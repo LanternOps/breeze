@@ -29,6 +29,7 @@ import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
 import { StrandedAccountsList } from './StrandedAccountsList';
 import { OrgDomainsSummaryRow } from './OrgDomainsSummaryRow';
 import { DirectoryDeprovisioningPanel } from './DirectoryDeprovisioningPanel';
+import { ScimProvisioningPanel } from './ScimProvisioningPanel';
 import {
   confirmRequiredImpact,
   isConfirmRequiredStatus,
@@ -317,6 +318,11 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         canEdit={view.canEdit}
         providers={{ microsoft: view.capabilities.entra, google: view.capabilities.google }}
       />
+      {/* Portal registration W9 (#11386): Entra SCIM provisioning — Tenant URL and the org's tokens.
+          Remounts when the proof state changes, so a freshly proven tenant shows the create button. */}
+      {view.capabilities.entra && (
+        <ScimProvisioningPanel key={String(view.entraTenantProven)} orgId={orgId} canEdit={view.canEdit} />
+      )}
       {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} providers={effectiveProviderSet(view, {})} />}
       <SsoOnlyConfirmDialog
         open={confirm !== null}

@@ -251,6 +251,9 @@ export default function ThirdPartyCatalog() {
             {t('admin.thirdPartyCatalog.description')}{' '}
             {t('admin.thirdPartyCatalog.totalEntries')} <span data-testid="catalog-total">{total}</span>
           </p>
+          <p data-testid="catalog-scope-note" className="text-xs text-muted-foreground mt-1 max-w-3xl">
+            {t('admin.thirdPartyCatalog.scopeNote')}
+          </p>
         </div>
         <div className="flex gap-2">
           <button

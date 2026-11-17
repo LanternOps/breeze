@@ -12,7 +12,7 @@
  * handlers never receive. Both are domain `core`.
  */
 import type { ActionIntent, ActionIntentStatus } from '../db/schema/actionIntents';
-import { compactToolResultForChat } from './aiToolOutput';
+import { compactToolResultForChat, shrinkToJsonBudget } from './aiToolOutput';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { hasSealedTemporaryPassword } from './actionIntents/resultSecrets';
 
@@ -93,6 +93,171 @@ export function mcpApprovalUrl(appBaseUrl: string, intentId: string): string {
   return `${appBaseUrl.replace(/\/+$/, '')}/approvals#intent-${intentId}`;
 }
 
+/**
+ * Keyed on the tool name too: a burned/expired secret no longer carries the
+ * result marker (and may have been nulled), but the tool still produced one.
+ * The reveal stays web-only. Shared by every path here that renders an intent
+ * result to a model, so the withholding rule cannot drift between them.
+ */
+export function isIntentResultWithheld(actionName: string, result: Record<string, unknown> | null): boolean {
+  return isSecretBearingTool(actionName) || (result !== null && hasSealedTemporaryPassword(result));
+}
+
+/**
+ * #11966: the executed steps of an AI agent run, for `get_ai_agent_run`.
+ * Without them the chat read only step statuses and told the user the output
+ * was not stored, although `action_intents.result` held it.
+ *
+ * Each result is compacted under the STEP's own tool name, so that tool's
+ * device-text fencing, redaction and error scrub apply exactly as they do when
+ * `get_action_status` shows the same result. The list is bounded to fit the
+ * tool-result budget beside the trace: at most STEP_RESULTS_MAX steps, each
+ * summary at most STEP_RESULT_MAX_CHARS, all entries within the caller's
+ * budget. Every cut is stated: `resultTruncated` beside the stored size, or
+ * `stepResultsOmitted` with how many steps were left out and why.
+ *
+ * Reading the run is not permission to read what its steps returned: the
+ * caller decides per step (`withheld`), and a result it withholds is never
+ * compacted or measured here.
+ */
+export type ChatIntentStepInput = Pick<
+  ActionIntent,
+  'id' | 'status' | 'actionName' | 'result' | 'errorCode' | 'executedAt' | 'createdAt'
+>;
+
+/**
+ * Why a stored result is not shown. `secret_bearing` is decided here; the
+ * other two are the CALLER's verdict on whether the reader may see what the
+ * step's own tool returns (`get_ai_agent_run` runs that tool's RBAC check).
+ */
+export type ChatStepResultWithheldReason = 'secret_bearing' | 'not_permitted' | 'permission_check_failed';
+
+type ChatIntentStepResultBase = {
+  intentId: string;
+  actionName: string;
+  status: 'completed' | 'failed';
+  errorCode?: string;
+  outcomeUncertain?: true;
+};
+
+/** Exactly one of: a summary, a withheld result, or no stored result. */
+export type ChatIntentStepResult = ChatIntentStepResultBase & (
+  | {
+      /** The compacted result JSON. */
+      resultSummary: string;
+      /** Size of the stored result JSON, so a reader can see how much a cut summary left out. */
+      resultChars: number;
+      /** `resultSummary` does not hold the whole stored result. */
+      resultTruncated?: true;
+    }
+  | { resultSummary: null; resultWithheld: ChatStepResultWithheldReason }
+  | { resultSummary: null; resultMissing: 'not_recorded' | 'exceeded_storage_cap' }
+);
+
+export type ChatIntentStepResults = {
+  stepResults: ChatIntentStepResult[];
+  /** Executed steps left out; `trace.intents` still lists every step with its status. */
+  stepResultsOmitted?: { count: number; reason: string };
+};
+
+export const STEP_RESULTS_MAX = 6;
+/** One summary's ceiling; also the budget each result is compacted to before any further cut. */
+export const STEP_RESULT_MAX_CHARS = 1_500;
+/** The default room for all step entries together, each entry's fields included. */
+export const STEP_RESULTS_BUDGET_CHARS = 3_000;
+const STEP_RESULT_MIN_CHARS = 250;
+/** Upper bound on one entry's fields besides `resultSummary` (ids, names, flags, JSON punctuation). */
+const STEP_RESULT_ENTRY_OVERHEAD_CHARS = 250;
+
+/** What the release worker and the inline chat path store for a result over MAX_RESULT_BYTES. */
+function isStorageCapMarker(result: Record<string, unknown>): boolean {
+  return Object.keys(result).length === 1 && result.truncated === true;
+}
+
+type ExecutedStep = ChatIntentStepInput & { status: 'completed' | 'failed' };
+
+/** Only a completed or failed step ran to an outcome; every other status has no result to show. */
+export function isExecutedStep<T extends ChatIntentStepInput>(row: T): row is T & ExecutedStep {
+  return row.status === 'completed' || row.status === 'failed';
+}
+
+/** A step that failed before dispatch has no executedAt; it sorts by when it was filed. */
+function stepTime(row: ChatIntentStepInput): number {
+  return (row.executedAt ?? row.createdAt).getTime();
+}
+
+function toStepResult(
+  row: ExecutedStep,
+  summaryChars: number,
+  callerWithheld: ChatStepResultWithheldReason | undefined,
+): ChatIntentStepResult {
+  const base: ChatIntentStepResultBase = { intentId: row.id, actionName: row.actionName, status: row.status };
+  if (row.status === 'failed') {
+    if (row.errorCode) base.errorCode = row.errorCode;
+    if (isIntentOutcomeUncertain(row)) base.outcomeUncertain = true;
+  }
+  // The caller's verdict first: a reader who may not see the result learns
+  // nothing about it, not even that it is secret-bearing or missing.
+  if (callerWithheld) return { ...base, resultSummary: null, resultWithheld: callerWithheld };
+  if (isIntentResultWithheld(row.actionName, row.result)) {
+    return { ...base, resultSummary: null, resultWithheld: 'secret_bearing' };
+  }
+  if (row.result === null) return { ...base, resultSummary: null, resultMissing: 'not_recorded' };
+  if (isStorageCapMarker(row.result)) return { ...base, resultSummary: null, resultMissing: 'exceeded_storage_cap' };
+
+  const raw = JSON.stringify(row.result);
+  // Compacted at a fixed budget, then cut from the end: a compactor run at a
+  // small budget falls back to a digest of field names and loses the content,
+  // while the head of a compacted result is the content itself.
+  const compacted = compactToolResultForChat(row.actionName, raw, STEP_RESULT_MAX_CHARS);
+  // Measured as escaped JSON: that is what the summary costs in the tool output.
+  const cutHere = JSON.stringify(compacted).length > summaryChars;
+  // Cut here, or by the compactor, which returns a result that fits its
+  // budget whole (fenced and redacted, never shortened) and cuts any other.
+  const truncated = cutHere || raw.length > STEP_RESULT_MAX_CHARS;
+  return {
+    ...base,
+    resultSummary: cutHere ? shrinkToJsonBudget(compacted, summaryChars) : compacted,
+    resultChars: raw.length,
+    ...(truncated ? { resultTruncated: true as const } : {}),
+  };
+}
+
+/**
+ * `budgetChars` is the room for every entry together. The caller sizes it to
+ * what the rest of its output leaves, so adding step results never pushes an
+ * output that fit into the compactor's digest fallback. `withheld` carries the
+ * caller's per-step access verdicts, keyed by intent id.
+ */
+export function toChatIntentStepResults(
+  rows: readonly ChatIntentStepInput[],
+  budgetChars: number = STEP_RESULTS_BUDGET_CHARS,
+  withheld: ReadonlyMap<string, ChatStepResultWithheldReason> = new Map(),
+): ChatIntentStepResults {
+  const executed = rows
+    .filter(isExecutedStep)
+    .sort((a, b) => stepTime(a) - stepTime(b) || a.createdAt.getTime() - b.createdAt.getTime());
+  const fitting = Math.floor(Math.max(0, budgetChars) / (STEP_RESULT_MIN_CHARS + STEP_RESULT_ENTRY_OVERHEAD_CHARS));
+  const shownCount = Math.min(STEP_RESULTS_MAX, executed.length, fitting);
+  const summaryChars = shownCount === 0 ? 0 : Math.min(
+    STEP_RESULT_MAX_CHARS,
+    Math.floor(budgetChars / shownCount) - STEP_RESULT_ENTRY_OVERHEAD_CHARS,
+  );
+  const out: ChatIntentStepResults = {
+    stepResults: executed.slice(0, shownCount).map((row) => toStepResult(row, summaryChars, withheld.get(row.id))),
+  };
+  const omitted = executed.length - shownCount;
+  if (omitted > 0) {
+    out.stepResultsOmitted = {
+      count: omitted,
+      reason: shownCount < Math.min(STEP_RESULTS_MAX, executed.length)
+        ? `The run trace left room for ${shownCount} step results; the run page in the Breeze app shows every step.`
+        : `Only the first ${STEP_RESULTS_MAX} executed steps carry a result here; the run page in the Breeze app shows every step.`,
+    };
+  }
+  return out;
+}
+
 export function toMcpActionStatus(
   intent: Pick<
     ActionIntent,
@@ -110,10 +275,7 @@ export function toMcpActionStatus(
     approvalUrl: mcpApprovalUrl(appBaseUrl, intent.id),
   };
   if (status === 'completed') {
-    // Keyed on the tool name too: a burned/expired secret no longer carries
-    // the result marker (and may have been nulled), but the tool still
-    // produced one. The reveal stays web-only.
-    if (isSecretBearingTool(intent.actionName) || (intent.result && hasSealedTemporaryPassword(intent.result))) {
+    if (isIntentResultWithheld(intent.actionName, intent.result)) {
       out.resultWithheld = 'secret_bearing';
     } else if (intent.result) {
       out.result = compactToolResultForChat(intent.actionName, JSON.stringify(intent.result));

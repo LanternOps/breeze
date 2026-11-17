@@ -7,7 +7,7 @@ import {
   type EffectiveTrustSettings, type TelemetryControlId, type TrustFramework, type TrustPagePublicPayload, type TrustPublishedConfig,
   type TrustPublishedConfigResolved, type TrustTemplateSettings,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, hasDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   orgDocuments, organizations, partners, portalBranding, trustPageDocuments, trustPages, trustPageSnapshots, ORG_DOCUMENT_META_COLUMNS,
 } from '../../db/schema';
@@ -23,7 +23,7 @@ import { buildSections, freezeSections } from './sections';
 import { defaultFrameworkView, resolveFrameworkView } from './sections/frameworks';
 import { loadTrustOnlyEvidence } from './trustOnlyEvidence';
 import { loadPartnerTemplate } from './template';
-import { addServing, cacheSnapshotPayload, removeServing, trustServingMember } from './servingSet';
+import { cacheSnapshotPayload, dropServingBuiltMarker, refreshServingForPartner, type ServingApplyOutcome } from './servingSet';
 import { TRUST_RESERVED_PARTNER_SLUGS } from './resolve';
 
 export class TrustPageError extends Error {
@@ -159,6 +159,12 @@ export interface SnapshotBuild {
   snapshotId: string; payload: TrustPagePublicPayload; sha256: string; deviceCount: number; generatedAt: Date;
   /** The publication config the payload was built from (publish freezes exactly this). */
   config: TrustPublishedConfig;
+  /**
+   * The partner template revision a 'draft' build resolved its inherited values from (null = the partner has
+   * no template). Always null for a frozen-config build, which reads no template. Publish compares THIS with
+   * the editor's expectedTemplateRevision (amendment 33), so the revision checked is the revision frozen.
+   */
+  templateRevision: number | null;
 }
 
 /**
@@ -193,8 +199,10 @@ export async function buildSnapshotForPage(
   const liveDocuments = await loadPublicDocumentsForPage(page);
 
   let frozen: TrustPublishedConfig;
+  let templateRevision: number | null = null;
   if (opts.config === 'draft') {
-    const { effective } = await resolveTrustPageSettings(page);
+    const { effective, template } = await resolveTrustPageSettings(page);
+    templateRevision = template?.revision ?? null;
     const v = effective.values;
     const sectionFreeze = await freezeSections({ page, asOf: generatedAt });
     const documents = liveDocuments.slice(0, TRUST_DOCUMENTS_MAX).map((d) => ({ id: d.id, visibility: d.visibility }));
@@ -234,7 +242,7 @@ export async function buildSnapshotForPage(
       thresholds: DEFAULT_TRUST_EVALUATION_POLICY.thresholds,
     },
   });
-  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config: frozen };
+  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config: frozen, templateRevision };
 }
 
 /**
@@ -260,15 +268,17 @@ export const TEMPLATE_CHANGED_MESSAGE = "Your partner's Trust Center template ch
 
 /**
  * One transaction: lock the page row, demote the previous current snapshot, insert the new current one, stamp
- * published_at and bump the revision — only if the revision still matches (409 otherwise). Serving-set and cache
- * writes happen after the transaction resolves, never inside it.
+ * published_at and bump the revision — only if the revision still matches (409 otherwise). No Redis I/O: the
+ * caller must let its DB context COMMIT and then call serveCommittedPublication({ partnerId: page.partnerId,
+ * cache }) before it answers (#9087). Serving the member inside the transaction let a concurrent rebuild that
+ * read the pre-commit rows remove it again.
  */
 export async function publishTrustPage(args: {
   orgId: string; expectedRevision: number; actorUserId: string; authorization?: { authorizedBy: string } | null;
   partnerTrustState: PartnerTrustState; partnerSlug: string; orgSlug: string;
   /** The template revision the editor loaded (null = no template); undefined = not checked (amendment 33). */
   expectedTemplateRevision?: number | null;
-}): Promise<{ page: TrustPageRow; snapshotId: string }> {
+}): Promise<{ page: TrustPageRow; snapshotId: string; cache: { snapshotId: string; payload: TrustPagePublicPayload } }> {
   const denied = trustDenial(args.partnerTrustState);
   if (denied) throw denied;
   validatePublishSlugs(args.partnerSlug, args.orgSlug);
@@ -285,17 +295,16 @@ export async function publishTrustPage(args: {
   if (!page.isPartnerHome && !authorizedBy) {
     throw new TrustPageError('Record who at the customer authorized publication before publishing.', 422, 'AUTHORIZATION_REQUIRED');
   }
-  if (args.expectedTemplateRevision !== undefined) {
-    // The editor showed inherited values from the template revision it loaded; publishing after the template
-    // changed would freeze values the publisher never saw.
-    const current = (await loadPartnerTemplate(page.partnerId))?.revision ?? null;
-    if (current !== args.expectedTemplateRevision) {
-      throw new TrustPageError(TEMPLATE_CHANGED_MESSAGE, 409, 'TEMPLATE_CHANGED');
-    }
-  }
   const publishedAt = page.publishedAt ?? new Date();
   // Built from the DRAFT; the same config is frozen below (a PUT racing this bumps the revision → 409).
   const built = await buildSnapshotForPage({ ...page, publishedAt }, { publishedAt, config: 'draft' });
+  if (args.expectedTemplateRevision !== undefined && built.templateRevision !== args.expectedTemplateRevision) {
+    // The editor showed inherited values from the template revision it loaded; publishing after the template
+    // changed would freeze values the publisher never saw. Compared AFTER the build, against the revision the
+    // build resolved: a separate pre-read could pass while the build froze a later revision (#9087). A template
+    // saved after the build does not change what is frozen, so no lock is needed.
+    throw new TrustPageError(TEMPLATE_CHANGED_MESSAGE, 409, 'TEMPLATE_CHANGED');
+  }
   const nextRevision = args.expectedRevision + 1;
 
   const result = await db.transaction(async (tx) => {
@@ -320,27 +329,66 @@ export async function publishTrustPage(args: {
     return updated ?? null;
   });
   if (!result) throw new TrustPageError('This page changed since you loaded it. Reload and publish again.', 409, 'REVISION_MISMATCH');
-
-  await cacheSnapshotPayload(built.snapshotId, built.payload);
-  const members = [trustServingMember(args.partnerSlug, args.orgSlug)];
-  if (result.isPartnerHome) members.push(trustServingMember(args.partnerSlug));
-  await addServing(members);
-  return { page: result, snapshotId: built.snapshotId };
+  return { page: result, snapshotId: built.snapshotId, cache: { snapshotId: built.snapshotId, payload: built.payload } };
 }
 
-/** Clears published_at and bumps the revision (so an in-flight publish 409s); removes the serving member after. */
-export async function unpublishTrustPage(args: {
-  orgId: string; actorUserId: string; partnerSlug: string; orgSlug: string; isPartnerHome: boolean;
-}): Promise<TrustPageRow> {
+/** Clears published_at and bumps the revision (so an in-flight publish 409s). No Redis I/O: see serveCommittedPublication. */
+export async function unpublishTrustPage(args: { orgId: string; actorUserId: string }): Promise<TrustPageRow> {
   const [updated] = await db.update(trustPages).set({
     publishedAt: null, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: args.actorUserId,
   }).where(eq(trustPages.orgId, args.orgId)).returning();
   if (!updated) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
-  await removeServing([
-    trustServingMember(args.partnerSlug, args.orgSlug),
-    ...(args.isPartnerHome ? [trustServingMember(args.partnerSlug)] : []),
-  ]);
   return updated;
+}
+
+/**
+ * The caller's duty after a publish or unpublish COMMITS (#9087): cache the new snapshot payload, then reconcile
+ * the partner's serving-set members against the DB. Must run outside any DB context (refreshServingForPartner
+ * throws otherwise), so the reconcile reads the committed rows. Never throws for anything else: the DB already
+ * committed, so a Redis or reconcile failure drops the built marker (the page resolves live instead of hiding)
+ * and reports 'degraded'.
+ */
+export async function serveCommittedPublication(r: {
+  partnerId: string; cache?: { snapshotId: string; payload: TrustPagePublicPayload };
+}): Promise<ServingApplyOutcome> {
+  if (hasDbAccessContext()) throw new Error('serveCommittedPublication must run after the publishing context commits');
+  if (r.cache) await cacheSnapshotPayload(r.cache.snapshotId, r.cache.payload);
+  try {
+    return await refreshServingForPartner(r.partnerId);
+  } catch (err) {
+    console.warn('[trustPage] serving-set reconcile after a committed publication failed; dropping the built marker', { partnerId: r.partnerId }, err);
+    captureException(err, undefined, { component: 'trustPage.serveCommittedPublication' });
+    await dropServingBuiltMarker();
+    return 'degraded';
+  }
+}
+
+/**
+ * What a publish/unpublish response reports about the serving set (#12103). 'applied': the set holds the committed
+ * state ('fallback' counts: its merge never removes a member, so a publish is served and an unpublished member that
+ * lingers is the safe false positive the live resolve turns into a 404). 'degraded': the set did not take the change.
+ * The DB is committed and the payload, badge, document and attestation routes resolve live, but /trust/card (which
+ * requires a known set) answers 503, or 404 if dropping the built marker failed too, until the self-heal rebuilds
+ * the set (lock-limited to one per minute). The portal page still renders from the payload; its SSR meta and the
+ * framable embed, which read the card, do not. 'no_redis' has no self-heal: the card never works without Redis.
+ */
+export type TrustServingStatus = 'applied' | 'degraded';
+export function servingStatusFor(outcome: ServingApplyOutcome): TrustServingStatus {
+  switch (outcome) {
+    case 'applied':
+    case 'fallback':
+      return 'applied';
+    case 'degraded':
+    case 'no_redis':
+      return 'degraded';
+    default: {
+      // Compile-time exhaustiveness. Never a throw: this runs after the publication committed, so an
+      // unexpected value is reported as not-yet-served rather than turning a committed publish into a 500.
+      const unhandled: never = outcome;
+      console.warn('[trustPage] unexpected serving outcome; reporting degraded', { outcome: unhandled });
+      return 'degraded';
+    }
+  }
 }
 
 /**

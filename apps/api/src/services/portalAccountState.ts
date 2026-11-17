@@ -56,7 +56,18 @@ export type PortalAccountWriter =
   // directory (or, in W9, SCIM) disable left the account with no other usable
   // credential. active|invited → disabled by 'directory'; on a disabled
   // account a no-op that keeps its disabled_by (an MSP disable stays the MSP's).
-  | 'directory_deprovision';
+  | 'directory_deprovision'
+  // W9 (#11386, plan D6): the account rule of disablePortalIdentity for the
+  // `scim` blocker — the same rows as directory_deprovision, attributed to
+  // 'scim'. On a disabled account a no-op that keeps its disabled_by.
+  | 'scim_deprovision'
+  // W9 (D6): a SCIM `active: true` that left the identity enabled re-activates
+  // the account ONLY when SCIM disabled it (disabled_by = 'scim') and it has a
+  // usable credential. An MSP or directory disable is never reversed by SCIM.
+  | 'scim_reactivate'
+  // W9 (D4): SCIM adopting an existing add-in account (spec §5.1: SCIM is a
+  // browser-access grant path). Alias of msp_grant_browser_access.
+  | 'scim_grant_browser_access';
 
 export interface PortalAccountFacts {
   status: string;
@@ -159,18 +170,28 @@ export function passwordUsableFor(
  * accept the invite (set a password or bind Microsoft) to sign in.
  */
 export function initialPortalAccountState(
-  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved' | 'sso_instant' | 'self_registration_instant',
-): { status: PortalAccountStatus; browserAccess: PortalBrowserAccess } {
+  writer:
+    | 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved' | 'sso_instant'
+    | 'self_registration_instant' | 'scim_provision' | 'scim_provision_inactive',
+): { status: PortalAccountStatus; browserAccess: PortalBrowserAccess; disabledBy: PortalAccountDisabledBy | null } {
   switch (writer) {
     case 'msp_invite':
     case 'self_request_approved':
     case 'self_registration_instant':
-      return { status: 'invited', browserAccess: 'granted' };
+      return { status: 'invited', browserAccess: 'granted', disabledBy: null };
     case 'addin_jit':
-      return { status: 'active', browserAccess: 'none' };
+      return { status: 'active', browserAccess: 'none', disabledBy: null };
     case 'sso_request_approved':
     case 'sso_instant':
-      return { status: 'active', browserAccess: 'granted' };
+    // W9 (#11386, plan D4): a SCIM-created account is identity-only, active and
+    // granted (spec §5.11).
+    case 'scim_provision':
+      return { status: 'active', browserAccess: 'granted', disabledBy: null };
+    // W9 (D4): SCIM created the person with `active: false`. Disabled by SCIM
+    // from the start (its identity carries the `scim` blocker), so a later SCIM
+    // `active: true` re-activates it through scim_reactivate.
+    case 'scim_provision_inactive':
+      return { status: 'disabled', browserAccess: 'granted', disabledBy: 'scim' };
   }
 }
 
@@ -207,8 +228,8 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
 function disabledByFor(facts: PortalAccountFacts, writer: PortalAccountWriter, status: PortalAccountStatus): PortalAccountDisabledBy | null {
   if (status !== 'disabled') return null;
   if (writer === 'msp_disable') return 'msp';
-  if (writer === 'directory_deprovision') {
-    if (facts.status !== 'disabled') return 'directory';
+  if (writer === 'directory_deprovision' || writer === 'scim_deprovision') {
+    if (facts.status !== 'disabled') return writer === 'scim_deprovision' ? 'scim' : 'directory';
     // Validated in planStatus: a stored, known value.
     return facts.disabledBy as PortalAccountDisabledBy;
   }
@@ -310,7 +331,8 @@ function planStatus(facts: PortalAccountFacts, writer: PortalAccountWriter): Omi
       return { status: 'invited', browserAccess, bumpEpoch: true };
     }
 
-    case 'directory_deprovision': {
+    case 'directory_deprovision':
+    case 'scim_deprovision': {
       // spec §5.11 "Effect": the identity's account had no other usable
       // credential. Browser access is left as it is (Restore reactivates it).
       if (status !== 'disabled') return { status: 'disabled', browserAccess, bumpEpoch: true };
@@ -352,7 +374,19 @@ function planStatus(facts: PortalAccountFacts, writer: PortalAccountWriter): Omi
       return { status: 'active', browserAccess: 'granted', bumpEpoch: false };
     }
 
-    case 'msp_grant_browser_access': {
+    case 'scim_reactivate': {
+      // W9 (D6): only SCIM's own account disable is SCIM's to lift.
+      if (status !== 'disabled' || facts.disabledBy !== 'scim') {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'not_scim_disabled', 'This portal user was not disabled by SCIM provisioning.');
+      }
+      if (facts.hasUsableExternalIdentity !== true && facts.passwordUsable !== true) {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'no_usable_credential', 'This portal user has no working sign-in method.');
+      }
+      return { status: 'active', browserAccess, bumpEpoch: true };
+    }
+
+    case 'msp_grant_browser_access':
+    case 'scim_grant_browser_access': {
       // The same rows as access_request_approve, with the MSP action's wording.
       if (status === 'disabled') {
         return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'disabled', 'This user is disabled. Reactivate them first.');

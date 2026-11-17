@@ -135,6 +135,7 @@ function columnCell(id: ColumnId, d: Device, input: DevicesCsvInput): Cell {
     case 'serial':
       return cls === 'manual' ? d.serialNumber : cls === 'agent' ? d.hardware?.serialNumber : '';
     case 'productSku': return isAgent(d) ? d.hardware?.productSku : '';
+    case 'hardwareModel': return isAgent(d) ? d.hardware?.model : '';
     case 'assetTag': return cls === 'manual' ? d.assetTag : '';
     case 'location': return cls === 'manual' ? d.location : '';
     case 'source': return cls === 'network' ? d.source : '';

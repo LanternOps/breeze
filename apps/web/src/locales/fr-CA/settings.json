@@ -595,7 +595,7 @@
       "verify": "Vérifier",
       "verifyQueued": "Vérification du modèle mise en file d'attente",
       "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente.",
-      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (utilise quelques milliers de jetons).",
+      "verifyGatewayHint": "Exécute un test d'appel d'outils sur votre point de terminaison. Voir la note sur les coûts ci-dessus.",
       "remove": "Retirer le modèle",
       "removeTitle": "Retirer ce modèle?",
       "removeMessage": "« {{model}} » sera supprimé de cette connexion. L’historique d’utilisation et de coûts est conservé. Vous pourrez le rajouter plus tard.",
@@ -1010,6 +1010,7 @@
     "noLogo": "Pas de logo",
     "uploadImage": "Téléverser l’image",
     "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage; les grandes images sont réduites à 800 px.",
+    "logoLowRes": "Ce logo fait {{width}} × {{height}} px. Les rapports, soumissions et factures l’impriment jusqu’à environ 64 mm (2,5 po) de large; il paraîtra donc flou à l’impression. Téléversez une version d’au moins 600 px sur son côté le plus long.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",
@@ -3348,7 +3349,8 @@
           "turnCount": "Tours",
           "summary": "Résumé",
           "computeCost": "Calcul",
-          "computeEstimated": "(estimé)"
+          "computeEstimated": "(estimé)",
+          "scope": "Portée"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -3434,6 +3436,24 @@
           "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
+        },
+        "scope": {
+          "org_one": "Toute l'organisation ({{count}} appareil au lancement)",
+          "org_other": "Toute l'organisation ({{count}} appareils au lancement)",
+          "site_one": "Site {{name}} ({{count}} appareil au lancement)",
+          "site_other": "Site {{name}} ({{count}} appareils au lancement)",
+          "siteUnnamed_one": "Un site ({{count}} appareil au lancement)",
+          "siteUnnamed_other": "Un site ({{count}} appareils au lancement)",
+          "devices_one": "{{count}} appareil sélectionné",
+          "devices_other": "{{count}} appareils sélectionnés"
+        },
+        "chain": {
+          "title": "Cette enquête",
+          "description": "Chaque étape prolongeait une étape précédente et pouvait utiliser les fichiers produits par les étapes antérieures.",
+          "step": "Étape {{step}}",
+          "current": "Cette exécution",
+          "open": "Ouvrir l'exécution",
+          "noGoal": "Aucun objectif consigné"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Forfait et fonctionnalités",
     "description": "Ce que comprend votre forfait. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une mise à niveau ajoute.",
     "currentPlan": "Forfait actuel",
+    "changePlan": "Changer de forfait",
+    "enrollmentPaused": "L’inscription de nouveaux appareils est suspendue : {{active}} sur {{limit}} appareils.",
+    "enrollmentPausedNoCounts": "L’inscription de nouveaux appareils est suspendue, car votre compte a atteint sa limite d’appareils.",
+    "enrollmentPausedChangePlan": "Changez de forfait pour en ajouter d’autres.",
     "plans": {
       "free": "Gratuit",
       "starter": "Starter",
@@ -8937,6 +8961,47 @@
       "stale": "Ce lot a changé depuis que vous l’avez ouvert. Consultez la liste actualisée et réessayez.",
       "notHeld": "Ce lot n’attend plus de décision.",
       "enforcementOff": "Le déprovisionnement est en mode rapport seulement sur ce serveur, il n’y a donc rien à appliquer."
+    }
+  },
+  "portalScim": {
+    "title": "Provisionnement Microsoft Entra (SCIM)",
+    "description": "Laissez le locataire Entra du client créer des comptes du portail pour les personnes affectées à l’application Breeze Portal, et les désactiver à leur départ.",
+    "loading": "Chargement du provisionnement…",
+    "retry": "Réessayer",
+    "refreshFailed": "Impossible d'actualiser. Les informations affichées ne sont peut-être pas à jour.",
+    "needsTenant": "Prouvez ci-dessus le locataire Microsoft de cette organisation avant de configurer le provisionnement.",
+    "tenantUrl": "URL du locataire",
+    "noBaseUrl": "L’adresse publique de l’API n’est pas configurée, l’URL du locataire ne peut donc pas être affichée. Demandez à votre administrateur de définir PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisionnés · {{deactivated}} désactivés par l’annuaire",
+    "secretOnce": "Copiez ce jeton maintenant et collez-le dans le champ Jeton secret de l’application Entra. Il ne sera plus affiché.",
+    "secretToken": "Jeton secret",
+    "secretDone": "Je l’ai copié",
+    "lastUsed": "Dernière utilisation {{date}}",
+    "neverUsed": "Pas encore utilisé",
+    "notWorking": "Ne fonctionne pas : le locataire prouvé de cette organisation a changé",
+    "revoke": "Révoquer",
+    "label": "Nom du jeton",
+    "create": "Créer un jeton de provisionnement",
+    "createSubmit": "Créer",
+    "cancel": "Annuler",
+    "copy": "Copier",
+    "copied": "Copié",
+    "copyFailed": "Impossible de copier dans le presse-papiers.",
+    "revokeConfirm": {
+      "title": "Révoquer ce jeton de provisionnement ?",
+      "message": "Entra cesse immédiatement de provisionner avec « {{label}} ». Les personnes déjà provisionnées conservent leur compte."
+    },
+    "toasts": {
+      "created": "Jeton de provisionnement créé.",
+      "revoked": "Jeton de provisionnement révoqué."
+    },
+    "errors": {
+      "load": "Impossible de charger le provisionnement.",
+      "create": "Impossible de créer le jeton de provisionnement.",
+      "revoke": "Impossible de révoquer le jeton de provisionnement.",
+      "tenantNotProven": "Prouvez le locataire Microsoft de cette organisation avant de créer un jeton de provisionnement.",
+      "limit": "Cette organisation a déjà deux jetons de provisionnement actifs. Révoquez-en un d’abord.",
+      "notFound": "Ce jeton de provisionnement n’existe plus."
     }
   }
 }

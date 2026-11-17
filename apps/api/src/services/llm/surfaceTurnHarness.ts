@@ -38,6 +38,7 @@ import type { SdkTool } from '../aiAgents/outcomeTools';
 import type { GatewayFailure } from '../aiModels/gateway/failureNotes';
 import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
 import { unknownToolArgsHooksForTools } from '../aiSdkToolArgGuard';
+import { SDK_PERMISSION_MODE } from './sdkChildEnvGuards';
 import type { ResolvedToolProfile } from '../aiModels/toolExposure';
 
 /** The stage version lives with the stored record (aiModels/surfaceReadiness.ts) so readers need not load the harness. */
@@ -230,6 +231,8 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
         // #11861: production refuses an argument the tool does not define, so the verify turn does too.
         hooks: unknownToolArgsHooksForTools({ [plan.mcpServerName]: tools }),
         settingSources: [],
+        // #11817: the production mode, so the verify turn sees production's allow/deny decisions.
+        permissionMode: SDK_PERMISSION_MODE,
         persistSession: false,
         abortController,
         env: input.childEnv,

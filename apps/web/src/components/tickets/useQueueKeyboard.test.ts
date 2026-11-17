@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { createElement, useState } from 'react';
+import { render, renderHook, waitFor } from '@testing-library/react';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { QUEUE_SHORTCUTS } from './queueShortcuts';
 import { resetTypingCadence } from '@/lib/keyboard/bareKeyGuard';
@@ -180,5 +181,72 @@ describe('useQueueKeyboard', () => {
     useUiStore.setState({ dirtyFormCount: 1 });
     press('a');
     expect(handlers.onAssignMe).not.toHaveBeenCalled();
+  });
+});
+
+// A key pressed once a render is in the DOM must act on that render. React can
+// run passive effects in a later task than the commit, so a listener
+// re-subscribed from useEffect can still hold the previous render's handlers
+// when the key arrives.
+describe('useQueueKeyboard handler freshness', () => {
+  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  let actEnvironment: boolean | undefined;
+  beforeEach(() => {
+    resetTypingCadence();
+    useUiStore.setState({ dirtyFormCount: 0 });
+    actEnvironment = g.IS_REACT_ACT_ENVIRONMENT;
+  });
+  afterEach(() => { g.IS_REACT_ACT_ENVIRONMENT = actEnvironment; });
+
+  it('a key pressed as soon as a render is in the DOM uses that render\'s handlers', async () => {
+    const seen: number[] = [];
+    let bump: () => void = () => {};
+    function Probe() {
+      const [version, setVersion] = useState(1);
+      bump = () => setVersion(2);
+      useQueueKeyboard({
+        onMove: () => { seen.push(version); },
+        onOpen: () => {},
+        onAssignMe: () => {},
+        onFocusReply: () => {},
+        onFocusInternal: () => {},
+        onResolve: () => {},
+        onEscape: () => {},
+      });
+      return createElement('div', { 'data-testid': 'probe', 'data-version': version });
+    }
+    const { getByTestId, unmount } = render(createElement(Probe));
+
+    // Press j at the earliest moment version 2 is in the DOM: the tightest case
+    // of a user, or findBy* plus a key press, reacting to the rows appearing.
+    const observer = new MutationObserver(() => { observer.disconnect(); press('j'); });
+    observer.observe(getByTestId('probe'), { attributes: true });
+    // bump() is not wrapped in act(), so React schedules the update as it would
+    // for a fetch response. Clearing the flag only silences the "not wrapped in
+    // act" warning (restored in afterEach).
+    g.IS_REACT_ACT_ENVIRONMENT = false;
+    bump();
+    await waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(seen).toEqual([2]);
+    unmount();
+  });
+
+  it('subscribes once across re-renders and unsubscribes on unmount', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const onMove = vi.fn();
+    const make = () => ({
+      onMove, onOpen: () => {}, onAssignMe: () => {}, onFocusReply: () => {},
+      onFocusInternal: () => {}, onResolve: () => {}, onEscape: () => {},
+    });
+    const { rerender, unmount } = renderHook(() => useQueueKeyboard(make()));
+    rerender();
+    rerender();
+    expect(add.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1);
+    add.mockRestore();
+
+    unmount();
+    press('j');
+    expect(onMove).not.toHaveBeenCalled();
   });
 });

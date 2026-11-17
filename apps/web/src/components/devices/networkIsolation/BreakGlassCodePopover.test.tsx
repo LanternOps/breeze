@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args) }));
+vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
 import BreakGlassCodePopover from './BreakGlassCodePopover';
 beforeEach(() => fetchWithAuth.mockReset());
 describe('BreakGlassCodePopover', () => {
@@ -45,5 +46,36 @@ describe('BreakGlassCodePopover', () => {
     fireEvent.click(screen.getByTestId('isolation-show-code'));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load');
     expect(screen.getByTestId('isolation-show-code')).toBeEnabled();
+  });
+  describe('release token tabs', () => {
+    it('shows no tabs without releaseTokenAvailable', () => {
+      render(<BreakGlassCodePopover deviceId="device-1" isolationId="episode-1" />);
+      expect(screen.queryByRole('tablist')).toBeNull();
+      expect(screen.getByTestId('isolation-show-code')).toBeInTheDocument();
+    });
+    it('defaults to the Code tab; switching to Token fetches nothing', () => {
+      render(<BreakGlassCodePopover deviceId="device-1" isolationId="episode-1" releaseTokenAvailable />);
+      expect(screen.getByRole('tablist')).toBeInTheDocument();
+      expect(screen.getByTestId('isolation-tab-code')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('isolation-show-code')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('isolation-tab-token'));
+      expect(screen.getByTestId('isolation-tab-token')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('isolation-issue-token')).toBeInTheDocument();
+      expect(screen.queryByTestId('isolation-show-code')).toBeNull();
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+    it('codesDisabled hides the code button, shows the note and the token UI', () => {
+      render(<BreakGlassCodePopover deviceId="device-1" isolationId="episode-1" releaseTokenAvailable codesDisabled />);
+      expect(screen.queryByTestId('isolation-show-code')).toBeNull();
+      expect(screen.queryByRole('tablist')).toBeNull();
+      expect(screen.getByTestId('isolation-codes-disabled-note')).toBeInTheDocument();
+      expect(screen.getByTestId('isolation-issue-token')).toBeInTheDocument();
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+    it('codesDisabled alone also implies the token UI', () => {
+      render(<BreakGlassCodePopover deviceId="device-1" isolationId="episode-1" codesDisabled />);
+      expect(screen.queryByTestId('isolation-show-code')).toBeNull();
+      expect(screen.getByTestId('isolation-issue-token')).toBeInTheDocument();
+    });
   });
 });

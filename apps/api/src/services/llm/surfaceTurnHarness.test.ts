@@ -8,6 +8,7 @@ import {
   type SurfaceTurnPlan,
   type SurfaceTurnSdk,
 } from './surfaceTurnHarness';
+import { SDK_PERMISSION_MODE } from './sdkChildEnvGuards';
 
 const SENTINEL = 'BRZ-TEST-0001';
 
@@ -112,6 +113,8 @@ describe('surfaceTurnHarness', () => {
       maxTurns: 4,
       tools: [],
       settingSources: [],
+      // #11817: the same pinned mode as production chat and agent runs.
+      permissionMode: SDK_PERMISSION_MODE,
       persistSession: false,
       env: base.childEnv,
     });

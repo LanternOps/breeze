@@ -28,15 +28,22 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
   const [busy, setBusy] = useState(false);
   const withKey = useCallback((r: TrustFaqRow): Row => ({ ...r, key: nextKey.current++ }), []);
 
-  // (Re)load whenever the page revision moves, unless the user has unsaved edits.
-  useEffect(() => {
+  // Only the newest load may apply: a retry, a revision move or unmount bumps the sequence and orphans older ones.
+  const loadSeq = useRef(0);
+  // Never over unsaved edits: a reload would replace the rows the user is editing.
+  const load = useCallback(() => {
     if (dirty.current) return;
-    let cancelled = false;
+    const seq = ++loadSeq.current;
     getTrustFaq(orgFetch, orgId)
-      .then((d) => { if (!cancelled && !dirty.current) { setRows(d.items.map((i) => withKey({ question: i.question, answerHtml: i.answerHtml }))); loadedRevision.current = d.publicationRevision; setLoadFailed(false); } })
-      .catch((err: unknown) => { console.error('[TrustFaqSection] load failed', err); if (!cancelled) setLoadFailed(true); });
-    return () => { cancelled = true; };
-  }, [orgFetch, orgId, revision, withKey]);
+      .then((d) => { if (seq === loadSeq.current && !dirty.current) { setRows(d.items.map((i) => withKey({ question: i.question, answerHtml: i.answerHtml }))); loadedRevision.current = d.publicationRevision; setLoadFailed(false); } })
+      .catch((err: unknown) => { console.error('[TrustFaqSection] load failed', err); if (seq === loadSeq.current) setLoadFailed(true); });
+  }, [orgFetch, orgId, withKey]);
+
+  // (Re)load whenever the page revision moves.
+  useEffect(() => {
+    load();
+    return () => { loadSeq.current++; };
+  }, [load, revision]);
 
   const edit = (fn: (prev: Row[]) => Row[]) => { dirty.current = true; setRows((prev) => fn(prev ?? [])); };
   const patch = (i: number, p: Partial<TrustFaqRow>) => edit((prev) => prev.map((r, n) => (n === i ? { ...r, ...p } : r)));
@@ -76,7 +83,17 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
     <section className="space-y-4 rounded-lg border bg-card p-4" data-testid="trust-faq-section">
       <h3 className="text-base font-semibold">{tr('title')}</h3>
       <p className="text-sm text-muted-foreground">{tr('description')}</p>
-      {loadFailed && <p role="alert" className="text-sm text-destructive" data-testid="trust-faq-load-error">{tr('loadFailed')}</p>}
+      {loadFailed && (
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+          <p data-testid="trust-faq-load-error">{tr('loadFailed')}</p>
+          {/* Every edit re-renders (setRows), so this ref read is current; a retry over unsaved edits would do nothing. */}
+          {!dirty.current && (
+            <button type="button" onClick={load} className="rounded-md border px-2 py-1 text-xs text-foreground hover:bg-muted" data-testid="trust-faq-retry">
+              {t('orgRecord.trust.retry')}
+            </button>
+          )}
+        </div>
+      )}
       {rows !== null && list.length === 0 && <p className="text-sm text-muted-foreground" data-testid="trust-faq-empty">{tr('empty')}</p>}
 
       <ul className="space-y-3">

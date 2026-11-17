@@ -22,6 +22,7 @@ import { closeModelGateway, getModelGateway } from './aiModels/gateway';
 import { prepareSdkChild } from './aiModels/connectionFactory';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { getLlmEgressProxy } from './llm/llmEgressProxy';
+import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
 import { createArgCheckedSdkMcpServer, unknownToolArgsHooks } from './aiSdkToolArgGuard';
 
 type UpstreamMessage = { role: string; content?: unknown };
@@ -83,7 +84,7 @@ async function runTurn(withHook: boolean) {
         model: r.wireModel, maxTurns: 4, tools: [], allowedTools: ['mcp__breeze__find_devices'],
         mcpServers,
         ...(withHook ? { hooks: unknownToolArgsHooks(mcpServers) } : {}),
-        settingSources: [], persistSession: false, env: child.env,
+        settingSources: [], permissionMode: SDK_PERMISSION_MODE, persistSession: false, env: child.env,
         ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
         stderr: (d: string) => { stderr.push(d); },
       },

@@ -360,7 +360,9 @@ describe('Wisp per-call auth and thread capture scope (W04 Task 4)', () => {
     const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
     expect(call[2]).toBe(narrowedAuth);
     expect(getAuth).not.toHaveBeenCalled();
-    expect((call[3] as { capture: unknown }).capture).toEqual({ orgId: 'org-1', sessionId: 's-1', wispThreadId: 't-1' });
+    expect((call[3] as { capture: unknown }).capture).toEqual({
+      orgId: 'org-1', sessionId: 's-1', wispThreadId: 't-1', wispGrant: { grantId: 'g-1', revisionId: 'r-1' },
+    });
   });
 
   it('an ordinary session keeps getAuth() and its capture scope gains no wispThreadId key', async () => {

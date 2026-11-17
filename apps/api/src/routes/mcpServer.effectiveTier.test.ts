@@ -467,6 +467,24 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     await callTool(['ai:read', 'ai:execute'], 'manage_patches', { action: 'list' });
     expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
+
+  // #11989: a tool registered at base Tier 4 is refused by the REAL
+  // checkGuardrails with its own reason — not routed to the Tier-3 approval
+  // gate (MCP_APPROVAL_REQUIRED) as an approvable call. The guardrail and
+  // agent-gate halves live in aiGuardrails.tier4Registration.contract.test.ts.
+  it('a base-Tier-4 registration is refused with the guardrail reason, even for a full-scope key', async () => {
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'demo_ext_tier4_tool' ? 4 : undefined));
+
+    const res = await callTool(['ai:read', 'ai:write', 'ai:execute'], 'demo_ext_tier4_tool', {});
+
+    const body = await res.json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toEqual({
+      error: 'Tool "demo_ext_tier4_tool" is registered at Tier 4 and is not available',
+    });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

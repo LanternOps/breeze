@@ -1,3 +1,5 @@
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+
 /**
  * Env vars every Claude Agent SDK child process must run with, whatever
  * endpoint it talks to (#7444).
@@ -35,3 +37,28 @@ export const SDK_CHILD_HOST_CONTEXT_GUARDS: Readonly<Record<string, string>> = O
   CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
   CLAUDE_CODE_THINKING_DISPLAY_UPDATES: '0',
 });
+
+/**
+ * The permission mode every Agent SDK `query()` runs with (#11817).
+ *
+ * Pinned, never left to the SDK: with no `permissionMode` the CLI picks its
+ * own starting mode — a `permissions.defaultMode` from loaded settings, else
+ * `auto` where auto mode is available, else `default` (`Options.permissionMode`
+ * in sdk.d.ts). Which one that is has varied with the provider (first-party vs
+ * a gateway) and the SDK release (#11817). Breeze wants one behaviour on every
+ * connection and every SDK version.
+ *
+ * `dontAsk` turns each call that would prompt into a denial, without calling
+ * `canUseTool` (Breeze passes none). What still runs: the tools named in
+ * `allowedTools`, and built-ins that need no approval in `default` mode —
+ * `ToolSearch` among them, so tool search works without allow-listing it
+ * (proved against the real CLI in sdkPermissionMode.e2e.test.ts). Breeze's
+ * approval gate does not live in the SDK: each tool handler runs its own
+ * guardrail and approval check.
+ *
+ * Callers put it after every spread of variable query options (a gateway
+ * child's `queryOptions`, a spike variant's options), so nothing spread in can
+ * override it. sdkPermissionMode.contract.test.ts fails if a `query()` call
+ * does not pass it, and checks that order at the two production sites.
+ */
+export const SDK_PERMISSION_MODE = 'dontAsk' as const satisfies PermissionMode;

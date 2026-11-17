@@ -34,7 +34,7 @@ describe('restore-point wire contract (#4609)', () => {
   it('pins triggers and statuses', () => {
     expect([...RESTORE_POINT_TRIGGERS]).toEqual(['patch', 'script', 'software_install']);
     expect(RESTORE_POINT_STATUSES[0]).toBe('requested');
-    expect(RESTORE_POINT_STATUSES).toHaveLength(11);
+    expect(RESTORE_POINT_STATUSES).toHaveLength(12);
     expect([...RESTORE_POINT_STATUSES]).toEqual([
       'requested',
       'created',
@@ -47,6 +47,7 @@ describe('restore-point wire contract (#4609)', () => {
       'insufficient_privileges',
       'verification_failed',
       'failed',
+      'interrupted',
     ]);
   });
 });

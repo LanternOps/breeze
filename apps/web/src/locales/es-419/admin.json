@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Catálogo de paquetes de terceros",
       "description": "Metadatos seleccionados por Breeze para software de terceros detectado por winget en los agentes.",
+      "scopeNote": "Este catálogo solo aporta un nombre descriptivo, el proveedor, la categoría y la gravedad predeterminada de un parche de terceros que informa un dispositivo. No decide qué aplicaciones se actualizan, y las aplicaciones que no aparecen aquí igualmente figuran en Parches. Las actualizaciones provienen de las fuentes de parches de una política de configuración, de un anillo de actualización y de lo que winget, Chocolatey o Homebrew informan en el dispositivo. Las instalaciones de winget por usuario se detectan, pero nunca se actualizan.",
       "totalEntries": "Entradas totales:",
       "refresh": "Actualizar",
       "addPackage": "Agregar paquete",
@@ -1157,6 +1158,7 @@
       "portal_access_request": "Solicitud de acceso al portal",
       "portal_auth": "Inicio de sesión del portal",
       "portal_directory_run": "Ejecución de directorio del portal",
+      "portal_scim_token": "Token de aprovisionamiento del portal",
       "portal_user": "Usuario del portal",
       "psa_connection": "Conexión de PSA",
       "psa_ticket_mapping": "Asignación de tickets PSA",

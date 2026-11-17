@@ -267,6 +267,11 @@ export async function fireRunCheckIn(
 
   // 5. Admit. Lazy: the assessment graph stays off the chat tool's import path.
   const { enqueueAssessment } = await import('./assessment');
+  // #11978: an event row names what it waits on, so the run can look at it
+  // (and a run_settled subject gets the read that can).
+  const subject = row.triggerKind !== 'time' && row.triggerSubjectId
+    ? { kind: row.triggerKind, id: row.triggerSubjectId }
+    : null;
   const result = await runOutsideDbContext(() => enqueueAssessment({
     grantId: row.grantId,
     orgId,
@@ -275,6 +280,7 @@ export async function fireRunCheckIn(
       checkInId: row.id,
       instruction: sanitizeCheckInInstruction(runInstruction),
       evidence: input.evidence,
+      ...(subject ? { subject } : {}),
     },
     dedupeKey: checkInRunDedupeKey(row.id),
     requireRevisionId: pinnedRevisionId,

@@ -15,6 +15,7 @@
     "verificationFailed": "Não foi possível verificar",
     "failed": "Falha — {{message}}",
     "failedNoMessage": "Falha",
+    "interrupted": "Desconhecido — o agente parou antes de poder informar este ponto de restauração",
     "unknown": "Resultado não reconhecido por esta versão do console"
   },
   "list": {

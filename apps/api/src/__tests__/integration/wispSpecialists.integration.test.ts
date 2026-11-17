@@ -151,7 +151,7 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     const requestId = randomUUID();
     const result = await requestSpecialist({
       grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'analysis',
-      params: { goal: 'Why are three devices slow?' }, requestedByRunId: runId,
+      params: { goal: 'Why are three devices slow?', scope: 'org' }, requestedByRunId: runId,
     }, { requestId });
     expect(result).toEqual({ refused: 'workspace_execute_required' });
     const rows = await sys(() => db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)

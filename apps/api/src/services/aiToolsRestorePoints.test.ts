@@ -116,6 +116,13 @@ describe('list_device_restore_point_attempts', () => {
     expect(renderedWhere().params).toEqual(expect.arrayContaining([DEVICE_ID, 'software_install', 'failed']));
   });
 
+  it('offers the agent-reported interrupted status as a filter value (#9163)', async () => {
+    const props = tool().definition.input_schema.properties as Record<string, { enum?: string[] }>;
+    expect(props.status?.enum).toContain('interrupted');
+    await call({ status: 'interrupted' });
+    expect(renderedWhere().params).toEqual(expect.arrayContaining([DEVICE_ID, 'interrupted']));
+  });
+
   it('returns an allowlisted DTO with a string sequenceNumber and never internal columns', async () => {
     m.rows = [row({ orgId: 'org-secret', deviceCommandId: 'cmd-secret' })];
     const body = await call({});

@@ -116,6 +116,7 @@ import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 import { registerPortalEntraTenantRoutes } from './orgPortalEntraTenant';
 import { registerOrgPortalDirectoryRoutes } from './orgPortalDirectory';
+import { registerOrgPortalScimRoutes } from './orgPortalScim';
 import { registerOrgCustomerDomainRoutes } from './orgCustomerDomains';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
@@ -3061,6 +3062,8 @@ registerPortalAccessPolicyRoutes(orgRoutes);
 registerPortalEntraTenantRoutes(orgRoutes);
 // Customer-portal directory deprovisioning: status, apply/dismiss held runs, restore/remove a disabled sign-in — see routes/orgPortalDirectory.ts
 registerOrgPortalDirectoryRoutes(orgRoutes);
+// Customer-portal Entra SCIM provisioning tokens (portal_scim_tokens) — see routes/orgPortalScim.ts
+registerOrgPortalScimRoutes(orgRoutes);
 // Customer sender domains + ownership verification (customer_email_domains) — see routes/orgCustomerDomains.ts
 registerOrgCustomerDomainRoutes(orgRoutes);
 // Staff read-only "Customer view" of the portal read models (#9350)

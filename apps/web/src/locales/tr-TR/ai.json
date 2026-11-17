@@ -621,7 +621,12 @@
       "waitingForApprover": "Bir onaylayıcı bekleniyor"
     },
     "continue": "Devam et",
-    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et."
+    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et.",
+    "chainStep": "Bu incelemenin {{step}}. adımı",
+    "goal": "Hedef: {{goal}}",
+    "findings": "Bulgular: {{count}}",
+    "findingsHigh": "({{count}} yüksek)",
+    "files": "Dosyalar:"
   },
   "aiModelPicker": {
     "chooseModel": "Model seçin",
@@ -1111,5 +1116,20 @@
       "partnerEnforced_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
       "partnerEnforced_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Bu yanıt zaman aşımına uğradı",
+    "disconnected": "Yanıt tamamlanmadan bağlantı kesildi.",
+    "tryAgain": "Tekrar dene",
+    "conversationGone": "Bu konuşma artık kullanılamıyor. Devam etmek için yeni bir sohbet başlatın."
+  },
+  "aiNotifications": {
+    "responseReady": "Yanıt hazır",
+    "needsApproval": "Onayınız gerekiyor",
+    "needsInput": "Girişiniz gerekiyor",
+    "failed": "Yanıt başarısız oldu",
+    "enable": "Bir yanıt hazır olduğunda bana bildir",
+    "disable": "Breeze AI bildirimlerini kapat",
+    "blocked": "Bu site için bildirimler engellendi. Tarayıcı ayarlarından izin verin."
   }
 }

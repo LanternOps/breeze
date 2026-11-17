@@ -378,6 +378,7 @@ ticketsRoutes.get(
     const orderBy =
       q.sort === 'newest' ? [desc(tickets.createdAt), desc(tickets.id)]
       : q.sort === 'oldest' ? [asc(tickets.createdAt), asc(tickets.id)]
+      : q.sort === 'updated' ? [desc(tickets.updatedAt), desc(tickets.id)]
       : q.sort === 'due' ? [asc(tickets.dueDate), asc(tickets.id)]
       : [desc(SLA_BREACHED), desc(SLA_AT_RISK), PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage: breaches surface first
 

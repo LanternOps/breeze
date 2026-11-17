@@ -12,8 +12,11 @@ export type RestorePointTrigger = (typeof RESTORE_POINT_TRIGGERS)[number];
 
 /**
  * 'requested' is server-only: written at command-creation time so an absent
- * ledger row means "Breeze never asked". Every other value is observed from the
- * agent. Mirrors RESTORE_POINT_ATTEMPT_STATUSES on the ledger schema.
+ * ledger row means "Breeze never asked". The other eleven are agent-reported.
+ * 'interrupted' (#9163) means the agent restarted, crashed or shut down before
+ * it reported the checkpoint's outcome: the outcome is unknown, and a restore
+ * point exists only if a sequence number is attached. Mirrors
+ * RESTORE_POINT_ATTEMPT_STATUSES on the ledger schema.
  */
 export const RESTORE_POINT_STATUSES = [
   'requested',
@@ -27,6 +30,7 @@ export const RESTORE_POINT_STATUSES = [
   'insufficient_privileges',
   'verification_failed',
   'failed',
+  'interrupted',
 ] as const;
 export type RestorePointStatus = (typeof RESTORE_POINT_STATUSES)[number];
 

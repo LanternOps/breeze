@@ -127,6 +127,7 @@ import {
 } from '../services/topology/aiSessionAccess';
 
 import { createTicketFromChatSchema, type AiContinuationRequired, type AiTicketDraft } from '@breeze/shared';
+import type { AiStreamEvent } from '@breeze/shared/types/ai';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
 import { pageContextWriteDefaultOrgId } from '../services/aiSessionOrgAnchor';
@@ -177,6 +178,24 @@ function generateSessionTitle(content: string): string {
   const truncated = cleaned.slice(0, 80);
   const lastSpace = truncated.lastIndexOf(' ');
   return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + '…';
+}
+
+/**
+ * #9428: the id of the session's most recent USER row when it has exactly this
+ * text — the failed turn's message a "Try again" re-runs — else null. Rows the
+ * failed turn wrote after it (partial assistant text, tool_use rows, the fixed
+ * provider-failure reply) are skipped: they belong to that same turn. Whether
+ * the turn failed is the client's call (it sends `retry` only for one).
+ * Caller-scoped: runs inside the request's own DB context, as the insert does.
+ */
+async function lastUserRowIdWithContent(sessionId: string, content: string): Promise<string | null> {
+  const [latest] = await db
+    .select({ id: aiMessages.id, content: aiMessages.content })
+    .from(aiMessages)
+    .where(and(eq(aiMessages.sessionId, sessionId), eq(aiMessages.role, 'user')))
+    .orderBy(desc(aiMessages.createdAt))
+    .limit(1);
+  return latest && latest.content === content ? latest.id : null;
 }
 
 type AiTurnBudgetDispatch = { reservationId: string; maxBudgetUsd?: number };
@@ -1177,11 +1196,21 @@ aiRoutes.post(
       });
 
       try {
-        const [userRow] = await db.insert(aiMessages).values({
-          sessionId,
-          role: 'user',
-          content: sanitizedContent,
-        }).returning({ id: aiMessages.id });
+        // #9428: "Try again" re-sends the failed turn's message. Its row was
+        // already saved by the failed POST, so re-use it (and anchor on it)
+        // rather than persisting the same message twice. Only the session's
+        // most recent user row with exactly this text qualifies (rows the
+        // failed turn wrote after it are skipped); otherwise this is a new
+        // message. The lookup runs in this same caller-scoped context as the
+        // insert.
+        const retriedRowId = body.retry === true ? await lastUserRowIdWithContent(sessionId, sanitizedContent) : null;
+        const [userRow] = retriedRowId
+          ? [{ id: retriedRowId }]
+          : await db.insert(aiMessages).values({
+            sessionId,
+            role: 'user',
+            content: sanitizedContent,
+          }).returning({ id: aiMessages.id });
         // #9427: the anchor an attaching client splices this turn's replay
         // after. Set before the turn is pushed.
         activeSession.turnUserMessageId = userRow?.id ?? null;
@@ -1330,7 +1359,10 @@ aiRoutes.post(
           data: JSON.stringify({
             type: 'error',
             message,
-          }),
+            // #9428: the turn may still be running server-side; a client
+            // reloads before offering to re-send (it may have answered).
+            code: 'stream_error',
+          } satisfies AiStreamEvent),
         });
       } finally {
         activeSession.eventBus.unsubscribe(subscriptionId);

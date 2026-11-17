@@ -229,7 +229,12 @@ export const alerts = pgTable('alerts', {
   topologyOpenSourceUidx: uniqueIndex('alerts_topology_open_source_uidx')
     .on(table.orgId, table.topologySiteId, table.topologySourceKey)
     .where(sql`topology_source_key IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')`),
-  topologySiteIdx: index('alerts_topology_site_idx').on(table.topologySiteId).where(sql`topology_site_id IS NOT NULL`)
+  topologySiteIdx: index('alerts_topology_site_idx').on(table.topologySiteId).where(sql`topology_site_id IS NOT NULL`),
+  // Wisp analysis W05 (2027-01-27-150000, built CONCURRENTLY): the `alerts`
+  // export's keyset order across a run's device frame (aiToolsExportDatasets/alerts.ts).
+  orgDeviceTriggeredIdx: index('alerts_org_device_triggered_idx')
+    .on(table.orgId, table.triggeredAt.desc(), table.id.desc())
+    .where(sql`owner_kind = 'device'`)
 }));
 
 export const alertCorrelations = pgTable('alert_correlations', {

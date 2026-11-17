@@ -1514,7 +1514,12 @@ export type ProposalContextDenyReason =
  * so the risk tier here is always the tier a completed review actually wrote.
  */
 export interface GuardrailContext {
-  proposal?: { riskTier: RiskTier; strictHits: string[] };
+  /**
+   * `goal` is the proposal's human title (the heading of its detail page). It
+   * names the script on the approval headline (#11979); a proposal has no
+   * library `scriptId` for the headline to fall back on.
+   */
+  proposal?: { riskTier: RiskTier; strictHits: string[]; goal?: string };
   /**
    * Set only when `proposal` is undefined AND the loader actually resolved a
    * specific reason (vs. no context being supplied at all) — lets the tier-4
@@ -3417,7 +3422,7 @@ export function checkGuardrails(
       tier: 1,
       allowed: true,
       requiresApproval: false,
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
@@ -3431,7 +3436,7 @@ export function checkGuardrails(
       allowed: true,
       requiresApproval: true,
       approvalScope: resolveApprovalScope(toolName, action, input, context),
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
@@ -3441,7 +3446,7 @@ export function checkGuardrails(
       allowed: true,
       requiresApproval: true,
       approvalScope: resolveApprovalScope(toolName, action, input, context),
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
@@ -3451,7 +3456,7 @@ export function checkGuardrails(
       allowed: true,
       requiresApproval: false,
       ...(TIER2_READONLY_ACTIONS[toolName]?.includes(action) ? { readOnly: true } : {}),
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
@@ -3465,7 +3470,7 @@ export function checkGuardrails(
       allowed: true,
       requiresApproval: false,
       readOnly: true,
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
@@ -3481,7 +3486,7 @@ export function checkGuardrails(
         requiresApproval: false,
         readOnly: true,
         pinnedEventLogsQuery,
-        description: buildApprovalDescription(toolName, action, input)
+        description: buildApprovalDescription(toolName, action, input, context)
       };
     }
 
@@ -3497,7 +3502,7 @@ export function checkGuardrails(
           allowed: true,
           requiresApproval: false,
           wispUnattendedRead,
-          description: buildApprovalDescription(toolName, action, input)
+          description: buildApprovalDescription(toolName, action, input, context)
         };
       }
     }
@@ -3512,18 +3517,21 @@ export function checkGuardrails(
       allowed: true,
       requiresApproval: true,
       approvalScope: resolveApprovalScope(toolName, action, input, context),
-      description: buildApprovalDescription(toolName, action, input)
+      description: buildApprovalDescription(toolName, action, input, context)
     };
   }
 
   if (baseTier === 4) {
-    // Only tier 3 gets a scope — a base-Tier-4 tool has no approval path at
-    // all, not a bigger approval scope.
+    // #11989: Tier 4 is blocked. A tool registered at base Tier 4 (the
+    // extension SDK admits `tier: 4`) has no approval path at all, so it is
+    // refused here like the blocked/unknown arms above. The chat gate, the
+    // agent gate and the MCP route refuse on `!allowed` before any approval
+    // card or durable intent.
     return {
       tier: 4,
-      allowed: true,
-      requiresApproval: true,
-      description: buildApprovalDescription(toolName, action, input)
+      allowed: false,
+      requiresApproval: false,
+      reason: `Tool "${toolName}" is registered at Tier 4 and is not available`
     };
   }
 
@@ -3532,7 +3540,7 @@ export function checkGuardrails(
     allowed: true,
     requiresApproval: false,
     ...(baseTier === 2 && TIER2_READONLY_TOOLS.has(toolName) ? { readOnly: true } : {}),
-    description: buildApprovalDescription(toolName, action, input)
+    description: buildApprovalDescription(toolName, action, input, context)
   };
 }
 
@@ -4600,10 +4608,39 @@ export function describeSpecialistRequest(input: Record<string, unknown>, orgNam
   return text;
 }
 
+/**
+ * #11979: the `run_script` headline. A proposal-backed run has no `scriptId`,
+ * so it is named by the proposal's goal (model-written text: one line,
+ * bounded, quoted), else by its id stub. One device is named by the
+ * `on device <id>...` stub the approval surfaces swap for its name
+ * (approvalDeviceName.ts `argumentDeviceId`); more are counted.
+ */
+function describeRunScriptHeadline(input: Record<string, unknown>, context: GuardrailContext | undefined): string {
+  let script: string;
+  if (isProposalRunScript('run_script', input)) {
+    // `...` becomes `…` so the goal can never carry an `on device <id>...`
+    // stub that a label builder would mistake for the real one and rename.
+    const goal = context?.proposal?.goal?.replace(/\s+/g, ' ').replace(/\.\.\./g, '…').trim();
+    script = goal
+      ? `Run proposed script "${goal.length > 80 ? `${goal.slice(0, 80)}…` : goal}"`
+      : `Run proposed script ${(input.proposalId as string).slice(0, 8)}...`;
+  } else {
+    script = typeof input.scriptId === 'string' && input.scriptId.length > 0
+      ? `Run script ${input.scriptId.slice(0, 8)}...`
+      : 'Run script';
+  }
+  if (!Array.isArray(input.deviceIds)) return script;
+  const [only] = input.deviceIds;
+  return input.deviceIds.length === 1 && typeof only === 'string' && only.length > 0
+    ? `${script} on device ${only.slice(0, 8)}...`
+    : `${script} on ${input.deviceIds.length} device(s)`;
+}
+
 export function buildApprovalDescription(
   toolName: string,
   action: string | undefined,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  context?: GuardrailContext,
 ): string {
   const parts: string[] = [];
 
@@ -4660,8 +4697,7 @@ export function buildApprovalDescription(
     }
 
     case 'run_script':
-      parts.push(`Run script ${(input.scriptId as string)?.slice(0, 8) ?? 'unknown'}...`);
-      if (Array.isArray(input.deviceIds)) parts.push(`on ${input.deviceIds.length} device(s)`);
+      parts.push(describeRunScriptHeadline(input, context));
       break;
 
     case 'cancel_script_execution':

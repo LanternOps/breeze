@@ -97,6 +97,7 @@ import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
 import { trustPageContentRoutes } from './routes/trustPageContent';
 import { trustPageAccessRoutes } from './routes/trustPageAccess';
 import { trustAccessPublicRoutes } from './routes/trustAccessPublic';
+import { portalScimRoutes } from './routes/portalScim';
 import { trustPageTemplateRoutes } from './routes/trustPageTemplate';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
@@ -183,6 +184,7 @@ import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
 import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
+import { partnerDeviceCapacityRoutes } from './routes/partnerDeviceCapacity';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -842,6 +844,10 @@ api.route('/trust/attestation', trustPageAttestationRoutes);
 // Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
 api.route('/trust/access', trustAccessPublicRoutes);
 api.route('/trust', trustPagePublicRoutes);
+// Portal Entra SCIM provisioning (W9 #11386): public, authenticated by an org's
+// SCIM bearer token inside the router (uniform 401). partnerGuard skips the path;
+// the global limiter meters it in its own 'scim' bucket.
+api.route('/scim/portal/v2', portalScimRoutes);
 // Public, token-gated agreement signing (#9075 W2b, no auth). Mounted with the
 // other public surfaces, before every root-mounted router and before the
 // auth-gated /contracts router, so no `.use('*')` auth middleware can run ahead
@@ -1130,6 +1136,8 @@ api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
 api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
+// Read-only device admission status for Settings → Plan. Also above `/partner`.
+api.route('/partner/device-capacity', partnerDeviceCapacityRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);

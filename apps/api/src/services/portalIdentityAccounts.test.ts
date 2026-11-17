@@ -98,7 +98,7 @@ describe('createIdentityOnlyAccount', () => {
   it('instant: locks the address, refuses nothing, links the contact, then an active+granted entra login and a jit identity', async () => {
     h.results.push([], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }]);
     const outcome = await createIdentityOnlyAccount(tx, instant());
-    expect(outcome).toEqual({ kind: 'created', portalUserId: 'pu-new', authEpoch: 1 });
+    expect(outcome).toEqual({ kind: 'created', portalUserId: 'pu-new', authEpoch: 1, identityId: 'identity-1' });
 
     expect(lockPortalInviteAddresses).toHaveBeenCalledWith(tx, ORG, ['jane@acme.example']);
     // "Never link by email": an existing account at the address is checked under the lock.
@@ -116,7 +116,7 @@ describe('createIdentityOnlyAccount', () => {
     expect(account!.args[0]).toBe(portalUsers);
     expect(firstArg(account, 'values')).toEqual({
       orgId: ORG, email: 'jane@acme.example', name: 'Jane', passwordHash: null, authMethod: 'entra',
-      entraTenantId: TID, entraOid: OID, status: 'active', browserAccess: 'granted', contactId: 'contact-1',
+      entraTenantId: TID, entraOid: OID, status: 'active', browserAccess: 'granted', disabledBy: null, contactId: 'contact-1',
     });
     expect(stepsOf(account, 'onConflictDoNothing')).toHaveLength(1);
     expect(identity!.args[0]).toBe(portalUserIdentities);
@@ -180,5 +180,46 @@ describe('createIdentityOnlyAccount', () => {
       orgId: ORG, portalUserId: 'pu-new', provider: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1',
       entraTenantId: null, linkedVia: 'jit',
     });
+  });
+});
+
+// W9 (#11386, plan D4): a SCIM create — identity-only, linked_via 'scim', the
+// SCIM columns on the identity, never a contact link.
+describe('createIdentityOnlyAccount — SCIM', () => {
+  const scim = { userName: 'Jane@Acme.example', displayName: 'Jane Doe', givenName: 'Jane', familyName: 'Doe' };
+  const scimInput = (over: Partial<CreateIdentityOnlyAccountInput> = {}) => instant({
+    contactAddress: null, writer: 'scim_provision', scim, ...over,
+  } as Partial<CreateIdentityOnlyAccountInput>);
+
+  it('scim_provision: an active + granted entra login and a scim identity carrying the SCIM columns', async () => {
+    h.results.push([], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }]);
+    const outcome = await createIdentityOnlyAccount(tx, scimInput());
+    expect(outcome).toEqual({ kind: 'created', portalUserId: 'pu-new', authEpoch: 1, identityId: 'identity-1' });
+    const [account, identity] = inserts();
+    expect(firstArg(account, 'values')).toMatchObject({
+      authMethod: 'entra', entraTenantId: TID, entraOid: OID, status: 'active', browserAccess: 'granted', disabledBy: null, contactId: null,
+    });
+    expect(firstArg(identity, 'values')).toEqual({
+      orgId: ORG, portalUserId: 'pu-new', provider: 'entra', issuer: entraIssuer(TID), subject: OID, entraTenantId: TID,
+      linkedVia: 'scim',
+      scimUserName: 'Jane@Acme.example', scimDisplayName: 'Jane Doe', scimGivenName: 'Jane', scimFamilyName: 'Doe',
+      scimProvisionedAt: NOW,
+    });
+    expect(linkLoginToContact).not.toHaveBeenCalled();
+  });
+
+  it('scim_provision_inactive: the login starts disabled by scim and the identity carries the scim blocker', async () => {
+    h.results.push([], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }]);
+    await createIdentityOnlyAccount(tx, scimInput({ writer: 'scim_provision_inactive' }));
+    const [account, identity] = inserts();
+    expect(firstArg(account, 'values')).toMatchObject({ status: 'disabled', browserAccess: 'granted', disabledBy: 'scim' });
+    expect(firstArg(identity, 'values')).toMatchObject({
+      linkedVia: 'scim', disabledAt: NOW, disabledReason: 'scim_deactivated', disabledBlockers: ['scim'],
+    });
+  });
+
+  it('a SCIM writer without SCIM attributes is a programming error', async () => {
+    await expect(createIdentityOnlyAccount(tx, scimInput({ scim: undefined }))).rejects.toThrow(/scim attributes/);
+    expect(h.calls).toEqual([]);
   });
 });

@@ -49,6 +49,9 @@ describe('AiModelPicker (spec §11)', () => {
     setChoices(base);
     render(<AiModelPicker />);
     expect(screen.getByTestId('ai-model-effort')).toBeInTheDocument();
+    // One control style on the row: the native select is sized like the model button beside it.
+    const box = (el: HTMLElement) => el.className.split(' ').filter((c) => /^(text-|px-|py-|rounded|border)/.test(c)).sort();
+    expect(box(screen.getByTestId('ai-model-effort'))).toEqual(box(screen.getByTestId('ai-model-picker-button')));
     expect(screen.queryByTestId('ai-model-thinking')).toBeNull();
     fireEvent.click(screen.getByTestId('ai-model-picker-button'));
     fireEvent.click(screen.getByTestId('ai-model-option-haiku'));

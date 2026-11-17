@@ -1581,6 +1581,38 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
+  it.each(['add', 'update'])('wake_on_lan %s rejects configureSettings true and unknown keys before mutation (#10838)', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'wake_on_lan' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    for (const inlineSettings of [
+      { configureSettings: true, buttonMode: 'always' },
+      { configureSettings: false, buttonMode: 'always', extra: 1 },
+    ]) {
+      if (action === 'update') mockSelectRows([{ featureType: 'wake_on_lan' }]);
+      const output = await tools.get('manage_policy_feature_link')!.handler({
+        action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'wake_on_lan', inlineSettings,
+      }, makeAuth());
+      expect(JSON.parse(output).error).toMatch(/wake_on_lan/);
+    }
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('wake_on_lan add accepts both button modes (#10838)', async () => {
+    const tools = toolsWithPolicy();
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    for (const buttonMode of ['verified', 'always']) {
+      const output = await tools.get('manage_policy_feature_link')!.handler({
+        action: 'add', configPolicyId: POLICY_ID, featureType: 'wake_on_lan',
+        inlineSettings: { configureSettings: false, buttonMode },
+      }, makeAuth());
+      expect(JSON.parse(output).error).toBeUndefined();
+    }
+    expect(addFeatureLink).toHaveBeenCalledTimes(2);
+  });
+
   it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'system_protection' } as any);
 
@@ -1810,6 +1842,28 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     });
     expect(out.error).toContain('config_check');
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a registry_check rule on a path the agent never collects, with a readable reason (#11976)', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SAM\\SAM\\Domains\\Account', registryValueName: 'F' }] }],
+    });
+    expect(out.error).toContain('HKLM\\SAM\\SAM\\Domains\\Account');
+    expect(out.error).toContain('never collected');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('rejects an uncollectable registry_check path on the UPDATE action too (#11976)', async () => {
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'compliance' } as any);
+    mockSelectRows([{ featureType: 'compliance' }]);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SECURITY', registryValueName: 'F' }] }] },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toContain('never collected');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
   });
 
   it('saves a well-formed compliance payload unnormalized (UI-only keys such as remediation survive)', async () => {

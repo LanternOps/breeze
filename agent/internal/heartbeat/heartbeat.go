@@ -69,6 +69,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
+	"github.com/breeze-rmm/agent/internal/wakeconfig"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -148,7 +149,14 @@ type HeartbeatPayload struct {
 	// unknown keys.
 	ECHActive             bool   `json:"echActive,omitempty"`
 	FilterSignatureSeenAt string `json:"filterSignatureSeenAt,omitempty"`
-	WatchdogVersion       string `json:"watchdogVersion,omitempty"`
+	// ControlPlaneBlock is the current or undelivered control-plane block
+	// episode (#8868): what answered in place of the server (a network
+	// filter's plaintext reply, a captive portal, an untrusted certificate).
+	// Set by doHeartbeatPost from the persisted tracker, so the primary POST
+	// and the backup probe both carry a fresh snapshot. Omitted when there is
+	// none; an older API strips the key.
+	ControlPlaneBlock *ControlPlaneBlockReport `json:"controlPlaneBlock,omitempty"`
+	WatchdogVersion   string                   `json:"watchdogVersion,omitempty"`
 	// WatchdogInstall describes a watchdog that is NOT installed and is being
 	// (or will not be) repaired (#8619). Omitted on a healthy host. Closed
 	// enums only; an API that predates it strips the unknown key.
@@ -275,7 +283,11 @@ type SecurityCapabilities struct {
 	NetworkIsolationMechanism         string `json:"networkIsolationMechanism,omitempty"`
 	NetworkIsolationUnsupportedReason string `json:"networkIsolationUnsupportedReason,omitempty"`
 	NetworkIsolationReady             bool   `json:"networkIsolationReady"`
-	OutboundNetworkPolicyVersion      int    `json:"outboundNetworkPolicyVersion"`
+	// NetworkIsolationDeadMan: this build runs the containment dead-man and
+	// accepts a non-zero deadManSeconds (#10103). Its own flag, not a level
+	// (decision 28); omitted by a build that cannot isolate.
+	NetworkIsolationDeadMan      bool `json:"networkIsolationDeadMan,omitempty"`
+	OutboundNetworkPolicyVersion int  `json:"outboundNetworkPolicyVersion"`
 	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
 	// user-context runs that would drop the credential, and redacts the values
 	// out of stdout/stderr/error. Declared unconditionally: the behavior is
@@ -591,6 +603,10 @@ type Heartbeat struct {
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
 	workloads          *workloadsRuntime
+	// wake runs the read-only Wake-on-LAN readiness collector; wakeApply is a
+	// test seam that replaces wake.ApplySettings.
+	wake      *wakeconfig.Manager
+	wakeApply func(wakeconfig.Settings)
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -988,6 +1004,16 @@ type Heartbeat struct {
 	// call). Guarded by mu.
 	lastControlPlaneStatus  health.Status
 	lastControlPlaneMessage string
+	// controlPlaneBlockedWarned latches the noteControlPlaneBlockedLiveness
+	// WARN to once per blocked streak (#8868). Reset on a successful
+	// heartbeat via clearControlPlaneBlockedLatch.
+	controlPlaneBlockedWarned atomic.Bool
+	// controlPlaneBlockedUnrecordedWarned latches the WARN for a streak in
+	// which neither the state file nor IPC recorded the marker.
+	controlPlaneBlockedUnrecordedWarned atomic.Bool
+	// blocks holds control-plane block episodes (#8868). nil in most test
+	// literals; every blockTracker method is nil-receiver safe.
+	blocks *blockTracker
 
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
@@ -1333,6 +1359,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchMgr:                       patching.NewDefaultManager(cfg),
 		connectionsCol:                 collectors.NewConnectionsCollector(),
 		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
+		blocks:                         newBlockTracker(filepath.Join(config.GetDataDir(), controlPlaneBlockFile), time.Now),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -1368,6 +1395,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
+	h.initWake()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1677,6 +1705,19 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// hits the disk.
 	h.enqueueDesktopFenceAnswer(msg)
 
+	// Resolve the deadlines ONCE (#11840). A current API sends them as time
+	// remaining, measured here from when this agent asked for the renewal
+	// (LeaseClockAnchor), so neither the device's wall clock nor any delay on
+	// the way can make the lease outlast what the server granted. An older API
+	// sends only absolute timestamps, read against the wall clock as before but
+	// capped at the same ceilings, so a slow clock cannot stretch them.
+	// Everything below, including the copy forwarded to a helper, uses these
+	// resolved values.
+	anchor := msg.LeaseClockAnchor()
+	expiresAt := desktop.LeaseExpiry(anchor, msg.ExpiresInMs, msg.ExpiresAtUnixMs)
+	hardDeadline := desktop.LeaseHardDeadline(anchor, msg.HardDeadlineInMs, msg.HardDeadlineUnixMs)
+	msg = withResolvedLeaseDeadlines(msg, expiresAt, hardDeadline)
+
 	// "I cannot answer right now" is not a renewal and not a revocation. It
 	// ends a session whose FIRST renewal it is (owner decision 2) and is
 	// otherwise the silence the grace window budgets for.
@@ -1702,16 +1743,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	go h.forwardRevocationLeaseToHelper(msg)
 
 	if !msg.Revoked {
-		// Deadlines are converted to the monotonic clock at receipt so an NTP
-		// step cannot extend a live lease (desktop.MonotonicDeadline).
-		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
-			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// The resolved deadlines are on the monotonic clock, so an NTP step
+		// after receipt cannot extend a live lease either.
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
 		if h.wsDesktopMgr != nil {
-			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
-				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		}
 		return
 	}
@@ -1748,10 +1785,34 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	}()
 }
 
+// withResolvedLeaseDeadlines rewrites an answer's absolute deadlines to the
+// resolved ones, in THIS device's wall clock, and drops the remaining-time
+// form that has now been consumed. The helper reads the absolute fields
+// against the same machine clock (desktop.MonotonicDeadline), so they land on
+// the same instants; an older helper that knows nothing of #11840 reads them
+// correctly too. A zero deadline stays absent.
+//
+// UnixMilli takes the deadline's WALL reading, so this is only right because
+// every anchor carries the wall clock as of receipt: ReceivedAt is a plain
+// time.Now(), and RequestedAt is derived from it by the request's monotonic
+// age (websocket.leaseRequestedAt), never from the agent's start time.
+func withResolvedLeaseDeadlines(msg websocket.RevocationLeaseMessage, expiresAt, hardDeadline time.Time) websocket.RevocationLeaseMessage {
+	msg.ExpiresAtUnixMs, msg.HardDeadlineUnixMs = 0, 0
+	if !expiresAt.IsZero() {
+		msg.ExpiresAtUnixMs = expiresAt.UnixMilli()
+	}
+	if !hardDeadline.IsZero() {
+		msg.HardDeadlineUnixMs = hardDeadline.UnixMilli()
+	}
+	msg.ExpiresInMs, msg.HardDeadlineInMs = 0, 0
+	return msg
+}
+
 // forwardRevocationLeaseToHelper relays a lease answer over IPC to the helper
-// that owns the session, if any. A failure is logged, not escalated: the
-// helper's own watchdog is authoritative and stops the session at
-// expiresAt+grace once answers stop arriving.
+// that owns the session, if any. Its deadlines must already be resolved to
+// this device's clock (withResolvedLeaseDeadlines). A failure is logged, not
+// escalated: the helper's own watchdog is authoritative and stops the session
+// at expiresAt+grace once answers stop arriving.
 func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLeaseMessage) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2333,6 +2394,7 @@ func (h *Heartbeat) Start() {
 	h.startContainment()
 	h.startTimeSync()
 	h.startWorkloads()
+	h.startWake()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
@@ -2689,6 +2751,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
 	h.stopWorkloads()
+	h.stopWake()
 	log.Info("draining in-flight commands and inventory goroutines")
 	// Both pools share ctx's deadline: their tasks run concurrently, so
 	// draining them in turn still bounds the whole wait by that deadline.
@@ -2720,6 +2783,7 @@ func (h *Heartbeat) Stop() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
 		h.stopWorkloads()
+		h.stopWake()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2905,6 +2969,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "workloads" {
 		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
+	if endpoint == "wake-status" {
+		if upload, ok := payload.(wakeUpload); ok && upload.ctx != nil {
 			parent = upload.ctx
 		}
 	}
@@ -3884,6 +3953,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if hasWI {
 		h.applyWorkloadInventoryConfig(wiRaw)
 	}
+
+	// Apply wake_on_lan_settings (read-only readiness collection). Same rule:
+	// above the policy-probe early return. An absent block changes nothing.
+	h.applyWakeOnLanFromUpdate(update)
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
@@ -5165,6 +5238,40 @@ func controlPlaneComponent(st ech.HostStatus) (status health.Status, message str
 	}
 }
 
+// classifiedSendFailure is the heartbeat health component's message for a
+// failed send (#8868): what answered in place of the control plane, when the
+// error is positive evidence of an interceptor, else err.Error() unchanged.
+// st is the dialer's status for the host; its evidence adds the filter's
+// Location host when it is current and of the same class as err.
+func classifiedSendFailure(err error, st ech.HostStatus) string {
+	ev, ok := ech.ErrorEvidence(err, time.Time{})
+	if !ok {
+		return err.Error()
+	}
+	if cur := st.Evidence; !cur.IsZero() && cur.SeenAt.After(st.LastPlainSuccessAt) &&
+		cur.Kind.PlaintextSignature() == ev.Kind.PlaintextSignature() {
+		if ev.Kind == ech.BlockPlaintextUnknown || cur.Kind == ev.Kind {
+			ev = cur
+		}
+	}
+	switch ev.Kind {
+	case ech.BlockCaptivePortal:
+		return "control plane held by a captive portal"
+	case ech.BlockUntrustedCertificate:
+		issuer := ev.CertIssuer
+		if issuer == "" {
+			issuer = "unknown"
+		}
+		return "control plane certificate not trusted (issuer: " + issuer + ")"
+	default:
+		detail := ev.LocationHost
+		if detail == "" {
+			detail = "no detail"
+		}
+		return "control plane blocked by a network security filter (" + detail + ")"
+	}
+}
+
 // serverHost returns raw's hostname (no port), or "" when raw does not parse.
 func serverHost(raw string) string {
 	u, err := neturl.Parse(raw)
@@ -5178,7 +5285,16 @@ func serverHost(raw string) string {
 // control plane and records the control_plane health component, but only when
 // (status, message) changed since the last beat.
 func (h *Heartbeat) observeControlPlane() ech.HostStatus {
-	st := ech.Shared().Status(serverHost(h.serverURL()))
+	primary := serverHost(h.serverURL())
+	st := ech.Shared().Status(primary)
+	// Primary first: the tracker keeps one active episode. An episode for a
+	// host that is neither primary nor backup any more is closed first.
+	backup := serverHost(h.backupServerURL())
+	h.blocks.ForgetOtherHosts(primary, backup)
+	h.blocks.Observe(primary, st)
+	if backup != "" && backup != primary {
+		h.blocks.Observe(backup, ech.Shared().Status(backup))
+	}
 	status, message := controlPlaneComponent(st)
 	h.mu.Lock()
 	changed := status != h.lastControlPlaneStatus || message != h.lastControlPlaneMessage
@@ -5735,6 +5851,10 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 // the control plane that actually issued them.
 func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (*HeartbeatResponse, bool) {
 	payload.ServerURL = baseURL
+	// Fresh per POST: the backup probe reuses the primary's payload and must
+	// carry the episode the primary's failure just started (#8868).
+	sentBlock := h.blocks.Report()
+	payload.ControlPlaneBlock = sentBlock
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal heartbeat", "error", err.Error())
@@ -5750,14 +5870,30 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	host := serverHost(baseURL)
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
-		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
+		// #8868: the dialer's evidence from this failure first (it carries
+		// the filter's Location host), then the error itself (the proxy path
+		// bypasses the dialer). Both feed one episode.
+		st := ech.Shared().Status(host)
+		h.blocks.Observe(host, st)
+		h.blocks.ObserveRequestError(host, err)
+		h.healthMon.Update("heartbeat", health.Unhealthy, classifiedSendFailure(err, st))
 		// #8934: the server answered, it is just overloaded — the loop is
 		// alive, and the watchdog must not restart it for that.
 		if status, ok := serverOverloadAnswer(err); ok {
 			h.noteServerUnavailableLiveness(status)
+		}
+		// #8868: a network filter is answering for the control plane. The
+		// loop is alive and a restart cannot lift the filter (and would drop
+		// the dialer's ECH mode), so hold the watchdog's restart: on this
+		// failure's own signature, or on another error (an ECH attempt timing
+		// out) while the host's plaintext episode is fresh. An untrusted
+		// certificate never holds.
+		if ech.IsFilterSignature(err) || h.blocks.HoldsRestart(host) {
+			h.noteControlPlaneBlockedLiveness()
 		}
 		return nil, false
 	}
@@ -5793,6 +5929,12 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if h.authMon != nil {
 		h.authMon.RecordSuccess()
 	}
+	// #8868: a 200 is acceptance. Without ECH it proves the host is reachable
+	// directly (clears its episode); a cleared episode this beat carried is
+	// now delivered and can go.
+	h.blocks.ObserveReached(host, ech.Shared().Status(host).ECHActive)
+	h.blocks.MarkDelivered(sentBlock)
+	h.clearControlPlaneBlockedLatch()
 	// #8318 — this process's credentials are proven current: a staged
 	// reattach set the server ended can go, and a reattached identity that
 	// has now authenticated no longer needs its staged set.

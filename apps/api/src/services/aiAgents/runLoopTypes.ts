@@ -43,6 +43,7 @@ import type { SweepProposalRecord } from './sweepFindings';
 import type { TicketRunContext } from './ticketContext';
 import type { WorkspaceService } from '../workspace/workspaceService';
 import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+import type { AnalysisManifestEntry } from './analysisProfile';
 
 // Wisp W05b — the assessment run's shapes live in `wisp/assessmentTypes.ts`
 // (type-only, shared with `wisp/assessment.ts` and `wisp/readiness.ts`);
@@ -461,6 +462,12 @@ export interface RunContext {
    * stay valid; absent reads as "no name".
    */
   orgName?: string | null;
+  /**
+   * Wisp analysis sessions W03 — metadata for the admission-frozen input
+   * handles of an `analysis` run, read inside `loadRunContext`'s system block.
+   * Optional so fixtures that predate it stay valid; null/absent reads as none.
+   */
+  analysisManifest?: AnalysisManifestEntry[] | null;
   device: { id: string; siteId: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
   /** Bounded, sanitized ticket context (Task 4) — `null` for every non-ticket

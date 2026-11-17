@@ -163,7 +163,7 @@ describe('aiAgents validators', () => {
   });
 
   it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 13 (sweep act-limits bump, #4442 W05)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -483,7 +483,7 @@ describe('limits v6', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -497,7 +497,7 @@ describe('limits v7', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -515,7 +515,7 @@ describe('limits v8', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun).toBe(10);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns).toBe(6);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentTriageRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxTriageRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageBudgetCentsPerRun: 51 }).success).toBe(false);
@@ -555,7 +555,7 @@ describe('designer kind', () => {
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxDesignRunsPerDay: 25 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 24 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(16);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
   });
   it('#5870: bounds designWallClockSeconds like analysisWallClockSeconds (60s-1800s)', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds).toBe(1800);
@@ -566,6 +566,25 @@ describe('designer kind', () => {
 });
 
 describe('analysis limits bounds (execution plane W04, spec §5.4)', () => {
+  it.each([
+    ['analysisMaxChainDepth', 0], ['analysisMaxChainDepth', 21],
+    ['analysisMaxChainRuns', 0], ['analysisMaxChainRuns', 41],
+    ['analysisMaxChainBudgetCents', 49], ['analysisMaxChainBudgetCents', 5001],
+  ] as const)('rejects %s = %d', (field, value) => {
+    expect(aiAgentLimitsPatchSchema.safeParse({ [field]: value }).success).toBe(false);
+  });
+  it('fills the chain bounds from defaults when a stored limits object lacks them', () => {
+    expect(aiAgentLimitsSchema.parse({})).toMatchObject({ analysisMaxChainDepth: 8, analysisMaxChainRuns: 12, analysisMaxChainBudgetCents: 600 });
+  });
+  it.each([[49, false], [50, true], [1000, true], [5000, true], [5001, false], [1.5, false]] as const)(
+    'analysisMaxFrameDevices %s → %s', (value, ok) => {
+      expect(aiAgentLimitsPatchSchema.safeParse({ analysisMaxFrameDevices: value }).success).toBe(ok);
+    });
+  it('a stored policy without analysisMaxFrameDevices parses to the default', () => {
+    const { analysisMaxFrameDevices: _omit, ...rest } = AI_AGENT_LIMIT_DEFAULTS;
+    expect(aiAgentLimitsSchema.parse(rest).analysisMaxFrameDevices).toBe(1000);
+  });
+
   it('accepts the defaults', () => {
     expect(aiAgentLimitsPatchSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
   });

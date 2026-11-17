@@ -5,7 +5,7 @@
  * (`wisp/readiness.ts`, Task 15) all speak these shapes, so they live in one
  * module none of them owns and none of them imports at runtime.
  */
-import type { Concern, Watch, WatchKind } from '@breeze/shared';
+import type { Concern, Watch, WatchKind, WispCheckInTriggerEvent } from '@breeze/shared';
 import type { CheckInEvidence } from './checkInTriggers';
 
 /**
@@ -33,6 +33,11 @@ import type { CheckInEvidence } from './checkInTriggers';
  * `sanitizeCheckInInstruction`; `evidence` is what the trigger's state showed
  * when it fired (an event check-in), null for a time check-in. `checkInId`
  * links the run back to its row and is never shown to the model.
+ * `subject` (#11978) is an event check-in's trigger subject (the device,
+ * script execution, command or AI agent run it waits on): its id IS shown, so
+ * the run knows what to look at, and a `run_settled` subject widens the run's
+ * reads (assessmentProfile.ts CHECK_IN_SUBJECT_READ_TOOLS). Absent for a time
+ * check-in and on runs admitted before it existed.
  */
 export type AssessmentReason =
   | {
@@ -47,7 +52,16 @@ export type AssessmentReason =
   | { kind: 'watch'; watchId: string; hits?: WatchHitSummary }
   | { kind: 'onboarding' }
   | { kind: 'on_demand'; requestId: string }
-  | { kind: 'check_in'; checkInId: string; instruction: string; evidence: CheckInEvidence | null };
+  | {
+    kind: 'check_in';
+    checkInId: string;
+    instruction: string;
+    evidence: CheckInEvidence | null;
+    subject?: CheckInSubject;
+  };
+
+/** An event check-in's trigger subject (#11978): what kind of thing it waits on, and its id. */
+export type CheckInSubject = { kind: WispCheckInTriggerEvent; id: string };
 
 /**
  * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent

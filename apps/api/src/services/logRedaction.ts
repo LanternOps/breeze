@@ -363,8 +363,10 @@ export function redactMemoryContentFields(value: unknown, redactString: (text: s
  */
 const LEGACY_HELPER_SESSION_ID = /\b(helper|assist)-[^\s"']{1,128}-\d{1,10}\b/g;
 
-/** `C:\Users\jdoe\…`, `D:\Documents and Settings\jdoe\…` — keep the path, drop the name. */
-const WINDOWS_PROFILE_PATH = /([A-Za-z]:\\(?:Users|Documents and Settings)\\)([^\\/:*?"<>|\r\n]+)/gi;
+/** `C:\Users\jdoe\…`, `D:\Documents and Settings\jdoe\…`, and the forward-slash
+ *  form (`c:/users/jdoe/…`, as in server-normalized startup item ids) — keep the
+ *  path, drop the name. */
+const WINDOWS_PROFILE_PATH = /([A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/])([^\\/:*?"<>|\r\n]+)/gi;
 
 /** `/home/jdoe/…`, `/Users/jdoe/…`, `/var/home/jdoe/…`. */
 const UNIX_HOME_PATH = /(\/(?:var\/)?(?:home|Users)\/)([^/\s:"'\\]+)/g;
