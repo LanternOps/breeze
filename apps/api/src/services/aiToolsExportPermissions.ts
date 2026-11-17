@@ -36,6 +36,7 @@ export interface ExportDatasetRequirement {
 }
 
 const DEVICES_READ: ExportPermission = Object.freeze({ resource: 'devices', action: 'read' });
+const ALERTS_READ: ExportPermission = Object.freeze({ resource: 'alerts', action: 'read' });
 const DEVICES_EXECUTE: ExportPermission = Object.freeze({ resource: 'devices', action: 'execute' });
 
 /**
@@ -62,6 +63,8 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   boot_performance: Object.freeze({ permission: DEVICES_READ }),
   hardware_events: Object.freeze({ permission: DEVICES_READ }),
   service_checks: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_alerts.list` (aiGuardrails TOOL_PERMISSIONS).
+  alerts: Object.freeze({ permission: ALERTS_READ }),
 });
 
 /**

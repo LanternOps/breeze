@@ -317,11 +317,16 @@ describe('export_dataset', () => {
     const props = def.input_schema.properties as Record<string, { description: string }>;
     expect(def.description).toContain('workspace_stage');
     expect(props.filters!.description).toContain('timeRange');
-    expect(props.filters!.description).toContain('180 days');
-    expect(props.filters!.description).toContain('reliability_scores is current state');
-    expect(props.dataset!.description).toContain('service_checks lists non-running checks');
-    expect(props.dataset!.description).toContain('eventKey');
+    expect(props.filters!.description).toContain('max 180 d');
+    expect(props.filters!.description).toContain('ignored by current state');
+    // W05: the two array filters.
+    expect(props.filters!.description).toContain('patch_state status[]');
+    expect(props.filters!.description).toContain('change_log changeType[]');
+    expect(props.dataset!.description).toContain('service_checks: non-running only');
+    // The per-dataset rules (withheld rows, dedupe keys) travel as result notes.
+    expect(props.dataset!.description).toContain('notes in the result');
     expect(getTool().searchHint).toContain('reliability');
+    for (const hint of ['alerts', 'patches', 'change log']) expect(getTool().searchHint).toContain(hint);
     // The SDK surface (what an analysis run's model sees) carries the same wording.
     const sdk = await import('node:fs/promises').then((fs) => fs.readFile(new URL('./aiAgentSdkTools.ts', import.meta.url), 'utf8'));
     expect(sdk).toContain('dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION)');
