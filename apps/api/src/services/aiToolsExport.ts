@@ -58,7 +58,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('export_dataset', {
     tier: 1,
     domain: 'admin',
-    searchHint: 'dataset file exports: logs, inventory, metrics, vulnerabilities, reliability, boot, hardware, service checks, alerts, patches, change log',
+    searchHint: 'dataset exports: logs, inventory, metrics, vulnerabilities, reliability, boot, hardware, alerts, patches, change log',
     captureExempt: true,
     // The central gate runs org+site verifyDeviceAccess on every id here
     // BEFORE this handler is entered. The run-target check below is a second,

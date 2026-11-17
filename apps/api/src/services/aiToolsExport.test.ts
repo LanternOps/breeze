@@ -250,6 +250,18 @@ describe('export_dataset', () => {
     expect(createPager.mock.calls[0]![0]).toMatchObject({ exportGrants: { datasets: SEVEN, sensitiveGates: [] }, notes: [] });
   });
 
+  it('W05: change_log without the user_account_changes gate reports those rows withheld; with it, nothing withheld', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const without = JSON.parse(await getTool().handler({ dataset: 'change_log' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['change_log'], sensitiveGates: ['security_events'] } }) as string);
+    expect(without.error).toBeUndefined();
+    expect(without.sensitiveRowsWithheld).toEqual(['user_account_changes']);
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const withGate = JSON.parse(await getTool().handler({ dataset: 'change_log' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['change_log'], sensitiveGates: ['user_account_changes'] } }) as string);
+    expect(withGate).not.toHaveProperty('sensitiveRowsWithheld');
+  });
+
   it('copies adapter notes into the result; omits notes and sensitiveRowsWithheld when there are none', async () => {
     createPager.mockImplementationOnce(async (r: { notes: string[] }) => { r.notes.push('a note'); return pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]); });
     const grants = { datasets: SEVEN, sensitiveGates: ['security_events' as const] };
@@ -305,7 +317,8 @@ describe('export_dataset', () => {
     expect(createArtifact).not.toHaveBeenCalled();
   });
 
-  it.each(['reliability_scores', 'reliability_history', 'reliability_events', 'boot_performance', 'hardware_events', 'service_checks'])(
+  it.each(['reliability_scores', 'reliability_history', 'reliability_events', 'boot_performance', 'hardware_events', 'service_checks',
+    'alerts', 'patch_state', 'patch_attempts', 'change_log'])(
     'a legacy run (no exportGrants) cannot export %s', async (dataset) => {
       const out = JSON.parse(await getTool().handler({ dataset }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
       expect(out.error).toBe('dataset_not_permitted');
