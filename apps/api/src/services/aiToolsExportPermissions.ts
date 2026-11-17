@@ -56,6 +56,12 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   metrics: Object.freeze({ permission: DEVICES_READ }),
   vulnerabilities: Object.freeze({ permission: DEVICES_READ }),
   custom_fields: Object.freeze({ permission: DEVICES_READ }),
+  reliability_scores: Object.freeze({ permission: DEVICES_READ }),
+  reliability_history: Object.freeze({ permission: DEVICES_READ }),
+  reliability_events: Object.freeze({ permission: DEVICES_READ }),
+  boot_performance: Object.freeze({ permission: DEVICES_READ }),
+  hardware_events: Object.freeze({ permission: DEVICES_READ }),
+  service_checks: Object.freeze({ permission: DEVICES_READ }),
 });
 
 /**

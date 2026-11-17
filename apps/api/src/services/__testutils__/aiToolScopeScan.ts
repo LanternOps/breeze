@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -331,11 +331,24 @@ export function walkTs(dir: string): string[] {
   return out;
 }
 
-/** Every `aiTools*.ts` source file in `services/`, sorted. */
+/**
+ * Every `aiTools*.ts` source file in `services/`, sorted, followed by the
+ * `export_dataset` adapter files in `services/aiToolsExportDatasets/` (as
+ * `aiToolsExportDatasets/<file>`), so a table an adapter reads is scanned like
+ * one a tool file reads.
+ */
 export function aiToolsSources(): string[] {
-  return readdirSync(SERVICES_DIR)
+  const top = readdirSync(SERVICES_DIR)
     .filter((f) => /^aiTools.*\.ts$/.test(f) && !f.includes('.test.'))
     .sort();
+  const adapterDir = join(SERVICES_DIR, 'aiToolsExportDatasets');
+  const adapters = existsSync(adapterDir)
+    ? readdirSync(adapterDir)
+      .filter((f) => f.endsWith('.ts') && !f.includes('.test.'))
+      .sort()
+      .map((f) => `aiToolsExportDatasets/${f}`)
+    : [];
+  return [...top, ...adapters];
 }
 
 /**

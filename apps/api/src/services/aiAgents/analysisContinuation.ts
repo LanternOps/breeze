@@ -343,8 +343,28 @@ export async function chainCommittedCents(
  * The fenced seed for a continuation of `prior`, from its submitted outcome
  * (`outcome.analysis`: summary + the first findings), falling back to the
  * `summary` column when there is no readable outcome.
+ *
+ * The summary and findings are derived from what the prior read, so they follow
+ * the rule carried files follow (`producerGrantsCovered`): when the prior held a
+ * dataset or sensitive gate this launch (`exportGrants`) does not, or recorded
+ * no readable grants, both are withheld and the seed keeps only the goal (the
+ * technician's own words) and a fixed line saying so. This holds by induction
+ * down the chain: the prior's own seed passed the same check against the
+ * prior's grants.
  */
-export async function buildAnalysisContinuationSeed(input: { orgId: string; prior: AnalysisChainPrior }): Promise<string> {
+export async function buildAnalysisContinuationSeed(input: {
+  orgId: string;
+  prior: AnalysisChainPrior;
+  exportGrants: AiRunExportGrants;
+}): Promise<string> {
+  if (!producerGrantsCovered(input.prior.stagedInputs, input.exportGrants)) {
+    console.warn('[analysisContinuation] continuation seed withheld: the prior run held export grants this launch does not', {
+      runId: input.prior.id,
+    });
+    return renderAnalysisContinuationSeed({
+      fromRunId: input.prior.id, goal: input.prior.goal, summary: null, findings: [], withheld: true,
+    });
+  }
   const [row] = await systemRead(() => db
     .select({ summary: aiAgentRuns.summary, outcome: aiAgentRuns.outcome })
     .from(aiAgentRuns)

@@ -118,6 +118,7 @@ import {
   type LaunchContext,
 } from './specialistLaunchers';
 import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
+import { EXPORT_DATASETS } from '../aiToolsExportDatasetNames';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
 const PARTNER = '00000000-0000-4000-8000-0000000000a2';
@@ -283,7 +284,8 @@ describe('launchSweep', () => {
 });
 
 const SITE = '00000000-0000-4000-8000-0000000000b1';
-const SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
+// Every dataset requires devices:read (W02 + W04), so a ceiling holding it is granted the whole list.
+const ALL_DATASETS = [...EXPORT_DATASETS] as string[];
 
 describe('analysis params (W02 C1 scope resolution)', () => {
   it('analysis params follow C1 scope resolution and bounds', () => {
@@ -334,12 +336,12 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[], []];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
     await launchAnalysis(ctx({ params: { goal: 'why', scope: 'org' } }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: ['security_events'] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: ['security_events'] } }));
     await launchAnalysis(ctx({
       actorAuth: null, params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ permissionKeys: new Set(['devices:read', 'ai_agents:write', 'ai_workspace:execute']) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: [] } }));
   });
 
   it('a ceiling without devices:read forwards an empty dataset set (the handler then refuses every export)', async () => {
@@ -356,7 +358,7 @@ describe('launchAnalysis', () => {
       params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ orgTerms: new Map([[ORG, { permissionKeys: new Set(['devices:read']), siteIds: null }]]) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: [] } }));
   });
 
   it('infers site scope from a bare siteId', async () => {
@@ -502,7 +504,7 @@ describe('analysis continuation (W03)', () => {
     });
     const exportGrants = h.admitAnalysisRun.mock.calls[0]![0].exportGrants;
     expect(h.deriveChainHandles.mock.calls[0]![0].exportGrants).toEqual(exportGrants);
-    expect(h.buildAnalysisContinuationSeed).toHaveBeenCalledWith({ orgId: ORG, prior: priorOf() });
+    expect(h.buildAnalysisContinuationSeed).toHaveBeenCalledWith({ orgId: ORG, prior: priorOf(), exportGrants });
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
       stagedHandles: [H1, H2],
       continuation: { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2, seed: 'SEED', dropped: derived.dropped },
@@ -528,12 +530,25 @@ describe('analysis continuation (W03)', () => {
   });
 
   it.each([
-    'analysis_continuation_other_grant', 'analysis_continuation_not_found',
-    'analysis_continuation_wrong_kind', 'analysis_continuation_not_settled',
-  ])('maps a validation refusal %s to continuation_refused with the code as detail', async (refusal) => {
+    ['analysis_continuation_other_grant', 'analysis_continuation_not_found'],
+    ['analysis_continuation_wrong_kind', 'analysis_continuation_not_found'],
+    ['analysis_continuation_not_found', 'analysis_continuation_not_found'],
+    ['analysis_continuation_not_settled', 'analysis_continuation_not_settled'],
+  ])('maps a validation refusal %s to continuation_refused with caller-visible detail %s', async (refusal, detail) => {
     h.tables.ai_agent_runs = [[]];
     h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
-    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail: refusal });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail });
+      // The precise reason stays in the server log only, and only when it was collapsed.
+      if (refusal !== detail) {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation refused'), expect.objectContaining({ reason: refusal }));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
     expect(h.deriveChainHandles).not.toHaveBeenCalled();
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
   });

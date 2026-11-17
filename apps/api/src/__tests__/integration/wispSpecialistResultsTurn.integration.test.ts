@@ -554,6 +554,9 @@ describe('the real producer and the real handler (#11845 review)', () => {
       datasets: [
         'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
         'metrics', 'vulnerabilities', 'custom_fields',
+        // W04: the reliability datasets, each devices:read.
+        'reliability_scores', 'reliability_history', 'reliability_events',
+        'boot_performance', 'hardware_events', 'service_checks',
       ],
       sensitiveGates: ['security_events'],
     });

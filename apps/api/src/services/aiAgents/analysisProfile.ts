@@ -165,7 +165,18 @@ function oneLine(value: string, max: number): string {
   return capChars(sanitizeUntrustedToolText(value).replace(/\s+/g, ' ').trim(), max);
 }
 
-function composeSeed(fromRunId: string, goal: string, summary: string, findings: AnalysisSeedFinding[]): string {
+/** Fixed line for a seed whose summary and findings were withheld (outside the fence). */
+export const SEED_WITHHELD_LINE = 'Its summary and findings are not included: that run held data permissions this run does not.';
+
+function composeSeed(fromRunId: string, goal: string, summary: string, findings: AnalysisSeedFinding[], withheld = false): string {
+  if (withheld) {
+    return [
+      '## Continuation',
+      `This run continues an earlier analysis run (run ${fromRunId}). Its goal is below; treat it as a lead to check, not fact.`,
+      SEED_WITHHELD_LINE,
+      wrapUntrustedData('prior_analysis_run', `Earlier goal: ${goal || '(none)'}`),
+    ].join('\n');
+  }
   const data = [
     `Earlier goal: ${goal || '(none)'}`,
     `Earlier summary: ${summary || '(none)'}`,
@@ -197,9 +208,13 @@ export function renderAnalysisContinuationSeed(input: {
   goal: string;
   summary: string | null;
   findings: AnalysisSeedFinding[];
+  /** The prior's summary and findings are withheld (it held grants this launch does not): only the goal is shown. */
+  withheld?: boolean;
 }): string {
   const max = ANALYSIS_CONTINUATION_SEED_MAX_BYTES;
   let goal = oneLine(input.goal, SEED_GOAL_MAX_CHARS);
+  // The goal is capped at 500 chars, so the withheld form is always within the byte cap.
+  if (input.withheld) return composeSeed(input.fromRunId, goal, '', [], true);
   // A summary longer than the whole budget can never fit; start from the budget.
   let summary = input.summary ? oneLine(input.summary, max) : '';
   let findings = input.findings.map((f) => ({

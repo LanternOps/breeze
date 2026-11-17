@@ -35,6 +35,11 @@ import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import type { readCustomFieldDefinitions as ReadCustomFieldDefinitionsFn } from './aiToolsDevice';
 import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
+import type { ExportDataset } from './aiToolsExportDatasetNames';
+import { bootPerformanceAdapter } from './aiToolsExportDatasets/boot';
+import { hardwareEventsAdapter } from './aiToolsExportDatasets/hardware';
+import { serviceChecksAdapter } from './aiToolsExportDatasets/serviceChecks';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
 
 /**
  * Lazy (call-time) imports of the two hub modules, NOT static ones.
@@ -59,11 +64,9 @@ async function getReadCustomFieldDefinitions(): Promise<typeof ReadCustomFieldDe
   return (await import('./aiToolsDevice')).readCustomFieldDefinitions;
 }
 
-export const EXPORT_DATASETS = [
-  'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
-  'metrics', 'vulnerabilities', 'custom_fields',
-] as const;
-export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+// The names live in a zero-import leaf so the Zod enums can derive from them
+// without an import cycle (see that file). Re-exported unchanged.
+export { EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasetNames';
 
 export interface DatasetRequest {
   auth: AuthContext;
@@ -627,4 +630,10 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   metrics: metricsAdapter,
   vulnerabilities: vulnerabilitiesAdapter,
   custom_fields: customFieldsAdapter,
+  reliability_scores: reliabilityScoresAdapter,
+  reliability_history: reliabilityHistoryAdapter,
+  reliability_events: reliabilityEventsAdapter,
+  boot_performance: bootPerformanceAdapter,
+  hardware_events: hardwareEventsAdapter,
+  service_checks: serviceChecksAdapter,
 };
