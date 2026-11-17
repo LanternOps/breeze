@@ -188,9 +188,15 @@ func (s *SafeInput) failQueued(err error) {
 }
 
 func (s *SafeInput) inject(ev InputEvent) error {
+	copyChord := s.held.isCopyChord(ev)
 	ev = s.held.prepare(ev)
 	err := s.inner.HandleEvent(ev)
 	s.held.observe(ev, err)
+	if copyChord && err == nil {
+		if h := s.hooks.Load(); h != nil && h.onCopyChord != nil {
+			h.onCopyChord()
+		}
+	}
 	return err
 }
 
@@ -444,11 +450,13 @@ func (s *SafeInput) SkipSeq(seq uint64) {
 }
 
 // safeInputHooks must not block and must not call back into SafeInput.
-// onReset runs on the goroutine that triggered the reset; onResync runs on the
-// worker. The Session's hooks only spawn a goroutine.
+// onReset runs on the goroutine that triggered the reset; onResync and
+// onCopyChord run on the worker. The Session's hooks only spawn a goroutine.
 type safeInputHooks struct {
 	onReset  func(reason string) // an agent-side reset started a new epoch
 	onResync func()              // sequenced input arrived with a stale epoch
+	// onCopyChord runs on the worker after a copy chord was injected.
+	onCopyChord func()
 }
 
 func (s *SafeInput) SetHooks(h safeInputHooks) { s.hooks.Store(&h) }
