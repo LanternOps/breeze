@@ -1004,7 +1004,7 @@
         "queued": "In coda",
         "running": "In esecuzione",
         "awaiting_approval": "In attesa di approvazione",
-        "approvals_decided": "Approvazioni decise",
+        "no_approvals_pending": "Nessuna approvazione in attesa",
         "completed": "Completato",
         "failed": "Non riuscito"
       }

@@ -10,8 +10,8 @@ const FETCH_LIMIT = 50;
 const POLL_INTERVAL_MS = 10_000;
 
 const WORKER_STATUS_KEYS = ['queued', 'running', 'awaiting_approval', 'completed', 'failed'] as const;
-// A row with a pending approval is live too: it flips to "Approvals decided"
-// when someone decides, and nothing else would refetch it.
+// A row with a pending approval is live too: it flips to "Nothing waiting on
+// approval" once none is pending, and nothing else would refetch it.
 const isLive = (i: ActivityItem) =>
   i.runStatus === 'queued' || i.runStatus === 'running' || (i.runStatus === 'awaiting_approval' && (i.pendingApprovals ?? 0) > 0);
 
@@ -26,7 +26,7 @@ function workerStatus(item: ActivityItem): { key: string; href: string | null } 
   if (item.runStatus !== 'awaiting_approval' || item.pendingApprovals === undefined) {
     return { key: item.runStatus, href: null };
   }
-  if (item.pendingApprovals === 0) return { key: 'approvals_decided', href: null };
+  if (item.pendingApprovals === 0) return { key: 'no_approvals_pending', href: null };
   return {
     key: 'awaiting_approval',
     href: item.pendingIntentId ? `/approvals#intent-${encodeURIComponent(item.pendingIntentId)}` : '/approvals',

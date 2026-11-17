@@ -113,16 +113,17 @@ describe('WispWorkersPanel', () => {
       expect(h.fetch).toHaveBeenCalledTimes(1);
     });
 
-    // A run stays `awaiting_approval` after its steps are decided, so the raw
-    // status told a technician something was waiting when their inbox was empty.
-    it('says the approvals are decided when an approval-parked run has nothing pending', async () => {
+    // A run stays `awaiting_approval` after its steps resolve, so the raw status
+    // told a technician something was waiting when their inbox was empty. The
+    // label must not say "decided": expired or cancelled steps also reach 0.
+    it('says nothing is waiting on approval when an approval-parked run has nothing pending', async () => {
       h.fetch.mockResolvedValue({
         items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null })],
         nextCursor: null, current: null,
       });
       render(<WispWorkersPanel threadId="t1" />);
       const status = await screen.findByTestId('wisp-worker-status');
-      expect(status.textContent).toBe('Approvals decided');
+      expect(status.textContent).toBe('Nothing waiting on approval');
       expect(status.closest('a')).toBeNull();
     });
 
