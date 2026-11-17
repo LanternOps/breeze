@@ -188,6 +188,11 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
       const summary = summaryOfRun(runs[0]!);
       expect(summary.incidents?.opened).toBe(1);
       expect(summary.agentCoverage?.huntressAgents).toBe(1);
+      // #12046: device coverage reconciles (the SentinelOne and EDR coverage
+      // queries ran against real Postgres and found nothing extra).
+      expect(summary.agentCoverage).toMatchObject({
+        breezeDevices: 1, devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 0, unmatchedAgents: 0,
+      });
       // The raw details jsonb never reaches the artifact.
       expect(JSON.stringify(runs[0]!.result)).not.toContain('do-not-render');
 

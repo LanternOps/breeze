@@ -88,6 +88,42 @@ describe('ReportPreview: threat_detection_review', () => {
     expect(note).not.toHaveTextContent(/\bno incidents\b/i);
   });
 
+  // #12046: "8 endpoints with an agent / 12 managed / 8 without" did not add
+  // up — the first tile counted agents (matched or not), not devices.
+  it('shows device coverage tiles that add up to the managed count', () => {
+    render(<ReportPreview
+      data={previewData({
+        ...MEASURED,
+        agentCoverage: {
+          huntressAgents: 8, breezeDevices: 12, agentsOffline: 0, devicesWithoutAgent: 8,
+          devicesWithDetectionAgent: 7, devicesWithoutDetectionAgent: 5, unmatchedAgents: 4,
+        },
+      })}
+      timezone="UTC"
+    />);
+    const panel = screen.getByTestId('threat-detection-summary');
+    expect(within(panel).queryByText('Endpoints with a detection agent')).toBeNull();
+    const valueOf = (label: string) => within(panel).getByText(label).nextElementSibling?.textContent;
+    expect(valueOf('Devices Breeze manages')).toBe('12');
+    expect(valueOf('Managed devices with a detection agent')).toBe('7');
+    expect(valueOf('Managed devices with no detection agent')).toBe('5');
+  });
+
+  it('derives a reconciling pair from a legacy snapshot, and keeps unmeasured tiles N/A', () => {
+    const { unmount } = render(<ReportPreview data={previewData(MEASURED)} timezone="UTC" />);
+    let panel = screen.getByTestId('threat-detection-summary');
+    const valueOf = (label: string) => within(panel).getByText(label).nextElementSibling?.textContent;
+    // 43 managed, 2 without a (Huntress) agent → 41 with.
+    expect(valueOf('Managed devices with a detection agent')).toBe('41');
+    expect(valueOf('Managed devices with no detection agent')).toBe('2');
+    unmount();
+
+    render(<ReportPreview data={previewData(UNMEASURED)} timezone="UTC" />);
+    panel = screen.getByTestId('threat-detection-summary');
+    expect(valueOf('Managed devices with a detection agent')).toBe('N/A');
+    expect(valueOf('Managed devices with no detection agent')).toBe('N/A');
+  });
+
   it('omits the coverage panel entirely when nothing is missing', () => {
     render(<ReportPreview data={previewData(MEASURED)} timezone="UTC" />);
     expect(screen.queryByTestId('threat-detection-coverage-note')).toBeNull();
