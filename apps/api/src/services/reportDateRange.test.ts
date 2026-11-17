@@ -86,6 +86,20 @@ describe('resolveAdHocEvidenceWindow (#12048)', () => {
     });
   });
 
+  it('names the bad bound instead of throwing a bare RangeError', () => {
+    expect(() => resolveAdHocEvidenceWindow({ start: 'last tuesday' }, GENERATED))
+      .toThrow('Invalid report date range: start "last tuesday" is not a date');
+    expect(() => resolveAdHocEvidenceWindow({ end: '2026-13-45' }, GENERATED))
+      .toThrow('Invalid report date range: end "2026-13-45" is not a date');
+  });
+
+  it('gives threat detection and vulnerability management one window for one config', () => {
+    // Both generators call this; equal input → equal window is the #12048 contract.
+    expect(resolveAdHocEvidenceWindow({ preset: 'last_30_days' }, GENERATED))
+      .toEqual(resolveAdHocEvidenceWindow(undefined, GENERATED));
+    expect(resolveAdHocEvidenceWindow({ end: '2026-11-09' }, GENERATED)).toMatchObject({ periodStart: '2026-10-10', periodEnd: '2026-11-09' });
+  });
+
   it('reads explicit bounds as whole days', () => {
     expect(resolveAdHocEvidenceWindow({ start: '2026-10-01', end: '2026-10-31' }, GENERATED)).toEqual({
       start: new Date('2026-10-01T00:00:00.000Z'),

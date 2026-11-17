@@ -4,9 +4,10 @@
  * generated time, one meta separator — and the partner logo sits on the header
  * once per page, without a white chip behind it.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { jsPDF } from 'jspdf';
 import { deflateSync } from 'node:zlib';
-import { buildReportPdf, scorecardLayout, type BuildOpts, type ReportBranding } from './reportPdf';
+import { buildReportPdf, executiveSummaryPeriodLabel, scorecardLayout, type BuildOpts, type ReportBranding } from './reportPdf';
 import type { ExecutiveSummary, PostureSummary } from '../types';
 import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
 import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
@@ -148,6 +149,7 @@ const build = (r: (typeof REPORTS)[number], branding: ReportBranding = usPartner
 
 describe.each(REPORTS)('$name PDF (#12048)', (report) => {
   it('prints on the partner page size, every page', () => {
+    expect(pageSizesMm(build(report)).length).toBeGreaterThan(0);
     for (const [w, h] of pageSizesMm(build(report))) {
       expect(w).toBeCloseTo(279.4, 0);
       expect(h).toBeCloseTo(215.9, 0);
@@ -176,6 +178,73 @@ describe.each(REPORTS)('$name PDF (#12048)', (report) => {
     for (const page of pages(doc)) {
       expect(page.match(/\/I\d+ Do/g) ?? []).toHaveLength(1);
     }
+  });
+});
+
+describe('build isolation and fallbacks (#12048, #12041)', () => {
+  // Every build re-assigns the page geometry and locale first, so a later
+  // build cannot inherit them; what can is a formatter exported for use
+  // outside a build (executiveSummaryPeriodLabel reads the active locale).
+  it('restores the default date format after a build that throws', () => {
+    const exploding = new Proxy({ ...vuln }, {
+      get(target, key) {
+        if (key === 'orgName') throw new Error('render exploded');
+        return Reflect.get(target, key);
+      },
+    });
+    expect(() => buildReportPdf([], {
+      reportType: 'vulnerability_management', summary: exploding as never, generatedAt: GENERATED,
+      timezone: 'Europe/Berlin', branding: { ...usPartner, dateFormat: 'DD/MM/YYYY', timeFormat: '24h' },
+    })).toThrow('render exploded');
+    expect(executiveSummaryPeriodLabel({ start: '2026-10-10', end: '2026-11-09' }, 'UTC')).toBe('Oct 10, 2026 – Nov 9, 2026');
+  });
+
+  it('falls back to the name on the brand band, without throwing, when the logo will not embed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const doc = build(REPORTS[2]!, { ...usPartner, logoDataUrl: 'data:image/png;base64,AAAA', logoAspect: 4 });
+      const p1 = pages(doc)[0]!;
+      expect(p1).not.toMatch(/\/I\d+ Do/);
+      expect(p1).toContain('(Example MSP) Tj');
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('draws header and footer exactly once on every page of a long table', () => {
+    const rows = Array.from({ length: 90 }, (_, i) => ({ hostname: `WS-${i}`, lastSeen: '2026-11-08T10:00:00Z', status: 'online' }));
+    const doc = buildReportPdf(rows, {
+      reportType: 'device_inventory', generatedAt: GENERATED, timezone: 'UTC',
+      branding: { ...usPartner, logoDataUrl: transparentPng(), logoAspect: 4 },
+    });
+    const all = pages(doc);
+    expect(all.length).toBeGreaterThan(2);
+    all.forEach((page) => {
+      expect(page.match(/\/I\d+ Do/g) ?? []).toHaveLength(1);
+      expect(page.match(/\(Confidential\) Tj/g) ?? []).toHaveLength(1);
+    });
+  });
+
+  it('formats an instant, keeps a caller-formatted string as given', () => {
+    const meta = (generatedAt: string | Date) => text(buildReportPdf([{ a: 1 }], { reportType: 'device_inventory', generatedAt, timezone: 'UTC' }));
+    expect(meta(new Date('2026-11-09T17:06:00Z'))).toContain('Generated Nov 9, 2026, 5:06 PM UTC');
+    expect(meta('2026-11-09T17:06:00.000Z')).toContain('Generated Nov 9, 2026, 5:06 PM UTC');
+    expect(meta('Nov 9, 2026')).toContain('Generated Nov 9, 2026');
+  });
+
+  it('formats a Postgres-text timestamp cell in the generic table instead of printing it raw', () => {
+    const t = text(buildReportPdf([{ hostname: 'WS-01', lastSeen: '2026-11-09 12:30:00+00' }], {
+      reportType: 'device_inventory', generatedAt: GENERATED, timezone: 'UTC',
+    }));
+    expect(t).toContain('Nov 9, 2026, 12:30 PM UTC');
+    expect(t).not.toContain('2026-11-09 12:30:00+00');
+  });
+
+  it('the chip check detects a rounded rectangle (positive control for the #12041 assertion)', () => {
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.roundedRect(10, 10, 20, 10, 1.6, 1.6, 'F');
+    expect(pages(doc)[0]).toMatch(/ c\n/);
   });
 });
 

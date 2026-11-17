@@ -180,7 +180,7 @@ export function renderEndpointManagementReport(
     }
   } else {
     const asOf = summary.freshness?.intune_devices?.asOf;
-    if (asOf) y = drawProse(doc, chrome, `Intune inventory as of ${asOf}.`, y, 9, C.muted);
+    if (asOf) y = drawProse(doc, chrome, `Intune inventory as of ${chrome.formatDateTime(asOf) ?? asOf}.`, y, 9, C.muted);
   }
   y += 1.5;
 
@@ -244,7 +244,7 @@ export function renderEndpointManagementReport(
       startY: y,
       margin: { left: PAGE.mx, right: PAGE.mx },
       head: [['Date', 'Compliant', 'Not compliant', 'In grace', 'Unknown']],
-      body: trend.map((p) => [p.date, num(p.compliant), num(p.noncompliant), num(p.inGrace), num(p.unknown)]),
+      body: trend.map((p) => [chrome.formatDate(p.date) ?? p.date, num(p.compliant), num(p.noncompliant), num(p.inGrace), num(p.unknown)]),
       styles: { fontSize: 7.6, cellPadding: 1.4 },
       headStyles: { fillColor: C.primary, textColor: C.white },
       alternateRowStyles: { fillColor: C.zebra },
@@ -275,7 +275,7 @@ export function renderEndpointManagementReport(
         [r.operatingSystem, r.osVersion].filter(Boolean).join(' ') || '—',
         r.userPrincipalName ?? '—',
         r.ownerType ?? '—',
-        r.lastIntuneSyncAt ?? 'Never',
+        chrome.formatDate(r.lastIntuneSyncAt) ?? 'Never',
         r.complianceState ? COMPLIANCE_LABELS[r.complianceState] : 'Unknown',
         r.jailBroken ?? '—',
       ]),

@@ -341,6 +341,14 @@ function claimChrome(doc: jsPDF, part: 'header' | 'footer'): boolean {
   return true;
 }
 
+/** Warn about a logo that will not embed once per document, not once per page. */
+const logoWarned = new WeakSet<jsPDF>();
+function claimLogoWarning(doc: jsPDF): boolean {
+  if (logoWarned.has(doc)) return false;
+  logoWarned.add(doc);
+  return true;
+}
+
 /** Height of the brand-colour rule closing the letterhead band. */
 const LETTERHEAD_RULE_H = 1.2;
 
@@ -375,7 +383,8 @@ function drawHeaderBand(doc: jsPDF, opts: RenderOpts): void {
   const letterheadMid = (PAGE.bandH - LETTERHEAD_RULE_H) / 2;
 
   // Partner logo when uploaded (carries its own wordmark); otherwise the Breeze
-  // vector mark + partner/Breeze name. A failed embed degrades to the name.
+  // vector mark + partner/Breeze name. A failed embed degrades to the partner
+  // name on the brand band (or the Breeze mark and name with no partner).
   let drewLogo = false;
   if (branding?.logoDataUrl) {
     paintLetterheadBand(doc);
@@ -389,7 +398,10 @@ function drawHeaderBand(doc: jsPDF, opts: RenderOpts): void {
     try {
       doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx, letterheadMid - logoH / 2, logoW, logoH, undefined, 'FAST');
       drewLogo = true;
-    } catch {
+    } catch (err) {
+      // Visible on the page (name instead of logo); logged so a corrupt or
+      // non-PNG stored logo is findable rather than a silent downgrade.
+      if (claimLogoWarning(doc)) console.warn('[reportPdf] Partner logo could not be embedded; using the name header', err);
       drewLogo = false;
     }
   }
@@ -2476,7 +2488,11 @@ function formatGenericCell(raw: unknown): string {
   // calendar day and is never shifted into the previous day by the timezone.
   if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(s)) {
     const hasTime = /T\d|\s\d{2}:/.test(s);
-    const formatted = hasTime ? formatReportDateTime(s.replace(' ', 'T'), L) : formatReportDate(s, L);
+    // "2026-11-09 12:30:00+00" (Postgres text) is not ISO once the space
+    // becomes a T (the offset lacks minutes), so try it as given too.
+    const formatted = hasTime
+      ? formatReportDateTime(s.replace(' ', 'T'), L) ?? formatReportDateTime(s, L)
+      : formatReportDate(s, L);
     if (formatted) return formatted;
   }
   return s;
@@ -2529,10 +2545,10 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
  * band + footer) is applied to every page.
  */
 export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
-  C = paletteForBranding(opts.branding);
-  L = resolveReportLocale(opts.branding, opts.timezone);
-  PAGE = reportPageGeometry(L.pageSize);
   try {
+    C = paletteForBranding(opts.branding);
+    L = resolveReportLocale(opts.branding, opts.timezone);
+    PAGE = reportPageGeometry(L.pageSize);
     return buildReportPdfWithPalette(rows, { ...opts, generatedAt: generatedAtLabel(opts.generatedAt) });
   } finally {
     C = BASE_C;

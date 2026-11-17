@@ -125,6 +125,22 @@ type Parts = { y: number; m: number; d: number; hour: number; minute: number; zo
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
+/** One formatter per zone: a generic table formats every date cell through
+ *  here, and building an Intl.DateTimeFormat per cell is the expensive part. */
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function partsFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = formatters.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: isValidTimeZone(timeZone) ? timeZone : 'UTC',
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZoneName: 'short',
+    });
+    formatters.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
 /** Calendar parts of `value` in `timeZone`. A bare `YYYY-MM-DD` is a calendar
  *  day, not an instant: it is never shifted across a zone boundary. */
 function partsOf(value: string | Date | null | undefined, timeZone: string): Parts | null {
@@ -135,12 +151,8 @@ function partsOf(value: string | Date | null | undefined, timeZone: string): Par
   }
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  const zone = isValidTimeZone(timeZone) ? timeZone : 'UTC';
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: zone, year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZoneName: 'short',
-  });
-  const get = (type: Intl.DateTimeFormatPartTypes) => fmt.formatToParts(date).find((p) => p.type === type)?.value ?? '';
+  const parts = partsFormatter(timeZone).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
   return {
     y: Number(get('year')), m: Number(get('month')), d: Number(get('day')),
     hour: Number(get('hour')) % 24, minute: Number(get('minute')), zone: get('timeZoneName'),

@@ -217,4 +217,19 @@ describe('buildReportPdf: identity_access_review', () => {
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
+
+  it('prints the period and sign-in times in the partner date format, with the zone (#12048)', () => {
+    const text = extractText(buildReportPdf([], {
+      ...opts,
+      timezone: 'America/New_York',
+      summary: SUMMARY,
+      branding: { name: 'Example MSP', logoDataUrl: null, logoAspect: null, dateFormat: 'MM/DD/YYYY', timeFormat: '12h' },
+    }));
+    expect(text).toContain('Interactive sign-ins for Sep 1, 2026');
+    // 09:00 UTC printed in the report zone, with its abbreviation (the table
+    // cell may wrap, so the date and the zone are matched separately).
+    expect(text).toContain('Sep 10, 2026,');
+    expect(text).toContain('5:00 AM EDT');
+    expect(text).not.toMatch(/\b2026-09-\d\d\b/);
+  });
 });
