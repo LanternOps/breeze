@@ -37,7 +37,8 @@ import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
 import type { ExportDataset } from './aiToolsExportDatasetNames';
 import { bootPerformanceAdapter } from './aiToolsExportDatasets/boot';
-import { reliabilityScoresAdapter,reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
+import { hardwareEventsAdapter } from './aiToolsExportDatasets/hardware';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
 
 /**
  * Lazy (call-time) imports of the two hub modules, NOT static ones.
@@ -632,4 +633,5 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   reliability_history: reliabilityHistoryAdapter,
   reliability_events: reliabilityEventsAdapter,
   boot_performance: bootPerformanceAdapter,
+  hardware_events: hardwareEventsAdapter,
 };

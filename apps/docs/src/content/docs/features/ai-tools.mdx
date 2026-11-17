@@ -448,7 +448,7 @@ The eight actions beyond reset and disable are new in v0.124.0 and are **four-ey
 
 `get_invite_funnel` measures deployment invites sent, clicked, enrolled, and currently online, with up to ten recent enrollments including device ID, hostname, OS, invited email, and enrollment time. Devices enrolled without invites can produce zero counts here. Use fleet tools for device counts; a zero invite funnel does not mean an empty fleet.
 
-`export_dataset` pages a dataset to completion without the ordinary 8,000-character response compaction. Use the returned artifact handle with `workspace_stage`. Supported datasets are `event_logs`, `agent_logs`, `device_inventory`, `software_inventory`, `metrics`, `vulnerabilities`, `custom_fields`, `reliability_scores`, `reliability_history`, `reliability_events`, and `boot_performance`.
+`export_dataset` pages a dataset to completion without the ordinary 8,000-character response compaction. Use the returned artifact handle with `workspace_stage`. Supported datasets are `event_logs`, `agent_logs`, `device_inventory`, `software_inventory`, `metrics`, `vulnerabilities`, `custom_fields`, `reliability_scores`, `reliability_history`, `reliability_events`, `boot_performance`, and `hardware_events`.
 
 `delete_tenant` only affects the tenant owning the API key. Its `confirmation_phrase` must exactly equal `delete <tenant_name> permanently` (lowercase and trimmed). Soft deletion retains devices, users, and data for 30 days; contact support to restore during that window. Data is permanently removed afterward.
 
