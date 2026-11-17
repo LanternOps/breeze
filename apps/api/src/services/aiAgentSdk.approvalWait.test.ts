@@ -236,6 +236,23 @@ function mockUpdateChain() {
   return { set, where };
 }
 
+/**
+ * #12084 review: the Tier-2 fallback close-out locks the mobile request
+ * (select ... for('update')) before it writes the execution row. Returns the
+ * order of the lock and the first UPDATE.
+ */
+function mockRequestLock() {
+  const order: string[] = [];
+  const forSpy = vi.fn(async () => { order.push('lock'); return []; });
+  vi.mocked(db.select).mockImplementation((() => ({ from: () => ({ where: () => ({ for: forSpy }) }) })) as never);
+  const update = vi.mocked(db.update).getMockImplementation();
+  vi.mocked(db.update).mockImplementation(((...a: unknown[]) => {
+    order.push('update');
+    return update ? (update as (...x: unknown[]) => unknown)(...a) : undefined;
+  }) as never);
+  return { forSpy, order };
+}
+
 /** Poll until `fn()` is true (waits blocked inside preToolUse are async). */
 async function until(fn: () => boolean, ms = 2000): Promise<void> {
   const start = Date.now();
@@ -511,6 +528,7 @@ describe('settleApprovalWaits (#3089)', () => {
     } as any);
     mockInsertReturning({ id: 'exec-4' });
     const { set, where } = mockUpdateChain();
+    const lock = mockRequestLock();
     vi.mocked(waitForApproval).mockImplementation(
       (_id: string, _timeoutMs: number, signal?: AbortSignal) =>
         new Promise((resolve) => {
@@ -547,6 +565,9 @@ describe('settleApprovalWaits (#3089)', () => {
         { _eq: ['approval_requests.status', 'pending'] },
       ],
     });
+    // Request first, then execution (#12084 review).
+    expect(lock.forSpy).toHaveBeenCalledWith('update');
+    expect(lock.order.slice(0, 2)).toEqual(['lock', 'update']);
     expect(session.pendingApprovalWaits).toBe(0);
   });
 
@@ -564,6 +585,7 @@ describe('settleApprovalWaits (#3089)', () => {
       } as any);
       mockInsertReturning({ id: 'exec-t' });
       const { set, where } = mockUpdateChain();
+      mockRequestLock();
       const { decideHelperToolAction } = await import('./pamToolActionGovernance');
       vi.mocked(decideHelperToolAction).mockResolvedValue('prompt' as any);
       // What waitForApproval reports when its own close-out failed.

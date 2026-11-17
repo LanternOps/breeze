@@ -3493,6 +3493,15 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               // decideHandler's CAS after this ledger row has already closed.
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId], userId: session.auth.user.id },
               async () => {
+                // Request first, then execution: the lock order of the
+                // wait's own close-out and the mobile decide (#12084 review).
+                if (approvalRequestId) {
+                  await db
+                    .select({ id: approvalRequests.id })
+                    .from(approvalRequests)
+                    .where(eq(approvalRequests.id, approvalRequestId))
+                    .for('update');
+                }
                 await db
                   .update(aiToolExecutions)
                   .set({ status: 'rejected', errorMessage: fallbackCloseOutMessage(cardWaitDetail) })

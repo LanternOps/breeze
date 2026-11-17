@@ -8,6 +8,7 @@
 
 import { db, withSystemDbAccessContext, runAfterDbContextCommit } from '../db';
 import { captureException } from './sentry';
+import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -662,6 +663,55 @@ function noteRejection(errorMessage: string | null | undefined, detail?: Approva
 }
 
 /**
+ * #12084 review: lock the mobile approval_requests rows linked to an
+ * execution, before the execution row itself. Every writer that touches both
+ * rows in one transaction takes them in this order (request, then execution):
+ * the mobile decide CASes its request and then mirrors onto the execution,
+ * and the approval-expiry reaper expires requests and then their executions.
+ * Must run inside a transaction. Returns the linked request ids.
+ */
+export async function lockLinkedApprovalRequests(executionId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.executionId, executionId))
+    .for('update');
+  return rows.map((r) => r.id);
+}
+
+/**
+ * #12084 review: one audit row for an approval the stop beat. The approve
+ * itself was audited where it was made (the chat route, the mobile decide);
+ * this records that it never ran. Best-effort and after the close-out
+ * commits: the stored rows already say what happened.
+ */
+async function auditApprovedButStopped(
+  executionId: string,
+  stopped: { orgId: string | null; toolName: string; sessionId: string; linkedRequestIds: string[] },
+): Promise<void> {
+  try {
+    await writeAuditEventAsync(requestLikeFromSnapshot({}), {
+      orgId: stopped.orgId,
+      action: 'ai.tool_approval.stopped',
+      resourceType: 'ai_execution',
+      resourceId: executionId,
+      resourceName: stopped.toolName,
+      actorType: 'system',
+      actorId: null,
+      result: 'failure',
+      errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
+      details: {
+        executionId,
+        sessionId: stopped.sessionId,
+        approvalRequestIds: stopped.linkedRequestIds,
+      },
+    });
+  } catch (err) {
+    console.error('[AI] Failed to audit an approval the stop beat:', executionId, err);
+  }
+}
+
+/**
  * #12084: end an approval wait that saw no decision, in one transaction.
  *
  * - The row is closed ONLY if it is still pending (`UPDATE ... WHERE status =
@@ -676,13 +726,17 @@ function noteRejection(errorMessage: string | null | undefined, detail?: Approva
  *   instead of being told approved for an action that will not run.
  * - When the close-out matches nothing, a fresh read (a new statement, so it
  *   sees the committed decision) returns that decision. A row never goes back
- *   to pending, so that read is the row's one outcome. On a timeout
- *   (`honourApproval`) an approval is honoured: the caller runs it exactly as
- *   if the last poll had seen it. On a settle (interrupt, turn timeout or
- *   limit stop, new message, teardown) the stop wins: the approved row, which
- *   only this wait would ever run, is moved to rejected with a message that
- *   says it was approved but the turn stopped, so the stored row matches what
- *   ran (nothing).
+ *   to pending, so that read is the row's one outcome. On a timeout with
+ *   budget spent waiting (`honourApproval`) an approval is honoured: the
+ *   caller runs it exactly as if the last poll had seen it. On a settle
+ *   (interrupt, turn timeout or limit stop, new message, teardown) or a zero
+ *   budget the stop wins: the approved row, which only this wait would ever
+ *   run, is moved to rejected with a message that says it was approved but
+ *   the turn stopped, so the stored row matches what ran (nothing). The
+ *   linked mobile request is stored as denied with that message as its
+ *   refusal reason, and one `ai.tool_approval.stopped` audit row is written.
+ * - Locks: the linked `approval_requests` rows first, then the execution row
+ *   (`lockLinkedApprovalRequests`), the order every other writer of both uses.
  */
 async function closeOutApprovalWait(
   executionId: string,
@@ -693,16 +747,26 @@ async function closeOutApprovalWait(
   for (let attempt = 1; ; attempt++) {
     try {
       const result = await withSystemDbAccessContext(async () => {
+        // Lock order (#12084 review): the linked mobile approval_requests
+        // rows first, then the execution row, as the mobile decide, the
+        // approval-expiry reaper and handleApproval take them. Taking the
+        // execution row first deadlocked with a mobile decide that had
+        // already CAS'd its request and was about to mirror onto this row.
+        // Helper/PAM rows have no approval_requests row; this locks nothing.
+        const linkedRequestIds = await lockLinkedApprovalRequests(executionId);
+
         const [closed] = await db
           .update(aiToolExecutions)
           .set({ status: 'rejected', errorMessage })
           .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending')))
           .returning({ id: aiToolExecutions.id });
         if (closed) {
-          await db
-            .update(approvalRequests)
-            .set({ status: 'expired' })
-            .where(and(eq(approvalRequests.executionId, executionId), eq(approvalRequests.status, 'pending')));
+          if (linkedRequestIds.length > 0) {
+            await db
+              .update(approvalRequests)
+              .set({ status: 'expired' })
+              .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
+          }
           return { kind: 'closed' as const };
         }
         if (!honourApproval) {
@@ -710,8 +774,30 @@ async function closeOutApprovalWait(
             .update(aiToolExecutions)
             .set({ status: 'rejected', errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE })
             .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'approved')))
-            .returning({ id: aiToolExecutions.id });
-          if (stopped) return { kind: 'stopped' as const };
+            .returning({ sessionId: aiToolExecutions.sessionId, toolName: aiToolExecutions.toolName });
+          if (stopped) {
+            // The approve stays on the request (decided_* still describe it),
+            // but the row must not read as approved for something that never
+            // ran. Denied with a refusal reason is the existing "approved,
+            // then not applied" shape, which the mobile Recent list and the
+            // approvals inbox render as not approved, with this reason.
+            if (linkedRequestIds.length > 0) {
+              await db
+                .update(approvalRequests)
+                .set({ status: 'denied', refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE })
+                .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'approved')));
+              await db
+                .update(approvalRequests)
+                .set({ status: 'expired' })
+                .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
+            }
+            const [owner] = await db
+              .select({ orgId: aiSessions.orgId })
+              .from(aiSessions)
+              .where(eq(aiSessions.id, stopped.sessionId))
+              .limit(1);
+            return { kind: 'stopped' as const, ...stopped, orgId: owner?.orgId ?? null, linkedRequestIds };
+          }
         }
         const [row] = await db
           .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
@@ -727,6 +813,7 @@ async function closeOutApprovalWait(
       }
       if (result.kind === 'stopped') {
         console.warn('[AI] Approval landed just before the turn stopped; not run:', executionId);
+        await auditApprovedButStopped(executionId, result);
         return false;
       }
       if (result.row?.status === 'approved') return true;
@@ -839,12 +926,16 @@ export async function waitForApproval(
 
   // No decision seen. A settle that landed during the last sleep is a settle,
   // not a timeout: the stop wins over an approval that beat the close-out.
-  // On a timeout the decision that beat the close-out wins.
+  // On a timeout the decision that beat the close-out wins, but only when
+  // this wait had a budget to spend: with `timeoutMs <= 0` no poll ran, the
+  // caller's cycle budget is spent (a work-limit stop or a sibling wait spent
+  // it), and the wait is refused at once, as it always was, even for a row
+  // that PAM policy auto-approved before the wait began (#12084 review).
   const settled = signal?.aborted === true;
   return closeOutApprovalWait(
     executionId,
     settled ? AI_APPROVAL_WAIT_ENDED_MESSAGE : AI_APPROVAL_TIMED_OUT_MESSAGE,
-    !settled,
+    !settled && timeoutMs > 0,
     detail,
   );
 }
@@ -937,6 +1028,11 @@ export async function handleApproval(
   // after a settle would flip 'rejected' back to a stranded 'approved' that
   // nothing will ever execute — while this function reports success to the
   // UI. Zero rows updated means we lost such a race: report failure honestly.
+  //
+  // #12084 review: lock the linked mobile request first, the order the
+  // wait's close-out and the mobile decide take these rows, so a click
+  // racing the close-out queues behind it instead of deadlocking with it.
+  await lockLinkedApprovalRequests(executionId);
   const [updated] = await db
     .update(aiToolExecutions)
     .set({

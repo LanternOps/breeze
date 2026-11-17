@@ -25,6 +25,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
+import { inLastSleep } from './aiApprovalWaitFixtures';
 import { db } from '../../db';
 import { partners, organizations, users, approvalRequests } from '../../db/schema';
 import { aiSessions, aiToolExecutions } from '../../db/schema/ai';
@@ -169,48 +170,6 @@ describe('waitForApproval — polls ai_tool_executions with RLS context (SDK pat
     expect(after!.errorMessage).toBe('Approval timed out');
   });
 });
-
-/**
- * #12084: a decision that lands between the wait's LAST poll and its close-out.
- *
- * The real poll sleeps between reads (500 ms, then up to 3 s). `inLastSleep`
- * swaps that first sleep for: run `decide` (the click), then sleep past the
- * wait's timeout. The first read saw 'pending' and no read follows, so the next
- * thing the wait does is its close-out: exactly the window in the issue. Only
- * the wait's own 500 ms sleep is intercepted (its callback is a native promise
- * resolver, which no driver or pool timer is); every other timer runs as
- * normal. If the sleep is never intercepted, `decided` never settles and the
- * test times out instead of passing vacuously.
- */
-function inLastSleep(decide: () => Promise<void>, sleepMs: number): { decided: Promise<void> } {
-  const realSetTimeout = globalThis.setTimeout;
-  let armed = true;
-  let markDecided!: () => void;
-  let failDecided!: (err: unknown) => void;
-  const decided = new Promise<void>((resolve, reject) => {
-    markDecided = resolve;
-    failDecided = reject;
-  });
-  // Rethrown where the test awaits it; this only stops an early rejection
-  // from surfacing as an unhandled rejection against another test.
-  decided.catch(() => undefined);
-  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
-    fn: (...args: unknown[]) => void,
-    ms?: number,
-    ...rest: unknown[]
-  ) => {
-    if (armed && ms === 500 && Function.prototype.toString.call(fn).includes('[native code]')) {
-      armed = false;
-      decide().then(
-        () => { markDecided(); realSetTimeout(fn, sleepMs); },
-        (err) => { failDecided(err); realSetTimeout(fn, sleepMs); },
-      );
-      return realSetTimeout(() => undefined, 0);
-    }
-    return realSetTimeout(fn, ms, ...rest);
-  }) as typeof setTimeout);
-  return { decided };
-}
 
 describe('waitForApproval — a decision made before the close-out wins (#12084)', () => {
   afterEach(() => {
