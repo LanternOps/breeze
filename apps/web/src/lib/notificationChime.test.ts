@@ -118,6 +118,33 @@ describe('playNotificationChime', () => {
       expect(audio.started).toBe(NOTES_PER_CHIME);
     });
 
+    // A real lock stays held while its callback runs (the chime plus the hold).
+    // A request without `ifAvailable` would queue behind it and chime late.
+    it('drops a chime asked for within the hold, and plays one after it', async () => {
+      let held = false;
+      const options: unknown[] = [];
+      setLocks({
+        request: async (_name: string, opts: { ifAvailable?: boolean }, run: (lock: unknown) => Promise<void>) => {
+          options.push(opts);
+          if (held && opts.ifAvailable) return run(null);
+          held = true;
+          try { return await run({}); } finally { held = false; }
+        },
+      });
+      const play = await load();
+      play('n1');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(audio.started).toBe(NOTES_PER_CHIME);
+      play('n2'); // same burst: another tab's refetch landing a moment later
+      await vi.advanceTimersByTimeAsync(100);
+      expect(audio.started).toBe(NOTES_PER_CHIME);
+      await settle(); // the hold ends
+      play('n3');
+      await settle();
+      expect(audio.started).toBe(NOTES_PER_CHIME * 2);
+      expect(options.every((o) => (o as { ifAvailable?: boolean }).ifAvailable === true)).toBe(true);
+    });
+
     it('falls back to playing when the lock request itself fails', async () => {
       setLocks({ request: () => Promise.reject(new Error('SecurityError')) });
       const play = await load();

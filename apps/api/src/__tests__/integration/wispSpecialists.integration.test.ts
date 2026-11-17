@@ -13,7 +13,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 vi.mock('../../services/eventBus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/eventBus')>();
@@ -548,17 +548,21 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     // Workers card (#11965 stopgap): the activity feed counts only the parked
     // run's own still-pending steps, against real SQL. The sibling's pending
     // step and the rejected one stay out; a run not parked carries no count.
+    // A second pending step, proposed later: the link still points at the
+    // OLDEST pending step (created_at is immutable, so it cannot be backdated).
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const newerIntent = await propose(watched.auth, 'A later step');
     const ceiling = await sys(() => resolveGrantCeiling(t.grant.grantId, t.grant.revisionId));
     const { items } = await listActivity(ceiling, { limit: 100 });
     expect(items.find((i) => i.id === watched.runId)).toMatchObject({
-      runStatus: 'awaiting_approval', pendingApprovals: 1, pendingIntentId: pendingIntent.id,
+      runStatus: 'awaiting_approval', pendingApprovals: 2, pendingIntentId: pendingIntent.id,
     });
     expect(items.find((i) => i.id === sibling.runId)).not.toHaveProperty('pendingApprovals');
     // Once the last step is decided the count drops to 0 while the run row
     // still says awaiting_approval: the card shows "Approvals decided".
     await sys(() => db.update(actionIntents).set({
       status: 'rejected', decidedByUserId: t.admin.id, decidedAt: new Date(), decidedVia: 'human',
-    } as never).where(eq(actionIntents.id, pendingIntent.id)));
+    } as never).where(inArray(actionIntents.id, [pendingIntent.id, newerIntent.id])));
     const after = await listActivity(ceiling, { limit: 100 });
     expect(after.items.find((i) => i.id === watched.runId)).toMatchObject({
       runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null,
