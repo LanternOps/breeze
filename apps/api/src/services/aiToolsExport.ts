@@ -22,6 +22,7 @@ import { breezeRegion } from '../config/env';
 import { emitRunProgress } from './aiAgents/runProgress';
 import { DATASET_ADAPTERS, EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasets';
 import { SensitiveEventLogAccessError } from './eventLogSensitivity';
+import { ExportFilterError } from './aiToolsExportShared';
 import { effectiveExportGrants, withheldSensitiveGates } from './aiToolsExportPermissions';
 import {
   buildExportStream, ExportCapError,
@@ -236,6 +237,11 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
             error: error.code,
             message: 'The export exceeded this run\'s artifact byte budget. Narrow the filters or the device set and try again.',
           });
+        }
+        // A filter the model can correct (e.g. a time range over the cap): its
+        // own code and message, never the generic `export_failed`.
+        if (error instanceof ExportFilterError) {
+          return JSON.stringify({ error: error.code, message: error.message });
         }
         if (error instanceof SensitiveEventLogAccessError) {
           return JSON.stringify({

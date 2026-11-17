@@ -304,6 +304,17 @@ describe('export_dataset', () => {
     expect(createArtifact).not.toHaveBeenCalled();
   });
 
+  it('maps ExportFilterError to its code, not export_failed', async () => {
+    const { ExportFilterError } = await import('./aiToolsExportShared');
+    sanitizeThrownToolError.mockClear();
+    createPager.mockRejectedValueOnce(new ExportFilterError('invalid_time_range', 'filters.timeRange spans more than 180 days; narrow it.'));
+    const out = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+    expect(out).toEqual({ error: 'invalid_time_range', message: 'filters.timeRange spans more than 180 days; narrow it.' });
+    expect(sanitizeThrownToolError).not.toHaveBeenCalled();
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
   it('logs orgId/runId/dataset context when an unexpected error escapes the handler', async () => {
     sanitizeThrownToolError.mockClear();
     createPager.mockRejectedValueOnce(new Error('boom'));
