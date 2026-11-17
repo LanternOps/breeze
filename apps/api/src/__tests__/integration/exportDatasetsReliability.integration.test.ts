@@ -215,6 +215,45 @@ describe('export_dataset W04 datasets on real Postgres (breeze_app, forced RLS)'
     });
   });
 
+  runDb('reliability_history: non-array jsonb counts as 0 instead of failing the page', async () => {
+    const t = await seedTenant();
+    for (const bad of ['{"a":1}', 'null', '"x"']) {
+      await getTestDb().execute(sql`
+        INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events, app_hangs)
+        VALUES (${t.a1}, ${t.orgA}, ${tsText(1)}::timestamp, 60, ${tsText(1)}::timestamp, ${bad}::jsonb, '{"k":2}'::jsonb)`);
+    }
+    const { rows } = await drain('reliability_history', request('reliability_history', t.orgA, [t.a1]));
+    expect(rows).toHaveLength(3);
+    for (const r of rows) {
+      expect(r.crashCount).toBe(0);
+      expect(r.appHangCount).toBe(0);
+    }
+    expect((await drain('reliability_events', request('reliability_events', t.orgA, [t.a1]))).rows).toEqual([]);
+  });
+
+  runDb('reliability_events: mid-row resume and a budget that ends on a row boundary lose and repeat nothing', async () => {
+    const t = await seedTenant();
+    const base = tsText(1);
+    const t0 = Date.now() - DAY_MS;
+    const at = (n: number) => new Date(t0 + n * 1000).toISOString();
+    // pageSize 100: 2 history rows per page, 400 events per page.
+    // Newest first: X holds exactly one page of events (boundary), Y spans three
+    // pages, Z shares Y's millisecond and differs in microseconds.
+    const rowsToSeed: Array<[string, number, number]> = [['123003', 400, 0], ['123002', 900, 10_000], ['123001', 3, 20_000]];
+    for (const [micros, count, from] of rowsToSeed) {
+      const events = Array.from({ length: count }, (_, n) => ({ type: 'bsod', timestamp: at(from + n) }));
+      await getTestDb().execute(sql`
+        INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events)
+        VALUES (${t.a1}, ${t.orgA}, ${`${base}.${micros}`}::timestamp, 60, ${base}::timestamp, ${JSON.stringify(events)}::jsonb)`);
+    }
+    const { pages, rows } = await drain('reliability_events', request('reliability_events', t.orgA, [t.a1], { pageSize: 100 }));
+    expect(rows).toHaveLength(1303);
+    expect(pages.every((p) => p.rows.length <= 400)).toBe(true);
+    expect(pages[pages.length - 1]!.nextCursor).toBeNull();
+    const expected = rowsToSeed.flatMap(([, count, from]) => Array.from({ length: count }, (_, n) => new Date(at(from + n)).toISOString()));
+    expect(rows.map((r) => r.timestamp)).toEqual(expected);
+  });
+
   runDb('service_checks exports non-running checks only', async () => {
     const t = await seedTenant();
     await seedRow('service_checks', t.orgA, t.a1, tsText(1));

@@ -345,6 +345,31 @@ describe('reliability_events', () => {
     expect(compiled(0).sql).not.toMatch(/<= \(\$\d+::timestamp/);
   });
 
+  it('a budget that fills exactly at a row boundary resumes at the next row, never skipping it', async () => {
+    const at = (n: number) => new Date(Date.UTC(2026, 10, 9) + n * 1000).toISOString();
+    const rowA = eventsHistory(H1, {
+      collectedAtText: '2026-11-10 00:00:02',
+      crashEvents: Array.from({ length: 400 }, (_, n) => ({ type: 'bsod', timestamp: at(n) })),
+      appHangs: [], serviceFailures: [], hardwareErrors: [],
+    });
+    const rowB = eventsHistory(H2, {
+      collectedAtText: '2026-11-10 00:00:01',
+      crashEvents: Array.from({ length: 50 }, (_, n) => ({ type: 'bsod', timestamp: at(1000 + n) })),
+      appHangs: [], serviceFailures: [], hardwareErrors: [],
+    });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValueOnce([rowA, rowB]); // pageSize 100: 2 history rows per page, budget 400
+    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 100 }));
+    const p1 = await pager(null);
+    expect(p1.rows).toHaveLength(400);
+    // Row A is fully consumed; the cursor must resume strictly after A, not after B.
+    expect(JSON.parse(Buffer.from(p1.nextCursor!, 'base64url').toString('utf8'))).toEqual([rowA.collectedAtText, H1, '0']);
+    runExportQuery.mockResolvedValueOnce([rowB]);
+    const p2 = await pager(p1.nextCursor);
+    expect(p2.rows.map((r) => r.historyId)).toEqual(Array(50).fill(H2));
+    expect(p2.nextCursor).toBeNull();
+  });
+
   it('counts window-filtered events toward the offset so resume stays aligned', async () => {
     const old = Array.from({ length: 1500 }, () => ({ type: 'bsod', timestamp: '2026-01-01T00:00:00Z' }));
     const fresh = Array.from({ length: 700 }, (_, n) => ({ type: 'bsod', timestamp: new Date(Date.UTC(2026, 10, 9) + n * 1000).toISOString() }));

@@ -281,7 +281,15 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
           flatIndex += 1;
           if (r === 0 && index < offset) continue;
           if (out.length >= eventBudget) {
-            return { rows: out, nextCursor: encodeExportCursor([row.collectedAtText, row.id, String(index)]) };
+            // Offset 0 means "strictly after this row", so a budget that runs
+            // out on a row's FIRST event must point at the previous row (fully
+            // consumed), or this row would be skipped. At r === 0, index 0
+            // cannot hit the budget (nothing has been emitted yet).
+            const prev = page[r - 1];
+            const nextCursor = index > 0 || !prev
+              ? encodeExportCursor([row.collectedAtText, row.id, String(index)])
+              : encodeExportCursor([prev.collectedAtText, prev.id, '0']);
+            return { rows: out, nextCursor };
           }
           // The event's own time decides the window; an unparseable one is
           // kept (with `timestamp: null`) rather than silently dropped.
