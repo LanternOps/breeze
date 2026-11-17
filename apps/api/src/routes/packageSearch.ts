@@ -12,6 +12,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { withDbTransactionIfHeld } from '../db';
 import {
   DEFAULT_SEARCH_LIMIT,
   annotateBreezeTested,
@@ -83,7 +84,10 @@ packageSearchRoutes.get(
     // probe must not fail the search.
     let indexUpdatedAt: string | null = null;
     try {
-      indexUpdatedAt = (await getWingetIndexFreshness()).lastSyncedAt;
+      // Transaction-wrapped so a failed probe doesn't poison the request
+      // transaction and turn this caught failure into a 500 (CLAUDE.md).
+      indexUpdatedAt = (await withDbTransactionIfHeld(() => getWingetIndexFreshness()))
+        .lastSyncedAt;
     } catch (err) {
       console.warn('[packageSearch] winget index freshness probe failed', {
         error: err instanceof Error ? err.message : String(err),

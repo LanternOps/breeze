@@ -94,6 +94,18 @@ describe('PackageManagerPicker', () => {
       expect(screen.getByText('No packages matched')).toBeInTheDocument();
     });
 
+    it('drops the freshness note when a later search fails', async () => {
+      searchMock({ windows: { results: [CHROME], indexUpdatedAt: hoursAgo(5) } });
+      renderPicker();
+      typeQuery('chrome');
+      await screen.findByTestId('index-freshness');
+
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({}, false, 500)));
+      typeQuery('chromium');
+      await screen.findByText(/Package search failed/);
+      expect(screen.queryByTestId('index-freshness')).not.toBeInTheDocument();
+    });
+
     it('shows nothing for macOS (Homebrew has no winget index)', async () => {
       searchMock({ macos: { results: [FIREFOX_CASK] } });
       renderPicker();

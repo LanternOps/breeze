@@ -23,6 +23,10 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('../db', () => ({
+  withDbTransactionIfHeld: vi.fn((fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock('../services/packageSearch', () => ({
   DEFAULT_SEARCH_LIMIT: 25,
   searchWingetIndex: vi.fn(),

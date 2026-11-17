@@ -118,6 +118,7 @@ export default function PackageManagerPicker({
           if (!res.ok) {
             setResults([]);
             setDegraded(false);
+            setIndexUpdatedAt(null);
             setSearchError(
               i18n.t("policies:software.addPackageModal.searchFailed"),
             );
@@ -138,6 +139,7 @@ export default function PackageManagerPicker({
         } catch {
           if (!cancelled) {
             setResults([]);
+            setIndexUpdatedAt(null);
             setSearchError(
               i18n.t("policies:software.addPackageModal.searchFailed"),
             );
