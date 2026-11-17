@@ -40,6 +40,24 @@ describe('AiApprovalDialog resolved elsewhere (#9431)', () => {
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
   });
 
+  it.each(['not_approved', 'expired', 'ended', 'an_outcome_this_build_does_not_know'])(
+    'shows a %s card as not approved: no approved text, no check mark (#12079)',
+    (resolution) => {
+      render(<AiApprovalDialog {...baseProps} resolution={resolution as never} />);
+
+      const resolved = screen.getByTestId('ai-approval-resolved');
+      expect(resolved).not.toHaveTextContent(/was approved/i);
+      expect(resolved.querySelector('.text-green-500')).toBeNull();
+      expect(screen.getByRole('button', { name: /approve/i })).toBeDisabled();
+    },
+  );
+
+  it('shows the check mark only on an approved card', () => {
+    render(<AiApprovalDialog {...baseProps} resolution="approved" />);
+
+    expect(screen.getByTestId('ai-approval-resolved').querySelector('.text-green-500')).not.toBeNull();
+  });
+
   it('never auto-denies a card that was already decided', () => {
     vi.useFakeTimers();
     render(<AiApprovalDialog {...baseProps} approvalWindowMs={2_000} resolution="approved" />);

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Drive getSession / getSessionMessages / handleApproval through the real service
 // logic without a live DB. We mock drizzle's `eq`/`and` to capture the WHERE
@@ -68,7 +70,7 @@ vi.mock('./aiModels/sessionModel', () => ({
   })),
 }));
 
-import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, type ApprovalWaitDetail } from './aiAgent';
+import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, AI_APPROVAL_REQUEST_EXPIRED_MESSAGE, type ApprovalWaitDetail } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
 
@@ -404,6 +406,14 @@ describe('getDecidedExecutionOutcome (#9431)', () => {
 });
 
 describe('waitForApproval expiry detail (#12079)', () => {
+  it('reads the exact text the approval-expiry reaper writes', () => {
+    // The reaper keeps its own literal (importing this module into a job is
+    // heavy); a drift would quietly turn reaper-expired cards back into
+    // "not approved".
+    const reaper = readFileSync(join(__dirname, '../jobs/approvalExpiryReaper.ts'), 'utf8');
+    expect(reaper).toContain(`errorMessage: '${AI_APPROVAL_REQUEST_EXPIRED_MESSAGE}'`);
+  });
+
   it('reports expired on its own timeout, and still marks the row rejected (never approved)', async () => {
     const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     updateMock.mockReturnValue({ set: setSpy });
@@ -433,6 +443,18 @@ describe('waitForApproval expiry detail (#12079)', () => {
     await expect(waitForApproval('exec-1', 60_000, undefined, detail)).resolves.toBe(false);
 
     expect(detail.expired).toBeUndefined();
+  });
+
+  it('does not report expired, or write the row, when the wait was already settled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, controller.signal, detail)).resolves.toBe(false);
+
+    expect(detail.expired).toBeUndefined();
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('does not report expired for an approval', async () => {

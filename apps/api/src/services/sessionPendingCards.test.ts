@@ -603,6 +603,16 @@ describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
   });
 
+  it('says ended, not expired, when a settled wait also ran into its timeout (#12079)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    // The real wait can reach its timeout branch after an abort landed mid-sleep.
+    approvalWaitDetails.get('exec-1')!.expired = true;
+    settleApprovalWaits(session);
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
+  });
+
   it('says ended when the wait throws', async () => {
     vi.mocked(waitForApproval).mockRejectedValue(new Error('db down'));
     const session = makeActiveSession() as ActiveSession;
@@ -630,6 +640,21 @@ describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
     await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
 
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome }]);
+  });
+
+  it('still refuses the tool when the intent expired (#12079)', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3' }));
+    mockWaitForIntentDecision.mockResolvedValue('expired');
+    const session = makeActiveSession() as ActiveSession;
+
+    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(result).toMatchObject({ allowed: false });
+    expect(mockTransitionIntent).not.toHaveBeenCalled();
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome: 'expired' }]);
   });
 
   it('maps an approved decision to approved', async () => {

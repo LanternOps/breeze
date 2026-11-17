@@ -704,7 +704,10 @@ export async function waitForApproval(
         .where(eq(aiToolExecutions.id, executionId))
     );
   } catch (err) {
-    console.error('[AI] Failed to mark timed-out execution:', err);
+    // The row stays 'pending' until the caller's close-out CAS; the wait still
+    // expired and the tool is still refused.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error('[AI] Failed to mark timed-out execution:', executionId, err);
   }
 
   return false;
