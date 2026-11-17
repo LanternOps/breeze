@@ -50,6 +50,20 @@ describe('summarizeIcePath', () => {
     expect(await summarizeIcePath(pc)).toEqual(summary({ host: 1, srflx: 1, relay: 1 }, { host: 2 }));
   });
 
+  it('adds SDP candidates that stats under-report (per-type max of both sources)', async () => {
+    // Stats list only the paired host candidate; the answer also carried a relay.
+    const pc = fakePc({
+      stats: [
+        { id: 'l1', type: 'local-candidate', candidateType: 'relay' },
+        { id: 'r1', type: 'remote-candidate', candidateType: 'host' },
+      ],
+      remoteSdp: 'v=0\r\na=candidate:1 1 udp 1 10.0.0.5 5000 typ host\r\na=candidate:2 1 udp 1 198.51.100.7 6000 typ relay raddr 0.0.0.0 rport 0\r\n',
+    });
+    const s = await summarizeIcePath(pc);
+    expect(s.remote).toEqual({ host: 1, srflx: 0, prflx: 0, relay: 1 });
+    expect(classifyIceFailure(s)).toBe('no_path');
+  });
+
   it('falls back to the SDP candidate lines when getStats has none (or throws)', async () => {
     const remoteSdp = [
       'v=0',
@@ -69,8 +83,18 @@ describe('classifyIceFailure', () => {
     expect(classifyIceFailure(summary({ host: 1, srflx: 1, relay: 1 }, { host: 3 }))).toBe('device_network');
   });
 
-  it('blames the device network when the agent offered no candidates at all', () => {
-    expect(classifyIceFailure(summary({ host: 1, relay: 1 }, {}))).toBe('device_network');
+  it('does not blame a network when no remote candidate was observed at all', () => {
+    // Nothing read is not evidence: an engine that drops candidate stats, or an
+    // SDP without them, must not produce a confident one-shot stop.
+    expect(classifyIceFailure(summary({ host: 1, relay: 1 }, {}))).toBe('unknown');
+  });
+
+  it('does not blame this viewer when no local candidate was observed at all', () => {
+    expect(classifyIceFailure(summary({}, { host: 1, relay: 1 }))).toBe('unknown');
+  });
+
+  it('still blames the device network for a host-only agent when local candidates are unknown', () => {
+    expect(classifyIceFailure(summary({}, { host: 2 }))).toBe('device_network');
   });
 
   it('blames this viewer network when only the agent reached a server', () => {
@@ -103,8 +127,9 @@ describe('iceFailureMessage', () => {
       iceFailureMessage('device_network'),
       iceFailureMessage('viewer_network'),
       iceFailureMessage('no_path'),
+      iceFailureMessage('unknown'),
     ]);
-    expect(msgs.size).toBe(3);
+    expect(msgs.size).toBe(4);
   });
 });
 
@@ -122,11 +147,26 @@ describe('decideNeverConnectedIceFailure', () => {
     ],
   });
 
-  it('stops on the first failure of a host-only agent with the device-network message', async () => {
-    const d = await decideNeverConnectedIceFailure(hostOnlyAgent, 1);
+  it('retries a host-only agent once, then stops with the device-network message', async () => {
+    // The agent's late candidates can be lost on the trickle path, so one
+    // read is not enough to blame the device's firewall.
+    const first = await decideNeverConnectedIceFailure(hostOnlyAgent, 1);
+    expect(first.stop).toBe(false);
+    expect(first.cause).toBe('device_network');
+    const second = await decideNeverConnectedIceFailure(hostOnlyAgent, 2);
+    expect(second.stop).toBe(true);
+    expect(second.message).toBe(iceFailureMessage('device_network'));
+  });
+
+  it('decides on unknown when the stats read never settles', async () => {
+    const hung = {
+      getStats: () => new Promise(() => {}),
+      localDescription: null,
+      remoteDescription: null,
+    } as unknown as RTCPeerConnection;
+    const d = await decideNeverConnectedIceFailure(hung, 2, 10);
+    expect(d.cause).toBe('unknown');
     expect(d.stop).toBe(true);
-    expect(d.cause).toBe('device_network');
-    expect(d.message).toBe(iceFailureMessage('device_network'));
   });
 
   it('retries once when both sides reached a relay, then stops', async () => {
@@ -138,13 +178,9 @@ describe('decideNeverConnectedIceFailure', () => {
 });
 
 describe('shouldStopAfterIceFailure', () => {
-  it('stops at once when the agent could reach no server: re-offering cannot change that', () => {
-    expect(shouldStopAfterIceFailure('device_network', 1)).toBe(true);
-  });
-
-  it('retries other never-connected failures until the cap, then stops', () => {
+  it('retries every never-connected failure once, then stops', () => {
     expect(MAX_NEVER_CONNECTED_ICE_FAILURES).toBe(2);
-    for (const cause of ['viewer_network', 'no_path'] as const) {
+    for (const cause of ['device_network', 'viewer_network', 'no_path', 'unknown'] as const) {
       expect(shouldStopAfterIceFailure(cause, 1)).toBe(false);
       expect(shouldStopAfterIceFailure(cause, 2)).toBe(true);
       expect(shouldStopAfterIceFailure(cause, 3)).toBe(true);

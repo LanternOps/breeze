@@ -38,19 +38,32 @@ describe('a WebRTC peer that never connects does not re-offer forever (#11838)',
 
   it('stops the loop with a specific error once the decision says so, and otherwise reconnects', () => {
     const body = callbackBody('handleNeverConnectedIceFailure');
-    expect(body).toContain('neverConnectedIceFailuresRef.current += 1');
     expect(body).toContain('decideNeverConnectedIceFailure(');
-    // Re-checks ownership after the async stats read.
-    expect(body).toMatch(/webrtcRef\.current !== wrapper/);
+    // Re-checked after the await, so it covers the stats-read window.
+    const ownership = body.indexOf('webrtcRef.current !== wrapper');
+    expect(ownership).toBeGreaterThan(body.indexOf('decideNeverConnectedIceFailure('));
+    // A superseded peer's failure must not spend the current owner's budget.
+    expect(body.indexOf('neverConnectedIceFailuresRef.current = failures')).toBeGreaterThan(ownership);
     expect(body).toContain('userDisconnectRef.current');
     const stop = body.slice(body.indexOf('if (decision.stop)'));
     const stopBranch = stop.slice(0, stop.indexOf('return;'));
     expect(stopBranch).toContain('stopReconnect()');
     expect(stopBranch).toContain('wrapper.close()');
+    // Released before close(), or onClosed would overwrite the error card
+    // with 'disconnected'.
+    expect(stopBranch).toContain('webrtcRef.current = null');
+    expect(stopBranch.indexOf('webrtcRef.current = null')).toBeLessThan(stopBranch.indexOf('wrapper.close()'));
     expect(stopBranch).toContain("setStatus('error')");
     expect(stopBranch).toContain('setErrorMessage(decision.message)');
     expect(stopBranch).toContain('onError(decision.message)');
     expect(stop.slice(stop.indexOf('return;'))).toContain('startReconnectRef.current()');
+  });
+
+  it('never resets the failure count on the reconnect path (that is the loop)', () => {
+    // Exactly three resets: onConnected, the connect effect, manual Retry.
+    expect(source.match(/neverConnectedIceFailuresRef\.current = 0/g)).toHaveLength(3);
+    expect(callbackBody('startReconnect')).not.toContain('neverConnectedIceFailuresRef');
+    expect(callbackBody('attemptReconnect')).not.toContain('neverConnectedIceFailuresRef');
   });
 
   it('gives every fresh connect and every manual Retry a full failure budget', () => {

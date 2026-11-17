@@ -979,11 +979,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // side offered, then either retry (the reconnect loop) or stop with a reason
   // the operator can act on, instead of re-offering forever.
   const handleNeverConnectedIceFailure = useCallback(async (wrapper: WebRTCSessionWrapper) => {
-    neverConnectedIceFailuresRef.current += 1;
-    const failures = neverConnectedIceFailuresRef.current;
+    const failures = neverConnectedIceFailuresRef.current + 1;
     const decision = await decideNeverConnectedIceFailure(wrapper.pc, failures);
-    // The owner may have moved on during the stats read.
+    // The owner may have moved on during the stats read. A superseded peer's
+    // failure must not spend the current owner's budget.
     if (webrtcRef.current !== wrapper || userDisconnectRef.current || cancelledRef.current) return;
+    neverConnectedIceFailuresRef.current = failures;
     console.warn(
       `WebRTC failed before connecting (attempt ${failures}, cause ${decision.cause}); ` +
         (decision.stop ? 'not retrying.' : 'retrying.'),
