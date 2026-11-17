@@ -269,8 +269,11 @@ export interface ControlPlaneBlockListView {
 
 /**
  * List-row view from the kind column and the stored record's `reportedAt`,
- * both selected from the same row (no extra query). Same rule as the notice:
- * a kind without a readable `reportedAt` shows nothing, as the detail does.
+ * both selected from the same row (no extra query). Same age rule as the
+ * notice, and a kind without a readable `reportedAt` shows nothing, as the
+ * detail does. Unlike the notice it does not re-validate the rest of the
+ * record: the heartbeat planner writes the kind and the record together, so
+ * only a hand-edited row could show a pill here and no notice on the detail.
  */
 export function deriveControlPlaneBlockListView(
   kind: string | null | undefined,

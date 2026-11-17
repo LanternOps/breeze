@@ -171,6 +171,9 @@ type blockTracker struct {
 	// (DEBUG, throttled write) and counted in quietSupersedes.
 	loudSupersedeAt time.Time
 	quietSupersedes int
+	// unpersisted marks in-memory state a quiet switch has not yet written;
+	// Report (every beat) flushes it once the throttle window allows.
+	unpersisted bool
 
 	dirSyncWarned atomic.Bool
 	writes        atomic.Int64 // test seam
@@ -243,6 +246,7 @@ func (t *blockTracker) persist() {
 		f.Pending = &p
 	}
 	t.lastPersistAt = t.now()
+	t.unpersisted = false
 	t.mu.Unlock()
 	t.writes.Add(1)
 
@@ -404,12 +408,19 @@ func (t *blockTracker) startEpisodeLocked(host string, ev ech.BlockEvidence, out
 // Only its cost is throttled: when evidence alternates between classes every
 // beat, at most one switch per blockLastSeenPersistEvery logs at INFO and
 // writes at once; the others log at DEBUG and ride the throttled lastSeen
-// write, so the file still catches up within that window. Caller holds t.mu.
+// write. Report flushes a pending quiet switch on the first beat after the
+// window, even with no further evidence, so the file lags memory by at most
+// one window plus one beat. A restart inside that lag reloads the previous
+// class until the next failure's own evidence switches it again (accepted:
+// a reloaded plaintext episode holds only while its evidence is fresh,
+// blockHoldFreshness). A clock that stepped backward makes the switch loud.
+// Caller holds t.mu.
 func (t *blockTracker) supersedeLocked(host string, ev ech.BlockEvidence, outcome, now time.Time) persistNeed {
 	old := t.active
 	quiet := !t.loudSupersedeAt.IsZero() && now.Sub(t.loudSupersedeAt) >= 0 &&
 		now.Sub(t.loudSupersedeAt) < blockLastSeenPersistEvery
 	if quiet {
+		t.unpersisted = true
 		t.quietSupersedes++
 		log.Debug("control-plane block episode superseded", "host", host,
 			"kind", string(old.Kind), "new_kind", string(ev.Kind))
@@ -620,6 +631,9 @@ func (t *blockTracker) Report() *ControlPlaneBlockReport {
 	}
 	t.mu.Lock()
 	need := t.expireLocked(t.now())
+	if t.unpersisted {
+		need = max(need, persistLastSeen) // flush a throttled quiet switch
+	}
 	var r *ControlPlaneBlockReport
 	switch {
 	case t.active != nil:

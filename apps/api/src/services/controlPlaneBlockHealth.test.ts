@@ -426,6 +426,32 @@ describe('active episode age-out at read time (device stopped reporting)', () =>
     deriveControlPlaneBlockNotice(row, NOW);
     expect(JSON.stringify(row)).toBe(before);
   });
+
+  it.each([
+    [LAST_KNOWN_AFTER_MS, 'active', 'active'],
+    [LAST_KNOWN_AFTER_MS + 1, 'last_known', 'last_known'],
+    [LAST_KNOWN_HIDE_AFTER_MS, 'last_known', 'last_known'],
+    [LAST_KNOWN_HIDE_AFTER_MS + 1, null, null],
+  ] as const)('exact boundary: age %i ms -> notice %s, list %s', (age, noticeState, listState) => {
+    const row = activeRow({ reportedAt: ago(age) });
+    expect(deriveControlPlaneBlockNotice(row, NOW)?.state ?? null).toBe(noticeState);
+    const list = deriveControlPlaneBlockListView('web_filter', ago(age), NOW);
+    const listResult = list.controlPlaneBlockKind === null ? null : list.controlPlaneBlockLastKnownAt ? 'last_known' : 'active';
+    expect(listResult).toBe(listState);
+  });
+
+  it('normalizes a non-canonical stored reportedAt to ISO in both views', () => {
+    const offset = '2026-10-18T05:00:00+00:00';
+    expect(deriveControlPlaneBlockNotice(activeRow({ reportedAt: offset }), NOW)?.lastReportedAt).toBe('2026-10-18T05:00:00.000Z');
+    expect(deriveControlPlaneBlockListView('web_filter', offset, NOW).controlPlaneBlockLastKnownAt).toBe('2026-10-18T05:00:00.000Z');
+  });
+
+  it('a reportedAt in the future keeps the list pill active', () => {
+    expect(deriveControlPlaneBlockListView('web_filter', new Date(NOW.getTime() + HOUR).toISOString(), NOW)).toEqual({
+      controlPlaneBlockKind: 'web_filter',
+      controlPlaneBlockLastKnownAt: null,
+    });
+  });
 });
 
 describe('deriveControlPlaneBlockListView (the list pill follows the same rule as the notice)', () => {

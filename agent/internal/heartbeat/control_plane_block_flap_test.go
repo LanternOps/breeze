@@ -76,6 +76,86 @@ func TestBlockTracker_AlternatingClassesThrottleLogsAndWrites(t *testing.T) {
 	}
 }
 
+// A quiet switch with no further evidence: the file lags memory until the
+// first Report (every beat) after the window, then catches up. A reload
+// inside the lag gets the previous, well-formed episode.
+func TestBlockTracker_QuietSwitchFlushedByReportWithoutNewEvidence(t *testing.T) {
+	tr, clock, path := newTestTracker(t)
+	tr.Observe(cpHost, webFilterStatus(blockT0))
+	tr.Observe(cpHost, certStatus(clock.Advance(30*time.Second)))      // loud: written at once
+	tr.Observe(cpHost, webFilterStatus(clock.Advance(30*time.Second))) // quiet: deferred
+	if !tr.HoldsRestart(cpHost) {
+		t.Fatal("quiet switch to plaintext did not take effect in memory")
+	}
+
+	lagging := newBlockTracker(path, clock.Now).Report()
+	if lagging == nil || lagging.Kind != string(ech.BlockUntrustedCertificate) {
+		t.Fatalf("reload inside the lag = %+v, want the previous (certificate) episode", lagging)
+	}
+
+	clock.Advance(time.Minute)
+	before := tr.persistCount()
+	tr.Report() // still inside the window: no write
+	if tr.persistCount() != before {
+		t.Fatal("Report wrote inside the throttle window")
+	}
+	clock.Advance(blockLastSeenPersistEvery)
+	tr.Report() // first beat after the window: flushes
+	if tr.persistCount() != before+1 {
+		t.Fatalf("Report did not flush the quiet switch (writes %d -> %d)", before, tr.persistCount())
+	}
+	if r := newBlockTracker(path, clock.Now).Report(); r == nil || r.Kind != string(ech.BlockWebFilter) {
+		t.Fatalf("reload after the flush = %+v, want web_filter", r)
+	}
+	tr.Report()
+	if tr.persistCount() != before+1 {
+		t.Fatal("Report kept writing after the flush")
+	}
+}
+
+// A clock that steps backward after a loud switch makes the next switch loud
+// (written at once), never silences switches for the length of the step.
+func TestBlockTracker_SupersedeAfterClockStepBackIsLoud(t *testing.T) {
+	logs := captureBlockLogs(t)
+	tr, clock, _ := newTestTracker(t)
+	tr.Observe(cpHost, webFilterStatus(blockT0))
+	tr.Observe(cpHost, certStatus(clock.Advance(30*time.Second)))      // loud
+	tr.Observe(cpHost, webFilterStatus(clock.Advance(30*time.Second))) // quiet
+	quiet := countLogLines(logs, "INFO", "control-plane block episode superseded")
+
+	clock.Advance(-10 * time.Minute)
+	before := tr.persistCount()
+	// Evidence must be newer than the episode's lastSeenAt to apply; the
+	// dialer's evidence carries its own (pre-step) time.
+	tr.Observe(cpHost, certStatus(blockT0.Add(2*time.Minute)))
+	if tr.persistCount() != before+1 {
+		t.Fatal("switch after a backward clock step was not written at once")
+	}
+	if n := countLogLines(logs, "INFO", "control-plane block episode superseded"); n != quiet+1 {
+		t.Fatalf("switch after a backward clock step logged %d INFO lines, want %d", n, quiet+1)
+	}
+	if !strings.Contains(logs.String(), "quiet_switches_since_last=1") {
+		t.Fatalf("loud switch did not report the quiet switch count\n%s", logs.String())
+	}
+}
+
+// The quiet window is [loud, loud + blockLastSeenPersistEvery).
+func TestBlockTracker_QuietWindowBoundary(t *testing.T) {
+	tr, clock, _ := newTestTracker(t)
+	tr.Observe(cpHost, webFilterStatus(blockT0))
+	loudAt := clock.Advance(time.Second)
+	tr.Observe(cpHost, certStatus(loudAt)) // loud
+	before := tr.persistCount()
+	tr.Observe(cpHost, webFilterStatus(clock.Advance(blockLastSeenPersistEvery-time.Nanosecond))) // quiet
+	if tr.persistCount() != before {
+		t.Fatal("switch one nanosecond inside the window was written at once")
+	}
+	tr.Observe(cpHost, certStatus(clock.Advance(time.Nanosecond))) // exactly loudAt+window: loud
+	if tr.persistCount() != before+1 {
+		t.Fatal("switch exactly one window after the loud one was not written at once")
+	}
+}
+
 // Wiring: a certificate failure that follows a filter failure must not
 // refresh the watchdog's blocked-liveness marker, also on the throttled
 // (quiet) supersede path of an alternating stream.
