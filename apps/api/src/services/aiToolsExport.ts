@@ -58,7 +58,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('export_dataset', {
     tier: 1,
     domain: 'admin',
-    searchHint: 'dataset file exports: logs, inventory, metrics, vulnerabilities, reliability, boot, hardware, service checks',
+    searchHint: 'dataset exports: logs, inventory, metrics, vulnerabilities, reliability, boot, hardware, alerts, patches, change log',
     captureExempt: true,
     // The central gate runs org+site verifyDeviceAccess on every id here
     // BEFORE this handler is entered. The run-target check below is a second,
@@ -67,9 +67,10 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'export_dataset',
       description:
-        // ≤ 300 chars (description-budget contract): the names fill it, so the
-        // per-dataset rules live on the `dataset` and `filters` parameters.
-        "Export a dataset to a file handle for workspace_stage: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields, reliability_scores, reliability_history, reliability_events, boot_performance, hardware_events, service_checks. Rules: see dataset, filters.",
+        // ≤ 300 chars (description-budget contract): the 17 names fill it, so
+        // they are comma-joined without spaces, and the per-dataset rules live
+        // on the `dataset` and `filters` parameters and in each result's notes.
+        'Export for workspace_stage: event_logs,agent_logs,device_inventory,software_inventory,metrics,vulnerabilities,custom_fields,reliability_scores,reliability_history,reliability_events,boot_performance,hardware_events,service_checks,alerts,patch_state,patch_attempts,change_log. See dataset, filters.',
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -545,11 +545,11 @@ describe('the real producer and the real handler (#11845 review)', () => {
     // Exact, derived from the setup: the grantor's role and the grant's pinned
     // revision both hold devices:read and devices:execute (PERMS), and the
     // ceiling is their intersection. resolveExportGrants therefore grants every
-    // dataset in EXPORT_DATASET_REQUIREMENTS declaration order (each needs only
-    // devices:read), and holds the one declared gate, security_events (the
-    // event_logs gate, needs devices:execute). No dataset declares
-    // user_account_changes, so it is never held. A new dataset or gate must
-    // change this literal on purpose.
+    // devices:read dataset in EXPORT_DATASET_REQUIREMENTS declaration order,
+    // and holds both declared gates (each needs devices:execute):
+    // security_events (event_logs) and user_account_changes (change_log).
+    // `alerts` needs alerts:read, which PERMS does not hold, so it is absent.
+    // A new dataset or gate must change this literal on purpose.
     expect(staged.exportGrants).toEqual({
       datasets: [
         'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
@@ -557,8 +557,10 @@ describe('the real producer and the real handler (#11845 review)', () => {
         // W04: the reliability datasets, each devices:read.
         'reliability_scores', 'reliability_history', 'reliability_events',
         'boot_performance', 'hardware_events', 'service_checks',
+        // W05: devices:read (alerts is alerts:read, see above).
+        'patch_state', 'patch_attempts', 'change_log',
       ],
-      sensitiveGates: ['security_events'],
+      sensitiveGates: ['security_events', 'user_account_changes'],
     });
   });
 
