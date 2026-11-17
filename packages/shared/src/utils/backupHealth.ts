@@ -106,7 +106,11 @@ export function mapBackupJobStatus(
  * exactly how two surfaces come to disagree about how many of a customer's
  * devices are failing.
  *
- * Order is render order. `other` is the sixth bucket and exists to make the
+ * `overdue` (#12025) holds `completed` rows whose newest success is past the
+ * 48-hour "recent" line. It is the one bucket chosen by row, not by status;
+ * see `bucketForBackupRow`. Like `other`, UIs render it only when non-zero.
+ *
+ * Order is render order. `other` is the last bucket and exists to make the
  * mapping TOTAL over `EXTERNAL_BACKUP_STATUSES` — a status belonging to no
  * bucket would silently vanish from a chart whose percentages still summed to
  * 100%. It collects `not_started` (the vendor knows the device but no run has
@@ -118,6 +122,7 @@ export function mapBackupJobStatus(
 export const BACKUP_STATUS_BUCKET_IDS = [
   'no_backups',
   'completed',
+  'overdue',
   'completed_with_errors',
   'in_progress',
   'unsuccessful',
@@ -126,10 +131,15 @@ export const BACKUP_STATUS_BUCKET_IDS = [
 
 export type BackupStatusBucketId = (typeof BACKUP_STATUS_BUCKET_IDS)[number];
 
-/** Every `ExternalBackupStatus` lands in exactly one bucket; asserted in `backupHealth.test.ts`. */
+/**
+ * Every `ExternalBackupStatus` lands in exactly one bucket; asserted in
+ * `backupHealth.test.ts`. `overdue` has no static members: no status means
+ * overdue on its own. A row lands there through {@link bucketForBackupRow}.
+ */
 export const BACKUP_STATUS_BUCKET_MEMBERS: Record<BackupStatusBucketId, readonly ExternalBackupStatus[]> = {
   no_backups: ['no_backups'],
   completed: ['completed'],
+  overdue: [],
   completed_with_errors: ['completed_with_errors'],
   in_progress: ['in_progress'],
   unsuccessful: ['failed', 'over_quota', 'no_selection', 'interrupted'],
@@ -153,6 +163,34 @@ const BUCKET_BY_STATUS: ReadonlyMap<ExternalBackupStatus, BackupStatusBucketId> 
  */
 export function bucketForBackupStatus(status: ExternalBackupStatus): BackupStatusBucketId {
   return BUCKET_BY_STATUS.get(status) ?? 'other';
+}
+
+/**
+ * "The last session completed, but that was too long ago" (#12025).
+ *
+ * `completed` is the status of the device's LAST session, whenever it ran. A
+ * device whose last session completed eight months ago is still `completed`,
+ * so on its own the status reads as fine. Its newest success is past the
+ * critical threshold (`over_48h`, the same 48 hours the overview calls
+ * "recent"), or there is none, so it is overdue.
+ *
+ * Only `completed` can be overdue. Every other status already sits in a bucket
+ * that says it needs a look. `completed_with_errors` is left out on purpose:
+ * vendors disagree on whether such a session advances `lastSuccessAt`, so its
+ * recency is not a safe signal that no backup ran.
+ */
+export function isOverdueBackup(row: { status: ExternalBackupStatus; recency: BackupRecency }): boolean {
+  return row.status === 'completed' && (row.recency === 'over_48h' || row.recency === 'never');
+}
+
+/**
+ * The Status bucket one ROW renders in. This is {@link bucketForBackupStatus},
+ * plus the one bucket that needs recency: an overdue `completed` row goes to
+ * `overdue`, so the Status card stops counting a months-stale device as
+ * "Completed".
+ */
+export function bucketForBackupRow(row: { status: ExternalBackupStatus; recency: BackupRecency }): BackupStatusBucketId {
+  return isOverdueBackup(row) ? 'overdue' : bucketForBackupStatus(row.status);
 }
 
 /** Statuses whose verdict is fixed by the status alone. */

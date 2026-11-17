@@ -27,6 +27,7 @@ import {
 export const STATUS_CLASS: Record<BackupStatusBucketId, string> = {
   no_backups: 'bg-slate-400',
   completed: 'bg-emerald-500',
+  overdue: 'bg-orange-500',
   completed_with_errors: 'bg-amber-500',
   in_progress: 'bg-sky-500',
   unsuccessful: 'bg-red-500',
@@ -60,7 +61,9 @@ export const HEALTH_DOT_CLASS: Record<BackupHealth, string> = {
   unknown: 'bg-slate-400',
 };
 
-/** `none` is a day with NO observation — grey, and never green. */
+/** `none` is a day with NO observation — grey, and never green. `no_backups`
+ *  is a day that WAS observed with no backup, including a provider day polled
+ *  with no new session (#12025). It is a miss, so it is orange, not grey. */
 export const HISTORY_CELL_CLASS: Record<ExternalBackupStatus | 'none', string> = {
   none: 'bg-muted',
   completed: 'bg-emerald-500',
@@ -71,7 +74,7 @@ export const HISTORY_CELL_CLASS: Record<ExternalBackupStatus | 'none', string> =
   failed: 'bg-red-500',
   over_quota: 'bg-red-400',
   no_selection: 'bg-red-300',
-  no_backups: 'bg-slate-400',
+  no_backups: 'bg-orange-500',
   unknown: 'bg-slate-300',
   paused: 'bg-amber-300',
 };
@@ -80,18 +83,27 @@ function percentOf(count: number, total: number): number {
   return total === 0 ? 0 : Math.round((count / total) * 100);
 }
 
+/**
+ * `byStatusBucket` is the API's per-row fold (`bucketForBackupRow`), which
+ * moves overdue `completed` rows into `overdue` (#12025). Folding `byStatus`
+ * here is only the fallback for a summary from an API that predates it.
+ */
 export function statusBuckets(
   byStatus: BackupHealthSummary['byStatus'],
+  byStatusBucket?: BackupHealthSummary['byStatusBucket'],
 ): Array<{ id: BackupStatusBucketId; count: number; percent: number; className: string }> {
   const counted = STATUS_BUCKETS.map((bucket) => ({
     ...bucket,
-    count: bucket.statuses.reduce((sum, status) => sum + (byStatus[status] ?? 0), 0),
+    count: byStatusBucket
+      ? (byStatusBucket[bucket.id] ?? 0)
+      : bucket.statuses.reduce((sum, status) => sum + (byStatus[status] ?? 0), 0),
   }));
   const total = counted.reduce((sum, bucket) => sum + bucket.count, 0);
   return counted
     // The five named buckets always render, so the bar group does not reflow as
-    // a fleet changes shape. `other` appears only when it has something to say.
-    .filter((bucket) => bucket.id !== 'other' || bucket.count > 0)
+    // a fleet changes shape. `overdue` and `other` appear only when they have
+    // something to say.
+    .filter((bucket) => (bucket.id !== 'other' && bucket.id !== 'overdue') || bucket.count > 0)
     .map(({ id, count, className }) => ({ id, count, className, percent: percentOf(count, total) }));
 }
 

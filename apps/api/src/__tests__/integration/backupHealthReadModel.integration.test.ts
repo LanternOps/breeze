@@ -10,6 +10,7 @@ import {
   backupJobs,
   backupProviderConnections,
   backupProviderCustomers,
+  backupProviderDeviceHistory,
   backupProviderDevices,
   devices,
 } from '../../db/schema';
@@ -341,6 +342,60 @@ describe('backupHealthReadModel against real policies', () => {
     await withDbAccessContext(fx.partnerContext, async () => {
       const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
       expect(rows.some((r) => r.deviceId === fx.deviceTwoId && r.status === 'no_backups')).toBe(true);
+    });
+  });
+
+  runDb('a provider device re-polled with an unchanged old success shows missed days, not green ones (#12025)', async () => {
+    const fx = await seedFixture();
+    const now = new Date();
+    const stale = new Date(now.getTime() - 200 * 86_400_000);
+    const dayAgo = (n: number) => new Date(now.getTime() - n * 86_400_000).toISOString().slice(0, 10);
+    const [template] = await withSystemDbAccessContext(() =>
+      db
+        .select({ connectionId: backupProviderDevices.connectionId, customerId: backupProviderDevices.customerId })
+        .from(backupProviderDevices)
+        .where(eq(backupProviderDevices.orgId, fx.org.id))
+        .limit(1),
+    );
+    const [device] = await withSystemDbAccessContext(() =>
+      db.insert(backupProviderDevices).values({
+        connectionId: template!.connectionId,
+        partnerId: fx.partner.id,
+        orgId: fx.org.id,
+        customerId: template!.customerId,
+        provider: 'cove',
+        vendorDeviceId: `vd-stale-${randomUUID().slice(0, 8)}`,
+        vendorDeviceName: 'BH-RM-STALE',
+        breezeDeviceId: null,
+        status: 'completed',
+        lastSuccessAt: stale,
+        lastSessionAt: stale,
+      }).returning({ id: backupProviderDevices.id }),
+    );
+    // What the sync stored before the fix: the stale snapshot's `completed`
+    // once per polled day, carrying the same old lastSuccessAt.
+    await withSystemDbAccessContext(() =>
+      db.insert(backupProviderDeviceHistory).values(
+        [3, 2, 1, 0].map((n) => ({
+          providerDeviceId: device!.id,
+          orgId: fx.org.id,
+          day: dayAgo(n),
+          status: 'completed' as const,
+          lastSuccessAt: stale,
+        })),
+      ),
+    );
+
+    await withDbAccessContext(fx.orgContext, async () => {
+      const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
+      const row = rows.find((r) => r.name === 'BH-RM-STALE');
+      expect(row).toBeDefined();
+      const cells = new Map(row!.history28d.map((c) => [c.day, c.status]));
+      expect(cells.get(dayAgo(3))).toBe('no_backups');
+      expect(cells.get(dayAgo(2))).toBe('no_backups');
+      expect(cells.get(dayAgo(1))).toBe('no_backups');
+      expect(cells.get(dayAgo(0))).toBeNull();
+      expect(row!.history28d.some((c) => c.status === 'completed')).toBe(false);
     });
   });
 });

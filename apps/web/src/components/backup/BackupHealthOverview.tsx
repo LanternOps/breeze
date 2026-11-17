@@ -159,7 +159,7 @@ export default function BackupHealthOverview({ orgId }: { orgId: string | null }
             <BarGroup
               title={t('backupHealth.statusTitle')}
               testIdPrefix="backup-health-status"
-              buckets={statusBuckets(summary.byStatus)}
+              buckets={statusBuckets(summary.byStatus, summary.byStatusBucket)}
               label={(id) => t(/* i18n-dynamic */ `backupHealth.status.${id}`)}
             />
             <BarGroup
