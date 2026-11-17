@@ -539,3 +539,58 @@ describe('AiRunCard (spec §5.5)', () => {
     });
   });
 });
+
+describe('analysis chain surface (W06)', () => {
+  const chain = [{ id: 'r0', step: 1 }, { id: 'r1', step: 2 }, { id: RUN, step: 3 }];
+
+  it('shows the step only when the run is in a chain', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', chainDepth: 2, chain }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-step')).textContent).toContain('aiRunCard.chainStep');
+  });
+
+  it('omits the step for an unchained run and for an API that predates the field', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', chainDepth: 0, chain: null }));
+    const a = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    await a.findByTestId('ai-run-card-summary');
+    expect(a.queryByTestId('ai-run-card-step')).toBeNull();
+    a.unmount();
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis' })); // no chain keys at all
+    const b = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    await b.findByTestId('ai-run-card-summary');
+    expect(b.queryByTestId('ai-run-card-step')).toBeNull();
+  });
+
+  it('shows the goal, the findings count with the high count, and the settled cost', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', analysisGoal: 'correlate BSODs',
+      analysis: { summary: 's', artifactHandles: [], proposedActions: [],
+        findings: [{ severity: 'high' }, { severity: 'low' }, { severity: 'info' }] } }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-goal')).textContent).toContain('aiRunCard.goal');
+    const findings = (await findByTestId('ai-run-card-findings')).textContent!;
+    expect(findings).toContain('aiRunCard.findings:3');
+    expect(findings).toContain('aiRunCard.findingsHigh:1');
+    expect((await findByTestId('ai-run-card-cost')).textContent).toMatch(/0\.19/); // (12 + 7) cents
+  });
+
+  it('omits the high count when no finding is high', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis',
+      analysis: { summary: 's', artifactHandles: [], proposedActions: [], findings: [{ severity: 'low' }] } }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-findings')).textContent).not.toContain('findingsHigh');
+  });
+
+  it('lists only unexpired output files for an analysis run', async () => {
+    const future = '2099-01-01T00:00:00.000Z'; const past = '2020-01-01T00:00:00.000Z';
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', artifacts: [
+      { id: 'o1', name: 'bsod_by_driver.csv', bytes: 14336, contentType: 'text/csv', kind: 'output', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/o1' },
+      { id: 'o2', name: 'old.csv', bytes: 10, contentType: 'text/csv', kind: 'output', expiresAt: past, downloadPath: '/api/v1/ai/artifacts/o2' },
+      { id: 'x1', name: 'export.jsonl', bytes: 10, contentType: 'application/jsonl', kind: 'input_capture', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/x1' },
+      { id: 's1', name: 'step-1.py', bytes: 10, contentType: 'text/x-python', kind: 'step_script', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/s1' },
+    ] }));
+    const { findByTestId, queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-artifact-o1')).getAttribute('href')).toBe('/api/v1/ai/artifacts/o1');
+    for (const id of ['o2', 'x1', 's1']) expect(queryByTestId(`ai-run-card-artifact-${id}`)).toBeNull();
+    expect(queryByTestId('ai-run-card-files')).not.toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import { CeremonyError, decideIntentApproval, isNoApproverDeviceError } from '@/
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { downloadArtifact } from '@/lib/downloadArtifact';
+import { formatCurrency } from '@/lib/i18n/format';
 import type { ChatRunProgressEntry, ChatRunState } from '@/stores/processStreamEvent';
 
 /** Poll cadence, matching the run detail page's DETAIL_POLL_INTERVAL_MS. */
@@ -18,6 +19,8 @@ interface PolledArtifact {
   bytes: number;
   contentType: string;
   downloadPath: string;
+  kind?: string;
+  expiresAt?: string;
 }
 
 interface PolledRun {
@@ -34,6 +37,11 @@ interface PolledRun {
   profile?: string;
   /** Set for a run launched under a Wisp grant. */
   wisp?: { grantorName: string | null } | null;
+  /** Analysis chain fields; any may be absent when the web is ahead of the API. */
+  chainDepth?: number;
+  chain?: Array<{ id: string; step: number }> | null;
+  analysisGoal?: string | null;
+  analysis?: { findings: Array<{ severity: string }> } | null;
 }
 
 interface PolledIntent {
@@ -201,8 +209,16 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   }, [runId, liveSettled, pollNonce]);
 
   const summary = polled?.summary ?? run?.summary ?? null;
-  const artifacts: PolledArtifact[] = polled?.artifacts
-    ?? (run?.artifacts ?? []).map((a) => ({
+  const polledArtifacts = polled?.artifacts;
+  // An analysis run's card lists only its unexpired output files; an expired
+  // artifact would 404 on download (the run page shows it as expired).
+  const artifacts: PolledArtifact[] = polledArtifacts
+    ? polled?.profile === 'analysis'
+      ? polledArtifacts.filter(
+          (a) => a.kind === 'output' && (!a.expiresAt || Date.parse(a.expiresAt) > Date.now()),
+        )
+      : polledArtifacts
+    : (run?.artifacts ?? []).map((a) => ({
       id: a.handle,
       name: a.name,
       bytes: a.bytes,
@@ -260,6 +276,15 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
     }
   };
 
+  const inChain = (polled?.chain?.length ?? 0) > 1;
+  const chainStep = (polled?.chainDepth ?? 0) + 1;
+  const costLabel = runIsTerminal
+    ? formatCurrency(((polled?.costCents ?? 0) + (polled?.computeCents ?? 0)) / 100)
+    : null;
+  const analysisGoal = polled?.analysisGoal ?? null;
+  const findings = polled?.analysis?.findings ?? null;
+  const highFindings = findings ? findings.filter((f) => f.severity === 'high').length : 0;
+
   const showContinue = onContinue !== undefined
     && polled?.profile === 'device_troubleshooting'
     && isSettled(status);
@@ -284,10 +309,33 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
           className={`h-3.5 w-3.5 ${status === 'failed' ? 'text-red-600' : status === 'completed' ? 'text-green-600' : spinning ? 'animate-spin text-gray-500' : 'text-gray-500'}`}
         />
         <span>{t('aiRunCard.title')}</span>
+        {inChain && (
+          <span data-testid="ai-run-card-step" className="text-muted-foreground">
+            · {t('aiRunCard.chainStep', { step: chainStep })}
+          </span>
+        )}
         <span data-testid="ai-run-card-status" className="text-muted-foreground">
           {t(/* i18n-dynamic */ `aiRunCard.status.${status}`, status)}
         </span>
+        {costLabel !== null && (
+          <span data-testid="ai-run-card-cost" className="text-muted-foreground">
+            · {costLabel}
+          </span>
+        )}
       </div>
+
+      {analysisGoal && (
+        <p data-testid="ai-run-card-goal" className="mt-2 text-xs">
+          {t('aiRunCard.goal', { goal: analysisGoal })}
+        </p>
+      )}
+
+      {findings && (
+        <p data-testid="ai-run-card-findings" className="mt-1 text-xs">
+          {t('aiRunCard.findings', { count: findings.length })}
+          {highFindings > 0 && <> {t('aiRunCard.findingsHigh', { count: highFindings })}</>}
+        </p>
+      )}
 
       {progress.length > 0 && (
         <ol data-testid="ai-run-card-progress" className="mt-2 space-y-0.5 text-xs text-muted-foreground">
@@ -360,7 +408,8 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
       )}
 
       {artifacts.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div data-testid="ai-run-card-files" className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">{t('aiRunCard.files')}</span>
           {artifacts.map((a) => (
             <a
               key={a.id}

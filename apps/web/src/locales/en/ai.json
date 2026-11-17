@@ -621,7 +621,12 @@
       "waitingForApprover": "Waiting for an approver"
     },
     "continue": "Continue",
-    "continueMessage": "Continue troubleshooting run {{runId}}."
+    "continueMessage": "Continue troubleshooting run {{runId}}.",
+    "chainStep": "Step {{step}} of this investigation",
+    "goal": "Goal: {{goal}}",
+    "findings": "Findings: {{count}}",
+    "findingsHigh": "({{count}} high)",
+    "files": "Files:"
   },
   "aiModelPicker": {
     "chooseModel": "Choose a model",

@@ -621,7 +621,12 @@
       "waitingForApprover": "En attente d'un approbateur"
     },
     "continue": "Continuer",
-    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}."
+    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}.",
+    "chainStep": "Étape {{step}} de cette investigation",
+    "goal": "Objectif : {{goal}}",
+    "findings": "Constats : {{count}}",
+    "findingsHigh": "({{count}} de gravité élevée)",
+    "files": "Fichiers :"
   },
   "aiModelPicker": {
     "chooseModel": "Choisir un modèle",
