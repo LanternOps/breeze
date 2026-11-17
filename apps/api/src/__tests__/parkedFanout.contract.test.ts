@@ -149,6 +149,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/vulnerabilityDetailReadModel.ts': 'read model: portal vulnerability detail',
   'services/portal/securityReadModel.ts': 'read model: portal security',
   'services/reportGenerationService.ts': 'report: per-org report builders',
+  'services/securityComplianceReport.ts': 'report: the posture report counts the org\'s managed devices (managedDeviceConditions, parked excluded) to state how many its site filter left out (#12044); selects no targets',
   'services/reportScope.ts': 'report: scope (already excludes the holding org)',
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',

@@ -139,7 +139,16 @@ const sendTest = async (
   });
 
   if (!response.ok) {
-    throw new Error(errorMessage);
+    // The API says why a test failed (rejected webhook, unreachable host, no
+    // deliverable destination); show that rather than a generic message.
+    let reason: string | undefined;
+    try {
+      const data = await response.json();
+      if (data && typeof data.error === "string" && data.error) reason = data.error;
+    } catch {
+      // Non-JSON error body: fall back to the generic message.
+    }
+    throw new Error(reason ?? errorMessage);
   }
 };
 
@@ -467,7 +476,7 @@ export default function CommunicationIntegrations() {
       );
       setDiscordStatus({
         tone: "success",
-        message: t("communicationIntegrations.discordTestNotificationQueued"),
+        message: t("communicationIntegrations.discordTestNotificationSent"),
       });
     } catch (err) {
       setDiscordStatus({

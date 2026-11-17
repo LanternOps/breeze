@@ -19,6 +19,7 @@ import {
 } from '../services/monitoringIntegrationTest';
 import { PERMISSIONS } from '../services/permissions';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
+import { sendDiscordTestNotification } from '../services/chatIntegrationTest';
 import { safeFetch } from '../services/urlSafety';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 
@@ -187,7 +188,50 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
     communicationSettings.set(orgResult.orgId, updated);
 
     if (body.test === true) {
-      return c.json({ success: true, message: `${provider} test notification queued.` });
+      // #12054: this used to answer "test notification queued." without
+      // sending or queueing anything. Report the outcome of a real attempt.
+      if (provider !== 'discord') {
+        // The Slack (workspace/channel) and Teams (app registration) fields
+        // stored here carry no webhook or bot token, so there is nothing a test
+        // could deliver to. Say so instead of claiming success.
+        const label = provider === 'slack' ? 'Slack' : 'Teams';
+        writeRouteAudit(c, {
+          orgId: orgResult.orgId,
+          action: `integration.${provider}.test`,
+          resourceType: 'integration',
+          resourceName: provider,
+          details: { outcome: 'unsupported' },
+        });
+        return c.json({
+          success: false,
+          error: `${label} test notifications cannot be sent from these settings. To deliver alerts to ${label}, `
+            + `add a ${label} notification channel in Settings > Notification Channels and test it there.`,
+        }, 422);
+      }
+
+      const webhook = openStoredIntegrationSecret(
+        protectedBody.value.webhookUrl,
+        `communication.${provider}`,
+        orgResult.orgId,
+        ['webhookUrl'],
+        'Discord webhook URL',
+      );
+      const result = webhook.ok
+        ? await sendDiscordTestNotification(webhook.value, { fetch: safeFetch })
+        : { ok: false as const, kind: 'invalid' as const, message: webhook.error };
+
+      writeRouteAudit(c, {
+        orgId: orgResult.orgId,
+        action: `integration.${provider}.test`,
+        resourceType: 'integration',
+        resourceName: provider,
+        details: { outcome: result.ok ? 'ok' : (!webhook.ok && webhook.unreadable ? 'secret_unreadable' : result.kind) },
+      });
+
+      if (!result.ok) {
+        return c.json({ success: false, error: result.message }, result.kind === 'unreachable' ? 502 : 400);
+      }
+      return c.json({ success: true, message: result.message });
     }
 
     writeRouteAudit(c, {
@@ -282,7 +326,7 @@ function resolveMaskedMonitoringSecrets(
 
   const resolved: Record<string, unknown> = { ...config };
   for (const field of maskedTopLevelFields) {
-    const opened = openStoredMonitoringSecret(storedRecord[field], orgId, [provider, field], `${provider} ${field}`);
+    const opened = openStoredIntegrationSecret(storedRecord[field], 'monitoring', orgId, [provider, field], `${provider} ${field}`);
     if (!opened.ok) return opened;
     resolved[field] = opened.value;
   }
@@ -302,8 +346,9 @@ function resolveMaskedMonitoringSecrets(
           ? storedEndpoints.find((s) => !!s && typeof s === 'object' && (s as Record<string, unknown>).id === id)
           : undefined;
         const storedUrl = stored ? (stored as Record<string, unknown>).url : undefined;
-        const opened = openStoredMonitoringSecret(
+        const opened = openStoredIntegrationSecret(
           storedUrl,
+          'monitoring',
           orgId,
           ['webhooks', 'endpoints', `id:${JSON.stringify(id ?? '')}`, 'url'],
           'webhook endpoint URL',
@@ -318,8 +363,9 @@ function resolveMaskedMonitoringSecrets(
   return { ok: true, config: resolved };
 }
 
-function openStoredMonitoringSecret(
+function openStoredIntegrationSecret(
   sealed: unknown,
+  family: string,
   orgId: string,
   path: readonly string[],
   label: string,
@@ -331,7 +377,7 @@ function openStoredMonitoringSecret(
   // decryptSecret THROWS on an AAD mismatch, a retired key id or corrupt
   // ciphertext; it only returns null for an empty input, excluded above.
   try {
-    const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, path) });
+    const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad(family, orgId, path) });
     if (!plaintext) return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
     return { ok: true, value: plaintext };
   } catch (err) {
@@ -341,7 +387,7 @@ function openStoredMonitoringSecret(
     // rotation, or a swapped blob). Name and message only — never the value.
     const name = err instanceof Error ? err.name : 'Error';
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[integrations] monitoring secret ${path.join('.')} unreadable for org ${orgId}: ${name}: ${message}`);
+    console.warn(`[integrations] ${family} secret ${path.join('.')} unreadable for org ${orgId}: ${name}: ${message}`);
     return { ok: false, error: `Stored ${label} could not be read; re-enter it and save`, unreadable: true };
   }
 }

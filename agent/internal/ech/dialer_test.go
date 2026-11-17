@@ -386,7 +386,10 @@ func TestDial_SignatureThresholdThenECH(t *testing.T) {
 	if !tc.ConnectionState().ECHAccepted {
 		t.Fatal("third dial: ECHAccepted = false")
 	}
-	want := HostStatus{Mode: ModeECH, ECHActive: true, FilterSignatureSeenAt: dialT0.Add(2 * time.Minute), LastECHAcceptedAt: dialT0.Add(2 * time.Minute)}
+	want := HostStatus{Mode: ModeECH, ECHActive: true, FilterSignatureSeenAt: dialT0.Add(2 * time.Minute), LastECHAcceptedAt: dialT0.Add(2 * time.Minute),
+		// #8868: the filter's 302 (startFilterListener) is kept as evidence;
+		// only the host leaves the dialer, never the /warn path.
+		Evidence: BlockEvidence{Kind: BlockWebFilter, HTTPStatus: 302, LocationHost: "example.invalid", SeenAt: dialT0.Add(2 * time.Minute)}}
 	if got := d.Status(dialHost); got != want {
 		t.Fatalf("Status = %+v, want %+v", got, want)
 	}

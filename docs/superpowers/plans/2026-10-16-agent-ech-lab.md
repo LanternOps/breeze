@@ -4,7 +4,10 @@ Manual checks for a build of the agent that includes ECH. Use `<region>.example`
 
 Strings to grep:
 
-- WARN `control plane answered the TLS handshake with plaintext HTTP; a network security filter is likely intercepting this host`
+- WARN `control plane answered the TLS handshake with plaintext HTTP; a network security filter is likely intercepting this host` (fields `host`, `kind`, `http_status`, `location_host`; #8868)
+- WARN `control plane presented a TLS certificate this device does not trust; TLS inspection or a broken certificate chain is likely` (fields `host`, `kind=untrusted_certificate`, `cert_issuer`; once per streak; #8868)
+- INFO `control-plane block episode started` / `control-plane block cleared` (fields `kind`, `cleared_by`; #8868)
+- WARN `control plane blocked by a network filter; recording liveness marker` (once per streak; the watchdog then journals `check.heartbeat_stale_control_plane_blocked` instead of restarting the agent; #8868)
 - INFO `ech mode changed` (fields `from`, `to`: plain, ech, cooldown)
 - DEBUG `ech dial attempt` (fields `attempt`: plain / ech / plain-fallback, `result` or `error`)
 - DEBUG `ech config fetch failed`, `ech one-shot config fetch failed`
@@ -30,11 +33,24 @@ Preconditions: a lab host with a built agent, enrolled against a lab server. A l
 
 Expected:
 
-- The WARN filter line fires on the first filter signature (once per streak). The INFO `ech mode changed ... to ech` line comes with the second signature, more than 30 s later and within 10 min.
+- The WARN filter line fires on the first filter signature (once per streak), with `kind=web_filter http_status=302 location_host=blocked.example`. No log line or file anywhere carries the Location path or query.
+- `heartbeat` component message: `control plane blocked by a network security filter (blocked.example)` instead of the raw `tls: first record does not look like a TLS handshake`.
+- `control-plane-block.json` appears in the agent data dir (mode 0600) with an `active` episode. Once any transport delivers a beat (ECH, the backup URL), the request body carries `controlPlaneBlock: {kind: "web_filter", host, firstSeenAt, lastSeenAt, httpStatus: 302, locationHost: "blocked.example"}`. An API without W2 strips the key; check the request in the API's debug log or a proxy.
+- `agent.state` gains `control_plane_blocked_at`, refreshed on every failing tick; the watchdog does not restart the agent while it stays fresh.
+- Stop the listener (so the real server answers): the next beat carries the episode with `clearedAt` and `clearedBy: "plain_success"`; after that beat's 200, `control-plane-block.json` is removed and no later beat carries `controlPlaneBlock`. The INFO `ech mode changed ... to ech` line comes with the second signature, more than 30 s later and within 10 min.
 - `control_plane`: agent log status `degraded`; device health observation / API `state: "warning"`, with the filter reason.
 - A DoH lookup finds no `ech=` record for this name, so `ech-cache.json` in the agent data dir never appears, and each failure is one fetch only; after 3 failures `ech mode changed ... to cooldown`, health reason stays the filter string while the listener keeps answering (every blocked dial refreshes the signature, and the filter row outranks cooldown); stop the listener and the cooldown string `encrypted client hello unavailable; retrying later` appears once 10 min pass without a signature. No DoH spin between dials.
 
 Rollback: restore `server_url`, stop the listener, restart the agent (mode is in memory; restart is plain).
+
+## 1b. Captive portal and untrusted certificate (#8868)
+
+Same setup as §1, with a different listener each time.
+
+- **Captive portal**: answer with `HTTP/1.1 511 Network Authentication Required\r\nContent-Length: 0\r\n\r\n`. Expect `kind=captive_portal http_status=511`, the `heartbeat` message `control plane held by a captive portal`, and the `controlPlaneBlock` kind `captive_portal`.
+- **Untrusted certificate**: serve real TLS with a self-signed certificate for the lab name whose issuer Organization is `Example Inspect CA` (for example `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/O=Example Inspect CA/CN=<lab-edge>.example" -addext "subjectAltName=DNS:<lab-edge>.example" ...` and `openssl s_server -accept 443 -www`). Expect exactly one WARN with `kind=untrusted_certificate cert_issuer="Example Inspect CA"`, the `heartbeat` message `control plane certificate not trusted (issuer: Example Inspect CA)`, the `controlPlaneBlock` kind `untrusted_certificate`, **no** `ech mode changed` line (an untrusted certificate never engages ECH and is never bypassed), and **no** `control_plane_blocked_at` in `agent.state` (the watchdog may still restart the agent).
+- **Restart mid-episode**: with the §1 listener running, restart the agent service; `control-plane-block.json` survives and the episode keeps its `firstSeenAt`. Then stop the listener: the episode clears (`plain_success`) and is delivered once.
+- Run each of these on Windows and macOS too: the untrusted-certificate case goes through the platform verifier there (CryptoAPI / Security.framework), not Go's, and must still classify as `untrusted_certificate`.
 
 ## 2. Hosted, blocked customer PC (real ECH)
 
