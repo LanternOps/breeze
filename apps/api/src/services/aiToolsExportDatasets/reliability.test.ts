@@ -24,7 +24,7 @@ vi.mock('../aiToolsExportShared', async (importOriginal) => {
   };
 });
 
-import { reliabilityScoresAdapter } from './reliability';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter } from './reliability';
 
 const NOW = new Date('2026-11-13T12:00:00.000Z');
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -157,3 +157,63 @@ describe('reliability_scores', () => {
   });
 });
 
+
+const historyRow = (n: number, text = '2026-11-10 00:00:00.123456') => ({
+  id: id(100 + n), deviceId: D1, collectedAt: new Date('2026-11-10T00:00:00.123Z'), collectedAtText: text,
+  bootTime: new Date('2026-11-01T00:00:00Z'), uptimeSeconds: 1000,
+  crashCount: 1, appHangCount: 2, serviceFailureCount: 3, hardwareErrorCount: 4,
+});
+
+describe('reliability_history', () => {
+  it('one keyset query: org, device set as one uuid[] param, 30-day default window, desc order', async () => {
+    const { sql, params } = await firstQuery(reliabilityHistoryAdapter, req({}));
+    expect(sql).toMatch(/"org_id" = \$\d+/);
+    expect(sql).toMatch(/"device_id" = ANY\(\$\d+::uuid\[\]\)/);
+    expect(params).toContainEqual([D1]);
+    expect(sql).toMatch(/order by .*"collected_at" desc, .*"id" desc/i);
+    expect(params).toContain(new Date('2026-10-14T12:00:00.000Z').toISOString());
+    expect(params).toContain(501);
+  });
+
+  it('counts are guarded against a non-array jsonb and raw_metrics is not selected', async () => {
+    const { sql } = await firstQuery(reliabilityHistoryAdapter, req({}));
+    expect(sql).toContain('jsonb_typeof');
+    expect(sql).not.toContain('"raw_metrics"');
+    expect(sql).toContain("jsonb_array_length");
+  });
+
+  it('cursor carries collected_at::text and the next page uses keysetBefore', async () => {
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValueOnce([historyRow(1), historyRow(2, '2026-11-09 00:00:00')]).mockResolvedValueOnce([]);
+    const pager = await reliabilityHistoryAdapter.createPager(req({}, { pageSize: 1 }));
+    const first = await pager(null);
+    expect(first.nextCursor).not.toBeNull();
+    await pager(first.nextCursor);
+    const second = compiled(1);
+    expect(second.sql).toMatch(/<= \$\d+::timestamp AND \(/);
+    expect(second.params).toContain('2026-11-10 00:00:00.123456');
+  });
+
+  it('row shape and hostname', async () => {
+    const [row] = await allRows(reliabilityHistoryAdapter, [historyRow(1)]);
+    expect(Object.keys(row!)).toEqual([
+      'id', 'deviceId', 'hostname', 'collectedAt', 'bootTime', 'uptimeSeconds',
+      'crashCount', 'appHangCount', 'serviceFailureCount', 'hardwareErrorCount',
+    ]);
+    expect(row!.hostname).toBe(`h-${D1}`);
+    expect(row!.collectedAt).toBe('2026-11-10T00:00:00.123Z');
+  });
+
+  it('empty device set yields nothing and runs no query', async () => {
+    exportDeviceSet.mockResolvedValue(scope([]));
+    expect(await (await reliabilityHistoryAdapter.createPager(req({})))(null)).toEqual({ rows: [], nextCursor: null });
+    expect(runExportQuery).not.toHaveBeenCalled();
+  });
+
+  it('a 181-day range is refused before any query', async () => {
+    const r = req({ timeRange: { start: '2026-01-01T00:00:00Z', end: '2026-11-01T00:00:00Z' } });
+    await expect(reliabilityHistoryAdapter.createPager(r)).rejects.toMatchObject({ code: 'invalid_time_range' });
+    expect(exportDeviceSet).not.toHaveBeenCalled();
+    expect(runExportQuery).not.toHaveBeenCalled();
+  });
+});

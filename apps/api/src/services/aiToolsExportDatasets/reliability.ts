@@ -8,10 +8,15 @@
  * site/device-scope contract scans credit a table read only to the named
  * function that also calls `exportDeviceSet`. Do not extract the query.
  */
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { db } from '../../db';
+import { deviceReliabilityHistory } from '../../db/schema';
 import { reliabilityExportPageQuery } from '../reliabilityScoring';
 import {
+  deviceIdIn,
   emptyExportPager,
   exportDeviceSet,
+  keysetBefore,
   keysetPager,
   noteOn,
   runExportQuery,
@@ -78,4 +83,67 @@ export const reliabilityScoresAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   createPager: createReliabilityScoresPager,
+};
+
+async function createReliabilityHistoryPager(req: DatasetRequest) {
+  const { start, end } = timeRangeFromFilters(req.filters);
+  const scope = await exportDeviceSet(req);
+  if (scope.deviceIds.length === 0) return emptyExportPager;
+
+  return keysetPager({
+    pageSize: req.pageSize,
+    shape: ['timestamp', 'uuid'],
+    fetch: async (after, limit) => {
+      const t = deviceReliabilityHistory;
+      // A bare `jsonb_array_length` raises on a non-array: a malformed row
+      // counts 0 instead of failing the page.
+      const count = (col: typeof t.crashEvents) =>
+        sql<number>`CASE WHEN jsonb_typeof(${col}) = 'array' THEN jsonb_array_length(${col}) ELSE 0 END`;
+      return await runExportQuery(
+        db
+          .select({
+            id: t.id,
+            deviceId: t.deviceId,
+            collectedAt: t.collectedAt,
+            // The keyset key: full microsecond precision, never a JS Date.
+            collectedAtText: sql<string>`${t.collectedAt}::text`,
+            bootTime: t.bootTime,
+            uptimeSeconds: t.uptimeSeconds,
+            crashCount: count(t.crashEvents),
+            appHangCount: count(t.appHangs),
+            serviceFailureCount: count(t.serviceFailures),
+            hardwareErrorCount: count(t.hardwareErrors),
+          })
+          .from(deviceReliabilityHistory)
+          .where(and(
+            eq(t.orgId, req.orgId),
+            deviceIdIn(t.deviceId, scope.deviceIds),
+            gte(t.collectedAt, start),
+            lte(t.collectedAt, end),
+            keysetBefore(t.collectedAt, t.id, after, 'timestamp'),
+          ))
+          .orderBy(desc(t.collectedAt), desc(t.id))
+          .limit(limit),
+      );
+    },
+    keyOf: (row) => [row.collectedAtText, row.id],
+    toRows: (rows) => rows.map((row) => ({
+      id: row.id,
+      deviceId: row.deviceId,
+      hostname: scope.hostnames.get(row.deviceId) ?? null,
+      collectedAt: row.collectedAt.toISOString(),
+      bootTime: row.bootTime.toISOString(),
+      uptimeSeconds: row.uptimeSeconds,
+      crashCount: Number(row.crashCount),
+      appHangCount: Number(row.appHangCount),
+      serviceFailureCount: Number(row.serviceFailureCount),
+      hardwareErrorCount: Number(row.hardwareErrorCount),
+    })),
+  });
+}
+
+export const reliabilityHistoryAdapter: DatasetAdapter = {
+  tier: 1,
+  deviceScoped: false,
+  createPager: createReliabilityHistoryPager,
 };
