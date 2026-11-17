@@ -30,7 +30,7 @@ describe('pickWispHeaderNotice: one notice, by priority', () => {
     expect(pickWispHeaderNotice({ wisp: wisp({ spentTodayCents: 10, budgetResetsAt: RESETS }), wideningAvailable: false, showRefreshHint: false, creditsExhausted: false })).toBeNull();
   });
 
-  it('spend without a reset instant is not enough for the budget notice (the meter needs both fields)', () => {
-    expect(pickWispHeaderNotice({ wisp: wisp({ spentTodayCents: 250 }), wideningAvailable: false, showRefreshHint: false, creditsExhausted: false })).toBeNull();
+  it('spend without a reset instant is enough for the budget notice, as for the rail (#10414: it names 00:00 UTC)', () => {
+    expect(pickWispHeaderNotice({ wisp: wisp({ spentTodayCents: 250 }), wideningAvailable: false, showRefreshHint: false, creditsExhausted: false })).toBe('budget');
   });
 });

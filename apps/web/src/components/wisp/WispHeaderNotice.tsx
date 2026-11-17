@@ -18,11 +18,13 @@ export type WispHeaderNoticeConditions = {
   creditsExhausted: boolean;
 };
 
-/** The day's budget is spent on a live grant (the meter's own rule: both A32 fields present). */
+/**
+ * The day's budget is spent on a live grant: the rail's `budgetReached` rule.
+ * No reset instant is needed; the warning then names 00:00 UTC (#10414).
+ */
 export function wispBudgetExhausted(wisp: Wisp): boolean {
   return wisp.status === 'active'
     && typeof wisp.spentTodayCents === 'number'
-    && typeof wisp.budgetResetsAt === 'string'
     && spendMeterState(wisp.spentTodayCents, wisp.budgetCentsPerDay) === 'exhausted';
 }
 

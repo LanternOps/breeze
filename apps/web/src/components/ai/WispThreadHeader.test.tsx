@@ -790,6 +790,12 @@ describe('WispThreadHeader (the docked pane\'s header)', () => {
     expect(screen.getByTestId('wisp-thread-header').textContent).not.toContain('Paused by Breeze');
   });
 
+  it('a spent budget with no reset instant still shows the notice (as the rail does), with the 00:00 UTC fallback', () => {
+    compact(wisp({ spentTodayCents: 201 }));
+    expect(screen.getByTestId('wisp-header-notice')).toHaveAttribute('data-kind', 'budget');
+    expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');
+  });
+
   it('the budget notice falls back to 00:00 UTC when the reset does not parse', () => {
     compact(wisp({ spentTodayCents: 201, budgetResetsAt: 'garbage' }));
     expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');

@@ -919,10 +919,15 @@ export const useAiStore = create<AiState>()(
   // navigation to /wisp carries the pane in open, or History picks that
   // thread): a pane left open would be a dead end, and closing it makes it
   // inert, so focus moves to the page's composer as focusWispPageComposer does.
-  setWispPageThreadId: (threadId) =>
-    set((s) => (s.isOpen && wispPaneHandedOff({ ...s, wispPageThreadId: threadId })
-      ? { wispPageThreadId: threadId, isOpen: false, wispPageComposerFocusRequest: s.wispPageComposerFocusRequest + 1 }
-      : { wispPageThreadId: threadId })),
+  setWispPageThreadId: (threadId) => {
+    const s = get();
+    if (s.isOpen && wispPaneHandedOff({ ...s, wispPageThreadId: threadId })) {
+      set({ wispPageThreadId: threadId });
+      get().focusWispPageComposer();
+      return;
+    }
+    set({ wispPageThreadId: threadId });
+  },
   focusWispPageComposer: () => {
     // #9429: the page composer is where the user now looks at this
     // conversation, as opening the pane would be: drop its notifications.
