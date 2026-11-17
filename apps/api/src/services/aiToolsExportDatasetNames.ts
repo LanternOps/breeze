@@ -27,6 +27,6 @@ export type ExportDataset = (typeof EXPORT_DATASETS)[number];
  * it, so the per-dataset rules live here (each ≤ 160, the parameter cap).
  */
 export const EXPORT_DATASET_PARAM_DESCRIPTION =
-  'Which dataset. service_checks lists non-running checks only; reliability_events can repeat an event (dedupe on eventKey); per-device datasets may truncate.';
+  'Which dataset. service_checks lists non-running checks only; reliability_events can repeat an event (dedupe on eventKey); capped exports set truncated.';
 export const EXPORT_FILTERS_PARAM_DESCRIPTION =
   'As the read tool. timeRange {start,end} ISO for reliability/boot/hardware/service: default 30 days, max 180 days. reliability_scores is current state.';

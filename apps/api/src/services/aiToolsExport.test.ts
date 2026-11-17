@@ -262,9 +262,9 @@ describe('export_dataset', () => {
     expect(plain).not.toHaveProperty('sensitiveRowsWithheld');
   });
 
-  it('states that per-device datasets may truncate (on the dataset parameter: the description is at its budget)', () => {
+  it('states that a capped export sets truncated (on the dataset parameter: the description is at its budget)', () => {
     const props = getTool().definition.input_schema.properties as Record<string, { description: string }>;
-    expect(props.dataset!.description).toContain('per-device datasets may truncate');
+    expect(props.dataset!.description).toContain('capped exports set truncated');
   });
 
   it('rejects an unknown dataset', async () => {
