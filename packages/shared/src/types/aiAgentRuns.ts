@@ -94,6 +94,53 @@ export const AI_AGENT_RUN_DTO_SCHEMA_VERSION = 1 as const;
 export const AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS = 160;
 
 /**
+ * Wisp analysis sessions W06 — hard ceiling on `AiAgentRunDetailDto.analysisGoal`
+ * and `AiAgentRunChainStepDto.goal`, INCLUDING the trailing ellipsis the API
+ * appends when it had to cut (same rule as the summary excerpt above). The
+ * goal is the model's restatement of the technician's ask; the cap keeps a
+ * long one from swamping the run card and the chain list.
+ */
+export const AI_AGENT_RUN_GOAL_MAX_CHARS = 300;
+
+/**
+ * Wisp analysis sessions W06 — most runs `AiAgentRunDetailDto.chain` lists.
+ * The default chain bound is 12 runs (`analysisMaxChainRuns`, max 40), so 50
+ * covers every chain a policy can produce while bounding the read.
+ */
+export const AI_AGENT_RUN_CHAIN_MAX_STEPS = 50;
+
+/**
+ * Wisp analysis sessions W06 — the device scope an `analysis` run was frozen
+ * to at admission. `deviceCount` is the count AS OF LAUNCH (a site or org
+ * scope is expanded once and never re-read). `siteName` is read live and is
+ * null when the site row is gone or invisible.
+ */
+export interface AiAgentRunAnalysisScopeDto {
+  kind: 'devices' | 'site' | 'org';
+  siteId: string | null;
+  siteName: string | null;
+  deviceCount: number;
+}
+
+/**
+ * Wisp analysis sessions W06 — one run of an analysis chain (a root run plus
+ * every run continued from it, directly or transitively). Two continuations
+ * of the same prior run are both listed and share a `step`.
+ */
+export interface AiAgentRunChainStepDto {
+  id: string;
+  /** `chain_depth + 1` — the root is step 1. */
+  step: number;
+  continuedFromRunId: string | null;
+  /** Capped at `AI_AGENT_RUN_GOAL_MAX_CHARS`; null when none was recorded. */
+  goal: string | null;
+  status: AiAgentRunStatus;
+  /** Model spend plus sandbox compute, in cents. */
+  costCents: number;
+  queuedAt: string;
+}
+
+/**
  * One row of `GET /ai/agents/runs` — org-wide, keyset-paginated. Deliberately
  * carries NO outcome payload (no trace, no ledger, no intents) — that is the
  * whole point of a list endpoint versus the detail one; a caller that needs
@@ -818,6 +865,46 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
    */
   workspace: AiAgentRunWorkspaceDto | null;
+  /**
+   * Wisp analysis sessions W06 — the run this one continued from
+   * (`ai_agent_runs.continued_from_run_id`). Null for a run that continues
+   * nothing, and once that prior run is deleted.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  continuedFromRunId: string | null;
+  /**
+   * Wisp analysis sessions W06 — the first run of this run's chain. Null on a
+   * run that continues nothing, INCLUDING a root that was continued later
+   * (its chain is still listed in `chain`).
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  chainRootRunId: string | null;
+  /**
+   * Wisp analysis sessions W06 — 0 for a root or unchained run. A plain number
+   * for the same reason as `computeCents`: "no chain" and "depth 0" are the
+   * same answer. Additive — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  chainDepth: number;
+  /**
+   * Wisp analysis sessions W06 — the analysis goal (`trigger_ref.goal`), capped
+   * at `AI_AGENT_RUN_GOAL_MAX_CHARS`. Model-written text: render as a text
+   * node only. Null for every non-analysis run.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  analysisGoal: string | null;
+  /**
+   * Wisp analysis sessions W06 — the frozen device scope. Null for every
+   * non-analysis run and for an analysis run with no frozen device list.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  analysisScope: AiAgentRunAnalysisScopeDto | null;
+  /**
+   * Wisp analysis sessions W06 — every run of this run's chain, ordered by
+   * depth, then queued time, then id; at most `AI_AGENT_RUN_CHAIN_MAX_STEPS`.
+   * Null unless the chain has at least two runs.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  chain: AiAgentRunChainStepDto[] | null;
 }
 
 /** See `AiAgentRunDetailDto.narrativeDelivery`. */

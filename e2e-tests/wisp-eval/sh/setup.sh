@@ -10,13 +10,16 @@
 #   6. the test world (sh/world.sh): built BEFORE the grant so Wisp's first look sees it
 #   7. Wisp is turned on for All organizations (grant step-up with a TOTP code), budget $5/day
 #
-# setup.sh [step...]   run only the named steps (admin entitlement totp approver triage world grant)
+# setup.sh [step...]   run only the named steps (admin entitlement totp approver triage world analysis grant)
+#   analysis (needs triage and world first): Northwind Dental allows external processing, the Triage
+#   agent carries the four workspace tools and export_dataset, python3 exists in the API container,
+#   and Northwind Dental gets an empty site (no devices) for the frame_empty scenario.
 set -euo pipefail
 # shellcheck source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 BUDGET_CENTS="${WISP_EVAL_BUDGET_CENTS:-500}"
-STEPS="${*:-admin entitlement totp approver triage world grant}"
+STEPS="${*:-admin entitlement totp approver triage world analysis grant}"
 
 # A .state/ from an earlier stack (same project name, fresh database) holds a TOTP
 # secret and passkeys the new database never saw: discard them.
@@ -103,6 +106,36 @@ step_triage() {
   say "triage: created partner-wide, shadow, enabled, operations $ops"
 }
 
+step_analysis() {
+  local nw agent cur want new new_site
+  nw="$(org_id 'Northwind Dental')"
+  [ -n "$nw" ] || { echo "analysis: Northwind Dental not found; run the world step first" >&2; exit 1; }
+  if [ "$(q "select ai_external_processing from organizations where id = '$nw'")" != "t" ]; then
+    api PATCH "/orgs/organizations/$nw" '{"aiExternalProcessing":true}' >/dev/null
+    say "analysis: Northwind Dental allows external AI processing"
+  fi
+  agent="$(q "select id from ai_agents where partner_id = '$PARTNER' and org_id is null and kind = 'triage' order by created_at limit 1")"
+  [ -n "$agent" ] || { echo "analysis: no partner-wide triage agent; run the triage step first" >&2; exit 1; }
+  want='["workspace_stage","workspace_run","workspace_collect","workspace_cancel","export_dataset"]'
+  cur="$(q "select tool_allowlist::text from ai_agents where id = '$agent'")"
+  new="$(jq -nc --argjson c "$cur" --argjson w "$want" '($c + $w) | unique')"
+  if [ "$(jq -nc --argjson c "$cur" '$c | unique')" != "$new" ]; then
+    api PATCH "/ai/agents/$agent" "$(jq -n --argjson t "$new" '{toolAllowlist:$t}')" >/dev/null
+    say "analysis: Triage agent allowlist now carries the workspace tools and export_dataset"
+  fi
+  # The dev API image is node:alpine without Python; the fake sandbox runs step scripts with python3.
+  if ! docker exec "$APIC" python3 --version >/dev/null 2>&1; then
+    docker exec "$APIC" apk add --no-cache python3 >/dev/null
+    say "analysis: installed python3 in $APIC (lost when the container is recreated; re-run this step)"
+  fi
+  # A site with no devices: the launcher refuses frame_empty for it.
+  if [ -z "$(site_id 'Northwind Dental' 'Annex (no devices)')" ]; then
+    new_site="$(api POST /orgs/sites "$(jq -n --arg o "$nw" '{orgId:$o,name:"Annex (no devices)",timezone:"America/Denver"}')" | jq -r '.id // .data.id // empty')"
+    [ -n "$new_site" ] || { echo "analysis: creating the empty site returned no id" >&2; exit 1; }
+    say "analysis: created the empty site Northwind Dental / Annex (no devices) ($new_site)"
+  fi
+}
+
 step_grant() {
   local gid preview hash code step tz
   gid="$(q "select id from wisp_grants where partner_id = '$PARTNER' and org_id is null and status = 'active' and expires_at > now() order by created_at desc limit 1")"
@@ -129,7 +162,7 @@ step_grant() {
 
 for s in $STEPS; do
   case "$s" in
-    admin|entitlement|totp|approver|triage|grant) "step_$s" ;;
+    admin|entitlement|totp|approver|triage|analysis|grant) "step_$s" ;;
     world) bash "$HARNESS/sh/world.sh" ;;
     *) echo "unknown step $s" >&2; exit 2 ;;
   esac

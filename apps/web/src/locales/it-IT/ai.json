@@ -621,7 +621,12 @@
       "waitingForApprover": "In attesa di un approvatore"
     },
     "continue": "Continua",
-    "continueMessage": "Continua la risoluzione dei problemi dell'esecuzione {{runId}}."
+    "continueMessage": "Continua la risoluzione dei problemi dell'esecuzione {{runId}}.",
+    "chainStep": "Passaggio {{step}} di questa indagine",
+    "goal": "Obiettivo: {{goal}}",
+    "findings": "Risultati: {{count}}",
+    "findingsHigh": "({{count}} di gravità alta)",
+    "files": "File:"
   },
   "aiModelPicker": {
     "chooseModel": "Scegli un modello",

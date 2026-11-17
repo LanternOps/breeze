@@ -621,7 +621,12 @@
       "waitingForApprover": "Bir onaylayıcı bekleniyor"
     },
     "continue": "Devam et",
-    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et."
+    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et.",
+    "chainStep": "Bu incelemenin {{step}}. adımı",
+    "goal": "Hedef: {{goal}}",
+    "findings": "Bulgular: {{count}}",
+    "findingsHigh": "({{count}} yüksek)",
+    "files": "Dosyalar:"
   },
   "aiModelPicker": {
     "chooseModel": "Model seçin",

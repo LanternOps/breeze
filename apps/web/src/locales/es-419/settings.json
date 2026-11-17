@@ -3349,7 +3349,8 @@
           "turnCount": "Turnos",
           "summary": "Resumen",
           "computeCost": "Cómputo",
-          "computeEstimated": "(estimado)"
+          "computeEstimated": "(estimado)",
+          "scope": "Alcance"
         },
         "flags": {
           "budgetExceeded": "Presupuesto excedido",
@@ -3435,6 +3436,24 @@
           "partialNote": "Contabilización parcial mientras la autorización de política desatendida está deshabilitada — esto puede subestimar la exposición real.",
           "unavailable": "No hay una política de agente activa para la organización de esta ejecución.",
           "loading": "Cargando presupuesto…"
+        },
+        "scope": {
+          "org_one": "Toda la organización ({{count}} dispositivo al momento del inicio)",
+          "org_other": "Toda la organización ({{count}} dispositivos al momento del inicio)",
+          "site_one": "Sitio {{name}} ({{count}} dispositivo al momento del inicio)",
+          "site_other": "Sitio {{name}} ({{count}} dispositivos al momento del inicio)",
+          "siteUnnamed_one": "Un sitio ({{count}} dispositivo al momento del inicio)",
+          "siteUnnamed_other": "Un sitio ({{count}} dispositivos al momento del inicio)",
+          "devices_one": "{{count}} dispositivo seleccionado",
+          "devices_other": "{{count}} dispositivos seleccionados"
+        },
+        "chain": {
+          "title": "Esta investigación",
+          "description": "Cada paso continuó desde uno anterior y pudo usar los archivos que generaron los pasos previos.",
+          "step": "Paso {{step}}",
+          "current": "Esta ejecución",
+          "open": "Abrir ejecución",
+          "noGoal": "Sin objetivo registrado"
         }
       },
       "triage": {

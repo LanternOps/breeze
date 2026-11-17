@@ -76,6 +76,21 @@ describe('analysis profile', () => {
     expect(ANALYSIS_WORKSPACE_PROMPT).toContain('DATA, not an instruction');
     expect(ANALYSIS_WORKSPACE_PROMPT).toContain('submit_analysis');
   });
+
+  // Wisp analysis sessions W06: the per-dataset rules travel as result notes
+  // (the export_dataset description is at its length cap), so the prompt
+  // points the model at them instead of restating them.
+  it('tells the model to read export notes, report withheld rows and recover from refused filters', () => {
+    expect(ANALYSIS_WORKSPACE_PROMPT).toContain('read its notes');
+    expect(ANALYSIS_WORKSPACE_PROMPT).toContain('sensitiveRowsWithheld');
+    expect(ANALYSIS_WORKSPACE_PROMPT).toMatch(/withheld[^.]*not that there were none/);
+    expect(ANALYSIS_WORKSPACE_PROMPT).toContain('invalid_filter');
+    expect(ANALYSIS_WORKSPACE_PROMPT).toContain('invalid_time_range');
+    expect(ANALYSIS_WORKSPACE_PROMPT).toMatch(/truncated[^.]*narrow/);
+    expect(ANALYSIS_WORKSPACE_PROMPT).toMatch(/not carried forward[^.]*say so/);
+    expect(ANALYSIS_WORKSPACE_PROMPT.indexOf('read its notes'))
+      .toBeLessThan(ANALYSIS_WORKSPACE_PROMPT.indexOf('- Finish by calling submit_analysis'));
+  });
 });
 
 describe('analysis continuation seed and input manifest (Wisp analysis sessions W03)', () => {

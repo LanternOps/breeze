@@ -3349,7 +3349,8 @@
           "turnCount": "Turni",
           "summary": "Riepilogo",
           "computeCost": "Calcolo",
-          "computeEstimated": "(stimato)"
+          "computeEstimated": "(stimato)",
+          "scope": "Ambito"
         },
         "flags": {
           "budgetExceeded": "Budget superato",
@@ -3435,6 +3436,24 @@
           "partialNote": "Contabilizzazione parziale finché l'autorizzazione delle policy non presidiate è disattivata — l'esposizione reale potrebbe essere sottostimata.",
           "unavailable": "Nessuna policy agente attiva per l'organizzazione di questa esecuzione.",
           "loading": "Caricamento del budget…"
+        },
+        "scope": {
+          "org_one": "Intera organizzazione ({{count}} dispositivo all'avvio)",
+          "org_other": "Intera organizzazione ({{count}} dispositivi all'avvio)",
+          "site_one": "Sede {{name}} ({{count}} dispositivo all'avvio)",
+          "site_other": "Sede {{name}} ({{count}} dispositivi all'avvio)",
+          "siteUnnamed_one": "Una sede ({{count}} dispositivo all'avvio)",
+          "siteUnnamed_other": "Una sede ({{count}} dispositivi all'avvio)",
+          "devices_one": "{{count}} dispositivo selezionato",
+          "devices_other": "{{count}} dispositivi selezionati"
+        },
+        "chain": {
+          "title": "Questa indagine",
+          "description": "Ogni passaggio proseguiva da uno precedente e poteva usare i file prodotti dai passaggi precedenti.",
+          "step": "Passaggio {{step}}",
+          "current": "Questa esecuzione",
+          "open": "Apri esecuzione",
+          "noGoal": "Nessun obiettivo registrato"
         }
       },
       "triage": {

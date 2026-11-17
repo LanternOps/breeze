@@ -3349,7 +3349,8 @@
           "turnCount": "Runden",
           "summary": "Zusammenfassung",
           "computeCost": "Rechenkosten",
-          "computeEstimated": "(geschätzt)"
+          "computeEstimated": "(geschätzt)",
+          "scope": "Umfang"
         },
         "flags": {
           "budgetExceeded": "Budget überschritten",
@@ -3435,6 +3436,24 @@
           "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
           "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
           "loading": "Budget wird geladen…"
+        },
+        "scope": {
+          "org_one": "Gesamte Organisation ({{count}} Gerät zum Startzeitpunkt)",
+          "org_other": "Gesamte Organisation ({{count}} Geräte zum Startzeitpunkt)",
+          "site_one": "Standort {{name}} ({{count}} Gerät zum Startzeitpunkt)",
+          "site_other": "Standort {{name}} ({{count}} Geräte zum Startzeitpunkt)",
+          "siteUnnamed_one": "Ein Standort ({{count}} Gerät zum Startzeitpunkt)",
+          "siteUnnamed_other": "Ein Standort ({{count}} Geräte zum Startzeitpunkt)",
+          "devices_one": "{{count}} ausgewähltes Gerät",
+          "devices_other": "{{count}} ausgewählte Geräte"
+        },
+        "chain": {
+          "title": "Diese Untersuchung",
+          "description": "Jeder Schritt setzte einen früheren fort und konnte die Dateien nutzen, die frühere Schritte erzeugt haben.",
+          "step": "Schritt {{step}}",
+          "current": "Dieser Lauf",
+          "open": "Lauf öffnen",
+          "noGoal": "Kein Ziel erfasst"
         }
       },
       "triage": {

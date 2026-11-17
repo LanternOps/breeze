@@ -621,7 +621,12 @@
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
-    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen.",
+    "chainStep": "Schritt {{step}} dieser Untersuchung",
+    "goal": "Ziel: {{goal}}",
+    "findings": "Ergebnisse: {{count}}",
+    "findingsHigh": "({{count}} hoch)",
+    "files": "Dateien:"
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",

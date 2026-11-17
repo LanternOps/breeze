@@ -74,12 +74,25 @@ describe('launch_specialist text (#10406 item 1)', () => {
   });
 });
 
-describe('launch_specialist params text (W02 analysis scope)', () => {
-  it('names the analysis scope and its values within 160 chars', () => {
-    for (const enabled of [false, true]) {
-      const d = launchSpecialistShapeFor(enabled).params.description!;
-      expect(d).toMatch(/analysis \{[^}]*scope[^}]*org\|site\|devices/); // W06 rewrites the wording; pin only the keys
-      expect(d.length).toBeLessThanOrEqual(160);
+describe('analysis guidance (W06)', () => {
+  const params = () => launchSpecialistShapeFor(true).params.description!;
+
+  it('the params text names every analysis key and stays within 160 chars', () => {
+    expect(params().length).toBeLessThanOrEqual(160);
+    for (const k of [
+      'analysis {goal, scope: org|site|devices, siteId|deviceIds, continueFromRunId?}',
+      'sweep {sweepKinds?}',
+      'remediation_research {deviceId, alertId?}',
+      // Kept: tells the model this kind takes no keys (registration contract).
+      'patch_plan {}',
+    ]) {
+      expect(params()).toContain(k);
     }
+    expect(launchSpecialistShapeFor(false).params.description).toBe(params());
+  });
+
+  it('workspace on: the kind text says org scope means the whole customer', () => {
+    expect(launchSpecialistKindDescribe(true)).toContain('analysis (org: whole customer)');
+    expect(launchSpecialistKindDescribe(true).length).toBeLessThanOrEqual(160);
   });
 });

@@ -456,8 +456,8 @@ The six reliability datasets read only the devices fixed into the analysis run w
 
 - `alerts` lists device-owned alerts in every status. Topology-site and backup alerts are not exported, and neither are an alert's context, resolution note or the people who acted on it. `resolutionReason` is a known reason or `other`.
 - `patch_state` is the current patch state per device and patch, so it ignores the time range and says so. Stale scan rows (status `missing`) are left out. `filters.status` takes an array of `pending`, `installed`, `failed` and `skipped`. Install, uninstall and detection scripts, download URLs and descriptions are not exported.
-- `patch_attempts` lists patch job results by creation time. A row whose `patchId` is empty is the device's summary for the whole job. Raw installer output is never exported.
-- `change_log` takes `filters.changeType` as an array of change types. User account changes need `devices:execute`. Without it they are left out, the result's `notes` and `sensitiveRowsWithheld` say so, and asking for user account changes alone returns an empty export.
+- `patch_attempts` lists patch job results by creation time. A row whose `patchId` is empty is the device's summary for the whole job. Raw installer output is never exported. A long window on a busy server can end before every row is read; the result then says `truncated`, and a narrower `timeRange` reads the rest.
+- `change_log` takes `filters.changeType` as an array of change types. User account changes need `devices:execute`. Without it they are left out, the result's `notes` and `sensitiveRowsWithheld` say so, and asking for user account changes alone returns an empty export. Service and scheduled task changes are not behind that permission, and they can name the account a service or task runs as.
 
 `delete_tenant` only affects the tenant owning the API key. Its `confirmation_phrase` must exactly equal `delete <tenant_name> permanently` (lowercase and trimmed). Soft deletion retains devices, users, and data for 30 days; contact support to restore during that window. Data is permanently removed afterward.
 
