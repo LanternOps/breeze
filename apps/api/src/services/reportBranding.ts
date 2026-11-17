@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, partners, portalBranding } from '../db/schema';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
-import { parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
+import { parseHexColor, partnerReportConventions, type ReportBranding } from '@breeze/shared/reportPdf';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
 import { checkPngImageData } from './pngDecodeLimits';
 
@@ -68,7 +68,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
 
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize })
       .from(partners)
       .where(eq(partners.id, org.partnerId!))
       .limit(1)
@@ -82,7 +82,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
 export async function loadReportBrandingForPartner(partnerId: string): Promise<ReportBranding> {
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize })
       .from(partners)
       .where(eq(partners.id, partnerId))
       .limit(1)
@@ -94,7 +94,7 @@ export async function loadReportBrandingForPartner(partnerId: string): Promise<R
  *  loaders. `orgBrand` is the org override (org loader only); `logContext` only
  *  labels the non-embeddable-logo warning. */
 async function brandingFromPartnerRow(
-  row: { partnerName: string | null; partnerSettings: unknown } | undefined,
+  row: { partnerName: string | null; partnerSettings: unknown; documentPageSize?: string | null } | undefined,
   logContext: { orgId: string } | { partnerId: string },
   orgBrand?: { logoUrl: string | null; primaryColor: string | null; secondaryColor: string | null },
 ): Promise<ReportBranding> {
@@ -119,6 +119,10 @@ async function brandingFromPartnerRow(
     accentColor,
     contactEmail: settings.contact?.email?.trim() || null,
     contactName: settings.contact?.name?.trim() || null,
+    // #12048: the report prints on the page size the partner's quotes and
+    // invoices use, in its date order and hour cycle. Unknown values come back
+    // null so the renderer falls back instead of guessing.
+    ...partnerReportConventions({ documentPageSize: row.documentPageSize, settings: row.partnerSettings }),
   };
 }
 

@@ -379,6 +379,7 @@
       "triage": "Triage order",
       "newest": "Newest first",
       "oldest": "Oldest first",
+      "updated": "Recently updated",
       "due": "Due date"
     },
     "priority": {

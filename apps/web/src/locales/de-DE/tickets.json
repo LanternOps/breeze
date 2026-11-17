@@ -379,6 +379,7 @@
       "triage": "Triage-Anordnung",
       "newest": "Das Neueste zuerst",
       "oldest": "Älteste zuerst",
+      "updated": "Zuletzt aktualisiert",
       "due": "Fälligkeitsdatum"
     },
     "priority": {

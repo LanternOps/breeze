@@ -61,6 +61,7 @@ import { alertSiteScopeByDeviceIds, alertTopologySiteGate } from './alerts/helpe
 import { topologySessionAccessCondition } from '../services/topology/aiSessionAccess';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { wakeFailureStatus } from '../services/wakeFailureStatus';
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
@@ -1513,7 +1514,7 @@ mobileRoutes.post(
       // relay result can find them.
       const wake = await outcome.deliver();
       if (!wake.ok) {
-        return c.json({ error: wake.message, code: wake.code }, 412);
+        return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
       }
       return c.json({
         action: 'wake',
@@ -1652,7 +1653,7 @@ async function runNonScriptQuickAction(
       userAgent: c.req.header('user-agent'),
     });
     if (!wake.ok) {
-      return c.json({ error: wake.message, code: wake.code }, 412);
+      return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
     }
     return wake;
   }

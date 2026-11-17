@@ -897,13 +897,21 @@ export async function executeTool(
   // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
   // thread's attachments — the key is added ONLY when the capture scope
   // carries one, so every other anchor keeps its exact shape.
+  //
+  // #11845: a Wisp chat session's grant pin rides on the `read_artifact`
+  // anchor only (never `run_flow`'s); the handler turns it into the
+  // analysis-output read scope against the live ceiling.
   const writeAnchor = toolName === 'read_artifact' || toolName === 'run_flow' ? captureContextFrom(auth, opts, toolName) : null;
   const wispThreadId = opts?.capture?.wispThreadId;
-  const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
+  const wispGrant = toolName === 'read_artifact' ? opts?.capture?.wispGrant : undefined;
+  const captureAnchor = writeAnchor
+    ? { ...writeAnchor, ...(wispThreadId ? { wispThreadId } : {}), ...(wispGrant ? { wispGrant } : {}) }
+    : null;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
-  // `run_flow` trusts the anchor's session id, so a caller-supplied anchor is
-  // dropped when the server computed none (no chat session => run_flow refuses).
-  if (toolName === 'run_flow' && !captureAnchor && handlerContext?.captureAnchor) {
+  // `run_flow` and `read_artifact` trust the anchor's session id, so a
+  // caller-supplied anchor is dropped when the server computed none (no chat
+  // session => both refuse).
+  if ((toolName === 'run_flow' || toolName === 'read_artifact') && !captureAnchor && handlerContext?.captureAnchor) {
     const { captureAnchor: _dropped, ...rest } = handlerContext;
     handlerContext = rest;
   }

@@ -23,6 +23,16 @@ describe('WispChatWelcome (#11145: the side panel and the /ai/chat tab)', () => 
     expect(h.findActiveWispGrant).toHaveBeenCalledWith(null);
   });
 
+  it('passes showTitle through (the docked pane drops the duplicate "Wisp" label; the /ai/chat tab keeps it)', async () => {
+    h.findActiveWispGrant.mockResolvedValue(lookup('looking'));
+    const { unmount } = render(welcome({ initialState: 'looking', showTitle: false }));
+    await waitFor(() => expect(h.findActiveWispGrant).toHaveBeenCalled());
+    expect(screen.queryByText('Wisp')).toBeNull();
+    unmount();
+    render(welcome({ initialState: 'looking' }));
+    expect(await screen.findByText('Wisp')).toBeInTheDocument();
+  });
+
   it('says "first look" once one exists', async () => {
     h.findActiveWispGrant.mockResolvedValue(lookup('done'));
     render(welcome({ initialState: 'looking' }));

@@ -14,11 +14,14 @@ export default function WispIdentityCard({
   wisp,
   orgName,
   currentActivity,
+  actions,
   children,
 }: {
   wisp: NonNullable<WispState>;
   orgName: string | null;
   currentActivity: CurrentActivity;
+  /** Buttons at the end of the title row (the rail's grant actions). */
+  actions?: ReactNode;
   children?: ReactNode;
 }) {
   const { t } = useTranslation('ai');
@@ -29,11 +32,11 @@ export default function WispIdentityCard({
 
   return (
     <div data-testid="wisp-identity" className="space-y-3 p-4">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3" data-testid="wisp-identity-title">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary" aria-hidden="true">
           <Sparkles className="h-5 w-5" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{t('wisp.title')}</h2>
           <p
             data-testid="wisp-state-line"
@@ -63,6 +66,9 @@ export default function WispIdentityCard({
             )}
           </p>
         </div>
+        {actions && (
+          <div className="flex shrink-0 items-center gap-1" data-testid="wisp-identity-actions">{actions}</div>
+        )}
       </div>
       {children}
     </div>

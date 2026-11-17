@@ -4,8 +4,11 @@ import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type Devic
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import { reportInvalidStoredSettings } from './invalidStoredSettingsReport';
+import { captureException } from './sentry';
 import {
   candidatesWithLink,
+  policySetFor,
+  type DevicePolicySetOpts,
   type ApplicabilityRule,
   type DevicePolicySet,
   type PolicyCandidate,
@@ -41,6 +44,7 @@ import {
   CONTAINMENT_POLICY_DEFAULTS,
   type ContainmentInlineSettings,
   type SystemProtectionInlineSettings,
+  type ConfigFeatureType,
 } from '@breeze/shared';
 import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
@@ -48,6 +52,8 @@ import {
   MAINTENANCE_TIME_OF_DAY_PATTERN,
   securityAgentsInlineSettingsSchema,
   type SecurityAgentsInlineSettings,
+  wakeOnLanInlineSettingsSchema,
+  type WakeOnLanInlineSettings,
 } from '@breeze/shared/validators';
 import { DEFAULT_RING_FEATURE_UPDATES, ringFeatureUpdatesSchema, type RingFeatureUpdates } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
@@ -1552,13 +1558,34 @@ export async function resolveSecurityAgentsLinksForDevices(
   const CHUNK = 500;
   for (let i = 0; i < unique.length; i += CHUNK) {
     const chunk = unique.slice(i, i + CHUNK);
-    for (const [deviceId, linkId] of await resolveSecurityAgentsLinkChunk(chunk)) winners.set(deviceId, linkId);
+    const chunkWinners = await resolveFeatureLinkWinnerChunk('security_agents', chunk, { groups: 'executionSafe' });
+    for (const [deviceId, winner] of chunkWinners) winners.set(deviceId, winner?.linkId ?? null);
   }
   return winners;
 }
 
-async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<string, string | null>> {
-  const result = new Map<string, string | null>(deviceIds.map((id) => [id, null] as const));
+type FeatureLinkWinner = {
+  linkId: string;
+  /** The policy that authored the link (the parent's id for an inherited link). */
+  sourcePolicyId: string;
+  /** The policy whose assignment won for this device. */
+  assignedPolicyId: string;
+  inlineSettings: unknown;
+};
+
+/**
+ * The winning link of one feature type for each device of a chunk, evaluated in
+ * memory from a fixed number of statements. `groups` picks which device groups
+ * count as targets: 'executionSafe' for execution_gated features (a group keyed
+ * on a self-reported field is not a valid target), 'all' for protective ones.
+ * A device no link reaches (or that does not exist) maps to null.
+ */
+async function resolveFeatureLinkWinnerChunk(
+  featureType: ConfigFeatureType,
+  deviceIds: string[],
+  opts: { groups: 'executionSafe' | 'all' },
+): Promise<Map<string, FeatureLinkWinner | null>> {
+  const result = new Map<string, FeatureLinkWinner | null>(deviceIds.map((id) => [id, null] as const));
   if (deviceIds.length === 0) return result;
 
   const deviceRows = await db
@@ -1582,7 +1609,9 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
     .where(inArray(deviceGroupMemberships.deviceId, deviceIds));
   const allGroupIds = Array.from(new Set(membershipRows.map((m) => m.groupId)));
   const safeGroups = new Set(
-    allGroupIds.length > 0 ? (await resolveExecutionSafeGroupIds(allGroupIds)).allowedGroupIds : [],
+    opts.groups === 'all'
+      ? allGroupIds
+      : allGroupIds.length > 0 ? (await resolveExecutionSafeGroupIds(allGroupIds)).allowedGroupIds : [],
   );
   const groupsByDevice = new Map<string, string[]>();
   for (const m of membershipRows) {
@@ -1603,6 +1632,9 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
   const candidates = await db
     .select({
       linkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      assignedPolicyId: configurationPolicies.id,
       policyOrgId: configurationPolicies.orgId,
       policyPartnerId: configurationPolicies.partnerId,
       assignmentLevel: configPolicyAssignments.level,
@@ -1625,7 +1657,7 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
       configPolicyEffectiveFeatureLinks,
       and(
         eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyEffectiveFeatureLinks.featureType, 'security_agents'),
+        eq(configPolicyEffectiveFeatureLinks.featureType, featureType),
       ),
     )
     // Same ORDER BY as the per-device walk, so sortByHierarchy breaks a full
@@ -1648,9 +1680,127 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
       return targeted && matchesRoleOsFilter(row, device);
     });
     if (applicable.length === 0) continue;
-    result.set(device.id, sortByHierarchy([...applicable])[0]!.linkId);
+    const winner = sortByHierarchy([...applicable])[0]!;
+    result.set(device.id, {
+      linkId: winner.linkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      assignedPolicyId: winner.assignedPolicyId,
+      inlineSettings: winner.inlineSettings,
+    });
   }
   return result;
+}
+
+// ============================================
+// wake_on_lan (#10838): the wake button's visibility mode
+// ============================================
+
+/**
+ * What a stored blob that no longer parses resolves as: the restrictive
+ * reading (the button only shows where readiness is proven). The write path
+ * refuses such blobs, so this is a direct DB edit or a schema change.
+ */
+const WAKE_ON_LAN_UNPARSEABLE_SETTINGS: WakeOnLanInlineSettings = { configureSettings: false, buttonMode: 'verified' };
+
+/** Links already logged as unparseable (once per link per process). */
+const warnedUnparseableWakeOnLanLinks = new Set<string>();
+
+/**
+ * wake_on_lan is `protective`: every device group counts, like oem_updates,
+ * because dropping a self-selected group's override could expose a broader
+ * policy. Its applicability is the batch resolver's exactly (ownership and the
+ * partner target both drop the partner for a parked device; role/OS in SQL).
+ */
+const WAKE_ON_LAN_APPLICABILITY: ApplicabilityRule = {
+  ownership: 'orgOrPartnerUnlessUnassignedPool', partnerTarget: 'partnerUnlessUnassignedPool', roleOs: 'sql',
+};
+
+export type ResolvedWakeOnLanWinner = {
+  settings: WakeOnLanInlineSettings;
+  linkId: string;
+  sourcePolicyId: string;
+  assignedPolicyId: string;
+};
+
+function parseWakeOnLanWinner(winner: FeatureLinkWinner): ResolvedWakeOnLanWinner {
+  const parsed = wakeOnLanInlineSettingsSchema.safeParse(winner.inlineSettings);
+  if (!parsed.success && !warnedUnparseableWakeOnLanLinks.has(winner.linkId)) {
+    warnedUnparseableWakeOnLanLinks.add(winner.linkId);
+    console.error('[featureConfigResolver] wake_on_lan link has unparseable settings; resolving as verified', {
+      linkId: winner.linkId,
+      configPolicyId: winner.sourcePolicyId,
+      issue: parsed.error.issues[0]?.message,
+    });
+    captureException(
+      new Error('wake_on_lan link has unparseable settings; resolving as verified'),
+      undefined,
+      { linkId: winner.linkId, configPolicyId: winner.sourcePolicyId },
+    );
+  }
+  return {
+    settings: parsed.success ? parsed.data : WAKE_ON_LAN_UNPARSEABLE_SETTINGS,
+    linkId: winner.linkId,
+    sourcePolicyId: winner.sourcePolicyId,
+    assignedPolicyId: winner.assignedPolicyId,
+  };
+}
+
+/**
+ * The winning `wake_on_lan` link (with parsed settings) for many devices, a
+ * fixed number of statements per chunk of 500. A device no link reaches, or
+ * that does not exist, maps to null.
+ */
+export async function resolveWakeOnLanWinnersForDevices(
+  deviceIds: readonly string[],
+): Promise<Map<string, ResolvedWakeOnLanWinner | null>> {
+  const winners = new Map<string, ResolvedWakeOnLanWinner | null>();
+  const unique = Array.from(new Set(deviceIds));
+  const CHUNK = 500;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunkWinners = await resolveFeatureLinkWinnerChunk('wake_on_lan', unique.slice(i, i + CHUNK), { groups: 'all' });
+    for (const [deviceId, winner] of chunkWinners) winners.set(deviceId, winner ? parseWakeOnLanWinner(winner) : null);
+  }
+  return winners;
+}
+
+/** {@link resolveWakeOnLanWinnersForDevices}, settings only. */
+export async function resolveWakeOnLanSettingsForDevices(
+  deviceIds: readonly string[],
+): Promise<Map<string, WakeOnLanInlineSettings | null>> {
+  const settings = new Map<string, WakeOnLanInlineSettings | null>();
+  for (const [deviceId, winner] of await resolveWakeOnLanWinnersForDevices(deviceIds)) {
+    settings.set(deviceId, winner?.settings ?? null);
+  }
+  return settings;
+}
+
+/**
+ * The heartbeat's per-device form. With the caller's loaded policy set it ranks
+ * the set's candidates (no statement); without one it delegates to the batch
+ * resolver, so both paths decide identically (the integration parity suite
+ * pins that on real Postgres).
+ */
+export async function resolveWakeOnLanSettingsForDevice(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+): Promise<WakeOnLanInlineSettings | null> {
+  const set = policySetFor(deviceId, opts);
+  if (!set) return (await resolveWakeOnLanSettingsForDevices([deviceId])).get(deviceId) ?? null;
+  const ranked = sortByHierarchy(
+    candidatesWithLink(set, 'wake_on_lan', WAKE_ON_LAN_APPLICABILITY).map(({ candidate, link }) => ({
+      assignmentLevel: candidate.level,
+      assignmentPriority: candidate.priority,
+      assignmentCreatedAt: candidate.assignmentCreatedAt,
+      linkId: link.id,
+      // The set does not carry the authoring policy of an inherited link; the
+      // assigned policy only feeds the unparseable-settings log line here.
+      sourcePolicyId: candidate.policyId,
+      assignedPolicyId: candidate.policyId,
+      inlineSettings: link.inlineSettings,
+    })),
+  );
+  const winner = ranked[0];
+  return winner ? parseWakeOnLanWinner(winner).settings : null;
 }
 
 /**

@@ -404,6 +404,15 @@ describe('TicketsPage', () => {
       await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&sort=newest'));
     });
 
+    it('Recently updated sort passes sort=updated to the API and persists in the hash (#12064)', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'updated' } });
+      await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('sort=updated'));
+      expect(window.location.hash).toBe('#sort=updated');
+    });
+
     it('restores sort and selection from a combined hash on load', async () => {
       window.location.hash = '#T-2026-0002&sort=oldest';
       mockListApi([healthy, atRisk, breached]);

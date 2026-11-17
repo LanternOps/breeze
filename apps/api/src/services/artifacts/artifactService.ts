@@ -1,10 +1,10 @@
 import { isUtf8 } from 'node:buffer';
-import { and, desc, eq, exists, gt, like, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, exists, gt, inArray, isNotNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
-import { aiRunArtifacts, wispThreadAttachments } from '../../db/schema';
+import { aiAgentRuns, aiRunArtifacts, wispThreadAttachments } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { redactAiToolOutputText, shrinkToJsonBudget } from '../aiToolOutput';
 import { captureException } from '../sentry';
@@ -62,6 +62,8 @@ export interface ArtifactRecord {
   tailPreview: string;
   sourceDeviceId: string | null;
   createdByTool: string;
+  /** `export_dataset` dataset name; null for every other producer. */
+  dataset: string | null;
   expiresAt: Date;
   createdAt: Date;
 }
@@ -78,6 +80,8 @@ export interface CreateArtifactInput {
   maxBytes: number;
   sourceDeviceId?: string | null;
   createdByTool: string;
+  /** Set by `export_dataset` only; defaults to NULL. */
+  dataset?: string | null;
   region: BlobRegion;
   ttlDays?: number;
 }
@@ -97,6 +101,7 @@ const ARTIFACT_COLUMNS = {
   tailPreview: aiRunArtifacts.tailPreview,
   sourceDeviceId: aiRunArtifacts.sourceDeviceId,
   createdByTool: aiRunArtifacts.createdByTool,
+  dataset: aiRunArtifacts.dataset,
   expiresAt: aiRunArtifacts.expiresAt,
   createdAt: aiRunArtifacts.createdAt,
 } as const;
@@ -214,6 +219,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
         tailPreview,
         sourceDeviceId: input.sourceDeviceId ?? null,
         createdByTool: input.createdByTool.slice(0, 128),
+        dataset: input.dataset ?? null,
         expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
       })
       .returning(ARTIFACT_COLUMNS);
@@ -374,9 +380,63 @@ export interface ArtifactCallerAnchor {
    * leaves the compiled query byte-identical to the pre-W04 one.
    */
   wispThreadId?: string | null;
+  /**
+   * Wisp analysis sessions W01 (#11845, spec §4.1 / §4.2 thread rule): set by
+   * the `read_artifact` handler from server state only, never from tool
+   * input. With it, a SESSION read (never a run read) also matches an `output`
+   * of a chat-launched `analysis` run under the calling session's grant, in
+   * any org of the grant's live ceiling. Absent / null / an empty `orgIds`
+   * leaves the compiled query byte-identical.
+   */
+  analysisOutputs?: AnalysisOutputReadScope | null;
+}
+
+/**
+ * Resolved by the `read_artifact` handler from server state only
+ * (`aiToolsArtifacts.ts`). Never built from tool input.
+ */
+export interface AnalysisOutputReadScope {
+  /** The calling session's grant (`ai_sessions.wisp_grant_id`). */
+  grantId: string;
+  /** The orgs of that grant's LIVE ceiling, resolved on this call. */
+  orgIds: string[];
 }
 
 const threadAttachment = alias(wispThreadAttachments, 'ta');
+const analysisRun = alias(aiAgentRuns, 'ar');
+
+/**
+ * The analysis-output arm (#11845). Every term is required:
+ *  - the artifact is an `output` (raw `input_capture` exports and `step_*`
+ *    files stay unreadable from chat);
+ *  - its org is in the caller's live grant ceiling (NOT the session org: a
+ *    partner-wide chat in org A may launch a run in org B and is then handed
+ *    its files; RLS under the caller's ceiling-narrowed auth still applies);
+ *  - its run, in the same org, is an `analysis` run under the caller's grant;
+ *  - that run was launched from a chat (`originSessionId` set), so a run the
+ *    coordinator admitted with no live chat (the run/approval paths, e.g. a
+ *    request from an assessment run) is excluded.
+ * The arm does not compare the run's origin session with the caller's: one
+ * grant is one Wisp thread (`wisp_threads_grant_uq`), and every session of a
+ * grant belongs to its grantor, so any chat of the thread may read its files.
+ */
+function analysisOutputArm(scope: AnalysisOutputReadScope) {
+  return and(
+    eq(aiRunArtifacts.kind, 'output'),
+    inArray(aiRunArtifacts.orgId, scope.orgIds),
+    exists(
+      db.select({ one: sql`1` })
+        .from(analysisRun)
+        .where(and(
+          eq(analysisRun.id, aiRunArtifacts.runId),
+          eq(analysisRun.orgId, aiRunArtifacts.orgId),
+          eq(analysisRun.profile, 'analysis'),
+          eq(analysisRun.grantId, scope.grantId),
+          isNotNull(sql`(${analysisRun.triggerRef} ->> 'originSessionId')`),
+        )),
+    ),
+  );
+}
 
 /**
  * `exists (select 1 from wisp_thread_attachments ta where ta.artifact_id =
@@ -412,13 +472,21 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
   const ownership = anchor.wispThreadId
     ? or(anchored, threadAttachmentArm(anchor.wispThreadId))
     : anchored;
+  // #11845: only a session read gets the analysis-output arm, and only with a
+  // non-empty ceiling. Without it the org term stays where it always was, so
+  // the compiled SQL is byte-identical to before.
+  const analysisScope = !runId && sessionId && anchor.analysisOutputs && anchor.analysisOutputs.orgIds.length > 0
+    ? anchor.analysisOutputs
+    : null;
+  const owned: (SQL | undefined)[] = analysisScope
+    ? [or(and(eq(aiRunArtifacts.orgId, anchor.orgId), ownership), analysisOutputArm(analysisScope))]
+    : [eq(aiRunArtifacts.orgId, anchor.orgId), ownership];
   return db
     .select(ARTIFACT_COLUMNS)
     .from(aiRunArtifacts)
     .where(and(
       eq(aiRunArtifacts.id, handle),
-      eq(aiRunArtifacts.orgId, anchor.orgId),
-      ownership,
+      ...owned,
       gt(aiRunArtifacts.expiresAt, new Date()),
       // Q5: an export is an intentional bulk write, never redacted, and never
       // meant to be paged back through this tool.
@@ -447,6 +515,12 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
  * legacy unmarked (raw) `input_capture` row alike: a handle is opaque, so "this
  * exists but is not yours" is itself a disclosure (same posture as
  * `resolveArtifact`/`findArtifactForAuth`).
+ *
+ * #11845: with `anchor.analysisOutputs` (built by the handler from the
+ * session's grant pin and the live grant ceiling), a session read also
+ * matches an `output` of a chat-launched `analysis` run under that grant in
+ * any ceiling org; see `analysisOutputArm` for the four terms and why the org
+ * term is the ceiling rather than the session org.
  */
 export async function findArtifactForCaller(
   handle: string,
@@ -457,6 +531,8 @@ export async function findArtifactForCaller(
   if (!UUID.safeParse(handle).success || !UUID.safeParse(anchor.orgId).success) return null;
   if (!anchor.runId && !anchor.sessionId) return null;
   if (anchor.wispThreadId && !UUID.safeParse(anchor.wispThreadId).success) return null;
+  if (anchor.analysisOutputs && ![anchor.analysisOutputs.grantId, ...anchor.analysisOutputs.orgIds]
+    .every((id) => UUID.safeParse(id).success)) return null;
   const [row] = await findArtifactForCallerQuery(handle, anchor);
   return (row as ArtifactRecord | undefined) ?? null;
 }

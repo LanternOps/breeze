@@ -34,6 +34,9 @@ vi.mock('../db', () => ({
   },
 }));
 
+// Cut middleware/auth's transitive pull on the full schema barrel (via the
+// MFA gate). The gate itself is covered by aiToolMfaGate.routeParity.contract.test.ts.
+vi.mock('../middleware/auth', () => ({ hasSatisfiedMfa: () => true }));
 vi.mock('../db/schema/patches', () => ({
   patchPolicies: {
     id: 'patchPolicies.id',

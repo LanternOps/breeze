@@ -88,6 +88,12 @@ export const sendAiMessageSchema = z.object({
    * Absent = keep the session's stored offering.
    */
   model: aiModelChoiceSchema.optional(),
+  /**
+   * #9428: this POST re-sends the session's last user message after a failed
+   * turn ("Try again"). The server skips inserting a second, identical
+   * trailing user row; the turn itself is dispatched as usual.
+   */
+  retry: z.boolean().optional(),
 });
 
 export const approveToolSchema = z.object({

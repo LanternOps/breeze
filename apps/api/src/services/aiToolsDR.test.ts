@@ -147,7 +147,7 @@ function approvedContext(groups: unknown[], overrides: Record<string, unknown> =
 function makeAuth(): AuthContext {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: null,
     orgId: ORG_ID,
     scope: 'organization',
@@ -398,7 +398,7 @@ describe('manage_dr_plan:create_plan write-org resolution (#6667)', () => {
   function multiOrgAuth(): AuthContext {
     return {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-      token: {} as any,
+      token: { mfa: true } as any,
       partnerId: 'partner-1',
       orgId: null,
       scope: 'partner',

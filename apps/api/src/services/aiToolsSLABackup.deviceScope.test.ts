@@ -39,7 +39,7 @@ function handlerFor(name: string): AiTool['handler'] {
 function makeAuth(over: Partial<AuthContext> = {}): AuthContext {
   return {
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: {} as any, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
+    token: { mfa: true } as any, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
     canAccessSite: () => true,
     ...over,

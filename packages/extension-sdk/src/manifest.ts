@@ -45,7 +45,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'patch-policies', 'patches', 'pax8',
   'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
   'portal', 'pre-assignment', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
-  'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
+  'remote', 'reports', 'roles', 's', 's1', 'scim', 'script-library', 'scripts',
   'search', 'security', 'sensitive-data', 'service-catalog', 'service-principals', 'settings',
   'snmp', 'software',
   'software-inventory', 'software-policies', 'sso', 'support',

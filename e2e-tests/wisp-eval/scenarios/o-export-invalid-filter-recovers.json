@@ -1,0 +1,31 @@
+{
+  "id": "export-invalid-filter-recovers",
+  "title": "An export_dataset call with a filter the dataset does not take is corrected and retried in the same run",
+  "issue": null,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "The alerts dataset takes only filters.timeRange (rejectUnknownFilters in services/aiToolsExportDatasets/alerts.ts), so a status filter answers invalid_filter. The prompt asks for 'active' alerts to make the run try one. It is a rate, not a constant: if the run never passes a status filter the precondition fails and the run is inconclusive (UNEXPECTED FAIL), not a pass. The tool row status of a refused filter is not asserted (the handler returns the error as a normal result); the failure is read from ai_tool_executions.tool_output instead.",
+  "steps": [
+    { "name": "ready", "type": "shell", "argv": ["analysis-ready.sh"] },
+    { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Start an analysis across the whole Northwind Dental organization. Export the alerts dataset filtered with status set to active, then count the alerts by severity." },
+    { "name": "settled", "type": "wait_sql", "timeoutSec": 420, "required": true, "equals": "true",
+      "sql": "select (count(*) > 0)::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}} and status in ('completed','failed','cancelled')" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "report", "type": "say", "approve": "none", "maxSec": 120,
+      "text": "What did the analysis find about the alerts?" }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "launch_specialist", "step": "launch", "origin": "chat", "precondition": true,
+      "inputMatches": "\"kind\":\"analysis\"" },
+    { "kind": "sql_equals", "equals": "true", "precondition": true,
+      "sql": "select (count(*) > 0)::text from ai_tool_executions where tool_name = 'export_dataset' and created_at > {{since}} and tool_input::text like '%alerts%' and tool_output::text like '%invalid_filter%'",
+      "note": "the run really sent an unsupported filter and was refused" },
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select (exists (select 1 from ai_tool_executions f where f.tool_name = 'export_dataset' and f.created_at > {{since}} and f.tool_output::text like '%invalid_filter%' and exists (select 1 from ai_tool_executions s where s.session_id = f.session_id and s.tool_name = 'export_dataset' and s.created_at > f.created_at and s.tool_input::text like '%alerts%' and s.tool_output::text not like '%invalid_filter%' and s.tool_output::text not like '%invalid_time_range%' and s.tool_output::text not like '%export_failed%')))::text",
+      "note": "a refused export is followed, in the same run session, by an alerts export that was not refused" },
+    { "kind": "tool_called", "tool": "export_dataset", "origin": "run", "inputMatches": "alerts" },
+    { "kind": "no_error_banner", "step": "launch" },
+    { "kind": "no_error_banner", "step": "report" }
+  ]
+}

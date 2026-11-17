@@ -436,6 +436,7 @@
         "publishing": "Pubblicazione in corso…",
         "cancel": "Annulla",
         "success": "Pagina del Centro di fiducia pubblicata.",
+        "successPending": "Pubblicata. La pagina pubblica verrà aggiornata entro un minuto.",
         "failed": "Impossibile pubblicare la pagina del Centro di fiducia.",
         "disabledNoWrite": "Per pubblicare serve l'autorizzazione a modificare le organizzazioni.",
         "disabledSlug": "Correggi l'indirizzo della pagina prima di pubblicare."
@@ -472,6 +473,7 @@
       },
       "errors": {
         "revisionMismatch": "Questa pagina è cambiata dal momento in cui l'hai caricata. Ricaricala e riprova.",
+        "templateChanged": "Il modello del Centro di fiducia del tuo partner è cambiato dal momento in cui hai caricato questa pagina. Ricaricala e pubblica di nuovo.",
         "authorizationRequired": "Indica chi ha autorizzato la pubblicazione.",
         "mfaRequired": "La pubblicazione richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova.",
         "trustProbation": "La pubblicazione si apre non appena il tuo account viene considerato attendibile.",

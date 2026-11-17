@@ -17,6 +17,7 @@ import (
 type containmentCommandManager interface {
 	Report() *isolation.Report
 	LocalRelease(context.Context, string, bool) error
+	LocalReleaseToken(context.Context, string) error
 	ReleaseAll(context.Context, string) error
 	BootApply(context.Context) error
 	RecoveryExpireCheck(context.Context) error
@@ -50,20 +51,30 @@ func newContainmentCommandWithFactory(manager func() containmentCommandManager) 
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(manager().Report())
 		},
 	})
-	var code string
+	var code, token string
 	var force bool
 	release := &cobra.Command{
-		Use: "release", Short: "Release containment with a break-glass code or local administrator override", Args: cobra.NoArgs,
+		Use: "release", Short: "Release containment with a break-glass code, a signed release token, or local administrator override", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Validate before constructing the manager or touching local state.
-			hasCode := cmd.Flags().Changed("code")
-			if (hasCode && cmd.Flags().Changed("force")) || (!hasCode && !force) || (hasCode && strings.TrimSpace(code) == "") {
-				return errors.New("exactly one of --code <code> or --force is required")
+			hasCode, hasToken, hasForce := cmd.Flags().Changed("code"), cmd.Flags().Changed("token"), cmd.Flags().Changed("force")
+			given := 0
+			for _, set := range []bool{hasCode, hasToken, hasForce} {
+				if set {
+					given++
+				}
+			}
+			if given != 1 || (hasForce && !force) || (hasCode && strings.TrimSpace(code) == "") || (hasToken && strings.TrimSpace(token) == "") {
+				return errors.New("exactly one of --code <code>, --token <token> or --force is required")
+			}
+			if hasToken {
+				return manager().LocalReleaseToken(cmd.Context(), strings.TrimSpace(token))
 			}
 			return manager().LocalRelease(cmd.Context(), code, force)
 		},
 	}
 	release.Flags().StringVar(&code, "code", "", "Offline break-glass code")
+	release.Flags().StringVar(&token, "token", "", "Signed offline release token issued by the console")
 	release.Flags().BoolVar(&force, "force", false, "Force release as a local administrator")
 	group.AddCommand(release)
 	var reason string

@@ -147,9 +147,9 @@ export async function emailReportRun(opts: {
     // The branded PDF is the deliverable an MSP wants landing in the client's
     // inbox — render it here exactly as the web does (same shared renderer).
     try {
-      const generatedAt = new Intl.DateTimeFormat('en-US', {
-        timeZone: opts.timezone, dateStyle: 'medium', timeStyle: 'short',
-      }).format(new Date());
+      // The instant, not a string: the renderer prints it in the partner's
+      // date format with its timezone, like every other report path (#12048).
+      const generatedAt = new Date();
       // The logo is decoded while the PDF is built and written; a large one
       // holds the process-wide large-decode slot (pngDecodeLimits.ts).
       const content = await withPngDecodeSlot(imageBytesFromDataUrl(opts.branding?.logoDataUrl), () => {

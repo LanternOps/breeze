@@ -264,6 +264,12 @@ describe('ISOLATED_BUCKETS pins', () => {
     expect(ISOLATED_BUCKETS.some((b) => '/api/v1/flows/abc'.startsWith(b.prefix))).toBe(false);
   });
 
+  it('meters portal SCIM provisioning in its own per-IP bucket (W9 #11386, D9)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/scim/', name: 'scim', limit: 6000 });
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/scim/portal/v2/Users'.startsWith(b.prefix) && b.name === 'scim')).toBe(true);
+  });
+
   it('meters bare-metal recovery object downloads separately from the shared 600/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');

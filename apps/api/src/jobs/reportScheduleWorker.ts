@@ -598,8 +598,8 @@ async function loadGatedSeriesChild(
 
 /** One-line trend summary for the email body — "Posture score 79 — up from
  * 74 last run." — built from the same `result.summary`/`result.previous`
- * snapshot the PDF scorecard reads, so the two never disagree. */
-function trendLineOf(result: ReportResult): string | null {
+ * snapshot the PDF scorecard reads, so the two never disagree. Exported for tests. */
+export function trendLineOf(result: ReportResult): string | null {
   const s = result.summary as Record<string, unknown> | undefined;
   const prev = result.previous?.summary as Record<string, unknown> | undefined;
   const score = typeof s?.postureScore === 'number' ? (s.postureScore as number) : null;
@@ -610,9 +610,27 @@ function trendLineOf(result: ReportResult): string | null {
     }
     return `Posture score ${score}.`;
   }
-  const health = (s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+  // Executive Summary (#12045): the headline is the share of devices seen in
+  // the recent window, compared only with a baseline that recorded the same.
+  const devicesOf = (v: Record<string, unknown> | undefined) =>
+    v?.devices as { total?: unknown; recentlySeenPercentage?: unknown; recentWindowDays?: unknown; healthPercentage?: unknown } | undefined;
+  const seen = devicesOf(s)?.recentlySeenPercentage;
+  // No managed devices: the 100 is a divide-by-zero default, not a figure —
+  // neither shown for this run nor used as the previous run's baseline.
+  if (devicesOf(s)?.total === 0) return null;
+  const prevDevices = devicesOf(prev)?.total === 0 ? undefined : devicesOf(prev);
+  if (typeof seen === 'number') {
+    const days = typeof devicesOf(s)?.recentWindowDays === 'number' ? devicesOf(s)!.recentWindowDays : 7;
+    const label = `Fleet availability (seen in last ${days} days) ${seen}%`;
+    const prevSeen = prevDevices?.recentlySeenPercentage;
+    if (typeof prevSeen === 'number' && prevSeen !== seen) {
+      return `${label} — ${seen > prevSeen ? 'up' : 'down'} from ${prevSeen}% last run.`;
+    }
+    return `${label}.`;
+  }
+  const health = devicesOf(s)?.healthPercentage;
   if (typeof health === 'number') {
-    const prevHealth = (prev?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+    const prevHealth = prevDevices?.healthPercentage;
     if (typeof prevHealth === 'number' && prevHealth !== health) {
       return `Fleet health ${health}% — ${health > prevHealth ? 'up' : 'down'} from ${prevHealth}% last run.`;
     }

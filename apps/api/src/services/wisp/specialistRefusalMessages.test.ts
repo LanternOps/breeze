@@ -66,3 +66,35 @@ describe('assessment refusal details (#10406)', () => {
     }
   });
 });
+
+describe('W02 analysis scope refusals', () => {
+  it('name the setting to change', () => {
+    expect(specialistRefusalMessage('invalid_params', 'scope_required')).toMatch(/scope "org"/);
+    expect(specialistRefusalMessage('admission_skipped', 'frame_too_large')).toMatch(/analysisMaxFrameDevices/);
+    expect(specialistRefusalMessage('admission_skipped', 'too_many_input_devices')).toMatch(/analysisMaxInputDevicesPerRun/);
+    expect(specialistRefusalMessage('admission_skipped', 'site_not_in_scope')).toMatch(/does not reach it/);
+    expect(specialistRefusalMessage('admission_skipped', 'frame_empty')).toMatch(/no active devices/);
+  });
+});
+
+describe('W03 analysis continuation and chain refusals', () => {
+  it.each([
+    'analysis_continuation_not_found', 'analysis_continuation_wrong_kind',
+    'analysis_continuation_other_grant', 'analysis_continuation_not_settled',
+    'analysis_chain_too_long', 'analysis_chain_budget_exceeded', 'analysis_rate',
+  ])('%s has its own sentence', (code) => {
+    const refused = code.startsWith('analysis_continuation') ? 'continuation_refused' : 'admission_skipped';
+    expect(specialistRefusalMessage(refused, code)).not.toBe(specialistRefusalMessage(refused));
+  });
+
+  it('each chain refusal names the limit field to change', () => {
+    expect(specialistRefusalMessage('admission_skipped', 'analysis_chain_too_long')).toMatch(/analysisMaxChainDepth.*analysisMaxChainRuns/);
+    expect(specialistRefusalMessage('admission_skipped', 'analysis_chain_budget_exceeded')).toContain('analysisMaxChainBudgetCents');
+    expect(specialistRefusalMessage('admission_skipped', 'analysis_rate')).toContain('analysisMaxRunsPerHour');
+    expect(specialistRefusalMessage('budget_exhausted')).toContain('daily budget');
+  });
+
+  it('the generic continuation sentence is no longer troubleshooting-only', () => {
+    expect(specialistRefusalMessage('continuation_refused')).not.toMatch(/troubleshooting/);
+  });
+});

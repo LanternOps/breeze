@@ -595,7 +595,7 @@
       "verify": "Prüfen",
       "verifyQueued": "Modellprüfung eingeplant",
       "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden.",
-      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens).",
+      "verifyGatewayHint": "Führt einen Tool-Calling-Test gegen Ihren Endpunkt aus. Siehe den Kostenhinweis oben.",
       "remove": "Modell entfernen",
       "removeTitle": "Dieses Modell entfernen?",
       "removeMessage": "„{{model}}“ wird aus dieser Verbindung gelöscht. Bisherige Nutzungs- und Kostendaten bleiben erhalten. Sie können es später erneut hinzufügen.",
@@ -1010,6 +1010,7 @@
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
     "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
+    "logoLowRes": "Dieses Logo ist {{width}} × {{height}} px groß. Berichte, Angebote und Rechnungen drucken es bis zu etwa 64 mm (2,5 Zoll) breit, daher wirkt es im Druck unscharf. Laden Sie eine Version hoch, deren längste Seite mindestens 600 px misst.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",
@@ -3348,7 +3349,8 @@
           "turnCount": "Runden",
           "summary": "Zusammenfassung",
           "computeCost": "Rechenkosten",
-          "computeEstimated": "(geschätzt)"
+          "computeEstimated": "(geschätzt)",
+          "scope": "Umfang"
         },
         "flags": {
           "budgetExceeded": "Budget überschritten",
@@ -3434,6 +3436,24 @@
           "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
           "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
           "loading": "Budget wird geladen…"
+        },
+        "scope": {
+          "org_one": "Gesamte Organisation ({{count}} Gerät zum Startzeitpunkt)",
+          "org_other": "Gesamte Organisation ({{count}} Geräte zum Startzeitpunkt)",
+          "site_one": "Standort {{name}} ({{count}} Gerät zum Startzeitpunkt)",
+          "site_other": "Standort {{name}} ({{count}} Geräte zum Startzeitpunkt)",
+          "siteUnnamed_one": "Ein Standort ({{count}} Gerät zum Startzeitpunkt)",
+          "siteUnnamed_other": "Ein Standort ({{count}} Geräte zum Startzeitpunkt)",
+          "devices_one": "{{count}} ausgewähltes Gerät",
+          "devices_other": "{{count}} ausgewählte Geräte"
+        },
+        "chain": {
+          "title": "Diese Untersuchung",
+          "description": "Jeder Schritt setzte einen früheren fort und konnte die Dateien nutzen, die frühere Schritte erzeugt haben.",
+          "step": "Schritt {{step}}",
+          "current": "Dieser Lauf",
+          "open": "Lauf öffnen",
+          "noGoal": "Kein Ziel erfasst"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Tarif & Funktionen",
     "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
     "currentPlan": "Aktueller Tarif",
+    "changePlan": "Tarif ändern",
+    "enrollmentPaused": "Die Registrierung neuer Geräte ist pausiert: {{active}} von {{limit}} Geräten.",
+    "enrollmentPausedNoCounts": "Die Registrierung neuer Geräte ist pausiert, weil Ihr Konto sein Gerätelimit erreicht hat.",
+    "enrollmentPausedChangePlan": "Ändern Sie Ihren Tarif, um weitere hinzuzufügen.",
     "plans": {
       "free": "Kostenlos",
       "starter": "Starter",
@@ -8937,6 +8961,47 @@
       "stale": "Dieser Batch hat sich geändert, seit Sie ihn geöffnet haben. Prüfen Sie die aktualisierte Liste und versuchen Sie es erneut.",
       "notHeld": "Dieser Batch wartet nicht mehr auf eine Entscheidung.",
       "enforcementOff": "Die Deprovisionierung ist auf diesem Server im Modus „Nur Bericht“, daher gibt es nichts anzuwenden."
+    }
+  },
+  "portalScim": {
+    "title": "Microsoft-Entra-Bereitstellung (SCIM)",
+    "description": "Lassen Sie den Entra-Mandanten des Kunden Portalkonten für die Personen anlegen, die der App „Breeze Portal“ zugewiesen sind, und sie deaktivieren, wenn diese ausscheiden.",
+    "loading": "Bereitstellung wird geladen…",
+    "retry": "Erneut versuchen",
+    "refreshFailed": "Aktualisierung fehlgeschlagen. Die Anzeige ist möglicherweise nicht aktuell.",
+    "needsTenant": "Weisen Sie oben den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Bereitstellung einrichten.",
+    "tenantUrl": "Mandanten-URL",
+    "noBaseUrl": "Die öffentliche Adresse der API ist nicht konfiguriert, daher kann die Mandanten-URL nicht angezeigt werden. Bitten Sie Ihren Administrator, PUBLIC_API_URL zu setzen.",
+    "counts": "{{provisioned}} bereitgestellt · {{deactivated}} vom Verzeichnis deaktiviert",
+    "secretOnce": "Kopieren Sie dieses Token jetzt und fügen Sie es in das Feld „Geheimes Token“ der Entra-App ein. Es wird nicht erneut angezeigt.",
+    "secretToken": "Geheimes Token",
+    "secretDone": "Ich habe es kopiert",
+    "lastUsed": "Zuletzt verwendet {{date}}",
+    "neverUsed": "Noch nicht verwendet",
+    "notWorking": "Funktioniert nicht: Der nachgewiesene Mandant dieser Organisation hat sich geändert",
+    "revoke": "Widerrufen",
+    "label": "Token-Name",
+    "create": "Bereitstellungs-Token erstellen",
+    "createSubmit": "Erstellen",
+    "cancel": "Abbrechen",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "copyFailed": "Kopieren in die Zwischenablage nicht möglich.",
+    "revokeConfirm": {
+      "title": "Dieses Bereitstellungs-Token widerrufen?",
+      "message": "Entra beendet die Bereitstellung mit „{{label}}“ sofort. Bereits bereitgestellte Personen behalten ihre Konten."
+    },
+    "toasts": {
+      "created": "Bereitstellungs-Token erstellt.",
+      "revoked": "Bereitstellungs-Token widerrufen."
+    },
+    "errors": {
+      "load": "Bereitstellung konnte nicht geladen werden.",
+      "create": "Bereitstellungs-Token konnte nicht erstellt werden.",
+      "revoke": "Bereitstellungs-Token konnte nicht widerrufen werden.",
+      "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie ein Bereitstellungs-Token erstellen.",
+      "limit": "Diese Organisation hat bereits zwei aktive Bereitstellungs-Token. Widerrufen Sie zuerst eines.",
+      "notFound": "Dieses Bereitstellungs-Token existiert nicht mehr."
     }
   }
 }

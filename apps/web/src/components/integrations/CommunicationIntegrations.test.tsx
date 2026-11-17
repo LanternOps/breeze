@@ -8,6 +8,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({
+  showToast: (...args: unknown[]) => showToastMock(...args),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, status = 200): Response {
@@ -22,6 +27,7 @@ describe('CommunicationIntegrations', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     fetchWithAuthMock.mockResolvedValue(makeResponse({}, 404));
+    showToastMock.mockReset();
   });
 
   afterEach(async () => {
@@ -80,5 +86,85 @@ describe('CommunicationIntegrations', () => {
     expect(await screen.findByText('Nicht verbunden')).toBeInTheDocument();
     expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
     expect(screen.queryByText(/Pending connection/)).not.toBeInTheDocument();
+  });
+
+  // #12054: the test button reported "queued" for a dispatch that never
+  // happened, and replaced the API's failure reason with a generic string.
+  async function clickDiscordTest() {
+    render(<CommunicationIntegrations />);
+    await screen.findByLabelText('Webhook URL');
+    const enabledToggles = screen.getAllByLabelText('Enabled');
+    fireEvent.click(enabledToggles[enabledToggles.length - 1]);
+    expect(screen.getByLabelText('Webhook URL')).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Webhook URL'), {
+      target: { value: 'https://discord.com/api/webhooks/1/token' },
+    });
+    const testButtons = screen.getAllByRole('button', { name: 'Test notification' });
+    const discordTest = testButtons[testButtons.length - 1];
+    expect(discordTest).toBeEnabled();
+    fireEvent.click(discordTest);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+  }
+
+  it('reports a delivered Discord test as sent, not queued', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ success: true, message: 'Discord test notification sent.' }),
+    );
+
+    await clickDiscordTest();
+
+    expect(await screen.findByText('Discord test notification sent.')).toBeInTheDocument();
+    expect(screen.queryByText(/queued/i)).not.toBeInTheDocument();
+    const [endpoint, init] = fetchWithAuthMock.mock.calls[1]!;
+    expect(endpoint).toBe('/integrations/discord');
+    expect(JSON.parse(String(init?.body))).toMatchObject({ test: true });
+  });
+
+  it('shows the API reason when the Discord test fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ success: false, error: 'Discord rejected the webhook (HTTP 404)' }, 400),
+    );
+
+    await clickDiscordTest();
+
+    expect(await screen.findByText('Discord rejected the webhook (HTTP 404)')).toBeInTheDocument();
+    // A failed test is the result shown beside the button, not a toast.
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  // #12102: test actions are throttled; a throttled click must say so.
+  it('toasts and shows the rate-limit message when the Discord test is throttled', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({
+        success: false,
+        code: 'RATE_LIMITED',
+        error: 'Too many test requests. Try again in 42 seconds.',
+      }, 429),
+    );
+
+    await clickDiscordTest();
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    const toast = showToastMock.mock.calls[0]![0] as { type: string; message: string };
+    expect(toast.type).toBe('error');
+    expect(toast.message).toMatch(/too many requests/i);
+    expect(await screen.findByText(toast.message)).toBeInTheDocument();
+  });
+
+  it('shows nothing for a test whose session expired (the auth redirect handles it)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, 401));
+
+    await clickDiscordTest();
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Test notification' }).at(-1)).toBeEnabled(),
+    );
+    expect(screen.queryByText('Unauthorized')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discord test notification failed.')).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });

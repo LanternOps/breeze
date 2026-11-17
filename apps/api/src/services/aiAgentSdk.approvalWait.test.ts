@@ -18,7 +18,7 @@ import {
 import { db, assertOutsideHeldDbContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { waitForApproval } from './aiAgent';
+import { waitForApproval, type ApprovalWaitDetail } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import { captureException } from './sentry';
 
@@ -236,6 +236,23 @@ function mockUpdateChain() {
   return { set, where };
 }
 
+/**
+ * #12084 review: the Tier-2 fallback close-out locks the mobile request
+ * (select ... for('update')) before it writes the execution row. Returns the
+ * order of the lock and the first UPDATE.
+ */
+function mockRequestLock() {
+  const order: string[] = [];
+  const forSpy = vi.fn(async () => { order.push('lock'); return []; });
+  vi.mocked(db.select).mockImplementation((() => ({ from: () => ({ where: () => ({ for: forSpy }) }) })) as never);
+  const update = vi.mocked(db.update).getMockImplementation();
+  vi.mocked(db.update).mockImplementation(((...a: unknown[]) => {
+    order.push('update');
+    return update ? (update as (...x: unknown[]) => unknown)(...a) : undefined;
+  }) as never);
+  return { forSpy, order };
+}
+
 /** Poll until `fn()` is true (waits blocked inside preToolUse are async). */
 async function until(fn: () => boolean, ms = 2000): Promise<void> {
   const start = Date.now();
@@ -359,7 +376,7 @@ describe('configurable interactive approval timeout (#6475)', () => {
 
     await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
 
-    expect(waitForApproval).toHaveBeenCalledWith('exec-cfg-2', THIRTY_MIN, expect.any(AbortSignal));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-cfg-2', THIRTY_MIN, expect.any(AbortSignal), expect.any(Object));
     const event = vi.mocked(session.eventBus.publish).mock.calls
       .map(([e]: [any]) => e)
       .find((e: any) => e.type === 'approval_required');
@@ -511,6 +528,7 @@ describe('settleApprovalWaits (#3089)', () => {
     } as any);
     mockInsertReturning({ id: 'exec-4' });
     const { set, where } = mockUpdateChain();
+    const lock = mockRequestLock();
     vi.mocked(waitForApproval).mockImplementation(
       (_id: string, _timeoutMs: number, signal?: AbortSignal) =>
         new Promise((resolve) => {
@@ -547,8 +565,51 @@ describe('settleApprovalWaits (#3089)', () => {
         { _eq: ['approval_requests.status', 'pending'] },
       ],
     });
+    // Request first, then execution (#12084 review).
+    expect(lock.forSpy).toHaveBeenCalledWith('update');
+    expect(lock.order.slice(0, 2)).toEqual(['lock', 'update']);
     expect(session.pendingApprovalWaits).toBe(0);
   });
+
+  it.each([
+    ['tier-2', {}, 'take_screenshot', 2],
+    ['helper/PAM', { auth: { ...makeAuth(), helperDeviceId: 'dev-9' } }, 'execute_command', 3],
+  ])(
+    '%s: when the wait could not write its timeout, the fallback close-out stores "timed out", not "ended" (#12084)',
+    async (_label, sessionOverrides, toolName, tier) => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier,
+        requiresApproval: true,
+        description: 'Run it',
+      } as any);
+      mockInsertReturning({ id: 'exec-t' });
+      const { set, where } = mockUpdateChain();
+      mockRequestLock();
+      const { decideHelperToolAction } = await import('./pamToolActionGovernance');
+      vi.mocked(decideHelperToolAction).mockResolvedValue('prompt' as any);
+      // What waitForApproval reports when its own close-out failed.
+      vi.mocked(waitForApproval).mockImplementation(
+        async (_id: string, _timeoutMs: number, _signal?: AbortSignal, detail?: ApprovalWaitDetail) => {
+          Object.assign(detail!, { expired: true, closeOutMessage: 'Approval timed out' });
+          return false;
+        },
+      );
+      const session = makeActiveSession(sessionOverrides);
+
+      const result = await createSessionPreToolUse(session)(toolName, { deviceId: 'd-1' });
+
+      expect(result.allowed).toBe(false);
+      // The card said expired; the row a late click reads must say so too.
+      expect(set).toHaveBeenCalledWith({ status: 'rejected', errorMessage: 'Approval timed out' });
+      expect(set).not.toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: 'Approval wait ended before a decision was made' }),
+      );
+      expect(where).toHaveBeenCalledWith({
+        _and: [{ _eq: ['id', 'exec-t'] }, { _eq: ['status', 'pending'] }],
+      });
+    },
+  );
 
   it('a zero-budget tier-2 approval never runs the ceremony (no mobile push, no UI card) and self-closes honestly', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
@@ -605,7 +666,7 @@ describe('settleApprovalWaits (#3089)', () => {
     const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
     expect(result.allowed).toBe(false);
-    expect(waitForApproval).toHaveBeenCalledWith('exec-h9', 0, expect.any(AbortSignal));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-h9', 0, expect.any(AbortSignal), expect.any(Object));
     expect(session.pendingApprovalWaits).toBe(0);
   });
 });

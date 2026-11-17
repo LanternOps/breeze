@@ -7,14 +7,14 @@ import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { orgDocuments, organizations, partners, trustPageDocuments, trustPages } from '../db/schema';
 import { PERMISSIONS } from '../services/permissions';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { requireCapability } from '../services/partnerTrust';
 import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
-  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, loadTrustPageEvidence, resolveTrustPageSettings,
-  trustPublishDecision, TrustPageError, PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
+  ensureTrustPage, publishTrustPage, serveCommittedPublication, unpublishTrustPage, loadLinkedDocumentsForEditor, loadTrustPageEvidence, resolveTrustPageSettings,
+  servingStatusFor, trustPublishDecision, TrustPageError, PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
 } from '../services/trustPage/publication';
 import { withTrustPageRevision } from '../services/trustPage/revision';
 import { frameworkOptionsFor } from '../services/trustPage/sections/frameworks';
@@ -201,27 +201,41 @@ trustPageRoutes.put('/:orgId/trust-page/embed', scopes, orgWrite, requireMfa(), 
 
 trustPageRoutes.post('/:orgId/trust-page/publish', scopes, orgWrite, requireMfa(), requireCapability('trust_page_publish'), zValidator('param', orgParam), zValidator('json', trustPagePublishSchema), async (c) => {
   const { orgId } = c.req.valid('param');
-  const ctx = await resolveAccessibleOrg(c, orgId);
-  if (!ctx) return notFound(c);
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
   try {
-    const { page, snapshotId } = await publishTrustPage({ orgId, expectedRevision: body.expectedRevision, expectedTemplateRevision: body.expectedTemplateRevision, actorUserId: auth.user.id, authorization: body.authorization ?? null, partnerTrustState: ctx.trustState, partnerSlug: ctx.partnerSlug, orgSlug: ctx.orgSlug });
-    await audit(c, orgId, 'trust_page.publish', page.id, { publicationRevision: page.publicationRevision, snapshotId, authorizationRecorded: Boolean(body.authorization) });
-    return c.json({ data: { page, snapshotId, ...publicPaths(ctx, page.isPartnerHome) } });
+    // Self-managed DB context (#9087): the publish COMMITS when this context resolves; only then is the serving
+    // set reconciled, and the response waits for it ("live when the toast says so", spec §7).
+    const done = await withAuthDbAccessContext(auth, async () => {
+      const ctx = await resolveAccessibleOrg(c, orgId);
+      if (!ctx) return null;
+      const published = await publishTrustPage({ orgId, expectedRevision: body.expectedRevision, expectedTemplateRevision: body.expectedTemplateRevision, actorUserId: auth.user.id, authorization: body.authorization ?? null, partnerTrustState: ctx.trustState, partnerSlug: ctx.partnerSlug, orgSlug: ctx.orgSlug });
+      await audit(c, orgId, 'trust_page.publish', published.page.id, { publicationRevision: published.page.publicationRevision, snapshotId: published.snapshotId, authorizationRecorded: Boolean(body.authorization) });
+      return { ctx, ...published };
+    });
+    if (!done) return notFound(c);
+    // Never throws for a Redis or reconcile failure: the DB committed, so a degraded outcome still answers 200.
+    // `serving` tells the editor whether the public card is live now or after the self-heal (#12103).
+    const serving = servingStatusFor(await serveCommittedPublication({ partnerId: done.page.partnerId, cache: done.cache }));
+    return c.json({ data: { page: done.page, snapshotId: done.snapshotId, serving, ...publicPaths(done.ctx, done.page.isPartnerHome) } });
   } catch (err) { return handleError(c, err); }
 });
 
 trustPageRoutes.post('/:orgId/trust-page/unpublish', scopes, orgWrite, requireMfa(), zValidator('param', orgParam), async (c) => {
   const { orgId } = c.req.valid('param');
-  const ctx = await resolveAccessibleOrg(c, orgId);
-  if (!ctx) return notFound(c);
   const auth = c.get('auth') as AuthContext;
   try {
-    const current = await ensureTrustPage(orgId, auth.user.id);
-    const page = await unpublishTrustPage({ orgId, actorUserId: auth.user.id, partnerSlug: ctx.partnerSlug, orgSlug: ctx.orgSlug, isPartnerHome: current.isPartnerHome });
-    await audit(c, orgId, 'trust_page.unpublish', page.id, { publicationRevision: page.publicationRevision });
-    return c.json({ data: { page } });
+    // Self-managed DB context (#9087): commit the unpublish, then reconcile the serving set against the DB.
+    const page = await withAuthDbAccessContext(auth, async () => {
+      if (!(await resolveAccessibleOrg(c, orgId))) return null;
+      await ensureTrustPage(orgId, auth.user.id);
+      const updated = await unpublishTrustPage({ orgId, actorUserId: auth.user.id });
+      await audit(c, orgId, 'trust_page.unpublish', updated.id, { publicationRevision: updated.publicationRevision });
+      return updated;
+    });
+    if (!page) return notFound(c);
+    const serving = servingStatusFor(await serveCommittedPublication({ partnerId: page.partnerId }));
+    return c.json({ data: { page, serving } });
   } catch (err) { return handleError(c, err); }
 });
 

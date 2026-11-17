@@ -44,6 +44,19 @@ static int clipboard_get_data(const char *type, void **out, int *length) {
 	}
 }
 
+static long clipboard_change_count(void) {
+	@autoreleasepool {
+		return (long)[[NSPasteboard generalPasteboard] changeCount];
+	}
+}
+
+static int clipboard_type_count(void) {
+	@autoreleasepool {
+		NSArray *types = [[NSPasteboard generalPasteboard] types];
+		return types ? (int)[types count] : 0;
+	}
+}
+
 static int clipboard_set_text(const char *text, int length) {
 	@autoreleasepool {
 		NSPasteboard *pb = [NSPasteboard generalPasteboard];
@@ -79,6 +92,15 @@ func NewSystemClipboard() *SystemClipboard {
 	return &SystemClipboard{}
 }
 
+var _ ChangeCounter = (*SystemClipboard)(nil)
+
+// ChangeCount is NSPasteboard's changeCount, which moves on every change of
+// the general pasteboard, a copy of identical content included, without
+// reading it.
+func (s *SystemClipboard) ChangeCount() (uint64, bool) {
+	return uint64(C.clipboard_change_count()), true
+}
+
 func (s *SystemClipboard) GetContent() (Content, error) {
 	if data, ok := readClipboardData("public.png"); ok {
 		return Content{Type: ContentTypeImage, Image: data, ImageFormat: "png"}, nil
@@ -91,6 +113,9 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 	}
 	if text, ok := readClipboardText(); ok {
 		return Content{Type: ContentTypeText, Text: text}, nil
+	}
+	if C.clipboard_type_count() == 0 {
+		return Content{}, ErrClipboardEmpty
 	}
 
 	return Content{}, ErrNoSupportedFormat

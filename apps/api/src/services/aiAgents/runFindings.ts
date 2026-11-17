@@ -189,7 +189,7 @@ function firstSentence(text: string): string {
  * it hard-cuts, which is still better than shipping 400 characters to a list
  * cell.
  */
-function truncateWithEllipsis(text: string, max: number): string {
+export function truncateWithEllipsis(text: string, max: number): string {
   if (text.length <= max) return text;
   let head = text.slice(0, max - 1);
   // `slice` counts UTF-16 code units, so a cut can land between the halves

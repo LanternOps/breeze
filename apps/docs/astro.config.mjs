@@ -237,6 +237,7 @@ export default defineConfig({
                 { slug: 'features/portal-domain-verification' },
                 { slug: 'features/portal-self-registration' },
                 { slug: 'features/portal-directory-deprovisioning' },
+                { slug: 'features/portal-entra-scim' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

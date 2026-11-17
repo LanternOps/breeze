@@ -20,6 +20,7 @@
  *    carried one. Only the named columns below are ever drawn.
  */
 import type { jsPDF } from 'jspdf';
+import type { ReportFormatChrome } from './reportLocale';
 import { autoTable } from 'jspdf-autotable';
 import type {
   ThreatCoverage,
@@ -27,6 +28,15 @@ import type {
   ThreatIncidentRow,
 } from '../types/threatDetectionReport';
 import { SEVERITY_ORDER } from '../utils/threatDetection';
+import {
+  clientDetectionAdvice,
+  clientDetectionTitle,
+  deviceCountSourcesNote,
+  endpointCoverageCounts,
+  openForDays,
+  threatSeverityLabel,
+  threatStatusLabel,
+} from '../utils/threatDetectionDisplay';
 
 type RGB = [number, number, number];
 
@@ -43,7 +53,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & ReportFormatChrome;
 
 export type ThreatDetectionPdfOpts = {
   generatedAt: string;
@@ -58,18 +68,24 @@ const ink = (doc: jsPDF, c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
 /** The one string that stands for "we did not measure this". Never `0`. */
 const NA = 'N/A';
 
+/** Same palette as the Vulnerability Management report's severity tiles, so a
+ *  client reading both sees one colour per severity (#12046). */
 function severityColor(C: PdfChrome['C'], severity: string | null): RGB {
   switch ((severity ?? '').toLowerCase()) {
     case 'critical': return C.danger;
-    case 'high': return C.danger;
-    case 'medium': return C.warning;
+    case 'high': return C.warning;
+    case 'medium': return C.primary;
     case 'low': return C.muted;
     default: return C.faint;
   }
 }
 
-function dateOnly(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : NA;
+/** An unresolved detection older than this is called out under the table: it
+ *  may have been closed at the source without the closure reaching Breeze. */
+const LONG_OPEN_DAYS = 90;
+
+function dateOnly(chrome: PdfChrome, value: string | null | undefined): string {
+  return chrome.formatDate(value) ?? NA;
 }
 
 /** A measured count, or `N/A` — the whole point of the type's nullable counts. */
@@ -128,27 +144,63 @@ function drawTiles(
   return y + 22;
 }
 
-/** The counts-by-bucket line, severity order preserved from the snapshot. */
-function bucketLine(counts: Record<string, number> | null | undefined): string {
+/**
+ * The counts-by-bucket line, severity order preserved from the snapshot. Each
+ * stored bucket is printed through `label` (client words, never a raw token),
+ * and buckets that share a label are merged — `sent` and `open` are both
+ * "Open" — so one word never appears twice.
+ */
+function bucketLine(
+  counts: Record<string, number> | null | undefined,
+  label: (bucket: string) => string,
+): string {
   if (!counts) return `${NA} — not measured`;
   const entries = Object.entries(counts);
   if (entries.length === 0) return 'None recorded in the covered window';
-  const known = (b: string) => (SEVERITY_ORDER as readonly string[]).indexOf(b);
-  return entries
+  const known = (b: string) => (SEVERITY_ORDER as readonly string[]).indexOf(b.toLowerCase());
+  const merged = new Map<string, number>();
+  entries
     .sort((a, b) => {
       const ra = known(a[0]) === -1 ? SEVERITY_ORDER.length : known(a[0]);
       const rb = known(b[0]) === -1 ? SEVERITY_ORDER.length : known(b[0]);
       return ra - rb || a[0].localeCompare(b[0]);
     })
-    .map(([bucket, count]) => `${bucket}: ${count}`)
-    .join('   ·   ');
+    .forEach(([bucket, count]) => {
+      const word = label(bucket);
+      merged.set(word, (merged.get(word) ?? 0) + count);
+    });
+  return [...merged.entries()].map(([word, count]) => `${word}: ${count}`).join('   ·   ');
 }
 
-function coverageMeta(coverage: ThreatCoverage | undefined, generatedAt: string): string {
-  const period = coverage?.periodStart && coverage?.periodEnd
-    ? `${dateOnly(coverage.periodStart)} to ${dateOnly(coverage.periodEnd)}`
-    : 'an unstated period';
-  return `Generated review evidence for ${period}   ·   Prepared ${generatedAt}`;
+/** Same shape, words and separator as the other service-plan reports' title
+ *  meta (#12046, #12048). */
+function coverageMeta(chrome: PdfChrome, coverage: ThreatCoverage | undefined, generatedAt: string): string {
+  const range = chrome.formatPeriod(coverage?.periodStart, coverage?.periodEnd);
+  const period = range ? `Reporting period ${range}` : 'Reporting period not stated';
+  return [period, `Generated ${generatedAt}`, 'Automatically generated review evidence'].join(chrome.metaSeparator);
+}
+
+/** Statuses that close a detection even when the source sent no closure date
+ *  — such a row must not read "Open N days" beside "Resolved". */
+const CLOSED_STATUS_LABELS = new Set(['Resolved', 'Dismissed']);
+
+function isClosedWithoutDate(row: ThreatIncidentRow): boolean {
+  return !row.resolvedAt && CLOSED_STATUS_LABELS.has(threatStatusLabel(row.status));
+}
+
+function isLongOpen(row: ThreatIncidentRow | undefined, asOf: string | undefined): boolean {
+  if (!row || row.resolvedAt || isClosedWithoutDate(row)) return false;
+  const days = openForDays(row.reportedAt, asOf);
+  return days !== null && days > LONG_OPEN_DAYS;
+}
+
+/** The Resolved cell: a date, or how long the detection has been open. */
+function resolvedCell(chrome: PdfChrome, row: ThreatIncidentRow, asOf: string | undefined): string {
+  if (row.resolvedAt) return dateOnly(chrome, row.resolvedAt);
+  if (isClosedWithoutDate(row)) return 'Not recorded';
+  const days = openForDays(row.reportedAt, asOf);
+  if (days === null) return 'Not resolved';
+  return `Open ${days} day${days === 1 ? '' : 's'}`;
 }
 
 export function renderThreatDetectionReport(
@@ -169,15 +221,16 @@ export function renderThreatDetectionReport(
     doc,
     'Threat Detection Review',
     summary.orgName ?? '',
-    coverageMeta(coverage, opts.generatedAt),
-    PAGE.bandH + 14,
+    coverageMeta(chrome, coverage, opts.generatedAt),
+    PAGE.bandH + 8,
   );
 
   // --- What this covers -------------------------------------------------------
   // First, before any number: the reader must know the window before they read
   // a count over it. `note` is printed verbatim — it is the one sentence the
   // shared `coverageGapLine` produced at generation time.
-  y = chrome.drawSectionHeading(doc, 'What this covers', y + 6);
+  // 3 mm under the title block, as on the other service-plan reports (#12048).
+  y = chrome.drawSectionHeading(doc, 'What this covers', y + 3);
   const note = coverage?.note?.trim();
   y = drawProse(
     doc,
@@ -192,20 +245,56 @@ export function renderThreatDetectionReport(
   y = drawProse(
     doc,
     chrome,
-    `Detection data held from ${dateOnly(coverage?.coveredFrom)} to ${dateOnly(coverage?.coveredTo)}   ·   Last sync ${dateOnly(coverage?.lastSyncAt)}${coverage?.lastSyncStatus ? ` (${coverage.lastSyncStatus})` : ''}`,
+    [
+      `Detection data held from ${dateOnly(chrome, coverage?.coveredFrom)} to ${dateOnly(chrome, coverage?.coveredTo)}`,
+      `Last sync ${chrome.formatDateTime(coverage?.lastSyncAt) ?? NA}${coverage?.lastSyncStatus ? ` (${coverage.lastSyncStatus})` : ''}`,
+    ].join(chrome.metaSeparator),
     y,
     8,
     C.muted,
   );
 
   // --- Endpoint coverage ------------------------------------------------------
+  // #12046: the three device tiles reconcile — with + without = managed. The
+  // agent total is NOT a tile: it counts every agent the detection service
+  // holds for the org, including ones matched to no managed device, so it does
+  // not belong beside device counts. It is stated in words below instead.
+  const fleet = endpointCoverageCounts(agents);
   y = chrome.drawSectionHeading(doc, 'Endpoint coverage', y + 4);
   y = drawTiles(doc, chrome, [
-    { value: measured(agents?.huntressAgents), label: 'Endpoints with a detection agent', unmeasured: agents?.huntressAgents == null },
-    { value: measured(agents?.breezeDevices), label: 'Devices Breeze manages', unmeasured: agents?.breezeDevices == null },
-    { value: measured(agents?.devicesWithoutAgent), label: 'Managed devices with no detection agent', unmeasured: agents?.devicesWithoutAgent == null },
-    { value: measured(agents?.agentsOffline), label: 'Detection agents not reporting in', unmeasured: agents?.agentsOffline == null },
+    { value: measured(fleet.managed), label: 'Devices Breeze manages', unmeasured: fleet.managed == null },
+    { value: measured(fleet.withAgent), label: 'Managed devices with a detection agent', unmeasured: fleet.withAgent == null },
+    { value: measured(fleet.withoutAgent), label: 'Managed devices with no detection agent', unmeasured: fleet.withoutAgent == null },
+    // Huntress-only, unlike the device tiles beside it: say so on the tile.
+    { value: measured(agents?.agentsOffline), label: 'Huntress agents not reporting in', unmeasured: agents?.agentsOffline == null },
   ], y + 2);
+  // #12046 follow-up: Huntress was not measured, so the device pair came from
+  // the other products alone; the reader is told which.
+  const sourcesNote = deviceCountSourcesNote(agents, coverage?.sourceStatus);
+  if (sourcesNote) {
+    y = drawProse(doc, chrome, sourcesNote, y - 4, 8.4, C.muted) + 4;
+  } else if (fleet.agentsReported != null && fleet.unmatchedAgents != null && fleet.unmatchedAgents > 0) {
+    y = drawProse(
+      doc,
+      chrome,
+      `${fleet.unmatchedAgents} of the ${fleet.agentsReported} Huntress agents reported for this organization are not matched to a device Breeze manages, so they are not counted in the tiles above.`,
+      y - 4,
+      8.4,
+      C.muted,
+    ) + 4;
+  } else if (fleet.agentsReported != null && fleet.unmatchedAgents == null && fleet.withAgent != null) {
+    // A legacy snapshot (before #12046): its device pair counts Huntress
+    // agents only, so it says so. The unmatched count was never recorded, and
+    // two agents can share one device, so it is not guessed from the totals.
+    y = drawProse(
+      doc,
+      chrome,
+      `These device counts include Huntress agents only. ${fleet.agentsReported} Huntress agent${fleet.agentsReported === 1 ? ' is' : 's are'} reported for this organization; any not matched to a device Breeze manages are not counted in the tiles above.`,
+      y - 4,
+      8.4,
+      C.muted,
+    ) + 4;
+  }
   // EDR provider framework (#8164): printed only when the snapshot carries it,
   // so a no-EDR (or legacy) snapshot renders exactly as before. The vendor is
   // never named — this is a customer-facing artifact.
@@ -226,15 +315,15 @@ export function renderThreatDetectionReport(
     { value: measured(incidents?.opened), label: 'Detections raised', unmeasured: incidents?.opened == null },
     { value: measured(incidents?.resolved), label: 'Detections resolved', unmeasured: incidents?.resolved == null },
     { value: hoursLabel(incidents?.meanResolveHours), label: 'Average time to resolve', unmeasured: incidents?.meanResolveHours == null },
-    { value: hoursLabel(incidents?.medianResolveHours), label: 'Typical time to resolve', unmeasured: incidents?.medianResolveHours == null },
+    { value: hoursLabel(incidents?.medianResolveHours), label: 'Median time to resolve', unmeasured: incidents?.medianResolveHours == null },
   ], y + 2);
-  y = drawProse(doc, chrome, `By severity — ${bucketLine(incidents?.bySeverity)}`, y, 8.4, C.muted);
-  y = drawProse(doc, chrome, `By status — ${bucketLine(incidents?.byStatus)}`, y, 8.4, C.muted);
+  y = drawProse(doc, chrome, `By severity — ${bucketLine(incidents?.bySeverity, threatSeverityLabel)}`, y, 8.4, C.muted);
+  y = drawProse(doc, chrome, `By status — ${bucketLine(incidents?.byStatus, threatStatusLabel)}`, y, 8.4, C.muted);
   if (summary.edrDetections) {
     y = drawProse(
       doc,
       chrome,
-      `Managed endpoint protection detections open now: ${summary.edrDetections.open}   ·   ${bucketLine(summary.edrDetections.bySeverity)}`,
+      `Managed endpoint protection detections open now: ${summary.edrDetections.open}   ·   ${bucketLine(summary.edrDetections.bySeverity, threatSeverityLabel)}`,
       y,
       8.4,
       C.muted,
@@ -243,30 +332,48 @@ export function renderThreatDetectionReport(
 
   // --- The detections themselves ----------------------------------------------
   if (rows.length > 0) {
+    // An open detection's age is measured against generation time — the
+    // instant the snapshot was taken — never "now" at re-render, so an old
+    // snapshot re-renders identically.
+    const asOf = summary.generatedAt ?? coverage?.generatedAt;
+    // An all-empty advice column is noise; it is drawn only when some row has
+    // advice. It is the LAST column, so dropping it shifts no other index.
+    const hasAdvice = rows.some((r) => typeof r.recommendation === 'string' && r.recommendation.trim() !== '');
+    const head = ['Reported', 'Device', 'Severity', 'Detection', 'Status', 'Resolved'];
+    if (hasAdvice) head.push('What we advised');
     y = chrome.drawSectionHeading(doc, 'Detections', y + 3);
     autoTable(doc, {
       startY: y + 1,
       margin: { left: PAGE.mx, right: PAGE.mx, top: PAGE.bandH + 8, bottom: 14 },
-      head: [['Reported', 'Device', 'Severity', 'Detection', 'Status', 'Resolved', 'What we advised']],
-      body: rows.map((r) => [
-        dateOnly(r.reportedAt),
-        r.hostname ?? 'Unattributed',
-        r.severity ?? 'unknown',
-        [r.title ?? 'Detection', r.carriedIn ? '(opened before this period)' : ''].filter(Boolean).join(' '),
-        r.status ?? 'unknown',
-        r.resolvedAt ? dateOnly(r.resolvedAt) : 'Not yet',
-        r.recommendation ?? '',
-      ]),
+      head: [head],
+      body: rows.map((r) => {
+        const cells = [
+          dateOnly(chrome, r.reportedAt),
+          r.hostname ?? 'Unattributed',
+          threatSeverityLabel(r.severity),
+          [clientDetectionTitle(r.title, summary.orgName), r.carriedIn ? '(opened before this period)' : '']
+            .filter(Boolean).join(' '),
+          threatStatusLabel(r.status),
+          resolvedCell(chrome, r, asOf),
+        ];
+        if (hasAdvice) cells.push(clientDetectionAdvice(r.recommendation));
+        return cells;
+      }),
       styles: { font: 'helvetica', fontSize: 7.4, cellPadding: 1.8, textColor: C.ink, lineColor: C.rule, lineWidth: 0.1 },
-      headStyles: { fillColor: C.panel, textColor: C.ink, fontStyle: 'bold' },
+      headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold' },
       alternateRowStyles: { fillColor: C.zebra },
       columnStyles: {
         0: { cellWidth: 20 }, 1: { cellWidth: 32 }, 2: { cellWidth: 18 },
-        4: { cellWidth: 20 }, 5: { cellWidth: 20 },
+        4: { cellWidth: 28 }, 5: { cellWidth: 24 },
       },
       didParseCell: (data) => {
-        if (data.section === 'body' && data.column.index === 2) {
+        if (data.section !== 'body') return;
+        if (data.column.index === 2) {
           data.cell.styles.textColor = severityColor(C, String(data.cell.raw ?? ''));
+          data.cell.styles.fontStyle = 'bold';
+        }
+        if (data.column.index === 5 && isLongOpen(rows[data.row.index], asOf)) {
+          data.cell.styles.textColor = C.danger;
           data.cell.styles.fontStyle = 'bold';
         }
       },
@@ -276,6 +383,20 @@ export function renderThreatDetectionReport(
       },
     });
     y = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 6;
+    // Flag age rather than list a months-old open detection silently: it is
+    // either genuinely open or a closure that never reached Breeze, and the
+    // reader is owed a sentence either way.
+    const longOpen = rows.filter((r) => isLongOpen(r, asOf)).length;
+    if (longOpen > 0) {
+      y = drawProse(
+        doc,
+        chrome,
+        `${longOpen} detection${longOpen === 1 ? ' has' : 's have'} been open for more than ${LONG_OPEN_DAYS} days. A detection this old may have been closed at the source without the closure reaching this report; your technician will confirm its status.`,
+        y,
+        8.4,
+        C.danger,
+      );
+    }
   } else {
     y = chrome.drawSectionHeading(doc, 'Detections', y + 3);
     y = drawProse(

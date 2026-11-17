@@ -1465,6 +1465,19 @@
         "unknown": "ocurrió un error no reconocido"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqueado por un filtro de red",
+      "titleUntrustedCertificate": "Certificado del servidor no confiable",
+      "webFilter": "Un filtro de seguridad de la red de este dispositivo está respondiendo en lugar del servidor de Breeze ({{locationHost}}). Por lo general es una función de seguridad del router del proveedor de internet, un filtro web del firewall o una página de inicio de sesión de la red.",
+      "captivePortal": "La red de este dispositivo está reteniendo las conexiones en una página de inicio de sesión (portal cautivo).",
+      "plaintextUnknown": "Algo en la red de este dispositivo respondió a la conexión de Breeze con HTTP sin cifrar en lugar de TLS.",
+      "untrustedCertificate": "La conexión al servidor de Breeze presentó un certificado en el que este dispositivo no confía (emitido por {{certIssuer}}). Por lo general se debe a la inspección TLS de un firewall o proxy, a un problema de certificado en un servidor autoalojado o a un almacén de certificados raíz de confianza desactualizado en este dispositivo. Breeze no lo omitirá.",
+      "viaEch": "Actualmente accesible mediante Encrypted Client Hello.",
+      "cleared": "Estuvo bloqueado desde {{from}} hasta {{to}}.",
+      "lastKnown": "Último reporte: {{time}}. El dispositivo no ha reportado desde entonces, así que es posible que esto ya no aplique.",
+      "howToFix": "Cómo solucionarlo",
+      "noDetail": "sin detalles"
+    },
     "logShipping": {
       "label": "Envío de registros",
       "state": {
@@ -1688,6 +1701,7 @@
       "lastSeen": "Visto por última vez",
       "serial": "N.º de serie",
       "productSku": "Número de producto",
+      "hardwareModel": "Modelo",
       "assetTag": "Etiqueta de activo",
       "location": "Ubicación",
       "source": "Origen"
@@ -1706,6 +1720,7 @@
       "lastSeen": "Ordenar por última hora vista",
       "serial": "Ordenar por número de serie",
       "productSku": "Ordenar por número de producto",
+      "hardwareModel": "Ordenar por modelo",
       "assetTag": "Ordenar por etiqueta de activo",
       "location": "Ordenar por ubicación",
       "source": "Ordenar por origen"
@@ -1863,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist no fue instalado por Breeze y la implementación está desactivada, así que el agente no lo toca.",
       "unknown": "Breeze Assist está habilitado pero no instalado."
     },
+    "controlPlaneBlockBadge": "Filtro de red",
+    "controlPlaneBlockBadgeCertificate": "Certificado no confiable",
+    "controlPlaneBlockLastKnownTooltip": "Último reporte: {{time}}; el dispositivo no ha reportado desde entonces.",
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
@@ -2812,6 +2830,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
       "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio",
       "bulkWakeResult": "Enviado a {{sent}}, omitidos {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} omitidos por la política de Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "No se envió ningún wake: {{count}} bloqueados por la política de Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} no se pudieron verificar, inténtalo de nuevo",
+      "bulkWakeAllLookupFailed": "No se envió ningún wake: {{count}} no se pudieron verificar, inténtalo de nuevo",
       "scriptQueuedOneOffline": "Script \"{{script}}\" en cola para {{hostname}}: se ejecutará cuando el dispositivo se reconecte"
     },
     "tryAgain": "Intentar otra vez",
@@ -2866,7 +2888,9 @@
       "relayDisconnected": "conexión del agente de retransmisión interrumpida durante el envío — reintentar",
       "missingTarget": "no encontrados o acceso denegado",
       "removed": "eliminados",
-      "invalidRelay": "con selección de agente de retransmisión no válida"
+      "invalidRelay": "con selección de agente de retransmisión no válida",
+      "policyNotReady": "bloqueados por su política de Wake-on-LAN (no listos)",
+      "policyLookupFailed": "cuya política de Wake-on-LAN no se pudo verificar — reintentar"
     }
   },
   "filterAddDropdown": {
@@ -4876,6 +4900,7 @@
     "startDescription": "Bloquear el tráfico de red excepto el plano de administración de Breeze.",
     "releaseDescription": "Solicitar la eliminación de las reglas de aislamiento de Breeze. Un dispositivo sin conexión recibe la liberación al reconectarse.",
     "serverWarning": "Este es un sistema operativo de servidor. El aislamiento puede interrumpir servicios de otros dispositivos.",
+    "deadManUnsupported": "La política de contención de este dispositivo establece una liberación por inactividad (dead-man), pero la versión de su agente no la admite. El dispositivo se aislará sin ella.",
     "reason": "Motivo",
     "ttlHours": "Duración (horas)",
     "incidentId": "ID de incidente existente (opcional)",
@@ -4899,6 +4924,20 @@
     "codeNext": "Código de la próxima hora",
     "codeValidUntil": "Código actual válido hasta {{date}}",
     "codeError": "No se pudieron cargar los códigos de emergencia. Inténtelo de nuevo.",
+    "tabCode": "Código de emergencia",
+    "tabToken": "Token de liberación",
+    "issueToken": "Emitir token de liberación",
+    "hideToken": "Ocultar token",
+    "tokenLabel": "Token de liberación",
+    "copyToken": "Copiar token",
+    "tokenCopied": "Copiado",
+    "tokenCopyError": "No se pudo copiar el token. Selecciónelo y cópielo manualmente.",
+    "tokenQrAlt": "Código QR con el token de liberación",
+    "tokenValidUntil": "Token válido hasta {{date}}",
+    "tokenCommandHint": "En el dispositivo aislado, ejecute este comando como administrador o root, reemplazando <token> por el token:",
+    "tokenError": "No se pudo emitir un token de liberación. Inténtelo de nuevo.",
+    "tokenUnavailable": "No hay un token de liberación disponible para este aislamiento.",
+    "codesDisabledNote": "Los códigos de emergencia están desactivados para este dispositivo. Use un token de liberación firmado.",
     "incidentHeading": "Aislamiento de red",
     "retry": "Reintentar estado de aislamiento",
     "filterLabel": "Aislado",

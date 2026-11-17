@@ -56,7 +56,8 @@ describe('portal self-registration emails', () => {
     for (const body of [t.html, t.text]) {
       expect(body).toContain('https://portal.example.com/login');
       expect(body).toContain('https://portal.example.com/forgot-password');
-      expect(body).toContain('Microsoft');
+      // The portal may not offer Microsoft sign-in: don't promise a method.
+      expect(body).not.toContain('Microsoft');
       expect(body).toContain('contact your IT provider');
     }
     const evil = buildPortalSelfRegistrationExistingAccountTemplate({ ...existingBase, orgName: '<i>x</i>' });

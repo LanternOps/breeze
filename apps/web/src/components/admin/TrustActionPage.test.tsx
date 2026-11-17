@@ -89,6 +89,19 @@ describe('TrustActionPage', () => {
     expect(screen.getByText('residential')).toBeTruthy();
     expect(screen.getByText('Email domain, Billing card fingerprint')).toBeTruthy();
     expect(fetchWithAuth).toHaveBeenCalledWith('/admin/trust/act/preview?token=signed-token');
+    // An older card without the source field still renders.
+    expect(screen.getByTestId('trust-action-ip-source').textContent).toBe('not recorded');
+  });
+
+  it('shows which classifier produced the signup IP class (#11698)', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      ...preview,
+      card: { ...preview.card, signup: { ip: '203.0.113.10', ipClass: 'unknown', asn: 64501, source: 'offline' } },
+    }));
+
+    render(<TrustActionPage />);
+
+    expect((await screen.findByTestId('trust-action-ip-source')).textContent).toBe('offline: nothing found');
   });
 
   it('submits the TOTP through runAction and shows the resulting trust state', async () => {

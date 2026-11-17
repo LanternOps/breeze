@@ -46,6 +46,8 @@ const PARTNER_AXIS_TABLES = new Set([
   'edr_connections',
   'accounting_connections',
   'ticket_mailbox_connections',
+  // #9127 PR C: one row per partner (unique partner_id).
+  'td_synnex_sftp_integrations',
 ]);
 
 /**

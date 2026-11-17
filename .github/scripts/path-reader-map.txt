@@ -22,6 +22,7 @@ apps/api/src/services/eventBus.types.test.ts apps/docs/src/content/docs/features
 apps/api/src/services/installerSigningDocs.test.ts docs/signing/WINDOWS_INSTALLER_SIGNING.md
 apps/api/src/services/installerSigningDocs.test.ts apps/docs/src/content/docs/deploy/verify-installer.mdx
 apps/api/src/services/mcpGuidancePromptTools.test.ts apps/docs/src/content/docs/features/ai-tools.mdx
+apps/api/src/services/aiToolsExport.registration.test.ts apps/docs/src/content/docs/features/ai-tools.mdx
 apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/src/content/docs/features/hardware-monitoring.mdx
 apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/astro.config.mjs
 apps/web/src/components/devices/time/timeSyncEvidenceDocs.test.ts apps/docs/src/content/docs/features/time-sync.mdx

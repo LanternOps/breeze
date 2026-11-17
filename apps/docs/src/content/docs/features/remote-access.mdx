@@ -310,7 +310,11 @@ The **Clipboard** chip in the viewer toolbar (it reads **Clipboard off** when bo
 - **Copy remote clipboard** brings the remote clipboard to your machine, for example when the viewer was in the background when something was copied on the remote.
 - **Send clipboard to remote** pushes your clipboard to the remote, for applications where you paste from a menu rather than with a keyboard shortcut.
 
-Pressing the remote's paste shortcut sends your clipboard first. If it can't be delivered (too large, disabled by policy, or the connection dropped), the paste is cancelled with a *Nothing pasted* message instead of pasting whatever was on the remote clipboard before. Connecting to a session no longer overwrites your local clipboard with the remote's.
+A change to the remote clipboard is copied to your machine automatically only when it follows something you did in the session: within about 2 seconds of a key or click you sent to the remote (with the viewer window focused), or of a copy shortcut. Any other change, such as something the end user copied while you were reading the screen, does not overwrite your clipboard. A **Remote clipboard changed** badge appears next to the chip instead; click it to copy the change here. If the remote copied something that can't be synced (a file, for example), the badge says so and cannot be clicked.
+
+Pressing the remote's paste shortcut pastes whichever clipboard changed last. If you copied something on your machine after the remote's last change, it is sent first; if the remote changed after your last copy, the remote pastes its own clipboard and yours is not sent over it. If your clipboard can't be delivered (too large, disabled by policy, the connection dropped, or it holds something that can't be sent, such as a file), the paste is cancelled with a *Nothing pasted* message instead of pasting whatever was on the remote clipboard before. Connecting to a session does not overwrite your local clipboard with the remote's.
+
+With a current agent the viewer also learns about remote clipboard changes it cannot carry (files, images the agent cannot read), sees a repeat copy of identical content, and gets a copied item right after a copy shortcut instead of up to half a second later. Older agents keep the earlier behaviour for those cases.
 
 Clipboard v2 needs agent and Breeze Viewer v0.122.1 or later. With an older agent the chip reports that the agent did not report clipboard status: text only, policy unknown. On a VNC session the clipboard is text only.
 
@@ -557,10 +561,10 @@ Every remote session that ends records a reason, shown under its status in **Rem
 | Reason | What happened |
 |--------|---------------|
 | Ended by the user | The person at the device ended it from the on-screen indicator. |
-| Ended by a technician | A technician ended it from the web console, for example with the terminal's **Disconnect** button. |
+| Ended by a technician | A technician ended it: closed the session window in the Breeze Viewer, cancelled a reconnect, or ended it from the web console, for example with the terminal's **Disconnect** button. |
 | Viewer closed | The viewer's connection closed normally (WebSocket desktop or terminal). |
 | Connection to the viewer lost | The viewer's connection failed, stopped answering heartbeats, or the API server holding it went away. |
-| Connection closed | The device reported that the peer connection closed. This is how most desktop sessions end today: the desktop viewer closes the connection when you hang up, so a normal hang-up and a dropped network connection both show this reason. When the viewer was reconnecting, Breeze first waits a short grace period. |
+| Connection closed | The device reported that the peer connection closed without the viewer ending the session first: a dropped network connection, the Breeze Viewer quit or crashed, or the viewer could not reach the API in time when you closed the window. Older viewer versions show every hang-up this way. When the viewer was reconnecting, Breeze first waits a short grace period. |
 | Never connected | The session was still pending or connecting when it timed out. A device whose sessions keep ending this way is worth checking for a connection that cannot be established between viewer and device. |
 | Replaced by a newer session | A new session to the same device replaced it. |
 | Screen capture stopped | The device stopped producing video mid-session and ended it; the details panel shows the device's reason. |
@@ -838,14 +842,19 @@ This is webkit2gtk's DMA-BUF renderer failing, most often on the NVIDIA driver. 
 The host's webkit2gtk build does not expose `RTCPeerConnection`, so the viewer skips WebRTC and uses the WebSocket (JPEG) transport. The session window shows a notice saying so, and the browser console logs `WebRTC is unavailable in this WebView (no RTCPeerConnection global)`. Installing the GStreamer plugin sets usually restores it — see [WebRTC needs webkit2gtk built with the GStreamer plugins](#webrtc-needs-webkit2gtk-built-with-the-gstreamer-plugins). This is a property of the host, not of the device you are connecting to.
 
 **Session stuck in `connecting`.**
-WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
+WebRTC signalling has not completed. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
 
 - **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`). If using an external TURN server, check its status via SSH.
 - **Firewall blocking TURN ports** — Coturn needs TCP and UDP port 3478, plus UDP ports in the relay range (default 49152–65535, or tightened to 49152–49252). Verify the ports are reachable with `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP).
 - **Wrong `TURN_HOST`** — Must be the TURN server's public IP, not a private address. If Breeze is behind Cloudflare Tunnel, TURN must run on a separate host with its own public IP — see [TURN Server](/deploy/turn-server/).
 - **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
 
-The viewer should automatically fall back to the WebSocket transport after a timeout.
+The viewer falls back to the WebSocket transport only when WebRTC signalling itself fails (no answer from the agent). Once the agent has answered, a session that has never connected reports a failure to find a network path as the error below rather than retrying indefinitely. A session that connected at least once and then lost its path keeps reconnecting as before. A device whose agent runs as a service (the normal Windows install) refuses the WebSocket transport, so WebRTC is its only path.
+
+**"Remote desktop could not connect. This viewer received only local network addresses from the device…"**
+The agent answered, but every address the viewer received from it was on the device's own network: no server-reflexive or relay candidate arrived. The likely cause is that the device reached neither the STUN server nor the TURN relay, typically because a firewall on the device's network drops outbound UDP and does not allow TCP to the relay port. A candidate lost on the way can look the same, which is why this is a likely cause and not a certainty. The viewer retries once (about 20 seconds per attempt) and then stops with this message instead of re-offering indefinitely. On a macOS device it hands off to VNC instead, as it does when a reconnect times out. Allow outbound UDP, and TCP to `TURN_PORT` (3478 by default), from the device to the TURN server, or offer [TURN over TLS](/deploy/turn-server/) (`TURN_TLS_HOST`, `TURN_TLS_PORT`) on a port the site allows. The agent logs `ICE gathering complete with no relay candidates` in **Agent Logs** for the same session.
+
+If the message names **this computer's network** instead, the viewer received a non-local address from the device but gathered only local ones itself: check the firewall on the technician's side. If it says **no connection between them worked**, both sides had non-local addresses and still could not connect; check the firewalls on both networks.
 
 **Poor video quality, high latency, or stalls — where are the WebRTC diagnostics?**
 While a desktop session is live, the device emits two periodic diagnostic lines: `Viewer WebRTC stats` (RTT, jitter, packet loss, frame drops as reported by the viewer) and `Desktop WebRTC metrics` (`captureMs`, `convertMs`, `encodeMs`, frames captured/encoded/sent, bandwidth). Both are shipped to **Devices → Select Device → Agent Logs** for the duration of the session regardless of `log_shipping_level`, so you do not need to lower the level to see them. Read `captureMs` against `encodeMs`: a high `captureMs` with a low `encodeMs` means the screen capturer is the bottleneck, not the encoder.
