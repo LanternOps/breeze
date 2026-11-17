@@ -122,7 +122,7 @@ import { notParkedDeviceCondition } from '../../services/unassignedPool/selector
 import { deriveLogShipping } from '../../services/logShippingHealth';
 import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotArriving';
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
-import { deriveControlPlaneBlockNotice } from '../../services/controlPlaneBlockHealth';
+import { deriveControlPlaneBlockListView, deriveControlPlaneBlockNotice } from '../../services/controlPlaneBlockHealth';
 import { readPromptHostObservation } from '../../services/promptHostObservation';
 
 // The device cascade registration lists (CORE_DEVICE_CASCADE_DELETE_TABLES,
@@ -1090,8 +1090,11 @@ coreRoutes.get(
         helperInstallIssue: devices.helperInstallIssue,
         // #8868 — closed-enum kind, non-null only while a control-plane block
         // episode is active; drives the list badge. The jsonb episode stays
-        // detail-only.
+        // detail-only: only its server-written `reportedAt` is read here (same
+        // row, no extra query) so the badge ages out when the device stops
+        // reporting. Consumed by deriveControlPlaneBlockListView, never forwarded.
         controlPlaneBlockKind: devices.controlPlaneBlockKind,
+        controlPlaneBlockReportedAt: sql<string | null>`${devices.controlPlaneBlock}->>'reportedAt'`,
         // #8608 — raw log-shipping columns, consumed ONLY by deriveLogShipping
         // below; they are never forwarded in the response.
         logShippingState: devices.logShippingState,
@@ -1373,7 +1376,7 @@ coreRoutes.get(
         updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
         updateAttemptLastAt: d.updateAttemptLastAt ?? null,
         helperInstallIssue: d.helperInstallIssue ?? null,
-        controlPlaneBlockKind: d.controlPlaneBlockKind ?? null,
+        ...deriveControlPlaneBlockListView(d.controlPlaneBlockKind, d.controlPlaneBlockReportedAt, new Date()),
         logShipping: deriveLogShipping(d, new Date()),
         lastLogAt: d.lastLogAt ?? null,
         metrics: latestMetrics

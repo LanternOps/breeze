@@ -61,6 +61,29 @@ describe('DeviceList — control-plane block badge (#8868)', () => {
     expect(badge.textContent).toBe('Certificate not trusted');
   });
 
+  it('an active pill is the warning form with no last-known marker', () => {
+    const dev = device('44444444-4444-4444-4444-444444444444', 'filtered', { controlPlaneBlockKind: 'web_filter' });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const badge = screen.getByTestId(`device-${dev.id}-status-control-plane-block`);
+    expect(badge.getAttribute('data-last-known')).toBeNull();
+    expect(badge.className).toContain('text-warning');
+  });
+
+  it('a device that stopped reporting gets the muted last-known pill with a tooltip', () => {
+    const dev = device('55555555-5555-5555-5555-555555555555', 'gone-quiet', {
+      status: 'offline',
+      controlPlaneBlockKind: 'web_filter',
+      controlPlaneBlockLastKnownAt: '2026-10-18T09:05:00.000Z',
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const badge = screen.getByTestId(`device-${dev.id}-status-control-plane-block`);
+    expect(badge.textContent).toBe('Network filter');
+    expect(badge.getAttribute('data-last-known')).toBe('true');
+    expect(badge.className).toContain('text-muted-foreground');
+    expect(badge.className).not.toContain('text-warning');
+    expect(badge.getAttribute('title')).toMatch(/^Last reported .+; the device has not reported since\.$/);
+  });
+
   it('shows no badge when the kind is null', () => {
     const dev = device('33333333-3333-3333-3333-333333333333', 'clean', { controlPlaneBlockKind: null });
     render(<DeviceList devices={[dev]} pageSize={50} />);
@@ -77,5 +100,20 @@ describe('toDeviceListRow — controlPlaneBlockKind (#8868)', () => {
 
   it.each([[undefined], [null], [42], [{ kind: 'web_filter' }]])('maps %j to null', (value) => {
     expect(toDeviceListRow({ ...base, controlPlaneBlockKind: value }).controlPlaneBlockKind).toBeNull();
+  });
+});
+
+describe('toDeviceListRow — controlPlaneBlockLastKnownAt (#8868 follow-up)', () => {
+  const base = { id: 'd1', hostname: 'h', osType: 'linux', status: 'offline', orgId: 'o', siteId: 's' };
+
+  it('carries a string time through', () => {
+    expect(
+      toDeviceListRow({ ...base, controlPlaneBlockKind: 'web_filter', controlPlaneBlockLastKnownAt: '2026-10-18T09:05:00.000Z' })
+        .controlPlaneBlockLastKnownAt,
+    ).toBe('2026-10-18T09:05:00.000Z');
+  });
+
+  it.each([[undefined], [null], [42], [{ at: 'x' }]])('maps %j to null', (value) => {
+    expect(toDeviceListRow({ ...base, controlPlaneBlockLastKnownAt: value }).controlPlaneBlockLastKnownAt).toBeNull();
   });
 });

@@ -103,7 +103,8 @@ type DeviceInfo = {
    * come from the device's network: render as plain text only.
    */
   controlPlaneBlock?: {
-    state: "active" | "cleared";
+    /** last_known: active when last reported; the device has not reported since. */
+    state: "active" | "last_known" | "cleared";
     kind: string;
     host: string;
     firstSeenAt: string;
@@ -113,6 +114,8 @@ type DeviceInfo = {
     locationHost?: string;
     certIssuer?: string;
     reachableViaEch: boolean;
+    /** Server time of the last report; only on last_known. */
+    lastReportedAt?: string;
   } | null;
   /** Derived read view from the API (#8608); absent until an agent reports. */
   logShipping?: {
@@ -328,7 +331,7 @@ const CONTROL_PLANE_BLOCK_DOCS_URL = `${DOCS_BASE_URL}/agents/advanced-install/#
 function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlock"] }) {
   const { t } = useTranslation("devices");
   if (!block) return null;
-  if (block.state !== "active" && block.state !== "cleared") return null;
+  if (block.state !== "active" && block.state !== "last_known" && block.state !== "cleared") return null;
 
   const noDetail = t("deviceInfoTab.controlPlaneBlock.noDetail");
   let title: string;
@@ -355,12 +358,14 @@ function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlo
   }
 
   const cleared = block.state === "cleared";
+  const lastKnown = block.state === "last_known";
   return (
     <div
       data-testid="control-plane-block-notice"
+      data-state={block.state}
       role="status"
       className={
-        cleared
+        cleared || lastKnown
           ? "rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
           : "rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
       }
@@ -373,6 +378,15 @@ function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlo
             to: formatDate(block.clearedAt ?? block.lastSeenAt),
           })}
         </p>
+      ) : lastKnown ? (
+        <>
+          <p>{message}</p>
+          <p>
+            {t("deviceInfoTab.controlPlaneBlock.lastKnown", {
+              time: formatDate(block.lastReportedAt ?? block.lastSeenAt),
+            })}
+          </p>
+        </>
       ) : (
         <>
           <p>{message}</p>

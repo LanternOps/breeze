@@ -51,6 +51,7 @@ import {
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
 import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
@@ -270,6 +271,12 @@ export type Device = {
    * none. The detail (filter host, issuer) is on the device page only.
    */
   controlPlaneBlockKind?: string | null;
+  /**
+   * Set (server time of the last report) when the device has not reported
+   * since its block was last asserted: the pill renders in a muted
+   * "last known" form. null/absent = the block is current.
+   */
+  controlPlaneBlockLastKnownAt?: string | null;
   /** Server-decided Wake button availability (#10838); absent on older APIs. */
   wakeAvailability?: WakeAvailability;
   /**
@@ -2159,6 +2166,8 @@ export default function DeviceList({
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
           "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30";
+        const mutedPillClass =
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground border-muted";
         const secondary: Array<{ key: string; node: React.ReactNode }> = [];
         if (
           isAgentUpdateStuck({
@@ -2226,12 +2235,21 @@ export default function DeviceList({
           });
         }
         if (device.controlPlaneBlockKind) {
+          const lastKnownAt = device.controlPlaneBlockLastKnownAt ?? null;
           secondary.push({
             key: "cpblock",
             node: (
               <span
                 data-testid={`device-${device.id}-status-control-plane-block`}
-                className={pillClass}
+                data-last-known={lastKnownAt ? "true" : undefined}
+                title={
+                  lastKnownAt
+                    ? t("deviceList.controlPlaneBlockLastKnownTooltip", {
+                        time: formatDateTime(lastKnownAt, { dateStyle: "medium", timeStyle: "short" }),
+                      })
+                    : undefined
+                }
+                className={lastKnownAt ? mutedPillClass : pillClass}
               >
                 {controlPlaneBlockLabel(device.controlPlaneBlockKind)}
               </span>

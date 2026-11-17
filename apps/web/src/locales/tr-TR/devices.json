@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "Breeze sunucusuna yapılan bağlantı, bu cihazın güvenmediği bir sertifika sundu (veren: {{certIssuer}}). Bu genellikle bir güvenlik duvarı veya proxy tarafından yapılan TLS denetimi, kendi barındırılan bir sunucudaki bir sertifika sorunu ya da bu cihazdaki güncel olmayan güvenilir kök sertifika deposudur. Breeze bunu atlamaz.",
       "viaEch": "Şu anda Encrypted Client Hello üzerinden erişilebilir.",
       "cleared": "{{from}} ile {{to}} arasında engellendi.",
+      "lastKnown": "Son bildirim: {{time}}. Cihaz o zamandan beri bildirimde bulunmadı, bu nedenle bu artık geçerli olmayabilir.",
       "howToFix": "Nasıl düzeltilir",
       "noDetail": "ayrıntı yok"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Ağ filtresi",
     "controlPlaneBlockBadgeCertificate": "Sertifikaya güvenilmiyor",
+    "controlPlaneBlockLastKnownTooltip": "Son bildirim: {{time}}; cihaz o zamandan beri bildirimde bulunmadı.",
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
