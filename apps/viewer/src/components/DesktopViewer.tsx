@@ -5,6 +5,7 @@ import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
 import { createSessionHangUp } from '../lib/sessionHangUp';
 import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { decideNeverConnectedIceFailure } from '../lib/iceFailure';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
@@ -277,6 +278,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
   const startReconnectRef = useRef<() => void>(() => {});
+  // #11838: consecutive failures of peers that never reached 'connected'.
+  // Reset on connect, on a fresh connect and on a manual Retry.
+  const neverConnectedIceFailuresRef = useRef(0);
+  // handleNeverConnectedIceFailure is defined after connectWebRTC; the ref
+  // breaks the TDZ, like startReconnectRef.
+  const handleNeverConnectedIceFailureRef = useRef<(wrapper: WebRTCSessionWrapper) => void>(() => {});
   const switchTransportRef = useRef<(target: Transport, reason?: 'user' | 'auto') => Promise<void>>(async () => {});
   const lastUserTransportChoiceAtRef = useRef<number>(0);
   const sessionRegisteredRef = useRef(false);
@@ -763,6 +770,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // transport is negotiating (a newer call, a cancelled connect effect, a
     // user disconnect) makes it stale (#8947).
     const attempt = webrtcAttemptsRef.current.begin();
+    // #11838: an answer is not a connection. A peer that fails before ever
+    // connecting is an ICE failure, not a dropped session.
+    let everConnected = false;
 
     let sessionWrapper: WebRTCSessionWrapper | null;
     try {
@@ -776,6 +786,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onConnected: () => {
           // Guard: ignore stale session events after the ref has moved on
           if (webrtcRef.current !== sessionWrapper) return;
+          everConnected = true;
+          neverConnectedIceFailuresRef.current = 0;
           setStatus('connected');
           setConnectedAt(new Date());
           setErrorMessage(null);
@@ -790,6 +802,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onFailed: () => {
           if (webrtcRef.current !== sessionWrapper) return;
           if (userDisconnectRef.current) return;
+          if (!everConnected) {
+            // Re-offering on every such failure looped forever on a network
+            // that blocks the transport (#11838): decide from the candidates.
+            if (sessionWrapper) handleNeverConnectedIceFailureRef.current(sessionWrapper);
+            return;
+          }
           startReconnectRef.current();
         },
         onClosed: () => {
@@ -956,6 +974,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     reconnectDeadlineRef.current = null;
     setReconnectSecondsLeft(0);
   }, []);
+
+  // #11838: a peer failed before it ever connected. Read the candidates each
+  // side offered, then either retry (the reconnect loop) or stop with a reason
+  // the operator can act on, instead of re-offering forever.
+  const handleNeverConnectedIceFailure = useCallback(async (wrapper: WebRTCSessionWrapper) => {
+    neverConnectedIceFailuresRef.current += 1;
+    const failures = neverConnectedIceFailuresRef.current;
+    const decision = await decideNeverConnectedIceFailure(wrapper.pc, failures);
+    // The owner may have moved on during the stats read.
+    if (webrtcRef.current !== wrapper || userDisconnectRef.current || cancelledRef.current) return;
+    console.warn(
+      `WebRTC failed before connecting (attempt ${failures}, cause ${decision.cause}); ` +
+        (decision.stop ? 'not retrying.' : 'retrying.'),
+      decision.summary,
+    );
+    if (decision.stop) {
+      stopReconnect();
+      webrtcRef.current = null;
+      wrapper.close();
+      setStatus('error');
+      setConnectedAt(null);
+      setErrorMessage(decision.message);
+      onError(decision.message);
+      return;
+    }
+    startReconnectRef.current();
+  }, [stopReconnect, onError]);
+  handleNeverConnectedIceFailureRef.current = (wrapper) => { void handleNeverConnectedIceFailure(wrapper); };
 
   // #10421: the session is over for good — the agent said so on the control
   // channel (idle timeout, max length, revoked lease) or the server 401'd a
@@ -1154,6 +1200,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     let cancelled = false;
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
+    neverConnectedIceFailuresRef.current = 0;
     userDisconnectRef.current = false;
     hangingUpRef.current = false;
     reconnectInFlightRef.current = false;
@@ -3221,6 +3268,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                   onClick={() => {
                     setErrorMessage(null);
                     userDisconnectRef.current = false;
+                    neverConnectedIceFailuresRef.current = 0;
                     startReconnectRef.current();
                   }}
                   className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-white"

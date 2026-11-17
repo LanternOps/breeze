@@ -838,14 +838,19 @@ This is webkit2gtk's DMA-BUF renderer failing, most often on the NVIDIA driver. 
 The host's webkit2gtk build does not expose `RTCPeerConnection`, so the viewer skips WebRTC and uses the WebSocket (JPEG) transport. The session window shows a notice saying so, and the browser console logs `WebRTC is unavailable in this WebView (no RTCPeerConnection global)`. Installing the GStreamer plugin sets usually restores it — see [WebRTC needs webkit2gtk built with the GStreamer plugins](#webrtc-needs-webkit2gtk-built-with-the-gstreamer-plugins). This is a property of the host, not of the device you are connecting to.
 
 **Session stuck in `connecting`.**
-WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
+WebRTC signalling has not completed. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
 
 - **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`). If using an external TURN server, check its status via SSH.
 - **Firewall blocking TURN ports** — Coturn needs TCP and UDP port 3478, plus UDP ports in the relay range (default 49152–65535, or tightened to 49152–49252). Verify the ports are reachable with `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP).
 - **Wrong `TURN_HOST`** — Must be the TURN server's public IP, not a private address. If Breeze is behind Cloudflare Tunnel, TURN must run on a separate host with its own public IP — see [TURN Server](/deploy/turn-server/).
 - **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
 
-The viewer should automatically fall back to the WebSocket transport after a timeout.
+The viewer falls back to the WebSocket transport only when WebRTC signalling itself fails (no answer from the agent). Once the agent has answered, a failure to find a network path is reported as the error below rather than retried indefinitely. A device whose agent runs as a service (the normal Windows install) refuses the WebSocket transport, so WebRTC is its only path.
+
+**"Remote desktop could not connect: this device's network blocks the remote desktop transport."**
+The agent answered, but every address it offered was on its own network: it reached neither the STUN server nor the TURN relay. This is almost always a firewall on the device's network that drops outbound UDP and does not allow TCP to the relay port. The viewer stops after the first such failure, because re-offering cannot change what the firewall lets out. Allow outbound UDP, and TCP to `TURN_PORT` (3478 by default), from the device to the TURN server, or offer [TURN over TLS](/deploy/turn-server/) (`TURN_TLS_HOST`, `TURN_TLS_PORT`) on a port the site allows. The agent logs `ICE gathering complete with no relay candidates` in **Agent Logs** for the same session.
+
+If the message names **this computer's network** instead, the device reached a server but the viewer did not: check the firewall on the technician's side. If it says **no network path worked** although both sides reached the relay servers, the viewer retries once and then stops; check the firewalls on both networks.
 
 **Poor video quality, high latency, or stalls — where are the WebRTC diagnostics?**
 While a desktop session is live, the device emits two periodic diagnostic lines: `Viewer WebRTC stats` (RTT, jitter, packet loss, frame drops as reported by the viewer) and `Desktop WebRTC metrics` (`captureMs`, `convertMs`, `encodeMs`, frames captured/encoded/sent, bandwidth). Both are shipped to **Devices → Select Device → Agent Logs** for the duration of the session regardless of `log_shipping_level`, so you do not need to lower the level to see them. Read `captureMs` against `encodeMs`: a high `captureMs` with a low `encodeMs` means the screen capturer is the bottleneck, not the encoder.
