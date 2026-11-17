@@ -37,7 +37,7 @@ vi.mock('../db', async (importOriginal) => {
 
 import { aiTools } from './aiToolNames';
 import './aiTools'; // populates the registry
-import { isMfaGatedToolAction, MFA_GATED_TOOL_ACTIONS } from './aiToolMfaGate';
+import { isMfaGatedToolAction, MFA_GATED_TOOL_ACTIONS, MFA_REQUIRED_CODE, MFA_REQUIRED_TOOL_MESSAGE } from './aiToolMfaGate';
 
 type Row = {
   route: string;
@@ -72,6 +72,7 @@ const ROWS: Row[] = [
   { route: 'routes/dr.ts', method: 'patch', path: '/plans/:id', tool: 'manage_dr_plan', actions: ['update_plan'] },
   { route: 'routes/dr.ts', method: 'post', path: '/plans/:id/groups', tool: 'manage_dr_plan', actions: ['add_group'] },
   { route: 'routes/dr.ts', method: 'patch', path: '/plans/:id/groups/:gid', tool: 'manage_dr_plan', actions: ['update_group'] },
+  { route: 'routes/dr.ts', method: 'delete', path: '/plans/:id/groups/:gid', tool: 'manage_dr_plan', actions: ['delete_group'] },
 ];
 
 /** The middleware chain of `<x>Routes.<method>('<path>', ...mw, async (c) =>`. */
@@ -80,6 +81,7 @@ function middlewareChain(file: string, method: string, path: string): string {
   const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`\\w+Routes\\.${method}\\(\\s*'${escaped}',([\\s\\S]*?)async \\(c`).exec(src);
   if (!match) throw new Error(`${method.toUpperCase()} ${path} not found in ${file}`);
+  if (/Routes\.(get|post|patch|put|delete)\(/.test(match[1]!)) throw new Error(`${method.toUpperCase()} ${path} in ${file}: chain ran into the next route`);
   return match[1]!;
 }
 
@@ -125,7 +127,20 @@ describe('AI tool actions mirroring a requireMfa() route are MFA-gated', () => {
     } catch (err) {
       output = JSON.stringify({ error: String(err) });
     }
-    expect(JSON.parse(output).error).toMatch(/^MFA required/);
+    expect(JSON.parse(output)).toEqual({ error: MFA_REQUIRED_TOOL_MESSAGE, code: MFA_REQUIRED_CODE });
+  });
+
+  const STRICTER_THAN_GATE = new Set(['assign_security_training']);
+  it.each(cases.filter(([tool]) => !STRICTER_THAN_GATE.has(tool)).flatMap(([tool, action]) =>
+    (['ai_agent', 'flow'] as const).map((kind) => [tool, action, kind] as const),
+  ))('%s action=%s: a %s principal is exempt from the MFA gate', async (tool, action, kind) => {
+    let output: string;
+    try {
+      output = await aiTools.get(tool)!.handler({ action }, { ...apiKeyAuth, principal: { kind } });
+    } catch (err) {
+      output = JSON.stringify({ error: String(err) });
+    }
+    expect(String(JSON.parse(output).error ?? '')).not.toMatch(/MFA required/);
   });
 
   // The gate must stay as narrow as the routes: reads, and actions whose route
@@ -136,7 +151,7 @@ describe('AI tool actions mirroring a requireMfa() route are MFA-gated', () => {
     ['manage_patches', 'compliance'],
     ['manage_backup_profiles', 'list'],
     ['manage_backup_configs', 'get'],
-    ['manage_dr_plan', 'delete_group'],
+    ['manage_backup_profiles', 'get'],
   ];
 
   it.each(ungated)('%s action=%s is not MFA-gated and passes the gate', async (tool, action) => {

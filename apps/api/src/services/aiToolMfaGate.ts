@@ -101,9 +101,10 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   trigger_c2c_sync: '*',
   assign_security_training: '*',
   // Tier 2 backup-SLA and DR-plan writes: POST/PATCH /backup/sla/configs and the
-  // /dr/plans create, update and group add/update routes. (delete_group is Tier 3.)
+  // /dr/plans create, update and group add/update/delete routes. All Tier 2 except
+  // delete_group (Tier 3, enrolled so the tool's writes share one rule).
   configure_backup_sla: Object.freeze(['create', 'update']),
-  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group']),
+  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group', 'delete_group']),
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
