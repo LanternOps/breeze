@@ -592,6 +592,46 @@ describe('analysis chain surface (W06)', () => {
     expect(b.queryByTestId('ai-run-card-cost')).toBeNull();
   });
 
+  it('does not show a mid-run poll cost as final when run_result arrives live; re-polls once for the settled cost', async () => {
+    fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'running', costCents: 5, computeCents: 0 }));
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', status: 'completed', costCents: 12, computeCents: 7 }));
+    const live = (status: string) => ({ runId: RUN, status, summary: null, artifacts: [], progress: [] }) as never;
+    const { queryByTestId, rerender } = render(
+      <AiRunCard runId={RUN} initialStatus="queued" run={live('running')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    // The stream reports completion while the last poll is still the partial one.
+    fetchWithAuth.mockImplementationOnce(() => new Promise(() => {})); // hold the re-poll open
+    rerender(<AiRunCard runId={RUN} initialStatus="queued" run={live('completed')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+    expect(queryByTestId('ai-run-card-cost')).toBeNull(); // 5c partial must not appear
+  });
+
+  it('shows the settled cost after the single re-poll and does not poll again', async () => {
+    fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'running', costCents: 5, computeCents: 0 }));
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', status: 'completed', costCents: 12, computeCents: 7 }));
+    const live = (status: string) => ({ runId: RUN, status, summary: null, artifacts: [], progress: [] }) as never;
+    const { findByTestId, queryByTestId, rerender } = render(
+      <AiRunCard runId={RUN} initialStatus="queued" run={live('running')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    rerender(<AiRunCard runId={RUN} initialStatus="queued" run={live('completed')} />);
+    expect((await findByTestId('ai-run-card-cost')).textContent).toMatch(/0\.19/);
+    expect(queryByTestId('ai-run-card-cost')!.textContent).not.toMatch(/0\.05/);
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists no files from the live stream before the first poll lands', () => {
+    fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    const { queryByTestId } = render(
+      <AiRunCard runId={RUN} initialStatus="running"
+        run={{ runId: RUN, status: 'completed', summary: null, progress: [],
+          artifacts: [{ handle: 'h1', name: 'live.csv', bytes: 1, contentType: 'text/csv' }] } as never} />);
+    expect(queryByTestId('ai-run-card-artifact-h1')).toBeNull();
+    expect(queryByTestId('ai-run-card-files')).toBeNull();
+  });
+
   it('keeps an output file whose expiry it cannot parse rather than hiding it', async () => {
     fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', artifacts: [
       { id: 'o3', name: 'x.csv', bytes: 1, contentType: 'text/csv', kind: 'output', expiresAt: 'not-a-date', downloadPath: '/api/v1/ai/artifacts/o3' },

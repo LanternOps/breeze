@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CheckCircle, Clock, Download, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AiAgentRunStatus, AiApprovalScope } from '@breeze/shared';
@@ -157,6 +157,11 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
     ? run.status
     : polled?.status ?? run?.status ?? initialStatus;
   const liveSettled = run !== undefined && isSettled(run.status);
+  const polledSettled = isSettled(polled?.status);
+  // Read by the poll effect without being a dependency (a dep would restart it
+  // when the one-shot poll lands and fetch again).
+  const polledRef = useRef<PolledRun | null>(null);
+  polledRef.current = polled;
   const runIsTerminal = isTerminal(status);
   /**
    * True only when a `run_result` event actually reached this tab — i.e. a turn
@@ -165,7 +170,13 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   const deliveredLive = run !== undefined && isTerminal(run.status);
 
   useEffect(() => {
-    if (liveSettled) return;
+    // A live settled result normally ends polling, but `polled` may still hold
+    // an in-progress response (partial cost). So when a poll has already landed,
+    // or the live result is terminal, take exactly ONE more poll to land the
+    // settled state (cost, files). A live approval park needs no fetch.
+    const current = polledRef.current;
+    if (liveSettled && (isSettled(current?.status) || (!current && !deliveredLive))) return;
+    const oneShot = liveSettled;
     // Per-effect flags: a shared ref would be reset by the NEXT effect run while
     // this run's in-flight tick was still pending, letting it re-arm a timer.
     let cancelled = false;
@@ -186,6 +197,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
           if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
+            if (oneShot) { settled = true; return; }
             // Keep polling a settled run only while a pending step is THIS
             // viewer's to decide (it leaves the list once decided). A step
             // only someone else can decide never ends this tab's polling.
@@ -204,7 +216,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
         // A transient failure is not worth a visible error on a card whose
         // whole job is "this is still working" — the next tick retries.
       }
-      if (cancelled || settled) return;
+      if (cancelled || settled || oneShot) return;
       timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
     };
 
@@ -219,17 +231,13 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   const polledArtifacts = polled?.artifacts;
   // An analysis run's card lists only its unexpired output files; an expired
   // artifact would 404 on download (the run page shows it as expired).
+  // Live stream artifacts carry no kind/expiry, so they are not listed until a
+  // poll has landed to filter them.
   const artifacts: PolledArtifact[] = polledArtifacts
     ? polled?.profile === 'analysis'
       ? polledArtifacts.filter((a) => a.kind === 'output' && !isExpired(a.expiresAt))
       : polledArtifacts
-    : (run?.artifacts ?? []).map((a) => ({
-      id: a.handle,
-      name: a.name,
-      bytes: a.bytes,
-      contentType: a.contentType,
-      downloadPath: `/api/v1/ai/artifacts/${a.handle}`,
-    }));
+    : [];
   // Live and polled steps merge by ordinal (live wins), so a stream attached
   // mid-run and the 5 s poll never double a step.
   const byOrdinal = new Map<number, ChatRunProgressEntry>();
@@ -283,10 +291,10 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
 
   const inChain = (polled?.chain?.length ?? 0) > 1;
   const chainStep = (polled?.chainDepth ?? 0) + 1;
-  // Analysis runs only, and only once a poll has returned the settled cost:
-  // the stream can report `completed` before the first poll lands, and a
-  // "$0.00" then would misstate what the run spent.
-  const costLabel = runIsTerminal && polled?.profile === 'analysis' && typeof polled.costCents === 'number'
+  // Analysis runs only, and only from a SETTLED poll response: the stream can
+  // report `completed` before a poll lands (a "$0.00" would misstate the spend)
+  // or while `polled` still holds a mid-run response with a partial cost.
+  const costLabel = runIsTerminal && polledSettled && polled?.profile === 'analysis' && typeof polled.costCents === 'number'
     ? formatCurrency((polled.costCents + (polled.computeCents ?? 0)) / 100)
     : null;
   const analysisGoal = polled?.analysisGoal ?? null;
