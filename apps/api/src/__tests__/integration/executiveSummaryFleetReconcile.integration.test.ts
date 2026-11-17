@@ -136,6 +136,11 @@ describe('executive summary fleet figures reconcile (#12045)', () => {
     await f.seed.insert(alerts).values([
       { ...owned, deviceId: movedOrg!.id, topologySourceKey: `topology:${'d'.repeat(64)}`, title: 'origin now in another org' },
       { ...owned, deviceId: movedSite!.id, topologySourceKey: `topology:${'e'.repeat(64)}`, title: 'origin now at another site' },
+      // Stored copy naming the moved device in its context must not fill the token either.
+      {
+        ...owned, deviceId: movedOrg!.id, topologySourceKey: `topology:${'f'.repeat(64)}`,
+        title: '{{device}} unreachable', context: { hostname: 'other-org-host', deviceName: 'other-org-host' },
+      },
     ]);
     const deviceOf = (s: ExecutiveSummary, title: string) => s.notableAlerts?.find((a) => a.title === title)?.device;
 
@@ -144,7 +149,8 @@ describe('executive summary fleet figures reconcile (#12045)', () => {
       generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, f.authority))).summary as ExecutiveSummary;
     expect(sys.notableAlerts?.map((a) => a.title)).toContain('origin now in another org');
     expect(deviceOf(sys, 'origin now in another org')).toBeNull();
-    expect(sys.notableAlerts?.some((a) => a.device === 'other-org-host')).toBe(false);
+    expect(sys.notableAlerts?.some((a) => a.device === 'other-org-host' || a.title.includes('other-org-host'))).toBe(false);
+    expect(sys.notableAlerts?.map((a) => a.title)).toContain('a device unreachable');
     expect(deviceOf(sys, 'origin now at another site')).toBe('other-site-origin');
 
     const scope = { version: 1 as const, kind: 'restricted' as const, orgId: f.org.id, siteIds: [f.site.id] };
@@ -157,6 +163,9 @@ describe('executive summary fleet figures reconcile (#12045)', () => {
     expect(r.notableAlerts?.map((a) => a.title)).toEqual(expect.arrayContaining(['origin now in another org', 'origin now at another site']));
     expect(deviceOf(r, 'origin now in another org')).toBeNull();
     expect(deviceOf(r, 'origin now at another site')).toBeNull();
+    expect(r.notableAlerts?.some((a) => a.title.includes('other-org-host'))).toBe(false);
+    // A device at an allowed site is still named in the restricted report.
+    expect(deviceOf(r, 'critical older')).toBe('maint-1');
   });
 
   it('fills device tokens left in stored alert titles', async () => {

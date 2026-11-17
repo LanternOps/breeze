@@ -800,6 +800,21 @@ function summarizeDeviceStatuses(
   };
 }
 
+const DEVICE_NAME_CONTEXT_KEYS = new Set(['device', 'deviceName', 'hostname', 'device.name', 'device.hostname']);
+
+/** A notable alert's title with stored {{device}}-style tokens filled the way
+ * the alerts list fills them. When the scoped join named no device (it is
+ * outside the report's org or sites, or there is none), the device names the
+ * alert's stored context carries are not used either: the token reads
+ * "a device" rather than naming a device the report may not show. */
+function notableAlertTitle(title: string, context: unknown, device: string | null): string {
+  if (device) return fillStoredAlertCopy({ title, context }, device).title;
+  const stored = context && typeof context === 'object' && !Array.isArray(context)
+    ? Object.fromEntries(Object.entries(context).filter(([k]) => !DEVICE_NAME_CONTEXT_KEYS.has(k)))
+    : {};
+  return fillStoredAlertCopy({ title, context: stored }, 'a device').title;
+}
+
 export async function generateExecutiveSummaryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -941,9 +956,7 @@ export async function generateExecutiveSummaryReport(
         end: reportWindow.end?.toISOString() ?? null,
       },
       notableAlerts: notableAlertRows.map((a) => ({
-        // Stored copy can still hold {{device}}-style tokens; fill them the
-        // way the alerts list does.
-        title: fillStoredAlertCopy({ title: a.title, context: a.context }, a.device).title,
+        title: notableAlertTitle(a.title, a.context, a.device),
         severity: a.severity,
         status: a.status,
         device: a.device ?? null,
