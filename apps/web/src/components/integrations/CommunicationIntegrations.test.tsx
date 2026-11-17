@@ -8,6 +8,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({
+  showToast: (...args: unknown[]) => showToastMock(...args),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, status = 200): Response {
@@ -22,6 +27,7 @@ describe('CommunicationIntegrations', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     fetchWithAuthMock.mockResolvedValue(makeResponse({}, 404));
+    showToastMock.mockReset();
   });
 
   afterEach(async () => {
@@ -124,5 +130,27 @@ describe('CommunicationIntegrations', () => {
     await clickDiscordTest();
 
     expect(await screen.findByText('Discord rejected the webhook (HTTP 404)')).toBeInTheDocument();
+    // A failed test is the result shown beside the button, not a toast.
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  // #12102: test actions are throttled; a throttled click must say so.
+  it('toasts and shows a wait message when the Discord test is rate limited', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({
+        success: false,
+        code: 'RATE_LIMITED',
+        error: 'Too many test requests. Try again in 42 seconds.',
+      }, 429),
+    );
+
+    await clickDiscordTest();
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    const toast = showToastMock.mock.calls[0]![0] as { type: string; message: string };
+    expect(toast.type).toBe('error');
+    expect(toast.message).toMatch(/too many requests/i);
+    expect(await screen.findByText(toast.message)).toBeInTheDocument();
   });
 });
