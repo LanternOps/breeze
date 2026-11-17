@@ -121,6 +121,7 @@ import {
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
 import { parseWatchdogInstall, planWatchdogInstallWrite } from '../../services/watchdogInstallHealth';
+import { parseControlPlaneBlock, planControlPlaneBlockWrite } from '../../services/controlPlaneBlockHealth';
 import {
   agentIdentityAssertionRefused,
   agentIdentityAssertionVersionToSign,
@@ -1342,6 +1343,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   Object.assign(
     deviceUpdates,
     planWatchdogInstallWrite(device, parseWatchdogInstall(data.watchdogInstall), new Date()),
+  );
+
+  // #8868 — control-plane block episode. Planned against the already-loaded
+  // `device` row: no extra query, and keys are added to this beat's single
+  // UPDATE only on a transition (new/changed episode, ECH flip, clear, stale)
+  // or at most hourly while an episode stays active. Absent = no change
+  // (an active record goes stale after 2 h of beats without it); malformed =
+  // no change.
+  Object.assign(
+    deviceUpdates,
+    planControlPlaneBlockWrite(
+      device,
+      parseControlPlaneBlock(data.controlPlaneBlock),
+      data.echActive,
+      new Date(),
+    ),
   );
 
   // #800 Layer C — recovery side. If the asymmetry detector previously

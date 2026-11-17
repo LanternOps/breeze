@@ -1163,6 +1163,44 @@ describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
   });
 });
 
+// Control-plane block episodes (#8868). Same contract as watchdogInstall: the
+// wire field is z.unknown().optional(), so old agents omit it and a malformed
+// object never rejects the beat. Strict parsing lives in parseControlPlaneBlock.
+describe('heartbeatSchema — controlPlaneBlock tolerance (#8868)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const valid = {
+    kind: 'web_filter',
+    host: 'cp.example',
+    firstSeenAt: '2026-10-18T09:00:00Z',
+    lastSeenAt: '2026-10-18T09:03:00Z',
+    httpStatus: 302,
+    locationHost: 'warn.filter-a.example',
+  };
+
+  it('an old agent that omits the field parses, and the key stays undefined', () => {
+    const r = heartbeatSchema.safeParse(minimal);
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toBeUndefined();
+  });
+
+  it('carries a well-formed controlPlaneBlock object through untouched', () => {
+    const r = heartbeatSchema.safeParse({ ...minimal, echActive: true, controlPlaneBlock: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toEqual(valid);
+  });
+
+  it.each([
+    ['a string', 'garbage'],
+    ['a number', 42],
+    ['null', null],
+    ['unknown kind', { ...valid, kind: 'isp_filter' }],
+    ['markup in locationHost', { ...valid, locationHost: '<script>' }],
+    ['a 5KB host', { ...valid, host: 'a'.repeat(5000) }],
+  ])('never rejects the heartbeat for %s', (_label, bad) => {
+    expect(heartbeatSchema.safeParse({ ...minimal, controlPlaneBlock: bad }).success).toBe(true);
+  });
+});
+
 describe('heartbeatSchema — ECH keys (#8869)', () => {
   const base = { status: 'ok' as const, agentVersion: '0.65.15' };
 
