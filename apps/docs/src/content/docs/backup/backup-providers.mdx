@@ -128,7 +128,7 @@ Cove and Axcient connections sync **every 30 minutes**; NinjaOne SaaS Backup con
 
 Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. A day is green only if a successful backup ran that day. A day Breeze checked with no new backup shows as **No backups** (orange), even when the device's last backup succeeded. A grey day means Breeze did not check the device that day. Today stays grey until a backup lands, because the day's backup may not have run yet. History older than 60 days is pruned.
 
-A device whose last backup completed but has no successful backup in the last 48 hours shows **No recent backup** in the Status column, with the date of its last success. The *Status* summary counts it under **No recent backup** instead of **Completed**.
+In the backup health view, any device (Breeze or provider) whose last backup completed but has no successful backup in the last 48 hours shows **No recent backup** in the Status column, with the date of its last success. The *Status* summary counts it under **No recent backup** instead of **Completed**.
 
 Linked endpoints raise **device alerts**. Microsoft 365 and Google Workspace backup workloads, including Cove Microsoft 365 accounts, raise **organization-level alerts** with no device, titled with the workload and customer name (or organization name). Both use the same conditions and severities:
 

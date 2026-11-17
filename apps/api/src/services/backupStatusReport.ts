@@ -84,12 +84,12 @@ function pct(count: number, total: number): number {
  * plan-authoring time — it does now, per the coordinator's follow-up, and
  * this file imports it instead of re-deriving it.)
  *
- * `other` is the catch-all for the two statuses the spec's Web UI section's
- * five NAMED buckets don't mention (`not_started`, `unknown`) — this function
- * renders it only when its count is non-zero, the same rule the overview
- * applies, so an org with no `other`-bucketed device never shows an empty,
- * unfamiliar sixth segment next to Cove's own five. `overdue` follows the same
- * rule.
+ * `other` is the catch-all for the statuses the spec's Web UI section's five
+ * NAMED buckets don't mention (`not_started`, `unknown`, `paused`) — this
+ * function renders it only when its count is non-zero, the same rule the
+ * overview applies, so an org with no `other`-bucketed device never shows an
+ * empty, unfamiliar segment next to Cove's own five. `overdue` (#12025)
+ * follows the same rule.
  */
 function buildStatusBuckets(rows: BackupHealthRow[]): BackupStatusBucket[] {
   const counts: Record<BackupStatusBucketId, number> = {

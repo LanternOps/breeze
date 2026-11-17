@@ -2,9 +2,10 @@
 /**
  * Bucket PRESENTATION for the backup-health bars.
  *
- * The grouping itself — which statuses make up "Unsuccessful", and the fact
- * that a sixth "other" bucket catches `not_started` and `unknown` so the
- * percentages sum to 100 and no device vanishes from the bars — lives in
+ * The grouping itself — which statuses make up "Unsuccessful", the fact that
+ * an "other" bucket catches `not_started`, `unknown` and `paused` so the
+ * percentages sum to 100 and no device vanishes from the bars, and the
+ * per-row "overdue" bucket (#12025) — lives in
  * @breeze/shared (W01) because the W05 backup-status report renders the same
  * buckets. Two hand-maintained copies of that membership is exactly how a
  * report and a dashboard end up describing one fleet differently.

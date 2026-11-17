@@ -396,6 +396,12 @@ describe('backupHealthReadModel against real policies', () => {
       expect(cells.get(dayAgo(1))).toBe('no_backups');
       expect(cells.get(dayAgo(0))).toBeNull();
       expect(row!.history28d.some((c) => c.status === 'completed')).toBe(false);
+      expect(row!.recency).toBe('over_48h');
+
+      // The Status card counts it as overdue; the raw vendor status stays `completed`.
+      const summary = await summarizeBackupHealth({ orgIds: [fx.org.id] }, { sources: ['provider'] });
+      expect(summary.byStatusBucket.overdue).toBeGreaterThanOrEqual(1);
+      expect(summary.byStatus.completed).toBe(summary.byStatusBucket.completed + summary.byStatusBucket.overdue);
     });
   });
 });

@@ -111,9 +111,10 @@ export interface BackupHealthRow {
   dataSources: string[];
   /**
    * 28 entries, oldest first. `status: null` = no observation that day (grey).
-   * `completed` means a successful session ran that day. A provider day that
-   * was polled but had no new success is `no_backups` (a missed day), not the
-   * stale last-session status (#12025).
+   * `completed` means a successful session ran that day. A past provider day
+   * that was polled as `completed` with no new success is `no_backups` (a
+   * missed day), not the stale last-session status; today stays `null` until
+   * a success lands (#12025).
    */
   history28d: Array<{ day: string; status: ExternalBackupStatus | null }>;
   /** `devices.status` when linked — "backup stale but the device is offline" context. */

@@ -116,8 +116,8 @@ export function mapBackupJobStatus(
  * 100%. It collects `not_started` (the vendor knows the device but no run has
  * been scheduled), `unknown` (a vendor code we do not map) and `paused` (an
  * operator parked the device on purpose), and UIs render
- * it only when its count is non-zero, which keeps the familiar five-bar layout
- * in the normal case.
+ * it only when its count is non-zero. With `overdue` following the same rule,
+ * a fleet with neither shows the familiar five-bar layout.
  */
 export const BACKUP_STATUS_BUCKET_IDS = [
   'no_backups',
