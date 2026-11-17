@@ -354,3 +354,18 @@ describe('AiChatSidebar external composer focus', () => {
     expect(input).toHaveFocus();
   });
 });
+
+// #9429: the notification bell sits in the panel header (its states are tested
+// in AiNotifyToggle.test.tsx; a stub here keeps the shell test free of the
+// Notification API and the auth store).
+vi.mock('./AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
+describe('AiChatSidebar notification bell (#9429)', () => {
+  it('mounts the bell in the header, with or without a bound session', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    const { rerender } = render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: 's1' });
+    rerender(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+  });
+});

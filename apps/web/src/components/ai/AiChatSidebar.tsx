@@ -24,6 +24,7 @@ import AiModelPicker from "./AiModelPicker";
 import AiThinkingIndicator, { approvalWaitFromPending } from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
+import AiNotifyToggle from "./AiNotifyToggle";
 import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
@@ -432,6 +433,7 @@ export default function AiChatSidebar() {
                 />
               </button>
             )}
+            <AiNotifyToggle />
             <button
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"

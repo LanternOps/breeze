@@ -1117,5 +1117,14 @@
     "disconnected": "La connexion a été interrompue avant la fin de la réponse.",
     "tryAgain": "Réessayer",
     "conversationGone": "Cette conversation n’est plus disponible. Démarrez une nouvelle discussion pour continuer."
+  },
+  "aiNotifications": {
+    "responseReady": "Réponse prête",
+    "needsApproval": "Votre approbation est requise",
+    "needsInput": "Votre intervention est requise",
+    "failed": "Échec de la réponse",
+    "enable": "M’avertir quand une réponse est prête",
+    "disable": "Désactiver les notifications de Breeze AI",
+    "blocked": "Les notifications sont bloquées pour ce site. Autorisez-les dans les paramètres du navigateur."
   }
 }

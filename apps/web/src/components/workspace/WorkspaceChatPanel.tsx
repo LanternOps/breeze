@@ -9,6 +9,7 @@ import AiContextBadge from "../ai/AiContextBadge";
 import AiErrorBanner from "../ai/AiErrorBanner";
 import { activeRetryTarget } from "@/lib/aiErrors";
 import AiCostIndicator from "../ai/AiCostIndicator";
+import AiNotifyToggle from "../ai/AiNotifyToggle";
 import WorkspaceSessionChips from "./WorkspaceSessionChips";
 import CreateTicketFromChatModal, {
   type CreateTicketFromChatModalProps,
@@ -134,6 +135,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
             {t("aiConversationMove.continueInPanel")}
           </button>
         )}
+        <AiNotifyToggle />
         <button
           type="button"
           onClick={openTicketModal}

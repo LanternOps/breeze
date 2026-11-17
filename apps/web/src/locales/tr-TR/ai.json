@@ -1117,5 +1117,14 @@
     "disconnected": "Yanıt tamamlanmadan bağlantı kesildi.",
     "tryAgain": "Tekrar dene",
     "conversationGone": "Bu konuşma artık kullanılamıyor. Devam etmek için yeni bir sohbet başlatın."
+  },
+  "aiNotifications": {
+    "responseReady": "Yanıt hazır",
+    "needsApproval": "Onayınız gerekiyor",
+    "needsInput": "Girişiniz gerekiyor",
+    "failed": "Yanıt başarısız oldu",
+    "enable": "Bir yanıt hazır olduğunda bana bildir",
+    "disable": "Breeze AI bildirimlerini kapat",
+    "blocked": "Bu site için bildirimler engellendi. Tarayıcı ayarlarından izin verin."
   }
 }

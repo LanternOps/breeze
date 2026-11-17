@@ -1117,5 +1117,14 @@
     "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
     "tryAgain": "Erneut versuchen",
     "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
+  },
+  "aiNotifications": {
+    "responseReady": "Antwort bereit",
+    "needsApproval": "Benötigt Ihre Genehmigung",
+    "needsInput": "Benötigt Ihre Eingabe",
+    "failed": "Antwort fehlgeschlagen",
+    "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
+    "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }
