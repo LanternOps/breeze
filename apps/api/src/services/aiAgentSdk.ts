@@ -18,9 +18,9 @@ import {
   assertOutsideHeldDbContext,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
-import { aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
+import { aiMessages, aiToolExecutions, aiActionPlans, brainDeviceContext, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, count, gte } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
@@ -60,7 +60,12 @@ import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
-import { TIER2_NOTE_WRITE_TOOLS } from './aiNoteWrites';
+import {
+  NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY,
+  NOTE_WRITE_AUTO_MAX_PER_SESSION,
+  noteWriteFitsContentBounds,
+  TIER2_NOTE_WRITE_TOOLS,
+} from './aiNoteWrites';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import {
   STANDING_CHECK_UNAVAILABLE_MESSAGE,
@@ -1438,6 +1443,49 @@ async function wispSelfStateSkipsCard(
   }
 }
 
+/** Card-free note writes taken per session (aiNoteWrites.ts bounds). */
+const noteWriteAutoCounts = new WeakMap<ActiveSession, number>();
+
+/**
+ * Whether this append-only note (aiNoteWrites.ts) may run without the card:
+ * its content fits, the session has a card-free slot left, and the device has
+ * had fewer than NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY notes written in the
+ * last 24 h. The session slot is reserved synchronously, before the count is
+ * awaited, so calls the SDK runs concurrently cannot share one; it is given
+ * back when the device check sends the note to the card. Any doubt asks.
+ *
+ * The count runs in a fresh system context: the device id is the model's and
+ * not yet verified, but the answer only decides card vs no card and never
+ * reaches the model; the handler's verifyDeviceAccess still gates the write.
+ */
+async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, unknown>): Promise<boolean> {
+  if (!noteWriteFitsContentBounds(input)) return false;
+  const taken = noteWriteAutoCounts.get(session) ?? 0;
+  if (taken >= NOTE_WRITE_AUTO_MAX_PER_SESSION) return false;
+  noteWriteAutoCounts.set(session, taken + 1);
+  let recent: number;
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [row] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.select({ n: count() })
+          .from(brainDeviceContext)
+          .where(and(eq(brainDeviceContext.deviceId, input.deviceId as string), gte(brainDeviceContext.createdAt, since))),
+      ),
+    );
+    recent = Number(row?.n ?? Number.NaN);
+  } catch (err) {
+    console.error(`[AI-SDK] device note count failed (session ${session.breezeSessionId}); asking for approval`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+    recent = Number.NaN;
+  }
+  if (!(recent < NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY)) {
+    noteWriteAutoCounts.set(session, Math.max(0, (noteWriteAutoCounts.get(session) ?? 1) - 1));
+    return false;
+  }
+  return true;
+}
+
 /**
  * The chat pre-tool gate. For a Wisp session (`session.wispGrant` set — always
  * resolved by streamingSessionManager.getOrCreate from the ai_sessions row),
@@ -2120,14 +2168,24 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
       // Append-only notes (aiNoteWrites.ts) skip the card in any interactive
       // chat (a helper session returned above, through PAM), with the
-      // read-only path's two carve-outs. A tenant or flow tool that
-      // happens to share the name is someone else's tool and keeps its card.
+      // read-only path's two carve-outs, and only inside the per-session,
+      // per-device and content bounds (`noteWriteSkipsCard`); past them the
+      // note shows the card. A tenant or flow tool that happens to share the
+      // name is someone else's tool and keeps its card. Evaluated only when
+      // no other path already skips the card, so the device count and the
+      // session slot are spent only on a call this path decides.
       const noteWriteAutoExec = guardrailCheck.tier === 2
         && TIER2_NOTE_WRITE_TOOLS.has(toolName)
+        && effectiveMode !== 'auto_approve'
+        && !readOnlyAutoExec
+        && !wispSelfStateAutoExec
+        && !unattendedRead
         && !tenant
         && !flowTool
         && !session.isPaused
-        && !planInFlight;
+        && !planInFlight
+        && !standingConflict
+        && await noteWriteSkipsCard(session, input);
       // #10428 W06: a standing-instruction warning always reaches a human.
       if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedRead)) {
         const liveDenial = await refreshTier2Authority(

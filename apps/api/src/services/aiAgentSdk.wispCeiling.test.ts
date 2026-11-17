@@ -64,6 +64,7 @@ import type { IntentReleaseRevalidation } from './actionIntents/revalidateReleas
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { aiTools as toolRegistry } from './aiToolNames';
 import type { AiTool } from './aiTools';
+import { NOTE_WRITE_AUTO_MAX_DETAILS_CHARS, NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY, NOTE_WRITE_AUTO_MAX_PER_SESSION } from './aiNoteWrites';
 
 const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
   ok: true,
@@ -94,6 +95,7 @@ vi.mock('../db/schema', () => ({
   aiMessages: {},
   aiToolExecutions: {},
   aiActionPlans: {},
+  brainDeviceContext: { deviceId: 'deviceId', createdAt: 'createdAt' },
   devices: {},
   deviceSessions: {},
   approvalRequests: { id: 'id' },
@@ -407,6 +409,13 @@ function makeSession(overrides?: Record<string, unknown>) {
     lastActivityAt: new Date(),
     ...overrides,
   };
+}
+
+/** The gate's count of notes written on a device in the last 24 h (aiNoteWrites.ts bounds). */
+function mockRecentDeviceNotes(n: number) {
+  const where = vi.fn().mockResolvedValue([{ n }]);
+  vi.mocked(db.select).mockReturnValue({ from: vi.fn(() => ({ where })) } as any);
+  return where;
 }
 
 function mockInsertValues() {
@@ -1157,6 +1166,7 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
     vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
     vi.mocked(waitForApproval).mockResolvedValue(false);
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
+    mockRecentDeviceNotes(0);
   });
 
   it.each([
@@ -1272,6 +1282,98 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
     expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
     expect(waitForApproval).toHaveBeenCalled();
     expect(approvalCards(session)).toHaveLength(1);
+  });
+
+  // Bounds on what an injected instruction can write with no person in the
+  // loop. Past any of them the note falls back to the card, so a person can
+  // still approve it.
+  describe('card-free bounds', () => {
+    it(`a session writes at most ${NOTE_WRITE_AUTO_MAX_PER_SESSION} notes without a card; the next one asks`, async () => {
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+      const gate = createSessionPreToolUse(session);
+      for (let i = 0; i < NOTE_WRITE_AUTO_MAX_PER_SESSION; i++) {
+        mockInsertValues();
+        expect(await gate('set_device_context', NOTE)).toMatchObject({ allowed: true });
+      }
+      expect(approvalCards(session)).toHaveLength(0);
+
+      mockInsertReturning({ id: 'exec-over-session-cap' });
+      expect(await gate('set_device_context', NOTE)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it('the session cap is per session', async () => {
+      const first = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+      for (let i = 0; i < NOTE_WRITE_AUTO_MAX_PER_SESSION; i++) {
+        mockInsertValues();
+        await createSessionPreToolUse(first)('set_device_context', NOTE);
+      }
+      mockInsertValues();
+      const second = makeActiveSession({ approvalMode: 'per_step', wispGrant: null, breezeSessionId: 'session-2' });
+      expect(await createSessionPreToolUse(second)('set_device_context', NOTE)).toMatchObject({ allowed: true });
+    });
+
+    it(`a device with ${NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY} notes in the last 24 h gets no more without a card`, async () => {
+      mockRecentDeviceNotes(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
+      mockInsertReturning({ id: 'exec-device-cap' });
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it('one below the device cap still runs without a card', async () => {
+      mockRecentDeviceNotes(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY - 1);
+      mockInsertValues();
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toMatchObject({ allowed: true });
+    });
+
+    it('a device-cap fallback does not use up a session slot', async () => {
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+      const gate = createSessionPreToolUse(session);
+      mockRecentDeviceNotes(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
+      mockInsertReturning({ id: 'exec-device-cap-2' });
+      await gate('set_device_context', NOTE);
+      mockRecentDeviceNotes(0);
+      for (let i = 0; i < NOTE_WRITE_AUTO_MAX_PER_SESSION; i++) {
+        mockInsertValues();
+        expect(await gate('set_device_context', NOTE)).toMatchObject({ allowed: true });
+      }
+    });
+
+    it('asks when the device count cannot be read (fail closed)', async () => {
+      vi.mocked(db.select).mockImplementation(() => { throw new Error('db down'); });
+      mockInsertReturning({ id: 'exec-count-failed' });
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it(`details over ${NOTE_WRITE_AUTO_MAX_DETAILS_CHARS} characters (serialised) ask`, async () => {
+      mockInsertReturning({ id: 'exec-big-details' });
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+      const details = { text: 'x'.repeat(NOTE_WRITE_AUTO_MAX_DETAILS_CHARS) };
+
+      expect(await createSessionPreToolUse(session)('set_device_context', { ...NOTE, details })).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
+    it('small details still run without a card', async () => {
+      mockInsertValues();
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', { ...NOTE, details: { build: '22631' } })).toMatchObject({ allowed: true });
+    });
+
+    it('a note with no device id asks', async () => {
+      mockInsertReturning({ id: 'exec-no-device' });
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', { contextType: 'quirk', summary: 's' })).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    });
   });
 
   it('a Tier-3 resolution under the same tool name still requires a durable approval intent', async () => {
@@ -1626,6 +1728,7 @@ describe('createSessionPreToolUse — grant-level unattended reads (#10973)', ()
     it('a device note runs without a card, as a note write', async () => {
       const [tool, input] = CALLS[2]!;
       mockInsertValues();
+      mockRecentDeviceNotes(0);
       const session = humanSession();
       expect(await createSessionPreToolUse(session)(tool, input)).toMatchObject({ allowed: true });
       expect(approvalCards(session)).toHaveLength(0);

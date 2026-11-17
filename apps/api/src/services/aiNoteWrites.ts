@@ -14,10 +14,20 @@
  * (RCA evidence). Each path sanitises the note text and fences it as untrusted
  * data. A new reader of brain_device_context must do the same.
  *
- * What the card used to stop and nothing stops now: notes are org-wide and
- * persistent, and the readers cap what they load (newest 100; RCA reads 10),
- * so a run of junk notes can push real ones out of view. The tool's rate limit
- * (aiToolRateLimits.ts) is the only bound on that today (#11986).
+ * What the card used to stop: notes are org-wide and persistent, and the
+ * readers cap what they load (newest 100; RCA reads 10), so a run of junk
+ * notes could push real ones out of view (#11986). The card-free path is
+ * therefore bounded, and past any bound the note falls back to the card (a
+ * person can still approve it; nothing is refused):
+ *   - per session: NOTE_WRITE_AUTO_MAX_PER_SESSION card-free notes;
+ *   - per device: no card-free note once the device has
+ *     NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY notes written in the last 24 h
+ *     (any path, any session); a failed count asks;
+ *   - content: `summary` is capped at 255 by the input schema, and `details`
+ *     must serialise to at most NOTE_WRITE_AUTO_MAX_DETAILS_CHARS characters.
+ * On top of these, the tool's rate limit (aiToolRateLimits.ts) still applies.
+ * The device count is a check-then-write, so concurrent calls in one turn can
+ * pass it together; the session cap bounds that overshoot.
  *
  * `createSessionPreToolUse` (aiAgentSdk.ts) applies this with the read-only
  * path's exclusions (#3130): never on a paused session, never as an unmatched
@@ -39,3 +49,28 @@
  * Leaf module — NO imports — so the chat gate can read it cheaply.
  */
 export const TIER2_NOTE_WRITE_TOOLS: ReadonlySet<string> = new Set<string>(['set_device_context']);
+
+/** Card-free note writes per chat session; the next one shows the card. */
+export const NOTE_WRITE_AUTO_MAX_PER_SESSION = 10;
+
+/** Notes written on one device in the last 24 h after which a note shows the card. */
+export const NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY = 5;
+
+/** Largest serialised `details` a card-free note may carry. */
+export const NOTE_WRITE_AUTO_MAX_DETAILS_CHARS = 2000;
+
+/**
+ * The content bounds of a card-free note: a device id to count against, and
+ * `details` absent or small. Anything else asks.
+ */
+export function noteWriteFitsContentBounds(input: Record<string, unknown>): boolean {
+  if (typeof input.deviceId !== 'string' || input.deviceId.length === 0) return false;
+  if (input.details === undefined || input.details === null) return true;
+  let serialised: string | undefined;
+  try {
+    serialised = JSON.stringify(input.details);
+  } catch {
+    return false;
+  }
+  return typeof serialised === 'string' && serialised.length <= NOTE_WRITE_AUTO_MAX_DETAILS_CHARS;
+}

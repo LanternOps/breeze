@@ -159,7 +159,7 @@ Unattended reads is a switch on your grant, off by default, under **Budget and c
 - read a registry key (`registry_operations` `read_key`);
 - read a registry value (`registry_operations` `get_value`);
 - query the Windows Security event log, with an optional filter by event ID, level, provider or age (`event_logs_query`);
-- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device. In a chat, saving a note does not depend on this switch: it runs without a card unless the conversation is paused or the note is not a step of a plan Breeze AI is carrying out. The switch still decides it for device troubleshooting runs.
+- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device. In a chat, saving a note does not depend on this switch: it runs without a card, within limits (10 per conversation, 5 on one device in the last 24 hours, small details only), unless the conversation is paused or a plan is running. Past a limit it asks on a card. The switch still decides it for device troubleshooting runs.
 
 Anything else still asks first. That includes every other event log channel, a Security query with a filter outside those four, and every registry write.
 
