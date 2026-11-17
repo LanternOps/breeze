@@ -1,7 +1,7 @@
 package heartbeat
 
-// On-demand runtime diagnostics (#2389). capture_pprof captures heap and/or
-// goroutine profiles in-process and returns them base64-encoded in the command
+// On-demand runtime diagnostics (#2389). capture_pprof captures heap, goroutine,
+// goroutineleak and/or CPU profiles in-process and returns them base64-encoded in the command
 // result. There is deliberately NO pprof HTTP listener: the agent is a root
 // daemon and must expose nothing reachable off-box, so the signed/queued
 // command path is the only trigger.
@@ -38,8 +38,13 @@ var capturePprofMinIntervalNs atomic.Int64
 // (0 = never).
 var capturePprofLastNs atomic.Int64
 
+// capturePprofCPUDurationNs is how long a cpu capture samples. Atomic so
+// tests can shrink it.
+var capturePprofCPUDurationNs atomic.Int64
+
 func init() {
 	capturePprofMinIntervalNs.Store(int64(30 * time.Second))
+	capturePprofCPUDurationNs.Store(int64(30 * time.Second))
 }
 
 // capturePprofMinInterval returns the current minimum interval between
@@ -93,18 +98,22 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		profile = s
 	}
 
-	var wantHeap, wantGoroutine bool
+	var wantHeap, wantGoroutine, wantLeak, wantCPU bool
 	switch profile {
-	case "all":
-		wantHeap, wantGoroutine = true, true
+	case "all": // cpu is excluded: it blocks for the sampling window
+		wantHeap, wantGoroutine, wantLeak = true, true, true
 	case "heap":
 		wantHeap = true
 	case "goroutine":
 		wantGoroutine = true
+	case "goroutineleak":
+		wantLeak = true
+	case "cpu":
+		wantCPU = true
 	default:
 		return tools.CommandResult{
 			Status: "failed",
-			Error:  fmt.Sprintf("invalid profile %q: must be heap, goroutine, or all", profile),
+			Error:  fmt.Sprintf("invalid profile %q: must be heap, goroutine, goroutineleak, cpu, or all", profile),
 		}
 	}
 
@@ -115,7 +124,7 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.CommandResult{
 			Status: "failed",
 			Error: fmt.Sprintf(
-				"capture_pprof rate-limited: at most one capture per %s (heap captures force a stop-the-world GC); retry later",
+				"capture_pprof rate-limited: at most one capture per %s (heap and goroutineleak captures force a stop-the-world GC); retry later",
 				interval),
 		}
 	}
@@ -153,6 +162,26 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		result["goroutineProfileBytes"] = size
 	}
 
+	if wantLeak {
+		// The leak detector runs a GC cycle to find unreachable blocked
+		// goroutines.
+		b64, size, err := capturePprofProfile("goroutineleak")
+		if err != nil {
+			return tools.CommandResult{Status: "failed", Error: err.Error()}
+		}
+		result["goroutineleakProfileBase64"] = b64
+		result["goroutineleakProfileBytes"] = size
+	}
+
+	if wantCPU {
+		b64, size, err := captureCPUProfile(time.Duration(capturePprofCPUDurationNs.Load()))
+		if err != nil {
+			return tools.CommandResult{Status: "failed", Error: err.Error()}
+		}
+		result["cpuProfileBase64"] = b64
+		result["cpuProfileBytes"] = size
+	}
+
 	return tools.NewSuccessResult(result, 0)
 }
 
@@ -170,6 +199,22 @@ func capturePprofProfile(name string) (string, int, error) {
 	}
 	if buf.Len() > maxProfileBytes {
 		return "", 0, fmt.Errorf("%s profile is %d bytes, exceeds the %d byte result cap", name, buf.Len(), maxProfileBytes)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len(), nil
+}
+
+// captureCPUProfile samples CPU for d and returns the profile base64-encoded
+// with its raw size. Only one CPU profile can run per process, so a second
+// concurrent start fails. Never forces a GC.
+func captureCPUProfile(d time.Duration) (string, int, error) {
+	var buf bytes.Buffer
+	if err := pprof.StartCPUProfile(&buf); err != nil {
+		return "", 0, fmt.Errorf("CPU profile already running: %w", err)
+	}
+	time.Sleep(d)
+	pprof.StopCPUProfile()
+	if buf.Len() > maxProfileBytes {
+		return "", 0, fmt.Errorf("cpu profile is %d bytes, exceeds the %d byte result cap", buf.Len(), maxProfileBytes)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len(), nil
 }
