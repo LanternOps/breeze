@@ -5,7 +5,7 @@
  * Pins what a unit test with a mocked `../../db` cannot:
  *   - the lineage columns' composite same-org FKs, `ai_agent_runs_chain_chk`,
  *     and `ON DELETE SET NULL (continued_from_run_id)` (migration
- *     2027-01-26-160000-ai-analysis-run-lineage.sql);
+ *     2027-01-27-130000-ai-analysis-run-lineage.sql);
  *   - `analysisContinuationOf` / `deriveChainHandles` over real rows;
  *   - the chain bounds enforced inside `createAndEnqueueAgentRun` step 4d
  *     under the real (agent, org) and analysis-compute advisory locks, where

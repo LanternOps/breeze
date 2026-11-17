@@ -221,7 +221,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // the run it continues, the chain's root and its depth (>= 1); a root is
   // depth 0 with both NULL (`ai_agent_runs_chain_chk`). The (pointer, org_id)
   // self-FKs and the two partial indexes are SQL-ONLY
-  // (migrations/2027-01-26-160000-ai-analysis-run-lineage.sql): they use
+  // (migrations/2027-01-27-130000-ai-analysis-run-lineage.sql): they use
   // `ON DELETE SET NULL (<pointer>)`, which Drizzle cannot model — the same
   // reason as `requestedByRunId` above.
   continuedFromRunId: uuid('continued_from_run_id'),
