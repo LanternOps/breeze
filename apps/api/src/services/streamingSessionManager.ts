@@ -1973,7 +1973,9 @@ export class StreamingSessionManager {
               // (#3089). Settling only acts on a wait already in flight; the
               // over-limit call's preToolUse may be past its stop check and not
               // yet waiting, so spend the cycle's wait budget too: its wait then
-              // returns at once (the hook refuses any later call outright).
+              // returns at once, refused, even for a row PAM policy already
+              // auto-approved (a zero budget never honours an approval, #12084);
+              // the hook refuses any later call outright.
               settleApprovalWaits(session);
               session.approvalWaitDeadline = Date.now();
               void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);

@@ -296,14 +296,14 @@ function tier2Guardrail() {
 
 /** Resolvers of in-flight `waitForApproval` calls, by execution id. */
 const approvalWaits = new Map<string, (approved: boolean) => void>();
-const approvalWaitDetails = new Map<string, { expired?: boolean } | undefined>();
+const approvalWaitDetails = new Map<string, { expired?: boolean; denied?: boolean } | undefined>();
 
 /** `waitForApproval` blocks until the test decides, or the wait is settled (abort). */
 function controlledApprovalWaits() {
   approvalWaits.clear();
   approvalWaitDetails.clear();
   vi.mocked(waitForApproval).mockImplementation(
-    (executionId: string, _timeoutMs?: number, signal?: AbortSignal, detail?: { expired?: boolean }) =>
+    (executionId: string, _timeoutMs?: number, signal?: AbortSignal, detail?: { expired?: boolean; denied?: boolean }) =>
       new Promise<boolean>((resolve) => {
         approvalWaits.set(executionId, resolve);
         approvalWaitDetails.set(executionId, detail);
@@ -603,14 +603,25 @@ describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
   });
 
-  it('says ended, not expired, when a settled wait also ran into its timeout (#12079)', async () => {
+  it('says expired when the row was closed as timed out, even if a settle landed after (#12084)', async () => {
     const session = makeActiveSession() as ActiveSession;
     const { result } = await blocked(session);
-    // The real wait can reach its timeout branch after an abort landed mid-sleep.
+    // The wait closed the row as timed out; a late click on it is told
+    // "expired", so the card must say the same.
     approvalWaitDetails.get('exec-1')!.expired = true;
     settleApprovalWaits(session);
     expect(await result).toMatchObject({ allowed: false });
-    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'expired' }]);
+  });
+
+  it('says not_approved, not ended, when a denial landed just before a settle (#12084)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    // The wait's close-out lost to the denial and reported it.
+    approvalWaitDetails.get('exec-1')!.denied = true;
+    settleApprovalWaits(session);
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'not_approved' }]);
   });
 
   it('says ended when the wait throws', async () => {
