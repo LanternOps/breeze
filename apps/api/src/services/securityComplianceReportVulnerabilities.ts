@@ -204,6 +204,10 @@ export type OpenVulnerabilityFinding = {
   epssScore: number | null;
   riskScore: number | null;
   patchAvailable: boolean;
+  /** The installed-software row this finding was matched against; null for an
+   *  OS-level finding (or, transiently, a software finding whose inventory row
+   *  was deleted — the FK is ON DELETE SET NULL). */
+  softwareInventoryId: string | null;
   acceptedBy: string | null;
   acceptedUntil: string | null;
   resolvedAt: string | null;
@@ -234,6 +238,7 @@ export async function loadOpenFindings(
       vulnerabilityId: deviceVulnerabilities.vulnerabilityId,
       status: deviceVulnerabilities.status,
       riskScore: deviceVulnerabilities.riskScore,
+      softwareInventoryId: deviceVulnerabilities.softwareInventoryId,
       acceptedBy: deviceVulnerabilities.acceptedBy,
       acceptedUntil: deviceVulnerabilities.acceptedUntil,
       resolvedAt: deviceVulnerabilities.resolvedAt,
@@ -285,6 +290,7 @@ export async function loadOpenFindings(
       epssScore: record.epssScore,
       riskScore: toNumberOrNull(row.riskScore),
       patchAvailable: record.patchAvailable,
+      softwareInventoryId: row.softwareInventoryId ?? null,
       acceptedBy: row.acceptedBy ?? null,
       acceptedUntil: toIso(row.acceptedUntil),
       resolvedAt: toIso(row.resolvedAt),
