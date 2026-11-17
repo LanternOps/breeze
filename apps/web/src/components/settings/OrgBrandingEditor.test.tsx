@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 
 import OrgBrandingEditor from './OrgBrandingEditor';
 import { fetchWithAuth } from '../../stores/auth';
@@ -456,6 +456,49 @@ describe('OrgBrandingEditor logo (#9673)', () => {
     const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} locked={['branding.logoUrl']} />);
     await loaded(container);
     expect(screen.queryByText('Managed by partner')).toBeNull();
+  });
+
+  describe('low-resolution warning (#12041)', () => {
+    function stubSized(w: number, h: number, mode: 'load' | 'error' = 'load') {
+      class SizedImage {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        naturalWidth = w;
+        naturalHeight = h;
+        set src(_: string) {
+          setTimeout(() => (mode === 'load' ? this.onload?.() : this.onerror?.()), 0);
+        }
+      }
+      vi.stubGlobal('Image', SizedImage);
+    }
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('warns when the org logo is under 600 px on its long side', async () => {
+      stubSized(140, 35);
+      mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+      await loaded(container);
+      const warning = await screen.findByTestId('logo-low-res-warning');
+      expect(warning.textContent).toContain('140 × 35');
+    });
+
+    it('does not warn for a large logo', async () => {
+      stubSized(800, 200);
+      mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+      await loaded(container);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByTestId('logo-low-res-warning')).toBeNull();
+    });
+
+    it('does not warn when the image fails to load', async () => {
+      stubSized(0, 0, 'error');
+      mockPortal({ logoUrl: OLD_LOGO, partnerLogoUrl: null });
+      const { container } = render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+      await loaded(container);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByTestId('logo-low-res-warning')).toBeNull();
+    });
   });
 
   // The legacy blob holds a real upload, unlike its colours (the editor wrote

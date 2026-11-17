@@ -1,5 +1,15 @@
 export { buildReportPdf, parseHexColor } from './reportPdf';
 export type { ReportBranding, BuildOpts } from './reportPdf';
+export {
+  REPORT_META_SEPARATOR,
+  formatReportDate,
+  formatReportDateTime,
+  formatReportPeriod,
+  partnerReportConventions,
+  reportPageGeometry,
+  resolveReportLocale,
+} from './reportLocale';
+export type { ReportDateFormat, ReportLocale, ReportPageSize, ReportTimeFormat } from './reportLocale';
 export { renderThreatDetectionReport } from './threatDetectionPdf';
 export type { ThreatDetectionPdfOpts } from './threatDetectionPdf';
 export { renderEndpointManagementReport } from './endpointManagementPdf';

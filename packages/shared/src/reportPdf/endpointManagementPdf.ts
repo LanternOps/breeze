@@ -24,6 +24,7 @@
  * web UI, not the PDF.
  */
 import type { jsPDF } from 'jspdf';
+import type { ReportFormatChrome } from './reportLocale';
 import { autoTable } from 'jspdf-autotable';
 import type {
   ComplianceState,
@@ -48,7 +49,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & ReportFormatChrome;
 
 export type EndpointManagementPdfOpts = {
   generatedAt: string;
@@ -157,14 +158,13 @@ export function renderEndpointManagementReport(
   const rows: IntuneDeviceRow[] = Array.isArray(summary.rows) ? summary.rows : [];
 
   // --- cover ---------------------------------------------------------------
-  const periodLabel = summary.period?.start && summary.period?.end
-    ? `Period ${summary.period.start} to ${summary.period.end}`
-    : 'Current inventory';
+  const range = chrome.formatPeriod(summary.period?.start, summary.period?.end);
+  const periodLabel = range ? `Reporting period ${range}` : 'Current inventory';
   let y = chrome.drawTitleBlock(
     doc,
     'Endpoint Management Review',
     summary.orgName ?? '',
-    `${periodLabel} · Generated ${opts.generatedAt}${opts.partnerName ? ` · ${opts.partnerName}` : ''}`,
+    [periodLabel, `Generated ${opts.generatedAt}`, opts.partnerName].filter(Boolean).join(chrome.metaSeparator),
     PAGE.bandH + 10,
   );
 

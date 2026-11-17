@@ -337,7 +337,7 @@ export function renderBackupStatusReport(
     doc,
     'Backup Status Report',
     data.org?.name ?? '',
-    `Prepared ${opts.generatedAt} - ${populationSummary}`,
+    `Prepared ${opts.generatedAt}   ·   ${populationSummary}`,
     PAGE.bandH + 14,
   );
 

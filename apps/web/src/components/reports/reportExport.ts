@@ -12,12 +12,11 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   TicketSlaPerformanceSummary,
 } from '@breeze/shared';
 import { isTicketSlaPerformanceSummary, rowsToXlsx, sheetsToXlsx, ticketSlaPerformanceSheets, XLSX_MIME_TYPE } from '@breeze/shared';
-import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
+import { buildReportPdf, parseHexColor, partnerReportConventions, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV + download helpers so existing importers of these
 // names from './reportExport' keep working; the canonical definitions now live
@@ -107,14 +106,10 @@ export async function exportReport(
     throw new Error(`Unsupported report format: ${format}`);
   }
 
-  // PDF — branded scorecard cover (posture) or branded generic table.
-  // Medium date + short time ("Jul 1, 2026, 4:15 PM"): an outward-facing
-  // document doesn't need seconds precision.
-  const generatedAt = formatDateTime(new Date(), {
-    timeZone: timezone,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  // PDF — branded scorecard cover (posture) or branded generic table. The
+  // renderer prints the generation instant in the partner's date format with
+  // its timezone, the same on every report path (#12048).
+  const generatedAt = new Date();
   const branding = opts.branding ?? (await loadPartnerBranding());
   const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
@@ -167,6 +162,7 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
     if (!res.ok) return empty;
     const data = (await res.json()) as {
       name?: string;
+      documentPageSize?: unknown;
       settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
     };
     const name = data.name ?? null;
@@ -175,6 +171,9 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
       accentColor: parseHexColor(data.settings?.branding?.secondaryColor) ? data.settings!.branding!.secondaryColor! : null,
       contactEmail: data.settings?.contact?.email?.trim() || null,
       contactName: data.settings?.contact?.name?.trim() || null,
+      // #12048: page size, date order and hour cycle, mapped exactly as the
+      // server-rendered paths map them.
+      ...partnerReportConventions({ documentPageSize: data.documentPageSize, settings: data.settings }),
     };
     const safeLogoUrl = sanitizeImageSrc(data.settings?.branding?.logoUrl ?? null);
     if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null, ...colors };

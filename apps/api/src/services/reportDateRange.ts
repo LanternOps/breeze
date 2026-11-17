@@ -50,6 +50,34 @@ function parseBound(bound: 'start' | 'end', value: string): Date {
   return date;
 }
 
+/** Default length of an ad-hoc service-plan evidence window. */
+const AD_HOC_EVIDENCE_DAYS = 30;
+
+export type EvidenceWindow = { start: Date; end: Date; periodStart: string; periodEnd: string };
+
+/**
+ * The window an ad-hoc service-plan evidence report covers when no deliverable
+ * occurrence supplies one (#12048): the report's explicit bounds (whole days),
+ * else its rolling preset, else the trailing 30 days — ending at generation.
+ *
+ * Shared by the threat detection and vulnerability management generators. Run
+ * together on Nov 9 they printed 10-10→11-09 (trailing 30 days) and
+ * 10-09→11-09 (one calendar month); a client reading both saw two periods.
+ */
+export function resolveAdHocEvidenceWindow(rawDateRange: unknown, generatedAt: string): EvidenceWindow {
+  const range = asRange(rawDateRange) ?? {};
+  const end = nonEmptyString(range.end) ? new Date(`${range.end.slice(0, 10)}T23:59:59.999Z`) : new Date(generatedAt);
+  const start = nonEmptyString(range.start)
+    ? new Date(`${range.start.slice(0, 10)}T00:00:00.000Z`)
+    : new Date(end.getTime() - (reportDateRangePresetDays(range) ?? AD_HOC_EVIDENCE_DAYS) * DAY_MS);
+  return {
+    start,
+    end,
+    periodStart: start.toISOString().slice(0, 10),
+    periodEnd: end.toISOString().slice(0, 10),
+  };
+}
+
 /** The length in days of a rolling preset, or null for `custom`/absent/unknown. */
 export function reportDateRangePresetDays(raw: unknown): number | null {
   const preset = asRange(raw)?.preset;

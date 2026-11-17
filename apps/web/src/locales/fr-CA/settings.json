@@ -1010,6 +1010,7 @@
     "noLogo": "Pas de logo",
     "uploadImage": "Téléverser l’image",
     "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage; les grandes images sont réduites à 800 px.",
+    "logoLowRes": "Ce logo fait {{width}} × {{height}} px. Les rapports, soumissions et factures l’impriment à environ 64 mm (2,5 po) de large; il paraîtra donc flou à l’impression. Téléversez une version d’au moins 600 px de large.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",

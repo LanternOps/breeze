@@ -85,6 +85,17 @@ The `config.filters` object narrows the data:
 | `pdf` | Formatted PDF document |
 | `excel` | Excel spreadsheet (.xlsx) |
 
+#### PDF page size, dates and letterhead
+
+Every report PDF follows your partner's document conventions, whether it is downloaded in Breeze, downloaded from the portal, or attached to a scheduled email:
+
+- **Page size** is the **Page size** (Letter or A4) set under **Settings → Billing → Documents**, the same setting your quotes and invoices use. It starts as Letter until you change it.
+- **Dates** follow the partner **date format** (`MM/DD/YYYY` prints "Nov 9, 2026", `DD/MM/YYYY` prints "9 Nov 2026", `YYYY-MM-DD` prints "2026-11-09") and the **time format** (12-hour or 24-hour). The month is spelled out so a date reads the same in every country.
+- **The generated time** carries its timezone (for example "Generated Nov 9, 2026, 12:06 PM EST"), and every report states its period as one range ("Reporting period Oct 10, 2026 – Nov 9, 2026").
+- **The header** is a white letterhead with your logo and a brand-colour rule under it when a logo is uploaded, and your brand colour with your name in white when there is none. A logo needs at least 600 px on its long side to print sharply; the Branding tab warns when it is smaller.
+
+Ad-hoc Threat Detection Review and Vulnerability Management runs (no service deliverable) cover the same window: the report's own date range, or the 30 days ending on the generation date.
+
 ### Schedule Details and Email Recipients
 
 For recurring reports, the **Schedule and delivery** panel in the report builder (also available as `config.schedule` and `config.emailRecipients` via the API) controls exactly when the report runs and who gets emailed the result:

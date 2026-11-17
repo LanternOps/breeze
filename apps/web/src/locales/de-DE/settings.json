@@ -1010,6 +1010,7 @@
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
     "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
+    "logoLowRes": "Dieses Logo ist {{width}} × {{height}} px groß. Berichte, Angebote und Rechnungen drucken es etwa 64 mm (2,5 Zoll) breit, daher wirkt es im Druck unscharf. Laden Sie eine Version mit mindestens 600 px Breite hoch.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",

@@ -43,6 +43,19 @@ import {
   FLEET_DESIGN_TEXT_MAX_CHARS,
   type FleetDesignReportSummary,
 } from '../types/fleetDesign';
+import {
+  REPORT_META_SEPARATOR,
+  formatReportDate,
+  formatReportDateTime,
+  formatReportPeriod,
+  reportPageGeometry,
+  resolveReportLocale,
+  type ReportDateFormat,
+  type ReportLocale,
+  type ReportPageGeometry,
+  type ReportPageSize,
+  type ReportTimeFormat,
+} from './reportLocale';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -158,12 +171,21 @@ export type ReportBranding = {
   /** Partner contact for the closing "to approve or discuss" line; null hides it. */
   contactEmail?: string | null;
   contactName?: string | null;
+  /** The partner's document page size (`partners.document_page_size`, the
+   *  one its quotes and invoices print on). Absent → A4 (#12048). */
+  pageSize?: ReportPageSize | null;
+  /** The partner's date order and hour cycle (`partners.settings.dateFormat`
+   *  / `timeFormat`). Absent → "Nov 9, 2026" and a 12-hour clock. */
+  dateFormat?: ReportDateFormat | null;
+  timeFormat?: ReportTimeFormat | null;
 };
 
 export type BuildOpts = {
   reportType: string;
-  /** Already-formatted, timezone-correct generation timestamp. */
-  generatedAt: string;
+  /** Generation instant. Pass a Date (or ISO string with a time) and the
+   *  renderer prints it in the partner's format with its timezone (#12048); any
+   *  other string is printed as given (callers that pre-format). */
+  generatedAt: string | Date;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
@@ -180,6 +202,9 @@ export type BuildOpts = {
   onRendererFallback?: (info: { reportType: string; reason: 'summary_missing' | 'summary_shape_mismatch' }) => void;
 };
 
+/** BuildOpts after `buildReportPdf` has resolved the generated time to its printed form. */
+type RenderOpts = Omit<BuildOpts, 'generatedAt'> & { generatedAt: string };
+
 /** Types whose PDF is a designed renderer that must never degrade silently
  *  (#3198 W02 fix round). */
 const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
@@ -193,7 +218,22 @@ const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
   'ticket_sla_performance',
 ]);
 
-const PAGE = { w: 297, h: 210, mx: 14, bandH: 19, footY: 199 } as const;
+/**
+ * The active page geometry and locale. `buildReportPdf` swaps in the partner's
+ * page size and date conventions for one synchronous build and restores the
+ * defaults afterwards — the same pattern as the palette `C` — so every drawing
+ * helper keeps reading `PAGE.w` unchanged (#12048).
+ */
+const DEFAULT_PAGE = reportPageGeometry('a4');
+let PAGE: ReportPageGeometry = DEFAULT_PAGE;
+const DEFAULT_LOCALE = resolveReportLocale(undefined, 'UTC');
+let L: ReportLocale = DEFAULT_LOCALE;
+
+/** A date in the report's locale, or `fallback` when there is none. */
+const fmtDate = (value: string | Date | null | undefined, fallback = '—'): string => formatReportDate(value, L) ?? fallback;
+const fmtDateTime = (value: string | Date | null | undefined, fallback = '—'): string => formatReportDateTime(value, L) ?? fallback;
+const fmtPeriod = (start: string | Date | null | undefined, end: string | Date | null | undefined): string | null =>
+  formatReportPeriod(start, end, L);
 const TOTAL_TOKEN = '{tpc}'; // jsPDF total-page-count placeholder
 
 const set = {
@@ -281,48 +321,81 @@ function drawBreezeMark(doc: jsPDF, x: number, yMid: number, size = 9): void {
   }
 }
 
-function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
-  const { branding, reportType } = opts;
+/**
+ * Pages whose header band / footer are already drawn. Several renderers draw
+ * the chrome for page 1 themselves and autotable's `didDrawPage` draws it again
+ * for the same page, which embedded the partner logo two or three times on a
+ * one-page report (#12041). Chrome is drawn once per page, whoever asks first.
+ */
+const chromeDrawn = new WeakMap<jsPDF, { header: Set<number>; footer: Set<number> }>();
+
+function claimChrome(doc: jsPDF, part: 'header' | 'footer'): boolean {
+  let drawn = chromeDrawn.get(doc);
+  if (!drawn) {
+    drawn = { header: new Set(), footer: new Set() };
+    chromeDrawn.set(doc, drawn);
+  }
+  const page = doc.getCurrentPageInfo().pageNumber;
+  if (drawn[part].has(page)) return false;
+  drawn[part].add(page);
+  return true;
+}
+
+/** Height of the brand-colour rule closing the letterhead band. */
+const LETTERHEAD_RULE_H = 1.2;
+
+/** The brand-colour band: partner name (or the Breeze mark) in white. */
+function paintBrandBand(doc: jsPDF): void {
   set.fill(doc, C.primary);
   doc.rect(0, 0, PAGE.w, PAGE.bandH, 'F');
-  // Teal brand ribbon under the band.
   set.fill(doc, C.teal);
   doc.rect(0, PAGE.bandH, PAGE.w, 0.7, 'F');
+}
 
+/**
+ * The letterhead band for a partner logo: white, closed by a brand-colour rule
+ * and the accent ribbon. The logo sits directly on white, as it does on the
+ * partner's own letterhead — no white chip pasted onto a dark band (#12041).
+ */
+function paintLetterheadBand(doc: jsPDF): void {
+  set.fill(doc, C.white);
+  doc.rect(0, 0, PAGE.w, PAGE.bandH, 'F');
+  set.fill(doc, C.primary);
+  doc.rect(0, PAGE.bandH - LETTERHEAD_RULE_H, PAGE.w, LETTERHEAD_RULE_H, 'F');
+  set.fill(doc, C.teal);
+  doc.rect(0, PAGE.bandH, PAGE.w, 0.7, 'F');
+}
+
+function drawHeaderBand(doc: jsPDF, opts: RenderOpts): void {
+  if (!claimChrome(doc, 'header')) return;
+  const { branding, reportType } = opts;
   const name = branding?.name?.trim() || 'Breeze';
-  const yMid = PAGE.bandH / 2;
+  const bandMid = PAGE.bandH / 2;
+  // Centre of the white area above the letterhead's closing rule.
+  const letterheadMid = (PAGE.bandH - LETTERHEAD_RULE_H) / 2;
 
   // Partner logo when uploaded (carries its own wordmark); otherwise the Breeze
-  // vector mark + partner/Breeze name. A failed embed degrades to the mark+name.
+  // vector mark + partner/Breeze name. A failed embed degrades to the name.
   let drewLogo = false;
   if (branding?.logoDataUrl) {
-    // Fit the logo inside a 9 mm × 60 mm box, preserving its aspect: a tall
+    paintLetterheadBand(doc);
+    // Fit the logo inside an 11 mm × 64 mm box, preserving its aspect: a tall
     // mark fills the height, a wide wordmark fills the width and shrinks.
-    const maxH = 9;
-    const maxW = 60;
+    const maxH = 11;
+    const maxW = 64;
     const aspect = branding.logoAspect && branding.logoAspect > 0 ? branding.logoAspect : 3;
-    const scale = Math.min(maxH, maxW / aspect) / maxH;
-    const logoH = maxH * scale;
+    const logoH = Math.min(maxH, maxW / aspect);
     const logoW = logoH * aspect;
-    const pad = 2;
-    const chipW = logoW + pad * 2;
-    const chipH = maxH + pad * 2;
-    const chipY = yMid - chipH / 2;
-    // White safe-area chip so a dark or transparent partner logo always reads on
-    // the brand-colour band (letterhead convention).
-    set.fill(doc, C.white);
-    doc.roundedRect(PAGE.mx, chipY, chipW, chipH, 1.6, 1.6, 'F');
     try {
-      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx + pad, chipY + pad + (maxH - logoH) / 2, logoW, logoH, undefined, 'FAST');
+      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx, letterheadMid - logoH / 2, logoW, logoH, undefined, 'FAST');
       drewLogo = true;
     } catch {
-      // Erase the empty chip and fall back to the Breeze mark + name.
-      set.fill(doc, C.primary);
-      doc.rect(0, 0, PAGE.mx + chipW + 2, PAGE.bandH, 'F');
       drewLogo = false;
     }
   }
   if (!drewLogo) {
+    // Also paints over the white letterhead when the logo would not embed.
+    paintBrandBand(doc);
     // Partner-branded but no usable logo: the partner's name IS the letterhead —
     // pairing it with the Breeze mark would brand the deliverable with the
     // tooling instead of the MSP. The Breeze mark appears only when there is no
@@ -330,26 +403,28 @@ function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
     const isPartnerBranded = Boolean(branding?.name?.trim());
     let textX = PAGE.mx;
     if (!isPartnerBranded) {
-      drawBreezeMark(doc, PAGE.mx, yMid);
+      drawBreezeMark(doc, PAGE.mx, bandMid);
       textX = PAGE.mx + 12;
     }
     set.text(doc, C.white);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(13);
-    doc.text(name, textX, yMid + 0.2, { baseline: 'middle' });
+    doc.text(name, textX, bandMid + 0.2, { baseline: 'middle' });
   }
 
-  // Right side: document category label.
-  set.text(doc, C.bandText);
-  doc.setFont('helvetica', 'normal');
+  // Right side: document category label — brand colour on the white
+  // letterhead, the light band tint on the brand band.
+  set.text(doc, drewLogo ? C.primary : C.bandText);
+  doc.setFont('helvetica', drewLogo ? 'bold' : 'normal');
   doc.setFontSize(8.5);
-  doc.text(reportTypeLabel(reportType).toUpperCase(), PAGE.w - PAGE.mx, yMid + 1, {
+  doc.text(reportTypeLabel(reportType).toUpperCase(), PAGE.w - PAGE.mx, (drewLogo ? letterheadMid : bandMid) + 1, {
     align: 'right',
     baseline: 'middle',
   });
 }
 
-function drawFooter(doc: jsPDF, opts: BuildOpts): void {
+function drawFooter(doc: jsPDF, opts: RenderOpts): void {
+  if (!claimChrome(doc, 'footer')) return;
   set.draw(doc, C.rule);
   doc.setLineWidth(0.2);
   doc.line(PAGE.mx, PAGE.footY, PAGE.w - PAGE.mx, PAGE.footY);
@@ -553,7 +628,7 @@ function drawScorecard(
  * `opts.previous` — the slim baseline copied onto the run snapshot at
  * generation time. Returns null when there's nothing to compare (no prior
  * run, or the prior summary didn't capture this metric). */
-function trendFor(opts: BuildOpts, current: number | null | undefined, pick: (s: Record<string, unknown>) => unknown): { delta: number; sinceLabel: string } | null {
+function trendFor(opts: RenderOpts, current: number | null | undefined, pick: (s: Record<string, unknown>) => unknown): { delta: number; sinceLabel: string } | null {
   const prevSummary = opts.previous?.summary;
   if (current == null || !prevSummary || typeof prevSummary !== 'object') return null;
   const prevRaw = pick(prevSummary as Record<string, unknown>);
@@ -848,8 +923,8 @@ function postureProtectionCounts(summary: PostureSummary, legacyUnprotected = 0)
 
 // Page 1 keeps clear of the acronym glossary pinned above the footer rule;
 // continuation pages have no glossary.
-const POSTURE_COVER_BOTTOM = PAGE.footY - 9;
-const POSTURE_CONTINUED_BOTTOM = PAGE.footY - 5;
+const postureCoverBottom = (): number => PAGE.footY - 9;
+const postureContinuedBottom = (): number => PAGE.footY - 5;
 // Room the per-device table needs to start on a partly used page: section
 // heading, the two-tier column header and a few device rows.
 const POSTURE_TABLE_MIN_SPACE = 45;
@@ -864,7 +939,7 @@ const POSTURE_REC_ROW_HEIGHT = 5.2;
  */
 type PostureFlow = {
   doc: jsPDF;
-  opts: BuildOpts;
+  opts: RenderOpts;
   y: number;
   bottom: number;
   onCover: boolean;
@@ -880,9 +955,9 @@ function finishPosturePage(flow: PostureFlow): void {
 
 function newPostureContinuationPage(flow: PostureFlow): void {
   finishPosturePage(flow);
-  flow.doc.addPage('a4', 'landscape');
+  flow.doc.addPage(L.pageSize, 'landscape');
   flow.y = drawTitleBlock(flow.doc, 'Security & Compliance Posture', '', 'Continued from the posture summary', PAGE.bandH + 8);
-  flow.bottom = POSTURE_CONTINUED_BOTTOM;
+  flow.bottom = postureContinuedBottom();
   flow.onCover = false;
   flow.chromePending = true;
 }
@@ -890,7 +965,7 @@ function newPostureContinuationPage(flow: PostureFlow): void {
 function renderPostureCover(
   doc: jsPDF,
   summary: PostureSummary,
-  opts: BuildOpts,
+  opts: RenderOpts,
   agg: PostureAggregates,
 ): PostureFlow {
   const p = summary.privilegedAccess ?? {};
@@ -982,7 +1057,7 @@ function renderPostureCover(
   // Recommendations come before the product inventory: the reader's next step
   // matters more than the tooling list. Both flow onto a continuation page
   // rather than being truncated (#12043).
-  const flow: PostureFlow = { doc, opts, y, bottom: POSTURE_COVER_BOTTOM, onCover: true, chromePending: true };
+  const flow: PostureFlow = { doc, opts, y, bottom: postureCoverBottom(), onCover: true, chromePending: true };
   drawRecommendedActions(flow, buildRecommendations(summary, agg));
   drawPostureProducts(flow, summary.securityProducts ?? []);
   return flow;
@@ -1159,7 +1234,7 @@ function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
   return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
 }
 
-function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts: BuildOpts): void {
+function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts: RenderOpts): void {
   const d = summary.devices ?? {};
   const a = summary.alerts ?? {};
   const total = d.total ?? 0;
@@ -1294,7 +1369,7 @@ const NARRATIVE_HEADLINE_LINE_H = 5.4; // wrapped headline-line height at fontSi
 const NARRATIVE_BULLET_INDENT = 5; // marker + gap before bullet text, matches drawPostureProductRow
 const NARRATIVE_BULLET_GAP = 1.6; // vertical gap after a bullet block, before the next bullet
 const NARRATIVE_SECTION_GAP = 2.5; // vertical gap after a section's last bullet, before the next heading
-const NARRATIVE_CONTENT_BOTTOM = PAGE.footY - 8; // keep clear of the footnote line above the footer rule
+const narrativeContentBottom = (): number => PAGE.footY - 8; // keep clear of the footnote line above the footer rule
 // org/agent display names come from the same unvalidated jsonb summary blob as
 // bullets (legacy/hand-built snapshots included), so they get the same
 // sanitizeNarrativeText treatment before reaching the header chrome — a
@@ -1325,17 +1400,15 @@ export function sanitizeNarrativeText(value: unknown, maxChars: number): string 
   return flat.length > maxChars ? flat.slice(0, maxChars).trim() : flat;
 }
 
-function formatNarrativeIsoDate(iso: unknown, timezone: string): string | null {
+function formatNarrativeIsoDate(iso: unknown): string | null {
   if (typeof iso !== 'string' || iso.trim() === '') return null;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return null;
-  return new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+  return formatReportDate(iso, L);
 }
 
-function narrativePeriodLabel(narrative: NarrativeSnapshot, timezone: string): string {
-  const start = formatNarrativeIsoDate(narrative.periodStart, timezone);
-  const end = formatNarrativeIsoDate(narrative.periodEnd, timezone);
-  if (start && end) return `${start} - ${end}`;
+function narrativePeriodLabel(narrative: NarrativeSnapshot): string {
+  const start = formatNarrativeIsoDate(narrative.periodStart);
+  const end = formatNarrativeIsoDate(narrative.periodEnd);
+  if (start && end) return `${start} – ${end}`;
   return start ?? end ?? '';
 }
 
@@ -1351,7 +1424,7 @@ function drawNarrativeFootnote(doc: jsPDF): void {
 }
 
 /** Finish the outgoing page's chrome, start a fresh one, and return its content-start y. */
-function narrativePageBreak(doc: jsPDF, opts: BuildOpts): number {
+function narrativePageBreak(doc: jsPDF, opts: RenderOpts): number {
   drawHeaderBand(doc, opts);
   drawFooter(doc, opts);
   drawNarrativeFootnote(doc);
@@ -1361,14 +1434,14 @@ function narrativePageBreak(doc: jsPDF, opts: BuildOpts): number {
 
 /** Page-break-aware vertical budget check: rolls onto a fresh page (with chrome
  * drawn on the outgoing one) when `neededH` would run into the footer zone. */
-function ensureNarrativeRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: number): number {
-  return y + neededH > NARRATIVE_CONTENT_BOTTOM ? narrativePageBreak(doc, opts) : y;
+function ensureNarrativeRoom(doc: jsPDF, opts: RenderOpts, y: number, neededH: number): number {
+  return y + neededH > narrativeContentBottom() ? narrativePageBreak(doc, opts) : y;
 }
 
-function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: BuildOpts): void {
+function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: RenderOpts): void {
   const orgName = sanitizeNarrativeText(narrative.orgName, NARRATIVE_NAME_MAX_CHARS);
   const agentName = sanitizeNarrativeText(narrative.agentName, NARRATIVE_NAME_MAX_CHARS);
-  const period = narrativePeriodLabel(narrative, opts.timezone);
+  const period = narrativePeriodLabel(narrative);
 
   const metaParts = [`Generated ${opts.generatedAt}`];
   if (period) metaParts.push(period);
@@ -1456,7 +1529,7 @@ function drawFleetDesignFootnote(doc: jsPDF): void {
 }
 
 /** Finish the outgoing page's chrome, start a fresh one, and return its content-start y. */
-function fleetDesignPageBreak(doc: jsPDF, opts: BuildOpts): number {
+function fleetDesignPageBreak(doc: jsPDF, opts: RenderOpts): number {
   drawHeaderBand(doc, opts);
   drawFooter(doc, opts);
   drawFleetDesignFootnote(doc);
@@ -1466,8 +1539,8 @@ function fleetDesignPageBreak(doc: jsPDF, opts: BuildOpts): number {
 
 /** Page-break-aware vertical budget check, mirroring `ensureNarrativeRoom` but
  * with the Fleet Design footnote drawn on the outgoing page. */
-function ensureFleetDesignRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: number): number {
-  return y + neededH > NARRATIVE_CONTENT_BOTTOM ? fleetDesignPageBreak(doc, opts) : y;
+function ensureFleetDesignRoom(doc: jsPDF, opts: RenderOpts, y: number, neededH: number): number {
+  return y + neededH > narrativeContentBottom() ? fleetDesignPageBreak(doc, opts) : y;
 }
 
 /** `jspdf-autotable` stamps `doc.lastAutoTable.finalY` at runtime but does not
@@ -1498,7 +1571,7 @@ function fmtPct(n: unknown): string {
 /** Shared bullet-list renderer for the Fleet Design report's prose sections
  * (found/baseline/unsure/automation) — same shape as the narrative bullet
  * loop: sanitize, wrap, page-break-aware, teal marker dot. */
-function drawFleetDesignBullets(doc: jsPDF, opts: BuildOpts, lines: string[], y: number): number {
+function drawFleetDesignBullets(doc: jsPDF, opts: RenderOpts, lines: string[], y: number): number {
   for (const raw of lines) {
     const text = fdText(raw);
     if (!text) continue;
@@ -1519,7 +1592,7 @@ function drawFleetDesignBullets(doc: jsPDF, opts: BuildOpts, lines: string[], y:
 /** Shared autoTable option block for the Fleet Design report's grids — the
  * posture table's style block (:1319-1340 pre-edit) minus `didParseCell`
  * (posture-specific cell colouring; nothing here needs it). */
-function drawFleetDesignTable(doc: jsPDF, opts: BuildOpts, head: string[][], body: string[][], y: number): number {
+function drawFleetDesignTable(doc: jsPDF, opts: RenderOpts, head: string[][], body: string[][], y: number): number {
   autoTable(doc, {
     startY: y,
     margin: { top: PAGE.bandH + 6, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
@@ -1563,7 +1636,7 @@ function fleetDesignFoundBullets(found: unknown): string[] {
   ];
 }
 
-function drawFleetDesignFunctionsTable(doc: jsPDF, opts: BuildOpts, functions: unknown, y: number): number {
+function drawFleetDesignFunctionsTable(doc: jsPDF, opts: RenderOpts, functions: unknown, y: number): number {
   if (!Array.isArray(functions) || functions.length === 0) return y;
   const body = functions.map((item) => {
     const f = item as { functionKey?: unknown; label?: unknown; deviceIds?: unknown; confidence?: unknown; evidence?: unknown };
@@ -1575,7 +1648,7 @@ function drawFleetDesignFunctionsTable(doc: jsPDF, opts: BuildOpts, functions: u
   return drawFleetDesignTable(doc, opts, [['Function', 'Devices', 'Confidence', 'Evidence']], body, y);
 }
 
-function drawFleetDesignMonitoringSection(doc: jsPDF, opts: BuildOpts, monitoring: unknown, y: number): number {
+function drawFleetDesignMonitoringSection(doc: jsPDF, opts: RenderOpts, monitoring: unknown, y: number): number {
   if (!Array.isArray(monitoring) || monitoring.length === 0) return y;
   for (const item of monitoring) {
     const m = item as { functionKey?: unknown; watches?: unknown; alertRules?: unknown };
@@ -1616,7 +1689,7 @@ function drawFleetDesignMonitoringSection(doc: jsPDF, opts: BuildOpts, monitorin
   return y;
 }
 
-function drawFleetDesignRetiredTable(doc: jsPDF, opts: BuildOpts, retired: unknown, y: number): number {
+function drawFleetDesignRetiredTable(doc: jsPDF, opts: RenderOpts, retired: unknown, y: number): number {
   if (!Array.isArray(retired) || retired.length === 0) return y;
   const body = retired.map((item) => {
     const r = item as { kind?: unknown; itemName?: unknown; policyName?: unknown; reason?: unknown };
@@ -1653,7 +1726,7 @@ function drawFleetDesignAutomationBullets(automation: unknown): string[] {
   return bullets;
 }
 
-function drawFleetDesignLegacyTable(doc: jsPDF, opts: BuildOpts, legacy: unknown, y: number): number {
+function drawFleetDesignLegacyTable(doc: jsPDF, opts: RenderOpts, legacy: unknown, y: number): number {
   if (!Array.isArray(legacy) || legacy.length === 0) return y;
   const body = legacy.map((item) => {
     const l = item as { scriptName?: unknown; bucket?: unknown; coveredBy?: unknown; intent?: unknown };
@@ -1720,7 +1793,7 @@ function fleetDesignUnsureBullets(unsure: unknown): string[] {
  * on a scheduled re-run it is the finding a technician opens the report for.
  * Rows are read defensively (persisted jsonb) exactly like the sections.
  */
-function drawFleetDesignDriftSection(doc: jsPDF, opts: BuildOpts, drift: unknown, y: number): number {
+function drawFleetDesignDriftSection(doc: jsPDF, opts: RenderOpts, drift: unknown, y: number): number {
   if (!drift || typeof drift !== 'object') return y;
   const d = drift as { appliedAt?: unknown; missing?: unknown; extra?: unknown; changed?: unknown };
   const missing = Array.isArray(d.missing) ? d.missing : [];
@@ -1751,7 +1824,7 @@ function drawFleetDesignDriftSection(doc: jsPDF, opts: BuildOpts, drift: unknown
   return y + NARRATIVE_SECTION_GAP;
 }
 
-function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: BuildOpts): void {
+function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: RenderOpts): void {
   const orgName = fdText(fd.orgName, NARRATIVE_NAME_MAX_CHARS);
   const agentName = fdText(fd.agentName, NARRATIVE_NAME_MAX_CHARS);
   const siteName = fdText(fd.siteName, NARRATIVE_NAME_MAX_CHARS);
@@ -1979,18 +2052,16 @@ type HeadCell = {
 };
 
 /** "Oct 2, 2026" in the report timezone, or null for a missing/invalid timestamp. */
-function formatLastSeen(raw: unknown, timezone: string): string | null {
+function formatLastSeen(raw: unknown): string | null {
   if (typeof raw !== 'string' && !(raw instanceof Date)) return null;
-  const d = new Date(raw);
-  if (isNaN(d.getTime())) return null;
-  return new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+  return formatReportDate(raw, L);
 }
 
 /**
  * Per-device evidence table. With `startY` it starts under a section heading on
  * the current (partly used) page instead of a page of its own (#12043).
  */
-function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts, startY?: number): void {
+function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: RenderOpts, startY?: number): void {
   const countLabel = `${rows.length} device${rows.length === 1 ? '' : 's'}`;
   let tableTop: number;
   if (startY == null) {
@@ -2044,7 +2115,7 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
     if (col.key !== 'hostname' || (hostCounts.get(hostKey(row)) ?? 0) < 2) return cell;
     // Legacy rows carry no lastSeenAt key at all; a null one never checked in.
     if (!('lastSeenAt' in row)) return cell;
-    const seen = formatLastSeen(row.lastSeenAt, opts.timezone);
+    const seen = formatLastSeen(row.lastSeenAt);
     return `${cell}\n${seen ? `last seen ${seen}` : 'never checked in'}`;
   }));
   const columnStyles: Record<number, { cellWidth: number; halign: 'left' | 'center' }> = {};
@@ -2133,31 +2204,24 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
 // Generic report table (any report type): humanized headers + value formatting.
 // ----------------------------------------------------------------------------
 
-function formatGenericCell(raw: unknown, timezone: string): string {
+function formatGenericCell(raw: unknown): string {
   if (raw === true) return 'Yes';
   if (raw === false) return 'No';
   if (raw == null) return '—';
   if (Array.isArray(raw)) return raw.length ? raw.join(', ') : '—';
   const s = String(raw).trim();
   if (s === '') return '—';
-  // ISO date / datetime → friendly localized form.
+  // ISO date / datetime → the report's date format (#12048). A bare date is a
+  // calendar day and is never shifted into the previous day by the timezone.
   if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(s)) {
-    const d = new Date(s);
-    if (!isNaN(d.getTime())) {
-      const hasTime = /T\d|\s\d{2}:/.test(s);
-      return new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        ...(hasTime ? { hour: 'numeric', minute: '2-digit' } : {}),
-      }).format(d);
-    }
+    const hasTime = /T\d|\s\d{2}:/.test(s);
+    const formatted = hasTime ? formatReportDateTime(s.replace(' ', 'T'), L) : formatReportDate(s, L);
+    if (formatted) return formatted;
   }
   return s;
 }
 
-function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts): void {
+function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: RenderOpts): void {
   const title = reportTypeLabel(opts.reportType);
   drawTitleBlock(doc, title, '', `Generated ${opts.generatedAt}   ·   ${rows.length} record${rows.length === 1 ? '' : 's'}`, PAGE.bandH + 8);
 
@@ -2173,7 +2237,7 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
 
   const keys = Object.keys(rows[0]!);
   const head = [keys.map(humanizeHeader)];
-  const body = rows.map((row) => keys.map((k) => formatGenericCell(row[k], opts.timezone)));
+  const body = rows.map((row) => keys.map((k) => formatGenericCell(row[k])));
 
   autoTable(doc, {
     startY: PAGE.bandH + 22,
@@ -2205,15 +2269,26 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
  */
 export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
   C = paletteForBranding(opts.branding);
+  L = resolveReportLocale(opts.branding, opts.timezone);
+  PAGE = reportPageGeometry(L.pageSize);
   try {
-    return buildReportPdfWithPalette(rows, opts);
+    return buildReportPdfWithPalette(rows, { ...opts, generatedAt: generatedAtLabel(opts.generatedAt) });
   } finally {
     C = BASE_C;
+    PAGE = DEFAULT_PAGE;
+    L = DEFAULT_LOCALE;
   }
 }
 
-function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
-  const doc = new jsPDF({ orientation: 'landscape' });
+/** The generation instant as printed: the partner's date format plus the
+ *  timezone. A caller-formatted string (not an ISO instant) is kept as given. */
+function generatedAtLabel(value: string | Date): string {
+  if (value instanceof Date || /^\d{4}-\d{2}-\d{2}T/.test(value)) return fmtDateTime(value, String(value));
+  return value;
+}
+
+function buildReportPdfWithPalette(rows: unknown[], opts: RenderOpts): jsPDF {
+  const doc = new jsPDF({ orientation: 'landscape', format: L.pageSize });
   const records = rows as Record<string, unknown>[];
   // Document metadata: the title a reader sees in their viewer tab and the
   // language a screen reader announces. Cheap, and the only structure jsPDF
@@ -2228,6 +2303,21 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     });
   }
   if (typeof doc.setLanguage === 'function') doc.setLanguage('en-US');
+
+  // The design system every designed sub-renderer draws with. Built once per
+  // document so all of them share one page size, palette and date format.
+  const chrome = {
+    C,
+    PAGE,
+    drawHeaderBand: (d: jsPDF) => drawHeaderBand(d, opts),
+    drawFooter: (d: jsPDF) => drawFooter(d, opts),
+    drawTitleBlock,
+    drawSectionHeading,
+    formatDate: (value: string | Date | null | undefined) => formatReportDate(value, L),
+    formatDateTime: (value: string | Date | null | undefined) => formatReportDateTime(value, L),
+    formatPeriod: (start: string | Date | null | undefined, end: string | Date | null | undefined) => fmtPeriod(start, end),
+    metaSeparator: REPORT_META_SEPARATOR,
+  };
 
   // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
   // ('devices' key) must not enter the posture cover, but we don't require any
@@ -2295,14 +2385,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as HardwareLifecycleSummary,
       { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'backup_status'
@@ -2315,14 +2398,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as BackupStatusReportData,
       { generatedAt: opts.generatedAt, timezone: opts.timezone },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'threat_detection_review'
@@ -2349,14 +2425,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'endpoint_management_review'
@@ -2377,14 +2446,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as EndpointManagementSummary,
       { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'vulnerability_management'
@@ -2407,14 +2469,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'identity_access_review'
@@ -2446,14 +2501,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'ticket_sla_attainment'
@@ -2480,14 +2528,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'technician_time_billability'
@@ -2507,14 +2548,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'ar_aging'
@@ -2535,14 +2569,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'ai_usage_by_client'
@@ -2566,14 +2593,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'mrr_renewals'
@@ -2593,14 +2613,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'quote_win_rate'
@@ -2622,14 +2635,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactName: opts.branding?.contactName ?? null,
         previous: opts.previous,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (
     opts.reportType === 'client_profitability'
@@ -2649,14 +2655,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
         contactEmail: opts.branding?.contactEmail ?? null,
         contactName: opts.branding?.contactName ?? null,
       },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else if (opts.reportType === 'ticket_sla_performance' && isTicketSlaPerformanceSummary(opts.summary)) {
     // Self-contained chrome: both tables paginate on their own.
@@ -2666,14 +2665,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary,
       { generatedAt: opts.generatedAt },
-      {
-        C,
-        PAGE,
-        drawHeaderBand: (d) => drawHeaderBand(d, opts),
-        drawFooter: (d) => drawFooter(d, opts),
-        drawTitleBlock,
-        drawSectionHeading,
-      },
+      chrome,
     );
   } else {
     if (DESIGNED_BUSINESS_TYPES.has(opts.reportType)) {

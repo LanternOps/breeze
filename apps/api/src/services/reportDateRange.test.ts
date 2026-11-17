@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveReportDateRange, reportDateRangePresetDays } from './reportDateRange';
+import { resolveAdHocEvidenceWindow, resolveReportDateRange, reportDateRangePresetDays } from './reportDateRange';
 
 const NOW = new Date('2026-10-21T12:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -64,5 +64,34 @@ describe('resolveReportDateRange (#9562)', () => {
     expect(reportDateRangePresetDays({ preset: 'last_90_days' })).toBe(90);
     expect(reportDateRangePresetDays({ preset: 'custom' })).toBeNull();
     expect(reportDateRangePresetDays(undefined)).toBeNull();
+  });
+});
+
+describe('resolveAdHocEvidenceWindow (#12048)', () => {
+  const GENERATED = '2026-11-09T17:06:00.000Z';
+
+  it('defaults to the trailing 30 days ending at generation, so every service-plan report prints one period', () => {
+    expect(resolveAdHocEvidenceWindow(undefined, GENERATED)).toEqual({
+      start: new Date(new Date(GENERATED).getTime() - 30 * DAY),
+      end: new Date(GENERATED),
+      periodStart: '2026-10-10',
+      periodEnd: '2026-11-09',
+    });
+  });
+
+  it('honours a rolling preset', () => {
+    expect(resolveAdHocEvidenceWindow({ preset: 'last_7_days' }, GENERATED)).toMatchObject({
+      periodStart: '2026-11-02',
+      periodEnd: '2026-11-09',
+    });
+  });
+
+  it('reads explicit bounds as whole days', () => {
+    expect(resolveAdHocEvidenceWindow({ start: '2026-10-01', end: '2026-10-31' }, GENERATED)).toEqual({
+      start: new Date('2026-10-01T00:00:00.000Z'),
+      end: new Date('2026-10-31T23:59:59.999Z'),
+      periodStart: '2026-10-01',
+      periodEnd: '2026-10-31',
+    });
   });
 });
