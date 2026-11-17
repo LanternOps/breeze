@@ -66,12 +66,14 @@ describe('buildHistory', () => {
           raw(day(30), null, '16'),
           raw(day(20), '99999999999999999999', '16'),
           raw(day(15), '-1', '16'),
+          raw(day(12), '0', '5'),
           raw(day(10), '3', '5'),
         ],
         [raw(day(95), '1e2', '16')],
       ];
       const out = await buildHistory(ctx({ showHistory: true }));
-      expect(out).toEqual([{ at: day(10).toISOString(), met: 3, shown: 5 }]);
+      // '0' is a real count (nothing met yet), not an unreadable one.
+      expect(out).toEqual([{ at: day(12).toISOString(), met: 0, shown: 5 }, { at: day(10).toISOString(), met: 3, shown: 5 }]);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith('[trustPage] history skipped unreadable snapshots', { pageId: 'pg', skipped: 6 });
     } finally {

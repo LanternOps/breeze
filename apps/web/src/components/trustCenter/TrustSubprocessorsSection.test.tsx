@@ -160,4 +160,32 @@ describe('TrustSubprocessorsSection', () => {
     expect(screen.getByTestId('trust-subprocessors-name-0')).toHaveValue('Edited locally');
     err.mockRestore();
   });
+
+  it('a retry that fails again keeps the alert and the retry', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.getTrustSubprocessors.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce(new Error('boom again'));
+    mount();
+    fireEvent.click(await screen.findByTestId('trust-subprocessors-retry'));
+    await waitFor(() => expect(api.getTrustSubprocessors).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('trust-subprocessors-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-subprocessors-retry')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-subprocessors-save')).toBeDisabled();
+    err.mockRestore();
+  });
+
+  it('an older load resolving after a newer one applies nothing (rows and Save revision stay the newer ones)', async () => {
+    const settle: Array<(v: unknown) => void> = [];
+    api.getTrustSubprocessors.mockImplementation(() => new Promise((r) => { settle.push(r); }));
+    const view = (rev: number) => <TrustSubprocessorsSection orgId="o1" orgFetch={orgFetch} state={{ page: { publicationRevision: rev } } as never} canWrite onReload={vi.fn(async () => {})} />;
+    const { rerender } = render(view(7));
+    rerender(view(8));
+    await waitFor(() => expect(settle).toHaveLength(2));
+    settle[1]!({ subprocessors: [sp('Newer EDR')], publicationRevision: 8 });
+    expect(await screen.findByTestId('trust-subprocessors-name-0')).toHaveValue('Newer EDR');
+    settle[0]!({ subprocessors: [sp('Older EDR')], publicationRevision: 7 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId('trust-subprocessors-name-0')).toHaveValue('Newer EDR');
+    fireEvent.click(screen.getByTestId('trust-subprocessors-save'));
+    await waitFor(() => expect(api.putTrustSubprocessors).toHaveBeenCalledWith(orgFetch, 'o1', 8, expect.any(Array)));
+  });
 });
