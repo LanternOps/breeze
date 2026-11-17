@@ -264,6 +264,12 @@ export type Device = {
   helperVersion?: string | null;
   /** Agent-reported Breeze Assist install problem (#6925); null/absent = none. */
   helperInstallIssue?: string | null;
+  /**
+   * Active control-plane block kind (#8868): a network filter, captive portal
+   * or untrusted TLS interceptor answers in place of the server. null/absent =
+   * none. The detail (filter host, issuer) is on the device page only.
+   */
+  controlPlaneBlockKind?: string | null;
   /** Server-decided Wake button availability (#10838); absent on older APIs. */
   wakeAvailability?: WakeAvailability;
   /**
@@ -1868,6 +1874,16 @@ export default function DeviceList({
     }
   };
   // Assist on disk but not run by the agent (#10183, #10185) is not "Not installed".
+  // #8868 — closed-enum kind from the list row; an unknown kind from a newer
+  // API still gets the generic network-filter label.
+  const controlPlaneBlockLabel = (kind: string): string => {
+    switch (kind) {
+      case "untrusted_certificate":
+        return t("deviceList.controlPlaneBlockBadgeCertificate");
+      default:
+        return t("deviceList.controlPlaneBlockBadge");
+    }
+  };
   const helperInstallIssueLabel = (issue: string): string =>
     helperInstalledDespiteIssue(issue)
       ? t("deviceList.helperUnavailable")
@@ -2205,6 +2221,19 @@ export default function DeviceList({
             ),
           });
         }
+        if (device.controlPlaneBlockKind) {
+          secondary.push({
+            key: "cpblock",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-control-plane-block`}
+                className={pillClass}
+              >
+                {controlPlaneBlockLabel(device.controlPlaneBlockKind)}
+              </span>
+            ),
+          });
+        }
         if (device.updateOfferWithheldReason) {
           secondary.push({
             key: "withheld",
@@ -2227,6 +2256,9 @@ export default function DeviceList({
             ? helperInstallIssueLabel(device.helperInstallIssue)
             : t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
+          cpblock: device.controlPlaneBlockKind
+            ? controlPlaneBlockLabel(device.controlPlaneBlockKind)
+            : t("deviceList.controlPlaneBlockBadge"),
         };
         const [topSecondary, ...restSecondary] = secondary;
         return (

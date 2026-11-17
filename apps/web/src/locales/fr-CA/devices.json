@@ -1465,6 +1465,18 @@
         "unknown": "une erreur non reconnue s’est produite"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqué par un filtre réseau",
+      "titleUntrustedCertificate": "Certificat du serveur non approuvé",
+      "webFilter": "Un filtre de sécurité sur le réseau de cet appareil répond à la place du serveur Breeze ({{locationHost}}). Il s'agit habituellement d'une fonction de sécurité du routeur du fournisseur Internet, d'un filtre Web du pare-feu ou d'une page de connexion du réseau.",
+      "captivePortal": "Le réseau de cet appareil retient les connexions sur une page de connexion (portail captif).",
+      "plaintextUnknown": "Un élément du réseau de cet appareil a répondu à la connexion Breeze en HTTP non chiffré au lieu de TLS.",
+      "untrustedCertificate": "La connexion au serveur Breeze a présenté un certificat que cet appareil n'approuve pas (émis par {{certIssuer}}). Il s'agit habituellement d'une inspection TLS par un pare-feu ou un proxy, d'un problème de certificat sur un serveur auto-hébergé ou d'un magasin de certificats racines désuet sur cet appareil. Breeze ne le contournera pas.",
+      "viaEch": "Actuellement joignable au moyen d'Encrypted Client Hello.",
+      "cleared": "A été bloqué du {{from}} au {{to}}.",
+      "howToFix": "Comment régler le problème",
+      "noDetail": "aucun détail"
+    },
     "logShipping": {
       "label": "Envoi des journaux",
       "state": {
@@ -1863,6 +1875,8 @@
       "unmanagedInstall": "Breeze Assist n’a pas été installé par Breeze et le déploiement est désactivé, l’agent le laisse donc tel quel.",
       "unknown": "Breeze Assist est activé mais non installé."
     },
+    "controlPlaneBlockBadge": "Filtre réseau",
+    "controlPlaneBlockBadgeCertificate": "Certificat non approuvé",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",
