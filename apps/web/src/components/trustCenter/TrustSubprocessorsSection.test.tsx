@@ -130,4 +130,34 @@ describe('TrustSubprocessorsSection', () => {
     const body = api.putTrustSubprocessors.mock.calls[0]![3] as Array<Record<string, unknown>>;
     expect(Object.keys(body[0]!).sort()).toEqual(['location', 'name', 'purpose', 'source', 'sourceKey', 'websiteUrl']);
   });
+
+  it('a failed load shows a retry that reloads', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.getTrustSubprocessors.mockRejectedValueOnce(new Error('boom'));
+    mount();
+    await screen.findByTestId('trust-subprocessors-load-error');
+    expect(api.getTrustSubprocessors).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('trust-subprocessors-retry'));
+    expect(await screen.findByTestId('trust-subprocessors-name-0')).toHaveValue('Acme EDR');
+    expect(api.getTrustSubprocessors).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('trust-subprocessors-load-error')).toBeNull();
+    expect(screen.queryByTestId('trust-subprocessors-retry')).toBeNull();
+    expect(screen.getByTestId('trust-subprocessors-save')).not.toBeDisabled();
+    err.mockRestore();
+  });
+
+  it('a failed reload offers retry until the user edits: a retry never replaces unsaved rows', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = (rev: number) => <TrustSubprocessorsSection orgId="o1" orgFetch={orgFetch} state={{ page: { publicationRevision: rev } } as never} canWrite onReload={vi.fn(async () => {})} />;
+    const { rerender } = render(view(7));
+    await screen.findByTestId('trust-subprocessors-name-0');
+    api.getTrustSubprocessors.mockRejectedValueOnce(new Error('boom'));
+    rerender(view(8));
+    expect(await screen.findByTestId('trust-subprocessors-retry')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('trust-subprocessors-name-0'), { target: { value: 'Edited locally' } });
+    expect(screen.queryByTestId('trust-subprocessors-retry')).toBeNull();
+    expect(screen.getByTestId('trust-subprocessors-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-subprocessors-name-0')).toHaveValue('Edited locally');
+    err.mockRestore();
+  });
 });
