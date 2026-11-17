@@ -27,6 +27,7 @@ import {
   noteOn,
   emptyExportPager,
   exportKey,
+  holdsSensitiveGate,
 } from './aiToolsExportShared';
 import type { DatasetRequest } from './aiToolsExportDatasets';
 import type { AuthContext } from '../middleware/auth';
@@ -313,5 +314,20 @@ describe('exportKey', () => {
 
   it('refuses to key without an org id rather than emit an unbound key', () => {
     expect(() => exportKey('', 'x')).toThrow(/org id/);
+  });
+});
+
+describe('holdsSensitiveGate', () => {
+  const baseReq = {
+    auth: { orgId: 'org-1' } as unknown as AuthContext,
+    orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, notes: [],
+  };
+  it.each([
+    [{ datasets: ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'], sensitiveGates: [] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: [] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: ['security_events'] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: ['user_account_changes'] }, true],
+  ])('grants %j -> %s', (exportGrants, expected) => {
+    expect(holdsSensitiveGate({ ...baseReq, exportGrants } as DatasetRequest, 'user_account_changes')).toBe(expected);
   });
 });

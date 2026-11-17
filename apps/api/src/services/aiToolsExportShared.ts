@@ -26,6 +26,7 @@ import {
 import { hmacFingerprint } from './secretCrypto';
 import { scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 import type { DatasetRequest } from './aiToolsExportDatasets';
+import type { AnalysisSensitiveGate } from '../db/schema/aiAgents';
 import type { ExportPager } from './aiToolsExportWriter';
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,16 @@ export async function runExportQuery<T>(query: PromiseLike<T[]>): Promise<T[]> {
 
 /** A pager that yields nothing: what an empty device set gets. */
 export const emptyExportPager: ExportPager = async () => ({ rows: [], nextCursor: null });
+
+/**
+ * Whether the run's FROZEN export grants hold a sensitive gate (W05). The gate
+ * was evaluated at admission against the live grant ceiling; nothing here, or
+ * in an adapter, evaluates the run principal's own permissions (it has no
+ * role). Legacy grants hold no gate.
+ */
+export function holdsSensitiveGate(req: DatasetRequest, gate: AnalysisSensitiveGate): boolean {
+  return req.exportGrants.sensitiveGates.includes(gate);
+}
 
 /** Append a note for the run's model, once. */
 export function noteOn(req: DatasetRequest, note: string): void {
