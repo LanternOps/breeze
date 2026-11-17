@@ -54,6 +54,7 @@ import {
 import { threatDetectionConfigSchema } from './reportConfigSchemas';
 import type {
   ThreatCoverage,
+  ThreatDetectionAgentSource,
   ThreatDetectionSummary,
   ThreatIncidentRow,
   ThreatSourceStatus,
@@ -259,7 +260,9 @@ async function otherDetectionAgentDeviceIds(
   orgId: string,
   filter: SiteFilter,
   includeEdr: boolean,
-): Promise<string[]> {
+): Promise<{ sentinelone: string[]; edr: string[] }> {
+  const ids = (rows: Array<{ deviceId: string | null }>) =>
+    rows.map((r) => r.deviceId).filter((id): id is string => typeof id === 'string');
   const s1Rows = await db
     .select({ deviceId: s1Agents.deviceId })
     .from(s1Agents)
@@ -272,9 +275,66 @@ async function otherDetectionAgentDeviceIds(
       .innerJoin(devices, eq(edrEndpoints.breezeDeviceId, devices.id))
       .where(and(eq(edrEndpoints.orgId, orgId), ...managedDeviceConditions(orgId), ...sitePredicates(filter)))
     : [];
-  return [...s1Rows, ...edrRows]
-    .map((r) => r.deviceId)
-    .filter((id): id is string => typeof id === 'string');
+  return { sentinelone: ids(s1Rows), edr: ids(edrRows) };
+}
+
+type DevicePair = {
+  devicesWithDetectionAgent: number;
+  devicesWithoutDetectionAgent: number;
+  detectionAgentSources: ThreatDetectionAgentSource[];
+};
+
+/**
+ * The reconciled device pair (#12046): with + without = managed. A device
+ * with agents from several products counts once, and an agent on a device
+ * outside `managedIds` counts in neither tile. `detectionAgentSources` lists
+ * Huntress whenever it was measured (even when it matched nothing), and the
+ * other products only when they matched a managed device.
+ */
+function devicePair(
+  managedIds: Set<string>,
+  bySource: Partial<Record<ThreatDetectionAgentSource, Iterable<string>>>,
+  huntressMeasured: boolean,
+): DevicePair {
+  const covered = new Set<string>();
+  const sources: ThreatDetectionAgentSource[] = huntressMeasured ? ['huntress'] : [];
+  for (const source of ['huntress', 'sentinelone', 'edr'] as const) {
+    let matched = false;
+    for (const id of bySource[source] ?? []) {
+      if (!managedIds.has(id)) continue;
+      covered.add(id);
+      matched = true;
+    }
+    if (matched && !sources.includes(source)) sources.push(source);
+  }
+  return {
+    devicesWithDetectionAgent: covered.size,
+    devicesWithoutDetectionAgent: managedIds.size - covered.size,
+    detectionAgentSources: sources,
+  };
+}
+
+/**
+ * The device pair on a data-gap path (Huntress not connected, or never
+ * synced), from SentinelOne and EDR only. Null when neither matched a managed
+ * device: with nothing measured, "no detection agent" cannot be claimed for
+ * any device, so the tiles stay N/A and the snapshot gains no keys.
+ */
+async function gapPathDevicePair(
+  orgId: string,
+  filter: SiteFilter,
+  includeEdr: boolean,
+  deviceRows: Array<{ id: string }>,
+): Promise<DevicePair | null> {
+  const managedIds = new Set(deviceRows.map((d) => d.id));
+  const pair = devicePair(managedIds, await otherDetectionAgentDeviceIds(orgId, filter, includeEdr), false);
+  return pair.detectionAgentSources.length > 0 ? pair : null;
+}
+
+/** Folds a gap-path device pair into a summary; a no-op when there is none. */
+function withDevicePair<T extends ThreatDetectionSummary>(summary: T, pair: DevicePair | null): T {
+  if (!pair) return summary;
+  return { ...summary, agentCoverage: { ...summary.agentCoverage!, ...pair } };
 }
 
 /** Folds EDR coverage into a summary; a no-op (same object) when there is none. */
@@ -447,11 +507,14 @@ export async function generateThreatDetectionReport(
     // An org with EDR coverage but no Huntress is NOT a data gap: its EDR
     // fields are real. Huntress-derived values above stay unmeasured (null).
     const edr = orgMissing ? null : await edrCoverageFor();
+    // #12046 follow-up: nor is its device coverage — SentinelOne or EDR agents
+    // on managed devices fill the device pair, labelled with its sources.
+    const pair = orgMissing ? null : await gapPathDevicePair(orgId, filter, includeEdr, deviceRows);
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: withEdr(summary, edr) as unknown as Record<string, unknown>,
+      summary: withDevicePair(withEdr(summary, edr), pair) as unknown as Record<string, unknown>,
     };
   }
 
@@ -465,11 +528,13 @@ export async function generateThreatDetectionReport(
       unattributableExcluded: 0,
       withheld: 0,
     }, deviceRows.length);
+    const edr = await edrCoverageFor();
+    const pair = await gapPathDevicePair(orgId, filter, includeEdr, deviceRows);
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: withEdr(neverSynced, await edrCoverageFor()) as unknown as Record<string, unknown>,
+      summary: withDevicePair(withEdr(neverSynced, edr), pair) as unknown as Record<string, unknown>,
     };
   }
 
@@ -673,7 +738,8 @@ export async function generateThreatDetectionReport(
   };
   coverage.note = coverageGapLine(coverage);
 
-  // Last query on this path so the Huntress query order is untouched.
+  // After every Huntress query, so the Huntress query order is untouched.
+  // Section 8's SentinelOne and EDR device queries follow it.
   const edr = await edrCoverageFor();
 
   // --- 8. Device coverage across every integrated source (#12046) -------------
@@ -681,18 +747,16 @@ export async function generateThreatDetectionReport(
   // both are counted in DEVICES (a device with two agents counts once), from
   // any source, and the Huntress agents matched to no managed device — which
   // used to inflate the first tile — are counted separately and disclosed.
-  // Computed only on this path: on the data-gap paths Huntress is unmeasured,
-  // so "no detection agent" cannot be claimed for any device.
+  // On the data-gap paths Huntress is unmeasured, so the pair there comes
+  // from SentinelOne and EDR alone, and only when they matched a device
+  // (`gapPathDevicePair`); `detectionAgentSources` records which.
   const managedIds = new Set(deviceRows.map((d) => d.id));
-  const coveredIds = new Set<string>();
-  for (const id of agentDeviceIds) if (managedIds.has(id)) coveredIds.add(id);
-  for (const id of await otherDetectionAgentDeviceIds(orgId, filter, includeEdr)) {
-    if (managedIds.has(id)) coveredIds.add(id);
-  }
   const fullAgentCoverage = {
     ...agentCoverage,
-    devicesWithDetectionAgent: coveredIds.size,
-    devicesWithoutDetectionAgent: managedIds.size - coveredIds.size,
+    ...devicePair(managedIds, {
+      huntress: agentDeviceIds,
+      ...await otherDetectionAgentDeviceIds(orgId, filter, includeEdr),
+    }, true),
     unmatchedAgents: agentRows.filter((a) => !a.deviceId || !managedIds.has(a.deviceId)).length,
   };
 

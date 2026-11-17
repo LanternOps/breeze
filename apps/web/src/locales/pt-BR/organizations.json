@@ -472,6 +472,7 @@
       },
       "errors": {
         "revisionMismatch": "Esta página foi alterada desde que você a carregou. Recarregue e tente novamente.",
+        "templateChanged": "O modelo da Central de Confiança do seu parceiro foi alterado desde que você carregou esta página. Recarregue e publique novamente.",
         "authorizationRequired": "Registre quem autorizou a publicação.",
         "mfaRequired": "A publicação exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
         "trustProbation": "A publicação é liberada quando sua conta passa a ser confiável.",

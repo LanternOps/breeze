@@ -124,6 +124,28 @@ describe('ReportPreview: threat_detection_review', () => {
     expect(valueOf('Managed devices with no detection agent')).toBe('N/A');
   });
 
+  // #12046 follow-up: SentinelOne without Huntress fills the device tiles; the
+  // preview must say they count SentinelOne only, as the PDF does.
+  it('shows SentinelOne-only device tiles with the same source caveat the PDF prints', () => {
+    render(<ReportPreview
+      data={previewData({
+        ...UNMEASURED,
+        agentCoverage: {
+          ...UNMEASURED.agentCoverage,
+          devicesWithDetectionAgent: 40, devicesWithoutDetectionAgent: 3,
+          detectionAgentSources: ['sentinelone'],
+        },
+      })}
+      timezone="UTC"
+    />);
+    const panel = screen.getByTestId('threat-detection-summary');
+    const valueOf = (label: string) => within(panel).getByText(label).nextElementSibling?.textContent;
+    expect(valueOf('Managed devices with a detection agent')).toBe('40');
+    expect(valueOf('Managed devices with no detection agent')).toBe('3');
+    expect(screen.getByTestId('threat-detection-coverage-note'))
+      .toHaveTextContent('These device counts include SentinelOne agents only, because Huntress is not connected.');
+  });
+
   it('omits the coverage panel entirely when nothing is missing', () => {
     render(<ReportPreview data={previewData(MEASURED)} timezone="UTC" />);
     expect(screen.queryByTestId('threat-detection-coverage-note')).toBeNull();

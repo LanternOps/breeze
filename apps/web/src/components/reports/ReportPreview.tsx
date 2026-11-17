@@ -14,7 +14,12 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportType } from './ReportsList';
 import { TicketSlaPerformancePreview } from './TicketSlaPerformancePreview';
 import { useTranslation } from 'react-i18next';
-import { endpointCoverageCounts, type ThreatDetectionSummary } from '@breeze/shared';
+import {
+  deviceCountSourcesNote,
+  endpointCoverageCounts,
+  type ThreatDetectionSummary,
+  type ThreatSourceStatus,
+} from '@breeze/shared';
 
 type PreviewMode = 'table' | 'chart';
 
@@ -366,7 +371,14 @@ export default function ReportPreview({
           { key: 'devicesWithAgent', value: show(fleet.withAgent), unmeasured: fleet.withAgent == null },
           { key: 'devicesWithoutAgent', value: show(fleet.withoutAgent), unmeasured: fleet.withoutAgent == null },
         ];
-        const gaps = Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : [];
+        // #12046 follow-up: when the device tiles were counted without
+        // Huntress, the same English sentence the PDF prints (generated, like
+        // the dataGaps lines, not a UI string).
+        const sourcesNote = deviceCountSourcesNote(s.agentCoverage, s.coverage?.sourceStatus as ThreatSourceStatus | undefined);
+        const gaps = [
+          ...(Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : []),
+          ...(sourcesNote ? [sourcesNote] : []),
+        ];
         return (
           <div className="space-y-4" data-testid="threat-detection-summary">
             {gaps.length > 0 && (

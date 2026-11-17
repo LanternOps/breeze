@@ -159,6 +159,12 @@ export interface SnapshotBuild {
   snapshotId: string; payload: TrustPagePublicPayload; sha256: string; deviceCount: number; generatedAt: Date;
   /** The publication config the payload was built from (publish freezes exactly this). */
   config: TrustPublishedConfig;
+  /**
+   * The partner template revision a 'draft' build resolved its inherited values from (null = the partner has
+   * no template). Always null for a frozen-config build, which reads no template. Publish compares THIS with
+   * the editor's expectedTemplateRevision (amendment 33), so the revision checked is the revision frozen.
+   */
+  templateRevision: number | null;
 }
 
 /**
@@ -193,8 +199,10 @@ export async function buildSnapshotForPage(
   const liveDocuments = await loadPublicDocumentsForPage(page);
 
   let frozen: TrustPublishedConfig;
+  let templateRevision: number | null = null;
   if (opts.config === 'draft') {
-    const { effective } = await resolveTrustPageSettings(page);
+    const { effective, template } = await resolveTrustPageSettings(page);
+    templateRevision = template?.revision ?? null;
     const v = effective.values;
     const sectionFreeze = await freezeSections({ page, asOf: generatedAt });
     const documents = liveDocuments.slice(0, TRUST_DOCUMENTS_MAX).map((d) => ({ id: d.id, visibility: d.visibility }));
@@ -234,7 +242,7 @@ export async function buildSnapshotForPage(
       thresholds: DEFAULT_TRUST_EVALUATION_POLICY.thresholds,
     },
   });
-  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config: frozen };
+  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config: frozen, templateRevision };
 }
 
 /**
@@ -287,17 +295,16 @@ export async function publishTrustPage(args: {
   if (!page.isPartnerHome && !authorizedBy) {
     throw new TrustPageError('Record who at the customer authorized publication before publishing.', 422, 'AUTHORIZATION_REQUIRED');
   }
-  if (args.expectedTemplateRevision !== undefined) {
-    // The editor showed inherited values from the template revision it loaded; publishing after the template
-    // changed would freeze values the publisher never saw.
-    const current = (await loadPartnerTemplate(page.partnerId))?.revision ?? null;
-    if (current !== args.expectedTemplateRevision) {
-      throw new TrustPageError(TEMPLATE_CHANGED_MESSAGE, 409, 'TEMPLATE_CHANGED');
-    }
-  }
   const publishedAt = page.publishedAt ?? new Date();
   // Built from the DRAFT; the same config is frozen below (a PUT racing this bumps the revision → 409).
   const built = await buildSnapshotForPage({ ...page, publishedAt }, { publishedAt, config: 'draft' });
+  if (args.expectedTemplateRevision !== undefined && built.templateRevision !== args.expectedTemplateRevision) {
+    // The editor showed inherited values from the template revision it loaded; publishing after the template
+    // changed would freeze values the publisher never saw. Compared AFTER the build, against the revision the
+    // build resolved: a separate pre-read could pass while the build froze a later revision (#9087). A template
+    // saved after the build does not change what is frozen, so no lock is needed.
+    throw new TrustPageError(TEMPLATE_CHANGED_MESSAGE, 409, 'TEMPLATE_CHANGED');
+  }
   const nextRevision = args.expectedRevision + 1;
 
   const result = await db.transaction(async (tx) => {

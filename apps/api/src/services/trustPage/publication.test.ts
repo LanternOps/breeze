@@ -192,14 +192,73 @@ describe('publishTrustPage guards', () => {
     expect(cfg).toMatchObject({ showPercentages: false, showManagedBy: true, hiddenControlIds: [], ndaText: 'Keep it confidential.', locale: 'fr-CA' });
   });
 
-  it('publish with an expectedTemplateRevision that no longer matches is 409 TEMPLATE_CHANGED before building', async () => {
+  /** A partner template whose only inherited value is showPercentages (the page leaves it NULL). */
+  const tpl = (revision: number, showPercentages: boolean) => ({
+    revision,
+    settings: { introHtml: null, searchIndexable: null, showPercentages, showDeviceCount: null, showManagedBy: null, showHistory: null, hiddenControlIds: null, frameworkView: null },
+  });
+  /** Publish a page that inherits showPercentages, capturing the frozen config (if the transaction is reached). */
+  async function publishInheriting(expectedTemplateRevision: number | null | undefined) {
+    const page = pageRow({ publicationAuthorizedBy: 'Jane Doe, COO', showPercentages: null });
+    queueBuildSelects(page);
+    const sets: unknown[] = [];
+    dbm.transaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: () => chain([{ rev: 0 }]),
+      update: () => ({ set: (v: unknown) => { sets.push(v); return chain([{ ...page, publicationRevision: 1 }]); } }),
+      insert: () => chain(undefined),
+    }));
+    const out = await publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' });
+    const frozen = (sets.find((v) => (v as Record<string, unknown>).publishedConfig) as Record<string, Record<string, unknown>>).publishedConfig!;
+    return { out, frozen };
+  }
+
+  it('TEMPLATE_CHANGED compares against the revision the build used, not a separate pre-read (#9087)', async () => {
+    // The template is saved (4 -> 5, showPercentages true -> false) between any pre-read and the build's read.
+    vi.mocked(loadPartnerTemplate).mockReset()
+      .mockResolvedValueOnce(tpl(4, true))
+      .mockResolvedValueOnce(tpl(5, false))
+      .mockResolvedValue(null);
+    const { frozen } = await publishInheriting(4);
+    // One read: the revision compared is the revision frozen, so the publisher froze exactly what they saw.
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
+    expect(frozen.showPercentages).toBe(true);
+  });
+
+  it('a template saved after the editor loaded fails 409 TEMPLATE_CHANGED after the build, before the transaction (#9087)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(5, false));
     vi.mocked(loadPostureEvidence).mockClear();
-    vi.mocked(loadPartnerTemplate).mockResolvedValueOnce(null);
-    dbm.select.mockReturnValueOnce(chain([pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' })]));
-    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 3, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
+    queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
+    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 4, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
       .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
-    expect(loadPostureEvidence).not.toHaveBeenCalled();
+    // The check ran on the build's own read (the evidence load is part of the build), not on a pre-read.
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
     expect(dbm.transaction).not.toHaveBeenCalled();
+  });
+
+  it('an editor that loaded no template fails 409 TEMPLATE_CHANGED once the partner creates one (#9087)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(1, true));
+    vi.mocked(loadPostureEvidence).mockClear();
+    queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
+    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: null, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
+      .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
+    expect(dbm.transaction).not.toHaveBeenCalled();
+  });
+
+  it('undefined expectedTemplateRevision publishes without a template check (API-key and MCP callers)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(9, true));
+    const { out, frozen } = await publishInheriting(undefined);
+    expect(out.page.publicationRevision).toBe(1);
+    expect(frozen.showPercentages).toBe(true);
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('null matches a partner with no template', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(null);
+    const { out, frozen } = await publishInheriting(null);
+    expect(out.page.publicationRevision).toBe(1);
+    expect(frozen.showPercentages).toBe(false); // the built-in default
   });
 
   it('the partner home page is exempt from the attestation; the publish returns the payload to cache and does no Redis I/O (#9087)', async () => {
