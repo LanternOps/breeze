@@ -7,6 +7,8 @@
  * is protected" came to mean three different things.
  */
 
+import type { BackupStatusBucketId } from '../utils/backupHealth';
+
 /**
  * The normalized outcome of a device's most recent backup session, for BOTH
  * first-party Breeze backups (via `mapBackupJobStatus`) and external vendors
@@ -107,7 +109,13 @@ export interface BackupHealthRow {
   usedBytes: number | null;
   errorsCount: number;
   dataSources: string[];
-  /** 28 entries, oldest first. `status: null` = no observation that day (grey). */
+  /**
+   * 28 entries, oldest first. `status: null` = no observation that day (grey).
+   * `completed` means a successful session ran that day. A past provider day
+   * that was polled as `completed` with no new success is `no_backups` (a
+   * missed day), not the stale last-session status; today stays `null` until
+   * a success lands (#12025).
+   */
   history28d: Array<{ day: string; status: ExternalBackupStatus | null }>;
   /** `devices.status` when linked — "backup stale but the device is offline" context. */
   agentOnline: boolean | null;
@@ -133,7 +141,14 @@ export interface BackupHealthSummary {
   endpoints: { total: number; covered: number; uncovered: number };
   providerOnly: number;
   m365Accounts: number;
+  /** Raw count of each row's last-session status, as the vendor reported it. */
   byStatus: Record<ExternalBackupStatus, number>;
+  /**
+   * The Status card's counts, one per `BACKUP_STATUS_BUCKET_IDS` entry, folded
+   * with `bucketForBackupRow`. Unlike `byStatus`, an overdue `completed` row
+   * counts under `overdue`, not `completed` (#12025).
+   */
+  byStatusBucket: Record<BackupStatusBucketId, number>;
   byHealth: Record<BackupHealth, number>;
   byRecency: Record<BackupRecency, number>;
 }
