@@ -54,9 +54,9 @@
  * 8 x 800 = 6,400 of the 16,000-character block (40%), leaving 9,600 for older
  * notes: more than two maximum-size approved notes (each at most ~3,350:
  * summary 365, details clipped at 2,000 then grown to ~2,860, framing ~120).
- * aiNoteWrites.readerBudget.test.ts renders both readers with K maximum-size
- * card-free notes in front of a maximum-size older note and checks it stays
- * in view. Tool rate limit (aiToolRateLimits.ts) still applies on top.
+ * The reader tests (aiToolsDevice.contextSanitize.test.ts,
+ * aiAgent.deviceMemory.test.ts) render both readers with K maximum-size
+ * card-free notes in front of a large older note and check it stays in view. Tool rate limit (aiToolRateLimits.ts) still applies on top.
  *
  * `createSessionPreToolUse` (aiAgentSdk.ts) applies this with the read-only
  * path's exclusions (#3130): never on a paused session, never as an unmatched
@@ -96,6 +96,12 @@ export const NOTE_WRITE_AUTO_MAX_DETAILS_CHARS = 200;
 
 /** Longest expiry a card-free note may have; also the expiry given to one that names none. */
 export const NOTE_WRITE_AUTO_MAX_EXPIRY_DAYS = 30;
+
+/** The tool whose ledger rows the per-conversation bound counts. */
+export const NOTE_WRITE_AUTO_MAX_PER_SESSION_TOOL = 'set_device_context';
+
+/** Returned by the handler when a card-free note arrives in a state the gate should have prevented. */
+export const NOTE_WRITE_UNAVAILABLE_MESSAGE = 'This note was not saved because of an internal error. Tell the user it was not saved.';
 
 /** Returned by the handler when the locked recount finds the device past a bound. */
 export const NOTE_WRITE_NEEDS_APPROVAL_MESSAGE =

@@ -6,15 +6,17 @@
  */
 
 import { db, hasDbAccessContext } from '../db';
-import { brainDeviceContext, devices } from '../db/schema';
-import { eq, and, or, gt, isNull, desc, sql, type SQL } from 'drizzle-orm';
+import { aiToolExecutions, brainDeviceContext, devices } from '../db/schema';
+import { eq, and, or, gt, isNull, inArray, desc, count, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { deviceIdSiteDenied } from './aiToolsSiteScope';
 import {
   NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE,
   NOTE_WRITE_AUTO_MAX_EXPIRY_DAYS,
   NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY,
+  NOTE_WRITE_AUTO_MAX_PER_SESSION_TOOL,
   NOTE_WRITE_NEEDS_APPROVAL_MESSAGE,
+  NOTE_WRITE_UNAVAILABLE_MESSAGE,
 } from './aiNoteWrites';
 
 export type ContextType = 'issue' | 'quirk' | 'followup' | 'preference';
@@ -102,9 +104,17 @@ export async function createDeviceContext(
     // for the device waits, then sees this row. Past a bound nothing is
     // written and the model is told to call again, which shows the card.
     // The lock needs the transaction a DB context opens; without one, refuse.
-    if (!hasDbAccessContext()) return { error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE };
+    // The two refusals below are wiring faults (the gate checked the expiry,
+    // and the tool dispatch always holds a context), not a bound: say so,
+    // and log them, rather than send the model round to a card that the gate
+    // would not show.
+    if (!hasDbAccessContext()) {
+      console.error('[brainDeviceContext] card-free note reached the handler outside a DB context; not written');
+      return { error: NOTE_WRITE_UNAVAILABLE_MESSAGE };
+    }
     if (!expiresAt || expiresAt.getTime() > Date.now() + NOTE_WRITE_AUTO_MAX_EXPIRY_DAYS * 86_400_000 + 60_000) {
-      return { error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE };
+      console.error('[brainDeviceContext] card-free note reached the handler with an expiry past the cap; not written');
+      return { error: NOTE_WRITE_UNAVAILABLE_MESSAGE };
     }
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${deviceId}`}, 0))`);
     const counts = await countDeviceNotes(deviceId);
@@ -203,4 +213,27 @@ export async function readCardFreeNoteBudget(deviceId: string, auth: AuthContext
   const access = await verifyDeviceAccess(deviceId, auth);
   if ('error' in access) return null;
   return countDeviceNotes(deviceId);
+}
+
+/**
+ * Card-free notes this chat session has already written, for the
+ * per-conversation bound: its `set_device_context` ledger rows that ran with
+ * no recorded approver. A row approved on a card carries `approved_by`
+ * (aiAgent.ts handleApproval); a pending or refused one never ran. Counted
+ * conservatively: a row with no recorded approver that ran by another route
+ * (a mobile approval, an approved plan step) counts too, which only reaches
+ * the bound early. Runs under the ambient context; the table's RLS follows
+ * the session's org.
+ */
+export async function countSessionCardFreeNotes(sessionId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(aiToolExecutions)
+    .where(and(
+      eq(aiToolExecutions.sessionId, sessionId),
+      eq(aiToolExecutions.toolName, NOTE_WRITE_AUTO_MAX_PER_SESSION_TOOL),
+      isNull(aiToolExecutions.approvedBy),
+      inArray(aiToolExecutions.status, ['executing', 'completed', 'failed']),
+    ));
+  return Number(row?.n ?? Number.NaN);
 }

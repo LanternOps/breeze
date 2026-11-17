@@ -20,7 +20,7 @@ import {
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
-import { eq, and, count, inArray, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
@@ -65,7 +65,7 @@ import {
   noteWriteFitsContentBounds,
   TIER2_NOTE_WRITE_TOOLS,
 } from './aiNoteWrites';
-import { cardFreeNoteFits, readCardFreeNoteBudget } from './brainDeviceContext';
+import { cardFreeNoteFits, countSessionCardFreeNotes, readCardFreeNoteBudget } from './brainDeviceContext';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import {
   STANDING_CHECK_UNAVAILABLE_MESSAGE,
@@ -1461,10 +1461,11 @@ const NOTE_WRITE_ASKS: NoteWriteDecision = { skip: false };
  *  1. content: details, expiry and device id fit (no DB);
  *  2. a session slot is reserved synchronously, before any await;
  *  3. the org/site/device access check, under the session's tool auth. A
- *     device the caller cannot reach is let through with NO count, so the
- *     tool dispatch refuses it exactly as it refuses any other call for that
- *     device, and whether a card appeared says nothing about its notes;
- *  4. the conversation count: this session's set_device_context rows that ran
+ *     device the caller cannot reach gets NO device count; past step 4 it is
+ *     let through, and the tool dispatch refuses it exactly as it refuses any
+ *     other call for that device, so whether a card appeared says nothing
+ *     about its notes;
+ *  4. the conversation count (for every device, reachable or not): this session's set_device_context rows that ran
  *     with no recorded approver (`ai_tool_executions`, durable across a
  *     session rebuild, restart or deploy) plus the calls in flight;
  *  5. the device counts (active notes and notes in the last 24 h), under the
@@ -1491,23 +1492,18 @@ async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, 
   try {
     const deviceId = input.deviceId as string;
     const device = await withAuthDbAccessContext(session.toolAuth, () => readCardFreeNoteBudget(deviceId, session.toolAuth));
-    if (device === null) return { skip: true, release };
-    const [row] = await withDbAccessContext(
+    // The conversation bound applies whether or not the device is reachable:
+    // it says nothing about the device.
+    const written = await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-      () => db.select({ n: count() })
-        .from(aiToolExecutions)
-        .where(and(
-          eq(aiToolExecutions.sessionId, session.breezeSessionId),
-          eq(aiToolExecutions.toolName, 'set_device_context'),
-          isNull(aiToolExecutions.approvedBy),
-          inArray(aiToolExecutions.status, ['executing', 'completed', 'failed']),
-        )),
+      () => countSessionCardFreeNotes(session.breezeSessionId),
     );
-    const written = Number(row?.n ?? Number.NaN);
     if (!(written + inFlight <= NOTE_WRITE_AUTO_MAX_PER_SESSION)) {
       release();
       return NOTE_WRITE_ASKS;
     }
+    // Unreachable: no device count ran; the dispatch refuses the call.
+    if (device === null) return { skip: true, release };
     if (!cardFreeNoteFits(device)) {
       release();
       return NOTE_WRITE_ASKS;

@@ -13,9 +13,10 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import { withDbAccessContext } from '../../db';
-import { brainDeviceContext } from '../../db/schema';
+import { aiSessions, aiToolExecutions, brainDeviceContext } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
+  countSessionCardFreeNotes,
   createDeviceContext,
   readCardFreeNoteBudget,
 } from '../../services/brainDeviceContext';
@@ -23,8 +24,9 @@ import {
   NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE,
   NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY,
   NOTE_WRITE_NEEDS_APPROVAL_MESSAGE,
+  NOTE_WRITE_UNAVAILABLE_MESSAGE,
 } from '../../services/aiNoteWrites';
-import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
+import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 function orgAuth(orgId: string, allowedSiteIds?: string[]): AuthContext {
@@ -128,8 +130,8 @@ describe('card-free note bounds on a real Postgres (breeze_app)', () => {
     const none = await inOrg(org.id, () => createDeviceContext(device.id, 'quirk', 'no expiry', null, auth, undefined, { cardFree: true }));
     const long = await inOrg(org.id, () => createDeviceContext(device.id, 'quirk', 'long', null, auth, new Date(Date.now() + 31 * 86_400_000), { cardFree: true }));
 
-    expect(none).toEqual({ error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE });
-    expect(long).toEqual({ error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE });
+    expect(none).toEqual({ error: NOTE_WRITE_UNAVAILABLE_MESSAGE });
+    expect(long).toEqual({ error: NOTE_WRITE_UNAVAILABLE_MESSAGE });
     expect(await notesOn(device.id)).toBe(0);
   });
 
@@ -154,5 +156,36 @@ describe('card-free note bounds on a real Postgres (breeze_app)', () => {
     const other = await createOrganization({ partnerId: partner.id });
 
     await expect(inOrg(other.id, () => readCardFreeNoteBudget(device.id, orgAuth(other.id)))).resolves.toBeNull();
+  });
+
+  // The per-conversation bound, durable across a session rebuild: rows of
+  // this session's set_device_context calls that ran with no approver.
+  it('the conversation count reads only this session\'s card-free note rows', async () => {
+    const { org, device } = await fixture();
+    const user = await createUser({ partnerId: (await createPartner()).id });
+    const [session] = await getTestDb().insert(aiSessions)
+      .values({ orgId: org.id, deviceId: device.id, type: 'general', model: 'claude-sonnet-5-5' }).returning();
+    const [otherSession] = await getTestDb().insert(aiSessions)
+      .values({ orgId: org.id, deviceId: device.id, type: 'general', model: 'claude-sonnet-5-5' }).returning();
+    const row = (over: Record<string, unknown>) => ({
+      sessionId: session!.id, toolName: 'set_device_context', toolInput: {}, status: 'completed' as const, ...over,
+    });
+    await getTestDb().insert(aiToolExecutions).values([
+      row({}),                                                   // counts
+      row({ status: 'executing' }),                              // counts
+      row({ status: 'failed' }),                                 // counts
+      row({ approvedBy: user.id, approvedAt: new Date() }),      // approved on a card
+      row({ status: 'pending' }),                                // a card still waiting
+      row({ status: 'rejected' }),                               // refused, never ran
+      row({ status: 'refused' }),                                // refused by the gate
+      row({ toolName: 'resolve_device_context' }),               // another tool
+      row({ sessionId: otherSession!.id }),                      // another session
+    ]);
+
+    await expect(inOrg(org.id, () => countSessionCardFreeNotes(session!.id))).resolves.toBe(3);
+    // Another org's context sees none of the rows (RLS on the session's org).
+    const partner = await createPartner();
+    const other = await createOrganization({ partnerId: partner.id });
+    await expect(inOrg(other.id, () => countSessionCardFreeNotes(session!.id))).resolves.toBe(0);
   });
 });
