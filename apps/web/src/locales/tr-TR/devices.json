@@ -1688,6 +1688,7 @@
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
       "productSku": "Ürün Numarası",
+      "hardwareModel": "Model",
       "assetTag": "Varlık Etiketi",
       "location": "Konum",
       "source": "Kaynak"
@@ -1706,6 +1707,7 @@
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
       "productSku": "Ürün numarasına göre sırala",
+      "hardwareModel": "Modele göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
       "location": "Konuma göre sırala",
       "source": "Kaynağa göre sırala"

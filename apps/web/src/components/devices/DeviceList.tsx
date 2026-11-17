@@ -415,6 +415,8 @@ export type Device = {
     serialNumber?: string;
     /** device_hardware.product_sku (#9593); the opt-in Product Number column. */
     productSku?: string;
+    /** device_hardware.model (#11332), as reported; the opt-in Model column. */
+    model?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -554,6 +556,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   // #9863 — the list joins device_warranty on the device subject only.
   "warranty",
   "productSku",
+  "hardwareModel",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -938,6 +941,7 @@ const sortValue: Record<Exclude<ColumnId, "diskUsage">, (d: Device) => string | 
     return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
   },
   productSku: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.productSku || null : null),
+  hardwareModel: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.model || null : null),
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
@@ -2952,8 +2956,8 @@ export default function DeviceList({
         const cls = device.deviceClass ?? "agent";
         const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
         return (
-          <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
-            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          <td key="serial" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
           </td>
         );
       },
@@ -2965,6 +2969,18 @@ export default function DeviceList({
         return (
           <td key="productSku" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-product-sku`}>
             {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    // #11332 - SMBIOS model shown exactly as reported (no derived label).
+    hardwareModel: {
+      header: () => sortHeader("hardwareModel", t("deviceList.tableColumns.hardwareModel"), t("deviceList.sortBy.hardwareModel")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.model : null;
+        return (
+          <td key="hardwareModel" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-model`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
           </td>
         );
       },

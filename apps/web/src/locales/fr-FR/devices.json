@@ -1688,6 +1688,7 @@
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
       "productSku": "Numéro de produit",
+      "hardwareModel": "Modèle",
       "assetTag": "Étiquette d'actif",
       "location": "Emplacement",
       "source": "Source"
@@ -1706,6 +1707,7 @@
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
       "productSku": "Trier par numéro de produit",
+      "hardwareModel": "Trier par modèle",
       "assetTag": "Trier par étiquette d'actif",
       "location": "Trier par emplacement",
       "source": "Trier par source"
