@@ -42,8 +42,11 @@ import { rebuildServingSetFromDb, isServing } from '../../services/trustPage/ser
 async function buildApp() {
   const { trustPageRoutes } = await import('../../routes/trustPage');
   const { trustPagePublicRoutes } = await import('../../routes/trustPagePublic');
+  const { trustPageAttestationRoutes } = await import('../../routes/trustPageAttestation');
   const app = new Hono();
   app.route('/api/v1/orgs', trustPageRoutes);
+  // Production order (index.ts): the attestation prefix before the generic /trust router.
+  app.route('/api/v1/trust/attestation', trustPageAttestationRoutes);
   app.route('/api/v1/trust', trustPagePublicRoutes);
   return app;
 }
@@ -102,6 +105,7 @@ describe('trust-page publish/unpublish routes, self-managed (#9087)', () => {
     expect(pub.status).toBe(200);
     const body = (await pub.json()).data;
     expect(body.publicPath).toBe(`/portal/trust/${s.partnerSlug}/${s.orgSlug}`);
+    expect(body.serving).toBe('applied');
     // Committed, served and cached before the response.
     const [row] = await getTestDb().select().from(trustPages).where(eq(trustPages.orgId, s.orgId));
     expect(row!.publishedAt).not.toBeNull();
@@ -112,9 +116,63 @@ describe('trust-page publish/unpublish routes, self-managed (#9087)', () => {
 
     const unpub = await app.request(`/api/v1/orgs/${s.orgId}/trust-page/unpublish`, { method: 'POST' });
     expect(unpub.status).toBe(200);
+    expect((await unpub.json()).data.serving).toBe('applied');
     expect(await isServing(member)).toBe(false);
     expect((await app.request(`/api/v1/trust/card/${s.partnerSlug}/${s.orgSlug}`)).status).toBe(404);
     await waitForAudit('trust_page.unpublish', row!.id);
+  });
+
+  // #12103: the serving set is an admission filter, never an authority. A member it still holds after the DB says
+  // unpublished (a reconcile that never ran, or the non-destructive fallback merge) must not serve anything: every
+  // public route re-checks the live row and answers the generic 404.
+  it('a member still in the serving set but unpublished in the DB is the generic 404 on every public route', async () => {
+    const s = await seed();
+    authState.ctx = { partnerId: s.partnerId, orgId: s.orgId, userId: s.userId };
+    const app = await buildApp();
+    const member = `${s.partnerSlug}/${s.orgSlug}`;
+    await rebuildServingSetFromDb();
+    const draft = await app.request(`/api/v1/orgs/${s.orgId}/trust-page`, { headers: { authorization: 'Bearer t' } });
+    expect(draft.status).toBe(200);
+    const pageId = (await draft.json()).data.page.id as string;
+    // A public, disclosure-confirmed document, so the document route has something to serve while published.
+    const [doc] = (await getTestDb().execute(sql`
+      INSERT INTO org_documents (org_id, title, storage_backend, data, content_type, byte_size, sha256, original_filename)
+      VALUES (${s.orgId}::uuid, 'Policy', 'db', '\\x01'::bytea, 'application/pdf', 1, ${'b'.repeat(64)}, 'policy.pdf')
+      RETURNING id`)) as unknown as Array<{ id: string }>;
+    await getTestDb().execute(sql`
+      INSERT INTO trust_page_documents (trust_page_id, document_id, org_id, visibility, sort_order, disclosure_confirmed_at)
+      VALUES (${pageId}::uuid, ${doc!.id}::uuid, ${s.orgId}::uuid, 'public', 0, now())`);
+
+    const pub = await app.request(`/api/v1/orgs/${s.orgId}/trust-page/publish`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 0, authorization: { authorizedBy: 'Jane Doe, COO' } }),
+    });
+    expect(pub.status).toBe(200);
+    expect(await isServing(member)).toBe(true);
+
+    const routes = {
+      card: `/api/v1/trust/card/${s.partnerSlug}/${s.orgSlug}`,
+      payload: `/api/v1/trust/public/${s.partnerSlug}/${s.orgSlug}`,
+      badge: `/api/v1/trust/public/${s.partnerSlug}/${s.orgSlug}/badge.svg`,
+      document: `/api/v1/trust/public/${s.partnerSlug}/${s.orgSlug}/documents/${doc!.id}`,
+      attestation: `/api/v1/trust/attestation/${s.partnerSlug}/${s.orgSlug}`,
+    };
+    // Control: while published, every route gets past admission. The attestation may answer 503 when this
+    // environment has no signing key; either way it is not the 404 asserted below.
+    for (const [name, path] of Object.entries(routes)) {
+      const res = await app.request(path);
+      if (name === 'attestation') expect(res.status, name).not.toBe(404);
+      else expect(res.status, name).toBe(200);
+    }
+
+    // Unpublished in the DB only; the set is left holding the member.
+    await getTestDb().update(trustPages).set({ publishedAt: null }).where(eq(trustPages.orgId, s.orgId));
+    expect(await isServing(member)).toBe(true);
+    for (const [name, path] of Object.entries(routes)) {
+      const res = await app.request(path);
+      expect(res.status, name).toBe(404);
+      expect(await res.json(), name).toEqual({ error: 'Not found', code: 'NOT_FOUND' });
+    }
   });
 
   it('a stale revision is a 409 inside the context and leaves the set and the page untouched', async () => {

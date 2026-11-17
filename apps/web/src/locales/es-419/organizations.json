@@ -436,6 +436,7 @@
         "publishing": "Publicando…",
         "cancel": "Cancelar",
         "success": "Página del Centro de confianza publicada.",
+        "successPending": "Publicada. La página pública se actualizará en menos de un minuto.",
         "failed": "No se pudo publicar la página del Centro de confianza.",
         "disabledNoWrite": "Necesita permiso para editar organizaciones para publicar.",
         "disabledSlug": "Corrija la dirección de la página antes de publicar."

@@ -67,7 +67,7 @@ const app = new Hono(); app.use('*', authMiddleware); app.route('/orgs', trustPa
 const H = (extra: Record<string, string> = {}) => ({ authorization: 'Bearer t', 'x-allow': 'organizations:read,organizations:write', 'content-type': 'application/json', ...extra });
 
 describe('trust page routes', () => {
-  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; dbm.sets = []; dbm.locks = []; rev.locked = 0; rev.next = 1; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; dbm.sets = []; dbm.locks = []; rev.locked = 0; rev.next = 1; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); svc.serveCommittedPublication.mockResolvedValue('applied'); });
 
   describe('W2 effective settings, explicit-empty intro, revision discipline', () => {
     const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', partnerCountry: 'AU', deletedAt: null };
@@ -249,17 +249,27 @@ describe('trust page routes', () => {
       expect(order).toEqual(['ctx:start', 'unpublish', 'ctx:end', 'serve']);
       expect(svc.serveCommittedPublication).toHaveBeenCalledWith({ partnerId: 'p1' });
     });
-    it.each(['degraded', 'no_redis', 'fallback'] as const)('publish still answers 200 when the reconcile is %s', async (outcome) => {
+    // #12103: the response reports whether the serving set took the change. 'fallback' never removes a member,
+    // so a publish is still served; 'degraded' and 'no_redis' leave the card answering 503 until self-heal.
+    it.each([
+      ['applied', 'applied'], ['fallback', 'applied'], ['degraded', 'degraded'], ['no_redis', 'degraded'],
+    ] as const)('publish still answers 200 when the reconcile is %s, reporting serving=%s', async (outcome, serving) => {
       dbm.rows.push([ctxRow]);
       svc.publishTrustPage.mockResolvedValueOnce({ page: published, snapshotId: 's1', cache });
       svc.serveCommittedPublication.mockResolvedValueOnce(outcome);
-      expect((await publish()).status).toBe(200);
+      const res = await publish();
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.serving).toBe(serving);
     });
-    it('unpublish still answers 200 when the reconcile is degraded', async () => {
+    it.each([
+      ['applied', 'applied'], ['fallback', 'applied'], ['degraded', 'degraded'], ['no_redis', 'degraded'],
+    ] as const)('unpublish still answers 200 when the reconcile is %s, reporting serving=%s', async (outcome, serving) => {
       dbm.rows.push([ctxRow]);
       svc.unpublishTrustPage.mockResolvedValueOnce({ ...PAGE, publicationRevision: 2 });
-      svc.serveCommittedPublication.mockResolvedValueOnce('degraded');
-      expect((await app.request(`/orgs/${ORG}/trust-page/unpublish`, { method: 'POST', headers: H({ 'x-mfa': '1' }) })).status).toBe(200);
+      svc.serveCommittedPublication.mockResolvedValueOnce(outcome);
+      const res = await app.request(`/orgs/${ORG}/trust-page/unpublish`, { method: 'POST', headers: H({ 'x-mfa': '1' }) });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.serving).toBe(serving);
     });
     it('an org outside the caller\'s access is a 404 and never reaches the service or the reconcile', async () => {
       const res = await app.request(`/orgs/${OTHER}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0 }) });

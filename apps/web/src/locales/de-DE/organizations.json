@@ -436,6 +436,7 @@
         "publishing": "Wird veröffentlicht…",
         "cancel": "Abbrechen",
         "success": "Seite des Vertrauenszentrums veröffentlicht.",
+        "successPending": "Veröffentlicht. Die öffentliche Seite wird innerhalb einer Minute aktualisiert.",
         "failed": "Die Seite des Vertrauenszentrums konnte nicht veröffentlicht werden.",
         "disabledNoWrite": "Zum Veröffentlichen benötigen Sie die Berechtigung, Organisationen zu bearbeiten.",
         "disabledSlug": "Korrigieren Sie die Seitenadresse vor dem Veröffentlichen."
