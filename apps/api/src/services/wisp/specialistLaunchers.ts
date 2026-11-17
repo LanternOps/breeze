@@ -30,6 +30,7 @@ import {
   buildAnalysisContinuationSeed,
   chainRootOf,
   deriveChainHandles,
+  type AnalysisContinuationRefusal,
 } from '../aiAgents/analysisContinuation';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
@@ -417,6 +418,18 @@ async function sweepAgentRefusal(orgId: string): Promise<PrerequisiteRefusal | n
 }
 
 /**
+ * The continuation refusal a chat caller may see. "Under another grant" and
+ * "not an analysis run" would confirm that a run the caller may not be allowed
+ * to see exists, so both read as not_found, before AND after approval. The
+ * precise reason is for the server log only.
+ */
+function callerVisibleContinuationRefusal(refusal: AnalysisContinuationRefusal): AnalysisContinuationRefusal {
+  return refusal === 'analysis_continuation_other_grant' || refusal === 'analysis_continuation_wrong_kind'
+    ? 'analysis_continuation_not_found'
+    : refusal;
+}
+
+/**
  * The cheap, read-only prerequisite each kind needs before it could launch —
  * the same checks its launcher makes, without enqueueing, admitting or
  * provisioning anything. Both the chat gate
@@ -443,11 +456,8 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
       if (!cont.ok) {
         // Without the grant, "another grant" and "not an analysis run" would
         // describe a run the caller may not be able to see: answer not_found.
-        // The launcher re-checks with the grant and gives the precise code.
-        const detail = cont.refusal === 'analysis_continuation_other_grant' || cont.refusal === 'analysis_continuation_wrong_kind'
-          ? 'analysis_continuation_not_found'
-          : cont.refusal;
-        return { refused: 'continuation_refused', detail };
+        // The launcher re-checks with the grant and answers the same way.
+        return { refused: 'continuation_refused', detail: callerVisibleContinuationRefusal(cont.refusal) };
       }
     }
     if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
@@ -573,13 +583,26 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
     const cont = await analysisContinuationOf({
       orgId: ctx.orgId, runId: params.continueFromRunId, grantId: ctx.grant.grantId,
     });
-    if (!cont.ok) return { refused: 'continuation_refused', detail: cont.refusal };
+    if (!cont.ok) {
+      // Same caller-visible answer as the precheck: "under another grant" and
+      // "not an analysis run" describe a run this caller may not be allowed to
+      // see, so the chat only ever learns not_found. The precise reason goes
+      // to the server log for support.
+      const detail = callerVisibleContinuationRefusal(cont.refusal);
+      if (detail !== cont.refusal) {
+        console.warn('[specialistLaunchers] analysis continuation refused', {
+          orgId: ctx.orgId, continueFromRunId: params.continueFromRunId, reason: cont.refusal,
+        });
+      }
+      return { refused: 'continuation_refused', detail };
+    }
     const { prior } = cont;
     // A prior whose chain root was deleted cannot have its chain counted.
     const root = chainRootOf(prior);
     if (root === null) return { refused: 'admission_skipped', detail: 'analysis_chain_too_long' };
     const derived = await deriveChainHandles({ orgId: ctx.orgId, prior, grantId: ctx.grant.grantId, exportGrants });
-    const seed = await buildAnalysisContinuationSeed({ orgId: ctx.orgId, prior });
+    // The seed follows the same producer-grants rule as the carried files.
+    const seed = await buildAnalysisContinuationSeed({ orgId: ctx.orgId, prior, exportGrants });
     stagedHandles = derived.handles;
     continuation = {
       fromRunId: prior.id, chainRootRunId: root, chainDepth: prior.chainDepth + 1, seed, dropped: derived.dropped,

@@ -41,7 +41,7 @@ A site or organization is expanded to its active devices when the run starts, an
 
 The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Security-category event logs also need `devices:execute`; without it they are left out of the export, and the run is told so.
 
-A run that continues an earlier analysis gets the files that earlier runs in the same chain exported or produced, checked again when it starts. A file is left out, and the run is told how many and why, when it has expired, when its dataset is no longer one this run may export, or when the run that produced it could read a dataset or security category that this run cannot.
+A run that continues an earlier analysis gets the files that earlier runs in the same chain exported or produced, checked again when it starts. A file is left out, and the run is told how many and why, when it has expired, when its dataset is no longer one this run may export, or when the run that produced it could read a dataset or security category that this run cannot. The same rule applies to the earlier run's summary and findings: when the earlier run could read something this run cannot, the new run gets only the earlier goal. A Wisp grant limited to certain sites cannot launch a continuation at all.
 
 ## Configured agent access
 
