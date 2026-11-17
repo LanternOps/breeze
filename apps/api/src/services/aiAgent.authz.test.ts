@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Drive getSession / getSessionMessages / handleApproval through the real service
 // logic without a live DB. We mock drizzle's `eq`/`and` to capture the WHERE
@@ -68,7 +70,7 @@ vi.mock('./aiModels/sessionModel', () => ({
   })),
 }));
 
-import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome } from './aiAgent';
+import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, AI_APPROVAL_REQUEST_EXPIRED_MESSAGE, type ApprovalWaitDetail } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
 
@@ -365,6 +367,19 @@ describe('getDecidedExecutionOutcome (#9431)', () => {
     await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBe(outcome);
   });
 
+  // #12079: a row closed by a timeout was never denied — say it expired.
+  it.each([
+    ['Approval timed out', 'expired'],
+    ['Approval request expired', 'expired'],
+    [null, 'not_approved'],
+    ['Approval wait ended before a decision was made', 'not_approved'],
+    ['Polling failed', 'not_approved'],
+  ])('maps a rejected execution with error %j to %s', async (errorMessage, outcome) => {
+    stubSelectOnce([{ status: 'rejected', errorMessage, sessionId: 'session-1', intentId: null }]);
+
+    await expect(getDecidedExecutionOutcome('exec-1', 'session-1')).resolves.toBe(outcome);
+  });
+
   it('returns null while the execution is still pending', async () => {
     stubSelectOnce([{ status: 'pending', sessionId: 'session-1', intentId: null }]);
 
@@ -387,5 +402,67 @@ describe('getDecidedExecutionOutcome (#9431)', () => {
     stubSelectOnce([]);
 
     await expect(getDecidedExecutionOutcome('exec-missing', 'session-1')).resolves.toBeNull();
+  });
+});
+
+describe('waitForApproval expiry detail (#12079)', () => {
+  it('reads the exact text the approval-expiry reaper writes', () => {
+    // The reaper keeps its own literal (importing this module into a job is
+    // heavy); a drift would quietly turn reaper-expired cards back into
+    // "not approved".
+    const reaper = readFileSync(join(__dirname, '../jobs/approvalExpiryReaper.ts'), 'utf8');
+    expect(reaper).toContain(`errorMessage: '${AI_APPROVAL_REQUEST_EXPIRED_MESSAGE}'`);
+  });
+
+  it('reports expired on its own timeout, and still marks the row rejected (never approved)', async () => {
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    updateMock.mockReturnValue({ set: setSpy });
+    const detail: ApprovalWaitDetail = {};
+
+    // A zero budget skips the poll and goes straight to the timeout close-out.
+    await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(false);
+
+    expect(detail.expired).toBe(true);
+    expect(setSpy).toHaveBeenCalledWith({ status: 'rejected', errorMessage: 'Approval timed out' });
+  });
+
+  it('reports expired when the expiry reaper closed the row', async () => {
+    stubSelectOnce([{ status: 'rejected', errorMessage: 'Approval request expired' }]);
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, undefined, detail)).resolves.toBe(false);
+
+    expect(detail.expired).toBe(true);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report expired for a denial', async () => {
+    stubSelectOnce([{ status: 'rejected', errorMessage: null }]);
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, undefined, detail)).resolves.toBe(false);
+
+    expect(detail.expired).toBeUndefined();
+  });
+
+  it('does not report expired, or write the row, when the wait was already settled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, controller.signal, detail)).resolves.toBe(false);
+
+    expect(detail.expired).toBeUndefined();
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report expired for an approval', async () => {
+    stubSelectOnce([{ status: 'approved', errorMessage: null }]);
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, undefined, detail)).resolves.toBe(true);
+
+    expect(detail.expired).toBeUndefined();
   });
 });

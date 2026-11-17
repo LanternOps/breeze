@@ -28,7 +28,7 @@ import { getTestDb } from './setup';
 import { db } from '../../db';
 import { partners, organizations, users } from '../../db/schema';
 import { aiSessions, aiToolExecutions } from '../../db/schema/ai';
-import { waitForApproval } from '../../services/aiAgent';
+import { waitForApproval, type ApprovalWaitDetail } from '../../services/aiAgent';
 
 let orgId: string;
 let userId: string;
@@ -60,7 +60,10 @@ beforeEach(async () => {
   sessionId = s!.id;
 });
 
-async function seedExecution(status: 'pending' | 'approved' | 'rejected'): Promise<string> {
+async function seedExecution(
+  status: 'pending' | 'approved' | 'rejected',
+  errorMessage: string | null = null,
+): Promise<string> {
   const tdb = getTestDb();
   const [row] = await tdb
     .insert(aiToolExecutions)
@@ -69,6 +72,7 @@ async function seedExecution(status: 'pending' | 'approved' | 'rejected'): Promi
       toolName: 'execute_command',
       toolInput: { deviceId: 'd', commandType: 'kill_process' },
       status,
+      errorMessage,
     })
     .returning({ id: aiToolExecutions.id });
   return row!.id;
@@ -104,8 +108,19 @@ describe('waitForApproval — polls ai_tool_executions with RLS context (SDK pat
 
   it('returns false for a rejected execution (genuine reject, not a 0-row miss)', async () => {
     const executionId = await seedExecution('rejected');
-    const approved = await waitForApproval(executionId, 5_000);
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 5_000, undefined, detail);
     expect(approved).toBe(false);
+    // #12079: a denial is not an expiry.
+    expect(detail.expired).toBeUndefined();
+  });
+
+  it('reports a row closed by the approval-expiry reaper as expired, not approved (#12079)', async () => {
+    const executionId = await seedExecution('rejected', 'Approval request expired');
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 5_000, undefined, detail);
+    expect(approved).toBe(false);
+    expect(detail.expired).toBe(true);
   });
 
   it('respects an already-aborted signal without touching the DB', async () => {
@@ -124,8 +139,11 @@ describe('waitForApproval — polls ai_tool_executions with RLS context (SDK pat
     // back on the superuser conn) rather than tight timing.
     const executionId = await seedExecution('pending');
 
-    const approved = await waitForApproval(executionId, 250);
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 250, undefined, detail);
     expect(approved).toBe(false);
+    // #12079: the card says it expired; the row still says not approved.
+    expect(detail.expired).toBe(true);
 
     const [after] = await getTestDb()
       .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })

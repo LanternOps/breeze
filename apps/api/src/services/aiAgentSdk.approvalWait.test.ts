@@ -359,7 +359,7 @@ describe('configurable interactive approval timeout (#6475)', () => {
 
     await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
 
-    expect(waitForApproval).toHaveBeenCalledWith('exec-cfg-2', THIRTY_MIN, expect.any(AbortSignal));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-cfg-2', THIRTY_MIN, expect.any(AbortSignal), expect.any(Object));
     const event = vi.mocked(session.eventBus.publish).mock.calls
       .map(([e]: [any]) => e)
       .find((e: any) => e.type === 'approval_required');
@@ -605,7 +605,7 @@ describe('settleApprovalWaits (#3089)', () => {
     const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
     expect(result.allowed).toBe(false);
-    expect(waitForApproval).toHaveBeenCalledWith('exec-h9', 0, expect.any(AbortSignal));
+    expect(waitForApproval).toHaveBeenCalledWith('exec-h9', 0, expect.any(AbortSignal), expect.any(Object));
     expect(session.pendingApprovalWaits).toBe(0);
   });
 });

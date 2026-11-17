@@ -235,12 +235,14 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
 
 /**
  * #9431: how an approval card's wait ended, as far as the session knows.
- * `not_approved` covers a denial and a timeout alike (the legacy wait cannot
- * tell them apart); `ended` means the wait stopped without a decision here
- * (settled by a new message or interrupt, or a durable intent that can still
- * be decided in Approvals).
+ * `not_approved` is a denial; `expired` (#12079) means the request ran out of
+ * time before anyone decided it; `ended` means the wait stopped without a
+ * decision here (settled by a new message or interrupt, or a durable intent
+ * that can still be decided in Approvals). Only `approved` means the action
+ * may run: a client must treat every other value, including one it does not
+ * know, as not approved.
  */
-export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
+export type AiApprovalOutcome = 'approved' | 'not_approved' | 'expired' | 'ended';
 
 /**
  * #10416: who an `approval_required` card is waiting on. `'you'` means the
