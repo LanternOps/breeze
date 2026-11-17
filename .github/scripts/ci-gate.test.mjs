@@ -839,7 +839,7 @@ test('ci-gate-replay: dispatch-only, read-only, full history, never in ci-succes
 });
 
 test('lint registers the gate suite', () => {
-  assert.match(ciJob('lint'), /^        run: node --test(?: --[\w-]+=\d+)* \.github\/scripts\/ci-gate\.test\.mjs$/m);
+  assert.match(ciJob('lint'), /^        run: node --test \.github\/scripts\/ci-gate\.test\.mjs$/m);
 });
 
 test('replay: the oracle is compared, and a difference is reported as a disagreement', () => {

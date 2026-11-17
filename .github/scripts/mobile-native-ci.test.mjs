@@ -121,8 +121,8 @@ test('CI Success keeps existing required checks and requires both new jobs', () 
   for (const name of ['lint', 'typecheck', 'test-api', 'test-web', 'test-agent', 'test-mobile', 'mobile-native-changes', 'build-mobile-ios']) {
     assert.ok(dependencies?.includes(name), `Missing required dependency ${name}`);
   }
-  assert.match(job('lint'), /node --test(?: --[\w-]+=\d+)* \.github\/scripts\/mobile-native-ci\.test\.mjs/u);
-  assert.match(job('lint'), /node --test(?: --[\w-]+=\d+)* \.github\/scripts\/mobile-lockfile-closure\.test\.mjs/u);
+  assert.match(job('lint'), /node --test \.github\/scripts\/mobile-native-ci\.test\.mjs/u);
+  assert.match(job('lint'), /node --test \.github\/scripts\/mobile-lockfile-closure\.test\.mjs/u);
 });
 
 test('Test Web is sharded four ways like Test API', () => {

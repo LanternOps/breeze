@@ -133,7 +133,7 @@ test('selection reads only policy files and execs only the listed classifier', (
 test('lint runs this suite', () => {
   const lint = workflow.match(/^  lint:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)?.[1];
   assert.ok(lint, 'lint job not found');
-  assert.match(lint, /^        run: node --test(?: --[\w-]+=\d+)* \.github\/scripts\/ci-policy\.test\.mjs$/m);
+  assert.match(lint, /^        run: node --test \.github\/scripts\/ci-policy\.test\.mjs$/m);
 });
 
 test('policyDigest tolerates listed files that do not exist yet, and stays stable', () => {

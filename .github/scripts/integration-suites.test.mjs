@@ -227,7 +227,7 @@ test('lint runs this suite', () => {
   const ci = read('.github/workflows/ci.yml');
   const lint = ci.match(/^  lint:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)?.[1];
   assert.ok(lint, 'lint job not found');
-  assert.match(lint, /^        run: node --test(?: --[\w-]+=\d+)* \.github\/scripts\/integration-suites\.test\.mjs$/m);
+  assert.match(lint, /^        run: node --test \.github\/scripts\/integration-suites\.test\.mjs$/m);
 });
 
 // ── W07b2: the PR run's selection, shadow ───────────────────────────────────

@@ -693,7 +693,7 @@ test('merge_group: a rename out of an area sets that area too', () => {
 test('lint runs this suite (it is the only thing that enforces the area contract)', () => {
   const lint = job('lint');
   assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, 'lint must stay code-only so it runs on every code PR');
-  assert.match(lint, /^        run: node --test(?: --[\w-]+=\d+)* \.github\/scripts\/ci-area-gating\.test\.mjs$/mu);
+  assert.match(lint, /^        run: node --test \.github\/scripts\/ci-area-gating\.test\.mjs$/mu);
 });
 
 for (const flag of Object.values(FLAG)) {

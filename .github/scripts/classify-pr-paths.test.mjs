@@ -352,7 +352,7 @@ test('ci.yml is the only CI Success reporter and runs on every PR', () => {
   assert.doesNotMatch(trigger, /paths(-ignore)?:/u, 'a path filter on ci.yml starves docs-only PRs of CI Success');
   assert.match(job('changes'), /gh api "repos\/\$\{GITHUB_REPOSITORY\}\/pulls\/\$\{PR_NUMBER\}\/files" --paginate/u);
   assert.match(job('changes'), /bash \.github\/scripts\/classify-pr-paths\.sh/u);
-  assert.match(job('lint'), /node --test(?: --[\w-]+=\d+)* \.github\/scripts\/classify-pr-paths\.test\.mjs/u);
+  assert.match(job('lint'), /node --test \.github\/scripts\/classify-pr-paths\.test\.mjs/u);
 });
 
 test('every code job is gated on the classifier', () => {

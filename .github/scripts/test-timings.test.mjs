@@ -231,5 +231,5 @@ test('lint runs this suite', () => {
   const ci = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
   const lint = ci.match(/^  lint:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)?.[1];
   assert.ok(lint, 'lint job not found');
-  assert.match(lint, /^        run: node --test(?: --[\w-]+=\d+)* \.github\/scripts\/test-timings\.test\.mjs$/m);
+  assert.match(lint, /^        run: node --test \.github\/scripts\/test-timings\.test\.mjs$/m);
 });
