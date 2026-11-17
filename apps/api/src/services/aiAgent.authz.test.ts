@@ -414,9 +414,16 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(reaper).toContain(`errorMessage: '${AI_APPROVAL_REQUEST_EXPIRED_MESSAGE}'`);
   });
 
+  /** The close-out's guarded UPDATE: `rows` is what RETURNING yields (empty = it lost). */
+  function stubCloseOut(rows: unknown[]) {
+    const whereSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) });
+    const setSpy = vi.fn().mockReturnValue({ where: whereSpy });
+    updateMock.mockReturnValueOnce({ set: setSpy });
+    return { setSpy, whereSpy };
+  }
+
   it('reports expired on its own timeout, and still marks the row rejected (never approved)', async () => {
-    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    updateMock.mockReturnValue({ set: setSpy });
+    const { setSpy, whereSpy } = stubCloseOut([{ id: 'exec-1' }]);
     const detail: ApprovalWaitDetail = {};
 
     // A zero budget skips the poll and goes straight to the timeout close-out.
@@ -424,6 +431,46 @@ describe('waitForApproval expiry detail (#12079)', () => {
 
     expect(detail.expired).toBe(true);
     expect(setSpy).toHaveBeenCalledWith({ status: 'rejected', errorMessage: 'Approval timed out' });
+    // #12084: only a still-pending row is closed.
+    expect(whereSpy).toHaveBeenCalledWith({
+      op: 'and',
+      conds: [
+        { op: 'eq', col: 'aiToolExecutions.id', val: 'exec-1' },
+        { op: 'eq', col: 'aiToolExecutions.status', val: 'pending' },
+      ],
+    });
+  });
+
+  it('honours an approval that beat the timeout close-out (#12084)', async () => {
+    stubCloseOut([]);
+    stubSelectOnce([{ status: 'approved', errorMessage: null }]);
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(true);
+
+    expect(detail).toEqual({});
+  });
+
+  it('reports a denial that beat the timeout close-out as denied, not expired (#12084)', async () => {
+    stubCloseOut([]);
+    stubSelectOnce([{ status: 'rejected', errorMessage: null }]);
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(false);
+
+    expect(detail).toEqual({ denied: true });
+  });
+
+  it('hands the timed-out message to the caller when the close-out cannot be written (#12084)', async () => {
+    updateMock.mockImplementation(() => { throw new Error('db down'); });
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(false);
+
+    // Retried, then left to the caller's close-out, which must store the same
+    // reason the card shows.
+    expect(updateMock).toHaveBeenCalledTimes(3);
+    expect(detail).toEqual({ expired: true, closeOutMessage: 'Approval timed out' });
   });
 
   it('reports expired when the expiry reaper closed the row', async () => {
@@ -445,16 +492,33 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(detail.expired).toBeUndefined();
   });
 
-  it('does not report expired, or write the row, when the wait was already settled', async () => {
+  it('closes a settled wait as ended, not expired, and only if still pending (#12084)', async () => {
+    const { setSpy, whereSpy } = stubCloseOut([{ id: 'exec-1' }]);
     const controller = new AbortController();
     controller.abort();
     const detail: ApprovalWaitDetail = {};
 
     await expect(waitForApproval('exec-1', 60_000, controller.signal, detail)).resolves.toBe(false);
 
-    expect(detail.expired).toBeUndefined();
+    expect(detail).toEqual({});
     expect(selectMock).not.toHaveBeenCalled();
-    expect(updateMock).not.toHaveBeenCalled();
+    expect(setSpy).toHaveBeenCalledWith({
+      status: 'rejected',
+      errorMessage: 'Approval wait ended before a decision was made',
+    });
+    expect(whereSpy.mock.calls[0]![0]).toMatchObject({
+      op: 'and',
+      conds: expect.arrayContaining([{ op: 'eq', col: 'aiToolExecutions.status', val: 'pending' }]),
+    });
+  });
+
+  it('honours an approval that landed before a settle (#12084)', async () => {
+    stubCloseOut([]);
+    stubSelectOnce([{ status: 'approved', errorMessage: null }]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(waitForApproval('exec-1', 60_000, controller.signal, {})).resolves.toBe(true);
   });
 
   it('does not report expired for an approval', async () => {

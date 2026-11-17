@@ -21,7 +21,7 @@
  * waitForApproval with NO ambient context, exactly as the SDK does. They fail
  * (RED) until waitForApproval establishes a system-scope context for its poll.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
@@ -78,6 +78,14 @@ async function seedExecution(
   return row!.id;
 }
 
+async function readRow(executionId: string) {
+  const [row] = await getTestDb()
+    .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
+    .from(aiToolExecutions)
+    .where(eq(aiToolExecutions.id, executionId));
+  return row;
+}
+
 describe('waitForApproval — polls ai_tool_executions with RLS context (SDK path)', () => {
   // Self-defense against a vacuous environment. The "approved → true" assertion
   // below only proves the fix if forced RLS is actually filtering — i.e. the app
@@ -123,12 +131,16 @@ describe('waitForApproval — polls ai_tool_executions with RLS context (SDK pat
     expect(detail.expired).toBe(true);
   });
 
-  it('respects an already-aborted signal without touching the DB', async () => {
+  it('closes a still-pending row when the wait was already settled, without calling it expired (#12084)', async () => {
     const executionId = await seedExecution('pending');
     const controller = new AbortController();
     controller.abort();
-    const approved = await waitForApproval(executionId, 5_000, controller.signal);
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 5_000, controller.signal, detail);
     expect(approved).toBe(false);
+    expect(detail.expired).toBeUndefined();
+    const after = await readRow(executionId);
+    expect(after).toEqual({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' });
   });
 
   it('marks a never-approved execution rejected on timeout (the wrapped timeout write)', async () => {
@@ -151,5 +163,151 @@ describe('waitForApproval — polls ai_tool_executions with RLS context (SDK pat
       .where(eq(aiToolExecutions.id, executionId));
     expect(after!.status).toBe('rejected');
     expect(after!.errorMessage).toBe('Approval timed out');
+  });
+});
+
+/**
+ * #12084: a decision that lands between the wait's LAST poll and its close-out.
+ *
+ * The real poll sleeps between reads (500 ms, then up to 3 s). `inLastSleep`
+ * swaps that first sleep for: run `decide` (the click), then sleep past the
+ * wait's timeout. The first read saw 'pending' and no read follows, so the next
+ * thing the wait does is its close-out: exactly the window in the issue. Only
+ * the wait's own 500 ms sleep is intercepted; every other timer runs as normal.
+ */
+function inLastSleep(decide: () => Promise<void>, sleepMs: number): { decided: Promise<void> } {
+  const realSetTimeout = globalThis.setTimeout;
+  let armed = true;
+  let markDecided!: () => void;
+  let failDecided!: (err: unknown) => void;
+  const decided = new Promise<void>((resolve, reject) => {
+    markDecided = resolve;
+    failDecided = reject;
+  });
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    fn: (...args: unknown[]) => void,
+    ms?: number,
+    ...rest: unknown[]
+  ) => {
+    if (armed && ms === 500) {
+      armed = false;
+      decide().then(
+        () => { markDecided(); realSetTimeout(fn, sleepMs); },
+        (err) => { failDecided(err); realSetTimeout(fn, sleepMs); },
+      );
+      return realSetTimeout(() => undefined, 0);
+    }
+    return realSetTimeout(fn, ms, ...rest);
+  }) as typeof setTimeout);
+  return { decided };
+}
+
+describe('waitForApproval — a decision made before the close-out wins (#12084)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function approveRow(executionId: string) {
+    await getTestDb()
+      .update(aiToolExecutions)
+      .set({ status: 'approved', approvedBy: userId, approvedAt: new Date() })
+      .where(eq(aiToolExecutions.id, executionId));
+  }
+
+  async function denyRow(executionId: string) {
+    await getTestDb()
+      .update(aiToolExecutions)
+      .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
+      .where(eq(aiToolExecutions.id, executionId));
+  }
+
+  it('an Approve in the last sleep before the timeout is honoured, not overwritten as timed out', async () => {
+    const executionId = await seedExecution('pending');
+    const { decided } = inLastSleep(() => approveRow(executionId), 400);
+
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 200, undefined, detail);
+    await decided;
+
+    // The click was answered 200 approved and audited; the wait agrees and the
+    // caller runs the action. The stored row is still the approval.
+    expect(approved).toBe(true);
+    expect(detail.expired).toBeUndefined();
+    expect(await readRow(executionId)).toEqual({ status: 'approved', errorMessage: null });
+  });
+
+  it('a Deny in the last sleep before the timeout reads as denied, not expired', async () => {
+    const executionId = await seedExecution('pending');
+    const { decided } = inLastSleep(() => denyRow(executionId), 400);
+
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 200, undefined, detail);
+    await decided;
+
+    expect(approved).toBe(false);
+    expect(detail.expired).toBeUndefined();
+    expect(detail.denied).toBe(true);
+    expect(await readRow(executionId)).toEqual({ status: 'rejected', errorMessage: null });
+  });
+
+  it('an Approve still committing when the close-out runs is honoured (row lock, not a stale read)', async () => {
+    const executionId = await seedExecution('pending');
+    let releaseApproval!: () => void;
+    const approvalHeld = new Promise<void>((resolve) => { releaseApproval = resolve; });
+    let approvalTx: Promise<void> | undefined;
+    const { decided } = inLastSleep(async () => {
+      let updated!: () => void;
+      const rowLocked = new Promise<void>((resolve) => { updated = resolve; });
+      // The approve request's transaction has written the row but not
+      // committed yet when the wait reaches its close-out.
+      approvalTx = getTestDb().transaction(async (tx) => {
+        await tx
+          .update(aiToolExecutions)
+          .set({ status: 'approved', approvedBy: userId, approvedAt: new Date() })
+          .where(eq(aiToolExecutions.id, executionId));
+        updated();
+        await approvalHeld;
+      });
+      await rowLocked;
+    }, 300);
+
+    const waiting = waitForApproval(executionId, 150, undefined, {});
+    await decided;
+    // Let the close-out reach the locked row, then commit the approval.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    releaseApproval();
+    await approvalTx;
+
+    expect(await waiting).toBe(true);
+    expect(await readRow(executionId)).toEqual({ status: 'approved', errorMessage: null });
+  });
+
+  it('an Approve that lands before a settle (new message / interrupt) is honoured, not dropped', async () => {
+    const executionId = await seedExecution('pending');
+    const controller = new AbortController();
+    const { decided } = inLastSleep(async () => {
+      await approveRow(executionId);
+      controller.abort();
+    }, 50);
+
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 60_000, controller.signal, detail);
+    await decided;
+
+    expect(approved).toBe(true);
+    expect(await readRow(executionId)).toEqual({ status: 'approved', errorMessage: null });
+  });
+
+  it('with no decision, the timeout still closes the row as timed out (nothing runs)', async () => {
+    const executionId = await seedExecution('pending');
+    const { decided } = inLastSleep(async () => undefined, 400);
+
+    const detail: ApprovalWaitDetail = {};
+    const approved = await waitForApproval(executionId, 200, undefined, detail);
+    await decided;
+
+    expect(approved).toBe(false);
+    expect(detail.expired).toBe(true);
+    expect(await readRow(executionId)).toEqual({ status: 'rejected', errorMessage: 'Approval timed out' });
   });
 });

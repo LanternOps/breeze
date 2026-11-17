@@ -18,7 +18,7 @@ import {
 import { db, assertOutsideHeldDbContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
-import { waitForApproval } from './aiAgent';
+import { waitForApproval, type ApprovalWaitDetail } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import { captureException } from './sentry';
 
@@ -549,6 +549,45 @@ describe('settleApprovalWaits (#3089)', () => {
     });
     expect(session.pendingApprovalWaits).toBe(0);
   });
+
+  it.each([
+    ['tier-2', {}, 'take_screenshot', 2],
+    ['helper/PAM', { auth: { ...makeAuth(), helperDeviceId: 'dev-9' } }, 'execute_command', 3],
+  ])(
+    '%s: when the wait could not write its timeout, the fallback close-out stores "timed out", not "ended" (#12084)',
+    async (_label, sessionOverrides, toolName, tier) => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier,
+        requiresApproval: true,
+        description: 'Run it',
+      } as any);
+      mockInsertReturning({ id: 'exec-t' });
+      const { set, where } = mockUpdateChain();
+      const { decideHelperToolAction } = await import('./pamToolActionGovernance');
+      vi.mocked(decideHelperToolAction).mockResolvedValue('prompt' as any);
+      // What waitForApproval reports when its own close-out failed.
+      vi.mocked(waitForApproval).mockImplementation(
+        async (_id: string, _timeoutMs: number, _signal?: AbortSignal, detail?: ApprovalWaitDetail) => {
+          Object.assign(detail!, { expired: true, closeOutMessage: 'Approval timed out' });
+          return false;
+        },
+      );
+      const session = makeActiveSession(sessionOverrides);
+
+      const result = await createSessionPreToolUse(session)(toolName, { deviceId: 'd-1' });
+
+      expect(result.allowed).toBe(false);
+      // The card said expired; the row a late click reads must say so too.
+      expect(set).toHaveBeenCalledWith({ status: 'rejected', errorMessage: 'Approval timed out' });
+      expect(set).not.toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: 'Approval wait ended before a decision was made' }),
+      );
+      expect(where).toHaveBeenCalledWith({
+        _and: [{ _eq: ['id', 'exec-t'] }, { _eq: ['status', 'pending'] }],
+      });
+    },
+  );
 
   it('a zero-budget tier-2 approval never runs the ceremony (no mobile push, no UI card) and self-closes honestly', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({

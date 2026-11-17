@@ -608,6 +608,15 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
  */
 export const AI_APPROVAL_TIMED_OUT_MESSAGE = 'Approval timed out';
 export const AI_APPROVAL_REQUEST_EXPIRED_MESSAGE = 'Approval request expired';
+/**
+ * #12084: the wait was settled (new message, interrupt, teardown) before
+ * anyone decided. Not an expiry and not a denial.
+ */
+export const AI_APPROVAL_WAIT_ENDED_MESSAGE = 'Approval wait ended before a decision was made';
+const AI_APPROVAL_POLLING_FAILED_MESSAGE = 'Polling failed';
+
+/** #12084: tries at the close-out before the caller's own close-out takes over. */
+const APPROVAL_CLOSE_OUT_ATTEMPTS = 3;
 
 function isApprovalExpiryMessage(errorMessage: string | null | undefined): boolean {
   return errorMessage === AI_APPROVAL_TIMED_OUT_MESSAGE || errorMessage === AI_APPROVAL_REQUEST_EXPIRED_MESSAGE;
@@ -615,8 +624,92 @@ function isApprovalExpiryMessage(errorMessage: string | null | undefined): boole
 
 /** #12079: what a `waitForApproval` that returned `false` knows about why. */
 export interface ApprovalWaitDetail {
-  /** The request expired without a decision. Never means approved. */
+  /**
+   * The stored row says the request expired (this wait's own timeout, or the
+   * approval-expiry reaper). Never means approved.
+   */
   expired?: boolean;
+  /**
+   * #12084: someone denied it. Set even when the denial landed in the gap
+   * before this wait's close-out, so the card says denied, not expired.
+   */
+  denied?: boolean;
+  /**
+   * #12084: the wait ended undecided but could not close its row, which may
+   * still be pending. The caller's own close-out must write exactly this
+   * message, so the stored row says what the card said.
+   */
+  closeOutMessage?: string;
+}
+
+/** #12084: record why a row reads `rejected`: expired, denied, or neither (settled / polling failed). */
+function noteRejection(errorMessage: string | null | undefined, detail?: ApprovalWaitDetail): void {
+  if (!detail) return;
+  if (isApprovalExpiryMessage(errorMessage)) {
+    detail.expired = true;
+  } else if (errorMessage !== AI_APPROVAL_WAIT_ENDED_MESSAGE && errorMessage !== AI_APPROVAL_POLLING_FAILED_MESSAGE) {
+    detail.denied = true;
+  }
+}
+
+/**
+ * #12084: end an approval wait that saw no decision. The row is closed ONLY if
+ * it is still pending (`UPDATE ... WHERE status = 'pending' RETURNING`, judged
+ * by the returned row), so a decision that landed after the last poll (an
+ * Approve click in the last sleep, a denial, the expiry reaper) is never
+ * overwritten. A decision still committing holds the row lock, so the UPDATE
+ * waits for it and then matches nothing.
+ *
+ * When the close-out matches nothing, a fresh read (a new statement, so it
+ * sees the committed decision) returns that decision, and an approval is
+ * honoured: the caller runs it exactly as if the last poll had seen it. A row
+ * never goes back to pending, so that read is the row's one outcome.
+ */
+async function closeOutApprovalWait(
+  executionId: string,
+  errorMessage: string,
+  detail?: ApprovalWaitDetail,
+): Promise<boolean> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const result = await withSystemDbAccessContext(async () => {
+        const [closed] = await db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', errorMessage })
+          .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending')))
+          .returning({ id: aiToolExecutions.id });
+        if (closed) return { closed: true as const };
+        const [row] = await db
+          .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
+          .from(aiToolExecutions)
+          .where(eq(aiToolExecutions.id, executionId))
+          .limit(1);
+        return { closed: false as const, row };
+      });
+
+      if (result.closed) {
+        noteRejection(errorMessage, detail);
+        return false;
+      }
+      if (result.row?.status === 'approved') return true;
+      if (result.row?.status === 'rejected') noteRejection(result.row.errorMessage, detail);
+      return false;
+    } catch (err) {
+      if (attempt < APPROVAL_CLOSE_OUT_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+        continue;
+      }
+      // The row may still be pending. Nothing runs; the caller's close-out
+      // (same pending guard, this same message) is the last chance to close it.
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error('[AI] Failed to close out approval wait:', executionId, err);
+      if (detail) {
+        detail.closeOutMessage = errorMessage;
+        if (isApprovalExpiryMessage(errorMessage)) detail.expired = true;
+      }
+      return false;
+    }
+  }
 }
 
 /**
@@ -637,8 +730,15 @@ export interface ApprovalWaitDetail {
  *
  * #12079: `false` alone cannot say whether the request was denied or expired.
  * A caller that needs the difference passes `detail`; `detail.expired` is set
- * when the wait ran out (this poll's own timeout) or the row was closed by the
- * approval-expiry reaper. An expired request is still not approved.
+ * when the stored row says it expired (this wait's own timeout, or the
+ * approval-expiry reaper). An expired request is still not approved.
+ *
+ * #12084: every way this wait ends without having seen a decision (timeout,
+ * a settle via `signal`, repeated poll errors) goes through one conditional
+ * close-out (`closeOutApprovalWait`), so one row has one outcome. A decision
+ * made before the close-out wins, an approval included, which then returns
+ * `true`. Once the close-out has closed the row nothing can approve it:
+ * `handleApproval` and the mobile decide both require 'pending'.
  */
 export async function waitForApproval(
   executionId: string,
@@ -651,7 +751,7 @@ export async function waitForApproval(
   let consecutiveErrors = 0;
 
   while (Date.now() - startTime < timeoutMs) {
-    if (signal?.aborted) return false;
+    if (signal?.aborted) break;
 
     try {
       const [execution] = await withSystemDbAccessContext(() =>
@@ -668,24 +768,14 @@ export async function waitForApproval(
 
       if (execution.status === 'approved') return true;
       if (execution.status === 'rejected') {
-        if (detail && isApprovalExpiryMessage(execution.errorMessage)) detail.expired = true;
+        noteRejection(execution.errorMessage, detail);
         return false;
       }
     } catch (err) {
       consecutiveErrors++;
       console.error(`[AI] Approval poll error (attempt ${consecutiveErrors}):`, err);
       if (consecutiveErrors >= 5) {
-        try {
-          await withSystemDbAccessContext(() =>
-            db
-              .update(aiToolExecutions)
-              .set({ status: 'rejected', errorMessage: 'Polling failed' })
-              .where(eq(aiToolExecutions.id, executionId))
-          );
-        } catch (cleanupErr) {
-          console.error('[AI] Failed to cleanup polling-failed execution:', cleanupErr);
-        }
-        return false;
+        return closeOutApprovalWait(executionId, AI_APPROVAL_POLLING_FAILED_MESSAGE, detail);
       }
     }
 
@@ -693,24 +783,14 @@ export async function waitForApproval(
     pollInterval = Math.min(pollInterval * 1.5, 3000);
   }
 
-  // Timeout - mark as rejected. Still not approved: nothing runs. The
-  // message is what tells a later reader it expired rather than was denied.
-  if (detail) detail.expired = true;
-  try {
-    await withSystemDbAccessContext(() =>
-      db
-        .update(aiToolExecutions)
-        .set({ status: 'rejected', errorMessage: AI_APPROVAL_TIMED_OUT_MESSAGE })
-        .where(eq(aiToolExecutions.id, executionId))
-    );
-  } catch (err) {
-    // The row stays 'pending' until the caller's close-out CAS; the wait still
-    // expired and the tool is still refused.
-    captureException(err instanceof Error ? err : new Error(String(err)));
-    console.error('[AI] Failed to mark timed-out execution:', executionId, err);
-  }
-
-  return false;
+  // No decision seen. A settle that landed during the last sleep is a settle,
+  // not a timeout. Either way the close-out closes only a still-pending row
+  // and otherwise returns the decision that beat it.
+  return closeOutApprovalWait(
+    executionId,
+    signal?.aborted ? AI_APPROVAL_WAIT_ENDED_MESSAGE : AI_APPROVAL_TIMED_OUT_MESSAGE,
+    detail,
+  );
 }
 
 /**

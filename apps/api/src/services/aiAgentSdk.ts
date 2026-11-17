@@ -226,11 +226,28 @@ function beginApprovalWait(session: ActiveSession): {
  * denied, or expired when `detail.expired` says the wait ran out (#12079) —
  * unless the wait was settled (new message, interrupt, teardown), in which
  * case nothing was decided.
+ *
+ * #12084: what the stored row says comes first. A denial that landed just
+ * before a settle is a denial, and a row closed as timed out is expired even
+ * if a settle arrived after the close-out, so the card says what a late click
+ * on the same row is told (`getDecidedExecutionOutcome`).
  */
 function approvalWaitOutcome(approved: boolean, signal: AbortSignal, detail?: ApprovalWaitDetail): AiApprovalOutcome {
   if (approved) return 'approved';
+  if (detail?.denied) return 'not_approved';
+  if (detail?.expired) return 'expired';
   if (signal.aborted) return 'ended';
-  return detail?.expired ? 'expired' : 'not_approved';
+  return 'not_approved';
+}
+
+/**
+ * #12084: the message for a caller's fallback close-out of an unapproved
+ * `waitForApproval` row. `waitForApproval` closes the row itself; this write
+ * only lands when that close-out failed, and then it must store the same
+ * reason the card was shown (a timed-out wait stays "timed out", not "ended").
+ */
+function fallbackCloseOutMessage(detail: ApprovalWaitDetail): string {
+  return detail.closeOutMessage ?? 'Approval wait ended before a decision was made';
 }
 
 /** #9431: an intent status read by `waitForIntentDecision` as a card outcome. */
@@ -1959,6 +1976,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         let approved: boolean;
         // #9431: how the card's wait ended, for every other listener.
         let helperOutcome: AiApprovalOutcome = 'ended';
+        const helperWaitDetail: ApprovalWaitDetail = {};
         try {
           const decision = await decideHelperToolAction({
             orgId: session.orgId,
@@ -1981,7 +1999,6 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // flows (#3089) so stacked helper approvals can't outlive the turn
           // timeout, and settleApprovalWaits can conclude a blocked helper turn.
           const helperApprovalWait = beginApprovalWait(session);
-          const helperWaitDetail: ApprovalWaitDetail = {};
           try {
             approved = await waitForApproval(
               helperExec.id,
@@ -1997,20 +2014,21 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           resolveApprovalCard(session, helperExec.id, helperOutcome);
         }
         if (!approved) {
-          // Mirrors the tier-2/tier-3 close-out below: on an early settle
-          // (abort signal), waitForApproval returns WITHOUT marking the row,
-          // so a later PAM decision (decideHelperToolAction/pamToolActionGovernance)
-          // would otherwise CAS this still-'pending' row to 'approved' with
-          // nothing left listening on it — a stranded approval that silently
-          // never executes. Guarded on status='pending' so a genuine
-          // reject/timeout (already marked) is a no-op.
+          // Mirrors the tier-2/tier-3 close-out below. waitForApproval closes
+          // the row itself (#12084); this is the fallback for when that write
+          // failed, so a later PAM decision (decideHelperToolAction/
+          // pamToolActionGovernance) cannot CAS a still-'pending' row to
+          // 'approved' with nothing left listening on it — a stranded
+          // approval that silently never executes. Guarded on
+          // status='pending' so a closed or decided row is a no-op, and it
+          // stores the reason the card showed (#12084).
           try {
             await withDbAccessContext(
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
               () =>
                 db
                   .update(aiToolExecutions)
-                  .set({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' })
+                  .set({ status: 'rejected', errorMessage: fallbackCloseOutMessage(helperWaitDetail) })
                   .where(and(
                     eq(aiToolExecutions.id, helperExec!.id),
                     eq(aiToolExecutions.status, 'pending'),
@@ -3297,6 +3315,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         const approvalWait = beginApprovalWait(session);
         let approvalRequestId: string | undefined;
         let approved: boolean;
+        const cardWaitDetail: ApprovalWaitDetail = {};
         try {
           if (approvalWait.timeoutMs <= 0) {
             try {
@@ -3427,7 +3446,6 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // (session teardown / new user message / interrupt — #3089).
           // #9431: how the card's wait ended, for every other listener.
           let cardOutcome: AiApprovalOutcome = 'ended';
-          const cardWaitDetail: ApprovalWaitDetail = {};
           try {
             approved = await waitForApproval(
               approvalExec.id,
@@ -3445,13 +3463,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         }
 
         if (!approved) {
-          // The wait may have been settled early (abort signal), in which case
-          // waitForApproval returned WITHOUT marking the row — close it out so
-          // a later Approve click can't flip it to a stranded 'approved' that
-          // nothing will ever execute (this legacy bridge has no durable
-          // release worker). Guarded on status='pending' so a genuine reject
-          // (row already 'rejected') or timeout (waitForApproval already
-          // marked it) is a no-op. The linked mobile approval_requests row is
+          // waitForApproval closes the row itself on every undecided ending
+          // (#12084); this write is the fallback for when that close-out
+          // failed, so a later Approve click can't flip a still-pending row to
+          // a stranded 'approved' that nothing will ever execute (this legacy
+          // bridge has no durable release worker). Guarded on
+          // status='pending' so a closed or decided row is a no-op, and it
+          // stores the reason the card showed, so a timed-out card is not
+          // later read back as "not approved" (#12084). The linked mobile approval_requests row is
           // CAS'd out of 'pending' too — the mobile decide handler
           // (routes/approvals.ts) only proceeds from 'pending', so this
           // closes the mobile Approve → stranded-'approved' race at the
@@ -3471,7 +3490,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               async () => {
                 await db
                   .update(aiToolExecutions)
-                  .set({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' })
+                  .set({ status: 'rejected', errorMessage: fallbackCloseOutMessage(cardWaitDetail) })
                   .where(and(
                     eq(aiToolExecutions.id, approvalExec!.id),
                     eq(aiToolExecutions.status, 'pending'),
