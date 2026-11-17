@@ -116,8 +116,12 @@ export type RevocationReason =
  *   so a device clock running ~2 min fast lost every session within seconds
  *   and one running slow kept a silent session alive for the full lag.
  * - `expiresInMs` / `hardDeadlineInMs` are the same deadlines as time
- *   remaining at send time. A current agent measures them from receipt on its
- *   monotonic clock, so its wall clock plays no part.
+ *   remaining as of the decision (`now`, taken before the recheck's queries).
+ *   A current agent measures them on its monotonic clock from when it queued
+ *   the renew request (the `renewAnchor` echoed by agentWs), which precedes
+ *   the decision, so neither its wall clock nor any delay on the way can make
+ *   the lease outlast what was granted. The start grant answers no request:
+ *   the agent measures it from receipt until the first renewal lands.
  */
 export interface RevocationLeaseDeadlines {
   expiresAt: number;

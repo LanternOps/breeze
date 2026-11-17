@@ -10,6 +10,62 @@ import (
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
+func startSkewTestStream(t *testing.T, id string) (*Heartbeat, *desktop.WsSessionManager) {
+	t.Helper()
+	mgr := newTestStreamManager()
+	h := &Heartbeat{desktopMgr: desktop.NewSessionManager(), wsDesktopMgr: mgr}
+	send := func(string, []byte) error { return nil }
+	_, _, s, err := mgr.StartSession(id, 0, desktop.DefaultStreamConfig(), testStreamLease(time.Second), send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Stop)
+	return h, mgr
+}
+
+// When the answer echoes the request's anchor, the lease is measured from
+// when the agent ASKED, not from when the answer arrived: a slow round trip
+// (a held-back frame, a slow database check) can only shorten the lease.
+func TestRevocationLeaseRenewalIsMeasuredFromTheRequest(t *testing.T) {
+	h, mgr := startSkewTestStream(t, "ws-anchor")
+	requestedAt := time.Now().Add(-40 * time.Second) // the answer took 40 s
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:        "ws-anchor",
+		ExpiresAtUnixMs:  time.Now().Add(time.Hour).UnixMilli(), // must be ignored
+		ExpiresInMs:      time.Minute.Milliseconds(),
+		HardDeadlineInMs: (30 * time.Minute).Milliseconds(),
+		ReceivedAt:       time.Now(),
+		RequestedAt:      requestedAt,
+	})
+	st, ok := mgr.LeaseStatus("ws-anchor")
+	if !ok || st.Revoked {
+		t.Fatalf("renewal must leave the stream live: %+v", st)
+	}
+	assertNear(t, "expiresAt", st.ExpiresAt, requestedAt.Add(time.Minute), requestedAt.Add(time.Minute))
+	assertNear(t, "hardDeadline", st.HardDeadline, requestedAt.Add(30*time.Minute), requestedAt.Add(30*time.Minute))
+}
+
+// An older API sends only absolute deadlines and no echo; the apply path must
+// keep honouring them exactly as before.
+func TestRevocationLeaseRenewalFromAnOlderAPIUsesTheAbsoluteDeadlines(t *testing.T) {
+	h, mgr := startSkewTestStream(t, "ws-old")
+	expiresAt := time.Now().Add(2 * time.Minute).Truncate(time.Millisecond)
+	hardDeadline := time.Now().Add(40 * time.Minute).Truncate(time.Millisecond)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:          "ws-old",
+		ExpiresAtUnixMs:    expiresAt.UnixMilli(),
+		HardDeadlineUnixMs: hardDeadline.UnixMilli(),
+		ReceivedAt:         time.Now(),
+	})
+	st, _ := mgr.LeaseStatus("ws-old")
+	if !st.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expiresAt = %v, want %v", st.ExpiresAt, expiresAt)
+	}
+	if !st.HardDeadline.Equal(hardDeadline) {
+		t.Fatalf("hardDeadline = %v, want %v", st.HardDeadline, hardDeadline)
+	}
+}
+
 // A renewal answer applied to a live stream must be measured from receipt.
 func TestRevocationLeaseRenewalIgnoresDeviceClockSkew(t *testing.T) {
 	for _, skew := range leaseSkews {

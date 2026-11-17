@@ -89,9 +89,19 @@ func TestNormalizeRevocationLeaseUsesTheRemainingDurations(t *testing.T) {
 		t.Fatalf("hardDeadline = %v, want ~now+1h", lease.HardDeadline)
 	}
 
-	// A lease carrying only the remaining form is still a usable lease.
-	if _, err := NormalizeRevocationLease(&ipc.RevocationLease{ExpiresInMs: 60_000, RenewEverySec: 25}); err != nil {
+	// A lease carrying only the remaining form is still a usable lease, and
+	// the missing hard deadline back-fills the 12h cap.
+	before = time.Now()
+	only, err := NormalizeRevocationLease(&ipc.RevocationLease{ExpiresInMs: 60_000, RenewEverySec: 25})
+	after = time.Now()
+	if err != nil {
 		t.Fatalf("a lease with only expiresInMs must be accepted: %v", err)
+	}
+	if only.ExpiresAt.Before(before.Add(time.Minute)) || only.ExpiresAt.After(after.Add(time.Minute)) {
+		t.Fatalf("expiresAt = %v, want ~now+1m", only.ExpiresAt)
+	}
+	if only.HardDeadline.Before(before.Add(MaxSessionDurationCap)) || only.HardDeadline.After(after.Add(MaxSessionDurationCap)) {
+		t.Fatalf("hardDeadline = %v, want ~now+12h", only.HardDeadline)
 	}
 }
 

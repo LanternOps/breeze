@@ -1687,13 +1687,16 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// hits the disk.
 	h.enqueueDesktopFenceAnswer(msg)
 
-	// Resolve the deadlines ONCE, against the moment the frame was read
-	// (#11840). A current API sends them as time remaining, so the device's
-	// wall clock plays no part; an older API sends only absolute timestamps,
-	// read against the wall clock as before. Everything below, including the
-	// copy forwarded to a helper, uses these resolved values.
-	expiresAt := desktop.LeaseExpiry(msg.ReceivedAt, msg.ExpiresInMs, msg.ExpiresAtUnixMs)
-	hardDeadline := desktop.LeaseHardDeadline(msg.ReceivedAt, msg.HardDeadlineInMs, msg.HardDeadlineUnixMs)
+	// Resolve the deadlines ONCE (#11840). A current API sends them as time
+	// remaining, measured here from when this agent asked for the renewal
+	// (LeaseClockAnchor), so neither the device's wall clock nor any delay on
+	// the way can make the lease outlast what the server granted. An older API
+	// sends only absolute timestamps, read against the wall clock as before.
+	// Everything below, including the copy forwarded to a helper, uses these
+	// resolved values.
+	anchor := msg.LeaseClockAnchor()
+	expiresAt := desktop.LeaseExpiry(anchor, msg.ExpiresInMs, msg.ExpiresAtUnixMs)
+	hardDeadline := desktop.LeaseHardDeadline(anchor, msg.HardDeadlineInMs, msg.HardDeadlineUnixMs)
 	msg = withResolvedLeaseDeadlines(msg, expiresAt, hardDeadline)
 
 	// "I cannot answer right now" is not a renewal and not a revocation. It

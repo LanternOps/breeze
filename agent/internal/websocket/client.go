@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -292,14 +293,17 @@ type RevocationLeaseMessage struct {
 	ExpiresAtUnixMs    int64
 	HardDeadlineUnixMs int64
 	// ExpiresInMs and HardDeadlineInMs are the same deadlines as the time
-	// remaining when the server sent the answer; zero from an older API
-	// (#11840). Resolve them with desktop.LeaseExpiry / LeaseHardDeadline
-	// against ReceivedAt, never against the device's wall clock.
+	// remaining at the moment the server decided to renew; zero from an older
+	// API (#11840). Resolve them with desktop.LeaseExpiry / LeaseHardDeadline
+	// against LeaseClockAnchor(), never against the device's wall clock.
 	ExpiresInMs      int64
 	HardDeadlineInMs int64
-	// ReceivedAt is the time.Now() reading taken when the frame was read: the
-	// monotonic anchor the remaining durations are measured from.
+	// ReceivedAt is the time.Now() reading taken when the frame was read.
 	ReceivedAt time.Time
+	// RequestedAt is when this agent queued the renewal request this answer
+	// is for, recovered from the renewAnchor the server echoed. Zero when the
+	// server echoed none (an older API) or the echo was unusable.
+	RequestedAt time.Time
 	// StartGeneration is the session's current desktop_start_generation as a
 	// canonical decimal string, empty from a pre-W05 API. The
 	// agent's durable start fence resyncs from it.
@@ -314,6 +318,59 @@ type RevocationLeaseMessage struct {
 	// renewal, so a stalled answer to an earlier attempt cannot satisfy a
 	// later one. Empty for ordinary watchdog renewals.
 	SyncNonce string
+}
+
+// LeaseClockAnchor is the instant the remaining durations are measured from.
+//
+// Preferably the moment this agent queued the request the answer is for: the
+// server decided after it saw that request, so a lease measured from it can
+// never end later than the server intended, however long the request, the
+// server's checks or the answer took (#11840). It can only end early, by the
+// round trip. Without an echo it falls back to the moment the frame was read.
+func (m RevocationLeaseMessage) LeaseClockAnchor() time.Time {
+	if !m.RequestedAt.IsZero() {
+		return m.RequestedAt
+	}
+	return m.ReceivedAt
+}
+
+// leaseAnchorBase is the origin of renewAnchor values: renewal requests carry
+// milliseconds elapsed since it, measured on the monotonic clock. The server
+// treats the value as opaque and echoes it on its answer.
+var leaseAnchorBase = time.Now()
+
+// leaseAnchorNow is the renewAnchor for a request queued now.
+func leaseAnchorNow() int64 {
+	return time.Since(leaseAnchorBase).Milliseconds()
+}
+
+// leaseRequestedAt recovers the request time from an echoed renewAnchor. An
+// absent, negative or non-finite echo, or one later than the frame's own
+// receipt, is unusable: the caller then measures from receipt instead.
+func leaseRequestedAt(echo *float64, receivedAt time.Time) time.Time {
+	if echo == nil || math.IsNaN(*echo) || *echo < 0 {
+		return time.Time{}
+	}
+	if *echo > float64(receivedAt.Sub(leaseAnchorBase).Milliseconds()) {
+		return time.Time{}
+	}
+	return leaseAnchorBase.Add(time.Duration(int64(*echo)) * time.Millisecond)
+}
+
+// jsonMillis converts a JSON millisecond count to int64. A non-positive or
+// non-finite value is 0 (absent). A huge one saturates instead of wrapping:
+// the float-to-int conversion of an out-of-range value is undefined in Go and
+// can come out negative, which would read as "absent" and fall back to the
+// device's wall clock.
+func jsonMillis(v float64) int64 {
+	const maxMillis = 1 << 53
+	if !(v > 0) {
+		return 0
+	}
+	if v > maxMillis {
+		return maxMillis
+	}
+	return int64(v)
 }
 
 // New creates a new WebSocket client
@@ -1492,6 +1549,9 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		HardDeadline     float64 `json:"hardDeadline"`
 		ExpiresInMs      float64 `json:"expiresInMs"`
 		HardDeadlineInMs float64 `json:"hardDeadlineInMs"`
+		// RenewAnchor is the server's echo of the value this agent sent on
+		// the request; a pointer because 0 is a valid anchor.
+		RenewAnchor *float64 `json:"renewAnchor"`
 		// Fence fields. Generations are STRINGS on the wire: they are
 		// bigint on the server and would round above 2^53 through a float.
 		StartGeneration    string `json:"startGeneration"`
@@ -1513,9 +1573,10 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason:             frame.Reason,
 		ExpiresAtUnixMs:    int64(frame.ExpiresAt),
 		HardDeadlineUnixMs: int64(frame.HardDeadline),
-		ExpiresInMs:        int64(frame.ExpiresInMs),
-		HardDeadlineInMs:   int64(frame.HardDeadlineInMs),
+		ExpiresInMs:        jsonMillis(frame.ExpiresInMs),
+		HardDeadlineInMs:   jsonMillis(frame.HardDeadlineInMs),
 		ReceivedAt:         receivedAt,
+		RequestedAt:        leaseRequestedAt(frame.RenewAnchor, receivedAt),
 		StartGeneration:    frame.StartGeneration,
 		TerminationPhase:   frame.TerminationPhase,
 		TerminalGeneration: frame.TerminalGeneration,
@@ -1538,6 +1599,11 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 	payload := map[string]any{
 		"type":      "revocation_lease_renew",
 		"sessionId": sessionID,
+		// Echoed on the answer, so the agent can measure the renewed lease
+		// from when it asked rather than from when the answer arrived
+		// (#11840). Stamped before queueing: an earlier anchor only makes the
+		// lease shorter. An older API strips the unknown key.
+		"renewAnchor": leaseAnchorNow(),
 	}
 	if nonce != "" {
 		payload["syncNonce"] = nonce

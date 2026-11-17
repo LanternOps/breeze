@@ -176,44 +176,53 @@ func monotonicFromUnixMs(receivedAt time.Time, unixMs int64) time.Time {
 // one frame keep a silent session alive far past its outage budget.
 const MaxRevocationLeaseTTL = 5 * time.Minute
 
-// LeaseExpiry resolves a lease expiry that arrived at receivedAt (a time.Now()
-// reading taken when the frame was read; zero means now).
+// LeaseExpiry resolves a lease expiry against anchor, a time.Now() reading
+// (zero means now) that the server's decision cannot precede.
 //
-// expiresInMs > 0 is the lease's remaining lifetime as the server sent it: the
-// clock-independent form, measured from receipt on the monotonic clock and
-// capped at MaxRevocationLeaseTTL. Otherwise (an older API) it falls back to
-// the absolute expiresAtUnixMs, read against this device's wall clock exactly
-// as before.
+// expiresInMs > 0 is the lease's remaining lifetime as of the server's
+// decision: the clock-independent form, measured from anchor on the monotonic
+// clock and capped at MaxRevocationLeaseTTL. Otherwise (an older API) it
+// falls back to the absolute expiresAtUnixMs, read against this device's wall
+// clock exactly as before. The absolute form cut a lease short by the
+// device's full clock lead and stretched it by the full lag, without bound
+// (#11840).
 //
-// Measuring from receipt lets the lease outlive the server's intent by the
-// frame's transit time. That is bounded by the agent's WebSocket read deadline
-// (pongWait, 60 s): a frame held back longer cannot be read, because the
-// socket is torn down first. The absolute form instead extended the lease by
-// the device's full clock lag, without bound, and cut it short by the full
-// lead (#11840).
-func LeaseExpiry(receivedAt time.Time, expiresInMs, expiresAtUnixMs int64) time.Time {
-	return resolveLeaseDeadline(receivedAt, expiresInMs, expiresAtUnixMs, MaxRevocationLeaseTTL)
+// Which anchor bounds what:
+//   - A renewal answer is measured from when this agent queued the request it
+//     answers (websocket.RevocationLeaseMessage.LeaseClockAnchor). The server
+//     decided after that, so the lease never ends later than the server
+//     granted, whatever the network or the server's own checks took. It can
+//     only end early, by the round trip.
+//   - The start payload answers no request, so it is measured from when the
+//     command was decoded and can outlive the server's intent by the
+//     command's delivery delay. Only until the first renewal answers, which
+//     is asked for on the first watchdog tick: renewed re-anchors it (and the
+//     hard deadline only ever moves earlier), unavailable or revoked ends the
+//     session. If nothing ever answers, the session ends expiresIn+grace
+//     after it started on this device.
+func LeaseExpiry(anchor time.Time, expiresInMs, expiresAtUnixMs int64) time.Time {
+	return resolveLeaseDeadline(anchor, expiresInMs, expiresAtUnixMs, MaxRevocationLeaseTTL)
 }
 
 // LeaseHardDeadline is LeaseExpiry for the session's hard deadline, with the
 // remaining time capped at MaxSessionDurationCap.
-func LeaseHardDeadline(receivedAt time.Time, hardDeadlineInMs, hardDeadlineUnixMs int64) time.Time {
-	return resolveLeaseDeadline(receivedAt, hardDeadlineInMs, hardDeadlineUnixMs, MaxSessionDurationCap)
+func LeaseHardDeadline(anchor time.Time, hardDeadlineInMs, hardDeadlineUnixMs int64) time.Time {
+	return resolveLeaseDeadline(anchor, hardDeadlineInMs, hardDeadlineUnixMs, MaxSessionDurationCap)
 }
 
-func resolveLeaseDeadline(receivedAt time.Time, remainingMs, unixMs int64, ceiling time.Duration) time.Time {
-	if receivedAt.IsZero() {
-		receivedAt = time.Now()
+func resolveLeaseDeadline(anchor time.Time, remainingMs, unixMs int64, ceiling time.Duration) time.Time {
+	if anchor.IsZero() {
+		anchor = time.Now()
 	}
 	if remainingMs > 0 {
 		// Compare in milliseconds first so a huge value cannot overflow the
 		// Duration multiply.
 		if remainingMs > ceiling.Milliseconds() {
-			return receivedAt.Add(ceiling)
+			return anchor.Add(ceiling)
 		}
-		return receivedAt.Add(time.Duration(remainingMs) * time.Millisecond)
+		return anchor.Add(time.Duration(remainingMs) * time.Millisecond)
 	}
-	return monotonicFromUnixMs(receivedAt, unixMs)
+	return monotonicFromUnixMs(anchor, unixMs)
 }
 
 // revocationLeaseToIPC is the inverse, used when the service hands a start over

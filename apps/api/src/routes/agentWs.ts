@@ -991,6 +991,16 @@ const revocationLeaseRenewSchema = z.object({
    * renewals send none, and older agents do not send it at all.
    */
   syncNonce: z.string().min(1).max(64).optional(),
+  /**
+   * #11840: the agent's own monotonic reading (ms) when it queued this
+   * request, opaque to the server. Echoed on a renewed answer so the agent
+   * measures the lease from when it ASKED: the decision came after that, so
+   * no delay on the way can stretch the lease past what was granted. A bad
+   * value is dropped rather than failing the renew — losing the renewal would
+   * push the session into its grace window — and the agent then measures
+   * from receipt. Older agents send none.
+   */
+  renewAnchor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
 });
 
 // #3578: in-flight stage for a command the agent is executing (agent side:
@@ -3585,7 +3595,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
             return;
           }
-          const { sessionId: leaseSessionId, syncNonce } = parsedRenew.data;
+          const { sessionId: leaseSessionId, syncNonce, renewAnchor } = parsedRenew.data;
           const nonceEcho = syncNonce ? { syncNonce } : {};
           // Bind the renew to the device this socket authenticated as: an agent
           // must never be able to renew (or learn about) another tenant's
@@ -3599,11 +3609,13 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               sessionId: leaseSessionId,
               expiresAt: leaseResult.expiresAt,
               hardDeadline: leaseResult.hardDeadline,
-              // The same deadlines as time remaining (#11840). A current agent
-              // measures these from receipt, so its own clock skew cannot cut
-              // the lease short or stretch it; an older agent ignores them.
+              // The same deadlines as time remaining at the decision (#11840).
+              // A current agent measures these from the echoed renewAnchor
+              // (else from receipt), so its own clock skew cannot cut the
+              // lease short or stretch it; an older agent ignores them.
               expiresInMs: leaseResult.expiresInMs,
               hardDeadlineInMs: leaseResult.hardDeadlineInMs,
+              ...(renewAnchor !== undefined ? { renewAnchor } : {}),
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
               // The agent's durable start fence resyncs from these.

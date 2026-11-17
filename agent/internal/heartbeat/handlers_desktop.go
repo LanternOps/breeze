@@ -561,6 +561,22 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 // validator also call. Keeping the rules in one place is what stops the two
 // paths from disagreeing about what a valid lease is — they already did once,
 // and the looser side accepted an all-zero block, i.e. an unrevokable session.
+// leaseMillis converts a JSON millisecond count. A non-positive value is 0
+// (absent); a huge one saturates rather than wrapping, because Go's
+// float-to-int conversion of an out-of-range value is undefined and can come
+// out negative, which would read as absent and fall back to the device's wall
+// clock. NormalizeRevocationLease caps the result.
+func leaseMillis(v float64) int64 {
+	const maxMillis = 1 << 53
+	if !(v > 0) {
+		return 0
+	}
+	if v > maxMillis {
+		return maxMillis
+	}
+	return int64(v)
+}
+
 func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	raw, ok := payload["revocationLease"].(map[string]any)
 	if !ok {
@@ -579,10 +595,10 @@ func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	// The clock-independent form (#11840); absent from an older API, which
 	// leaves the absolute fields above in charge.
 	if v, ok := raw["expiresInMs"].(float64); ok {
-		wire.ExpiresInMs = int64(v)
+		wire.ExpiresInMs = leaseMillis(v)
 	}
 	if v, ok := raw["hardDeadlineInMs"].(float64); ok {
-		wire.HardDeadlineInMs = int64(v)
+		wire.HardDeadlineInMs = leaseMillis(v)
 	}
 	if v, ok := raw["renewEverySec"].(float64); ok {
 		wire.RenewEverySec = int64(v)
