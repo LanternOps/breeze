@@ -525,7 +525,10 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
  * Asks the billing service to expire the newly restricted partner's open
  * checkouts and cancel any incomplete subscription, then records the outcome
  * as its own audit row (`partner.trust.checkouts_closed`) next to the
- * restriction's. A separate row rather than more evidence on the restriction
+ * restriction's. Read the row's `result` / `details.status`, not just its
+ * action: an `unavailable` or `failed` outcome writes the same action name.
+ * Called after every probation → restricted transition: the hard-deny path
+ * below and the admin restrict route (#11952). A separate row rather than more evidence on the restriction
  * row: the restriction is written first and must never wait on, or be undone
  * by, the billing service. Best effort throughout — never throws.
  *
@@ -537,7 +540,7 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
  * probation, so it is never evaluated again), so a non-`closed` outcome is
  * sent to the ops channel for a human to finish by hand.
  */
-async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string): Promise<void> {
+export async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string): Promise<void> {
   if (partnerTrustMode() !== 'enforce') {
     console.info(
       `[partnerTrustPromotion] Not closing checkouts for restricted partner ${partnerId}: partner trust is not enforcing`,
@@ -578,7 +581,7 @@ async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string
   }
   try {
     await sendOpsAlert({
-      title: 'Auto-restricted partner: open checkouts not closed',
+      title: 'Restricted partner: open checkouts not closed',
       body: [
         `Partner id: ${partnerId}`,
         `Restriction: ${reason}`,

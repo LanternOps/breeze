@@ -1,4 +1,4 @@
-import { Fragment, useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Fragment, useState, useCallback, useMemo, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   MessageSquare,
@@ -85,6 +85,8 @@ import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import { REOPEN_EVENT } from '../whatsNew/WhatsNewSplash';
 import BrandHeader from './BrandHeader';
+import RailSectionFlyout from './RailSectionFlyout';
+import { tabbableNodes } from '../shared/tabbable';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
@@ -97,6 +99,9 @@ interface SidebarProps {
 }
 
 type SidebarMode = 'open' | 'hover' | 'collapsed';
+/** Where a nav link renders: the desktop sidebar (labels follow its mode), the
+ *  mobile drawer, or a rail section's flyout (both always labelled). */
+type NavSurface = 'sidebar' | 'mobile' | 'flyout';
 
 // ---------------------------------------------------------------------------
 // Hash tracking (#7900 W3): the Service Desk's typed entries share `/tickets`
@@ -761,6 +766,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [isTablet, setIsTablet] = useState(false);  // < 1024px
   const [isMobile, setIsMobile] = useState(false);   // < 768px
   const { isMobileMenuOpen, closeMobileMenu } = useUiStore();
+  // Tablet only: the labelled sidebar shown over the rail until dismissed.
+  // Never persisted — the saved mode is the desktop preference.
+  const [peek, setPeek] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
 
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
@@ -882,12 +891,106 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return () => document.removeEventListener('astro:after-swap', handleNav);
   }, [closeMobileMenu]);
 
-  // Compute the effective mode: on tablet force collapsed, on mobile hide entirely
-  const effectiveMode: SidebarMode = isMobile ? 'collapsed' : isTablet ? 'collapsed' : mode;
+  // The drawer exists only below 768px. Close it when the viewport grows past
+  // that (rotation, window resize) so it does not reappear unasked on the way
+  // back, and the menu button never reports an open drawer nobody can see.
+  useEffect(() => {
+    if (!isMobile && isMobileMenuOpen) closeMobileMenu();
+  }, [isMobile, isMobileMenuOpen, closeMobileMenu]);
+
+  // Mobile drawer is a modal dialog: focus moves in on open (the current page's
+  // link, else the first stop) and returns on close to whatever opened it —
+  // the header's menu button, which a tap on iOS never focuses, so it is also
+  // the fallback.
+  const mobileDrawerOpen = isMobile && isMobileMenuOpen;
+  const mobileDrawerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+    const opener = document.activeElement;
+    const raf = requestAnimationFrame(() => {
+      const panel = mobileDrawerRef.current;
+      if (!panel) return;
+      const stops = tabbableNodes(panel);
+      const current = panel.querySelector<HTMLElement>('nav a[aria-current="page"]');
+      (current && stops.includes(current) ? current : stops[0] ?? panel).focus();
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      const target =
+        opener instanceof HTMLElement && opener !== document.body && opener.isConnected
+          ? opener
+          : document.querySelector<HTMLElement>('[data-testid="mobile-menu-toggle"]');
+      target?.focus();
+    };
+  }, [mobileDrawerOpen]);
+
+  const handleMobileDrawerKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      closeMobileMenu();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const stops = tabbableNodes(event.currentTarget);
+    if (stops.length === 0) return;
+    const first = stops[0]!;
+    const last = stops[stops.length - 1]!;
+    const active = document.activeElement;
+    if (active === event.currentTarget) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  // Compute the effective mode. Mobile renders only the drawer. Tablet ignores
+  // the saved desktop mode: the rail stays narrow (a 256px sidebar would eat a
+  // quarter of the viewport) and the toggle peeks the labelled sidebar over it.
+  const isTabletRail = isTablet && !isMobile;
+  const tabletPeek = isTabletRail && peek;
+  const effectiveMode: SidebarMode = isMobile ? 'collapsed' : isTablet ? (tabletPeek ? 'hover' : 'collapsed') : mode;
+  // Hover mode and the tablet rail float the sidebar over a fixed 64px spacer.
+  const overlayShell = effectiveMode === 'hover' || isTabletRail;
 
   // --- Derived state -------------------------------------------------------
-  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
-  const isNarrow = effectiveMode !== 'open';
+  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && (hovered || tabletPeek));
+
+  // `hovered` only means something in hover mode. Leaving hover mode while the
+  // pointer is over the sidebar (the `[` shortcut, the toggle) never fires a
+  // mouseleave, so clear it — otherwise the next switch back to hover mode
+  // opens expanded with the pointer elsewhere.
+  useEffect(() => {
+    if (effectiveMode !== 'hover') setHovered(false);
+  }, [effectiveMode]);
+
+  useEffect(() => {
+    if (!isTabletRail) setPeek(false);
+  }, [isTabletRail]);
+
+  // The peek closes on Escape, a click outside the sidebar, or navigation.
+  useEffect(() => {
+    if (!tabletPeek) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPeek(false);
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      if (!asideRef.current?.contains(event.target as Node)) setPeek(false);
+    };
+    const onNavigate = () => setPeek(false);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('astro:after-swap', onNavigate);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('astro:after-swap', onNavigate);
+    };
+  }, [tabletPeek]);
 
   // Find the best matching active href. Includes the runtime-extension items
   // (not part of the static `allNavItems`) so an extension's own page/nav
@@ -970,9 +1073,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [activeSectionId, extensionsSection]);
 
   // --- Sidebar mode cycling ------------------------------------------------
-  // Reads the ref (not `mode`) so the one-time window listener below never
-  // goes stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT.
+  // Reads refs (not state) so the one-time window listener below never goes
+  // stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT. On the tablet
+  // rail the same control toggles the peek instead of the desktop preference.
+  const isTabletRailRef = useRef(isTabletRail);
+  isTabletRailRef.current = isTabletRail;
   const cycleMode = useCallback(() => {
+    if (isTabletRailRef.current) {
+      setPeek((prev) => !prev);
+      return;
+    }
     const current = modeRef.current;
     const next: SidebarMode = current === 'open' ? 'hover' : current === 'hover' ? 'collapsed' : 'open';
     setMode(next);
@@ -1033,11 +1143,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return true;
   };
 
-  const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+  const renderNavItem = (item: NavItem, surface: NavSurface = 'sidebar') => {
     if (!isNavItemVisible(item)) return null;
     const isActive = item.href === activeHref;
-    const labels = forMobileOverlay ? true : showLabels;
-    const narrow = forMobileOverlay ? false : isNarrow;
+    const labels = surface === 'sidebar' ? showLabels : true;
     const badgeCount =
       item.badgeKind === 'deletion-requests'
         ? deletionRequestsCount
@@ -1056,9 +1165,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         key={item.name}
         href={item.href}
         aria-current={isActive ? 'page' : undefined}
-        title={lockedReason ?? (narrow && !hovered ? label : undefined)}
+        title={lockedReason ?? (labels ? undefined : label)}
         onClick={(event) => {
-          if (forMobileOverlay) closeMobileMenu();
+          if (surface === 'mobile') closeMobileMenu();
           // `/tickets#type=<t>` while already on /tickets: Astro's router would
           // pushState it silently (no hashchange), leaving TicketsPage's
           // useHashState filter stale (#8682 sweep). Cross-page clicks fall
@@ -1076,8 +1185,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         )}
       >
-        <item.icon className="h-5 w-5 shrink-0" />
-        {labels && <span className="truncate flex-1">{label}</span>}
+        <item.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+        {/* The icon rail still names every link: the tooltip (`title`) is not
+            reliably announced, and is absent on touch. */}
+        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{label}</span>}
         {lockedReason && (
           <>
             {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
@@ -1155,10 +1266,37 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const renderTopLevelNav = (forMobileOverlay = false) =>
     topLevelNav.map((item) => (
       <Fragment key={item.name}>
-        {renderNavItem(item, forMobileOverlay)}
+        {renderNavItem(item, forMobileOverlay ? 'mobile' : 'sidebar')}
         {item.href === '/' && renderRecentGroup(forMobileOverlay)}
       </Fragment>
     ));
+
+  // --- A section's links, grouped under their headings ----------------------
+  const renderSectionItems = (section: NavSection, surface: NavSurface) =>
+    groupByHeading(section.items).map((run) => {
+      if (!run.heading) return run.items.map((item) => renderNavItem(item, surface));
+      // A heading over nothing is noise (Review Focus 3): drop it
+      // when every member is hidden by its gates.
+      if (!run.items.some(isNavItemVisible)) return null;
+      const heading = section.headings?.[run.heading];
+      const headingId = `nav-heading-${section.id}-${run.heading}${surface === 'sidebar' ? '' : `-${surface}`}`;
+      return (
+        <div key={`heading:${run.heading}`} role="group" aria-labelledby={headingId}>
+          <div
+            id={headingId}
+            data-testid={`nav-heading-${run.heading}`}
+            className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground/80"
+          >
+            {heading
+              ? t(/* i18n-dynamic */ heading.labelKey, { defaultValue: heading.label })
+              : run.heading}
+          </div>
+          <div className="ml-3 border-l pl-1">
+            {run.items.map((item) => renderNavItem(item, surface))}
+          </div>
+        </div>
+      );
+    });
 
   // --- Render a collapsible section ----------------------------------------
   const renderCollapsibleSection = (section: NavSection, forMobileOverlay = false) => {
@@ -1172,15 +1310,23 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
     const expanded = isSectionExpanded(section.id);
     const labels = forMobileOverlay ? true : showLabels;
+    const surface: NavSurface = forMobileOverlay ? 'mobile' : 'sidebar';
+    const sectionLabel = section.labelKey
+      ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label })
+      : section.label;
 
     return (
       <div key={section.id} data-testid={`nav-section-${section.id}`}>
         <div className="my-2 border-t" />
-        {/* In collapsed mode (no labels), show only the section icon */}
+        {/* Icon rail: the section icon opens the section beside the sidebar. */}
         {!labels ? (
-          <div className="flex justify-center py-1.5">
-            <section.icon className="h-4 w-4 text-muted-foreground/70" />
-          </div>
+          <RailSectionFlyout
+            sectionId={section.id}
+            label={sectionLabel}
+            icon={section.icon}
+            active={section.id === activeSectionId}
+            renderLinks={() => renderSectionItems(section, 'flyout')}
+          />
         ) : (
           <button
             data-testid={`nav-section-toggle-${section.id}`}
@@ -1189,7 +1335,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
-            <span>{section.labelKey ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label }) : section.label}</span>
+            <span>{sectionLabel}</span>
             <ChevronDown
               className={cn(
                 'h-3.5 w-3.5 transition-transform duration-200',
@@ -1208,32 +1354,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             aria-hidden={!expanded}
             inert={!expanded || undefined}
           >
-            <div>
-              {groupByHeading(section.items).map((run) => {
-                if (!run.heading) return run.items.map((item) => renderNavItem(item, forMobileOverlay));
-                // A heading over nothing is noise (Review Focus 3): drop it
-                // when every member is hidden by its gates.
-                if (!run.items.some(isNavItemVisible)) return null;
-                const heading = section.headings?.[run.heading];
-                const headingId = `nav-heading-${section.id}-${run.heading}${forMobileOverlay ? '-mobile' : ''}`;
-                return (
-                  <div key={`heading:${run.heading}`} role="group" aria-labelledby={headingId}>
-                    <div
-                      id={headingId}
-                      data-testid={`nav-heading-${run.heading}`}
-                      className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground/80"
-                    >
-                      {heading
-                        ? t(/* i18n-dynamic */ heading.labelKey, { defaultValue: heading.label })
-                        : run.heading}
-                    </div>
-                    <div className="ml-3 border-l pl-1">
-                      {run.items.map((item) => renderNavItem(item, forMobileOverlay))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <div>{renderSectionItems(section, surface)}</div>
           </div>
         )}
         {/* In collapsed mode, show nothing for children */}
@@ -1242,8 +1363,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   };
 
   // --- Toggle button icon --------------------------------------------------
-  const ToggleIcon = effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
-  const toggleTitle = effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
+  const ToggleIcon = isTabletRail
+    ? (tabletPeek ? ChevronLeft : ChevronRight)
+    : effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
+  const toggleTitle = isTabletRail
+    ? (tabletPeek ? t('layout.sidebar.collapse') : t('layout.sidebar.expand'))
+    : effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
 
   // --- Shared CSS for expand/collapse animation ----------------------------
   const sectionAnimCss = (
@@ -1265,6 +1390,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // --- Desktop sidebar shell -----------------------------------------------
   const sidebarContent = (
     <aside
+      ref={asideRef}
       className={cn(
         'flex h-full flex-col border-r bg-card transition-shadow duration-200',
         // Hide completely on mobile — the overlay handles it
@@ -1273,8 +1399,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         // invoice workspace header at z-20) must slide UNDER the popped-out
         // sidebar, not over it; page content < in-page sticky (10–20) <
         // chrome overlays (30–40) < modals/menus (50).
-        effectiveMode === 'hover' && 'absolute inset-y-0 left-0 z-30',
-        effectiveMode === 'hover' && hovered && 'shadow-xl',
+        overlayShell && 'absolute inset-y-0 left-0 z-30',
+        overlayShell && showLabels && 'shadow-xl',
         showLabels ? 'w-64' : 'w-16'
       )}
       onMouseEnter={effectiveMode === 'hover' ? () => setHovered(true) : undefined}
@@ -1297,16 +1423,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
               <ChevronsDownUp className="h-5 w-5" />
             </button>
           )}
-          {/* Only show mode toggle on non-tablet viewports */}
-          {!isTablet && (
-            <button
-              onClick={cycleMode}
-              title={toggleTitle}
-              className="rounded-md p-1.5 hover:bg-muted"
-            >
-              <ToggleIcon className="h-5 w-5" />
-            </button>
-          )}
+          {/* Desktop: cycles the saved mode. Tablet: peeks the labelled sidebar. */}
+          <button
+            type="button"
+            data-testid="sidebar-mode-toggle"
+            onClick={cycleMode}
+            title={toggleTitle}
+            aria-label={toggleTitle}
+            aria-expanded={isTabletRail ? tabletPeek : undefined}
+            className="rounded-md p-1.5 hover:bg-muted"
+          >
+            <ToggleIcon className="h-5 w-5" aria-hidden="true" />
+          </button>
         </div>
       </div>
 
@@ -1349,34 +1477,47 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   );
 
   // --- Mobile overlay sidebar ----------------------------------------------
-  const mobileOverlay = isMobile && isMobileMenuOpen && (
+  const mobileOverlay = mobileDrawerOpen && (
     <>
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-background/80 backdrop-blur-xs"
         onClick={closeMobileMenu}
+        aria-hidden="true"
       />
       {/* Slide-out sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-card border-r shadow-lg overflow-y-auto">
+      <aside
+        ref={mobileDrawerRef}
+        id="mobile-nav-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('layout.header.menu')}
+        tabIndex={-1}
+        onKeyDown={handleMobileDrawerKeyDown}
+        className="fixed inset-y-0 left-0 z-50 w-64 overflow-y-auto border-r bg-card shadow-lg focus:outline-hidden"
+      >
         {sectionAnimCss}
 
         <div className="flex h-16 items-center justify-between border-b px-4">
           <BrandHeader logoUrl={brandLogoUrl} name={brandName} showLabel />
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={collapseAllExceptActive}
               title={t('layout.sidebar.collapseSections')}
               aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
-              <ChevronsDownUp className="h-5 w-5" />
+              <ChevronsDownUp className="h-5 w-5" aria-hidden="true" />
             </button>
             <button
+              type="button"
               onClick={closeMobileMenu}
               className="rounded-md p-1.5 hover:bg-muted"
               title={t('layout.sidebar.closeMenu')}
+              aria-label={t('layout.sidebar.closeMenu')}
             >
-              <X className="h-5 w-5" />
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -1397,16 +1538,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return <>{mobileOverlay}</>;
   }
 
-  // In hover mode, wrap with a fixed-width spacer so content doesn't shift
-  if (effectiveMode === 'hover') {
-    return (
-      <div className="relative w-16 shrink-0">
-        {sidebarContent}
-      </div>
-    );
-  }
-
-  return sidebarContent;
+  // One wrapper in every desktop mode so switching modes never remounts the
+  // sidebar (a remount drops focus from the toggle the user just pressed and
+  // resets the nav's scroll). Overlay modes float the sidebar over a fixed
+  // 64px spacer so the page doesn't shift.
+  return (
+    <div data-testid="sidebar-shell" className={cn('relative flex shrink-0', overlayShell && 'w-16')}>
+      {sidebarContent}
+    </div>
+  );
 }
 
 export function VersionSpan({

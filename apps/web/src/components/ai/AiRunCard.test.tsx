@@ -264,19 +264,53 @@ describe('AiRunCard (spec §5.5)', () => {
     }
   });
 
-  it('shows the approvals block from a live awaiting_approval result and does not poll', async () => {
+  it('shows the approvals block from a live awaiting_approval result before any poll returns', () => {
+    fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    const { getByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: 'Needs a restart', artifacts: [], progress: [], pendingIntentCount: 3 }}
+      />,
+    );
+    expect(getByTestId('ai-run-card-approvals')).toBeTruthy();
+  });
+
+  // The live result carries a count but not the steps. Without a poll the card
+  // can only say "review in /approvals", and the technician has to leave the chat.
+  it('still polls after a live awaiting_approval result, so the steps get their Approve buttons', async () => {
+    fetchWithAuth.mockResolvedValue(detail({
+      status: 'awaiting_approval',
+      intents: [{
+        id: 'i1', status: 'pending_approval', actionName: 'tool_i1', approvalScope: 'supervised',
+        decidedVia: null, actionLabel: 'Label i1', approvalRequestId: 'req-i1',
+      }],
+    }));
+    const { findByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+      />,
+    );
+    expect(await findByTestId('ai-run-card-step-approve-i1')).toBeTruthy();
+  });
+
+  // A live terminal result takes exactly one poll to land the settled cost and
+  // files (#12110), never a polling loop.
+  it('takes exactly one poll for a run whose live result is terminal', async () => {
     vi.useFakeTimers();
     try {
-      const { getByTestId } = render(
+      fetchWithAuth.mockResolvedValue(detail({ status: 'completed' }));
+      render(
         <AiRunCard
           runId={RUN}
           initialStatus="running"
-          run={{ runId: RUN, status: 'awaiting_approval', summary: 'Needs a restart', artifacts: [], progress: [], pendingIntentCount: 3 }}
+          run={{ runId: RUN, status: 'completed', summary: 'Done', artifacts: [], progress: [] }}
         />,
       );
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-      expect(getByTestId('ai-run-card-approvals')).toBeTruthy();
-      expect(fetchWithAuth).not.toHaveBeenCalled();
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -380,7 +414,7 @@ describe('AiRunCard (spec §5.5)', () => {
     expect(getByTestId('ai-run-card-status').textContent).toContain('awaiting_approval');
   });
 
-  it('does not re-arm polling when live settles while a poll is in flight', async () => {
+  it('takes one settling poll, not a re-armed loop, when a live terminal result lands while a poll is in flight', async () => {
     vi.useFakeTimers();
     try {
       let resolveFetch!: (v: unknown) => void;
@@ -392,12 +426,98 @@ describe('AiRunCard (spec §5.5)', () => {
         <AiRunCard
           runId={RUN}
           initialStatus="running"
-          run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+          run={{ runId: RUN, status: 'completed', summary: null, artifacts: [], progress: [] }}
         />,
       );
       await act(async () => { resolveFetch(detail({ status: 'running' })); await vi.advanceTimersByTimeAsync(0); });
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      // The stale in-flight poll plus the one settling poll; nothing re-arms.
+      expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Interaction of the terminal one-shot (#12110) with in-chat approvals: a
+  // live approval park must not take the one-shot path, or a step the viewer
+  // can still decide freezes on a stale poll.
+  it('keeps polling when a live awaiting_approval lands after a poll already showed the viewer\'s pending step', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValue(detail({
+        status: 'awaiting_approval',
+        intents: [{
+          id: 'i1', status: 'pending_approval', actionName: 'tool_i1', approvalScope: 'supervised',
+          decidedVia: null, actionLabel: 'Label i1', approvalRequestId: 'req-i1',
+        }],
+      }));
+      const { rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      rerender(
+        <AiRunCard
+          runId={RUN}
+          initialStatus="running"
+          run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+        />,
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(2); // the restart re-reads at once
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(2);
+      // Once the step is decided elsewhere, the card goes quiet.
+      fetchWithAuth.mockResolvedValue(detail({ status: 'awaiting_approval', intents: [] }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      const quiet = fetchWithAuth.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fetchWithAuth.mock.calls.length).toBe(quiet);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes no poll when a live terminal result lands after a settled poll', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValue(detail({ status: 'completed' }));
+      const { rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      rerender(
+        <AiRunCard
+          runId={RUN}
+          initialStatus="running"
+          run={{ runId: RUN, status: 'completed', summary: null, artifacts: [], progress: [] }}
+        />,
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A poll that raced the live result can still say "running". Stopping there
+  // would freeze the card without its steps; it must poll until the API agrees.
+  it('keeps polling past a stale running poll after a live awaiting_approval, then stops once nothing is the viewer\'s to decide', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth
+        .mockResolvedValueOnce(detail({ status: 'running' }))
+        .mockResolvedValue(detail({ status: 'awaiting_approval', intents: [] }));
+      render(
+        <AiRunCard
+          runId={RUN}
+          initialStatus="running"
+          run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+        />,
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -448,6 +568,36 @@ describe('AiRunCard (spec §5.5)', () => {
       const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
       fireEvent.click(await findByTestId('ai-run-card-step-deny-a'));
       await waitFor(() => expect(decideIntentApproval).toHaveBeenCalledWith('req-a', 'deny', undefined, 'supervised'));
+    });
+
+    // The decide restarts the poll (pollNonce). Once the last step is decided
+    // the card must go quiet, or every approved run keeps a tab polling for good.
+    it('stops polling after the last step is decided, starting from a live awaiting_approval', async () => {
+      vi.useFakeTimers();
+      try {
+        decideIntentApproval.mockResolvedValue('decided');
+        fetchWithAuth.mockResolvedValueOnce(awaiting([intent('a')]));
+        const { getByTestId, queryAllByTestId } = render(
+          <AiRunCard
+            runId={RUN}
+            initialStatus="running"
+            run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+          />,
+        );
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        fetchWithAuth.mockResolvedValue(awaiting([intent('a', { status: 'approved' })]));
+        await act(async () => {
+          fireEvent.click(getByTestId('ai-run-card-step-approve-a'));
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(queryAllByTestId('ai-run-card-step-approval')).toHaveLength(0);
+        const callsOnceDecided = fetchWithAuth.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(fetchWithAuth.mock.calls.length).toBe(callsOnceDecided);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('keeps polling while an intent is pending_approval', async () => {

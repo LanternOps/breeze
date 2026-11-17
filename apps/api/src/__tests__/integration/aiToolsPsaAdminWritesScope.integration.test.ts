@@ -69,7 +69,8 @@ function orgAuth(opts: { userId: string; partnerId: string; orgId: string; allow
   const { allowedSiteIds } = opts;
   return {
     user: { id: opts.userId, email: 'op@example.com', name: 'Op', isPlatformAdmin: false },
-    token: {} as any,
+    // Interactive session that cleared MFA: manage_tags / manage_saved_filters writes are MFA-gated.
+    token: { mfa: true } as any,
     partnerId: opts.partnerId,
     orgId: opts.orgId,
     scope: 'organization',
@@ -85,7 +86,8 @@ function orgAuth(opts: { userId: string; partnerId: string; orgId: string; allow
 function partnerAuth(opts: { userId: string; partnerId: string; accessibleOrgIds: string[]; partnerOrgAccess: 'all' | 'selected' }): AuthContext {
   return {
     user: { id: opts.userId, email: 'op@example.com', name: 'Op', isPlatformAdmin: false },
-    token: {} as any,
+    // Interactive session that cleared MFA: manage_tags / manage_saved_filters writes are MFA-gated.
+    token: { mfa: true } as any,
     partnerId: opts.partnerId,
     orgId: null,
     scope: 'partner',

@@ -158,6 +158,12 @@
   animation: fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+@utility bell-ring {
+  /* Header bell swing when a new notification arrives */
+  animation: bell-ring 0.8s ease-in-out 2;
+  transform-origin: 50% 10%;
+}
+
 @utility slide-in-right {
   /* Slide-in drawer from right edge */
   animation: slide-in-from-right 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -34455,6 +34461,28 @@
     }
   }
 
+  @keyframes bell-ring {
+    0%,
+    100% {
+      transform: rotate(0);
+    }
+    15% {
+      transform: rotate(18deg);
+    }
+    30% {
+      transform: rotate(-16deg);
+    }
+    45% {
+      transform: rotate(12deg);
+    }
+    60% {
+      transform: rotate(-8deg);
+    }
+    75% {
+      transform: rotate(4deg);
+    }
+  }
+
   @keyframes dialog-backdrop-in {
     from {
       opacity: 0;
@@ -34470,6 +34498,9 @@
 
   /* Respect reduced motion preference */
   @media (prefers-reduced-motion: reduce) {
+    .bell-ring {
+      animation: none !important;
+    }
     .animate-in,
     .slide-in-right,
     .stagger-1,

@@ -30,7 +30,7 @@
     "dotenv": "17.4.2",
     "happy-dom": "^21.0.4",
     "postgres": "3.4.9",
-    "tsup": "8.5.1",
+    "tsup": "9.0.0",
     "tsx": "^4.23.15",
     "typescript": "5.9.3",
     "vitest": "4.1.12"

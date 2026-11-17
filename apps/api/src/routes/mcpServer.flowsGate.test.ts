@@ -203,10 +203,13 @@ describe('MCP flow tools gate (FLOWS_ENABLED)', () => {
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('flag on: the flow tools (bar the Tier 3 run_flow) are listed and callable', async () => {
+  it('flag on: the flow tools (bar the Tier 3 run_flow and the MFA-gated cancel_flow_run) are listed and callable', async () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     const names = await listedNames();
-    for (const n of FLOW_TOOLS.filter((t) => t !== 'run_flow')) expect(names).toContain(n);
+    for (const n of FLOW_TOOLS.filter((t) => t !== 'run_flow' && t !== 'cancel_flow_run')) expect(names).toContain(n);
+    // cancel_flow_run is wholly MFA-gated (aiToolMfaGate.ts, POST /flows/runs/:runId/cancel
+    // carries requireMfa()), so an API key, which has no MFA claim, does not see it.
+    expect(names).not.toContain('cancel_flow_run');
     const r = await rpc('tools/call', { name: 'get_flow', arguments: { flowId: '33333333-3333-4333-8333-333333333333' } });
     expect(r.error).toBeUndefined();
     expect(mocks.executeTool).toHaveBeenCalled();

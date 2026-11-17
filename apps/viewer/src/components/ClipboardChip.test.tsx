@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 const STATUS = {
-  hostToViewer: true, viewerToHost: false, chunked: true, suppressesBaseline: true,
+  hostToViewer: true, viewerToHost: false, chunked: true, suppressesBaseline: true, changeNotices: false,
   maxTextBytes: 1 << 20, maxImageBytes: 8 << 20,
 };
 
@@ -40,7 +40,7 @@ describe('ClipboardChip', () => {
   it('shows the policy and wires the enabled action only', () => {
     const { onCopyRemote, onSendToRemote } = render({
       kind: 'webrtc',
-      state: { open: true, status: STATUS, lastTransfer: null, remoteItemAvailable: true },
+      state: { open: true, status: STATUS, lastTransfer: null, remoteItemAvailable: true, remoteHeld: null },
     });
     expect(q('clipboard-chip')!.title).toContain('Local → remote: Disabled by policy');
     act(() => q('clipboard-chip')!.click());
@@ -54,10 +54,38 @@ describe('ClipboardChip', () => {
     render({
       kind: 'webrtc',
       state: {
-        open: true, status: { ...STATUS, viewerToHost: true }, remoteItemAvailable: true,
+        open: true, status: { ...STATUS, viewerToHost: true }, remoteItemAvailable: true, remoteHeld: null,
         lastTransfer: { direction: 'from-remote', type: 'text', bytes: 2150, at: Date.now() },
       },
     });
     expect(q('clipboard-chip-label')!.textContent).toBe('Copied 2.1 KB from remote');
+  });
+
+  it('shows a held remote change as a badge that pulls it in one click (#11310)', () => {
+    const { onCopyRemote } = render({
+      kind: 'webrtc',
+      state: { open: true, status: STATUS, lastTransfer: null, remoteItemAvailable: true, remoteHeld: 'item' },
+    });
+    const badge = q('clipboard-held-badge')!;
+    expect(badge.textContent).toContain('Remote clipboard changed');
+    expect(badge.disabled).toBe(false);
+    act(() => badge.click());
+    expect(onCopyRemote).toHaveBeenCalledOnce();
+  });
+
+  it('shows an unpullable held change as a disabled badge', () => {
+    const { onCopyRemote } = render({
+      kind: 'webrtc',
+      state: { open: true, status: STATUS, lastTransfer: null, remoteItemAvailable: false, remoteHeld: 'unsupported' },
+    });
+    const badge = q('clipboard-held-badge')!;
+    expect(badge.disabled).toBe(true);
+    act(() => badge.click());
+    expect(onCopyRemote).not.toHaveBeenCalled();
+  });
+
+  it('shows no badge when nothing is held', () => {
+    render({ kind: 'webrtc', state: { open: true, status: STATUS, lastTransfer: null, remoteItemAvailable: true, remoteHeld: null } });
+    expect(q('clipboard-held-badge')).toBeNull();
   });
 });

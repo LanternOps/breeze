@@ -34,6 +34,10 @@ const readPromotionBlockers = vi.hoisted(() => vi.fn());
 vi.mock('../../services/ipClassifyOffline', () => ({ readOfflineClassifierStatus }));
 vi.mock('../../services/partnerTrustBlockers', () => ({ readPromotionBlockers }));
 
+// #11952: an admin restrict closes the partner's open checkouts, like an auto-restrict.
+const closeOpenCheckoutsAfterRestrict = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../services/partnerTrustPromotion', () => ({ closeOpenCheckoutsAfterRestrict }));
+
 vi.mock('../../services/partnerTrustPartnerMail', () => ({
   sendTrustApprovedEmail: vi.fn(async () => 0),
 }));
@@ -201,6 +205,45 @@ describe('admin partner trust routes', () => {
 
     expect(response.status).toBe(200);
     expect(writeTrust).toHaveBeenCalledWith('p-1', 'restricted', 'admin:restrict', auth.user.id, 'probation');
+  });
+
+  // #11952: a manual restrict used to leave every open checkout payable; only
+  // the auto-restrict path asked billing to expire them.
+  it('closes open checkouts after an admin restrict lands', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'confirmed abuse' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(closeOpenCheckoutsAfterRestrict).toHaveBeenCalledExactlyOnceWith('p-1', 'admin:restrict');
+  });
+
+  it('does not close checkouts when the restrict CAS loses (no state change)', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    writeTrust.mockResolvedValueOnce(0 as never);
+    const response = await buildApp().request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'confirmed abuse' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(closeOpenCheckoutsAfterRestrict).not.toHaveBeenCalled();
+  });
+
+  it('never closes checkouts on a promote', async () => {
+    state.trust = { trustState: 'restricted', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'manual approval', override: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(closeOpenCheckoutsAfterRestrict).not.toHaveBeenCalled();
   });
 
   it('rejects promote when the MFA step-up is not satisfied (403)', async () => {

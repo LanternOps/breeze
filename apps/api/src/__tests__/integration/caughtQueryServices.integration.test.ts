@@ -34,7 +34,7 @@ function toolsAuth(userId: string, partnerId: string, orgId: string): AuthContex
   return {
     principal: { kind: 'user_session' },
     user: { id: userId, email: 'op@example.com', name: 'Op', isPlatformAdmin: false },
-    token: {} as AuthContext['token'],
+    token: { mfa: true } as AuthContext['token'], // an MFA-satisfied interactive session, as the requireMfa() route twin needs
     partnerId,
     orgId,
     scope: 'organization',

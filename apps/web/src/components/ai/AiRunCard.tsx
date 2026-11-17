@@ -98,10 +98,12 @@ const TERMINAL_BY_STATUS: Record<AiAgentRunStatus, boolean> = {
 };
 
 /**
- * Statuses after which polling is pointless: terminal ones, plus
- * `awaiting_approval` (the run will not move until a person decides). Kept
- * apart from TERMINAL_BY_STATUS so the status copy and the "open the full run"
- * link still treat an approval-parked run as in flight. Total map for the same
+ * Statuses whose run row never changes again: the terminal ones, plus
+ * `awaiting_approval` (nothing moves a run out of it today, #11965). Polling
+ * can still continue on one of these while this viewer has a step to decide
+ * (see `tick`): the steps change even though the status does not. Kept apart
+ * from TERMINAL_BY_STATUS so the status copy and the "open the full run" link
+ * still treat an approval-parked run as in flight. Total map for the same
  * reason as above.
  */
 const SETTLED_FOR_POLLING: Record<AiAgentRunStatus, boolean> = {
@@ -170,13 +172,15 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   const deliveredLive = run !== undefined && isTerminal(run.status);
 
   useEffect(() => {
-    // A live settled result normally ends polling, but `polled` may still hold
-    // an in-progress response (partial cost). So when a poll has already landed,
-    // or the live result is terminal, take exactly ONE more poll to land the
-    // settled state (cost, files). A live approval park needs no fetch.
+    // A live TERMINAL result normally ends polling, but `polled` may still hold
+    // an in-progress response (partial cost). So unless a settled poll has
+    // already landed, take exactly ONE more poll to land the settled state
+    // (cost, files). A live `awaiting_approval` is different: it carries a
+    // count but not the steps, so the poll keeps running to load them and
+    // stops itself below once nothing is left for this viewer to decide.
     const current = polledRef.current;
-    if (liveSettled && (isSettled(current?.status) || (!current && !deliveredLive))) return;
-    const oneShot = liveSettled;
+    if (deliveredLive && isSettled(current?.status)) return;
+    const oneShot = deliveredLive;
     // Per-effect flags: a shared ref would be reset by the NEXT effect run while
     // this run's in-flight tick was still pending, letting it re-arm a timer.
     let cancelled = false;
@@ -225,7 +229,9 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, liveSettled, pollNonce]);
+  // `liveSettled` restarts the poll when a live approval park arrives, so its
+  // steps load at once instead of on the next 5 s tick.
+  }, [runId, liveSettled, deliveredLive, pollNonce]);
 
   const summary = polled?.summary ?? run?.summary ?? null;
   const polledArtifacts = polled?.artifacts;

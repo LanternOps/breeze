@@ -48,7 +48,8 @@ vi.mock('../../stores/featuresStore', () => {
 
 vi.mock('../../stores/aiStore', () => ({ useAiStore: () => ({ isOpen: false, toggle: vi.fn() }) }));
 vi.mock('../../stores/helpStore', () => ({ useHelpStore: () => ({ isOpen: false, toggle: vi.fn() }) }));
-vi.mock('../../stores/uiStore', () => ({ useUiStore: () => ({ toggleMobileMenu: vi.fn() }) }));
+const uiState = vi.hoisted(() => ({ isMobileMenuOpen: false, toggleMobileMenu: vi.fn() }));
+vi.mock('../../stores/uiStore', () => ({ useUiStore: () => uiState }));
 vi.mock('./OrgSwitcher', () => ({ default: () => null }));
 vi.mock('./NotificationCenter', () => ({ default: () => null }));
 vi.mock('../time/TimerWidget', () => ({ default: () => null }));
@@ -327,5 +328,26 @@ describe('Header Breeze AI button gating (#6396)', () => {
     const { container } = render(<Header />);
     await waitFor(() => expect(screen.getByLabelText('layout.header.accountMenu')).toBeInTheDocument());
     expect(container.querySelector('header')?.className.split(/\s+/)).toContain('h-16');
+  });
+});
+
+describe('Header mobile menu button', () => {
+  afterEach(() => { uiState.isMobileMenuOpen = false; });
+
+  it('is a collapsed disclosure for the navigation drawer', async () => {
+    render(<Header />);
+    const button = await screen.findByTestId('mobile-menu-toggle');
+    expect(button).toHaveAttribute('type', 'button');
+    expect(button).toHaveAccessibleName('layout.header.openMenu');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(button).not.toHaveAttribute('aria-controls');
+  });
+
+  it('reports the drawer it controls while the drawer is open', async () => {
+    uiState.isMobileMenuOpen = true;
+    render(<Header />);
+    const button = await screen.findByTestId('mobile-menu-toggle');
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    expect(button).toHaveAttribute('aria-controls', 'mobile-nav-drawer');
   });
 });

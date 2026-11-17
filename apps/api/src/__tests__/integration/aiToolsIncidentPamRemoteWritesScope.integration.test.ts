@@ -133,7 +133,7 @@ function makeAuth(opts: {
   return {
     principal: { kind: 'user_session' },
     user: { id: opts.userId, email: 'op@example.com', name: 'Op', isPlatformAdmin: false },
-    token: {} as AuthContext['token'],
+    token: { mfa: true } as AuthContext['token'], // an MFA-satisfied interactive session, as the requireMfa() route twin needs
     partnerId: opts.partnerId,
     orgId: scope === 'organization' ? orgIds[0]! : null,
     scope,
