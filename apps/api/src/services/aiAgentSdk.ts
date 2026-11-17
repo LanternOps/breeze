@@ -80,8 +80,9 @@ import {
   transitionIntent,
   type ActionIntentTransitionPatch,
 } from './actionIntents/intentService';
-import { buildActionLabel } from './actionIntents/actionLabel';
+import { buildActionLabel, hasDeviceIdStub } from './actionIntents/actionLabel';
 import { argumentTicketId, nameApprovalCardTargets, resolveApprovalTicketContext } from './actionIntents/approvalCardContext';
+import { argumentDeviceId } from './actionIntents/approvalDeviceName';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import {
@@ -2355,7 +2356,16 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         lastSeenAt?: string;
         activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
       } | undefined;
-      const deviceId = input.deviceId as string | undefined;
+      // #11979: the device this call names — `deviceId`, or the one entry of a
+      // `deviceIds` list, but only where the headline names it by its stub (a
+      // single-device `run_script`). A tool whose headline counts its devices
+      // gets no device context, as before.
+      const argDeviceId = argumentDeviceId(input as Record<string, unknown>);
+      const deviceId = argDeviceId
+        && ((input as Record<string, unknown>).deviceId !== undefined
+          || hasDeviceIdStub(guardrailCheck.description ?? '', argDeviceId))
+        ? argDeviceId
+        : undefined;
       if (deviceId) {
         try {
           const [[dev], sessions] = await withDbAccessContext(
