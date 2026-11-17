@@ -100,6 +100,9 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   frame_too_large: 'succeeded',
   site_not_in_scope: 'succeeded',
   frame_empty: 'succeeded',
+  analysis_continuation_not_found: 'succeeded',
+  analysis_chain_too_long: 'succeeded',
+  analysis_chain_budget_exceeded: 'succeeded',
   workspace_unavailable: 'succeeded',
   // AI model registry W03: a configuration gate, not an integrity failure.
   model_unavailable: 'succeeded',

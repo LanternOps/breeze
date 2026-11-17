@@ -375,11 +375,15 @@ describe('chatRunBridge (spec §5.5)', () => {
     expect(s).toContain('Summary: Sandbox timed out.');
   });
 
-  it("forwards a result's chain step to the renderer (W03 sets it)", () => {
+  it('an analysis run at depth 2 renders its step number; depth 0 and absent render none', () => {
     const { session } = fakeSession();
     const base = { runId: 'run-c', status: 'completed' as const, profile: 'analysis', summary: 's', artifacts: [] };
-    expect(drainPendingRunResults(session as never, [{ ...base, chain: { depth: 2 } }])).toContain('Step 3 of this investigation');
-    expect(drainPendingRunResults(session as never, [base])).not.toContain('of this investigation');
+    const at = (chainDepth?: number) =>
+      drainPendingRunResults(session as never, [chainDepth === undefined ? base : { ...base, chainDepth }]) ?? '';
+    expect(at(2)).toContain('Step 3 of this investigation');
+    expect(at(1)).toContain('Step 2 of this investigation');
+    expect(at(0)).not.toContain('of this investigation');
+    expect(at()).not.toContain('of this investigation');
   });
 
   it('maps a failed run to a run_result the card can render', async () => {

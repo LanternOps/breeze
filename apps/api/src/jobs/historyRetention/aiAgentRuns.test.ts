@@ -41,7 +41,9 @@ describe('ai_agent_runs target (#4342 W5)', () => {
     expect(sql).toContain('NOT EXISTS (SELECT 1 FROM ticket_drafts d WHERE d.run_id = ai_agent_runs.id AND d.org_id = ai_agent_runs.org_id)');
     expect(sql).toContain('NOT EXISTS (SELECT 1 FROM ai_run_artifacts ra WHERE ra.run_id = ai_agent_runs.id AND ra.org_id = ai_agent_runs.org_id)');
     expect(sql).toContain('NOT EXISTS (SELECT 1 FROM ai_run_workspaces rw WHERE rw.run_id = ai_agent_runs.id AND rw.org_id = ai_agent_runs.org_id)');
-    expect(params).toEqual([CUTOFF]);
+    expect(sql).toContain('NOT EXISTS (SELECT 1 FROM ai_agent_runs cm WHERE cm.org_id = ai_agent_runs.org_id AND cm.chain_root_run_id = COALESCE(ai_agent_runs.chain_root_run_id, ai_agent_runs.id)');
+    expect(sql).toContain('NOT EXISTS (SELECT 1 FROM ai_agent_runs cr WHERE cr.id = ai_agent_runs.chain_root_run_id');
+    expect(params).toEqual([CUTOFF, CUTOFF, CUTOFF]);
   });
 
   it('enforces only on an explicit true', async () => {

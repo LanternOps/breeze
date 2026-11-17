@@ -119,13 +119,23 @@ const KNOWN_GATES: ReadonlySet<string> = new Set<AnalysisSensitiveGate>(['securi
  */
 export function effectiveExportGrants(value: unknown): AiRunExportGrants {
   if (value === undefined) return { datasets: [...LEGACY_EXPORT_GRANTS.datasets], sensitiveGates: [] };
-  const v = value as Partial<Record<keyof AiRunExportGrants, unknown>> | null;
+  return frozenExportGrantsOf(value) ?? { datasets: [], sensitiveGates: [] };
+}
+
+/**
+ * A recorded frozen grant, read strictly: a copy when well-formed, otherwise
+ * null — including when absent. For callers that must PROVE what a run was
+ * allowed (continuation carry-over), where neither the legacy set nor "nothing
+ * permitted" is a safe stand-in for an unreadable value.
+ */
+export function frozenExportGrantsOf(value: unknown): AiRunExportGrants | null {
+  const v = value as Partial<Record<keyof AiRunExportGrants, unknown>> | null | undefined;
   if (
-    v === null || typeof v !== 'object' || Array.isArray(v)
+    v === null || v === undefined || typeof v !== 'object' || Array.isArray(v)
     || !Array.isArray(v.datasets) || !v.datasets.every((d) => typeof d === 'string')
     || !Array.isArray(v.sensitiveGates) || !v.sensitiveGates.every((g) => typeof g === 'string' && KNOWN_GATES.has(g))
   ) {
-    return { datasets: [], sensitiveGates: [] };
+    return null;
   }
   return { datasets: [...(v.datasets as string[])], sensitiveGates: [...(v.sensitiveGates as AnalysisSensitiveGate[])] };
 }

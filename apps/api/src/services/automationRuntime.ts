@@ -1652,6 +1652,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   frame_too_large: false,
   site_not_in_scope: false,
   frame_empty: false,
+  // Wisp analysis sessions W03: continuation and chain-bound refusals are
+  // policy outcomes (or a lost race), never a data-integrity bug.
+  analysis_continuation_not_found: false,
+  analysis_chain_too_long: false,
+  analysis_chain_budget_exceeded: false,
   workspace_unavailable: false,
   // AI model registry W03: a configuration gate (the agents' model is
   // unavailable), never a data-integrity bug.

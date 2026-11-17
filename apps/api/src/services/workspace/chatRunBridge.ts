@@ -89,8 +89,12 @@ export interface PendingRunResult {
    * `analysis` runs there.
    */
   analysis?: AnalysisOutcome | null;
-  /** The run's chain step (`ai_agent_runs.chain_depth`). Nothing sets it yet; the step line is omitted when absent. */
-  chain?: { depth: number };
+  /**
+   * The run's `ai_agent_runs.chain_depth`, set by `wisp/specialistResultsTurn.ts`
+   * for `analysis` rows. The step line is printed only when it is above 0 (a run
+   * that continues nothing is not part of a chain). Absent on the in-memory queue path.
+   */
+  chainDepth?: number;
 }
 
 interface RunDelivery {
@@ -442,7 +446,7 @@ export function drainPendingRunResults(session: ActiveSession, durable: readonly
         outcome: result.analysis ?? null,
         summary: result.summary,
         artifacts: result.artifacts,
-        ...(result.chain ? { chain: result.chain } : {}),
+        ...(result.chainDepth !== undefined && result.chainDepth > 0 ? { chain: { depth: result.chainDepth } } : {}),
       });
       return `Analysis run ${result.runId} ${result.status}.\n${body}\n`
         + 'Read a file with read_artifact by its handle. Proposed actions are not run: to act on one, make the tool call yourself.';
