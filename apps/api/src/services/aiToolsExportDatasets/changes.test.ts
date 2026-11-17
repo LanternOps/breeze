@@ -72,6 +72,23 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+// A bare token with no `key=` in front, placed so a cut made BEFORE redaction
+// would land mid-token: 1985 filler chars, a space, then `ghp_` + 30 chars, then
+// a tail that keeps the redacted text over the 2000 cap. Cut-first would emit
+// `ghp_AAAA` (too short for the token pattern to redact); redact-first emits none.
+const STRADDLE = `${'x'.repeat(1985)} ghp_${'A'.repeat(30)} ${'y'.repeat(100)}`;
+const expectStraddleRedacted = (v: unknown) => {
+  expect(v as string).not.toContain('ghp_');
+  expect(Array.from(v as string).length).toBeLessThanOrEqual(2000);
+  expect(v as string).toMatch(/…\[cut\]$/);
+};
+/** The bind value of the parameter `re` (one `$n` capture) matches in the SQL. */
+const boundOf = (q: { sql: string; params: unknown[] }, re: RegExp) => {
+  const m = q.sql.match(re);
+  expect(m, `no ${re} in ${q.sql}`).not.toBeNull();
+  return q.params[Number(m![1]) - 1];
+};
+
 const changeRow = (n = 1, over: Record<string, unknown> = {}) => ({
   id: id(600 + n), deviceId: D1, timestamp: new Date('2026-11-03T09:00:00.123Z'), timestampText: '2026-11-03 09:00:00.123456',
   changeType: 'software', changeAction: 'added', subject: 'Contoso Agent', beforeValue: null, afterValue: { version: '1.0' },
@@ -79,7 +96,7 @@ const changeRow = (n = 1, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const withGate = (gates: AnalysisSensitiveGate[], filters: Record<string, unknown> = {}) =>
-  req(filters, { exportGrants: { datasets: ['change_log'], sensitiveGates: gates } });
+  req({ timeRange: { start: '2026-10-14T12:00:00.000Z' }, ...filters }, { exportGrants: { datasets: ['change_log'], sensitiveGates: gates } });
 const LEGACY_SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
 
 describe('change_log: user_account_changes gate', () => {
@@ -92,7 +109,7 @@ describe('change_log: user_account_changes gate', () => {
   });
 
   it('legacy grants (the original seven, no gates) hold no gate', async () => {
-    const r = req({}, { exportGrants: { datasets: LEGACY_SEVEN, sensitiveGates: [] } });
+    const r = req({ timeRange: { start: '2026-10-14T12:00:00.000Z' } }, { exportGrants: { datasets: LEGACY_SEVEN, sensitiveGates: [] } });
     expect((await firstQuery(changeLogAdapter, r)).sql).toContain(`<> 'user_account'`);
   });
 
@@ -145,6 +162,32 @@ describe('change_log', () => {
     expect(params).toContain('2026-11-13T12:00:00.000Z');
     expect(sql).toMatch(/order by "device_change_log"\."timestamp" desc, "device_change_log"\."id" desc/i);
     expect(params).toContain(501);
+  });
+
+  it('notes the default window when no timeRange is given', async () => {
+    const r = req({}, { exportGrants: { datasets: ['change_log'], sensitiveGates: ['user_account_changes'] } });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    await changeLogAdapter.createPager(r);
+    expect(r.notes).toEqual([expect.stringMatching(/^change_log: no timeRange was given, so only rows with timestamp in the last 30 days \(2026-10-14T12:00:00\.000Z to 2026-11-13T12:00:00\.000Z\) are included\.$/)]);
+  });
+
+  it('the time window binds device_change_log.timestamp, start as >= and end as <=', async () => {
+    const q = await firstQuery(changeLogAdapter, req({ timeRange: { start: '2026-10-01T00:00:00Z', end: '2026-10-20T00:00:00Z' } }));
+    expect(boundOf(q, /"device_change_log"\."timestamp" >= \$(\d+)/)).toBe('2026-10-01T00:00:00.000Z');
+    expect(boundOf(q, /"device_change_log"\."timestamp" <= \$(\d+)/)).toBe('2026-10-20T00:00:00.000Z');
+  });
+
+  it.each([[{ changeAction: 'added' }], [{ changeTypes: ['software'] }], [{ status: ['x'] }]])(
+    'an unknown filter key %j is refused before any query', async (filters) => {
+      await expect(changeLogAdapter.createPager(req(filters))).rejects.toMatchObject({ code: 'invalid_filter' });
+      expect(exportDeviceSet).not.toHaveBeenCalled();
+    });
+
+  it('a bare token straddling the cut is redacted in subject and in a jsonb leaf', async () => {
+    const [row] = await allRows(changeLogAdapter, [changeRow(1, { subject: STRADDLE, afterValue: { command: STRADDLE }, details: [STRADDLE] })]);
+    expectStraddleRedacted(row!.subject);
+    expect(row!.afterValue as string).not.toContain('ghp_');
+    expect(row!.details as string).not.toContain('ghp_');
   });
 
   it('never selects fingerprint or created_at', async () => {

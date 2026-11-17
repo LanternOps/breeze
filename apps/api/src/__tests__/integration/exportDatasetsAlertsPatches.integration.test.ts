@@ -386,6 +386,76 @@ describe('export_dataset W05 datasets on real Postgres (breeze_app, forced RLS)'
     });
   });
 
+  describe('identical timestamps keep a total order (id tiebreak): no repeat, no skip, null last cursor', () => {
+    const tied = (base: string) => `${base}.123456`;
+    const seeders = {
+      alerts: (t: Tenant, ts: string) => seedAlert(t.orgA, t.a1, ts),
+      change_log: (t: Tenant, ts: string) => seedChange(t.orgA, t.a1, ts, 'software'),
+      patch_attempts: async (t: Tenant, ts: string) => seedResult(t.jobA, t.a1, await seedPatch(), ts),
+    } as const;
+
+    describe.each(['alerts', 'change_log', 'patch_attempts'] as const)('%s', (dataset) => {
+      describe.each([1, 2])('pageSize %i', (pageSize) => {
+        runDb('three rows with one timestamp come out as ids descending', async () => {
+          const t = await seedTenant();
+          const ts = tied(tsText(3));
+          const ids: string[] = [];
+          for (let i = 0; i < 3; i++) ids.push(await seeders[dataset](t, ts));
+          const { pages, rows } = await drain(dataset, request(t.orgA, [t.a1], { pageSize, filters: { timeRange: rangeAround(3) } }));
+          const exported = rows.map((r) => r.id as string).filter((id) => ids.includes(id));
+          expect(exported).toEqual([...ids].sort().reverse());
+          expect(new Set(exported).size).toBe(3);
+          expect(pages.length).toBeGreaterThan(1);
+          expect(pages[pages.length - 1]!.nextCursor).toBeNull();
+        });
+      });
+    });
+  });
+
+  describe('patch_state orders by (device_id, patch_id) ascending across devices', () => {
+    describe.each([1, 3])('pageSize %i', (pageSize) => {
+      runDb('concatenated pages equal the sorted pair list, no repeat', async () => {
+        const t = await seedTenant();
+        await withSystemDbAccessContext(async () => {
+          for (const dev of [t.a1, t.a2]) {
+            for (let i = 0; i < 3; i++) await seedDevicePatch(t.orgA, dev, await seedPatch(), i % 2 ? 'installed' : 'pending');
+          }
+        });
+        const expectedCount = (await getTestDb().execute(sql`
+          SELECT count(*)::int AS n FROM device_patches
+          WHERE device_id IN (${t.a1}, ${t.a2}) AND status <> 'missing'`) as unknown as Array<{ n: number }>)[0]!.n;
+        expect(expectedCount).toBeGreaterThanOrEqual(8);
+        const { rows } = await drain('patch_state', request(t.orgA, [t.a1, t.a2], { pageSize }));
+        const pairs = rows.map((r) => [r.deviceId as string, r.patchId as string] as const);
+        const sorted = [...pairs].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0));
+        expect(pairs).toEqual(sorted);
+        expect(new Set(pairs.map((p) => p.join('|'))).size).toBe(pairs.length);
+        expect(pairs).toHaveLength(expectedCount);
+        expect(devicesOf(rows)).toEqual([t.a1, t.a2].sort());
+      });
+    });
+  });
+
+  describe('default 30-day window', () => {
+    runDb('change_log: a 31-day-old row is absent by default and present with an explicit earlier start', async () => {
+      const t = await seedTenant();
+      const old = await seedChange(t.orgA, t.a1, tsText(31), 'software');
+      expect((await drain('change_log', request(t.orgA, [t.a1]))).rows.map((r) => r.id)).not.toContain(old);
+      const start = new Date(Date.now() - 35 * DAY_MS).toISOString();
+      const { rows } = await drain('change_log', request(t.orgA, [t.a1], { filters: { timeRange: { start } } }));
+      expect(rows.map((r) => r.id)).toContain(old);
+    });
+
+    runDb('patch_attempts: a 31-day-old row is absent by default and present with an explicit earlier start', async () => {
+      const t = await seedTenant();
+      const old = await seedResult(t.jobA, t.a1, await seedPatch(), tsText(31));
+      expect((await drain('patch_attempts', request(t.orgA, [t.a1]))).rows.map((r) => r.id)).not.toContain(old);
+      const start = new Date(Date.now() - 35 * DAY_MS).toISOString();
+      const { rows } = await drain('patch_attempts', request(t.orgA, [t.a1], { filters: { timeRange: { start } } }));
+      expect(rows.map((r) => r.id)).toContain(old);
+    });
+  });
+
   runDb('redaction applies to stored alert data: secrets and signed-URL queries never leave', async () => {
     const t = await seedTenant();
     await seedAlert(t.orgA, t.a1, tsText(1), {

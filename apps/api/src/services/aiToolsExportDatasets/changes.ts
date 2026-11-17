@@ -32,7 +32,9 @@ import {
   holdsSensitiveGate,
   keysetBefore,
   keysetPager,
+  noteDefaultWindow,
   noteOn,
+  rejectUnknownFilters,
   runExportQuery,
   timeRangeFromFilters,
 } from '../aiToolsExportShared';
@@ -55,9 +57,11 @@ function changeTypeFilter(value: unknown): ChangeType[] | null {
 const VALUE_TEXT = { urls: true, paths: true } as const;
 
 async function createChangeLogPager(req: DatasetRequest) {
+  rejectUnknownFilters('change_log', req.filters, ['timeRange', 'changeType']);
   const { start, end } = timeRangeFromFilters(req.filters);
   let changeTypes = changeTypeFilter(req.filters.changeType);
   const scope = await exportDeviceSet(req);
+  noteDefaultWindow(req, 'change_log', 'timestamp', { start, end });
   const gated = !holdsSensitiveGate(req, 'user_account_changes');
   if (gated) {
     noteOn(req, USER_ACCOUNT_CHANGES_NOTE);

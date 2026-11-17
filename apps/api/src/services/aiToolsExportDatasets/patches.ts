@@ -39,7 +39,9 @@ import {
   keysetAfterIds,
   keysetBefore,
   keysetPager,
+  noteDefaultWindow,
   noteOn,
+  rejectUnknownFilters,
   runExportQuery,
   timeRangeFromFilters,
 } from '../aiToolsExportShared';
@@ -68,6 +70,7 @@ function statusFilter(value: unknown): PatchStateStatus[] | null {
 }
 
 async function createPatchStatePager(req: DatasetRequest) {
+  rejectUnknownFilters('patch_state', req.filters, ['timeRange', 'status']);
   // Validated (a bad range is refused) but not applied: this is current state.
   timeRangeFromFilters(req.filters);
   const statuses = statusFilter(req.filters.status);
@@ -142,9 +145,11 @@ async function createPatchStatePager(req: DatasetRequest) {
 }
 
 async function createPatchAttemptsPager(req: DatasetRequest) {
+  rejectUnknownFilters('patch_attempts', req.filters, ['timeRange']);
   const { start, end } = timeRangeFromFilters(req.filters);
   const scope = await exportDeviceSet(req);
   noteOn(req, PATCH_ATTEMPTS_NO_OUTPUT_NOTE);
+  noteDefaultWindow(req, 'patch_attempts', 'createdAt', { start, end });
   if (scope.deviceIds.length === 0) return emptyExportPager;
 
   return keysetPager({

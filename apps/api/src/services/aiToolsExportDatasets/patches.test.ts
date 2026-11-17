@@ -77,6 +77,23 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+// A bare token with no `key=` in front, placed so a cut made BEFORE redaction
+// would land mid-token: 1985 filler chars, a space, then `ghp_` + 30 chars, then
+// a tail that keeps the redacted text over the 2000 cap. Cut-first would emit
+// `ghp_AAAA` (too short for the token pattern to redact); redact-first emits none.
+const STRADDLE = `${'x'.repeat(1985)} ghp_${'A'.repeat(30)} ${'y'.repeat(100)}`;
+const expectStraddleRedacted = (v: unknown) => {
+  expect(v as string).not.toContain('ghp_');
+  expect(Array.from(v as string).length).toBeLessThanOrEqual(2000);
+  expect(v as string).toMatch(/…\[cut\]$/);
+};
+/** The bind value of the parameter `re` (one `$n` capture) matches in the SQL. */
+const boundOf = (q: { sql: string; params: unknown[] }, re: RegExp) => {
+  const m = q.sql.match(re);
+  expect(m, `no ${re} in ${q.sql}`).not.toBeNull();
+  return q.params[Number(m![1]) - 1];
+};
+
 const P1 = id(500);
 const P2 = id(501);
 const stateRow = (over: Record<string, unknown> = {}) => ({
@@ -119,6 +136,16 @@ describe('patch_state', () => {
     for (const col of ['install_command', 'uninstall_command', 'detect_script', 'description', 'download_url', 'metadata', 'kb_article_url']) {
       expect(sql).not.toContain(`"${col}"`);
     }
+  });
+
+  it('a bare token straddling the cut is redacted, never half-emitted (lastError, title, category, externalId)', async () => {
+    const [row] = await allRows(patchStateAdapter, [stateRow({ lastError: STRADDLE, title: STRADDLE, category: STRADDLE, externalId: STRADDLE })]);
+    for (const col of ['lastError', 'title', 'category', 'externalId'] as const) expectStraddleRedacted(row![col]);
+  });
+
+  it.each([[{ changeType: ['software'] }], [{ statuses: ['failed'] }]])('patch_state refuses an unknown filter key %j', async (filters) => {
+    await expect(patchStateAdapter.createPager(req(filters))).rejects.toMatchObject({ code: 'invalid_filter' });
+    expect(exportDeviceSet).not.toHaveBeenCalled();
   });
 
   it('lastError: secret straddling the cut is redacted, URL reduced, <= 2000', async () => {
@@ -253,6 +280,24 @@ describe('patch_attempts', () => {
     expect(second.params).toContain('2026-11-05 00:59:00.123456');
   });
 
+  it('a bare token straddling the cut is redacted, never half-emitted (errorMessage, jobName, patchTitle, patchExternalId)', async () => {
+    const [row] = await allRows(patchAttemptsAdapter, [attemptRow(1, {
+      errorMessage: STRADDLE, jobName: STRADDLE, patchTitle: STRADDLE, patchExternalId: STRADDLE,
+    })]);
+    for (const col of ['errorMessage', 'jobName', 'patchTitle', 'patchExternalId'] as const) expectStraddleRedacted(row![col]);
+  });
+
+  it('the time window binds patch_job_results.created_at, start as >= and end as <=', async () => {
+    const q = await firstQuery(patchAttemptsAdapter, req({ timeRange: { start: '2026-10-01T00:00:00Z', end: '2026-10-20T00:00:00Z' } }));
+    expect(boundOf(q, /"patch_job_results"\."created_at" >= \$(\d+)/)).toBe('2026-10-01T00:00:00.000Z');
+    expect(boundOf(q, /"patch_job_results"\."created_at" <= \$(\d+)/)).toBe('2026-10-20T00:00:00.000Z');
+  });
+
+  it.each([[{ status: ['failed'] }], [{ jobId: 'x' }]])('patch_attempts refuses an unknown filter key %j', async (filters) => {
+    await expect(patchAttemptsAdapter.createPager(req(filters))).rejects.toMatchObject({ code: 'invalid_filter' });
+    expect(exportDeviceSet).not.toHaveBeenCalled();
+  });
+
   it('errorMessage redacted, URL reduced, cut', async () => {
     const [row] = await allRows(patchAttemptsAdapter, [attemptRow(1, {
       errorMessage: `failed: password=p1 https://h.example/a?token=t9 C:\\Users\\jdoe\\x ${'q'.repeat(3000)}`,
@@ -293,7 +338,7 @@ describe('patch_attempts', () => {
     const r = req({});
     exportDeviceSet.mockResolvedValue(scope([D1]));
     await patchAttemptsAdapter.createPager(r);
-    expect(r.notes).toEqual([PATCH_ATTEMPTS_NO_OUTPUT_NOTE]);
+    expect(r.notes).toEqual([PATCH_ATTEMPTS_NO_OUTPUT_NOTE, expect.stringMatching(/^patch_attempts: no timeRange was given, so only rows with createdAt in the last 30 days \(2026-10-14T12:00:00\.000Z to 2026-11-13T12:00:00\.000Z\) are included\.$/)]);
   });
 
   it('a 181-day range is refused before any query', async () => {

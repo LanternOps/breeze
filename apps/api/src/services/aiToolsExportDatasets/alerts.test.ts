@@ -71,6 +71,23 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+// A bare token with no `key=` in front, placed so a cut made BEFORE redaction
+// would land mid-token: 1985 filler chars, a space, then `ghp_` + 30 chars, then
+// a tail that keeps the redacted text over the 2000 cap. Cut-first would emit
+// `ghp_AAAA` (too short for the token pattern to redact); redact-first emits none.
+const STRADDLE = `${'x'.repeat(1985)} ghp_${'A'.repeat(30)} ${'y'.repeat(100)}`;
+const expectStraddleRedacted = (v: unknown) => {
+  expect(v as string).not.toContain('ghp_');
+  expect(Array.from(v as string).length).toBeLessThanOrEqual(2000);
+  expect(v as string).toMatch(/…\[cut\]$/);
+};
+/** The bind value of the parameter `re` (one `$n` capture) matches in the SQL. */
+const boundOf = (q: { sql: string; params: unknown[] }, re: RegExp) => {
+  const m = q.sql.match(re);
+  expect(m, `no ${re} in ${q.sql}`).not.toBeNull();
+  return q.params[Number(m![1]) - 1];
+};
+
 const alertRow = (n = 1, over: Record<string, unknown> = {}) => ({
   id: id(100 + n), deviceId: D1, ruleId: id(900), ruleName: 'CPU high', severity: 'high', status: 'active',
   title: 'CPU over 90%', message: 'cpu at 95%', triggeredAt: new Date('2026-11-01T10:00:00.123Z'),
@@ -120,10 +137,23 @@ describe('alerts', () => {
     expect(row!.title).toBe('Check https://host.example failed');
   });
 
-  it('a secret straddling the 2000-character cut is redacted, never half-emitted', async () => {
-    const [row] = await allRows(alertsAdapter, [alertRow(1, { message: `${'m'.repeat(1990)} password=hunter2` })]);
-    expect(row!.message).not.toMatch(/hunt|hunter2/);
+  it('a bare token straddling the 2000-character cut is redacted, never half-emitted (message, title, ruleName)', async () => {
+    const [row] = await allRows(alertsAdapter, [alertRow(1, { message: STRADDLE, title: STRADDLE, ruleName: STRADDLE })]);
+    for (const col of ['message', 'title', 'ruleName'] as const) expectStraddleRedacted(row![col]);
   });
+
+  it('the time window binds triggered_at, start as >= and end as <=', async () => {
+    const q = await firstQuery(alertsAdapter, req({ timeRange: { start: '2026-10-01T00:00:00Z', end: '2026-10-20T00:00:00Z' } }));
+    expect(boundOf(q, /"alerts"\."triggered_at" >= \$(\d+)/)).toBe('2026-10-01T00:00:00.000Z');
+    expect(boundOf(q, /"alerts"\."triggered_at" <= \$(\d+)/)).toBe('2026-10-20T00:00:00.000Z');
+  });
+
+  it.each([[{ status: ['active'] }], [{ severity: 'high' }], [{ timeRange: {}, deviceId: 'x' }]])(
+    'an unknown filter key %j is refused before any query', async (filters) => {
+      await expect(alertsAdapter.createPager(req(filters))).rejects.toMatchObject({ code: 'invalid_filter' });
+      expect(exportDeviceSet).not.toHaveBeenCalled();
+      expect(runExportQuery).not.toHaveBeenCalled();
+    });
 
   it('title and message drop profile paths, user names in paths and UNC hosts', async () => {
     const [row] = await allRows(alertsAdapter, [alertRow(1, {
@@ -203,7 +233,11 @@ describe('alerts', () => {
     const r = req({});
     exportDeviceSet.mockResolvedValue(scope([D1]));
     await alertsAdapter.createPager(r);
-    expect(r.notes).toEqual([ALERTS_DEVICE_OWNED_NOTE]);
+    expect(r.notes).toEqual([ALERTS_DEVICE_OWNED_NOTE, expect.stringMatching(/^alerts: no timeRange was given, so only rows with triggeredAt in the last 30 days \(2026-10-14T12:00:00\.000Z to 2026-11-13T12:00:00\.000Z\) are included\.$/)]);
+    // An explicit window gets no default-window note.
+    const ranged = req({ timeRange: { start: '2026-10-01T00:00:00Z' } });
+    await alertsAdapter.createPager(ranged);
+    expect(ranged.notes).toEqual([ALERTS_DEVICE_OWNED_NOTE]);
   });
 
   it('is tier 1 and not device-scoped (set-based)', () => {

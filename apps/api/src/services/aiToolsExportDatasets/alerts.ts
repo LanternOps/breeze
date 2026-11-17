@@ -27,23 +27,27 @@ import {
   exportText,
   keysetBefore,
   keysetPager,
+  noteDefaultWindow,
   noteOn,
+  rejectUnknownFilters,
   runExportQuery,
   timeRangeFromFilters,
 } from '../aiToolsExportShared';
 import type { DatasetAdapter, DatasetRequest } from '../aiToolsExportDatasets';
 
 export const ALERTS_DEVICE_OWNED_NOTE =
-  'alerts lists device-owned alerts only (topology-site and backup alerts are left out); alert context is not exported.';
+  'alerts lists device-owned alerts in every status, selected by triggeredAt (topology-site and backup alerts are left out); alert context is not exported.';
 
 const RESOLUTION_REASONS: ReadonlySet<string> = new Set(ALERT_RESOLUTION_REASONS);
 
 const iso = (value: Date | null): string | null => (value ? value.toISOString() : null);
 
 async function createAlertsPager(req: DatasetRequest) {
+  rejectUnknownFilters('alerts', req.filters, ['timeRange']);
   const { start, end } = timeRangeFromFilters(req.filters);
   const scope = await exportDeviceSet(req);
   noteOn(req, ALERTS_DEVICE_OWNED_NOTE);
+  noteDefaultWindow(req, 'alerts', 'triggeredAt', { start, end });
   if (scope.deviceIds.length === 0) return emptyExportPager;
 
   return keysetPager({

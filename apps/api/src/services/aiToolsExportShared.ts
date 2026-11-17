@@ -24,6 +24,7 @@ import {
   redactLogMessage,
 } from './logRedaction';
 import { hmacFingerprint } from './secretCrypto';
+import { BARE_SECRET_PATTERNS } from './redactionPatterns';
 import { scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 import type { DatasetRequest } from './aiToolsExportDatasets';
 import type { AnalysisSensitiveGate } from '../db/schema/aiAgents';
@@ -39,6 +40,25 @@ export class ExportFilterError extends Error {
   constructor(readonly code: 'invalid_time_range' | 'invalid_filter', message: string) {
     super(message);
     this.name = 'ExportFilterError';
+  }
+}
+
+/**
+ * Refuse any `filters` key the dataset does not read (W05). An ignored key
+ * would silently widen the export: `alerts` with `status: ['active']` would
+ * return every status, with nothing telling the model its filter was dropped.
+ */
+export function rejectUnknownFilters(
+  dataset: string,
+  filters: Record<string, unknown>,
+  allowed: readonly string[],
+): void {
+  const unknown = Object.keys(filters).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new ExportFilterError(
+      'invalid_filter',
+      `${dataset} does not take filters.${unknown.join(', filters.')}; it takes ${allowed.map((k) => `filters.${k}`).join(', ')} only.`,
+    );
   }
 }
 
@@ -222,6 +242,21 @@ export function noteOn(req: DatasetRequest, note: string): void {
   if (!req.notes.includes(note)) req.notes.push(note);
 }
 
+/** When the model gave no `timeRange`, say which window the export used, so a
+ *  row older than the default 30 days is not mistaken for absent (W05). */
+export function noteDefaultWindow(
+  req: DatasetRequest,
+  dataset: string,
+  column: string,
+  range: { start: Date; end: Date },
+): void {
+  if (req.filters.timeRange !== undefined && req.filters.timeRange !== null) return;
+  noteOn(req, `${dataset}: no timeRange was given, so only rows with ${column} in the last ${EXPORT_TIME_RANGE_DEFAULT_DAYS} days (${range.start.toISOString()} to ${range.end.toISOString()}) are included.`);
+}
+
+export const EMPTY_DEVICE_SET_NOTE =
+  'No device in this run\'s frame is readable for this export (none left after the requested devices, the site and the organization were applied), so it is empty.';
+
 // ---------------------------------------------------------------------------
 // Device set
 // ---------------------------------------------------------------------------
@@ -244,6 +279,12 @@ export interface ExportDeviceScope {
 
 const EMPTY_SCOPE: ExportDeviceScope = Object.freeze({ deviceIds: [], hostnames: new Map<string, string>() });
 
+/** The empty scope, with a note: an empty export must not read like "no data" (W05). */
+function emptyDeviceScope(req: DatasetRequest): ExportDeviceScope {
+  noteOn(req, EMPTY_DEVICE_SET_NOTE);
+  return EMPTY_SCOPE;
+}
+
 /**
  * The devices a set-based export may read: the run's frozen frame, narrowed by
  * the requested ids, the exact-device axis (`auth.allowedDeviceIds`) and the
@@ -255,7 +296,7 @@ export async function exportDeviceSet(req: DatasetRequest): Promise<ExportDevice
   if (req.auth.orgId !== req.orgId) {
     throw new Error('export_dataset: the agent principal\'s organization does not match the requested organization');
   }
-  if (!req.runTargets || req.runTargets.length === 0) return EMPTY_SCOPE;
+  if (!req.runTargets || req.runTargets.length === 0) return emptyDeviceScope(req);
   let candidates = [...new Set(req.runTargets)];
   if (req.deviceIds !== null) {
     const requested = new Set(req.deviceIds);
@@ -266,8 +307,8 @@ export async function exportDeviceSet(req: DatasetRequest): Promise<ExportDevice
     const allowed = new Set(allowedDeviceIds);
     candidates = candidates.filter((id) => allowed.has(id));
   }
-  if (req.siteId !== null && req.auth.canAccessSite && !req.auth.canAccessSite(req.siteId)) return EMPTY_SCOPE;
-  if (candidates.length === 0) return EMPTY_SCOPE;
+  if (req.siteId !== null && req.auth.canAccessSite && !req.auth.canAccessSite(req.siteId)) return emptyDeviceScope(req);
+  if (candidates.length === 0) return emptyDeviceScope(req);
 
   const rows = await db
     .select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname })
@@ -281,6 +322,7 @@ export async function exportDeviceSet(req: DatasetRequest): Promise<ExportDevice
   // Keep the frame's order: it is the run's own, stable across pages.
   const byId = new Map(inScope.map((row) => [row.id, row]));
   const deviceIds = candidates.filter((id) => byId.has(id));
+  if (deviceIds.length === 0) return emptyDeviceScope(req);
   return {
     deviceIds,
     hostnames: new Map(deviceIds.map((id) => [id, byId.get(id)!.hostname])),
@@ -307,13 +349,31 @@ export interface ExportTextOptions {
   paths?: boolean;
 }
 
+/**
+ * Bare vendor-token shapes (`sk-…`, `ghp_…`, `AKIA…`, JWTs) with no `key=`
+ * in front of them, which the secret-assignment rules do not see. An installer
+ * error or alert message can echo one verbatim (W05 review).
+ */
+function redactBareSecrets(text: string): string {
+  return BARE_SECRET_PATTERNS.reduce((current, pattern) => current.replace(pattern, '[REDACTED]'), text);
+}
+
+function mapStrings(value: unknown, fn: (text: string) => string): unknown {
+  if (typeof value === 'string') return fn(value);
+  if (Array.isArray(value)) return value.map((v) => mapStrings(v, fn));
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mapStrings(v, fn)]));
+  }
+  return value;
+}
+
 /** One free-text cell: redacted, then cut. Redaction runs first, so a secret straddling the cut is never half-emitted. */
 export function exportText(value: unknown, opts: ExportTextOptions = {}): string | null {
   if (value === null || value === undefined) return null;
   let text = typeof value === 'string' ? value : String(value);
   if (opts.urls) text = scrubUrlsInText(text);
   text = opts.paths ? redactAgentLogMessage(text) : redactLogMessage(text);
-  return cutExportText(text);
+  return cutExportText(redactBareSecrets(text));
 }
 
 /** An agent-reported enumerated value: one of `known`, else the fixed `other`
@@ -346,5 +406,5 @@ export function exportJsonText(value: unknown, opts: ExportTextOptions = {}): st
   if (value === null || value === undefined) return null;
   let redacted = opts.paths ? redactAgentLogFields(value) : redactLogFields(value);
   if (opts.urls) redacted = scrubUrlsInValue(redacted);
-  return cutExportText(JSON.stringify(redacted));
+  return cutExportText(JSON.stringify(mapStrings(redacted, redactBareSecrets)));
 }
