@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Dialog } from '@/components/shared/Dialog';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { publishTrustPage, type TrustPageDraft } from '@/lib/api/trustPage';
+import { publishTrustPage, type TrustPageDraft, type TrustServingStatus } from '@/lib/api/trustPage';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 
 interface Props {
@@ -59,8 +59,9 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
     try {
       const data = await runAction({
         request: () => publishTrustPage(orgFetch, orgId, body),
-        parseSuccess: (d) => (d as { data: { page: TrustPageDraft; snapshotId: string } }).data,
-        successMessage: tr('publish.success'),
+        parseSuccess: (d) => (d as { data: { page: TrustPageDraft; snapshotId: string; serving?: TrustServingStatus } }).data,
+        // Committed either way; 'degraded' means the public page catches up once the server self-heals (#12103).
+        successMessage: (d) => (d.serving === 'degraded' ? tr('publish.successPending') : tr('publish.success')),
         errorFallback: tr('publish.failed'),
         friendly: (code, message) => ({
           REVISION_MISMATCH: tr('errors.revisionMismatch'),

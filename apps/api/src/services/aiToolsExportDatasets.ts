@@ -40,6 +40,9 @@ import { vulnerabilitiesAdapter } from './aiToolsExportDatasets/vulnerabilities'
 import { customFieldsAdapter } from './aiToolsExportDatasets/customFields';
 import { hardwareEventsAdapter } from './aiToolsExportDatasets/hardware';
 import { serviceChecksAdapter } from './aiToolsExportDatasets/serviceChecks';
+import { alertsAdapter } from './aiToolsExportDatasets/alerts';
+import { changeLogAdapter } from './aiToolsExportDatasets/changes';
+import { patchStateAdapter, patchAttemptsAdapter } from './aiToolsExportDatasets/patches';
 import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
 
 // The names live in a zero-import leaf so the Zod enums can derive from them
@@ -390,4 +393,8 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   boot_performance: bootPerformanceAdapter,
   hardware_events: hardwareEventsAdapter,
   service_checks: serviceChecksAdapter,
+  alerts: alertsAdapter,
+  patch_state: patchStateAdapter,
+  patch_attempts: patchAttemptsAdapter,
+  change_log: changeLogAdapter,
 };

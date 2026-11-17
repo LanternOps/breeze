@@ -27,6 +27,10 @@ import {
   noteOn,
   emptyExportPager,
   exportKey,
+  holdsSensitiveGate,
+  rejectUnknownFilters,
+  noteDefaultWindow,
+  EMPTY_DEVICE_SET_NOTE,
 } from './aiToolsExportShared';
 import type { DatasetRequest } from './aiToolsExportDatasets';
 import type { AuthContext } from '../middleware/auth';
@@ -313,5 +317,79 @@ describe('exportKey', () => {
 
   it('refuses to key without an org id rather than emit an unbound key', () => {
     expect(() => exportKey('', 'x')).toThrow(/org id/);
+  });
+});
+
+describe('holdsSensitiveGate', () => {
+  const baseReq = {
+    auth: { orgId: 'org-1' } as unknown as AuthContext,
+    orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, notes: [],
+  };
+  it.each([
+    [{ datasets: ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'], sensitiveGates: [] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: [] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: ['security_events'] }, false],
+    [{ datasets: ['change_log'], sensitiveGates: ['user_account_changes'] }, true],
+  ])('grants %j -> %s', (exportGrants, expected) => {
+    expect(holdsSensitiveGate({ ...baseReq, exportGrants } as DatasetRequest, 'user_account_changes')).toBe(expected);
+  });
+});
+
+describe('W05 review: filter keys, default window, empty frame, bare tokens', () => {
+  const baseReq = (filters: Record<string, unknown> = {}) => ({
+    auth: { orgId: 'org-1' } as unknown as AuthContext,
+    orgId: 'org-1', filters, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, notes: [] as string[],
+    exportGrants: { datasets: [], sensitiveGates: [] },
+  }) as DatasetRequest;
+
+  it('rejectUnknownFilters refuses every key outside the list, naming it, and accepts the listed ones', () => {
+    expect(() => rejectUnknownFilters('alerts', { timeRange: {} }, ['timeRange'])).not.toThrow();
+    expect(() => rejectUnknownFilters('alerts', {}, ['timeRange'])).not.toThrow();
+    let err: unknown;
+    try { rejectUnknownFilters('alerts', { timeRange: {}, status: ['active'] }, ['timeRange']); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(ExportFilterError);
+    expect(err).toMatchObject({ code: 'invalid_filter' });
+    expect((err as Error).message).toContain('filters.status');
+  });
+
+  it('noteDefaultWindow notes the window only when no timeRange was given', () => {
+    const range = { start: new Date('2026-10-14T12:00:00.000Z'), end: NOW };
+    const plain = baseReq();
+    noteDefaultWindow(plain, 'alerts', 'triggeredAt', range);
+    expect(plain.notes).toEqual([
+      'alerts: no timeRange was given, so only rows with triggeredAt in the last 30 days (2026-10-14T12:00:00.000Z to 2026-11-13T12:00:00.000Z) are included.',
+    ]);
+    const ranged = baseReq({ timeRange: { start: '2026-10-01T00:00:00Z' } });
+    noteDefaultWindow(ranged, 'alerts', 'triggeredAt', range);
+    expect(ranged.notes).toEqual([]);
+  });
+
+  it('an empty device set is noted on every empty path; a non-empty one is not', async () => {
+    const agentAuth = { orgId: 'org-1', allowedDeviceIds: ['d1'] } as unknown as AuthContext;
+    const noFrame = { ...baseReq(), auth: agentAuth };
+    await exportDeviceSet(noFrame);
+    expect(noFrame.notes).toEqual([EMPTY_DEVICE_SET_NOTE]);
+
+    const outside = { ...baseReq(), auth: agentAuth, runTargets: ['d2'], notes: [] as string[] };
+    await exportDeviceSet(outside);
+    expect(outside.notes).toEqual([EMPTY_DEVICE_SET_NOTE]);
+
+    dbSelect.mockReturnValueOnce({ from: () => ({ where: async () => [] }) });
+    const gone = { ...baseReq(), auth: agentAuth, runTargets: ['d1'], notes: [] as string[] };
+    expect((await exportDeviceSet(gone)).deviceIds).toEqual([]);
+    expect(gone.notes).toEqual([EMPTY_DEVICE_SET_NOTE]);
+
+    dbSelect.mockReturnValueOnce({ from: () => ({ where: async () => [{ id: 'd1', siteId: 's1', hostname: 'h1' }] }) });
+    const found = { ...baseReq(), auth: agentAuth, runTargets: ['d1'], notes: [] as string[] };
+    expect((await exportDeviceSet(found)).deviceIds).toEqual(['d1']);
+    expect(found.notes).toEqual([]);
+  });
+
+  it.each([
+    ['ghp_' + 'A'.repeat(30)], ['sk-ant-' + 'b'.repeat(24)], ['AKIA' + 'C'.repeat(16)],
+    ['eyJ' + 'h'.repeat(24) + '.' + 'p'.repeat(24) + '.' + 's'.repeat(12)],
+  ])('exportText and exportJsonText redact a bare token (%s)', (token) => {
+    expect(exportText(`failed with ${token} here`)).toBe('failed with [REDACTED] here');
+    expect(exportJsonText({ note: `x ${token}`, list: [token] })).toBe(JSON.stringify({ note: 'x [REDACTED]', list: ['[REDACTED]'] }));
   });
 });

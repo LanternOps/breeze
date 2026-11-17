@@ -24,6 +24,19 @@ describe('TrustPublishDialog', () => {
     await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 5, expectedTemplateRevision: null }));
     await waitFor(() => expect(onPublished).toHaveBeenCalled());
   });
+  // #12103: the DB committed but the serving set did not take the change; the card self-heals within a minute.
+  it.each([
+    ['applied', 'Trust Center page published.'],
+    ['degraded', 'Published. The public page will update within a minute.'],
+    [undefined, 'Trust Center page published.'],
+  ])('a publish whose serving outcome is %s toasts "%s"', async (serving, message) => {
+    api.publishTrustPage.mockResolvedValue(json({ data: { page: page(), snapshotId: 's', ...(serving ? { serving } : {}) } }));
+    const onPublished = vi.fn();
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} templateRevision={null} page={page({ isPartnerHome: true })} onPublished={onPublished} onStale={vi.fn(async () => undefined)} />);
+    fireEvent.click(screen.getByTestId('trust-publish-confirm'));
+    await waitFor(() => expect(onPublished).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message }));
+  });
   it('Change demands a new checkbox + name and sends them', async () => {
     api.publishTrustPage.mockResolvedValue(json({ data: { page: page(), snapshotId: 's' } }));
     render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} templateRevision={null} page={page({ publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: '2026-09-01T00:00:00Z' })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);

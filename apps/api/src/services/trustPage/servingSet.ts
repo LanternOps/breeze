@@ -136,6 +136,19 @@ const MAX_RECONCILE_ATTEMPTS = 3;
  * and writes the built marker. 'partner' removes that slug's members (`slug`, `slug/*`) missing from the list
  * (strict only), then adds the list; it never writes the marker (a partial add must not claim completeness).
  * Every successful apply INCRs the epoch. Members are added in chunks so `unpack` stays under Lua's stack limit.
+ *
+ * Cost (#12103): the 'partner' strict branch SMEMBERS the WHOLE set to find that slug's stale members, so it is
+ * O(all published pages), not O(this partner's), and Redis is blocked for that scan. Kept deliberately:
+ *  - every partner-scope writer is human-rate: publish/unpublish, partner-home, an org or partner slug/status/trust
+ *    change, archive/restore (scheduleServingRefreshForPartner callers); no worker or per-request path uses it;
+ *  - the 'all' rebuild (hourly sweep, boot, self-heal) already does a strictly larger O(N) pass in one script (SADD
+ *    every member, then RENAME), so a partner apply never blocks Redis longer than the rebuild already does;
+ *  - making it proportional needs a second structure (a per-partner index set, or a sorted set for a lex-range
+ *    scan) that every apply and the full rebuild must keep exactly in step with this admission filter: more
+ *    invariants on the path that decides what is public. A sorted set also changes the key's type, which old
+ *    instances read with SISMEMBER mid-deploy (WRONGTYPE → null → card 503).
+ * Revisit if the set grows into the hundreds of thousands of members, where the rebuild's own pass would need the
+ * same change.
  */
 export const SNAPSHOT_APPLY_LUA = `
 local mode = ARGV[3]

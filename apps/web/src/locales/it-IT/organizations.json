@@ -436,6 +436,7 @@
         "publishing": "Pubblicazione in corso…",
         "cancel": "Annulla",
         "success": "Pagina del Centro di fiducia pubblicata.",
+        "successPending": "Pubblicata. La pagina pubblica verrà aggiornata entro un minuto.",
         "failed": "Impossibile pubblicare la pagina del Centro di fiducia.",
         "disabledNoWrite": "Per pubblicare serve l'autorizzazione a modificare le organizzazioni.",
         "disabledSlug": "Correggi l'indirizzo della pagina prima di pubblicare."

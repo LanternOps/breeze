@@ -14,7 +14,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
   ensureTrustPage, publishTrustPage, serveCommittedPublication, unpublishTrustPage, loadLinkedDocumentsForEditor, loadTrustPageEvidence, resolveTrustPageSettings,
-  trustPublishDecision, TrustPageError, PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
+  servingStatusFor, trustPublishDecision, TrustPageError, PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
 } from '../services/trustPage/publication';
 import { withTrustPageRevision } from '../services/trustPage/revision';
 import { frameworkOptionsFor } from '../services/trustPage/sections/frameworks';
@@ -214,10 +214,10 @@ trustPageRoutes.post('/:orgId/trust-page/publish', scopes, orgWrite, requireMfa(
       return { ctx, ...published };
     });
     if (!done) return notFound(c);
-    // Never throws for a Redis or reconcile failure: the DB committed, so a degraded outcome still answers 200
-    // and the dropped built marker makes the page resolve live rather than hide.
-    await serveCommittedPublication({ partnerId: done.page.partnerId, cache: done.cache });
-    return c.json({ data: { page: done.page, snapshotId: done.snapshotId, ...publicPaths(done.ctx, done.page.isPartnerHome) } });
+    // Never throws for a Redis or reconcile failure: the DB committed, so a degraded outcome still answers 200.
+    // `serving` tells the editor whether the public card is live now or after the self-heal (#12103).
+    const serving = servingStatusFor(await serveCommittedPublication({ partnerId: done.page.partnerId, cache: done.cache }));
+    return c.json({ data: { page: done.page, snapshotId: done.snapshotId, serving, ...publicPaths(done.ctx, done.page.isPartnerHome) } });
   } catch (err) { return handleError(c, err); }
 });
 
@@ -234,8 +234,8 @@ trustPageRoutes.post('/:orgId/trust-page/unpublish', scopes, orgWrite, requireMf
       return updated;
     });
     if (!page) return notFound(c);
-    await serveCommittedPublication({ partnerId: page.partnerId });
-    return c.json({ data: { page } });
+    const serving = servingStatusFor(await serveCommittedPublication({ partnerId: page.partnerId }));
+    return c.json({ data: { page, serving } });
   } catch (err) { return handleError(c, err); }
 });
 

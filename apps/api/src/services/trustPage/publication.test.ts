@@ -21,7 +21,7 @@ import type { TrustPageRow } from '../../db/schema/trustPages';
 import { loadPostureEvidence } from '../postureEvidence';
 import { cacheSnapshotPayload, dropServingBuiltMarker, refreshServingForPartner } from './servingSet';
 import { loadPartnerTemplate } from './template';
-import { publishTrustPage, serveCommittedPublication, trustPublishDecision, unpublishTrustPage, validatePublishSlugs, TrustPageError } from './publication';
+import { publishTrustPage, serveCommittedPublication, servingStatusFor, trustPublishDecision, unpublishTrustPage, validatePublishSlugs, TrustPageError } from './publication';
 
 /** Thenable query-builder stand-in: every builder method returns itself; awaiting it yields `result`. */
 function chain(result: unknown): unknown {
@@ -331,5 +331,17 @@ describe('serveCommittedPublication (#9087)', () => {
     await expect(serveCommittedPublication({ partnerId: 'p1' })).rejects.toThrow('must run after the publishing context commits');
     expect(refreshServingForPartner).not.toHaveBeenCalled();
     expect(cacheSnapshotPayload).not.toHaveBeenCalled();
+  });
+});
+
+describe('servingStatusFor (#12103)', () => {
+  it.each([['applied', 'applied'], ['fallback', 'applied'], ['degraded', 'degraded'], ['no_redis', 'degraded']] as const)('%s → %s', (outcome, status) => {
+    expect(servingStatusFor(outcome)).toBe(status);
+  });
+  it('an unexpected outcome reports degraded and never throws: it runs after the publication committed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(servingStatusFor('surprise' as never)).toBe('degraded');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unexpected serving outcome'), { outcome: 'surprise' });
+    warn.mockRestore();
   });
 });

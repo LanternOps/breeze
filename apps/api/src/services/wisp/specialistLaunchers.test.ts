@@ -286,6 +286,8 @@ describe('launchSweep', () => {
 const SITE = '00000000-0000-4000-8000-0000000000b1';
 // Every dataset requires devices:read (W02 + W04), so a ceiling holding it is granted the whole list.
 const ALL_DATASETS = [...EXPORT_DATASETS] as string[];
+// W05: `alerts` needs alerts:read; every other dataset needs devices:read.
+const DEVICES_READ_DATASETS = ALL_DATASETS.filter((d) => d !== 'alerts');
 
 describe('analysis params (W02 C1 scope resolution)', () => {
   it('analysis params follow C1 scope resolution and bounds', () => {
@@ -336,12 +338,12 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[], []];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
     await launchAnalysis(ctx({ params: { goal: 'why', scope: 'org' } }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: ['security_events'] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: ['security_events', 'user_account_changes'] } }));
     await launchAnalysis(ctx({
       actorAuth: null, params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ permissionKeys: new Set(['devices:read', 'ai_agents:write', 'ai_workspace:execute']) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: DEVICES_READ_DATASETS, sensitiveGates: [] } }));
   });
 
   it('a ceiling without devices:read forwards an empty dataset set (the handler then refuses every export)', async () => {
@@ -358,7 +360,7 @@ describe('launchAnalysis', () => {
       params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ orgTerms: new Map([[ORG, { permissionKeys: new Set(['devices:read']), siteIds: null }]]) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: DEVICES_READ_DATASETS, sensitiveGates: [] } }));
   });
 
   it('infers site scope from a bare siteId', async () => {

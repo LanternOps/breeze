@@ -436,6 +436,7 @@
         "publishing": "Yayımlanıyor…",
         "cancel": "İptal",
         "success": "Güven Merkezi sayfası yayımlandı.",
+        "successPending": "Yayımlandı. Herkese açık sayfa bir dakika içinde güncellenecek.",
         "failed": "Güven Merkezi sayfası yayımlanamadı.",
         "disabledNoWrite": "Yayımlamak için kuruluşları düzenleme izni gerekir.",
         "disabledSlug": "Yayımlamadan önce sayfa adresini düzeltin."

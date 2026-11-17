@@ -36,6 +36,7 @@ export interface ExportDatasetRequirement {
 }
 
 const DEVICES_READ: ExportPermission = Object.freeze({ resource: 'devices', action: 'read' });
+const ALERTS_READ: ExportPermission = Object.freeze({ resource: 'alerts', action: 'read' });
 const DEVICES_EXECUTE: ExportPermission = Object.freeze({ resource: 'devices', action: 'execute' });
 
 /**
@@ -62,6 +63,18 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   boot_performance: Object.freeze({ permission: DEVICES_READ }),
   hardware_events: Object.freeze({ permission: DEVICES_READ }),
   service_checks: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_alerts.list` (aiGuardrails TOOL_PERMISSIONS).
+  alerts: Object.freeze({ permission: ALERTS_READ }),
+  // W05: `manage_patches.list`.
+  patch_state: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_patches.list` / `device_history`.
+  patch_attempts: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `query_change_log`; user_account rows need the same gate permission
+  // as security event logs (spec §4.4, decision 8).
+  change_log: Object.freeze({
+    permission: DEVICES_READ,
+    sensitiveGate: Object.freeze({ gate: 'user_account_changes' as const, permission: DEVICES_EXECUTE }),
+  }),
 });
 
 /**
