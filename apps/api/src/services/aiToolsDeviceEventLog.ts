@@ -58,10 +58,12 @@ export function projectEventLog(entry: unknown): Record<string, unknown> | null 
   const r = rec(entry);
   const name = r ? text(r.name) : undefined;
   if (!r || !name) return null;
+  // A count the agent did not send is unknown, not zero: omit it (#11975).
+  const recordCount = num(r.recordCount);
   return {
     name,
     displayName: text(r.displayName) ?? name,
-    recordCount: num(r.recordCount) ?? 0,
+    ...(recordCount !== undefined ? { recordCount } : {}),
     lastWriteTime: text(r.lastWriteTime) ?? '',
   };
 }

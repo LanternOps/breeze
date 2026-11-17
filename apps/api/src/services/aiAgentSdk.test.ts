@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { aiToolExecutions } from '../db/schema';
@@ -6603,6 +6604,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
 describe('#11994: overlapping calls complete their own intent and ledger row', () => {
   let ledgerUpdates: Array<{ values: Record<string, unknown>; where: unknown }>;
   let ledgerIds: string[];
+  let sessionFlags: Array<Record<string, unknown>>;
 
   const tier3Check = { allowed: true, tier: 3, requiresApproval: true, description: 'Execute command' };
   const cardCheck = { allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot' };
@@ -6631,6 +6633,7 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
     const schema = await import('../db/schema');
     ledgerUpdates = [];
     ledgerIds = [];
+    sessionFlags = [];
     let next = 0;
     // An insert that can be awaited at `.values()` or chained to
     // `.returning()`. A ledger row keeps the id the caller supplied, or gets
@@ -6647,6 +6650,7 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
       set: vi.fn((values: Record<string, unknown>) => ({
         where: vi.fn(async (where: unknown) => {
           if (table === schema.aiToolExecutions) ledgerUpdates.push({ values, where });
+          if (table === schema.aiSessions && 'flagReason' in values) sessionFlags.push(values);
         }),
       })),
     })) as any);
@@ -6829,5 +6833,154 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
     expect(JSON.stringify(terminal[0]!.where)).toContain(autoExec!);
     expect(terminal[1]!.values.toolOutput).toEqual({ who: 'plan' });
     expect(JSON.stringify(terminal[1]!.where)).toContain(planExec!);
+  });
+
+  // #11994 x #11968: a Tier-3 call whose input the tool refuses, corrected on
+  // the model's retry, beside a same-name sibling Tier-3 call in the same turn.
+  // The refusal, the sibling and the retry each pass the gate under their own
+  // tool_use id, so each closes exactly its own intent and its own ledger row,
+  // once, with its own outcome — and the corrected refusal does not flag the
+  // session.
+  it('a refusal corrected on retry beside a Tier-3 sibling: each intent and ledger row closes once with its own outcome', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-first', approvalRequestIds: ['appr-first'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-sibling', approvalRequestIds: ['appr-sibling'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-retry', approvalRequestIds: ['appr-retry'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const firstInput = { deviceId: 'd-a', command: '' };
+    const siblingInput = { deviceId: 'd-b', command: 'hostname' };
+    const retryInput = { deviceId: 'd-a', command: 'whoami' };
+    const refusal = JSON.stringify({ error: 'Invalid input: command: Too small' });
+
+    expect(await pre('execute_command', firstInput, undefined, 'toolu_first')).toMatchObject({ allowed: true, intentId: 'intent-first' });
+    expect(await pre('execute_command', siblingInput, undefined, 'toolu_sibling')).toMatchObject({ allowed: true, intentId: 'intent-sibling' });
+    // The refused call returns while the sibling is still running.
+    await post('execute_command', firstInput, refusal, true, 2, undefined, undefined, 'toolu_first');
+    // The model corrects its input and calls again; the sibling finishes
+    // before the retry does.
+    expect(await pre('execute_command', retryInput, undefined, 'toolu_retry')).toMatchObject({ allowed: true, intentId: 'intent-retry' });
+    const [firstExec, siblingExec, retryExec] = ledgerIds;
+    await post('execute_command', siblingInput, JSON.stringify({ who: 'sibling' }), false, 5, undefined, undefined, 'toolu_sibling');
+    await post('execute_command', retryInput, JSON.stringify({ who: 'retry' }), false, 5, undefined, undefined, 'toolu_retry');
+
+    expect(ledgerIds).toHaveLength(3);
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-first', to: 'failed', result: { error: 'Invalid input: command: Too small' } },
+      { intentId: 'intent-sibling', to: 'completed', result: { who: 'sibling' } },
+      { intentId: 'intent-retry', to: 'completed', result: { who: 'retry' } },
+    ]);
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(3);
+    const closes = (exec: string) => terminal.filter((u) => JSON.stringify(u.where).includes(exec));
+    expect(closes(firstExec!)).toHaveLength(1);
+    expect(closes(firstExec!)[0]!.values).toMatchObject({ status: 'failed', toolOutput: { error: 'Invalid input: command: Too small' } });
+    expect(closes(siblingExec!)).toHaveLength(1);
+    expect(closes(siblingExec!)[0]!.values).toMatchObject({ status: 'completed', toolOutput: { who: 'sibling' } });
+    expect(closes(retryExec!)).toHaveLength(1);
+    expect(closes(retryExec!)[0]!.values).toMatchObject({ status: 'completed', toolOutput: { who: 'retry' } });
+
+    // The refusal was corrected within the turn: no flag now or at turn end.
+    expect(sessionFlags).toEqual([]);
+    await flushDeferredToolFailureFlags(session);
+    expect(sessionFlags).toEqual([]);
+  });
+});
+
+// #11968: an input refusal the model corrects on its next call must not flag
+// the whole session; one it never corrects within the turn still does.
+describe('createSessionPostToolUse — auto-flag on a correctable input refusal (#11968)', () => {
+  let flagSets: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    mockInsertValues();
+    flagSets = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn((payload: Record<string, unknown>) => {
+        if ('flagReason' in payload) flagSets.push(payload);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    } as any);
+  });
+
+  const refusal = JSON.stringify({ error: 'invalid_params', detail: 'params.goal: Too big' });
+  const success = JSON.stringify({ requestId: 'req-1', status: 'queued' });
+
+  it('does not flag when the same tool succeeds after an invalid_params refusal in the same turn', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+
+    expect(flagSets).toEqual([]);
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([]);
+  });
+
+  it('does not flag when the same tool succeeds after a schema refusal (Invalid input: …)', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', {}, JSON.stringify({ error: 'Invalid input: limit: Too big' }), true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toEqual([]);
+  });
+
+  it('holds an uncorrected invalid_params refusal until the turn ends, then flags with the same reason', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    expect(flagSets).toEqual([]);
+
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: launch_specialist — invalid_params', flaggedAt: expect.any(Date) }),
+    ]);
+  });
+
+  it('a success of a DIFFERENT tool does not clear the held refusal', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+    expect(flagSets[0]!.flagReason).toBe('Tool failed: launch_specialist — invalid_params');
+  });
+
+  it('a refusal after the correcting success is held again and flagged if the turn ends on it', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2', 'tu-3'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+    await callback('launch_specialist', { kind: 'y' }, refusal, true, 0);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+  });
+
+  it('any other tool failure still flags the session at once', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'd-1' }, JSON.stringify({ error: 'Device is offline' }), true, 3);
+
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: execute_command — Device is offline' }),
+    ]);
+    // Nothing was held, so the turn end adds no second write.
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toHaveLength(1);
   });
 });

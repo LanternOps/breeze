@@ -18,9 +18,9 @@ import {
   assertOutsideHeldDbContext,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
-import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
+import { aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
@@ -35,6 +35,7 @@ import {
 } from './toolSources/guardrails';
 import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
 import { checkBudgetDetailed, checkAiRateLimit } from './aiCostTracker';
+import { recordToolOutcomeForAutoFlag } from './aiSessionAutoFlag';
 import { aiDenialClientCode, type AiDenialClientCode } from './aiDenialCode';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
@@ -4119,29 +4120,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       }
     }
 
-    // 2c. Auto-flag session on tool failure (first failure only)
-    if (isError) {
-      try {
-        const errorMsg = (typeof parsedOutput.error === 'string'
-          ? parsedOutput.error
-          : safeOutput).slice(0, 500);
-        await withDbAccessContext(
-          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-          () =>
-            db.update(aiSessions)
-              .set({
-                flaggedAt: new Date(),
-                flagReason: `Tool failed: ${toolName} — ${errorMsg}`,
-              })
-              .where(and(
-                eq(aiSessions.id, sessionId),
-                isNull(aiSessions.flaggedAt),
-              ))
-        );
-      } catch (err) {
-        console.error('[AI-SDK] Failed to auto-flag session:', sessionId, err instanceof Error ? err.message : err);
-      }
-    }
+    // 2c. Auto-flag session on tool failure (first failure only). A
+    // correctable input refusal is held until the turn ends and dropped if the
+    // model's next call to the same tool succeeds (#11968, aiSessionAutoFlag.ts).
+    await recordToolOutcomeForAutoFlag(session, toolName, {
+      isError,
+      errorCode: parsedOutput.error,
+      errorMsg: (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput).slice(0, 500),
+    });
 
     // 2d. Plan completion DB update
     if (session.activePlanId && session.currentPlanStepIndex >= session.approvedPlanSteps.size) {

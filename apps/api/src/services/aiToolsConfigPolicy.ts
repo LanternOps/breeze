@@ -28,6 +28,11 @@ import {
 } from '../routes/configurationPolicies/oemUpdatesGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { withoutObservedRegistryValues } from './complianceRuleResults';
+import {
+  uncollectableComplianceRegistryPaths,
+  uncollectableComplianceRegistryPathMessage,
+} from '../routes/agents/policyProbeSafety';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
@@ -284,6 +289,12 @@ function validateInlineSettingsForFeature(
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
     return { error: `Invalid ${featureType} inline settings — ${described}` };
+  }
+  // #11976: same refusal as the HTTP route; left to the service backstop it
+  // would reach the model as the generic tool error.
+  if (featureType === 'compliance') {
+    const uncollectable = uncollectableComplianceRegistryPaths(raw);
+    if (uncollectable.length > 0) return { error: uncollectableComplianceRegistryPathMessage(uncollectable[0]!) };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -1126,7 +1137,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           policyId,
           policyName: policy.name,
-          devices: rows,
+          devices: rows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
           showing: rows.length,
         });
       }

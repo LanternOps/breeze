@@ -2008,6 +2008,55 @@ describe('compliance rule set names', () => {
     expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
   });
 
+  // #11976: the agent never collects these paths, so the rule would report
+  // "Registry value not found" forever. Refuse it when it is written.
+  const SAM_RULE = { items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SAM\\SAM', registryValueName: 'F' }] }] };
+
+  it('POST refuses a registry_check on a path the agent never collects → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: SAM_RULE }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED');
+    expect(body.error).toContain('HKLM\\SAM\\SAM');
+    expect(body.paths).toEqual(['HKLM\\SAM\\SAM']);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH refuses a registry_check on a path the agent never collects → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: SAM_RULE }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts a registry_check on an ordinary policy path', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        featureType: 'compliance',
+        inlineSettings: { items: [{ name: 'Lock', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Example', registryValueName: 'Enabled' }] }] },
+      }),
+    });
+
+    expect(res.status).not.toBe(400);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
   it('PATCH with distinct names saves', async () => {
     getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
     const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
