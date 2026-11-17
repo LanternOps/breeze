@@ -281,6 +281,52 @@ describe('export_dataset W04 datasets on real Postgres (breeze_app, forced RLS)'
     expect(rows.map((r) => r.timestamp)).toEqual([...ev(0, 3), ...ev(100, 2), ...ev(200, 1)].map((e) => new Date(e.timestamp).toISOString()));
   });
 
+  runDb('reliability_events: two devices, tied collected_at, mid-row resumes across many pages lose and repeat nothing', async () => {
+    const t = await seedTenant();
+    const ts = `${tsText(1)}.500000`;
+    const t0 = Date.now() - 2 * DAY_MS;
+    let n = 0;
+    const seeded: string[] = [];
+    // Four rows at the SAME collected_at (the id breaks the tie), two per
+    // device, 3/10/1/7 events, plus an empty row in between.
+    for (const [dev, count] of [[t.a1, 3], [t.a2, 10], [t.a1, 1], [t.a2, 7], [t.a1, 0]] as const) {
+      const events = Array.from({ length: count }, () => ({ type: 'bsod', timestamp: new Date(t0 + (n++) * 1000).toISOString() }));
+      const [row] = await getTestDb().execute(sql`
+        INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events)
+        VALUES (${dev}, ${t.orgA}, ${ts}::timestamp, 60, ${ts}::timestamp, ${JSON.stringify(events)}::jsonb)
+        RETURNING id::text AS id`) as unknown as Array<{ id: string }>;
+      seeded.push(row!.id);
+    }
+    // pageSize 1: a page takes at most 4 events.
+    const { pages, rows } = await drain('reliability_events', request('reliability_events', t.orgA, [t.a1, t.a2], { pageSize: 1 }));
+    expect(pages.every((p) => p.rows.length <= 4)).toBe(true);
+    expect(pages[pages.length - 1]!.nextCursor).toBeNull();
+    const ordered = await getTestDb().execute(sql`
+      SELECT id::text AS id, jsonb_array_length(crash_events) AS n FROM device_reliability_history
+      WHERE org_id = ${t.orgA} ORDER BY collected_at DESC, id DESC`) as unknown as Array<{ id: string; n: number }>;
+    expect(rows.map((r) => r.historyId)).toEqual(ordered.flatMap((r) => Array(Number(r.n)).fill(r.id)));
+    expect(rows).toHaveLength(21);
+    expect(new Set(rows.map((r) => r.timestamp)).size).toBe(21);
+  });
+
+  runDb('reliability_events: range edges on the collected-after-end window', async () => {
+    const t = await seedTenant();
+    const end = new Date(Date.now() - 5 * DAY_MS);
+    const start = new Date(end.getTime() - 10 * DAY_MS);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const insert = (collectedMs: number, events: unknown[]) => getTestDb().execute(sql`
+      INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events)
+      VALUES (${t.a1}, ${t.orgA}, ${iso(collectedMs)}::timestamptz AT TIME ZONE 'UTC', 60, now()::timestamp, ${JSON.stringify(events)}::jsonb)`);
+    const inRange = iso(end.getTime() - 2 * 3_600_000);
+    await insert(end.getTime() + 27 * 3_600_000, [{ type: 'bsod', timestamp: iso(end.getTime() - 3_600_000) }]); // past the 26 h lag: out
+    await insert(end.getTime() - DAY_MS, [{ type: 'bsod', timestamp: inRange }, { type: 'bsod', timestamp: 'garbage' }]); // in window: both kept
+    await insert(start.getTime() - 3_600_000, [{ type: 'bsod', timestamp: 'garbage' }]); // collected before start: out
+    const r = request('reliability_events', t.orgA, [t.a1], { filters: { timeRange: { start: start.toISOString(), end: end.toISOString() } } });
+    const { rows } = await drain('reliability_events', r);
+    expect(rows.map((x) => x.timestamp)).toEqual([inRange, null]);
+    expect(r.notes.some((note) => note.includes('26 hours after timeRange.end'))).toBe(true);
+  });
+
   runDb('reliability_events: an in-range event posted after the range end is exported', async () => {
     const t = await seedTenant();
     const end = new Date(Date.now() - 5 * DAY_MS);

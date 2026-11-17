@@ -24,7 +24,7 @@ vi.mock('../aiToolsExportShared', async (importOriginal) => {
   };
 });
 
-import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './reliability';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter, RELIABILITY_LATE_EVENTS_NOTE } from './reliability';
 
 const NOW = new Date('2026-11-13T12:00:00.000Z');
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -357,6 +357,50 @@ describe('reliability_events', () => {
     const pager = await reliabilityEventsAdapter.createPager(req({}));
     const page = await pager(cursorFor(['2026-11-10 00:00:00', H1, '5']));
     expect(page.rows.map((r) => r.historyId)).toEqual([H2, H2, H2]);
+  });
+
+  it('a cursor row removed between the two queries: the next row loses nothing and the page cursor stays on the key order', async () => {
+    const a = eventsHistory(H1, { collectedAtText: '2026-11-10 00:00:00' });
+    const b = eventsHistory(H2, { collectedAtText: '2026-11-09 00:00:00' });
+    const c = eventsHistory(id(203), { collectedAtText: '2026-11-08 00:00:00' });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    // Key query sees A (the cursor row), B and C; the arrays query finds only B.
+    runExportQuery.mockResolvedValueOnce([a, b, c]).mockResolvedValueOnce([b]);
+    // pageSize 1: budget 4. need = 4 + offset 1 = 5; A 3 + B 3 = 6 > 5, so A and B are chosen.
+    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 1 }));
+    const page = await pager(cursorFor([a.collectedAtText, H1, '1']));
+    expect(page.rows.map((r) => r.historyId)).toEqual([H2, H2, H2]);
+    expect(cursorOf(page.nextCursor)).toEqual([b.collectedAtText, H2, '0']);
+  });
+
+  it('the resumed row\'s skipped events count toward the prefix, so the page still fills', async () => {
+    const at = (n: number) => new Date(Date.UTC(2026, 10, 9) + n * 1000).toISOString();
+    const a = eventsHistory(H1, {
+      collectedAtText: '2026-11-10 00:00:02',
+      crashEvents: Array.from({ length: 500 }, (_, n) => ({ type: 'bsod', timestamp: at(n) })),
+      appHangs: [], serviceFailures: [], hardwareErrors: [],
+    });
+    const b = eventsHistory(H2, {
+      collectedAtText: '2026-11-10 00:00:01',
+      crashEvents: Array.from({ length: 300 }, (_, n) => ({ type: 'bsod', timestamp: at(1000 + n) })),
+      appHangs: [], serviceFailures: [], hardwareErrors: [],
+    });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([a, b]);
+    // pageSize 100: budget 400. Resuming A at 300 leaves 200 of A; B must be read too.
+    const page = await (await reliabilityEventsAdapter.createPager(req({}, { pageSize: 100 })))(cursorFor([a.collectedAtText, H1, '300']));
+    expect(compiled(1).params).toContainEqual([H1, H2]);
+    expect(page.rows).toHaveLength(400);
+    expect(cursorOf(page.nextCursor)).toEqual([b.collectedAtText, H2, '200']);
+  });
+
+  it('a supplied range end notes that late-reported events are not included', async () => {
+    const r = req({ timeRange: { start: '2026-11-01T00:00:00Z', end: '2026-11-10T00:00:00Z' } });
+    await firstQuery(reliabilityEventsAdapter, r);
+    expect(r.notes).toContain(RELIABILITY_LATE_EVENTS_NOTE);
+    const open = req({});
+    await firstQuery(reliabilityEventsAdapter, open);
+    expect(open.notes).not.toContain(RELIABILITY_LATE_EVENTS_NOTE);
   });
 
   it('time range: reads rows collected up to 26 h after end and keeps in-range events from them', async () => {

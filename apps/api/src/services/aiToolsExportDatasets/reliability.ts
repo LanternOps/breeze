@@ -165,6 +165,8 @@ export const reliabilityHistoryAdapter: DatasetAdapter = {
 type EventClass = 'crash' | 'app_hang' | 'service_failure' | 'hardware_error';
 
 const DUPLICATE_EVENTS_NOTE = 'reliability_events can list one event more than once; drop duplicates on eventKey.';
+export const RELIABILITY_LATE_EVENTS_NOTE =
+  'reliability_events selects events by their own time; an event reported more than 26 hours after timeRange.end (e.g. by a device that was offline) is not included.';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -233,6 +235,9 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
   const scope = await exportDeviceSet(req);
   if (scope.deviceIds.length === 0) return emptyExportPager;
   noteOn(req, DUPLICATE_EVENTS_NOTE);
+  // Only a supplied end can sit in the past; without one the window ends now.
+  const range = req.filters.timeRange as { end?: unknown } | null | undefined;
+  if (range?.end !== undefined && range.end !== null) noteOn(req, RELIABILITY_LATE_EVENTS_NOTE);
 
   const startMs = start.getTime();
   const endMs = end.getTime();
