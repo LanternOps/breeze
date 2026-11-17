@@ -67,7 +67,8 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.report.edrUnknown).toBe(1);
     expect(ev.report.anyAvUnknown).toBe(1);
-    expect(ev.report.unprotected).toBe(2);
+    // d3 has no protection evidence → not assessed, not unprotected (#12044).
+    expect(ev.report.unprotected).toBe(1);
     expect(ev.report.reporting).toBe(2);
     expect(ev.controls.disk_encryption).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.controls.host_firewall).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
@@ -189,10 +190,46 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.edr_coverage).toMatchObject({ eligible: 3, assessed: 2, passing: 0 });
     expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.report.edrUnknown).toBe(1);
-    expect(ev.report.anyAvUnknown).toBe(1);
-    expect(ev.report.unprotected).toBe(2);
+    // The report needs protection evidence, not a check-in alone (#12044):
+    // 'in' and 'out' are both not assessed there, and neither is unprotected.
+    expect(ev.report.anyAvUnknown).toBe(2);
+    expect(ev.report.unprotected).toBe(0);
     // Neither is inside the 24h monitoring window.
     expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
+  });
+
+  describe('report protection figures (#12044)', () => {
+    it('a checked-in device with no protection evidence is not assessed in the report, never unprotected', async () => {
+      // d3 checked in recently but has no status row and no agent: its protection is unknown.
+      mockQueries({ 2: [
+        { id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+        { id: 'd2', hostname: 'pc-2', osType: 'macos', siteName: 'HQ', lastSeenAt: recent },
+        { id: 'd3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote', lastSeenAt: recent },
+      ] });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.devices.find((d) => d.id === 'd3')?.protection).toBe('unknown');
+      expect(ev.report.unprotected).toBe(1); // d2 only (provider "other", RTP off)
+      expect(ev.report.anyAvUnknown).toBe(1);
+      expect(ev.report.avAssessed).toBe(2);
+      expect(ev.report.avProtected).toBe(1);
+      // The shared control the trust page reads is unchanged: d3 stays assessed and failing there.
+      expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
+    });
+
+    it('an EDR product the device itself reports counts toward the report EDR figure', async () => {
+      // d1's security status names SentinelOne, but no SentinelOne integration row links it.
+      mockQueries({
+        3: [{ deviceId: 'd1', provider: 'sentinelone', realTimeProtection: true, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: recent }],
+        5: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.report.edrProtected).toBe(1);
+      // The inventory lists the same product, so the two figures now reconcile.
+      expect(ev.report.productEvidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ product: 'SentinelOne', category: 'edr' }),
+      ]));
+      expect(ev.controls.edr_coverage.passing).toBe(0); // trust-page control unchanged
+    });
   });
 
   it('a stale security_status row is not assessed for encryption/firewall; EDR/AV assessment then rests on the agent row or check-in', async () => {

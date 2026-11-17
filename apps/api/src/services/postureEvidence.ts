@@ -162,7 +162,25 @@ export interface PostureEvidence {
   controls: PostureControlEvidence;
   report: {
     reporting: number;
+    /**
+     * Report-only protection figures (#12044). A device whose protection state
+     * is unknown (no status row, no agent, or a null real-time-protection
+     * reading) is NOT ASSESSED here, never unprotected: `avAssessed` counts the
+     * devices with protection evidence, `avProtected` those protected, and
+     * `unprotected` = avAssessed - avProtected. The shared
+     * `controls.endpoint_protection` (trust page) keeps its §19.7 semantics.
+     */
     unprotected: number;
+    avAssessed: number;
+    avProtected: number;
+    /**
+     * Report-only: EDR-assessed devices with an EDR product — an integration
+     * agent (Huntress, SentinelOne, EDR connector) OR an EDR provider the device
+     * itself reports with real-time protection on, so the figure reconciles with the
+     * product inventory, which lists both (#12044). The shared
+     * `controls.edr_coverage` still counts integration agents only.
+     */
+    edrProtected: number;
     cisIncluded: boolean;
     cisAssessedCount: number;
     edrUnknown: number;
@@ -323,6 +341,9 @@ export async function loadPostureEvidence(
     report: {
       reporting: 0,
       unprotected: 0,
+      avAssessed: 0,
+      avProtected: 0,
+      edrProtected: 0,
       cisIncluded: policy.includeCis,
       cisAssessedCount: 0,
       edrUnknown: 0,
@@ -607,9 +628,10 @@ export async function loadPostureEvidence(
   controls.backups_verified = await loadBackupsVerifiedEvidence(orgId, deviceIds, asOf, policy.maxSecurityStatusAgeDays);
 
   let reporting = 0; // devices reporting a security_status row
-  let unprotected = 0;
+  let avAssessed = 0;
+  let avProtected = 0;
+  let edrProtected = 0;
   let edrUnknown = 0;
-  let anyAvUnknown = 0;
   const monitoringCutoff = asOf.getTime() - policy.monitoringWindowHours * 3600_000;
   const evidenceCutoff = asOf.getTime() - policy.maxSecurityStatusAgeDays * 86400000;
 
@@ -644,10 +666,6 @@ export async function loadPostureEvidence(
         });
 
     if (ss) reporting += 1;
-    // The report has no unknown protection bucket. An absent status row (and a
-    // null real-time-protection reading) has always counted as unprotected
-    // here, so preserve that public contract.
-    if (protection !== 'protected') unprotected += 1;
 
     // Firewall/encryption are live device states that stop updating when a device
     // goes offline, so a row older than the cutoff is treated as unknown rather
@@ -662,12 +680,20 @@ export async function loadPostureEvidence(
     const seenRecently = Number.isFinite(lastSeenMs) && lastSeenMs >= evidenceCutoff;
     const epAssessed = ssFresh || isManaged || seenRecently;
     const epEvidenceAt = ssFresh ? ss!.updatedAt : lastSeenAt;
-    if (!epAssessed) {
-      edrUnknown += 1;
-      anyAvUnknown += 1;
-    }
+    if (!epAssessed) edrUnknown += 1;
     bump(controls.edr_coverage, epAssessed, isManaged, epEvidenceAt);
     bump(controls.endpoint_protection, epAssessed, protection === 'protected', epEvidenceAt);
+
+    // Report-only figures (#12044): unknown protection is not assessed, never
+    // unprotected; an EDR the device reports itself counts as EDR coverage.
+    if (epAssessed && protection !== 'unknown') {
+      avAssessed += 1;
+      if (protection === 'protected') avProtected += 1;
+    }
+    // A self-reported EDR counts only while it is protecting (real-time on) —
+    // the same rule that marks it active in the product inventory.
+    const reportsEdrProduct = Boolean(ss?.provider) && categoryForEndpointProvider(ss!.provider) === 'edr' && rtp === true;
+    if (epAssessed && (isManaged || reportsEdrProduct)) edrProtected += 1;
 
     const enc = ss?.encryptionStatus ?? 'unknown';
     bump(controls.disk_encryption, ssFresh && enc !== 'unknown', enc === 'encrypted', ss?.updatedAt);
@@ -778,11 +804,14 @@ export async function loadPostureEvidence(
     controls,
     report: {
       reporting,
-      unprotected,
+      unprotected: avAssessed - avProtected,
+      avAssessed,
+      avProtected,
+      edrProtected,
       cisIncluded: policy.includeCis,
       cisAssessedCount: cisByDevice.size,
       edrUnknown,
-      anyAvUnknown,
+      anyAvUnknown: deviceRows.length - avAssessed,
       orgWide,
       backupProviders,
       vulnByDevice,
