@@ -69,6 +69,12 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   patch_state: Object.freeze({ permission: DEVICES_READ }),
   // W05: `manage_patches.list` / `device_history`.
   patch_attempts: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `query_change_log`; user_account rows need the same gate permission
+  // as security event logs (spec §4.4, decision 8).
+  change_log: Object.freeze({
+    permission: DEVICES_READ,
+    sensitiveGate: Object.freeze({ gate: 'user_account_changes' as const, permission: DEVICES_EXECUTE }),
+  }),
 });
 
 /**

@@ -20,6 +20,7 @@ export const EXPORT_DATASETS = [
   'alerts',
   'patch_state',
   'patch_attempts',
+  'change_log',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 

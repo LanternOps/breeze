@@ -46,8 +46,24 @@ describe('EXPORT_DATASET_REQUIREMENTS', () => {
 });
 
 describe('resolveExportGrants', () => {
-  it('a ceiling holding devices:read and devices:execute gets every dataset and the security gate', () => {
-    expect(resolveExportGrants(() => true)).toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: ['security_events'] });
+  it('a ceiling holding every permission gets every dataset and both gates', () => {
+    expect(resolveExportGrants(() => true))
+      .toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: ['security_events', 'user_account_changes'] });
+  });
+
+  it('W05: devices:read without devices:execute yields change_log but not the user_account_changes gate', () => {
+    const g = resolveExportGrants((r, a) => r === 'devices' && a === 'read');
+    expect(g.datasets).toContain('change_log');
+    expect(g.sensitiveGates).not.toContain('user_account_changes');
+  });
+
+  it('W05: devices:read + devices:execute holds the user_account_changes gate', () => {
+    expect(resolveExportGrants((r) => r === 'devices').sensitiveGates).toEqual(['security_events', 'user_account_changes']);
+  });
+
+  it('W05: only event_logs and change_log declare a sensitive gate', () => {
+    const gated = Object.entries(EXPORT_DATASET_REQUIREMENTS).filter(([, r]) => r.sensitiveGate).map(([d, r]) => [d, r.sensitiveGate!.gate]);
+    expect(gated).toEqual([['event_logs', 'security_events'], ['change_log', 'user_account_changes']]);
   });
 
   it('devices:read without devices:execute: every devices:read dataset, no gate', () => {
