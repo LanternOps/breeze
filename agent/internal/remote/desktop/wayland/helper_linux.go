@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"sync/atomic"
+
+	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 )
 
 // inputCmd is one pointer or keyboard event from the root agent.
@@ -51,9 +53,9 @@ func runHelper(out *bufio.Writer) error {
 	defer session.Close()
 	current.Store(session)
 
-	gst, err := exec.LookPath("gst-launch-1.0")
+	gst, err := linuxsession.ResolveSystemBinary("gst-launch-1.0")
 	if err != nil {
-		gst = "/usr/bin/gst-launch-1.0"
+		return err
 	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -83,7 +85,14 @@ func runHelper(out *bufio.Writer) error {
 		_ = session.pw.Close()
 		session.pw = nil
 	}
-	defer func() { _ = cmd.Wait() }()
+	// cancel and close the pipe before Wait. A failed stdout write returns
+	// while gstreamer is still producing; Wait first would block on a child
+	// that is blocked writing to this pipe.
+	defer func() {
+		cancel()
+		_ = reader.Close()
+		_ = cmd.Wait()
+	}()
 
 	buf := make([]byte, 0, 256<<10)
 	tmp := make([]byte, 64<<10)

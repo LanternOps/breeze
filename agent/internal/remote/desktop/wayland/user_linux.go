@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
@@ -30,7 +31,11 @@ var sessionCache struct {
 }
 
 func loginctl(args ...string) ([]byte, error) {
-	return procspawn.Command(lookBin("loginctl"), args...).Output()
+	bin, err := linuxsession.ResolveSystemBinary("loginctl")
+	if err != nil {
+		return nil, err
+	}
+	return procspawn.Command(bin, args...).Output()
 }
 
 func lookupSession() (userSession, error) {
@@ -116,18 +121,8 @@ func IsGraphical() bool {
 }
 
 func gstInstalled() bool {
-	if _, err := exec.LookPath("gst-launch-1.0"); err == nil {
-		return true
-	}
-	_, err := os.Stat("/usr/bin/gst-launch-1.0")
+	_, err := linuxsession.ResolveSystemBinary("gst-launch-1.0")
 	return err == nil
-}
-
-func lookBin(name string) string {
-	if p, err := exec.LookPath(name); err == nil {
-		return p
-	}
-	return "/usr/bin/" + name
 }
 
 // CaptureSupported reports that the active Wayland session can use this
@@ -179,29 +174,66 @@ func systemdHelpSupportsPipe(help string) bool {
 }
 
 func systemdPipe() bool {
+	bin, err := linuxsession.ResolveSystemBinary("systemd-run")
+	if err != nil {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := procspawn.CommandContext(ctx, lookBin("systemd-run"), "--help").CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, bin, "--help").CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return false
 	}
 	return systemdHelpSupportsPipe(string(out))
 }
 
+// pipewireLibRoots are the library directories that may hold the gstreamer
+// pipewire plugin. A file check replaces `gst-inspect-1.0`, which loads every
+// system plugin.
+var pipewireLibRoots = []string{"/usr/lib", "/usr/lib64", "/lib", "/lib64"}
+
 func pipewireSrc() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := procspawn.CommandContext(ctx, lookBin("gst-inspect-1.0"), "pipewiresrc").Run()
-	return err == nil
+	return pipewirePluginIn(pipewireLibRoots)
+}
+
+func pipewirePluginIn(roots []string) bool {
+	const name = "libgstpipewire.so"
+	for _, root := range roots {
+		if regularFile(filepath.Join(root, "gstreamer-1.0", name)) {
+			return true
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if regularFile(filepath.Join(root, e.Name(), "gstreamer-1.0", name)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func remoteDesktopPortal(user string) bool {
 	if !validUser(user) {
 		return false
 	}
+	bin, err := linuxsession.ResolveSystemBinary("busctl")
+	if err != nil {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := procspawn.CommandContext(ctx, lookBin("busctl"),
+	out, err := procspawn.CommandContext(ctx, bin,
 		"--user", "-M", user+"@", "introspect",
 		"org.freedesktop.portal.Desktop",
 		"/org/freedesktop/portal/desktop",

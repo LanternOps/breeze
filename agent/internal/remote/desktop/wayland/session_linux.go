@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 )
@@ -253,9 +254,9 @@ func startPipe() (*pipe, error) {
 	if err != nil {
 		return nil, err
 	}
-	bin, err := exec.LookPath("systemd-run")
+	bin, err := linuxsession.ResolveSystemBinary("systemd-run")
 	if err != nil {
-		bin = "/usr/bin/systemd-run"
+		return nil, fmt.Errorf("systemd-run: %w", err)
 	}
 	cmd := procspawn.Command(bin,
 		"--user", "-M", sess.name+"@",
@@ -323,6 +324,9 @@ func (p *pipe) readStderr(r io.Reader) {
 			}
 		}
 	}
+	// A line past the scanner limit stops Scan without consuming the rest.
+	// Leave the pipe undrained and gstreamer blocks on its next write.
+	_, _ = io.Copy(io.Discard, r)
 }
 
 func (p *pipe) readStdout(r io.Reader) {

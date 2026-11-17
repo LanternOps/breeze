@@ -22,9 +22,10 @@ const (
 	// maxFramePixels bounds the decoded frame accepted from the in-session
 	// helper. maxPayload bounds compressed bytes, not pixels: image/jpeg
 	// allocates from the SOF header before it validates the scan, so a
-	// 25-byte header can ask for a 4 GiB frame. 64 megapixels covers an
-	// 8K desktop.
-	maxFramePixels int64 = 64 << 20
+	// 25-byte header can ask for a 4 GiB frame. 40 megapixels still covers
+	// an 8K desktop (7680x4320 is about 33 MP) and caps the RGBA copy
+	// Capture makes on every call at about 160 MiB.
+	maxFramePixels int64 = 40_000_000
 )
 
 // decodeFrame checks the declared size before image/jpeg allocates it.

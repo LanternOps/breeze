@@ -56,6 +56,16 @@ func TestTakeJPEG(t *testing.T) {
 	}
 }
 
+func TestFrameCapCovers8K(t *testing.T) {
+	const w, h = 7680, 4320
+	if int64(w)*int64(h) > maxFramePixels {
+		t.Fatalf("8K %dx%d exceeds cap %d", w, h, maxFramePixels)
+	}
+	if maxFramePixels > 40_000_000 {
+		t.Fatalf("cap %d is above 40 MP", maxFramePixels)
+	}
+}
+
 func TestDecodeFrameBoundsPixels(t *testing.T) {
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2)), &jpeg.Options{Quality: 50}); err != nil {

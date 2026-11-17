@@ -31,9 +31,16 @@ func (s *portalSession) Close() {
 	if s == nil {
 		return
 	}
+	// input() uses the same fields. Take the lock so a pointer event cannot
+	// run on a session this call is tearing down.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.session != "" && s.conn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		obj := s.conn.Object("org.freedesktop.portal.Desktop", s.session)
-		_ = obj.Call("org.freedesktop.portal.Session.Close", 0).Err
+		_ = obj.CallWithContext(ctx, "org.freedesktop.portal.Session.Close", 0).Err
+		s.session = ""
 	}
 	if s.pw != nil {
 		_ = s.pw.Close()
