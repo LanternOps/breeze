@@ -19,7 +19,8 @@ const config = (over: Record<string, unknown> = {}) => resolveFrozenConfig(trust
   introHtml: null, websiteUrl: null, securityContactEmail: null, documentIds: [], ...over,
 }));
 const ctx = (over: Record<string, unknown> = {}): SectionBuildContext => ({ page: { id: 'pg' } as never, asOf, partnerName: 'MSP', config: config(over), documents: [] });
-const pt = (d: Date, met: number, shown: number) => ({ generatedAt: d, met, shown });
+// The columns come back as text (->>, no SQL cast): parsing happens in buildHistory so one bad row cannot throw.
+const pt = (d: Date, met: number, shown: number) => ({ generatedAt: d, met: String(met), shown: String(shown) });
 
 // payloadSha256 ignoring history is asserted in payloadBuilder.test.ts ("sha256 ignores history ...").
 describe('buildHistory', () => {
@@ -52,6 +53,41 @@ describe('buildHistory', () => {
     const out = await buildHistory(ctx({ showHistory: true }));
     expect(out.map((p) => [p.met, p.shown])).toEqual([[5, 16], [6, 16], [5, 16]]);
     expect(out[0]!.at).toBe(day(40).toISOString());
+  });
+
+  it('skips every unreadable row (non-integer, negative, null, unsafe), reports the count once, and keeps good rows', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const raw = (d: Date, met: string | null, shown: string | null) => ({ generatedAt: d, met, shown });
+      rows.queue = [
+        [
+          raw(day(50), 'x', '16'),
+          raw(day(40), '2.5', '16'),
+          raw(day(30), null, '16'),
+          raw(day(20), '99999999999999999999', '16'),
+          raw(day(15), '-1', '16'),
+          raw(day(10), '3', '5'),
+        ],
+        [raw(day(95), '1e2', '16')],
+      ];
+      const out = await buildHistory(ctx({ showHistory: true }));
+      expect(out).toEqual([{ at: day(10).toISOString(), met: 3, shown: 5 }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith('[trustPage] history skipped unreadable snapshots', { pageId: 'pg', skipped: 6 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn when every row is readable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      rows.queue = [[pt(day(10), 3, 5)], []];
+      await buildHistory(ctx({ showHistory: true }));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('caps at 200 points, keeping the newest', async () => {
