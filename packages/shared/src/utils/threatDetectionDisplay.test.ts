@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clientDetectionAdvice,
   clientDetectionTitle,
   endpointCoverageCounts,
   openForDays,
@@ -74,6 +75,59 @@ describe('clientDetectionTitle (#12046)', () => {
   it('falls back to a word when the title is empty or only a prefix', () => {
     expect(clientDetectionTitle(null, 'Acme')).toBe('Detection');
     expect(clientDetectionTitle('MEDIUM - ', 'Acme')).toBe('Detection');
+  });
+});
+
+describe('length cap before the email scrub (#12046 follow-up)', () => {
+  it('caps a very long title, quickly, instead of running the address pattern over all of it', () => {
+    // One 200k-character token with no address in it: the address pattern
+    // retries from every start position, so an uncapped scrub is quadratic.
+    const started = Date.now();
+    const title = clientDetectionTitle(`Detection ${'x'.repeat(200_000)}`, 'Acme');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(title.length).toBeLessThanOrEqual(303);
+  });
+
+  it('never leaves half an address behind when the cap cuts through one', () => {
+    // 291 characters of words, then an address across the 300-character cap.
+    const raw = `${'Sign-in '.repeat(36)}xx jane.doe@example.com and more text after it`;
+    expect(raw.indexOf('jane.doe@')).toBe(291);
+    expect(raw.indexOf('example.com') + 'example.com'.length).toBeGreaterThan(300);
+    const title = clientDetectionTitle(raw, 'Acme');
+    expect(title).not.toMatch(/jane|@|example/);
+    expect(title.endsWith('...')).toBe(true);
+  });
+
+  it('leaves a title under the cap untouched apart from the usual rewrites', () => {
+    const raw = `Suspicious sign-in ${'a'.repeat(250)}`;
+    expect(clientDetectionTitle(raw, 'Acme')).toBe(raw);
+  });
+});
+
+describe('clientDetectionAdvice (#12046 follow-up)', () => {
+  it('replaces an email address in the advice with a neutral phrase', () => {
+    expect(clientDetectionAdvice('Reset the password for jane.doe@example.com and review sign-ins.'))
+      .toBe('Reset the password for a user account and review sign-ins.');
+  });
+
+  it('keeps advice without an address as written', () => {
+    expect(clientDetectionAdvice('Isolate the host and reimage.')).toBe('Isolate the host and reimage.');
+  });
+
+  it('returns an empty string for absent advice, so the cell stays blank', () => {
+    expect(clientDetectionAdvice(null)).toBe('');
+    expect(clientDetectionAdvice('   ')).toBe('');
+  });
+
+  it('caps very long advice without leaving half an address', () => {
+    // The address runs from character 986 to 1006, across the 1000 cap.
+    const raw = `${'Review the account. '.repeat(49)}Reset jane.doe@example.com`;
+    expect(raw.indexOf('jane.doe@')).toBe(986);
+    const started = Date.now();
+    const advice = clientDetectionAdvice(`${raw}${'y'.repeat(200_000)}`);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(advice.length).toBeLessThanOrEqual(1_003);
+    expect(advice).not.toMatch(/jane|@/);
   });
 });
 

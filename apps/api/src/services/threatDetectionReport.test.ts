@@ -447,6 +447,7 @@ describe('generateThreatDetectionReport', () => {
       devicesWithoutAgent: 1,
       devicesWithDetectionAgent: 2,
       devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['huntress'],
       unmatchedAgents: 0,
     });
   });
@@ -481,6 +482,7 @@ describe('generateThreatDetectionReport', () => {
       // d1 (Huntress + EDR), d2 (SentinelOne), d3 (EDR); d4 and d5 have none.
       devicesWithDetectionAgent: 3,
       devicesWithoutDetectionAgent: 2,
+      detectionAgentSources: ['huntress', 'sentinelone', 'edr'],
       unmatchedAgents: 2,
     });
     const a = s.agentCoverage!;
