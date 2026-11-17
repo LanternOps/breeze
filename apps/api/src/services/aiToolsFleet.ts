@@ -862,6 +862,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_deployments', action, auth);
+      if (mfaError) return mfaError;
 
       // Creating or driving a deployment is an organization-wide change (the
       // target resolves against the whole org), matching routes/deployments.ts.
@@ -2529,6 +2531,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_automations', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       // Site axis (app-layer only; RLS does NOT enforce it): an automation may

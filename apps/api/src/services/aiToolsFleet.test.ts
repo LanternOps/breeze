@@ -763,6 +763,7 @@ describe('manage_automations on a switched (converted) row (#5221 W06 B7)', () =
   const tool = toolMap.get('manage_automations')!;
   const auth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true }, // enable/disable are MFA-gated (aiToolMfaGate.ts)
     orgId: 'org-1',
     partnerId: null,
     scope: 'organization',

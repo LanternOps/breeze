@@ -89,22 +89,38 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   ]),
   // Mirrors of requireMfa() routes outside config policies. Each row is pinned
   // to its route by aiToolMfaGate.routeParity.contract.test.ts.
+  //
+  // One rule for these: only auto-executing actions (effective Tier 1 or 2) are
+  // enrolled. A Tier 2 action is never approval-gated over MCP, so the handler
+  // call is its ONLY MFA check there. A Tier 3 action keeps relying on the
+  // approval gate (in web chat both the chat route and the approve route
+  // require MFA) and is NOT enrolled, even when its route twin requires MFA:
+  // enrolling it would remove its MCP approval-request path. The Tier 3 twins
+  // left out on purpose are pinned in TIER3_APPROVAL_ONLY in the parity test.
   manage_backup_configs: Object.freeze(['create', 'update']),
-  manage_backup_profiles: Object.freeze(['create', 'update', 'delete']),
+  // update/delete are Tier 3 (approval), so only create is enrolled.
+  manage_backup_profiles: Object.freeze(['create']),
   // POST /patches/scan, /patches/:id/{approve,decline,defer} and /patches/bulk-approve.
-  // All Tier 2, so this is their only MFA check over MCP.
   manage_patches: Object.freeze(['scan', 'approve', 'decline', 'defer', 'bulk_approve']),
   revoke_elevation: '*',
-  configure_vault: '*',
-  trigger_vault_sync: '*',
   sync_huntress_data: '*',
-  trigger_c2c_sync: '*',
   assign_security_training: '*',
-  // Tier 2 backup-SLA and DR-plan writes: POST/PATCH /backup/sla/configs and the
-  // /dr/plans create, update and group add/update/delete routes. All Tier 2 except
-  // delete_group (Tier 3, enrolled so the tool's writes share one rule).
+  // POST/PATCH /backup/sla/configs.
   configure_backup_sla: Object.freeze(['create', 'update']),
-  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group', 'delete_group']),
+  // /dr/plans create, update and group add/update. delete_group is Tier 3 (approval), so it is not enrolled.
+  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group']),
+  // PUT/PATCH /automations/:id (the enabled flag).
+  manage_automations: Object.freeze(['enable', 'disable']),
+  // POST /deployments/:id/pause and /:id/resume.
+  manage_deployments: Object.freeze(['pause', 'resume']),
+  // PATCH /devices/:id (the tags field).
+  manage_tags: Object.freeze(['add', 'remove']),
+  // POST /filters and DELETE /filters/:id.
+  manage_saved_filters: Object.freeze(['create', 'delete']),
+  // POST /monitor-definitions/:id/devices/:deviceId/reset.
+  reset_monitor_escalation: '*',
+  // POST /flows/runs/:runId/cancel.
+  cancel_flow_run: '*',
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';

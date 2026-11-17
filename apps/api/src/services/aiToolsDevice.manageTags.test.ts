@@ -44,7 +44,8 @@ function handlerFor(name: string): AiTool['handler'] {
 const auth = {
   principal: { kind: 'user_session' },
   user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-  token: {} as any, partnerId: null, orgId: 'org-1', scope: 'organization',
+  // An interactive session that cleared MFA: manage_tags add/remove are MFA-gated (aiToolMfaGate.ts).
+  token: { mfa: true } as any, partnerId: null, orgId: 'org-1', scope: 'organization',
   accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
 } as unknown as AuthContext;
 
