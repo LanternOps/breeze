@@ -31,6 +31,10 @@ describe('buildInstallCommands', () => {
     it('scopes the connectivity error to the fetch + shebang check', () => {
       const { macos } = buildInstallCommands(base);
       expect(macos).toContain('Could not fetch the Breeze installer from https://rmm.example.com');
+      // #8868: a network filter or captive portal is a common cause; name it.
+      expect(macos).toContain(
+        'verify this machine has network access to your Breeze server. A captive portal or web filter may be intercepting this network." >&2',
+      );
       // The fallback must wrap only the fetch/verify group: install.sh prints
       // its own precise errors, so a failure inside `sudo bash` must NOT
       // trigger the "could not fetch" message.

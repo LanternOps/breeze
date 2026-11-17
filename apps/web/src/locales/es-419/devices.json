@@ -1465,6 +1465,18 @@
         "unknown": "ocurrió un error no reconocido"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqueado por un filtro de red",
+      "titleUntrustedCertificate": "Certificado del servidor no confiable",
+      "webFilter": "Un filtro de seguridad de la red de este dispositivo está respondiendo en lugar del servidor de Breeze ({{locationHost}}). Por lo general es una función de seguridad del router del proveedor de internet, un filtro web del firewall o una página de inicio de sesión de la red.",
+      "captivePortal": "La red de este dispositivo está reteniendo las conexiones en una página de inicio de sesión (portal cautivo).",
+      "plaintextUnknown": "Algo en la red de este dispositivo respondió a la conexión de Breeze con HTTP sin cifrar en lugar de TLS.",
+      "untrustedCertificate": "La conexión al servidor de Breeze presentó un certificado en el que este dispositivo no confía (emitido por {{certIssuer}}). Por lo general se debe a la inspección TLS de un firewall o proxy, a un problema de certificado en un servidor autoalojado o a un almacén de certificados raíz de confianza desactualizado en este dispositivo. Breeze no lo omitirá.",
+      "viaEch": "Actualmente accesible mediante Encrypted Client Hello.",
+      "cleared": "Estuvo bloqueado desde {{from}} hasta {{to}}.",
+      "howToFix": "Cómo solucionarlo",
+      "noDetail": "sin detalles"
+    },
     "logShipping": {
       "label": "Envío de registros",
       "state": {
@@ -1865,6 +1877,8 @@
       "unmanagedInstall": "Breeze Assist no fue instalado por Breeze y la implementación está desactivada, así que el agente no lo toca.",
       "unknown": "Breeze Assist está habilitado pero no instalado."
     },
+    "controlPlaneBlockBadge": "Filtro de red",
+    "controlPlaneBlockBadgeCertificate": "Certificado no confiable",
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",

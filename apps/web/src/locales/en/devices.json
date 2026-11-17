@@ -1465,6 +1465,18 @@
         "unknown": "an unrecognized error occurred"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Blocked by a network filter",
+      "titleUntrustedCertificate": "Server certificate not trusted",
+      "webFilter": "A network security filter on this device's network is answering in place of the Breeze server ({{locationHost}}). This is usually an ISP gateway security feature, a firewall web filter, or a network sign-in page.",
+      "captivePortal": "This device's network is holding connections at a sign-in (captive portal) page.",
+      "plaintextUnknown": "Something on this device's network answered the Breeze connection with plain HTTP instead of TLS.",
+      "untrustedCertificate": "The connection to the Breeze server presented a certificate this device does not trust (issued by {{certIssuer}}). This is usually TLS inspection by a firewall or proxy, a certificate problem on a self-hosted server, or an out-of-date trusted-root store on this device. Breeze will not bypass it.",
+      "viaEch": "Currently reachable via Encrypted Client Hello.",
+      "cleared": "Was blocked from {{from}} to {{to}}.",
+      "howToFix": "How to fix",
+      "noDetail": "no detail"
+    },
     "logShipping": {
       "label": "Log shipping",
       "state": {
@@ -1865,6 +1877,8 @@
       "unmanagedInstall": "Breeze Assist was not installed by Breeze and deploy is off, so the agent leaves it alone.",
       "unknown": "Breeze Assist is enabled but not installed."
     },
+    "controlPlaneBlockBadge": "Network filter",
+    "controlPlaneBlockBadgeCertificate": "Certificate not trusted",
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",
