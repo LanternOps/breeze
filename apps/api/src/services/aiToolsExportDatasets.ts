@@ -36,6 +36,7 @@ import type { readCustomFieldDefinitions as ReadCustomFieldDefinitionsFn } from 
 import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
 import type { ExportDataset } from './aiToolsExportDatasetNames';
+import { reliabilityScoresAdapter } from './aiToolsExportDatasets/reliability';
 
 /**
  * Lazy (call-time) imports of the two hub modules, NOT static ones.
@@ -626,4 +627,5 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   metrics: metricsAdapter,
   vulnerabilities: vulnerabilitiesAdapter,
   custom_fields: customFieldsAdapter,
+  reliability_scores: reliabilityScoresAdapter,
 };

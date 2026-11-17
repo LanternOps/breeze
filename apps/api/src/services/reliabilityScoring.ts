@@ -2095,6 +2095,56 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
   return { total, rows };
 }
 
+/**
+ * The export_dataset reader (`reliability_scores`): the same WHERE as
+ * `listReliabilityDevices` (`reliabilityListWhere`, so the exact-device and
+ * site narrowing live in one place), widened to every window and factor score,
+ * keyset-paged on the primary key (`device_id` ascending) instead of offset.
+ * Returns the un-awaited query so the adapter's single await point runs it.
+ */
+export function reliabilityExportPageQuery(filter: ReliabilityListFilter, afterDeviceId: string | null, limit: number) {
+  return db
+    .select({
+      deviceId: deviceReliability.deviceId,
+      siteId: devices.siteId,
+      osType: devices.osType,
+      status: devices.status,
+      computedAt: deviceReliability.computedAt,
+      reliabilityScore: deviceReliability.reliabilityScore,
+      uptimeScore: deviceReliability.uptimeScore,
+      crashScore: deviceReliability.crashScore,
+      hangScore: deviceReliability.hangScore,
+      serviceFailureScore: deviceReliability.serviceFailureScore,
+      hardwareErrorScore: deviceReliability.hardwareErrorScore,
+      uptime7d: deviceReliability.uptime7d,
+      uptime30d: deviceReliability.uptime30d,
+      uptime90d: deviceReliability.uptime90d,
+      crashCount7d: deviceReliability.crashCount7d,
+      crashCount30d: deviceReliability.crashCount30d,
+      crashCount90d: deviceReliability.crashCount90d,
+      hangCount7d: deviceReliability.hangCount7d,
+      hangCount30d: deviceReliability.hangCount30d,
+      hangCount90d: deviceReliability.hangCount90d,
+      serviceFailureCount7d: deviceReliability.serviceFailureCount7d,
+      serviceFailureCount30d: deviceReliability.serviceFailureCount30d,
+      hardwareErrorCount7d: deviceReliability.hardwareErrorCount7d,
+      hardwareErrorCount30d: deviceReliability.hardwareErrorCount30d,
+      mtbfHours: deviceReliability.mtbfHours,
+      trendDirection: deviceReliability.trendDirection,
+      trendConfidence: deviceReliability.trendConfidence,
+      provisional: reliabilityProvisionalSql,
+      topIssues: deviceReliability.topIssues,
+    })
+    .from(deviceReliability)
+    .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
+    .where(and(
+      reliabilityListWhere(filter),
+      afterDeviceId ? sql`${deviceReliability.deviceId} > ${afterDeviceId}::uuid` : undefined,
+    ))
+    .orderBy(asc(deviceReliability.deviceId))
+    .limit(limit);
+}
+
 export interface ReliabilityFleetSummary {
   total: number;
   averageScore: number;

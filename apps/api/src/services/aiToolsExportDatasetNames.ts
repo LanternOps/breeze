@@ -11,5 +11,6 @@
 export const EXPORT_DATASETS = [
   'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
   'metrics', 'vulnerabilities', 'custom_fields',
+  'reliability_scores',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
