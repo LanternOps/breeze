@@ -63,6 +63,60 @@ describe('PackageManagerPicker', () => {
     fetchMock.mockReset();
   });
 
+  describe('index freshness (#12052)', () => {
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
+    it('shows when the winget index was last updated, without a stale warning when recent', async () => {
+      searchMock({ windows: { results: [CHROME], indexUpdatedAt: hoursAgo(5) } });
+      renderPicker();
+      typeQuery('chrome');
+
+      const note = await screen.findByTestId('index-freshness');
+      expect(note).toHaveTextContent(/Index last updated/);
+      expect(note).toHaveTextContent(/5 hours ago/);
+      expect(screen.queryByTestId('index-stale')).not.toBeInTheDocument();
+    });
+
+    it('flags a stale index once the daily sync has missed a run (> 48 h)', async () => {
+      searchMock({ windows: { results: [CHROME], indexUpdatedAt: hoursAgo(72) } });
+      renderPicker();
+      typeQuery('chrome');
+
+      expect(await screen.findByTestId('index-stale')).toHaveTextContent(/out of date/i);
+    });
+
+    it('shows freshness on a genuine zero-hit search too', async () => {
+      searchMock({ windows: { results: [], indexUpdatedAt: hoursAgo(2) } });
+      renderPicker();
+      typeQuery('zzzz');
+
+      expect(await screen.findByTestId('index-freshness')).toBeInTheDocument();
+      expect(screen.getByText('No packages matched')).toBeInTheDocument();
+    });
+
+    it('drops the freshness note when a later search fails', async () => {
+      searchMock({ windows: { results: [CHROME], indexUpdatedAt: hoursAgo(5) } });
+      renderPicker();
+      typeQuery('chrome');
+      await screen.findByTestId('index-freshness');
+
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({}, false, 500)));
+      typeQuery('chromium');
+      await screen.findByText(/Package search failed/);
+      expect(screen.queryByTestId('index-freshness')).not.toBeInTheDocument();
+    });
+
+    it('shows nothing for macOS (Homebrew has no winget index)', async () => {
+      searchMock({ macos: { results: [FIREFOX_CASK] } });
+      renderPicker();
+      fireEvent.click(screen.getByRole('tab', { name: 'macOS' }));
+      typeQuery('firefox');
+
+      await screen.findByText('firefox');
+      expect(screen.queryByTestId('index-freshness')).not.toBeInTheDocument();
+    });
+  });
+
   it('does not search until at least 2 characters are typed', async () => {
     searchMock({});
     renderPicker();
