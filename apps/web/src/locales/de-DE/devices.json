@@ -1688,6 +1688,7 @@
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
       "productSku": "Produktnummer",
+      "hardwareModel": "Modell",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1706,6 +1707,7 @@
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
       "productSku": "Nach Produktnummer sortieren",
+      "hardwareModel": "Nach Modell sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"

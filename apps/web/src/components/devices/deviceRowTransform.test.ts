@@ -46,6 +46,16 @@ describe('toDeviceListRow', () => {
     expect(row.hardware?.productSku).toBe('5S3F8EA#ABB');
   });
 
+  it('carries the hardware model through exactly as reported (#11332)', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { model: 'VMware20,1' } });
+    expect(row.hardware?.model).toBe('VMware20,1');
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores an invalid hardware model %j', model => {
+    const row = toDeviceListRow({ ...RAW, hardware: { model } });
+    expect(row.hardware?.model).toBeUndefined();
+  });
+
   it.each([undefined, null, 42, false, {}])('ignores an invalid hardware product number %j', productSku => {
     const row = toDeviceListRow({ ...RAW, hardware: { productSku } });
     expect(row.hardware?.productSku).toBeUndefined();

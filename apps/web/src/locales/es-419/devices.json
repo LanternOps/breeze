@@ -1688,6 +1688,7 @@
       "lastSeen": "Visto por última vez",
       "serial": "N.º de serie",
       "productSku": "Número de producto",
+      "hardwareModel": "Modelo",
       "assetTag": "Etiqueta de activo",
       "location": "Ubicación",
       "source": "Origen"
@@ -1706,6 +1707,7 @@
       "lastSeen": "Ordenar por última hora vista",
       "serial": "Ordenar por número de serie",
       "productSku": "Ordenar por número de producto",
+      "hardwareModel": "Ordenar por modelo",
       "assetTag": "Ordenar por etiqueta de activo",
       "location": "Ordenar por ubicación",
       "source": "Ordenar por origen"

@@ -1054,6 +1054,8 @@ coreRoutes.get(
         diskTotalGb: deviceHardware.diskTotalGb,
         serialNumber: deviceHardware.serialNumber,
         productSku: deviceHardware.productSku,
+        // #11332 - SMBIOS model exactly as reported; opt-in Model column.
+        model: deviceHardware.model,
         // Reliability headline score (#1720) — surfaced as a sortable list
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
@@ -1344,7 +1346,8 @@ coreRoutes.get(
           ramTotalMb: d.ramTotalMb,
           diskTotalGb: d.diskTotalGb,
           serialNumber: d.serialNumber,
-          productSku: d.productSku
+          productSku: d.productSku,
+          model: d.model
         },
         // Reliability column (#1720): null when the device has no computed
         // score yet (no device_reliability row) — the list renders a dash.

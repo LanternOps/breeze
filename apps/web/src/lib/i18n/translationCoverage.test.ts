@@ -1257,7 +1257,7 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +1 vendorUpdates.category (#11069): "BIOS" acronym.
-    'devices.json': 98, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym
+    'devices.json': 99, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym; +1 device list hardwareModel header (#11332): "Model" is the standard identical cognate in tr-TR
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.

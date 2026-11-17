@@ -581,6 +581,16 @@ describe('GET /devices — response shape', () => {
     });
   });
 
+  it.each(['VMware20,1', null])('includes hardware model %s in list rows (#11332)', async model => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', model }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.model', model);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      model: deviceHardware.model,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
