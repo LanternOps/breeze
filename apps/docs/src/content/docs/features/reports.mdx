@@ -85,6 +85,17 @@ The `config.filters` object narrows the data:
 | `pdf` | Formatted PDF document |
 | `excel` | Excel spreadsheet (.xlsx) |
 
+#### PDF page size, dates and letterhead
+
+Every report PDF follows your partner's document conventions, whether it is downloaded in Breeze, downloaded from the portal, or attached to a scheduled email:
+
+- **Page size** is the **Page size** (Letter or A4) set under **Settings → Billing → Documents**, the same setting your quotes and invoices use. It starts as Letter until you change it.
+- **Dates** follow the partner **date format** (`MM/DD/YYYY` prints "Nov 9, 2026", `DD/MM/YYYY` prints "9 Nov 2026", `YYYY-MM-DD` prints "2026-11-09") and the **time format** (12-hour or 24-hour). The month is spelled out so a date reads the same in every country.
+- **The generated time** carries its timezone (for example "Generated Nov 9, 2026, 12:06 PM EST"), and every report states its period as one range of UTC calendar days, labelled as such ("Reporting period Oct 10, 2026 – Nov 9, 2026 (UTC)"). Reports cut their periods on UTC day boundaries, so a report generated late in the evening in the Americas can show a period ending on the next day's date; the label says why. Business reports (SLA, technician time, AI usage, quote win rate, profitability) name the timezone their period is measured in instead.
+- **The header** is a white letterhead with your logo and a brand-colour rule under it when a logo is uploaded, and your brand colour with your name in white when there is none. A logo needs at least 600 px on its long side to print sharply; the Branding tab warns when it is smaller.
+
+Threat Detection Review and Vulnerability Management runs you start with **Generate** (no service deliverable) cover the same window: the report's explicit dates, else its rolling preset (last 7, 30 or 90 days), else the 30 days ending on the generation date. A scheduled Vulnerability Management run with no service deliverable covers one calendar month ending on the run date, and says so on the report. If a report's stored dates cannot be read, a Generate run falls back to that one-month window instead of failing.
+
 ### Schedule Details and Email Recipients
 
 For recurring reports, the **Schedule and delivery** panel in the report builder (also available as `config.schedule` and `config.emailRecipients` via the API) controls exactly when the report runs and who gets emailed the result:

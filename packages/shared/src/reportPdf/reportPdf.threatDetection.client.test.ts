@@ -9,13 +9,16 @@ import type { ThreatDetectionSummary, ThreatIncidentRow } from '../types/threatD
 
 const opts = { reportType: 'threat_detection_review', generatedAt: 'Nov 9, 2026', timezone: 'UTC' };
 
+// Escaped, with the five undefined CP1252 slots kept (see
+// reportPdf.vulnerabilityManagement.test.ts): without them every mapping after
+// 0x80 shifts and an en dash decodes as a different character.
 const CP1252_HIGH =
-  '€‚ƒ„…†‡' +
-  'ˆ‰Š‹ŒŽ' +
-  '‘’“”•–—' +
-  '˜™š›œžŸ';
+  '€\u0081‚ƒ„…†‡' +
+  'ˆ‰Š‹Œ\u008dŽ\u008f' +
+  '\u0090‘’“”•–—' +
+  '˜™š›œ\u009džŸ';
 const decodeWinAnsi = (s: string): string =>
-  s.replace(/[\x80-\x9f]/g, (ch) => CP1252_HIGH[ch.charCodeAt(0) - 0x80] ?? ch);
+  s.replace(/[\u0080-\u009f]/g, (ch) => CP1252_HIGH[ch.charCodeAt(0) - 0x80] ?? ch);
 
 function pdfText(summary: ThreatDetectionSummary): string {
   const doc = buildReportPdf([], { ...opts, summary });
@@ -204,7 +207,7 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
     });
     expect(text).not.toMatch(/Open \d+ days/);
     expect(text).toContain('(Not recorded) Tj');
-    expect(text).toContain('2025-04-13');
+    expect(text).toContain('Apr 13, 2025');
     expect(text).not.toMatch(/been open for more than 90 days/);
   });
 
@@ -265,6 +268,6 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
   });
 
   it('states the reporting period in the same form as the other reports', () => {
-    expect(pdfText(BASE)).toContain('Reporting period 2026-10-10 to 2026-11-09');
+    expect(pdfText(BASE)).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');
   });
 });
