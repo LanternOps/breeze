@@ -196,6 +196,22 @@ describe('GET /:partnerSlug/:orgSlug', () => {
     expect(await res.json()).toEqual(GENERIC);
   });
 
+  it('#9087: signs the CIS-gated payload when the flag is off, exactly what the public page serves', async () => {
+    const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false';
+    try {
+      const cis = { ...normalizeTrustPagePayload(PAYLOAD as never), frameworks: ['cis_v8', 'nist_csf_2'], footer: { poweredByBreeze: true, frameworkAttributions: ['cis_v8', 'nist_csf_2'] } };
+      serving.readCachedSnapshotPayload.mockResolvedValueOnce(cis as never);
+      resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED(), payload: null });
+      const res = await get('/nw/acme');
+      expect(res.status).toBe(200);
+      const signed = (decodeJwt(await res.text()).trust as { payload: { frameworks: string[] } }).payload;
+      expect(signed.frameworks).toEqual(['nist_csf_2']);
+    } finally {
+      if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev;
+    }
+  });
+
   it('serves the cached snapshot payload when present', async () => {
     serving.readCachedSnapshotPayload.mockResolvedValueOnce({ ...PAYLOAD, snapshotId: 's1' } as never);
     resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED(), payload: null });
