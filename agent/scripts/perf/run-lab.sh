@@ -27,7 +27,9 @@ esac
 
 V=(virsh -c qemu:///system)
 port=53317 # the libvirt bridge port the VM may reach on the host
-dir='C:\breeze-perf' data='C:\ProgramData\Breeze' backup='C:\ProgramData\Breeze.perf-backup'
+dir='C:\breeze-perf'
+data=${PERF_LAB_DATA_DIR:-'C:\ProgramData\Breeze'} # test-only override, to exercise the backup on a scratch tree
+backup="$data.perf-backup"
 bridge=$("${V[@]}" net-dumpxml default | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p" | head -1)
 stack_port=$(sed -E 's#^[a-z]+://[^:/]+:([0-9]+).*#\1#' <<<"$BREEZE_STACK_URL")
 others=$("${V[@]}" list --name --state-running | grep -vx -e "$vm" -e '' || true)
@@ -59,11 +61,13 @@ gx_wait() {
 gx() { gx_wait "$(gx_start "$1")" "${2:-120}"; }
 sql() { docker exec "$BREEZE_PG_CONTAINER" psql -U breeze -d breeze -tAc "$1"; }
 api() { curl -fsS -X "$1" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' "$BREEZE_STACK_URL/api/v1$2" "${@:3}"; }
-hash_state() { gx "Get-ChildItem -LiteralPath '$data' -Recurse -File | ForEach-Object { \$_.FullName.Substring(${#data} + 1) + ' ' + (Get-FileHash -LiteralPath \$_.FullName -Algorithm SHA256).Hash } | Sort-Object"; }
+hash_state() { gx "Get-ChildItem -LiteralPath '$1' -Recurse -File | ForEach-Object { \$_.FullName.Substring(${#1} + 1) + ' ' + (Get-FileHash -LiteralPath \$_.FullName -Algorithm SHA256).Hash } | Sort-Object"; }
 robocopy_mirror() { gx "robocopy '$1' '$2' /MIR /COPYALL /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null; if (\$LASTEXITCODE -ge 8) { throw \"robocopy exit \$LASTEXITCODE\" }; exit 0"; }
 
 srv='' relay='' backed_up='' services=''
 stop_pid() { if [ -n "$1" ]; then kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; fi; }
+# The relay runs in its own process group, so killing the group also stops its forked connection children.
+stop_group() { if [ -n "$1" ]; then kill -- -"$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; fi; }
 vm_off() {
   [ "$("${V[@]}" domstate "$vm")" = running ] || return 0
   "${V[@]}" shutdown "$vm" >/dev/null || true
@@ -73,37 +77,47 @@ vm_off() {
 # restore <run dir>: put C:\ProgramData\Breeze back exactly as it was.
 restore() {
   gx "Get-Process breeze* -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2" || true
-  robocopy_mirror "$backup" "$data"
-  hash_state >"$1/state-after.txt"
+  robocopy_mirror "$backup" "$data" || return 1
+  hash_state "$data" >"$1/state-after.txt" || return 1
   diff -q "$1/state-before.txt" "$1/state-after.txt" >/dev/null || { echo "restore mismatch: $1/state-*.txt" >&2; return 1; }
-  gx "Remove-Item -Recurse -Force -LiteralPath '$backup'"
   backed_up=''
+  gx "Remove-Item -Recurse -Force -LiteralPath '$backup'" || echo "warning: could not remove $backup" >&2
 }
 start_services() {
   if [ -n "$services" ]; then gx "Start-Service $services; Get-Service $services | ForEach-Object { \$_.Name + ' ' + \$_.Status }" >"$run_dir/services-after.txt"; services=''; fi
 }
 cleanup() {
   set +e
-  stop_pid "$srv"; stop_pid "$relay"
+  stop_pid "$srv"; stop_group "$relay"
   if [ -n "${files:-}" ]; then rm -rf "$files"; fi
-  if [ -n "$backed_up" ]; then restore "$run_dir"; fi
+  if [ -n "$backed_up" ] && ! restore "$run_dir"; then
+    echo "!!! RESTORE FAILED: $data may not match the backup. The services ($services) stay stopped." >&2
+    echo "!!! Recover by hand in the VM: robocopy '$backup' '$data' /MIR /COPYALL /DCOPY:DAT, compare the hashes with $run_dir/state-before.txt, then Start-Service $services" >&2
+    services=''
+  fi
   start_services
   if [ -z "$snapshot" ] && [ "$("${V[@]}" domstate "$vm")" = running ]; then gx "Remove-Item -Recurse -Force -LiteralPath '$dir' -ErrorAction SilentlyContinue"; fi
   vm_off
 }
 trap cleanup EXIT
 
+# login: set $token. The first call only sets the auth-binding cookie; the second returns tokens.
+# Access tokens last 15 minutes, so every run logs in again.
+login() {
+  local jar t=''
+  jar=$(mktemp)
+  for _ in 1 2; do
+    t=$(curl -sS -b "$jar" -c "$jar" -H 'Content-Type: application/json' "$BREEZE_STACK_URL/api/v1/auth/login" \
+      -d "$(jq -nc --arg e "$BREEZE_ADMIN_EMAIL" --arg p "$BREEZE_ADMIN_PASSWORD" '{email:$e,password:$p}')" | jq -r '.tokens.accessToken // empty')
+    [ -z "$t" ] || break
+  done
+  rm -f "$jar"
+  [ -n "$t" ] || { echo "login to $BREEZE_STACK_URL failed" >&2; return 1; }
+  token=$t
+}
 files=$(mktemp -d)
-# The first login only sets the auth-binding cookie; the second returns tokens.
-login() { curl -sS -b "$files/jar" -c "$files/jar" -H 'Content-Type: application/json' "$BREEZE_STACK_URL/api/v1/auth/login" \
-  -d "$(jq -nc --arg e "$BREEZE_ADMIN_EMAIL" --arg p "$BREEZE_ADMIN_PASSWORD" '{email:$e,password:$p}')" | jq -r '.tokens.accessToken // empty'; }
-token=$(login)
-[ -n "$token" ] || token=$(login)
-[ -n "$token" ] || { echo "login to $BREEZE_STACK_URL failed" >&2; exit 1; }
-site=$(api GET /orgs/sites | jq -c '.data[0]')
 cp "$agent" "$files/breeze-agent.exe"
 cp "$(dirname "$0")/sample-process.ps1" "$files/"
-rm -f "$files/jar"
 secret_arg=''
 if [ -n "${BREEZE_ENROLLMENT_SECRET:-}" ]; then secret_arg="--enrollment-secret '$BREEZE_ENROLLMENT_SECRET'"; fi
 agent_sha=$(sha256sum "$agent" | cut -d' ' -f1)
@@ -112,6 +126,9 @@ for run in $(seq "$runs"); do
   run_dir="$out/run-$run"
   mkdir -p "$run_dir"
   echo "run $run/$runs: $workload for $seconds s" >&2
+  login
+  echo "run $run: logged in" >&2
+  site=$(api GET /orgs/sites | jq -c '.data[0]')
   if [ -n "$snapshot" ]; then "${V[@]}" snapshot-revert "$vm" "$snapshot"; fi
   [ "$("${V[@]}" domstate "$vm")" = running ] || "${V[@]}" start "$vm" >/dev/null
   for _ in $(seq 300); do ga '{"execute":"guest-ping"}' >/dev/null 2>&1 && break; sleep 1; done
@@ -127,9 +144,16 @@ for run in $(seq "$runs"); do
           if (\$i -ge 30) { throw \"\$n did not stop\" }
           try { Stop-Service -Force \$n } catch { }; Start-Sleep 2 } }" 180
     gx "Get-Process breeze* -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2"
-    hash_state >"$run_dir/state-before.txt"
-    backed_up=1
-    robocopy_mirror "$data" "$backup"
+    hash_state "$data" >"$run_dir/state-before.txt"
+    # Only a complete, verified backup may ever be mirrored back over the live data.
+    if robocopy_mirror "$data" "$backup" && hash_state "$backup" >"$run_dir/state-backup.txt" &&
+      diff -q "$run_dir/state-before.txt" "$run_dir/state-backup.txt" >/dev/null; then
+      backed_up=1
+    else
+      echo "backup of $data failed or does not match; removing it and restarting the services without a restore" >&2
+      gx "Remove-Item -Recurse -Force -LiteralPath '$backup' -ErrorAction SilentlyContinue" || true
+      exit 1
+    fi
   fi
 
   python3 -I -m http.server "$port" --bind "$bridge" --directory "$files" >/dev/null 2>&1 &
@@ -141,8 +165,10 @@ for run in $(seq "$runs"); do
   stop_pid "$srv"; srv=''
   [ "$vm_sha" = "$agent_sha" ] || { echo "agent copy hash mismatch" >&2; exit 1; }
 
-  socat "TCP-LISTEN:$port,bind=$bridge,fork,reuseaddr" "TCP:127.0.0.1:$stack_port" &
+  setsid socat "TCP-LISTEN:$port,bind=$bridge,fork,reuseaddr" "TCP:127.0.0.1:$stack_port" &
   relay=$!
+  for _ in $(seq 30); do [ -z "$(ss -Hltn "src $bridge:$port")" ] || break; sleep 0.5; done
+  [ -n "$(ss -Hltn "src $bridge:$port")" ] || { echo "relay on $bridge:$port never listened" >&2; exit 1; }
   key=$(api POST /enrollment-keys -d "$(jq -nc --argjson s "$site" '{orgId:$s.orgId,siteId:$s.id,name:"perf-lab",maxUsage:1,ttlMinutes:60}')" | jq -r .key)
   gx "\$env:BREEZE_AGENT_ENROLLMENT_KEY='$key'
     & $dir\\breeze-agent.exe enroll --config $dir\\agent.yaml --server http://$bridge:$port $secret_arg --quiet; exit \$LASTEXITCODE" >"$run_dir/enroll.txt"
@@ -161,7 +187,7 @@ for run in $(seq "$runs"); do
   sql "select custom_metrics->'agentRuntime' from device_metrics where device_id = '$device' and custom_metrics ? 'agentRuntime' order by timestamp desc limit 1" >"$run_dir/agent-runtime.json"
   jq -r .goroutines "$run_dir/agent-runtime.json" >"$run_dir/goroutines.txt"
   sql "select type, status from device_commands where device_id = '$device' order by created_at" >"$run_dir/commands.txt"
-  stop_pid "$relay"; relay=''
+  stop_group "$relay"; relay=''
 
   gx "Get-Process breeze* -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2"
   if [ -n "$backed_up" ]; then restore "$run_dir"; fi
