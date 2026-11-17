@@ -354,9 +354,11 @@ their own once the connection works again.
 
 Most integrations record their own failures (a failed sync, a revoked
 authorization): Huntress, SentinelOne, Pax8, UniFi, backup providers, EDR,
-accounting, DNS filtering, Microsoft 365 connections and tenant sync, and ticket
-mailboxes all report into the same panel, alongside the outbound webhook and
-Google Workspace checks below. Breeze also watches for connections that fail
+accounting, DNS filtering, Microsoft 365 connections and tenant sync, ticket
+mailboxes and the TD SYNNEX price file all report into the same panel,
+alongside the outbound webhook and Google Workspace checks below. The other TD
+SYNNEX connections (EC Express and Digital Bridge) are not watched: they have
+no schedule, so nothing can stall. Breeze also watches for connections that fail
 without saying so:
 
 - **Outbound webhooks.** A webhook opens an incident when a delivery uses up all
@@ -374,7 +376,10 @@ without saying so:
   reconciliation for an hour, as long as pulling or pushing payments is turned
   on for the connection. Xero is allowed three days, because Breeze
   deliberately pauses background reconciliation while a tenant's daily Xero
-  call allowance is nearly used up.
+  call allowance is nearly used up. The TD SYNNEX price file runs nightly, so
+  it stalls when no nightly run has finished for three days and the connection
+  has not been saved or tested in that time; a run that fails opens **Sync failed**
+  instead.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide

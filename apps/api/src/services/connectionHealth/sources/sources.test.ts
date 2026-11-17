@@ -21,6 +21,7 @@ import { dnsFilterObservation, dnsFilterSource } from './dnsFilter';
 import { m365ConnectionObservation, m365ConnectionSource } from './m365Connection';
 import { m365SyncObservation, m365SyncSource } from './m365Sync';
 import { ticketMailboxObservation, ticketMailboxSource } from './ticketMailbox';
+import { tdSynnexSftpObservation, tdSynnexSftpSource } from './tdSynnexSftp';
 
 const NOW = new Date('2026-10-16T12:00:00Z');
 const OLD = new Date('2026-09-01T00:00:00Z');
@@ -231,5 +232,44 @@ describe('org sources', () => {
 
   it('m365 sync: unknown while the connection itself is degraded', () => {
     expect(m365SyncObservation({ connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'degraded', connectionCreatedAt: OLD, domains: [{ domain: 'users', lastStatus: 'error', lastError: null, stale: false }] }, NOW).state).toBe('unknown');
+  });
+});
+
+// #9127 PR C: the nightly TD SYNNEX price file.
+describe('td_synnex_sftp', () => {
+  const CATALOG = { viewPermission: { resource: 'catalog', action: 'read' }, repairPermission: { resource: 'catalog', action: 'write' } };
+  const row = { id: ID, partnerId: P, enabled: true, lastSyncStatus: 'error', lastSyncError: 'download failed: password=hunter2secret', createdAt: OLD, stale: false };
+  const sqlOf = (q: unknown) => new PgDialect().sqlToQuery((q as { getSQL(): SQL }).getSQL());
+
+  it('registers one partner-axis source, hourly, with the distributor sub-tab fix link', () => {
+    expect(tdSynnexSftpSource).toMatchObject({
+      kind: 'td_synnex_sftp', intervalMinutes: 60, tables: ['td_synnex_sftp_integrations'], fixHrefs: ['/integrations#tdsynnex-sftp'],
+    });
+  });
+
+  it('a failed nightly run is a partner-wide transient sync_failed with a sanitized detail and catalog permissions', () => {
+    expect(tdSynnexSftpObservation(row, NOW)).toEqual({
+      sourceKind: 'td_synnex_sftp', sourceId: ID, partnerId: P, orgId: null, ownerUserId: null,
+      state: 'broken', severity: 'transient', condition: 'sync_failed',
+      detail: 'download failed: password=[REDACTED]',
+      displayName: 'TD SYNNEX price file', fixHref: '/integrations#tdsynnex-sftp', ownerFixHref: null, ...CATALOG, observedAt: NOW,
+    });
+  });
+
+  it('stale is sync_stale with no detail (the last error may be old); disabled is retired; ok is healthy', () => {
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'ok', stale: true }, NOW)).toMatchObject({ state: 'broken', condition: 'sync_stale', detail: null });
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'running', stale: true }, NOW).condition).toBe('sync_stale');
+    expect(tdSynnexSftpObservation({ ...row, enabled: false }, NOW).state).toBe('retired');
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'ok' }, NOW).state).toBe('healthy');
+  });
+
+  it('the broken query reads enabled rows that failed or whose last attempt or config change is past three nights', () => {
+    const q = sqlOf(tdSynnexSftpSource.brokenQuery(NOW));
+    expect(q.sql).toContain('"td_synnex_sftp_integrations"."enabled" AND');
+    expect(q.sql).toContain(`"td_synnex_sftp_integrations"."last_sync_status" = 'error'`);
+    expect(q.sql).toContain('COALESCE(GREATEST("td_synnex_sftp_integrations"."last_sync_at", "td_synnex_sftp_integrations"."updated_at"), "td_synnex_sftp_integrations"."created_at")');
+    expect(q.sql).toContain('::timestamp - make_interval(mins => 4320)');
+    expect(q.sql).not.toContain('::timestamptz');
+    expect(q.params).toContain(NOW.toISOString());
   });
 });

@@ -390,6 +390,20 @@ export function googleWorkspaceHealth(row: { probeStatus: string | null }): Heal
   return HEALTHY;
 }
 
+/**
+ * TD SYNNEX nightly price file (#9127). The sync writes 'running', then 'ok'
+ * or 'error' (services/tdSynnexSftpSync.ts); disabling the row is the
+ * deliberate off switch. `stale`: no attempt finished, and the config was not
+ * saved, within three nights (a dead cron or a run hung in 'running'). A
+ * recorded failure still wins. Running and never-synced are unknown until then.
+ */
+export function tdSynnexSftpHealth(row: { enabled: boolean; lastSyncStatus: string | null; stale?: boolean }): HealthVerdict {
+  if (!row.enabled) return RETIRED;
+  if (row.lastSyncStatus === 'error') return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
+  return row.lastSyncStatus === 'ok' ? HEALTHY : UNKNOWN;
+}
+
 /** Spec §3: a mailbox is broken after this many transient poll failures in a row. */
 export const MAILBOX_TRANSIENT_FAILURE_THRESHOLD = 5;
 

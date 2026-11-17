@@ -1,17 +1,19 @@
 /**
- * Connection health staleness on three partner-axis sources (#9127, plan
- * 2026-10-18 PR A): edr, accounting and ticket_mailbox, against real Postgres.
+ * Connection health staleness on the partner-axis sources of #9127 (plan
+ * 2026-10-18): edr, accounting and ticket_mailbox (PR A) and the new
+ * td_synnex_sftp kind (PR C), against real Postgres.
  * The org-axis kinds are in connectionHealthStaleOrgSources.integration.test.ts.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections, edrConnections, ticketMailboxConnections, ticketMailboxTenantOwnerships } from '../../db/schema';
+import { accountingConnections, edrConnections, tdSynnexSftpIntegrations, ticketMailboxConnections, ticketMailboxTenantOwnerships } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { edrSource } from '../../services/connectionHealth/sources/edr';
 import { accountingSource } from '../../services/connectionHealth/sources/accounting';
 import { ticketMailboxSource } from '../../services/connectionHealth/sources/ticketMailbox';
+import { tdSynnexSftpSource } from '../../services/connectionHealth/sources/tdSynnexSftp';
 import type { HealthSource } from '../../services/connectionHealth/types';
 
 const NOW = new Date();
@@ -198,5 +200,62 @@ describe('ticket_mailbox stale arm', () => {
   it('tracked: a fresh poll recovers', async () => {
     const id = await gmail();
     expect((await observe(ticketMailboxSource, [id])).find((x) => x.sourceId === id)).toMatchObject({ state: 'healthy' });
+  });
+});
+
+describe('td_synnex_sftp', () => {
+  // updated_at follows last_sync_at unless a case says otherwise: every sync
+  // write (running, ok, error) bumps both.
+  async function sftp(over: Partial<typeof tdSynnexSftpIntegrations.$inferInsert> = {}) {
+    const id = randomUUID();
+    const lastSyncAt = over.lastSyncAt === undefined ? minAgo(5) : over.lastSyncAt;
+    await asSystem(async () => db.insert(tdSynnexSftpIntegrations).values({
+      id, partnerId: await partner(), accountNumber: '123456', enabled: true,
+      lastSyncStatus: 'ok', createdAt: hoursAgo(24 * 30),
+      ...over, lastSyncAt, updatedAt: over.updatedAt ?? lastSyncAt ?? over.createdAt ?? hoursAgo(24 * 30),
+    }));
+    return id;
+  }
+
+  it('a nightly run last finished 80 h ago is stale with no detail; 20 h ago is not read', async () => {
+    const stale = await sftp({ lastSyncAt: hoursAgo(80), lastSyncError: 'an old error' });
+    const fresh = await sftp({ lastSyncAt: hoursAgo(20) });
+    const obs = await observe(tdSynnexSftpSource);
+    expect(obs.find((x) => x.sourceId === stale)).toMatchObject({
+      state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null, orgId: null,
+      displayName: 'TD SYNNEX price file', fixHref: '/integrations#tdsynnex-sftp',
+      viewPermission: { resource: 'catalog', action: 'read' }, repairPermission: { resource: 'catalog', action: 'write' },
+    });
+    expect(obs.find((x) => x.sourceId === fresh)).toBeUndefined();
+  });
+
+  it('a failed run an hour ago is sync_failed with a sanitized detail', async () => {
+    const id = await sftp({ lastSyncStatus: 'error', lastSyncAt: hoursAgo(1), lastSyncError: 'login rejected: password=hunter2secret' });
+    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id))
+      .toMatchObject({ condition: 'sync_failed', detail: 'login rejected: password=[REDACTED]' });
+  });
+
+  it('a run hung in running since 80 h ago is stale', async () => {
+    const id = await sftp({ lastSyncStatus: 'running', lastSyncAt: hoursAgo(100), updatedAt: hoursAgo(80) });
+    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id)).toMatchObject({ condition: 'sync_stale' });
+  });
+
+  it('disabled: not read untracked, retired when tracked', async () => {
+    const id = await sftp({ enabled: false, lastSyncStatus: 'error', lastSyncAt: hoursAgo(24 * 10) });
+    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id)).toBeUndefined();
+    expect((await observe(tdSynnexSftpSource, [id])).find((x) => x.sourceId === id)).toMatchObject({ state: 'retired' });
+  });
+
+  it('never synced: stale when created and last saved 4 days ago; not when enabled 5 minutes ago on an old row', async () => {
+    const old = await sftp({ lastSyncStatus: null, lastSyncAt: null, createdAt: hoursAgo(96), updatedAt: hoursAgo(96) });
+    const justEnabled = await sftp({ lastSyncStatus: null, lastSyncAt: null, createdAt: hoursAgo(24 * 10), updatedAt: minAgo(5) });
+    const obs = await observe(tdSynnexSftpSource);
+    expect(obs.find((x) => x.sourceId === old)).toMatchObject({ condition: 'sync_stale' });
+    expect(obs.find((x) => x.sourceId === justEnabled)).toBeUndefined();
+  });
+
+  it('tracked: a fresh nightly run recovers', async () => {
+    const id = await sftp();
+    expect((await observe(tdSynnexSftpSource, [id])).find((x) => x.sourceId === id)).toMatchObject({ state: 'healthy' });
   });
 });
