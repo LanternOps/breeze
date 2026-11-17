@@ -78,6 +78,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // Customer domain ownership check: a DNS (or HTTPS) lookup of the domain
   // between short reads; the verification service owns its own contexts.
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/organizations\/[^/]+\/customer-domains\/[^/]+\/verification\/check\/?$/ },
+  // Trust Center publish and unpublish (#9087, spec trust-center §7 "live when
+  // the toast says so"): the publish must COMMIT before the serving set is
+  // reconciled against the DB, and the response waits for that reconcile.
+  // Under the request transaction the reconcile would read the pre-publish
+  // rows. The handler runs its DB work in one caller-scoped context, then
+  // reconciles with no context held.
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/publish\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/unpublish\/?$/ },
   // Billing portal session and support message: forwarded to the billing
   // service. The support handler reads the sender in a short caller-scoped
   // context; the portal handler does no DB work of its own.

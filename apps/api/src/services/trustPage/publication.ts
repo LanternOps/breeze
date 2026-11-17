@@ -7,7 +7,7 @@ import {
   type EffectiveTrustSettings, type TelemetryControlId, type TrustFramework, type TrustPagePublicPayload, type TrustPublishedConfig,
   type TrustPublishedConfigResolved, type TrustTemplateSettings,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, hasDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   orgDocuments, organizations, partners, portalBranding, trustPageDocuments, trustPages, trustPageSnapshots, ORG_DOCUMENT_META_COLUMNS,
 } from '../../db/schema';
@@ -23,7 +23,7 @@ import { buildSections, freezeSections } from './sections';
 import { defaultFrameworkView, resolveFrameworkView } from './sections/frameworks';
 import { loadTrustOnlyEvidence } from './trustOnlyEvidence';
 import { loadPartnerTemplate } from './template';
-import { addServing, cacheSnapshotPayload, removeServing, trustServingMember } from './servingSet';
+import { cacheSnapshotPayload, dropServingBuiltMarker, refreshServingForPartner, type ServingApplyOutcome } from './servingSet';
 import { TRUST_RESERVED_PARTNER_SLUGS } from './resolve';
 
 export class TrustPageError extends Error {
@@ -260,15 +260,17 @@ export const TEMPLATE_CHANGED_MESSAGE = "Your partner's Trust Center template ch
 
 /**
  * One transaction: lock the page row, demote the previous current snapshot, insert the new current one, stamp
- * published_at and bump the revision — only if the revision still matches (409 otherwise). Serving-set and cache
- * writes happen after the transaction resolves, never inside it.
+ * published_at and bump the revision — only if the revision still matches (409 otherwise). No Redis I/O: the
+ * caller must let its DB context COMMIT and then call serveCommittedPublication({ partnerId: page.partnerId,
+ * cache }) before it answers (#9087). Serving the member inside the transaction let a concurrent rebuild that
+ * read the pre-commit rows remove it again.
  */
 export async function publishTrustPage(args: {
   orgId: string; expectedRevision: number; actorUserId: string; authorization?: { authorizedBy: string } | null;
   partnerTrustState: PartnerTrustState; partnerSlug: string; orgSlug: string;
   /** The template revision the editor loaded (null = no template); undefined = not checked (amendment 33). */
   expectedTemplateRevision?: number | null;
-}): Promise<{ page: TrustPageRow; snapshotId: string }> {
+}): Promise<{ page: TrustPageRow; snapshotId: string; cache: { snapshotId: string; payload: TrustPagePublicPayload } }> {
   const denied = trustDenial(args.partnerTrustState);
   if (denied) throw denied;
   validatePublishSlugs(args.partnerSlug, args.orgSlug);
@@ -320,27 +322,38 @@ export async function publishTrustPage(args: {
     return updated ?? null;
   });
   if (!result) throw new TrustPageError('This page changed since you loaded it. Reload and publish again.', 409, 'REVISION_MISMATCH');
-
-  await cacheSnapshotPayload(built.snapshotId, built.payload);
-  const members = [trustServingMember(args.partnerSlug, args.orgSlug)];
-  if (result.isPartnerHome) members.push(trustServingMember(args.partnerSlug));
-  await addServing(members);
-  return { page: result, snapshotId: built.snapshotId };
+  return { page: result, snapshotId: built.snapshotId, cache: { snapshotId: built.snapshotId, payload: built.payload } };
 }
 
-/** Clears published_at and bumps the revision (so an in-flight publish 409s); removes the serving member after. */
-export async function unpublishTrustPage(args: {
-  orgId: string; actorUserId: string; partnerSlug: string; orgSlug: string; isPartnerHome: boolean;
-}): Promise<TrustPageRow> {
+/** Clears published_at and bumps the revision (so an in-flight publish 409s). No Redis I/O: see serveCommittedPublication. */
+export async function unpublishTrustPage(args: { orgId: string; actorUserId: string }): Promise<TrustPageRow> {
   const [updated] = await db.update(trustPages).set({
     publishedAt: null, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: args.actorUserId,
   }).where(eq(trustPages.orgId, args.orgId)).returning();
   if (!updated) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
-  await removeServing([
-    trustServingMember(args.partnerSlug, args.orgSlug),
-    ...(args.isPartnerHome ? [trustServingMember(args.partnerSlug)] : []),
-  ]);
   return updated;
+}
+
+/**
+ * The caller's duty after a publish or unpublish COMMITS (#9087): cache the new snapshot payload, then reconcile
+ * the partner's serving-set members against the DB. Must run outside any DB context (refreshServingForPartner
+ * throws otherwise), so the reconcile reads the committed rows. Never throws for anything else: the DB already
+ * committed, so a Redis or reconcile failure drops the built marker (the page resolves live instead of hiding)
+ * and reports 'degraded'.
+ */
+export async function serveCommittedPublication(r: {
+  partnerId: string; cache?: { snapshotId: string; payload: TrustPagePublicPayload };
+}): Promise<ServingApplyOutcome> {
+  if (hasDbAccessContext()) throw new Error('serveCommittedPublication must run after the publishing context commits');
+  if (r.cache) await cacheSnapshotPayload(r.cache.snapshotId, r.cache.payload);
+  try {
+    return await refreshServingForPartner(r.partnerId);
+  } catch (err) {
+    console.warn('[trustPage] serving-set reconcile after a committed publication failed; dropping the built marker', { partnerId: r.partnerId }, err);
+    captureException(err, undefined, { component: 'trustPage.serveCommittedPublication' });
+    await dropServingBuiltMarker();
+    return 'degraded';
+  }
 }
 
 /**
