@@ -251,7 +251,7 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 | Kind | What it does | Starts |
 |---|---|---|
 | `sweep` | Collects evidence across the estate | On its own |
-| `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)). Available only when the server's analysis sandbox is on; otherwise Wisp says so | On its own |
+| `analysis` | Runs sandboxed analysis over a whole customer, one site, or chosen devices (see [AI Analysis Runs](/features/ai-analysis-runs/#investigations-from-wisp-chat)). Can continue from an earlier analysis under the same grant and use the files it produced. Available only when the server's analysis sandbox is on; otherwise Wisp says so | On its own |
 | `operator_recipe` | Runs an AI task recipe | After you approve |
 | `patch_plan` | Drafts a patch plan | After you approve |
 | `remediation_research` | Researches a fix for a problem | After you approve |
@@ -262,6 +262,8 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
 
 `launch_specialist` itself runs only `sweep`, `analysis`, `device_troubleshooting` and `assessment` on the call. A sweep needs an enabled sweep schedule for the organization. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+
+An `analysis` result comes back into the conversation on Wisp's next turn, with its findings and output files. Wisp can then continue from it (each continuation is one more step of the same investigation and can use every file the earlier steps produced) or start a fresh analysis when the question changes. An investigation stops at 8 steps, 12 runs or $6.00 by default. Each analysis launch is checked against the grant's daily budget at an estimate of 100 ¢, so on a default Pro grant (200 ¢ a day) the [budget](#budgets) usually stops a long investigation first; raise it for that grant.
 
 A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
 
