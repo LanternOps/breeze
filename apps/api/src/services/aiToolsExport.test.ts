@@ -96,6 +96,7 @@ describe('export_dataset', () => {
     expect(createArtifact.mock.calls[0]![0]).toMatchObject({
       orgId: 'org-1', runId: 'run-1', kind: 'input_capture',
       createdByTool: 'export_dataset', contentType: 'application/x-ndjson', region: 'eu',
+      dataset: 'event_logs',
     });
   });
 

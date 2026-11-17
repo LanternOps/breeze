@@ -113,7 +113,7 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
         like(aiAgentRuns.dedupeKey, SPECIALIST_KEY_PATTERN),
         and(eq(aiAgentRuns.profile, 'sweep'), like(aiAgentRuns.dedupeKey, SPECIALIST_SWEEP_KEY_PATTERN)),
       )})::int`,
-      spentCents: sql<string | number>`coalesce(sum(${aiAgentRuns.costCents}) filter (where ${ne(aiAgentRuns.status, 'skipped')}), 0)::bigint`,
+      spentCents: sql<string | number>`coalesce(sum(${aiAgentRuns.costCents} + coalesce(${aiAgentRuns.computeCents}, 0)) filter (where ${ne(aiAgentRuns.status, 'skipped')}), 0)::bigint`,
     })
     .from(aiAgentRuns)
     .where(and(

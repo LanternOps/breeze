@@ -52,7 +52,7 @@ vi.mock('./workspaceBreaker', () => ({
 }));
 
 const artifacts = new Map<string, {
-  id: string; orgId: string; runId: string | null; name: string; bytes: number; body: Buffer;
+  id: string; orgId: string; runId: string | null; name: string; bytes: number; body: Buffer; expiresAt: Date;
 }>();
 const created: Array<Record<string, unknown>> = [];
 
@@ -73,6 +73,7 @@ vi.mock('../artifacts/artifactService', () => ({
     artifacts.set(id, {
       id, orgId: String(input.orgId), runId: String(input.runId),
       name: String(input.name), bytes: body.length, body,
+      expiresAt: new Date(Date.now() + 86_400_000),
     });
     return { id, bytes: body.length, name: String(input.name) };
   },
@@ -161,8 +162,11 @@ function ctxFor(over: Partial<WorkspaceRunContext> = {}): WorkspaceRunContext {
   };
 }
 
-function seedArtifact(id: string, orgId: string, runId: string | null, name: string, body: Buffer) {
-  artifacts.set(id, { id, orgId, runId, name, bytes: body.length, body });
+function seedArtifact(
+  id: string, orgId: string, runId: string | null, name: string, body: Buffer,
+  expiresAt: Date = new Date(Date.now() + 86_400_000),
+) {
+  artifacts.set(id, { id, orgId, runId, name, bytes: body.length, body, expiresAt });
 }
 
 beforeEach(async () => {
@@ -427,6 +431,20 @@ describe('WorkspaceService.stage', () => {
     expect(backend.writes.at(-1)!.bytes.toString()).toBe('hello');
 
     await expect(svc.stage(['h-other'])).rejects.toMatchObject({ code: 'staged_handle_not_allowed' });
+  });
+
+  it('refuses a handle that expired after admission (artifact_expired), even though staged_inputs lists it', async () => {
+    seedArtifact('h-old', 'org-1', 'prior-run', 'a.csv', Buffer.from('x'), new Date(Date.now() - 1000));
+    const svc = new WorkspaceService(ctxFor({ allowedInputHandles: ['h-old'] }), new RecordingBackend());
+    await expect(svc.stage(['h-old'])).rejects.toMatchObject({ code: 'artifact_expired' });
+  });
+
+  it('a continuation can stage an inherited handle and no other in-org handle', async () => {
+    seedArtifact('inherited', 'org-1', 'prior-run', 'a.csv', Buffer.from('a'));
+    seedArtifact('sibling', 'org-1', 'unrelated-run', 'b.csv', Buffer.from('b'));
+    const svc = new WorkspaceService(ctxFor({ allowedInputHandles: ['inherited'] }), new RecordingBackend());
+    await expect(svc.stage(['inherited'])).resolves.toMatchObject({ staged: [{ handle: 'inherited' }] });
+    await expect(svc.stage(['sibling'])).rejects.toMatchObject({ code: 'staged_handle_not_allowed' });
   });
 
   it('stages an export created by another tool in this run, but not foreign-org or unowned artifacts', async () => {

@@ -24,7 +24,13 @@ import { devices } from '../../db/schema/devices';
 import { sites } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgentSweepScheduler';
-import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
+import { admitAnalysisRun, type AdmitAnalysisRunInput } from '../aiAgents/analysisAdmission';
+import {
+  analysisContinuationOf,
+  buildAnalysisContinuationSeed,
+  chainRootOf,
+  deriveChainHandles,
+} from '../aiAgents/analysisContinuation';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
 import { ensureTroubleshootAgent, TroubleshootBaselineConflictError } from '../aiAgents/troubleshootProvisioning';
@@ -117,6 +123,9 @@ export const analysisParamsSchema = z.strictObject({
   scope: z.enum(['devices', 'site', 'org']).optional(),
   deviceIds: z.array(z.uuid()).min(1).max(200).optional(),
   siteId: z.uuid().optional(),
+  // Wisp analysis sessions W03 (C1): continue a settled analysis run under the
+  // same grant. Its files are derived server-side; no parameter names a handle.
+  continueFromRunId: z.uuid().optional(),
 }).superRefine((params, issue) => {
   // Contradictory params are refused with a readable detail, never silently
   // dropped: an `org` analysis that quietly ignored a `siteId` would read a
@@ -428,6 +437,19 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
   // site allowlist) at launch.
   analysis: async ({ orgId, params }) => {
     const parsed = analysisParamsSchema.parse(params);
+    // W03: what can be checked without the grant (the launcher re-checks with it).
+    if (parsed.continueFromRunId) {
+      const cont = await analysisContinuationOf({ orgId, runId: parsed.continueFromRunId });
+      if (!cont.ok) {
+        // Without the grant, "another grant" and "not an analysis run" would
+        // describe a run the caller may not be able to see: answer not_found.
+        // The launcher re-checks with the grant and gives the precise code.
+        const detail = cont.refusal === 'analysis_continuation_other_grant' || cont.refusal === 'analysis_continuation_wrong_kind'
+          ? 'analysis_continuation_not_found'
+          : cont.refusal;
+        return { refused: 'continuation_refused', detail };
+      }
+    }
     if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
     if (!(await siteInOrg(orgId, parsed.siteId))) return { refused: 'admission_skipped', detail: 'site_not_in_scope' };
     return null;
@@ -536,6 +558,34 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
   // place a human permission bounds what `export_dataset` may read.
   const exportGrants = resolveExportGrants((resource, action) =>
     ceilingHoldsPermission(ctx.ceiling, ctx.orgId, resource, action));
+
+  // W03 (spec §4.2): a continuation. Validated under THIS live grant — the
+  // same grant is the whole session check (no session ancestry), so any chat
+  // under the grant may continue a run another launched; the new run still
+  // records the launching session as its own origin. Its inputs are derived
+  // here from the prior run and re-validated against this launch's export
+  // grants; admission re-checks the lineage and the chain bounds under its
+  // lock. The dedupe key stays per request, so branching a chain (two
+  // continuations of one run) admits both rather than replaying the first.
+  let stagedHandles: string[] = [];
+  let continuation: AdmitAnalysisRunInput['continuation'];
+  if (params.continueFromRunId) {
+    const cont = await analysisContinuationOf({
+      orgId: ctx.orgId, runId: params.continueFromRunId, grantId: ctx.grant.grantId,
+    });
+    if (!cont.ok) return { refused: 'continuation_refused', detail: cont.refusal };
+    const { prior } = cont;
+    // A prior whose chain root was deleted cannot have its chain counted.
+    const root = chainRootOf(prior);
+    if (root === null) return { refused: 'admission_skipped', detail: 'analysis_chain_too_long' };
+    const derived = await deriveChainHandles({ orgId: ctx.orgId, prior, grantId: ctx.grant.grantId, exportGrants });
+    const seed = await buildAnalysisContinuationSeed({ orgId: ctx.orgId, prior });
+    stagedHandles = derived.handles;
+    continuation = {
+      fromRunId: prior.id, chainRootRunId: root, chainDepth: prior.chainDepth + 1, seed, dropped: derived.dropped,
+    };
+  }
+
   const result = await runOutsideDbContext(() => admitAnalysisRun({
     orgId: ctx.orgId,
     requestedByUserId: ctx.grantorUserId,
@@ -544,13 +594,18 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
     scope,
     deviceIds: params.deviceIds ?? [],
     siteId: params.siteId ?? null,
-    stagedHandles: [],
+    stagedHandles,
     dedupeKey,
     grant: { ...ctx.grant },
     exportGrants,
+    ...(continuation ? { continuation } : {}),
   }));
   if (result.created) return reattach(ctx, { admitted: true, runId: result.runId }, originSessionId);
   if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };
+  // The prior changed under the lock (deleted, or its lineage moved).
+  if (result.refusal === 'analysis_continuation_not_found') {
+    return { refused: 'continuation_refused', detail: 'analysis_continuation_not_found' };
+  }
   // `duplicate` collapses into `analysis_rate`; resolve a raced replay first.
   const raced = await existingRunId(ctx.orgId, dedupeKey);
   if (raced) return reattach(ctx, { admitted: true, runId: raced }, originSessionId);
