@@ -123,7 +123,7 @@ export default function WispThreadHeaderCompact({
             value={wisp.focusOrgId ?? ''}
             disabled={focusPending}
             onChange={(e) => void changeFocus(e.target.value || null)}
-            className="min-w-0 max-w-[11rem] cursor-pointer appearance-none truncate bg-transparent font-medium text-foreground focus:outline-hidden disabled:cursor-wait disabled:opacity-50"
+            className="min-w-0 max-w-[11rem] cursor-pointer appearance-none truncate border-0 bg-transparent bg-none! p-0! text-xs leading-none font-medium focus:ring-0 text-foreground focus:outline-hidden disabled:cursor-wait disabled:opacity-50"
           >
             <option value="">{t('wisp.focus.none')}</option>
             {focusOptions.map((o) => (
