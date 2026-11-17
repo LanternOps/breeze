@@ -1,12 +1,13 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { withDbAccessContext } from '../../db';
+import { eq } from 'drizzle-orm';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { alerts, devices, sites } from '../../db/schema';
 import { generateExecutiveSummaryReport } from '../../services/reportGenerationService';
 import { siteScopeFingerprint, type OrgReportExecutionAuthority } from '../../services/siteScope';
 import type { ExecutiveSummary } from '@breeze/shared';
-import { createIntegrationTestClient } from './db-utils';
+import { createIntegrationTestClient, createOrganization, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -52,7 +53,7 @@ async function fixture() {
     principalKind: 'user', scope: { version: 1, kind: 'unrestricted', orgId: org.id },
     principalUserId: user.id, capturedAt: new Date(), fingerprint: 'f'.repeat(64),
   };
-  return { org, site, user, seed, inOrg, authority };
+  return { org, site, user, seed, inOrg, authority, partnerId: client.env.partner.id };
 }
 
 describe('executive summary fleet figures reconcile (#12045)', () => {
@@ -114,5 +115,62 @@ describe('executive summary fleet figures reconcile (#12045)', () => {
     expect(s.notableAlerts?.map((a) => a.title)).toEqual(['critical older', 'high recent']);
     expect(s.notableAlerts?.some((a) => a.device === 'other-site-host')).toBe(false);
     expect((s.alerts!.critical ?? 0) + (s.alerts!.high ?? 0)).toBe(2);
+  });
+
+  it('names a notable alert\'s device only when it is in the report\'s org and site, even in system context', async () => {
+    const f = await fixture();
+    // A site-owned topology alert keeps its origin device id after that device
+    // moves; the device may now be in another org, or at another site of this one.
+    const otherOrg = await createOrganization({ partnerId: f.partnerId });
+    const otherOrgSite = await createSite({ orgId: otherOrg.id });
+    const [otherSite] = await f.seed.insert(sites).values({ orgId: f.org.id, name: 'Other site' }).returning();
+    const hw = { osType: 'windows' as const, osVersion: '11', architecture: 'amd64', agentVersion: '1', status: 'online' as const, lastSeenAt: new Date() };
+    const [movedOrg, movedSite] = await f.seed.insert(devices).values([
+      { ...hw, agentId: crypto.randomUUID(), orgId: otherOrg.id, siteId: otherOrgSite.id, hostname: 'other-org-host' },
+      { ...hw, agentId: crypto.randomUUID(), orgId: f.org.id, siteId: otherSite!.id, hostname: 'other-site-origin' },
+    ]).returning();
+    const owned = {
+      orgId: f.org.id, ownerKind: 'topology_site' as const, topologySiteId: f.site.id,
+      severity: 'critical' as const, status: 'active' as const, triggeredAt: new Date(Date.now() - DAY / 2),
+    };
+    await f.seed.insert(alerts).values([
+      { ...owned, deviceId: movedOrg!.id, topologySourceKey: `topology:${'d'.repeat(64)}`, title: 'origin now in another org' },
+      { ...owned, deviceId: movedSite!.id, topologySourceKey: `topology:${'e'.repeat(64)}`, title: 'origin now at another site' },
+    ]);
+    const deviceOf = (s: ExecutiveSummary, title: string) => s.notableAlerts?.find((a) => a.title === title)?.device;
+
+    // Scheduled runs execute in system context, where RLS hides nothing.
+    const sys = (await withSystemDbAccessContext(() =>
+      generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, f.authority))).summary as ExecutiveSummary;
+    expect(sys.notableAlerts?.map((a) => a.title)).toContain('origin now in another org');
+    expect(deviceOf(sys, 'origin now in another org')).toBeNull();
+    expect(sys.notableAlerts?.some((a) => a.device === 'other-org-host')).toBe(false);
+    expect(deviceOf(sys, 'origin now at another site')).toBe('other-site-origin');
+
+    const scope = { version: 1 as const, kind: 'restricted' as const, orgId: f.org.id, siteIds: [f.site.id] };
+    const restricted: OrgReportExecutionAuthority = {
+      principalKind: 'user', scope, principalUserId: f.user.id, capturedAt: new Date(), fingerprint: siteScopeFingerprint(scope),
+    };
+    const r = (await withSystemDbAccessContext(() =>
+      generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, restricted))).summary as ExecutiveSummary;
+    // Both alerts are owned by the restricted site, so both are listed; neither origin is named.
+    expect(r.notableAlerts?.map((a) => a.title)).toEqual(expect.arrayContaining(['origin now in another org', 'origin now at another site']));
+    expect(deviceOf(r, 'origin now in another org')).toBeNull();
+    expect(deviceOf(r, 'origin now at another site')).toBeNull();
+  });
+
+  it('fills device tokens left in stored alert titles', async () => {
+    const f = await fixture();
+    const [dev] = await f.seed.select({ id: devices.id }).from(devices)
+      .where(eq(devices.hostname, 'online-1')).limit(1);
+    await f.seed.insert(alerts).values({
+      orgId: f.org.id, deviceId: dev!.id, severity: 'critical' as const, status: 'active' as const,
+      title: '{{device}} is low on disk', triggeredAt: new Date(Date.now() - DAY / 4),
+    });
+    const s = (await f.inOrg(() =>
+      generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, f.authority))).summary as ExecutiveSummary;
+    const titles = s.notableAlerts?.map((a) => a.title) ?? [];
+    expect(titles).toContain('online-1 is low on disk');
+    expect(titles.some((t) => t.includes('{{'))).toBe(false);
   });
 });

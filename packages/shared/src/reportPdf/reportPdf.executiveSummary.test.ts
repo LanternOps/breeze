@@ -149,6 +149,29 @@ describe('Executive Summary cover (#12045)', () => {
     expect(size({ generatedAt: '2026-10-09T12:00:00Z', summary: { devices: { healthPercentage: 33, recentlySeenPercentage: 83 } } })).toBeGreaterThan(none);
   });
 
+  it('draws no trend chip against a previous run that had no devices', () => {
+    const size = (summary: ExecutiveSummary, previous?: { generatedAt: string; summary: unknown }) =>
+      Buffer.from(buildReportPdf([], { ...opts, reportType: 'executive_summary', summary, previous }).output('arraybuffer')).byteLength;
+    // An empty run stores a default 100, not a measurement: a "-8" chip would be invented.
+    const emptyWindowed = { devices: { total: 0, online: 0, offline: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } };
+    expect(size(reported, { generatedAt: '2026-10-09T12:00:00Z', summary: emptyWindowed })).toBe(size(reported));
+    const emptyLegacy = { devices: { total: 0, online: 0, offline: 0, healthPercentage: 100 } };
+    expect(size(legacy, { generatedAt: '2026-10-09T12:00:00Z', summary: emptyLegacy })).toBe(size(legacy));
+  });
+
+  it('labels an empty new-format snapshot with the windowed wording, not the legacy one', () => {
+    const empty: ExecutiveSummary = {
+      ...reported,
+      devices: { total: 0, online: 0, offline: 0, otherStatuses: {}, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 },
+    };
+    const m = metricByLabel(empty);
+    expect(m.has('Online when report ran')).toBe(false);
+    expect(m.get('Seen in last 7 days')?.value).toBe('N/A');
+    expect(m.get('Seen in last 7 days')?.status).toBe('na');
+    // A legacy snapshot keeps its own label.
+    expect(metricByLabel({ ...legacy, devices: { total: 0, online: 0, offline: 0, healthPercentage: 100 } }).has('Online when report ran')).toBe(true);
+  });
+
   it('draws no headline score for an empty fleet rather than a green 100', () => {
     const empty: ExecutiveSummary = {
       ...reported,

@@ -1054,7 +1054,15 @@ export function buildExecutiveSummaryMetrics(summary: ExecutiveSummary): { devic
         status: pctStatus(headline.score),
         target: 'target >=90%',
       }
-    : {
+    : !headline && d.recentlySeenPercentage != null
+      // A new-format snapshot of an empty fleet: same wording, no figure.
+      ? {
+          label: `Seen in last ${d.recentWindowDays ?? 7} days`,
+          value: 'N/A',
+          status: pctStatus(null),
+          target: 'target >=90%',
+        }
+      : {
         label: 'Online when report ran',
         value: headline ? `${headline.score}%` : 'N/A',
         status: pctStatus(headline?.score),
@@ -1209,10 +1217,13 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
       { label: 'Alerts resolved', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, tone: (a.resolutionRate ?? 100) >= 80 ? C.success : C.warning },
     ];
     // Trend only against a previous run that measured the same thing: a
-    // windowed score is never compared with a point-in-time one.
-    const trend = headline.windowed
-      ? trendFor(opts, headline.score, (s) => ((s as { devices?: { recentlySeenPercentage?: unknown } }).devices ?? {}).recentlySeenPercentage)
-      : trendFor(opts, headline.score, (s) => ((s as { devices?: { healthPercentage?: unknown } }).devices ?? {}).healthPercentage);
+    // windowed score is never compared with a point-in-time one, and a run
+    // with no devices stored a default 100, not a measurement.
+    const prevFigure = (key: 'recentlySeenPercentage' | 'healthPercentage') => (s: Record<string, unknown>) => {
+      const prev = (s as { devices?: { total?: unknown; recentlySeenPercentage?: unknown; healthPercentage?: unknown } }).devices ?? {};
+      return prev.total === 0 ? undefined : prev[key];
+    };
+    const trend = trendFor(opts, headline.score, prevFigure(headline.windowed ? 'recentlySeenPercentage' : 'healthPercentage'));
     y = drawScorecard(
       doc,
       headline.score,

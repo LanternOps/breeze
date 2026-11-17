@@ -613,22 +613,24 @@ export function trendLineOf(result: ReportResult): string | null {
   // Executive Summary (#12045): the headline is the share of devices seen in
   // the recent window, compared only with a baseline that recorded the same.
   const devicesOf = (v: Record<string, unknown> | undefined) =>
-    v?.devices as { recentlySeenPercentage?: unknown; recentWindowDays?: unknown } | undefined;
+    v?.devices as { total?: unknown; recentlySeenPercentage?: unknown; recentWindowDays?: unknown; healthPercentage?: unknown } | undefined;
   const seen = devicesOf(s)?.recentlySeenPercentage;
-  // No managed devices: the 100 is a divide-by-zero default, not a figure.
-  if ((s?.devices as { total?: unknown } | undefined)?.total === 0) return null;
+  // No managed devices: the 100 is a divide-by-zero default, not a figure —
+  // neither shown for this run nor used as the previous run's baseline.
+  if (devicesOf(s)?.total === 0) return null;
+  const prevDevices = devicesOf(prev)?.total === 0 ? undefined : devicesOf(prev);
   if (typeof seen === 'number') {
     const days = typeof devicesOf(s)?.recentWindowDays === 'number' ? devicesOf(s)!.recentWindowDays : 7;
     const label = `Fleet availability (seen in last ${days} days) ${seen}%`;
-    const prevSeen = devicesOf(prev)?.recentlySeenPercentage;
+    const prevSeen = prevDevices?.recentlySeenPercentage;
     if (typeof prevSeen === 'number' && prevSeen !== seen) {
       return `${label} — ${seen > prevSeen ? 'up' : 'down'} from ${prevSeen}% last run.`;
     }
     return `${label}.`;
   }
-  const health = (s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+  const health = devicesOf(s)?.healthPercentage;
   if (typeof health === 'number') {
-    const prevHealth = (prev?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+    const prevHealth = prevDevices?.healthPercentage;
     if (typeof prevHealth === 'number' && prevHealth !== health) {
       return `Fleet health ${health}% — ${health > prevHealth ? 'up' : 'down'} from ${prevHealth}% last run.`;
     }

@@ -444,6 +444,15 @@ describe('trendLineOf (executive summary, #12045)', () => {
       .toBe('Fleet availability (seen in last 7 days) 92%.');
   });
 
+  it('does not compare against a previous run that had no devices', () => {
+    // That run's 100 is a default, not a measurement.
+    const empty = { devices: { total: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } };
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: empty } }))
+      .toBe('Fleet availability (seen in last 7 days) 92%.');
+    expect(trendLineOf({ summary: { devices: { total: 12, healthPercentage: 33 } }, previous: { generatedAt: null, summary: { devices: { total: 0, healthPercentage: 100 } } } }))
+      .toBe('Fleet health 33%.');
+  });
+
   it('reports no fleet figure for an empty fleet', () => {
     expect(trendLineOf({ summary: { devices: { total: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } } })).toBeNull();
   });

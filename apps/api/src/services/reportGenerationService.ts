@@ -44,6 +44,7 @@ import { resolveReportDateRange } from './reportDateRange';
 import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
 import { alertSiteScopeByDeviceIds } from '../routes/alerts/helpers';
+import { fillStoredAlertCopy } from '../routes/alerts/alertCopy';
 // #3198 W02: shared with the business generators, which refuse a restricted
 // authority with a non-empty site list themselves (the zero-safe branch below
 // only sees the empty-list case).
@@ -870,18 +871,28 @@ export async function generateExecutiveSummaryReport(
 
   // The critical/high alerts the counts above summarise, named on the cover
   // (#12045): critical first, then most recent. Same window and site scope.
+  // The device is joined only inside the report's org (and allowed sites): a
+  // site-owned topology alert keeps its origin device id after that device
+  // moves, and scheduled runs execute in system context where RLS hides
+  // nothing, so an unscoped join could name a device the report may not show.
+  const notableDeviceJoin = and(
+    eq(alerts.deviceId, devices.id),
+    eq(devices.orgId, orgId),
+    restrictedSiteIds ? inArray(devices.siteId, restrictedSiteIds) : undefined,
+  );
   const notableAlertRows = restrictedSiteIds?.length === 0
     ? []
     : await db
       .select({
         title: alerts.title,
+        context: alerts.context,
         severity: alerts.severity,
         status: alerts.status,
         device: devices.hostname,
         triggeredAt: alerts.triggeredAt,
       })
       .from(alerts)
-      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .leftJoin(devices, notableDeviceJoin)
       .where(and(...alertConditions, inArray(alerts.severity, ['critical', 'high'])))
       .orderBy(sql`case when ${alerts.severity} = 'critical' then 0 else 1 end`, desc(alerts.triggeredAt))
       .limit(EXEC_NOTABLE_ALERT_LIMIT);
@@ -930,7 +941,9 @@ export async function generateExecutiveSummaryReport(
         end: reportWindow.end?.toISOString() ?? null,
       },
       notableAlerts: notableAlertRows.map((a) => ({
-        title: a.title,
+        // Stored copy can still hold {{device}}-style tokens; fill them the
+        // way the alerts list does.
+        title: fillStoredAlertCopy({ title: a.title, context: a.context }, a.device).title,
         severity: a.severity,
         status: a.status,
         device: a.device ?? null,
