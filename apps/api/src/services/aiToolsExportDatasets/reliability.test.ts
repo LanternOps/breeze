@@ -224,14 +224,22 @@ const EVENT_KEYS = [
 ];
 const H1 = id(201);
 const H2 = id(202);
-const eventsHistory = (hid: string, over: Record<string, unknown> = {}) => ({
-  id: hid, deviceId: D1, collectedAt: new Date('2026-11-10T00:00:00Z'), collectedAtText: '2026-11-10 00:00:00',
-  crashEvents: [{ type: 'bsod', timestamp: '2026-11-09T01:00:00Z', details: { dump: 'C:\\Users\\jdoe\\x.dmp', token: 't' } }],
-  appHangs: [{ processName: 'C:\\Users\\jdoe\\app.exe', timestamp: '2026-11-09T02:00:00Z', duration: 30, resolved: true }],
-  serviceFailures: [{ serviceName: 'Spooler', timestamp: 'garbage', errorCode: 'password=hunter2', recovered: false }],
-  hardwareErrors: { not: 'an array' },
-  ...over,
-});
+/** One history row as both queries see it: the key/count query reads `id`,
+ *  `collectedAtText` and `eventCount`; the arrays query reads the rest. */
+const eventsHistory = (hid: string, over: Record<string, unknown> = {}) => {
+  const row: Record<string, unknown> = {
+    id: hid, deviceId: D1, collectedAt: new Date('2026-11-10T00:00:00Z'), collectedAtText: '2026-11-10 00:00:00',
+    crashEvents: [{ type: 'bsod', timestamp: '2026-11-09T01:00:00Z', details: { dump: 'C:\\Users\\jdoe\\x.dmp', token: 't' } }],
+    appHangs: [{ processName: 'C:\\Users\\jdoe\\app.exe', timestamp: '2026-11-09T02:00:00Z', duration: 30, resolved: true }],
+    serviceFailures: [{ serviceName: 'Spooler', timestamp: 'garbage', errorCode: 'password=hunter2', recovered: false }],
+    hardwareErrors: { not: 'an array' },
+    ...over,
+  };
+  const arrays = [row.crashEvents, row.appHangs, row.serviceFailures, row.hardwareErrors];
+  return { ...row, collectedAtText: String(row.collectedAtText), eventCount: arrays.reduce<number>((n, a) => n + (Array.isArray(a) ? a.length : 0), 0) };
+};
+const cursorOf = (c: string | null) => JSON.parse(Buffer.from(c!, 'base64url').toString('utf8')) as string[];
+const cursorFor = (key: string[]) => Buffer.from(JSON.stringify(key), 'utf8').toString('base64url');
 
 describe('reliability_events', () => {
   it('flattens every class with one key set, in order', async () => {
@@ -283,21 +291,109 @@ describe('reliability_events', () => {
     expect(r.notes).toContain('reliability_events can list one event more than once; drop duplicates on eventKey.');
   });
 
-  it('reads pageSize/50 history rows per page (limit 11 at pageSize 500), desc keyset on collected_at', async () => {
+  it('first reads keys and counts of rows that HAVE events (limit 2001 at pageSize 500), desc keyset on collected_at', async () => {
     const { sql, params } = await firstQuery(reliabilityEventsAdapter, req({}));
-    expect(params).toContain(11);
+    expect(params).toContain(2001);
     expect(sql).toMatch(/order by .*"collected_at" desc, .*"id" desc/i);
     expect(sql).toMatch(/"device_id" = ANY\(\$\d+::uuid\[\]\)/);
+    // Empty rows are skipped in SQL, not paged through.
+    expect(sql).toMatch(/jsonb_array_length\(.*\) > 0/);
+    // The arrays themselves are not read by this query.
+    const selectList = sql.slice(0, sql.indexOf(' from "device_reliability_history"'));
+    expect(selectList).not.toMatch(/"(crash_events|app_hangs|service_failures|hardware_errors)"\s*(,|$)/);
   });
 
-  it('pages on the history row cursor', async () => {
+  it('then reads only the chosen rows\' arrays, by id, in one query', async () => {
     exportDeviceSet.mockResolvedValue(scope([D1]));
-    runExportQuery.mockResolvedValueOnce([eventsHistory(H1), eventsHistory(H2)]).mockResolvedValueOnce([]);
-    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 10 }));
+    runExportQuery.mockResolvedValue([eventsHistory(H1), eventsHistory(H2)]);
+    await (await reliabilityEventsAdapter.createPager(req({})))(null);
+    expect(runExportQuery).toHaveBeenCalledTimes(2);
+    const second = compiled(1);
+    expect(second.sql).toMatch(/"crash_events"/);
+    expect(second.sql).toMatch(/"id" = ANY\(\$\d+::uuid\[\]\)/);
+    expect(second.params).toContainEqual([H1, H2]);
+    expect(second.sql).not.toMatch(/ limit /i);
+  });
+
+  it('no row with events: one query, nothing more', async () => {
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([]);
+    expect(await (await reliabilityEventsAdapter.createPager(req({})))(null)).toEqual({ rows: [], nextCursor: null });
+    expect(runExportQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('pages on the history row cursor when more rows are left than a page takes', async () => {
+    // pageSize 1: budget 4 events, at most 4 rows per page.
+    const rows = [1, 2, 3, 4, 5].map((n) => eventsHistory(id(300 + n), {
+      collectedAtText: `2026-11-10 00:00:0${9 - n}`,
+      crashEvents: [{ type: 'bsod', timestamp: '2026-11-09T01:00:00Z' }], appHangs: [], serviceFailures: [], hardwareErrors: [],
+    }));
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows.slice(0, 4)).mockResolvedValue([]);
+    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 1 }));
     const first = await pager(null);
-    expect(first.nextCursor).not.toBeNull();
+    expect(first.rows).toHaveLength(4);
+    expect(cursorOf(first.nextCursor)).toEqual(['2026-11-10 00:00:05', id(304), '0']);
     await pager(first.nextCursor);
-    expect(compiled(1).params).toContain('2026-11-10 00:00:00');
+    expect(compiled(2).params).toContain('2026-11-10 00:00:05');
+    expect(compiled(2).sql).toMatch(/\(.*\) < \(\$\d+::timestamp, \$\d+::uuid\)/);
+  });
+
+  it('a page whose events all fall outside the window still advances past its rows', async () => {
+    const old = Array.from({ length: 10 }, () => ({ type: 'bsod', timestamp: '2026-01-01T00:00:00Z' }));
+    const r1 = eventsHistory(H1, { crashEvents: old, appHangs: [], serviceFailures: [], hardwareErrors: [] });
+    const r2 = eventsHistory(H2, { collectedAtText: '2026-11-09 00:00:00' });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValueOnce([r1, r2]).mockResolvedValueOnce([r1]);
+    const page = await (await reliabilityEventsAdapter.createPager(req({}, { pageSize: 1 })))(null);
+    expect(page.rows).toEqual([]);
+    expect(cursorOf(page.nextCursor)).toEqual([r1.collectedAtText, H1, '0']);
+  });
+
+  it('a resumed cursor whose row is gone skips none of the next row\'s events', async () => {
+    const next = eventsHistory(H2, { collectedAtText: '2026-11-09 00:00:00' });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([next]);
+    const pager = await reliabilityEventsAdapter.createPager(req({}));
+    const page = await pager(cursorFor(['2026-11-10 00:00:00', H1, '5']));
+    expect(page.rows.map((r) => r.historyId)).toEqual([H2, H2, H2]);
+  });
+
+  it('time range: reads rows collected up to 26 h after end and keeps in-range events from them', async () => {
+    const r = req({ timeRange: { start: '2026-11-01T00:00:00Z', end: '2026-11-10T00:00:00Z' } });
+    const lateRow = eventsHistory(H1, {
+      collectedAt: new Date('2026-11-10T12:00:00Z'), collectedAtText: '2026-11-10 12:00:00',
+      crashEvents: [{ type: 'bsod', timestamp: '2026-11-09T23:00:00Z' }], // in range, posted after end
+      appHangs: [{ processName: 'a', timestamp: '2026-11-10T06:00:00Z', duration: 1, resolved: true }], // after end
+      serviceFailures: [{ serviceName: 'S', timestamp: 'garbage', recovered: false }], // no own time, row after end
+      hardwareErrors: [],
+    });
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([lateRow]);
+    const page = await (await reliabilityEventsAdapter.createPager(r))(null);
+    expect(page.rows.map((x) => [x.eventClass, x.timestamp])).toEqual([['crash', '2026-11-09T23:00:00.000Z']]);
+    expect(compiled(0).params).toContain('2026-11-11T02:00:00.000Z');
+    expect(compiled(0).params).not.toContain('2026-11-10T00:00:00.000Z');
+  });
+
+  it('enumerated columns map to the known set; anything else exports as other', async () => {
+    const rows = await allRows(reliabilityEventsAdapter, [eventsHistory(H1, {
+      crashEvents: [
+        { type: 'kernel_panic', timestamp: '2026-11-09T01:00:00Z' },
+        { type: 'C:\\Users\\jdoe password=hunter2', timestamp: '2026-11-09T01:00:00Z' },
+        { type: 7, timestamp: '2026-11-09T01:00:00Z' },
+        { timestamp: '2026-11-09T01:00:00Z' },
+      ],
+      appHangs: [], serviceFailures: [],
+      hardwareErrors: [
+        { type: 'thermal', severity: 'warning', source: 's', timestamp: '2026-11-09T01:00:00Z' },
+        { type: 'jdoe', severity: 'apocalyptic jdoe', source: 's', timestamp: '2026-11-09T01:00:00Z' },
+      ],
+    })]);
+    expect(rows.map((x) => [x.eventType, x.severity])).toEqual([
+      ['kernel_panic', null], ['other', null], ['other', null], [null, null],
+      ['thermal', 'warning'], ['other', 'other'],
+    ]);
   });
 
   it('empty device set and a bad range behave like the history dataset', async () => {
@@ -340,8 +436,8 @@ describe('reliability_events', () => {
     expect(p2.nextCursor).toBeNull();
     const stamps = [...p1.rows, ...p2.rows].map((r) => r.timestamp);
     expect(stamps).toEqual(crashEvents.map((e) => new Date(e.timestamp).toISOString()));
-    // the resumed query includes the partially consumed row (<=, not <)
-    expect(compiled(1).sql).toMatch(/\(.*\) <= \(\$\d+::timestamp, \$\d+::uuid\)/);
+    // the resumed key query (call 2: page 1 ran calls 0 and 1) includes the partly consumed row (<=, not <)
+    expect(compiled(2).sql).toMatch(/\(.*\) <= \(\$\d+::timestamp, \$\d+::uuid\)/);
     expect(compiled(0).sql).not.toMatch(/<= \(\$\d+::timestamp/);
   });
 
@@ -358,13 +454,14 @@ describe('reliability_events', () => {
       appHangs: [], serviceFailures: [], hardwareErrors: [],
     });
     exportDeviceSet.mockResolvedValue(scope([D1]));
-    runExportQuery.mockResolvedValueOnce([rowA, rowB]); // pageSize 100: 2 history rows per page, budget 400
+    // pageSize 100: budget 400. Each page runs the key query, then the arrays query.
+    runExportQuery.mockResolvedValueOnce([rowA, rowB]).mockResolvedValueOnce([rowA, rowB]);
     const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 100 }));
     const p1 = await pager(null);
     expect(p1.rows).toHaveLength(400);
     // Row A is fully consumed; the cursor must resume strictly after A, not after B.
     expect(JSON.parse(Buffer.from(p1.nextCursor!, 'base64url').toString('utf8'))).toEqual([rowA.collectedAtText, H1, '0']);
-    runExportQuery.mockResolvedValueOnce([rowB]);
+    runExportQuery.mockResolvedValueOnce([rowB]).mockResolvedValueOnce([rowB]);
     const p2 = await pager(p1.nextCursor);
     expect(p2.rows.map((r) => r.historyId)).toEqual(Array(50).fill(H2));
     expect(p2.nextCursor).toBeNull();

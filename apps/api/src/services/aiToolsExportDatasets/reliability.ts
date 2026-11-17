@@ -10,11 +10,14 @@
  */
 import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, lte, sql, type AnyColumn } from 'drizzle-orm';
+import {
+  reliabilityCrashEventSchema,
+  reliabilityHardwareErrorSchema,
+} from '@breeze/shared/validators';
 import { db } from '../../db';
 import { deviceReliabilityHistory } from '../../db/schema';
 import { reliabilityEventKey, reliabilityExportPageQuery } from '../reliabilityScoring';
 import {
-  cutExportText,
   decodeExportCursor,
   deviceIdIn,
   emptyExportPager,
@@ -22,6 +25,7 @@ import {
   exportJsonText,
   exportText,
   exportDeviceSet,
+  exportEnum,
   keysetBefore,
   keysetPager,
   noteOn,
@@ -166,8 +170,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const asNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const asBoolean = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-/** An enumerated string the agent reported: type-checked and cut, not pattern-redacted. */
-const asEnum = (v: unknown): string | null => (typeof v === 'string' ? cutExportText(v) : null);
+/** The enumerated values ingest accepts; anything else exports as `other`. */
+const CRASH_TYPES: ReadonlySet<string> = new Set(reliabilityCrashEventSchema.shape.type.options);
+const HARDWARE_ERROR_TYPES: ReadonlySet<string> = new Set(reliabilityHardwareErrorSchema.shape.type.options);
+const HARDWARE_SEVERITIES: ReadonlySet<string> = new Set(reliabilityHardwareErrorSchema.shape.severity.options);
 
 /** The per-class columns. Every class returns the SAME keys in the SAME order
  *  (the writer takes the CSV header from the first row). */
@@ -184,7 +190,7 @@ function eventColumns(eventClass: EventClass, event: Record<string, unknown>) {
   };
   switch (eventClass) {
     case 'crash':
-      cols.eventType = asEnum(event.type);
+      cols.eventType = exportEnum(event.type, CRASH_TYPES);
       cols.detail = exportJsonText(event.details, { paths: true });
       break;
     case 'app_hang':
@@ -198,20 +204,29 @@ function eventColumns(eventClass: EventClass, event: Record<string, unknown>) {
       cols.recovered = asBoolean(event.recovered);
       break;
     case 'hardware_error':
-      cols.eventType = asEnum(event.type);
+      cols.eventType = exportEnum(event.type, HARDWARE_ERROR_TYPES);
       cols.name = exportText(event.source, { paths: true });
-      cols.severity = asEnum(event.severity);
+      cols.severity = exportEnum(event.severity, HARDWARE_SEVERITIES);
       cols.eventId = exportText(event.eventId, { paths: true });
       break;
   }
   return cols;
 }
 
-/** Ingest allows up to 3,500 events per history row, so the page is bounded on
- *  OUTPUT too: this many history rows per page, and at most `pageSize * 4`
- *  events, resuming mid-row from a sub-row cursor when the budget runs out. */
-const HISTORY_ROWS_PER_EVENT_PAGE_DIVISOR = 50;
+/** Ingest allows up to 3,500 events per history row, so a page is bounded on
+ *  OUTPUT: at most `pageSize * 4` events, resuming mid-row from a sub-row
+ *  cursor when the budget runs out. */
 const EVENTS_PER_PAGE_FACTOR = 4;
+
+/** How long after an event's own time its history row can still arrive: the
+ *  agent posts at most once per 24 h (`reliabilityPostInterval`), plus slack.
+ *  The scan reads rows collected up to this long after `end`, so an in-range
+ *  event posted after `end` is not missed; the event's own time decides. */
+export const RELIABILITY_POST_LAG_MS = 26 * 60 * 60 * 1000;
+
+/** A jsonb column's element count; a non-array (malformed) value counts 0. */
+const jsonbCount = (col: AnyColumn) =>
+  sql`CASE WHEN jsonb_typeof(${col}) = 'array' THEN jsonb_array_length(${col}) ELSE 0 END`;
 
 async function createReliabilityEventsPager(req: DatasetRequest) {
   const { start, end } = timeRangeFromFilters(req.filters);
@@ -221,8 +236,11 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
 
   const startMs = start.getTime();
   const endMs = end.getTime();
-  const historyRowsPerPage = Math.max(1, Math.floor(req.pageSize / HISTORY_ROWS_PER_EVENT_PAGE_DIVISOR));
+  const scanEnd = new Date(endMs + RELIABILITY_POST_LAG_MS);
   const eventBudget = req.pageSize * EVENTS_PER_PAGE_FACTOR;
+  // Only rows with at least one event are read, so a page can never consume
+  // more history rows than it may emit events.
+  const metaRowsPerPage = eventBudget;
 
   return async (cursor: string | null) => {
     // [collected_at::text, id, eventOffset]. Offset 0: resume strictly after the
@@ -230,12 +248,51 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
     // first `offset` flattened events are skipped.
     const after = decodeExportCursor(cursor, ['timestamp', 'uuid', 'int']);
     const offset = after ? Number(after[2]) : 0;
+    const resumeRowId = after && offset > 0 ? after[1]! : null;
 
     const t = deviceReliabilityHistory;
-    const resume = after && offset > 0
+    const resume = after && resumeRowId
       ? sql`(${t.collectedAt} <= ${after[0]}::timestamp AND (${t.collectedAt}, ${t.id}) <= (${after[0]}::timestamp, ${after[1]}::uuid))`
       : keysetBefore(t.collectedAt, t.id, after ? [after[0]!, after[1]!] : null, 'timestamp');
+    const eventCount = sql<number>`(${jsonbCount(t.crashEvents)} + ${jsonbCount(t.appHangs)} + ${jsonbCount(t.serviceFailures)} + ${jsonbCount(t.hardwareErrors)})`;
 
+    // 1. The page's history rows: keys and counts only. Most daily rows carry
+    //    no events; those are skipped here instead of being paged through.
+    const meta = await runExportQuery(
+      db
+        .select({
+          id: t.id,
+          collectedAtText: sql<string>`${t.collectedAt}::text`,
+          eventCount,
+        })
+        .from(deviceReliabilityHistory)
+        .where(and(
+          eq(t.orgId, req.orgId),
+          deviceIdIn(t.deviceId, scope.deviceIds),
+          gte(t.collectedAt, start),
+          lte(t.collectedAt, scanEnd),
+          sql`${eventCount} > 0`,
+          resume,
+        ))
+        .orderBy(desc(t.collectedAt), desc(t.id))
+        .limit(metaRowsPerPage + 1),
+    );
+    // The shortest prefix holding more events than the page can emit (plus the
+    // resumed row's skipped ones): only those rows' arrays are read, so memory
+    // stays bounded however many events one row carries.
+    let need = eventBudget;
+    let chosenCount = 0;
+    let counted = 0;
+    for (const m of meta.slice(0, metaRowsPerPage)) {
+      if (chosenCount === 0 && m.id === resumeRowId) need += offset;
+      counted += Number(m.eventCount);
+      chosenCount += 1;
+      if (counted > need) break;
+    }
+    const chosen = meta.slice(0, chosenCount);
+    if (chosen.length === 0) return { rows: [], nextCursor: null };
+
+    // 2. The chosen rows' event arrays, by primary key.
     const fetched = await runExportQuery(
       db
         .select({
@@ -252,18 +309,20 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
         .where(and(
           eq(t.orgId, req.orgId),
           deviceIdIn(t.deviceId, scope.deviceIds),
-          gte(t.collectedAt, start),
-          lte(t.collectedAt, end),
-          resume,
-        ))
-        .orderBy(desc(t.collectedAt), desc(t.id))
-        .limit(historyRowsPerPage + 1),
+          deviceIdIn(t.id, chosen.map((m) => m.id)),
+        )),
     );
-    const page = fetched.slice(0, historyRowsPerPage);
+    const byId = new Map(fetched.map((row) => [row.id, row]));
+    // Keyset order from step 1. A row removed in between (retention) is skipped.
+    const page = chosen.flatMap((m) => byId.get(m.id) ?? []);
 
     const out: Array<Record<string, unknown>> = [];
     for (let r = 0; r < page.length; r += 1) {
       const row = page[r]!;
+      // The offset belongs to the cursor's row only, never to whatever row
+      // comes first if that one is gone.
+      const skip = r === 0 && row.id === resumeRowId ? offset : 0;
+      const collectedAfterEnd = row.collectedAt.getTime() > endMs;
       const classes: Array<[EventClass, unknown]> = [
         ['crash', row.crashEvents],
         ['app_hang', row.appHangs],
@@ -279,7 +338,7 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
           if (!isRecord(event)) continue;
           const index = flatIndex;
           flatIndex += 1;
-          if (r === 0 && index < offset) continue;
+          if (index < skip) continue;
           if (out.length >= eventBudget) {
             // Offset 0 means "strictly after this row", so a budget that runs
             // out on a row's FIRST event must point at the previous row (fully
@@ -291,11 +350,12 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
               : encodeExportCursor([prev.collectedAtText, prev.id, '0']);
             return { rows: out, nextCursor };
           }
-          // The event's own time decides the window; an unparseable one is
-          // kept (with `timestamp: null`) rather than silently dropped.
+          // The event's own time decides the window. One with an unparseable
+          // time is kept (`timestamp: null`) when its row was collected inside
+          // the window, rather than silently dropped.
           const when = typeof event.timestamp === 'string' ? new Date(event.timestamp) : null;
           const ms = when && !Number.isNaN(when.getTime()) ? when.getTime() : null;
-          if (ms !== null && (ms < startMs || ms > endMs)) continue;
+          if (ms === null ? collectedAfterEnd : ms < startMs || ms > endMs) continue;
           const cols = eventColumns(eventClass, event);
           out.push({
             historyId: row.id,
@@ -319,10 +379,10 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
         }
       }
     }
-    const last = page[page.length - 1];
+    const last = chosen[chosen.length - 1]!;
     return {
       rows: out,
-      nextCursor: fetched.length > historyRowsPerPage && last
+      nextCursor: meta.length > chosen.length
         ? encodeExportCursor([last.collectedAtText, last.id, '0'])
         : null,
     };

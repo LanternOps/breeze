@@ -254,6 +254,55 @@ describe('export_dataset W04 datasets on real Postgres (breeze_app, forced RLS)'
     expect(rows.map((r) => r.timestamp)).toEqual(expected);
   });
 
+  runDb('reliability_events: empty history rows between non-empty ones cost no pages', async () => {
+    const t = await seedTenant();
+    const t0 = Date.now() - 2 * DAY_MS;
+    const at = (n: number) => new Date(t0 + n * 1000).toISOString();
+    // Newest first: a row with 3 events, 1200 empty rows, a row with 2 events,
+    // 1200 more empty rows, then a row with 1 event. All inside the default window.
+    const insertEvents = async (secondsAgo: number, events: unknown[]) => getTestDb().execute(sql`
+      INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events)
+      VALUES (${t.a1}, ${t.orgA}, now()::timestamp - make_interval(secs => ${secondsAgo}), 60, now()::timestamp, ${JSON.stringify(events)}::jsonb)`);
+    const insertEmpty = async (fromSecondsAgo: number) => getTestDb().execute(sql`
+      INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time)
+      SELECT ${t.a1}, ${t.orgA}, now()::timestamp - make_interval(secs => ${fromSecondsAgo} + g), 60, now()::timestamp
+      FROM generate_series(1, 1200) AS g`);
+    const ev = (from: number, count: number) => Array.from({ length: count }, (_, n) => ({ type: 'bsod', timestamp: at(from + n) }));
+    await insertEvents(10, ev(0, 3));
+    await insertEmpty(10);
+    await insertEvents(2000, ev(100, 2));
+    await insertEmpty(2000);
+    await insertEvents(4000, ev(200, 1));
+    // pageSize 100: a page takes up to 400 events. Paging through the empty
+    // rows would take more pages than the drain's 100-page guard.
+    const { pages, rows } = await drain('reliability_events', request('reliability_events', t.orgA, [t.a1], { pageSize: 100 }));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.nextCursor).toBeNull();
+    expect(rows.map((r) => r.timestamp)).toEqual([...ev(0, 3), ...ev(100, 2), ...ev(200, 1)].map((e) => new Date(e.timestamp).toISOString()));
+  });
+
+  runDb('reliability_events: an in-range event posted after the range end is exported', async () => {
+    const t = await seedTenant();
+    const end = new Date(Date.now() - 5 * DAY_MS);
+    const start = new Date(end.getTime() - 10 * DAY_MS);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    // Collected 12 h after `end`: one event an hour before `end` (in range),
+    // one an hour after it (out), one with no usable time (out: its row is
+    // outside the range).
+    const events = [
+      { type: 'bsod', timestamp: iso(end.getTime() - 3_600_000) },
+      { type: 'bsod', timestamp: iso(end.getTime() + 3_600_000) },
+      { type: 'bsod', timestamp: 'garbage' },
+    ];
+    await getTestDb().execute(sql`
+      INSERT INTO device_reliability_history (device_id, org_id, collected_at, uptime_seconds, boot_time, crash_events)
+      VALUES (${t.a1}, ${t.orgA}, ${iso(end.getTime() + 12 * 3_600_000)}::timestamptz AT TIME ZONE 'UTC', 60, now()::timestamp, ${JSON.stringify(events)}::jsonb)`);
+    const { rows } = await drain('reliability_events', request('reliability_events', t.orgA, [t.a1], {
+      filters: { timeRange: { start: start.toISOString(), end: end.toISOString() } },
+    }));
+    expect(rows.map((r) => r.timestamp)).toEqual([events[0]!.timestamp]);
+  });
+
   runDb('service_checks exports non-running checks only', async () => {
     const t = await seedTenant();
     await seedRow('service_checks', t.orgA, t.a1, tsText(1));
