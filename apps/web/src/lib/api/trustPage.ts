@@ -127,6 +127,14 @@ export function updateTrustDocuments(
   return f(`${base(orgId)}/documents`, jsonInit('PUT', expectedRevision === undefined ? { documents } : { documents, expectedRevision }));
 }
 
+/**
+ * Publish/unpublish responses report whether the public serving set took the change (#12103). 'degraded' = the
+ * page is committed but its public card answers "temporarily unavailable" until the server self-heals (~1 min).
+ * Absent from servers older than #12103.
+ */
+export type TrustServingStatus = 'applied' | 'degraded';
+
+/** POST → `{ data: { page, snapshotId, serving, publicPath, badgePath, embedPath } }`. */
 export function publishTrustPage(
   f: Fetcher,
   orgId: string,

@@ -436,6 +436,7 @@
         "publishing": "Publicando…",
         "cancel": "Cancelar",
         "success": "Página da Central de Confiança publicada.",
+        "successPending": "Publicada. A página pública será atualizada em até um minuto.",
         "failed": "Não foi possível publicar a página da Central de Confiança.",
         "disabledNoWrite": "Você precisa de permissão para editar organizações para publicar.",
         "disabledSlug": "Corrija o endereço da página antes de publicar."

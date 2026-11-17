@@ -364,6 +364,32 @@ export async function serveCommittedPublication(r: {
 }
 
 /**
+ * What a publish/unpublish response reports about the serving set (#12103). 'applied': the set holds the committed
+ * state ('fallback' counts: its merge never removes a member, so a publish is served and an unpublished member that
+ * lingers is the safe false positive the live resolve turns into a 404). 'degraded': the set did not take the change
+ * (Redis failed and the built marker was dropped, or there is no Redis), so the public card answers 503 until the
+ * self-heal rebuilds it, about a minute.
+ */
+export type TrustServingStatus = 'applied' | 'degraded';
+export function servingStatusFor(outcome: ServingApplyOutcome): TrustServingStatus {
+  switch (outcome) {
+    case 'applied':
+    case 'fallback':
+      return 'applied';
+    case 'degraded':
+    case 'no_redis':
+      return 'degraded';
+    default: {
+      // Compile-time exhaustiveness. Never a throw: this runs after the publication committed, so an
+      // unexpected value is reported as not-yet-served rather than turning a committed publish into a 500.
+      const unhandled: never = outcome;
+      console.warn('[trustPage] unexpected serving outcome; reporting degraded', { outcome: unhandled });
+      return 'degraded';
+    }
+  }
+}
+
+/**
  * Worker path (system context). Builds from the FROZEN published_config (Ruling 20) — draft edits never reach
  * the public page without a publish. Inserts a new current snapshot only when the content hash changed and the
  * revision is unchanged (a racing publish wins); always stamps last_evaluated_at when it still owns the revision.

@@ -436,6 +436,7 @@
         "publishing": "Publishing…",
         "cancel": "Cancel",
         "success": "Trust Center page published.",
+        "successPending": "Published. The public page will update within a minute.",
         "failed": "Could not publish the Trust Center page.",
         "disabledNoWrite": "You need permission to edit organizations to publish.",
         "disabledSlug": "Fix the page address before publishing."
