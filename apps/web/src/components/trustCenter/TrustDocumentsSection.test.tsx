@@ -151,16 +151,31 @@ describe('TrustDocumentsSection', () => {
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
   });
   it('a reload after 409 keeps unsaved links when the saved list did not change (#9087)', async () => {
-    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }));
-    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    api.updateTrustDocuments
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }))
+      .mockResolvedValue(ok());
+    // The reload hands back a NEW array with the same saved content and a bumped revision (what the tab does).
+    const props = { orgId: 'o1', orgFetch, canWrite: true };
+    let rerenderSection: ReturnType<typeof render>['rerender'] | undefined;
+    const onReload = vi.fn(async () => {
+      rerenderSection?.(<TrustDocumentsSection {...props} documents={[sd('d-pol', 'Security policy', 0)]} onReload={onReload} expectedRevision={3} />);
+    });
+    ({ rerender: rerenderSection } = render(<TrustDocumentsSection {...props} documents={[sd('d-pol', 'Security policy', 0)]} onReload={onReload} expectedRevision={2} />));
     fireEvent.click(await screen.findByTestId('trust-doc-add-d-ev'));
     fireEvent.click(screen.getByTestId('trust-doc-disclosure-checkbox'));
     fireEvent.click(screen.getByTestId('trust-doc-disclosure-confirm'));
     await screen.findByTestId('trust-doc-linked-d-ev');
     fireEvent.click(screen.getByTestId('trust-docs-save'));
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    // The unsaved addition survived the re-render, and the retry carries the fresh revision.
     expect(screen.getByTestId('trust-doc-linked-d-ev')).toBeInTheDocument();
     expect(screen.getByTestId('trust-doc-linked-d-pol')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('trust-docs-save')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('trust-docs-save'));
+    await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenLastCalledWith(orgFetch, 'o1', [
+      { documentId: 'd-pol', visibility: 'public', disclosureConfirmed: true },
+      { documentId: 'd-ev', visibility: 'public', disclosureConfirmed: true },
+    ], 3));
   });
   it('a DOCUMENT_UNAVAILABLE 422 does not reload (only a stale revision does)', async () => {
     api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'DOCUMENT_UNAVAILABLE', details: { documentIds: ['d-pol'] } }), { status: 422 }));

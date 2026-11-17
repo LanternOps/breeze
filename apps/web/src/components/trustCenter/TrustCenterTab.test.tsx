@@ -121,6 +121,21 @@ describe('TrustCenterTab', () => {
       { documentId: 'd-pol', visibility: 'public', disclosureConfirmed: true },
     ], 7));
   });
+  it('a documents 409 reloads the page, and the retry sends the refreshed revision (#9087)', async () => {
+    const docs = [{ documentId: 'd-pol', visibility: 'public', disclosureConfirmedAt: '2026-10-01T00:00:00Z', sortOrder: 0, title: 'Security policy', category: 'policy', contentType: 'application/pdf', byteSize: 1, supersededByDocumentId: null, deleted: false }];
+    api.getTrustPage
+      .mockResolvedValueOnce({ ...state({ publicationRevision: 7 }), documents: docs })
+      .mockResolvedValue({ ...state({ publicationRevision: 8 }), documents: docs });
+    api.updateTrustDocuments
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'stale', code: 'REVISION_MISMATCH' }), { status: 409 }))
+      .mockResolvedValue(new Response(JSON.stringify({ data: { documents: [], publicationRevision: 9 } }), { status: 200 }));
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    await waitFor(() => expect(api.getTrustPage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('trust-docs-save')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('trust-docs-save'));
+    await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenLastCalledWith(orgFetch, 'o1', expect.any(Array), 8));
+  });
   it('publish sends the template revision the editor loaded (#9087)', async () => {
     api.getTrustPage.mockResolvedValue({ ...state({ isPartnerHome: true }), template: { revision: 6 } });
     api.publishTrustPage.mockResolvedValue(new Response(JSON.stringify({ data: { page: state({ publishedAt: new Date().toISOString() }).page, snapshotId: 's' } }), { status: 200 }));

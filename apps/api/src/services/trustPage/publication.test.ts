@@ -226,18 +226,23 @@ describe('publishTrustPage guards', () => {
 
   it('a template saved after the editor loaded fails 409 TEMPLATE_CHANGED after the build, before the transaction (#9087)', async () => {
     vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(5, false));
+    vi.mocked(loadPostureEvidence).mockClear();
     queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
     await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 4, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
       .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    // The check ran on the build's own read (the evidence load is part of the build), not on a pre-read.
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
     expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
     expect(dbm.transaction).not.toHaveBeenCalled();
   });
 
   it('an editor that loaded no template fails 409 TEMPLATE_CHANGED once the partner creates one (#9087)', async () => {
     vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(1, true));
+    vi.mocked(loadPostureEvidence).mockClear();
     queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
     await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: null, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
       .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
     expect(dbm.transaction).not.toHaveBeenCalled();
   });
 
