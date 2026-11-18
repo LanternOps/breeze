@@ -18,7 +18,7 @@ import {
 //   apps/api/src/services/backupEncryption.ts  (encryption plan refusals)
 //   apps/api/src/routes/backup/jobs.ts         (enqueue failures, cancel)
 //   agent/internal/backup/backup.go, brokered_journal.go,
-//   agent/internal/sessionbroker/backup.go     (job errors and warnings)
+//   agent/internal/sessionbroker/backup.go     (job errors and warnings, backupSessionEndedError)
 type Row = [status: string, errorLog: string | null, expected: BackupFailureCategory | null];
 
 const REAPER = '[stale-backup-reaper]';
@@ -40,6 +40,9 @@ const BINDING_CORPUS: Row[] = [
   ['failed', 'failed to upload file to s3 with multipart upload: AccessDenied: Access Denied', 'storage'],
   ['failed', 'base_retired: late result rejected — the base snapshot was retired before this result arrived', 'storage'],
   ['failed', 'backup helper exited unexpectedly', 'agent'],
+  // #11044: the agent closed the helper's session itself (keepalive).
+  ['failed', 'agent closed the backup helper session (keepalive timeout: no reply from the helper for 1m0s)', 'agent'],
+  ['failed', 'agent closed the backup helper session (keepalive pings to the helper failed 3 times in a row)', 'agent'],
   ['failed', 'IPC recv error: ipc: read header: EOF', 'agent'],
   ['failed', 'IPC recv error: ipc: message too large: 2065852772', 'agent'],
   ['failed', 'The backup reported a different snapshot than it was allowed to write.', 'agent'],
@@ -272,6 +275,7 @@ const CAUSE_CORPUS: CauseRow[] = [
   ['could not ask to continue interrupted snapshot: storage session: renew rejected with status 410', 'storage', 'storage_session_expired'],
   ['session is no longer usable: the control plane kept rate limiting', 'storage', 'storage_session_expired'],
   ['backup helper exited unexpectedly', 'agent', 'helper_stopped'],
+  ['agent closed the backup helper session (keepalive timeout: no reply from the helper for 1m0s)', 'agent', 'helper_stopped'],
   ['context canceled', 'unknown', 'run_cancelled_on_device'],
   ['[stale-backup-reaper] Backup dispatch never completed', 'timeout', 'never_started'],
   ['[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes', 'timeout', 'no_agent_signal'],
