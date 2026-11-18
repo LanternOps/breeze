@@ -122,6 +122,58 @@ describe('retestOperation', () => {
     });
   });
 
+  // #12085: the unavailable result carries no reason on the wire, so the
+  // executor log is where an operator learns which Graph step failed.
+  it('logs the failed reconciliation step and code with the correlation id, and nothing else', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = deps();
+    d.graphClient.probeTenant = vi.fn().mockResolvedValue({
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      observedGrants: null,
+      grantReconciliationFailure: { stage: 'assignments', code: 'graph_permission_missing' },
+    });
+    try {
+      const result = await retestOperation({
+        correlationId: '11111111-1111-4111-8111-111111111111',
+        tenantId: TENANT,
+      }, d);
+
+      expect(result).toMatchObject({ success: true, grantReconciliation: 'unavailable' });
+      expect(result).not.toHaveProperty('grantReconciliationFailure');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[m365-graph-actions-executor] grant reconciliation unavailable',
+        {
+          operation: 'retest',
+          correlationId: '11111111-1111-4111-8111-111111111111',
+          stage: 'assignments',
+          code: 'graph_permission_missing',
+        },
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not log when reconciliation completes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = deps();
+    d.graphClient.probeTenant = vi.fn().mockResolvedValue({
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      observedGrants: [...getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!],
+    });
+    try {
+      await retestOperation({ correlationId: '11111111-1111-4111-8111-111111111111', tenantId: TENANT }, d);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('fails closed when the application proof does not match the fixed configured app', async () => {
     const d = deps();
     d.graphClient.probeTenant = vi.fn().mockResolvedValue({
