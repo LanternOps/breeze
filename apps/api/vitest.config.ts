@@ -16,6 +16,8 @@ export default defineConfig({
     maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
+      // Real object-store smoke test (#8350): vitest.config.storage.ts.
+      'src/**/*.storage.test.ts',
       'src/services/accounting/accountingFeePush.integration.test.ts',
       'src/index.autopay.integration.test.ts',
       'src/db/schema/autopaySetupAttempts.integration.test.ts',
