@@ -1209,6 +1209,7 @@
           "verified": "Only when verified ready",
           "verifiedHelp": "Show Wake only for devices reporting ready, or proven by a past wake that came online. Other devices can be sent one test wake."
         },
+        "verifiedWarning": "With this mode the Wake button stays hidden on a device until a wake has been proven there (a past wake that came online) or the device reports ready. Expect it to be hidden on most devices at first.",
         "aboutTitle": "About this setting",
         "aboutBody": "This policy only decides when the Wake button shows. Breeze reads each device's Wake-on-LAN readiness but does not change BIOS, network adapter or Windows settings.",
         "panel": {
@@ -1258,6 +1259,8 @@
             "fast_startup_unknown": "Fast Startup state unknown",
             "nic_magic_packet_disabled": "Adapter magic packet wake is off",
             "nic_magic_packet_unknown": "Adapter magic packet wake state unknown",
+            "nic_unreadable": "A wired adapter is present but could not be read",
+            "nic_cmdlets_unavailable": "Network adapter settings cannot be read on this device",
             "nic_eee_enabled": "Energy-Efficient Ethernet is on",
             "firmware_adapter_unavailable": "Firmware settings cannot be read yet"
           },
