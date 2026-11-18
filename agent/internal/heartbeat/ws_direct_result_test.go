@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,7 +71,11 @@ func TestHandleCommandHTTPResultSubmission(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var submissions atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/api/") { // ignore local port probes
+					http.NotFound(w, r)
+					return
+				}
 				submissions.Add(1)
 				w.WriteHeader(http.StatusOK)
 			}))

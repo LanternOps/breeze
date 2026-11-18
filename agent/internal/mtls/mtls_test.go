@@ -236,7 +236,7 @@ func TestIsExpiredUnparseableReturnsTrueFailClosed(t *testing.T) {
 }
 
 func TestIsExpiredISO8601WithoutTZ(t *testing.T) {
-	future := time.Now().Add(24 * time.Hour).Format("2006-01-02T15:04:05")
+	future := time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02T15:04:05")
 	if IsExpired(future) {
 		t.Fatalf("IsExpired(%q) should return false for future ISO 8601 date", future)
 	}
@@ -311,8 +311,8 @@ func TestNeedsRenewalUnparseableExpiresReturnsFalse(t *testing.T) {
 }
 
 func TestNeedsRenewalISO8601WithoutTZ(t *testing.T) {
-	issued := time.Now().Add(-3 * time.Hour).Format("2006-01-02T15:04:05")
-	expires := time.Now().Add(1 * time.Hour).Format("2006-01-02T15:04:05")
+	issued := time.Now().UTC().Add(-3 * time.Hour).Format("2006-01-02T15:04:05")
+	expires := time.Now().UTC().Add(1 * time.Hour).Format("2006-01-02T15:04:05")
 
 	if !NeedsRenewal(issued, expires) {
 		t.Fatal("should need renewal with ISO 8601 timestamps after 2/3 threshold")
