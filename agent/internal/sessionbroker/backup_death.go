@@ -246,8 +246,7 @@ func (b *Broker) redispatchQueuedBackupRuns(ended *Session, commandIDs []string)
 		// new entry decides who reports it: the new helper's own result or
 		// death once admitted, or the failure handled below.
 		env, err := b.forwardTrackedBackupRun(bh, session, req, timeout, redispatches+1)
-		var terminal *backupRunTerminalError
-		if errors.As(err, &terminal) {
+		if terminal, ok := errors.AsType[*backupRunTerminalError](err); ok {
 			// The new helper admitted it and its session ended too; the
 			// error already says how (started there, or out of re-sends).
 			backupLog.Warn("re-sent backup run lost with its new helper session, failing the job",
