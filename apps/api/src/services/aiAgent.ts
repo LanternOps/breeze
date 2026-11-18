@@ -778,7 +778,7 @@ async function closeOutApprovalWait(
           if (linkedRequestIds.length > 0) {
             await db
               .update(approvalRequests)
-              .set({ status: 'expired' })
+              .set({ status: 'expired', decidedAt: new Date() })
               .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
           }
           return { kind: 'closed' as const };
@@ -806,7 +806,7 @@ async function closeOutApprovalWait(
                 .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'approved')));
               await db
                 .update(approvalRequests)
-                .set({ status: 'expired' })
+                .set({ status: 'expired', decidedAt: new Date() })
                 .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
             }
             return { kind: 'stopped' as const, ...stopped, linkedRequestIds };
