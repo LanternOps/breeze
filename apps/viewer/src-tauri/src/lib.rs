@@ -630,21 +630,31 @@ fn arm_session_end(
     session_id: String,
     state: tauri::State<'_, session_end::SessionEndState>,
 ) -> Result<(), String> {
-    if !window.label().starts_with("session-") {
-        return Err("only a session window has a session to end".to_string());
+    let label = window.label();
+    let checked = if !label.starts_with("session-") {
+        Err("only a session window has a session to end".to_string())
+    } else if access_token.is_empty() {
+        Err("empty access token".to_string())
+    } else {
+        session_end::end_url(&api_url, &session_id).map(|_| ())
+    };
+    if let Err(err) = checked {
+        // Never the token. Closing this window will end the session as a
+        // dropped connection.
+        eprintln!("Not arming the native session end for {label}: {err}");
+        return Err(err);
     }
-    if access_token.is_empty() {
-        return Err("empty access token".to_string());
-    }
-    session_end::end_url(&api_url, &session_id)?;
-    state.arm(
-        window.label(),
+    let armed = state.arm(
+        label,
         session_end::EndTarget {
             api_url,
             access_token,
             session_id,
         },
     );
+    if !armed {
+        eprintln!("Not arming the native session end for {label}: the window is closing");
+    }
     Ok(())
 }
 
@@ -677,21 +687,36 @@ fn hold_close_to_end_session(app: &tauri::AppHandle, label: &str, api: &tauri::C
             let app = app.clone();
             let label = label.to_string();
             tauri::async_runtime::spawn(async move {
+                // Destroys the window when dropped, so even a panic while
+                // sending End cannot leave the close held forever.
+                let _destroy = DestroyWindowOnDrop { app, label };
                 session_end::send_end(&target).await;
-                drop(target);
-                let destroyed = match app.get_webview_window(&label) {
-                    Some(window) => window.destroy().map_err(|e| e.to_string()),
-                    None => Ok(()),
-                };
-                if let Err(err) = destroyed {
-                    eprintln!(
-                        "Failed to close session window {label} after ending its session: {err}"
-                    );
-                    if let Some(state) = app.try_state::<session_end::SessionEndState>() {
-                        state.close_failed(&label);
-                    }
-                }
             });
+        }
+    }
+}
+
+/// #12129: finishes a held close by destroying the window. If that fails, the
+/// next close request goes ahead instead of being held again.
+struct DestroyWindowOnDrop {
+    app: tauri::AppHandle,
+    label: String,
+}
+
+impl Drop for DestroyWindowOnDrop {
+    fn drop(&mut self) {
+        let destroyed = match self.app.get_webview_window(&self.label) {
+            Some(window) => window.destroy().map_err(|e| e.to_string()),
+            None => Ok(()),
+        };
+        if let Err(err) = destroyed {
+            eprintln!(
+                "Failed to close session window {} after ending its session: {err}",
+                self.label
+            );
+            if let Some(state) = self.app.try_state::<session_end::SessionEndState>() {
+                state.close_failed(&self.label);
+            }
         }
     }
 }

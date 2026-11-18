@@ -78,8 +78,15 @@ impl SessionEndState {
     }
 
     /// The page is now showing `target` in `label`. Replaces any earlier arm.
-    pub fn arm(&self, label: &str, target: EndTarget) {
-        self.lock().armed.insert(label.to_string(), target);
+    /// Refused while the window's close is held: the window is about to be
+    /// destroyed, and a target armed now would never be ended.
+    pub fn arm(&self, label: &str, target: EndTarget) -> bool {
+        let mut inner = self.lock();
+        if inner.closing.contains(label) {
+            return false;
+        }
+        inner.armed.insert(label.to_string(), target);
+        true
     }
 
     /// The page has ended (or no longer shows) `session_id`. A disarm for an
@@ -196,6 +203,8 @@ pub async fn send_end(target: &EndTarget) -> EndOutcome {
     let outcome = match tokio::time::timeout(END_TIMEOUT, request).await {
         Ok(Ok(resp)) => classify_status(resp.status().as_u16()),
         Ok(Err(err)) => {
+            // Without the URL: it is the operator's API address.
+            let err = err.without_url();
             eprintln!("End session request failed on close; the session will end when the connection closes: {err}");
             EndOutcome::Failed
         }
@@ -234,7 +243,7 @@ mod tests {
     #[test]
     fn an_armed_window_ends_its_session_before_closing() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
+        assert!(state.arm("session-1", target("s1")));
         assert_eq!(
             state.on_close_requested("session-1"),
             CloseDecision::EndFirst(target("s1"))
@@ -249,7 +258,7 @@ mod tests {
     #[test]
     fn a_second_close_while_end_is_in_flight_keeps_holding() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
+        assert!(state.arm("session-1", target("s1")));
         let _ = state.on_close_requested("session-1");
         assert_eq!(
             state.on_close_requested("session-1"),
@@ -260,7 +269,7 @@ mod tests {
     #[test]
     fn a_failed_destroy_lets_the_next_close_through() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
+        assert!(state.arm("session-1", target("s1")));
         let _ = state.on_close_requested("session-1");
         state.close_failed("session-1");
         // End was already sent once; the next close does not send it again.
@@ -273,8 +282,8 @@ mod tests {
     #[test]
     fn rearming_replaces_the_session_after_a_transport_switch() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
-        state.arm("session-1", target("s2"));
+        assert!(state.arm("session-1", target("s1")));
+        assert!(state.arm("session-1", target("s2")));
         assert_eq!(
             state.on_close_requested("session-1"),
             CloseDecision::EndFirst(target("s2"))
@@ -284,7 +293,7 @@ mod tests {
     #[test]
     fn the_page_ending_the_session_itself_disarms_the_native_end() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
+        assert!(state.arm("session-1", target("s1")));
         assert!(state.disarm("session-1", "s1"));
         assert_eq!(
             state.on_close_requested("session-1"),
@@ -295,7 +304,7 @@ mod tests {
     #[test]
     fn a_late_disarm_for_an_older_session_leaves_the_newer_one_armed() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s2"));
+        assert!(state.arm("session-1", target("s2")));
         assert!(!state.disarm("session-1", "s1"));
         assert_eq!(
             state.on_close_requested("session-1"),
@@ -306,14 +315,14 @@ mod tests {
     #[test]
     fn a_destroyed_window_forgets_its_session_and_close_state() {
         let state = SessionEndState::default();
-        state.arm("session-1", target("s1"));
+        assert!(state.arm("session-1", target("s1")));
         state.forget("session-1");
         assert_eq!(
             state.on_close_requested("session-1"),
             CloseDecision::Proceed
         );
 
-        state.arm("session-2", target("s2"));
+        assert!(state.arm("session-2", target("s2")));
         let _ = state.on_close_requested("session-2");
         state.forget("session-2");
         assert_eq!(
@@ -442,6 +451,40 @@ mod tests {
             .port();
         let target = EndTarget {
             api_url: format!("http://127.0.0.1:{port}"),
+            access_token: "viewer-tok".to_string(),
+            session_id: "s1".to_string(),
+        };
+        assert_eq!(
+            tauri::async_runtime::block_on(send_end(&target)),
+            EndOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn a_session_armed_while_the_close_is_held_is_not_kept() {
+        let state = SessionEndState::default();
+        assert!(state.arm("session-1", target("s1")));
+        let _ = state.on_close_requested("session-1");
+        // A transport switch inside the hold must not leave a target behind
+        // that nothing will ever end.
+        assert!(!state.arm("session-1", target("s2")));
+        state.close_failed("session-1");
+        assert_eq!(
+            state.on_close_requested("session-1"),
+            CloseDecision::Proceed
+        );
+    }
+
+    #[test]
+    fn send_end_over_https_fails_cleanly_against_a_closed_port() {
+        // Exercises the rustls/ring client build an https API takes.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let target = EndTarget {
+            api_url: format!("https://127.0.0.1:{port}"),
             access_token: "viewer-tok".to_string(),
             session_id: "s1".to_string(),
         };

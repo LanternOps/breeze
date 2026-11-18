@@ -3,6 +3,9 @@ import type { AuthenticatedConnectionParams } from './webrtc';
 
 type Invoke = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
 
+/** The longest the hang-up waits for Rust to acknowledge a disarm. */
+export const DISARM_TIMEOUT_MS = 500;
+
 /**
  * #12129: keeps the native close hook (src-tauri/src/session_end.rs) told
  * which desktop session this window shows. Rust owns the window close: it
@@ -31,10 +34,14 @@ export function createNativeSessionEnd(call: Invoke = invoke) {
         },
       );
 
+  // Bounded: the hang-up awaits it before closing the window, and a disarm
+  // that is lost only costs the close one redundant End.
   const disarm = (sessionId: string | null | undefined): Promise<void> => {
     if (!sessionId) return Promise.resolve();
     if (armed === sessionId) armed = null;
-    return send('disarm_session_end', { sessionId });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, DISARM_TIMEOUT_MS); });
+    return Promise.race([send('disarm_session_end', { sessionId }), timeout]).finally(() => clearTimeout(timer));
   };
 
   const track = <T extends AuthenticatedConnectionParams | null>(auth: T): T => {

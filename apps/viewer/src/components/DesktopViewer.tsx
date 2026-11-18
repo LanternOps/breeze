@@ -3014,7 +3014,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     void hangUpThenClose({
       // End sent here; tell Rust not to send it again on the close that
-      // onDisconnect ends with (it would only delay the close).
+      // onDisconnect ends with. Disarmed even when End failed: the closers
+      // tear the peer down before that close, so a second End could not
+      // change the record and would only delay the close by up to 2 s.
       hangUp: async () => {
         await hangUpRef.current(auth);
         await nativeSessionEndRef.current.disarm(auth?.sessionId);

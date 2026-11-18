@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
-import { createNativeSessionEnd } from './nativeSessionEnd';
+import { createNativeSessionEnd, DISARM_TIMEOUT_MS } from './nativeSessionEnd';
 
 const AUTH = {
   apiUrl: 'https://example.com',
@@ -73,6 +73,21 @@ describe('createNativeSessionEnd (#12129)', () => {
     await native.disarm('');
     await native.disarm(null);
     expect(call.mock.calls.filter(([cmd]) => cmd === 'disarm_session_end')).toHaveLength(1);
+  });
+
+  it('a disarm that never settles cannot hold up the hang-up', async () => {
+    vi.useFakeTimers();
+    try {
+      const native = createNativeSessionEnd(vi.fn(() => new Promise<unknown>(() => {})));
+      let settled = false;
+      void native.disarm(AUTH.sessionId).then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(DISARM_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('swallows a failed or throwing native call', async () => {
