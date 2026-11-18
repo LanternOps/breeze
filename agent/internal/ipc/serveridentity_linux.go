@@ -78,9 +78,11 @@ func GatherUnixServerEvidence(conn *net.UnixConn, socketPath string) (UnixServer
 
 // VerifyUnixBrokerServer checks, before anything is sent, that the process
 // that accepted conn on socketPath is the root broker: SO_PEERCRED uid 0 and
-// a root-controlled directory chain (CheckUnixServerIdentity). Every Unix
+// a root-controlled directory chain (CheckUnixServerIdentity). Every Go Unix
 // client of the broker socket calls it: the user and desktop helpers, the
-// watchdog and breeze-backup.
+// watchdog and breeze-backup. The Rust Assist app (apps/helper) applies the
+// same rule in its own dialer: ipc/server_identity_unix.rs,
+// verify_unix_broker_server. A change to the rule changes both.
 func VerifyUnixBrokerServer(conn net.Conn, socketPath string) error {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
