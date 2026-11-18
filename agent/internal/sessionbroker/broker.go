@@ -350,6 +350,15 @@ type Broker struct {
 	// liveness probe (OpenProcess on Windows, indeterminate elsewhere).
 	nowFn               func() time.Time
 	helperKeyPIDAliveFn func(pid uint32) (alive, known bool)
+
+	// Linux per-session desktop helper (#12117). linuxDesktopTickets holds the
+	// single-use spawn tickets; linuxLogindLookup reads logind during
+	// admission (nil off Linux); selfExeHash (guarded by mu) is the SHA-256 of
+	// the daemon's own executable, recorded once at start, which an admitted
+	// desktop helper's binary must equal.
+	linuxDesktopTickets *linuxDesktopTickets
+	linuxLogindLookup   logindLookupFunc
+	selfExeHash         string
 }
 
 // helperKillRetentionTTL is the hard cap on how long a helper key stays owned
@@ -394,7 +403,10 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		goos:                   runtime.GOOS,
 		helperKeyRetention:     make(map[HelperKey]retainedHelperKey),
 		helperKeyRetentionTTL:  helperKillRetentionTTL,
+		linuxDesktopTickets:    newLinuxDesktopTickets(nil),
+		linuxLogindLookup:      defaultLinuxLogindLookup(),
 	}
+	b.selfExeHash = recordRunningBuildHash()
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
 	return b
@@ -980,7 +992,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser {
+		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			if betterSession(s, best) {
 				best = s
 			}
@@ -991,7 +1003,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 	}
 
 	for _, s := range b.sessions {
-		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && betterSession(s, best) {
+		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1811,7 +1823,7 @@ func (b *Broker) FindUserSession(winSessionID string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && betterSession(s, best) {
+		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1824,7 +1836,7 @@ func (b *Broker) userHelperSessions() []*Session {
 
 	sessions := make([]*Session, 0, len(b.sessions))
 	for _, s := range b.sessions {
-		if s.HelperRole == ipc.HelperRoleUser {
+		if s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			sessions = append(sessions, s)
 		}
 	}
@@ -1837,7 +1849,7 @@ func (b *Broker) userHelperSessionForKey(sessionKey string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.HelperRole != ipc.HelperRoleUser {
+		if s.HelperRole != ipc.HelperRoleUser || isLinuxDesktopSession(s) {
 			continue
 		}
 		match := s.WinSessionID == sessionKey || s.IdentityKey == sessionKey
@@ -2464,6 +2476,34 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	// Step 7b: Linux per-session desktop helper admission (#12117). Runs after
+	// the path and hash checks, so a peer that is not an agent build cannot
+	// burn a ticket, and before anything else is granted. A Linux desktop
+	// helper earns the desktop scope only through a spawn ticket; without one
+	// it is refused outright, never downgraded to the user helper grant.
+	var linuxDesktop *LinuxDesktopBinding
+	isLinuxDesktop, linuxReject := linuxDesktopAdmission(b.effectiveGOOS(), helperRole, authReq)
+	if linuxReject == "" && isLinuxDesktop {
+		binding, reason := b.admitLinuxDesktopHelper(creds.UID, peerHash, authReq)
+		if reason == "" {
+			linuxDesktop = &binding
+		}
+		linuxReject = reason
+	}
+	if linuxReject != "" {
+		// Never log the ticket itself.
+		log.Warn("Linux desktop helper admission rejected",
+			"reason", linuxReject, "uid", creds.UID, "pid", creds.PID,
+			"role", helperRole, "binaryKind", authReq.BinaryKind, "logindSession", authReq.LogindSessionID)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    linuxReject,
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+
 	// Step 8: Reject duplicate session IDs
 	b.mu.RLock()
 	if _, exists := b.sessions[authReq.SessionID]; exists {
@@ -2540,7 +2580,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	var scopes []string
+	if linuxDesktop != nil {
+		// Exactly the desktop scope: no consent, prompt or messaging grant
+		// from the helper's advertisements.
+		scopes = append([]string(nil), linuxDesktopHelperScopes...)
+	} else {
+		scopes = b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	}
 	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
 	if err != nil {
 		log.Warn("failed to retain authenticated peer process handle", "pid", creds.PID, "error", err.Error())
@@ -2588,6 +2635,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Send auth response
+	// Darwin-only (AgentHandlesTCCNotice), so always false for a Linux
+	// desktop helper.
 	handlesTCCNotice := b.agentHandlesTCCNoticeFor(helperRole, authReq, scopes)
 	authResp := ipc.AuthResponse{
 		Accepted:              true,
@@ -2623,7 +2672,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	applyAuthAdvertisements(session, helperRole, authReq)
+	if linuxDesktop != nil {
+		// Only the UI locale is taken from a Linux desktop helper's
+		// advertisements; consent, PAM and prompt support grant nothing.
+		session.LinuxDesktop = linuxDesktop
+		session.uiLocale = uiLocaleFromAuth(authReq)
+	} else {
+		applyAuthAdvertisements(session, helperRole, authReq)
+	}
 	session.agentHandlesTCCNotice.Store(handlesTCCNotice)
 	session.peerProcess = peerProcessRef
 

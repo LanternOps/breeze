@@ -48,6 +48,10 @@ type Session struct {
 	HelperRole         ipc.HelperRole // "system" or "user" — determines scopes and capabilities
 	BinaryKind         string
 	DesktopContext     string
+	// LinuxDesktop is the spawn-ticket binding of an admitted Linux
+	// per-session desktop helper (#12117), nil for every other helper. Set
+	// once before the session is registered and read-only afterwards.
+	LinuxDesktop *LinuxDesktopBinding
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
