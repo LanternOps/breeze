@@ -111,7 +111,7 @@ pub fn now_rfc3339_secs() -> String {
 }
 
 /// The current local time as `YYYY-MM-DD HH:MM:SS`, or UTC if the local
-/// offset cannot be determined (as chrono's `Local` did).
+/// offset cannot be determined.
 pub fn local_log_timestamp() -> String {
     format_log(OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc()))
 }
@@ -244,6 +244,11 @@ mod tests {
             ("0000-01-01T00:00:00Z", -62_167_219_200_000),
             ("9999-12-31T23:59:59.999Z", 253_402_300_799_999),
             ("1969-12-31T23:59:59.5Z", -500),
+            // Leap second, fraction and offset together: roll, then subtract.
+            ("2026-10-16T23:59:60.25-23:59", 1_792_281_540_250),
+            ("2000-02-29T00:00:00Z", 951_782_400_000),
+            // Year 0 is a leap year (proleptic Gregorian).
+            ("0000-02-29T00:00:00Z", -62_162_121_600_000),
             // The `toISOString()` shape the API sends.
             ("2026-10-16T12:00:00.000+00:00", T),
         ];
@@ -301,6 +306,18 @@ mod tests {
             "2026-10-16T12:00:00\u{2212}",
             "2026-10-16T12:00:00+",
             "2026-10-16T12:00:00 +02:00",
+            "2100-02-29T00:00:00Z",
+            "2026-10-16T12:00:00-24:00",
+            "2026-10-16T12:00:00\u{2212}24:00",
+            "2026-10-16T12:00:00+02:99",
+            "2026-10-16T12:00:00+0a:00",
+            "2026-10-16T12:00:00+02:0a",
+            // Multi-byte UTF-8 around every slicing point: refused, no panic.
+            "2026-10-16T12:00:00\u{e9}",
+            "2026-10-16T12:00:00.\u{e9}",
+            "2026-10-16T12:00:00+0\u{e9}:00",
+            "2026-10-16T\u{e9}2:00:00Z",
+            "2026-10-16T12:00:0\u{e9}Z",
         ];
         for input in cases {
             assert_eq!(parse_rfc3339_millis(input), None, "input {input:?}");
@@ -328,6 +345,10 @@ mod tests {
         assert_eq!(
             format_rfc3339(s + 1, 0),
             "2026-10-16T12:00:00.000000001+00:00"
+        );
+        assert_eq!(
+            format_rfc3339(s + 1_000, 0),
+            "2026-10-16T12:00:00.000001+00:00"
         );
         assert_eq!(format_rfc3339(s, 7200), "2026-10-16T14:00:00+02:00");
         assert_eq!(
