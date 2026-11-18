@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "No compliance results reported. Assign a Configuration Policy with compliance rules to this device, or wait for the next evaluation.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Assign a configuration policy"
+    "assignPolicy": "Assign a configuration policy",
+    "notCollectedProbeLimit": "Not collected (probe limit)",
+    "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",

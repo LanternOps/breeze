@@ -68,7 +68,9 @@
       "check": "Controllo",
       "lastChecked": "Ultimo controllo",
       "noComplianceResultsYetAssignThisPolicy": "Non ci sono ancora risultati di conformità. Assegna questo criterio ai dispositivi e aggiungi regole di conformità; lo stato apparirà dopo la prossima valutazione.",
-      "summary": "Visualizzazione dei primi {{shown}} di {{total}} risultati: il riepilogo sotto riflette solo questa pagina."
+      "summary": "Visualizzazione dei primi {{shown}} di {{total}} risultati: il riepilogo sotto riflette solo questa pagina.",
+      "notCollectedProbeLimit": "Non raccolto (limite di rilevamenti)",
+      "notCollectedProbeLimitHint": "L'elenco dei rilevamenti di conformità di questa organizzazione è pieno, quindi almeno un controllo qui non viene raccolto. Non viene valutato, segnalato né corretto finché l'elenco non ha spazio."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleziona un'organizzazione per questo criterio.",

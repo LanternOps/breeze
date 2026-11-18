@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Nessun risultato di conformità segnalato. Assegna a questo dispositivo una Configuration Policy con regole di conformità oppure attendi la prossima valutazione.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Assegna un criterio di configurazione"
+    "assignPolicy": "Assegna un criterio di configurazione",
+    "notCollectedProbeLimit": "Non raccolto (limite di rilevamenti)",
+    "notCollectedProbeLimitHint": "L'elenco dei rilevamenti di conformità di questa organizzazione è pieno, quindi almeno un controllo qui non viene raccolto. Non viene valutato, segnalato né corretto finché l'elenco non ha spazio."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",

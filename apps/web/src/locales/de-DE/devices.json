@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Es wurden keine Compliance-Ergebnisse gemeldet. Weisen Sie diesem Gerät eine Konfigurationsrichtlinie mit Compliance-Regeln zu oder warten Sie auf die nächste Auswertung.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen",
+    "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
+    "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",

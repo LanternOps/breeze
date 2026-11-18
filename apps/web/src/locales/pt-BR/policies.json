@@ -68,7 +68,9 @@
       "check": "Verificação",
       "lastChecked": "Última verificação",
       "noComplianceResultsYetAssignThisPolicy": "Ainda não há resultados de conformidade. Atribua esta política a dispositivos e adicione regras de conformidade; o status aparecerá após a próxima avaliação.",
-      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página."
+      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página.",
+      "notCollectedProbeLimit": "Não coletado (limite de sondagens)",
+      "notCollectedProbeLimitHint": "A lista de sondagens de conformidade desta organização está cheia, então pelo menos uma verificação aqui não é coletada. Ela não é avaliada, alertada nem corrigida até que a lista tenha espaço."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Selecione uma organização para esta política.",
