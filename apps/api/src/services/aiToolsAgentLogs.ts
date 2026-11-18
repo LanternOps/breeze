@@ -19,6 +19,7 @@ import { deviceScopeCondition, deviceSiteDenied, orgIdIn, resolveSiteAllowedDevi
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveReadableToolOrgScope } from './aiToolWriteOrg';
 import { aiExecuteCommand } from './aiDispatch';
+import { inToolDbPhase } from './aiToolDbContext';
 import type { CommandResult } from './commandQueue';
 import { CAPTURE_PPROF_PROFILES } from './commandTypes';
 
@@ -425,6 +426,9 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     domain: 'admin',
     searchHint: 'agent Go runtime pprof profiles, heap memory growth and goroutine leaks',
     deviceArgs: ['deviceId'],
+    // A cpu capture waits up to 60 s, past the production idle-in-transaction
+    // timeout under a per-call transaction (#7918; `AiTool.selfManagedDbContext`).
+    selfManagedDbContext: true,
     definition: {
       name: 'capture_agent_pprof',
       description:
@@ -463,7 +467,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
-        if (!(await findReachableDevice(auth, deviceId))) {
+        if (!(await inToolDbPhase(auth, () => findReachableDevice(auth, deviceId)))) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
