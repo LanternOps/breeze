@@ -26,12 +26,39 @@ body_ok() {
   [ -s "$ENVVALS" ] && LC_ALL=C grep -aqF -f "$ENVVALS" "$1" && return 1       # any literal .env value
   return 0
 }
-# text_ok <string>: body_ok for a single field (an issue title), via a private file.
+# text_ok <string>: body_ok + refs_ok for a single field (an issue title), via a private file.
 text_ok() {
   local tf rc
   tf="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.field.XXXXXX")" || return 1
-  printf '%s' "$1" > "$tf"; body_ok "$tf"; rc=$?
+  printf '%s' "$1" > "$tf"; body_ok "$tf" && refs_ok "$tf"; rc=$?
   rm -f "$tf"; return "$rc"
+}
+# _outside_code <file>: the text GitHub would auto-link (fenced blocks and
+# inline code spans removed).
+_outside_code() {
+  LC_ALL=C awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } !f { gsub(/`[^`]*`/, ""); print }' "$1"
+}
+# refs_ok <file>: provenance gate for agent-written text bound for GitHub. The
+# agent can read GitHub only through the gh broker, which is pinned to QA_REPO,
+# so text that names ANOTHER repository (URL, OWNER/REPO#N, OWNER/REPO@sha) did
+# not come from a read it was allowed to make; a cross-repo short reference
+# would also write a backlink into that repository. @-mentions outside code are
+# refused too: a published report must not notify arbitrary users or teams.
+refs_ok() {
+  local own owner r
+  own="$(printf '%s' "$QA_REPO" | tr '[:upper:]' '[:lower:]')"; owner="${own%%/*}"
+  [ -n "$owner" ] || return 1
+  for r in $(LC_ALL=C grep -aoiE 'api\.github\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|(github\.com|githubusercontent\.com)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' "$1" \
+             | sed -E 's#^[Aa][Pp][Ii]\.[^/]*/[Rr][Ee][Pp][Oo][Ss]/##; s#^[^/]*/##' | tr '[:upper:]' '[:lower:]' | sed -E 's/\.+$//; s/\.git$//'); do
+    [ "$r" = "$own" ] || return 1
+  done
+  for r in $(_outside_code "$1" | LC_ALL=C grep -aoE '(^|[^A-Za-z0-9_./-])[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(#[0-9]+|@[0-9a-f]{7,40})' \
+             | sed -E 's#^[^A-Za-z0-9]##; s/[#@].*$//' | tr '[:upper:]' '[:lower:]'); do
+    [ "$r" = "$own" ] || return 1
+  done
+  _outside_code "$1" | LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_.@/-])@[A-Za-z0-9][A-Za-z0-9-]{0,38}([^A-Za-z0-9_/@-]|$)' && return 1
+  _outside_code "$1" | LC_ALL=C grep -aqiE "(^|[^A-Za-z0-9_.@/-])@$owner/" && return 1
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -39,9 +66,11 @@ text_ok() {
 # tree: claude, its Bash commands (gh), the Playwright MCP server and Chromium.
 # Unlike Claude Code permission rules, it binds every tool and every child
 # process, and the agent cannot change it once started.
-#   - network: loopback only (the QA stack + the egress proxy). Unix sockets are
-#     denied too, which also blocks DNS (mDNSResponder), docker.sock and
-#     ssh-agent; hostname lookups for the proxy's upstreams happen in the proxy.
+#   - network: three loopback ports only -- the QA stack (Caddy), the egress
+#     proxy and the gh broker -- so no other service listening on this Mac's
+#     loopback is reachable. Unix sockets are denied too (except the agent's own
+#     TMPDIR), which also blocks DNS (mDNSResponder), docker.sock and ssh-agent;
+#     hostname lookups for the proxy's upstreams happen in the proxy.
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
 #     ~/.ssh, git credential files, the egress audit log, other runs and this
 #     run's logs/transcripts are unreadable.
@@ -49,8 +78,12 @@ text_ok() {
 #     any .claude/CLAUDE.md) and the usual caches; the worktree, the developer
 #     checkout, runner state and persistence points (~/.claude config, git and gh
 #     config, shell rc files, LaunchAgents) are read-only.
-#   - gh's own config (~/.config/gh) stays READABLE: the agent's read-only gh
-#     queries cannot start without it, so the profile only blocks rewriting it.
+#   - GitHub: the agent has NO route to it (not on the egress allowlist) and
+#     cannot read gh's config/token store. Its only reader is qa-gh, a client of
+#     the runner's gh broker (gh-broker.py), which runs outside the sandbox,
+#     allows read-only issue/PR queries and pins every one to QA_REPO.
+#   - well-known credential stores (~/.aws, ~/.kube, ~/.docker, ~/.gnupg, ...)
+#     and the developer's real browser profiles are unreadable as well.
 # ---------------------------------------------------------------------------
 _sb_real() {   # _sb_real <path>: physical path (parent must exist), refuses quotes/newlines
   local d b; d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
@@ -73,26 +106,34 @@ _sb_ancestors() {
 egress_log_path() { printf '%s' "$QA_HOME/.audit/egress-$RUN_ID.log"; }
 
 qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
-  local out="$1" home qh wt src run st sed_env atmp gitc audit
+  local out="$1" home qh wt src run st sed_env atmp gitc audit lib p
   home="$(_sb_real "$HOME")" && qh="$(_sb_real "$QA_HOME")" && wt="$(_sb_real "$QA_WORKTREE")" \
     && src="$(_sb_real "$QA_SOURCE_REPO")" && run="$(_sb_real "$RUN_DIR")" \
     && atmp="$(_sb_real "${AGENT_TMP:-$QA_HOME/.t}")" \
-    && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" || { log "sandbox: bad path"; return 1; }
+    && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" \
+    && lib="$(_sb_real "$QA_LIB_DIR")" || { log "sandbox: bad path"; return 1; }
+  # The agent's network is these three loopback ports and nothing else.
+  for p in "${QA_STACK_PORT:-}" "${EGRESS_PORT:-}" "${GH_BROKER_PORT:-}"; do
+    [[ "$p" =~ ^[0-9]{1,5}$ ]] || { log "sandbox: stack/proxy/broker port missing or bad ('$p')"; return 1; }
+  done
   audit="$qh/.audit"
   # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
   gitc="$(cd "$src" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd -P)"
   gitc="$(_sb_real "${gitc:-$src/.git}")" || { log "sandbox: bad git dir"; return 1; }
   local wt_re src_re run_re home_re locked
   wt_re="$(_sb_re "$wt")"; src_re="$(_sb_re "$src")"; run_re="$(_sb_re "$run")"; home_re="$(_sb_re "$home")"
-  locked="$(_sb_ancestors "$run" "$audit" "$wt" "$src" "$gitc" "$home/.config/gh" "$home/.config/git" \
+  locked="$(_sb_ancestors "$run" "$audit" "$wt" "$src" "$gitc" "$lib" "$home/.config/gh" "$home/.config/git" \
     "$home/.claude/skills" "$home/.ssh" "$home/Library/LaunchAgents")"
   ( umask 077; cat > "$out" ) <<SB
 (version 1)
 (allow default)
 
-;; network: loopback only -- the QA stack and the runner's egress proxy
+;; network: three loopback ports -- the QA stack, the egress proxy, the gh broker
 (deny network-outbound)
-(allow network-outbound (remote ip "localhost:*"))
+(allow network-outbound
+  (remote ip "localhost:$QA_STACK_PORT")
+  (remote ip "localhost:$EGRESS_PORT")
+  (remote ip "localhost:$GH_BROKER_PORT"))
 ;; unix sockets only in the agent's own TMPDIR (Playwright <-> Chromium)
 (allow network-outbound (remote unix-socket (subpath "$atmp")))
 
@@ -108,7 +149,20 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   (regex #"^$src_re/(.*/)?\.env[^/]*$")
   (literal "$home/.git-credentials")
   (literal "$home/.config/git/credentials")
-  (subpath "$home/.ssh"))
+  (subpath "$home/.ssh")
+  (subpath "$home/.config/gh")
+  (subpath "$home/.aws")
+  (subpath "$home/.kube")
+  (subpath "$home/.docker")
+  (subpath "$home/.gnupg")
+  (subpath "$home/.password-store")
+  (subpath "$home/.config/gcloud")
+  (subpath "$home/.azure")
+  (literal "$home/.netrc")
+  (subpath "$home/Library/Cookies")
+  (subpath "$home/Library/Application Support/Google/Chrome")
+  (subpath "$home/Library/Application Support/Firefox")
+  (subpath "$home/Library/Safari"))
 ;; contents only (file-read-data): RUN_DIR's parent must stay stat-able, or
 ;; claude cannot resolve --add-dir / its Edit rules for RUN_DIR
 (deny file-read-data
@@ -127,6 +181,7 @@ $locked
   (subpath "$home/.config/git")
   (subpath "$home/.config/gh")
   (subpath "$qh/bin")
+  (subpath "$lib")
   (literal "$(_sb_real "$STATE")")
   (literal "$run/commits.tsv")
   (literal "$run/hosted-prs.txt")
@@ -150,23 +205,35 @@ SB
 }
 
 # ---------------------------------------------------------------------------
-# Egress proxy: the sandbox's only route off the machine. CONNECT to :443 of a
-# fixed host allowlist (Anthropic for the model, GitHub for read-only gh); all
-# else is refused and logged to egress_log_path, which the agent cannot touch.
+# Egress proxy: the only route off the machine for traffic the sandboxed process
+# tree originates. CONNECT to :443 of a fixed host allowlist (Anthropic, for the
+# model only); all else is refused and logged to egress_log_path, which the agent
+# cannot touch. GitHub is deliberately NOT on it: the agent reads GitHub only
+# through the gh broker below, which runs outside the sandbox and pins the repo.
+# The QA stack's own containers are bounded separately (isolate_stack): they
+# run on an internal-only Docker network, so the app the agent administers
+# cannot be told to call out either.
 # ---------------------------------------------------------------------------
-QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,.anthropic.com,.claude.com,claude.ai,.claude.ai,api.github.com,github.com}"
+QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,.anthropic.com,.claude.com,claude.ai,.claude.ai}"
 EGRESS_PID=""; EGRESS_PORT=""; EGRESS_LOG=""
+# _start_daemon <port-var> <pid-var> <port-file> <cmd...>: start a loopback
+# helper that writes its port to <port-file>, and wait for it.
+_start_daemon() {
+  local pv="$1" pidv="$2" pf="$3" port _; shift 3
+  rm -f "$pf"
+  "$@" &
+  printf -v "$pidv" '%s' "$!"
+  for _ in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
+  port="$(tr -dc '0-9' < "$pf" 2>/dev/null)"
+  printf -v "$pv" '%s' "$port"
+  [ -n "$port" ] && kill -0 "${!pidv}" 2>/dev/null
+}
 start_egress_proxy() {
-  local pf="$QA_HOME/.sandbox/egress.port"
   EGRESS_LOG="$(egress_log_path)"
   ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$(dirname "$EGRESS_LOG")" && : >> "$EGRESS_LOG" ) || return 1
-  rm -f "$pf"
-  /usr/bin/python3 "$QA_LIB_DIR/egress-proxy.py" --allow "$QA_EGRESS_ALLOW" --port-file "$pf" --log "$EGRESS_LOG" &
-  EGRESS_PID=$!
-  local _
-  for _ in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
-  EGRESS_PORT="$(tr -dc '0-9' < "$pf" 2>/dev/null)"
-  [ -n "$EGRESS_PORT" ] && kill -0 "$EGRESS_PID" 2>/dev/null || { stop_egress_proxy; return 1; }
+  _start_daemon EGRESS_PORT EGRESS_PID "$QA_HOME/.sandbox/egress.port" \
+    /usr/bin/python3 "$QA_LIB_DIR/egress-proxy.py" --allow "$QA_EGRESS_ALLOW" \
+    --port-file "$QA_HOME/.sandbox/egress.port" --log "$EGRESS_LOG" || { stop_egress_proxy; return 1; }
   log "egress proxy on 127.0.0.1:$EGRESS_PORT (allow: $QA_EGRESS_ALLOW; audit log: $EGRESS_LOG)"
 }
 stop_egress_proxy() {
@@ -174,40 +241,157 @@ stop_egress_proxy() {
   EGRESS_PID=""; EGRESS_PORT=""
 }
 
+# gh broker: the agent's only GitHub reader (qa-gh -> gh-broker.py). Runs as
+# the runner, outside the sandbox; read-only issue/PR verbs, every call pinned
+# to QA_REPO, each request logged next to the egress log.
+GH_BROKER_PID=""; GH_BROKER_PORT=""; GH_BROKER_LOG=""
+gh_broker_log_path() { printf '%s' "$QA_HOME/.audit/gh-$RUN_ID.log"; }
+start_gh_broker() {
+  local gh_bin; gh_bin="${QA_GH_BIN:-$(command -v gh)}" || return 1
+  [ -n "$gh_bin" ] || return 1
+  GH_BROKER_LOG="$(gh_broker_log_path)"
+  ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$(dirname "$GH_BROKER_LOG")" && : >> "$GH_BROKER_LOG" ) || return 1
+  _start_daemon GH_BROKER_PORT GH_BROKER_PID "$QA_HOME/.sandbox/gh-broker.port" \
+    /usr/bin/python3 "$QA_LIB_DIR/gh-broker.py" --repo "$QA_REPO" --gh "$gh_bin" \
+    --port-file "$QA_HOME/.sandbox/gh-broker.port" --log "$GH_BROKER_LOG" || { stop_gh_broker; return 1; }
+  log "gh broker on 127.0.0.1:$GH_BROKER_PORT (repo: $QA_REPO; audit log: $GH_BROKER_LOG)"
+}
+stop_gh_broker() {
+  [ -n "$GH_BROKER_PID" ] && kill "$GH_BROKER_PID" 2>/dev/null
+  GH_BROKER_PID=""; GH_BROKER_PORT=""
+}
+
 # build_agent_cmd <cmd...>: AGENT_CMD = <cmd> wrapped in the sandbox, with the
-# proxy as its only egress. Needs AGENT_PROFILE and EGRESS_PORT.
+# proxy as its only egress and the gh broker as its only GitHub reader. Needs
+# AGENT_PROFILE, EGRESS_PORT and GH_BROKER_PORT.
 build_agent_cmd() {
   local px="http://127.0.0.1:$EGRESS_PORT"
   AGENT_CMD=(/usr/bin/sandbox-exec -f "$AGENT_PROFILE"
     /usr/bin/env -u SSH_AUTH_SOCK -u GPG_AGENT_INFO -u DOCKER_HOST
+    -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN
     "HTTPS_PROXY=$px" "https_proxy=$px" "HTTP_PROXY=$px" "http_proxy=$px"
     "ALL_PROXY=$px" "NO_PROXY=localhost,127.0.0.1,::1" "no_proxy=localhost,127.0.0.1,::1"
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1
     "TMPDIR=${AGENT_TMP:-$QA_HOME/.t}"
+    "QA_GH_PORT=$GH_BROKER_PORT"
     "$@")
 }
 
 # sandbox_selfcheck: prove the sandbox holds on THIS machine before an agent
-# runs under it (fail closed). Needs AGENT_PROFILE and a running proxy.
+# runs under it (fail closed). Needs AGENT_PROFILE, the proxy, the gh broker
+# and QA_STACK_PORT. Every "must fail" probe has a control that must succeed
+# outside the sandbox, so a probe that could never succeed proves nothing.
 sandbox_selfcheck() {
-  local fails="" canary="$QA_WORKTREE/.env.qa-sandbox-canary"
+  local fails="" canary="$QA_WORKTREE/.env.qa-sandbox-canary" lp lpid out
   sbx() { /usr/bin/sandbox-exec -f "$AGENT_PROFILE" "$@"; }
+  tcp() { "$@" /usr/bin/python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5).close()' "$PORT" 2>/dev/null; }
+  dns() { "$@" /usr/bin/python3 -c 'import socket; socket.getaddrinfo("api.anthropic.com", 443)' >/dev/null 2>&1; }
   echo "QA_SANDBOX_CANARY=1" > "$canary"
   sbx /bin/cat "$canary" >/dev/null 2>&1 && fails="$fails env-file-readable"
   rm -f "$canary"
   [ -e "$ENVVALS" ] && sbx /bin/cat "$ENVVALS" >/dev/null 2>&1 && fails="$fails envvals-readable"
+  [ -e "$HOME/.config/gh" ] && sbx /bin/ls "$HOME/.config/gh" >/dev/null 2>&1 && fails="$fails gh-config-readable"
   sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null https://1.1.1.1 2>/dev/null && fails="$fails direct-egress"
-  sbx /usr/bin/python3 -c 'import socket; socket.gethostbyname("qa-sandbox-selfcheck.example.org")' >/dev/null 2>&1 && fails="$fails dns"
+  # DNS: a name that resolves outside must not resolve inside.
+  if dns env; then dns sbx && fails="$fails dns"; else fails="$fails dns-probe-inconclusive"; fi
   sbx /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://example.com 2>/dev/null && fails="$fails proxy-open"
-  sbx /usr/bin/curl -s -m 15 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.github.com/zen 2>/dev/null || fails="$fails proxy-blocks-github"
+  sbx /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.github.com/zen 2>/dev/null && fails="$fails proxy-allows-github"
+  sbx /usr/bin/curl -s -m 15 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.anthropic.com/ 2>/dev/null || fails="$fails proxy-blocks-anthropic"
+  # loopback: the stack port connects; any other listener on this Mac does not.
+  PORT="$QA_STACK_PORT" tcp sbx || fails="$fails stack-unreachable"
+  lp="$QA_HOME/.sandbox/selfcheck.port"; rm -f "$lp"
+  /usr/bin/python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(4); open(sys.argv[1],"w").write(str(s.getsockname()[1])); time.sleep(30)' "$lp" &
+  lpid=$!
+  for _ in $(seq 1 30); do [ -s "$lp" ] && break; sleep 0.1; done
+  if PORT="$(cat "$lp" 2>/dev/null)" tcp env; then
+    PORT="$(cat "$lp")" tcp sbx && fails="$fails other-loopback-port-open"
+  else fails="$fails loopback-probe-inconclusive"; fi
+  { kill "$lpid"; wait "$lpid"; } 2>/dev/null; rm -f "$lp"
+  # GitHub: the broker answers, and refuses a request aimed at another repo.
+  sbx /usr/bin/env "QA_GH_PORT=$GH_BROKER_PORT" "$QA_LIB_DIR/qa-gh" issue list --limit 1 --json number >/dev/null 2>&1 \
+    || fails="$fails gh-broker-unreachable"
+  out="$(sbx /usr/bin/env "QA_GH_PORT=$GH_BROKER_PORT" "$QA_LIB_DIR/qa-gh" issue list --repo cli/cli --limit 1 2>&1)"
+  case "$out" in *"qa-gh: refused"*) ;; *) fails="$fails gh-broker-not-pinned" ;; esac
   sbx /bin/sh -c ': >> "$1"' _ "$RUN_DIR/commits.tsv" 2>/dev/null && fails="$fails scope-writable"
   [ -f "$EGRESS_LOG" ] || fails="$fails audit-log-missing"
   sbx /bin/sh -c ': >> "$1"' _ "$EGRESS_LOG" 2>/dev/null && fails="$fails audit-log-writable"
+  sbx /bin/sh -c ': >> "$1"' _ "$GH_BROKER_LOG" 2>/dev/null && fails="$fails gh-audit-log-writable"
   sbx /bin/sh -c ': > "$1"' _ "$RUN_DIR/.sandbox-selfcheck" 2>/dev/null || fails="$fails run-dir-readonly"
   rm -f "$RUN_DIR/.sandbox-selfcheck"
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files unreadable, no direct egress/DNS, proxy enforces allowlist, scope and audit log read-only, RUN_DIR writable)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable)"
 }
+
+# ---------------------------------------------------------------------------
+# QA stack egress. The agent administers the stack, and the app exists to call
+# destinations its admin supplies (notification webhooks, integrations, ...),
+# so the stack must not reach the internet either. After boot, every container
+# of the compose project is moved onto an internal-only Docker network (no
+# gateway: no outbound TCP/UDP and no external DNS) under its service name; only
+# the edge service (Caddy) also keeps the project network, because a published
+# port needs a non-internal network. Caddy's upstreams are fixed in its
+# Caddyfile and its admin API listens on its own loopback, so nothing the agent
+# controls makes it dial out.
+# ---------------------------------------------------------------------------
+STACK_NET=""
+# isolate_stack <project> [edge-service]
+isolate_stack() {
+  local project="$1" edge="${2:-caddy}" c svc n ids
+  STACK_NET="$project-qa-noegress"
+  docker network inspect "$STACK_NET" >/dev/null 2>&1 \
+    || docker network create --internal --label io.lanternops.qa-sweep=1 "$STACK_NET" >/dev/null || return 1
+  [ "$(docker network inspect -f '{{.Internal}}' "$STACK_NET" 2>/dev/null)" = true ] || { log "stack: $STACK_NET is not internal"; return 1; }
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$project")"
+  [ -n "$ids" ] || { log "stack: no containers for project $project"; return 1; }
+  for c in $ids; do
+    svc="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")" || return 1
+    if ! docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c" | tr ' ' '\n' | grep -qxF "$STACK_NET"; then
+      docker network connect --alias "$svc" "$STACK_NET" "$c" >/dev/null || { log "stack: could not attach $svc"; return 1; }
+    fi
+    [ "$svc" = "$edge" ] && continue
+    for n in $(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c"); do
+      [ "$n" = "$STACK_NET" ] && continue
+      docker network disconnect -f "$n" "$c" >/dev/null || { log "stack: could not detach $svc from $n"; return 1; }
+    done
+  done
+}
+# stack_isolation_check <project> <probe-service> [edge-service]: fail closed
+# unless every non-edge container sits only on internal networks AND a live probe
+# from <probe-service> (needs node) can neither resolve an external name nor open
+# a TCP connection to an internet address.
+stack_isolation_check() {
+  local project="$1" probe="$2" edge="${3:-caddy}" fails="" c svc n pc rc
+  for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
+    svc="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")"
+    [ "$svc" = "$edge" ] && continue
+    for n in $(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c"); do
+      [ "$(docker network inspect -f '{{.Internal}}' "$n" 2>/dev/null)" = true ] || fails="$fails $svc-on-$n"
+    done
+  done
+  pc="$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=$probe" | head -1)"
+  if [ -z "$pc" ]; then fails="$fails no-running-$probe"
+  else
+    # exit 0 = isolated, 10 = external DNS answered, 11 = outbound TCP connected
+    docker exec "$pc" node -e '
+      const net = require("net"), dns = require("dns");
+      let done = false; const fin = (c) => { if (!done) { done = true; process.exit(c); } };
+      dns.lookup(process.argv[1], (e) => {
+        if (!e) return fin(10);
+        const s = net.connect(443, process.argv[2]);
+        s.on("connect", () => fin(11)); s.on("error", () => fin(0)); setTimeout(() => fin(0), 5000);
+      });' example.com 1.1.1.1 >/dev/null 2>&1
+    rc=$?
+    case "$rc" in 0) ;; 10) fails="$fails $probe-resolves-external-dns" ;; 11) fails="$fails $probe-reaches-internet" ;;
+      *) fails="$fails $probe-probe-failed($rc)" ;; esac
+  fi
+  if [ -n "$fails" ]; then log "stack isolation check FAILED:$fails"; return 1; fi
+  log "stack isolation OK (every service but $edge on internal-only network $STACK_NET; $probe: no external DNS, no outbound TCP)"
+}
+remove_stack_net() {
+  [ -n "$STACK_NET" ] && docker network rm "$STACK_NET" >/dev/null 2>&1
+  STACK_NET=""
+}
+
 
 # build_mcp_config <base-url> <src-json> <out-json>: per-run Playwright MCP
 # config. The server starts in RUN_DIR/browser (with --ignore-roots its cwd is
@@ -296,6 +480,9 @@ publish_outbox() {
     if ! body_ok "$bodyf"; then
       log "outbox REJECT $(basename "$f"): empty/oversized/secret-like body"; continue
     fi
+    if ! refs_ok "$bodyf"; then
+      log "outbox REJECT $(basename "$f"): body references another repository or @-mentions someone"; continue
+    fi
     case "$action" in
       create)
         full_title="$(jq -r '.title // empty' "$f" | tr -d '\n')"
@@ -306,7 +493,7 @@ publish_outbox() {
         # Same gate as the body, on the joined title before the cut: a key that
         # straddles column 200 must not publish its first half.
         if ! text_ok "$full_title"; then
-          log "outbox REJECT $(basename "$f"): secret-like title"; continue
+          log "outbox REJECT $(basename "$f"): secret-like title (or a cross-repo reference / @-mention)"; continue
         fi
         gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
       comment)
@@ -341,7 +528,7 @@ publish_outbox() {
   log "outbox: $created issue(s) created, $comments comment(s), $prs PR(s) annotated"
   local ledger="$PUBLISH_DIR/ledger.md"
   if [ -f "$RUN_DIR/ledger.md" ] && [ ! -L "$RUN_DIR/ledger.md" ]; then cp "$RUN_DIR/ledger.md" "$ledger"; fi
-  if [ -s "$ledger" ] && body_ok "$ledger"; then
+  if [ -s "$ledger" ] && body_ok "$ledger" && refs_ok "$ledger"; then
     local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
                  --jq '[.[]|select(.title=="QA sweep ledger")][0].number // empty')"
     if [ -n "$n" ]; then gh -R "$QA_REPO" issue edit "$n" --body-file "$ledger" >/dev/null

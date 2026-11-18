@@ -129,7 +129,8 @@ cleanup() {
     (cd "$QA_WORKTREE" && pnpm wt-stack down) || log "WARN: wt-stack down failed"
   fi
   [ -f "$QA_WORKTREE/.env.pre-hosted" ] && mv "$QA_WORKTREE/.env.pre-hosted" "$QA_WORKTREE/.env"
-  stop_egress_proxy
+  remove_stack_net
+  stop_egress_proxy; stop_gh_broker
   rm -f "$ENVVALS"; rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -329,6 +330,23 @@ fi
 state_set '. + {envFingerprint:$fp}' --rawfile fp "$FP_FILE"
 BASE_URL="$(jq -r .baseUrl .breeze-stack.json)"
 log "stack at $BASE_URL"
+# The agent may reach exactly this loopback port of the stack (see qa_sandbox_profile).
+QA_STACK_PORT="$(printf '%s' "$BASE_URL" | sed -nE 's#^http://(localhost|127\.0\.0\.1)(:([0-9]{1,5}))?(/.*)?$#\3#p')"
+case "$BASE_URL" in http://localhost|http://localhost/*|http://127.0.0.1|http://127.0.0.1/*) QA_STACK_PORT=80 ;; esac
+[[ "$QA_STACK_PORT" =~ ^[0-9]{1,5}$ ]] || { notify "QA sweep: unexpected stack URL"; log "FATAL stack baseUrl '$BASE_URL' is not a loopback http URL"; exit 1; }
+
+# --- the stack's own egress: internal-only network (see isolate_stack) --------
+STACK_PROJECT="$(jq -r .project .breeze-stack.json)"
+secure_stack() {
+  isolate_stack "$STACK_PROJECT" caddy && stack_isolation_check "$STACK_PROJECT" api caddy || return 1
+  local _
+  for _ in $(seq 1 24); do curl -sf -o /dev/null "$BASE_URL/health" && return 0; sleep 5; done
+  log "stack unhealthy after isolation"; return 1
+}
+if ! secure_stack; then
+  notify "QA sweep: could not cut the QA stack off from the internet; agent not started (see $LOG)"
+  log "FATAL stack isolation"; echo "STACK_ISOLATION_FAILED" > "$RUN_DIR/result"; exit 1
+fi
 
 # --- the sweep ---------------------------------------------------------------
 SLICE="$(state_get .nextSlice)"; SLICE="${SLICE:-0}"
@@ -375,10 +393,13 @@ build_mcp_config "$BASE_URL" "$SCRIPT_DIR/qa-mcp.json" "$RUN_DIR/mcp.json" \
   || { notify "QA sweep: could not build the MCP config"; exit 1; }
 
 # --- agent sandbox + egress (fixed before the agent starts) -------------------
-# The agent's whole process tree runs under a Seatbelt profile: loopback-only
-# network, env files/logs unreadable, worktree and runner inputs read-only. Its
-# only way off the machine is the egress proxy (Anthropic + GitHub, :443). The
-# profile is self-checked here; if it doesn't hold, the agent never starts.
+# The agent's whole process tree runs under a Seatbelt profile: network limited
+# to three loopback ports (stack, egress proxy, gh broker), env files/logs/gh
+# config unreadable, worktree and runner inputs read-only. Its own traffic
+# leaves the machine only through the egress proxy (Anthropic, :443); it reads
+# GitHub only through the gh broker (read-only, pinned to QA_REPO); the stack it
+# drives has no egress (secure_stack above). The profile is self-checked here;
+# if it doesn't hold, the agent never starts.
 AGENT_PROFILE="$QA_HOME/.sandbox/agent.sb"
 AGENT_TMP="$QA_HOME/.t"   # the agent's TMPDIR; the only place it may use unix sockets (kept short: 104-byte socket paths)
 rm -rf "$AGENT_TMP"
@@ -386,7 +407,7 @@ rm -rf "$AGENT_TMP"
 prewarm_mcp "$SCRIPT_DIR/qa-mcp.json" || log "WARN: could not prefetch the Playwright MCP package (the sandboxed server resolves it offline)"
 snapshot_commentable_issues   # outbox `comment` targets: open qa-sweep issues as of now
 log "commentable qa-sweep issues:${QA_COMMENTABLE:- none}"
-if ! { qa_sandbox_profile "$AGENT_PROFILE" && start_egress_proxy && sandbox_selfcheck; }; then
+if ! { start_egress_proxy && start_gh_broker && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
   notify "QA sweep: agent sandbox/egress proxy failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
@@ -402,6 +423,7 @@ Run parameters:
 - ENV_DRIFT_FILE=$DRIFT (environment changes detected this run; empty = none)
 - PHASE=self-hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (PRs deferred to the hosted phase — do NOT emit pr_result for these; empty = none)
+- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader: run it exactly where the skill says \`gh\`, e.g. \`$SCRIPT_DIR/qa-gh issue list --label qa-sweep --state open\`; it is fixed to $QA_REPO)
 You are unattended: never ask questions. You cannot write to GitHub directly; queue writes in RUN_DIR/outbox as the skill describes."
 
 # Flip the running stack to hosted mode in place (same DB, same data, same
@@ -450,7 +472,7 @@ if [ "${QA_DRY_RUN:-0}" = 1 ]; then
     f="$(curl -sf "$u" 2>/dev/null | jq -c '.features // empty' 2>/dev/null)" && [ -n "$f" ] && { log "features: $f"; break; }
   done
   if [ -n "${HOSTED_PRS// /}" ] || [ "${QA_DRY_HOSTED:-0}" = 1 ]; then
-    switch_to_hosted && log "DRY RUN: hosted switch OK" || log "DRY RUN: hosted switch FAILED"
+    switch_to_hosted && secure_stack && log "DRY RUN: hosted switch OK" || log "DRY RUN: hosted switch FAILED"
   fi
   exit 0
 fi
@@ -458,8 +480,9 @@ fi
 # Least privilege. The agent reads untrusted text (public issue/PR bodies, page
 # content), so: no permission bypass (dontAsk = unlisted tools are denied, never
 # prompted); reads limited to the worktree + RUN_DIR; writes limited to RUN_DIR;
-# Bash limited to read-only gh queries (no curl/jq/git, no --body-file); GitHub
-# writes go through the outbox, validated + published by this script.
+# Bash limited to qa-gh, the gh broker's client (read-only issue/PR queries,
+# repo fixed by the broker; no curl/jq/git, no gh itself); GitHub writes go
+# through the outbox, validated + published by this script.
 # QA_HOME/bin and state.json are out of reach. The stack's .env files are moved
 # out of the worktree for the duration of each run (hide_stack_env).
 # Skills and slash commands are off (Skill denied, --disable-slash-commands,
@@ -482,8 +505,10 @@ ALLOWED_TOOLS=(
   "${PW_TOOLS[@]/#/mcp__playwright__}" "ToolSearch" "TodoWrite"
   "Read(/$QA_WORKTREE/**)" "Read(/$RUN_DIR/**)"
   "Edit(/$RUN_DIR/**)"   # Edit rules cover Write too
-  "Bash(gh issue list:*)" "Bash(gh issue view:*)"
-  "Bash(gh pr list:*)" "Bash(gh pr view:*)" "Bash(gh pr diff:*)"
+  # GitHub reads only through the broker's client. The rule is the first layer;
+  # the boundary is the broker (repo pinned, read-only verbs) plus the sandbox
+  # (no route to GitHub, gh config unreadable), so gh itself cannot work inside.
+  "Bash($SCRIPT_DIR/qa-gh:*)"
 )
 DENIED_TOOLS=(
   "Skill"
@@ -506,6 +531,7 @@ DENIED_TOOLS=(
   "Bash(sort:*)" "Bash(uniq:*)" "Bash(diff:*)" "Bash(cmp:*)" "Bash(comm:*)"
   "Bash(strings:*)" "Bash(xxd:*)" "Bash(od:*)" "Bash(hexdump:*)" "Bash(base64:*)"
   "Bash(nl:*)" "Bash(tac:*)" "Bash(rev:*)" "Bash(wc:*)" "Bash(jq:*)" "Bash(git:*)"
+  "Bash(gh:*)" "Bash(curl:*)" "Bash(python3:*)" "Bash(/usr/bin/python3:*)"
   "WebFetch" "WebSearch" "Agent" "Task"
 )
 run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
@@ -532,7 +558,7 @@ RC=$?
 HOSTED_OK=1
 if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   HOSTED_OK=0
-  if switch_to_hosted; then
+  if switch_to_hosted && secure_stack; then   # the recreated containers start on the project network again
     HPROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section, **Hosted phase** subsection, exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
 - RUN_DIR=$RUN_DIR   (append to report.md; update ledger.md; add outbox/*.json — nowhere else)
@@ -541,6 +567,7 @@ Run parameters:
 - PHASE=hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (verify exactly these PRs; emit one pr_result each)
 - COMMITS_FILE=$RUN_DIR/commits.tsv
+- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader, fixed to $QA_REPO; use it where the skill says \`gh\`)
 You are unattended: never ask questions. Queue GitHub writes in RUN_DIR/outbox as the skill describes."
     run_agent "$HPROMPT" "${QA_HOSTED_TIMEOUT:-90m}" "-hosted" && HOSTED_OK=1
   else

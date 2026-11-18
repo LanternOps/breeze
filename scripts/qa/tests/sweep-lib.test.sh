@@ -181,7 +181,18 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   git init -q "$QA_SOURCE_REPO"
   AUDIT="$(egress_log_path)"; mkdir -p "$(dirname "$AUDIT")"; echo 'ALLOW api.github.com:443' > "$AUDIT"
   echo 'err' > "$RUN_DIR/claude.err"; echo '{}' > "$RUN_DIR/transcript.jsonl"
+  mkdir -p "$FAKE_HOME/.aws" && echo '[default]' > "$FAKE_HOME/.aws/credentials"
+  mkdir -p "$FAKE_HOME/Library/Application Support/Google/Chrome/Default" && echo c > "$FAKE_HOME/Library/Application Support/Google/Chrome/Default/Cookies"
+  # The "stack": a loopback HTTP server the profile allows; a second listener it does not.
+  /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http.log" 2>&1 &
+  HTTP_PID=$!
+  /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http2.log" 2>&1 &
+  HTTP2_PID=$!; sleep 1
+  lport() { lsof -nP -a -p "$1" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}'; }
+  HTTP_PORT="$(lport "$HTTP_PID")"; HTTP2_PORT="$(lport "$HTTP2_PID")"
+  QA_STACK_PORT="$HTTP_PORT"; EGRESS_PORT=1; GH_BROKER_PORT=2
   PROF="$T/agent.sb"
+  check "sandbox: the profile refuses to build without the stack/proxy/broker ports" "! (QA_STACK_PORT='' HOME='$FAKE_HOME' qa_sandbox_profile '$T/noport.sb')"
   HOME="$FAKE_HOME" qa_sandbox_profile "$PROF"
   sbx() { /usr/bin/sandbox-exec -f "$PROF" "$@"; }
   check "F2: parked stack env is unreadable" "! sbx /bin/cat '$STACK_ENV_DIR/.env' >/dev/null 2>&1"
@@ -234,7 +245,12 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "dev: ~/.config/git is read-only" "! sbx /bin/sh -c 'echo x >> \"$FAKE_HOME/.config/git/config\"' 2>/dev/null"
   check "dev: ~/.git-credentials is unreadable and read-only" "! sbx /bin/cat '$FAKE_HOME/.git-credentials' >/dev/null 2>&1 && ! sbx /bin/sh -c 'echo x >> \"$FAKE_HOME/.git-credentials\"' 2>/dev/null"
   check "gh: the token store cannot be rewritten" "! sbx /bin/sh -c 'echo x >> \"$FAKE_HOME/.config/gh/hosts.yml\"' 2>/dev/null"
-  check "gh: its config stays readable (the agent's read-only gh queries need it)" "sbx /bin/cat '$FAKE_HOME/.config/gh/hosts.yml' >/dev/null 2>&1 && sbx /bin/cat '$FAKE_HOME/.config/gh/config.yml' >/dev/null 2>&1"
+  check "gh: its token store and config are unreadable (GitHub only via the broker)" "! sbx /bin/cat '$FAKE_HOME/.config/gh/hosts.yml' >/dev/null 2>&1 && ! sbx /bin/cat '$FAKE_HOME/.config/gh/config.yml' >/dev/null 2>&1"
+  check "creds: ~/.aws is unreadable" "! sbx /bin/cat '$FAKE_HOME/.aws/credentials' >/dev/null 2>&1"
+  check "creds: the developer's real Chrome profile is unreadable" "! sbx /bin/cat '$FAKE_HOME/Library/Application Support/Google/Chrome/Default/Cookies' >/dev/null 2>&1"
+  rm -f "$QA_DIR/.qa-planted"
+  check "lib: the runner's own scripts (qa-gh, broker, lib) are read-only" "! sbx /bin/sh -c 'echo x > \"$QA_DIR/.qa-planted\"' 2>/dev/null && ! sbx /bin/sh -c 'echo x >> \"$QA_DIR/qa-gh\"' 2>/dev/null"
+  rm -f "$QA_DIR/.qa-planted"
   # A developer checkout that is itself a linked worktree keeps its config in the main repo.
   LINK_MAIN="$T/link-main"; git init -q "$LINK_MAIN"
   git -C "$LINK_MAIN" -c user.name=qa -c user.email=qa@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m init
@@ -254,11 +270,11 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   kill "$US1" "$US2" 2>/dev/null; rm -rf "$OUT_SOCK_DIR"
   check "F3: direct outbound TCP to the internet is blocked (by IP)" "! sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null https://1.1.1.1 2>/dev/null"
   check "F3: DNS resolution is blocked (no DNS exfil)" "! sbx /usr/bin/python3 -c 'import socket; socket.gethostbyname(\"qa-sandbox-test.example.org\")' 2>/dev/null"
-  /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http.log" 2>&1 &
-  HTTP_PID=$!; sleep 1
-  HTTP_PORT="$(lsof -nP -a -p "$HTTP_PID" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}')"
   check "sandbox: loopback (the QA stack) is reachable" "[ \"\$(sbx /usr/bin/curl --noproxy '*' -s -m 5 http://localhost:$HTTP_PORT/README.md)\" = readme ]"
-  kill "$HTTP_PID" 2>/dev/null
+  check "sandbox: the stack port is reachable as 127.0.0.1 too" "[ \"\$(sbx /usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP_PORT/README.md)\" = readme ]"
+  check "sandbox: control: the second loopback listener answers outside the sandbox" "[ \"\$(/usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP2_PORT/README.md)\" = readme ]"
+  check "sandbox: any other loopback service on this Mac is unreachable" "! sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null http://127.0.0.1:$HTTP2_PORT/README.md 2>/dev/null"
+  kill "$HTTP_PID" "$HTTP2_PID" 2>/dev/null
 else
   skip "Seatbelt cases (needs macOS sandbox-exec and qa_sandbox_profile)"
   type qa_sandbox_profile >/dev/null 2>&1 || bad "qa_sandbox_profile is defined"
@@ -319,16 +335,154 @@ else
   skip "proxy live CONNECT (set QA_TEST_NETWORK=1)"
 fi
 
+# === gh broker: the agent's only GitHub reader, pinned to QA_REPO ============
+# A fake gh that prints the argv it was given, one per line.
+mkdir -p "$T/ghb"
+cat > "$T/ghb/gh" <<'GH'
+#!/bin/sh
+for a in "$@"; do printf '[%s]\n' "$a"; done
+GH
+chmod +x "$T/ghb/gh"
+GHB_PORT_FILE="$T/ghb.port"; GHB_LOG="$T/ghb.log"
+/usr/bin/python3 "$QA_DIR/gh-broker.py" --repo LanternOps/breeze --gh "$T/ghb/gh" --port-file "$GHB_PORT_FILE" --log "$GHB_LOG" &
+GHB_PID=$!
+for _ in $(seq 1 30); do [ -s "$GHB_PORT_FILE" ] && break; sleep 0.1; done
+qgh() { QA_GH_PORT="$(cat "$GHB_PORT_FILE")" "$QA_DIR/qa-gh" "$@" 2>&1; }
+refused() { case "$(qgh "$@")" in *"qa-gh: refused"*) return 0 ;; *) return 1 ;; esac; }
+out="$(qgh issue list --label qa-sweep --state open --json number,title)"
+check "broker: an allowed read runs" "printf '%s' \"\$out\" | grep -qxF '[list]'"
+check "broker: every call is pinned to the runner's repo" "printf '%s' \"\$out\" | tr '\n' ' ' | grep -qF '[--repo] [LanternOps/breeze]'"
+out="$(qgh pr diff 11533 --name-only)"
+check "broker: pr diff by bare number runs, pinned" "printf '%s' \"\$out\" | tr '\n' ' ' | grep -qF '[pr] [diff] [11533] [--name-only] [--repo] [LanternOps/breeze]'"
+check "broker: -R other/repo is refused" "refused issue list -R octo/private"
+check "broker: --repo other/repo is refused" "refused pr view 1 --repo octo/private"
+check "broker: --repo=other/repo is refused" "refused pr view 1 --repo=octo/private"
+check "broker: an issue URL of another repo is refused" "refused issue view https://github.com/octo/private/issues/1"
+check "broker: OWNER/REPO#N is refused" "refused issue view octo/private#1"
+check "broker: a branch name for pr view is refused" "refused pr view octo:main"
+check "broker: a repo: search qualifier is refused (GitHub ORs repeated scopes)" "refused issue list --search 'repo:octo/private secret'"
+check "broker: an org: search qualifier is refused" "refused pr list -S 'is:open org:octo'"
+check "broker: a negated/parenthesised scope qualifier is refused" "refused issue list --search 'x (user:octo)'"
+check "broker: gh api is refused" "refused api repos/octo/private/contents/README.md"
+check "broker: write verbs are refused" "refused issue comment 1 --body hi && refused pr merge 1 && refused issue create --title x --body y"
+check "broker: --jq is refused (gh's jq can read the broker's environment)" "refused issue list --jq '\$ENV'"
+check "broker: --template is refused" "refused pr view 1 --template '{{.}}'"
+check "broker: --web is refused" "refused pr view 1 --web"
+check "broker: --hostname is refused" "refused issue list --hostname ghe.example"
+check "broker: a second positional is refused" "refused pr view 1 2"
+check "broker: an unknown flag is refused" "refused issue list --foo bar"
+check "broker: --limit is bounded" "refused issue list --limit 100000"
+check "broker: control characters are refused" "refused issue list --search \"\$(printf 'a\nb')\""
+check "broker: a bare search term still works" "qgh issue list --search 'devices page 500' --state open | grep -qxF '[devices page 500]'"
+check "broker: refusals are audit-logged" "grep -q '^[0-9:Z]* DENY .*octo/private' '$GHB_LOG'"
+check "broker: allowed calls are audit-logged with the pinned repo" "grep -q 'ALLOW issue list .*--repo LanternOps/breeze' '$GHB_LOG'"
+check "broker: qa-gh without QA_GH_PORT fails closed" "! env -u QA_GH_PORT '$QA_DIR/qa-gh' issue list >/dev/null 2>&1"
+kill "$GHB_PID" 2>/dev/null
+
+# The runner's wiring: GitHub is reachable only through the broker.
+check "wiring: GitHub is not on the egress allowlist" "! printf '%s' \"\$QA_EGRESS_ALLOW\" | grep -qi github"
+ALLOW_BLOCK="$(awk '/^ALLOWED_TOOLS=\(/{f=1} f{print} f&&/^\)/{exit}' "$QA_DIR/scheduled-ui-sweep.sh")"
+check "wiring: the agent's only Bash allow rule is qa-gh" "[ \"\$(printf '%s\n' \"\$ALLOW_BLOCK\" | grep -o '\"Bash(' | wc -l | tr -d ' ')\" = 1 ] && printf '%s' \"\$ALLOW_BLOCK\" | grep -qF '\"Bash(\$SCRIPT_DIR/qa-gh:*)\"'"
+check "wiring: plain gh is explicitly denied to the agent" "grep -qF '\"Bash(gh:*)\"' '$QA_DIR/scheduled-ui-sweep.sh'"
+check "wiring: the installer ships the broker and its client" "grep -q 'gh-broker.py' '$QA_DIR/install-schedule.sh' && grep -q '/qa-gh\"' '$QA_DIR/install-schedule.sh'"
+
+# === outbox provenance: nothing that names another repository, no mentions ====
+new_run refs
+QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
+outbox 001.json '{"action":"create","title":"[UI] marker-r1 leak","body":"copied from https://github.com/octo/private/blob/main/README.md"}'
+outbox 002.json '{"action":"create","title":"[UI] marker-r2 leak","body":"see octo/private#12 for context"}'
+outbox 003.json '{"action":"create","title":"[UI] marker-r3 leak","body":"fixed in octo/private@0123456789abcdef"}'
+outbox 004.json '{"action":"create","title":"[UI] marker-r4 leak","body":"raw: https://raw.githubusercontent.com/octo/private/main/x"}'
+outbox 005.json '{"action":"create","title":"[UI] marker-r5 leak","body":"api: api.github.com/repos/Octo/Private/contents"}'
+outbox 006.json '{"action":"create","title":"[UI] marker-r6 ping","body":"cc @someone please look."}'
+outbox 007.json '{"action":"create","title":"[UI] marker-r7 ping","body":"cc @LanternOps/core"}'
+outbox 008.json '{"action":"create","title":"[UI] marker-r8 octo/private#3","body":"clean"}'
+outbox 009.json '{"action":"comment","issue":555,"body":"marker-r9 see https://github.com/octo/private/issues/1"}'
+outbox 010.json '{"action":"pr_result","pr":100,"result":"PASS","body":"marker-r10 cf. octo/private#9"}'
+outbox 020.json '{"action":"create","title":"[UI] marker-ok1 own refs","body":"Regressed by #100; see https://github.com/LanternOps/breeze/issues/555 and lanternops/breeze#7, LanternOps/breeze@0123456789abcdef."}'
+outbox 021.json '{"action":"create","title":"[UI] marker-ok2 code","body":"Mail admin@example.com; package `@playwright/mcp` and\n```\n@media (max-width: 600px) { }\nsee octo/private#1\n```\n@types/node too"}'
+publish_outbox >/dev/null 2>&1
+for n in 1 2 3 4 5 6 7 8; do
+  check "refs: entry $n (another repo / mention) is not published" "! grep -q 'marker-r$n ' '$GH_LOG'"
+done
+check "refs: a comment naming another repo is not published" "! grep -q 'issue comment 555' '$GH_LOG'"
+check "refs: a pr_result naming another repo is not published" "! grep -q 'pr comment 100' '$GH_LOG'"
+check "refs: references to this repo (URL, #N, OWNER/REPO#N, @sha) publish" "grep -q 'marker-ok1' '$GH_LOG'"
+check "refs: emails, npm scopes and code blocks are not mistaken for mentions/refs" "grep -q 'marker-ok2' '$GH_LOG'"
+check "refs: rejections name the file, not the text" "grep -q 'REJECT 001.json: body references another repository' '$T/runner.log' && ! grep -q 'octo' '$T/runner.log'"
+new_run refs-ledger
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+printf 'ledger row, see github.com/octo/private\n' > "$RUN_DIR/ledger.md"
+publish_outbox >/dev/null 2>&1
+check "refs: a ledger naming another repo is not published" "! grep -q 'issue edit\|QA sweep ledger' '$GH_LOG'"
+
+# === QA stack egress: internal-only network (needs Docker) ====================
+if [ "${QA_TEST_DOCKER:-0}" = 1 ] && docker info >/dev/null 2>&1; then
+  DP="qa-iso-test-$$"; DNET="$DP-ext"
+  docker network create "$DNET" >/dev/null
+  dctr() {  # dctr <service> <image> [cmd...]: a container labelled as part of compose project $DP
+    local svc="$1" img="$2"; shift 2
+    docker run -d --name "$DP-$svc" --network "$DNET" --network-alias "$svc" \
+      --label "com.docker.compose.project=$DP" --label "com.docker.compose.service=$svc" "$img" "$@" >/dev/null
+  }
+  dctr api node:24-alpine node -e 'require("http").createServer((q,r)=>r.end("api-ok")).listen(3001)'
+  dctr caddy nginx:alpine
+  docker run -d --name "$DP-caddy2" --network "$DNET" -p 127.0.0.1:0:80 nginx:alpine >/dev/null   # unrelated container: untouched
+  sleep 2
+  new_run docker
+  check "stack: control: before isolation the probe sees the internet" "! stack_isolation_check '$DP' api caddy"
+  check "stack: control: the check names what it found" "grep -q 'api-resolves-external-dns\|api-reaches-internet' '$T/runner.log'"
+  isolate_stack "$DP" caddy
+  check "stack: isolation passes its own check" "stack_isolation_check '$DP' api caddy"
+  check "stack: api is only on the internal network" "[ \"\$(docker inspect -f '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' $DP-api)\" = '$DP-qa-noegress ' ]"
+  check "stack: the edge keeps reaching api by service name" "docker exec $DP-caddy wget -qO- -T 5 http://api:3001 | grep -q api-ok"
+  check "stack: api cannot reach the internet" "! docker exec $DP-api node -e 'const s=require(\"net\").connect(443,\"1.1.1.1\");s.on(\"connect\",()=>process.exit(0));s.on(\"error\",()=>process.exit(1));setTimeout(()=>process.exit(1),5000)'"
+  check "stack: isolation is idempotent (hosted-phase re-run)" "isolate_stack '$DP' caddy && stack_isolation_check '$DP' api caddy"
+  check "stack: other projects' containers are untouched" "docker inspect -f '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}} {{end}}' $DP-caddy2 | grep -qx '$DNET '"
+  # a recreated service comes back on the project network: the check must catch it
+  docker network connect "$DNET" "$DP-api"
+  check "stack: a service back on an egress network fails the check" "! stack_isolation_check '$DP' api caddy"
+  docker rm -f "$DP-api" "$DP-caddy" "$DP-caddy2" >/dev/null 2>&1
+  remove_stack_net; docker network rm "$DNET" >/dev/null 2>&1
+  check "stack: the internal network is removed at teardown" "! docker network inspect '$DP-qa-noegress' >/dev/null 2>&1"
+else
+  skip "QA stack network isolation (set QA_TEST_DOCKER=1 with Docker running)"
+fi
+
+# === end-to-end sandbox self-check (real proxy, broker, sandbox) ==============
+if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
+  new_run selfcheck
+  RUN_DIR="$QA_HOME/runs/$RUN_ID"; mkdir -p "$RUN_DIR"
+  QA_WORKTREE="$QA_HOME/worktree"; QA_SOURCE_REPO="$T/source-repo"; mkdir -p "$QA_WORKTREE"
+  STACK_ENV_DIR="$QA_HOME/.stack-env"; STATE="$QA_HOME/state.json"; AGENT_TMP="$QA_HOME/.t"
+  mkdir -p "$STACK_ENV_DIR" "$AGENT_TMP"; echo '{}' > "$STATE"; echo 'v' > "$ENVVALS"
+  printf 'x\n' > "$RUN_DIR/commits.tsv"; echo readme > "$QA_WORKTREE/README.md"
+  /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http3.log" 2>&1 &
+  H3=$!; sleep 1; QA_STACK_PORT="$(lsof -nP -a -p "$H3" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}')"
+  QA_GH_BIN="$T/ghb/gh" start_gh_broker && start_egress_proxy
+  AGENT_PROFILE="$T/selfcheck.sb"
+  qa_sandbox_profile "$AGENT_PROFILE"
+  check "selfcheck: the real sandbox + proxy + broker pass the runner's self-check" "sandbox_selfcheck"
+  grep 'selfcheck' "$T/runner.log" | tail -1
+  # A profile that lets the agent reach any loopback port must fail it.
+  sed 's/(remote ip "localhost:[0-9]*")/(remote ip "localhost:*")/' "$AGENT_PROFILE" > "$T/loose.sb"; AGENT_PROFILE="$T/loose.sb"
+  check "selfcheck: a loopback-wide profile is caught" "! sandbox_selfcheck && grep -q 'other-loopback-port-open' '$T/runner.log'"
+  stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
+else
+  skip "end-to-end sandbox self-check (set QA_TEST_NETWORK=1, macOS)"
+fi
+
 # === agent + MCP launch wiring ================================================
 if type build_agent_cmd >/dev/null 2>&1; then
   new_run cmd
-  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; AGENT_TMP="$QA_HOME/.t"
+  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; GH_BROKER_PORT=9876; AGENT_TMP="$QA_HOME/.t"
   build_agent_cmd claude -p hi
   joined="${AGENT_CMD[*]}"
   check "launch: agent runs under sandbox-exec with the generated profile" "[ \"\${AGENT_CMD[0]}\" = /usr/bin/sandbox-exec ] && [ \"\${AGENT_CMD[1]}\" = -f ] && [ \"\${AGENT_CMD[2]}\" = '$AGENT_PROFILE' ]"
   check "launch: proxy env points at the loopback egress proxy" "case \"\$joined\" in *HTTPS_PROXY=http://127.0.0.1:4321*) true;; *) false;; esac"
   check "launch: ssh-agent socket is not inherited" "case \"\$joined\" in *'-u SSH_AUTH_SOCK'*) true;; *) false;; esac"
   check "launch: agent gets its own TMPDIR" "case \"\$joined\" in *\"TMPDIR=\$QA_HOME/.t\"*) true;; *) false;; esac"
+  check "launch: the agent gets the broker port, and no GitHub token from the runner's env" "case \"\$joined\" in *'QA_GH_PORT=9876'*'-u GH_TOKEN'*|*'-u GH_TOKEN'*'QA_GH_PORT=9876'*) true;; *) false;; esac"
   check "launch: the agent command follows the wrapper" "[ \"\${AGENT_CMD[\${#AGENT_CMD[@]}-3]}\" = claude ]"
 else
   bad "build_agent_cmd is defined"
