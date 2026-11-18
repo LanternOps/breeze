@@ -631,6 +631,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_vulnerability_report: z.object({
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
     severity: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_vulnerabilities: z.object({

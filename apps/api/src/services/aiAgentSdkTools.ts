@@ -3434,6 +3434,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        ...pageZodShape(20, 100),
       },
       makeHandler('get_vulnerability_report')
     ),

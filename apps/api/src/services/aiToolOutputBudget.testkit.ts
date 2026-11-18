@@ -50,7 +50,6 @@ export const UNBOUNDED_LIST_READS: ReadonlySet<string> = new Set([
   'get_effective_configuration',
   'get_executive_summary',
   'get_user_risk_detail',
-  'get_vulnerability_report',
   'query_custom_fields',
   'search_documentation',
 ]);
