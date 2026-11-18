@@ -20,6 +20,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
+import { endReasonLabelKey } from './sessionEndReason';
 import '@/lib/i18n';
 
 const DATE_LOCALE = 'en-US';
@@ -52,6 +53,14 @@ export type RemoteSession = {
   durationSeconds?: number;
   bytesTransferred?: number;
   recordingUrl?: string;
+  /**
+   * Why it ended (#11839): a RemoteSessionEndReason from @breeze/shared. Typed
+   * as string on purpose: an API newer than this bundle may send a reason it
+   * has no label for, and `endReasonLabelKey` drops it.
+   */
+  endReason?: string | null;
+  /** The recorded failure detail, when there is one (agent error, timeout text). */
+  errorMessage?: string | null;
   createdAt: string;
 };
 
@@ -190,6 +199,8 @@ export function normalizeRemoteSession(session: RemoteSessionApi): RemoteSession
     durationSeconds: session.durationSeconds ?? undefined,
     bytesTransferred: session.bytesTransferred ?? undefined,
     recordingUrl: session.recordingUrl ?? undefined,
+    endReason: session.endReason ?? null,
+    errorMessage: session.errorMessage ?? null,
     createdAt: session.createdAt
   };
 }
@@ -523,6 +534,11 @@ export default function SessionHistory({
                       )}>
                         {t(/* i18n-dynamic */ sessionStatusBadge(session).labelKey)}
                       </span>
+                      {endReasonLabelKey(session.endReason) && (
+                        <p className="mt-1 text-xs text-muted-foreground" data-testid="session-end-reason">
+                          {t(/* i18n-dynamic */ endReasonLabelKey(session.endReason)!)}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end">

@@ -21,6 +21,10 @@ type VersionIdentity = {
   version: string;
   detectionRules?: unknown;
   successExitCodes?: readonly number[] | null;
+  installScriptsEnabled?: boolean;
+  preInstallScript?: string | null;
+  postInstallScript?: string | null;
+  supportedOs?: unknown;
 };
 
 type InstallMethodIdentity = {
@@ -72,6 +76,18 @@ export function fingerprintSoftwareVersionDependency(
       // deployment still in flight at upgrade time as "dependency changed".
       ...(version.successExitCodes && version.successExitCodes.length > 0
         ? { successExitCodes: [...version.successExitCodes] }
+        : {}),
+      // #6958: enabled install scripts run as SYSTEM/root, so editing them (or
+      // the one OS that picks their interpreter) after approval must
+      // invalidate the pin. Present ONLY when enabled, so every version without
+      // enabled scripts keeps the exact fingerprint it was pinned with.
+      ...(version.installScriptsEnabled === true
+        ? {
+          installScriptsEnabled: true,
+          preInstallScript: version.preInstallScript ?? null,
+          postInstallScript: version.postInstallScript ?? null,
+          supportedOs: version.supportedOs ?? null,
+        }
         : {}),
     },
     catalog: { integrationProvider: catalog.integrationProvider },

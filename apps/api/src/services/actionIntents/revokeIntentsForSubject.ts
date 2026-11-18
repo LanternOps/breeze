@@ -88,7 +88,7 @@ export async function revokeIntentsForSubject(input: {
         if (taskLinked) await markOperationCancelled(db, intent.id);
         await publishIntentTerminalOutbox(
           db,
-          { id: intent.id, orgId: intent.orgId, taskId: intent.taskId },
+          { id: intent.id, orgId: intent.orgId, taskId: intent.taskId, requestingFlowRunId: intent.requestingFlowRunId },
           'intent_cancelled',
         );
         result.cancelled.push(intent.id);

@@ -188,7 +188,7 @@ func TestApplyConfigUpdate_ECHEnabledFalseDoesNotForceReconnect(t *testing.T) {
 	cfg := swapTestConfig(t, srv.URL, "")
 	swapSharedECHDialer(t)
 	h := &Heartbeat{config: cfg}
-	ws := websocket.New(&websocket.Config{ServerURL: srv.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t")}, nil)
+	ws := websocket.New(&websocket.Config{ServerURL: srv.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t"), StartDialWindow: noStartDialJitter()}, nil)
 	h.SetWebSocketClient(ws)
 	go ws.Start()
 	defer ws.Stop()

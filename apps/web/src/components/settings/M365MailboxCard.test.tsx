@@ -242,6 +242,130 @@ describe('M365MailboxCard', () => {
     expect(screen.queryByText('unknown@a.com')).not.toBeInTheDocument();
   });
 
+  describe('trusted ARC sealers (#10862)', () => {
+    const conn = (over: Record<string, unknown> = {}) => ({
+      id: 'c1',
+      mailboxAddress: 'support@a.com',
+      displayName: 'Support',
+      status: 'connected',
+      lastPolledAt: null,
+      lastMessageAt: null,
+      trustedArcSealers: [],
+      ...over,
+    });
+
+    it('starts empty, and saves a normalized list through the PATCH route', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn()] }));
+      render(<M365MailboxCard />);
+      const input = await screen.findByTestId('m365-arc-sealers-input');
+      expect(input).toHaveValue('');
+
+      fireEvent.change(input, { target: { value: 'Gateway.Example, mx.gateway.example gateway.example' } });
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ ok: true, trustedArcSealers: ['gateway.example', 'mx.gateway.example'] }));
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example', 'mx.gateway.example'] })] }));
+      fireEvent.click(screen.getByTestId('m365-arc-sealers-save'));
+
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/tickets/mailbox/connections/c1/trusted-arc-sealers',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ sealers: ['gateway.example', 'mx.gateway.example'] }),
+        }),
+      ));
+    });
+
+    it('shows the saved list and lets it be cleared', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      render(<M365MailboxCard />);
+      const input = await screen.findByTestId('m365-arc-sealers-input');
+      expect(input).toHaveValue('gateway.example');
+
+      fireEvent.change(input, { target: { value: '' } });
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ ok: true, trustedArcSealers: [] }));
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn()] }));
+      fireEvent.click(screen.getByTestId('m365-arc-sealers-save'));
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(
+        '/tickets/mailbox/connections/c1/trusted-arc-sealers',
+        expect.objectContaining({ body: JSON.stringify({ sealers: [] }) }),
+      ));
+    });
+
+    it('keeps an edit made before the mount effects flush (no late saved→draft clobber, #11350)', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      // Edit the instant the input is inserted into the DOM — a microtask after the
+      // commit, before React's passive effects flush. Under CPU load a user (or a
+      // test) can land in this window; a mount-time `setDraft(saved)` would then
+      // overwrite the edit.
+      const observer = new MutationObserver(() => {
+        const el = document.querySelector<HTMLInputElement>('[data-testid="m365-arc-sealers-input"]');
+        if (!el) return;
+        observer.disconnect();
+        fireEvent.change(el, { target: { value: 'edited.example' } });
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      render(<M365MailboxCard />);
+      await waitFor(() => expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example'));
+      // Let any pending passive effect run, then confirm the edit survived.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example');
+      observer.disconnect();
+    });
+
+    it('still adopts a genuinely new saved list from the server', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      render(<M365MailboxCard />);
+      const input = await screen.findByTestId('m365-arc-sealers-input');
+      fireEvent.change(input, { target: { value: 'edited.example' } });
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ ok: true, trustedArcSealers: ['edited.example'] }));
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['edited.example', 'mx.edited.example'] })] }));
+      fireEvent.click(screen.getByTestId('m365-arc-sealers-save'));
+      await waitFor(() => expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example, mx.edited.example'));
+    });
+
+    it.each(['*.gateway.example', 'a@gateway.example', 'localhost'])('blocks saving the invalid entry %s without calling the API', async (value) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn()] }));
+      render(<M365MailboxCard />);
+      fireEvent.change(await screen.findByTestId('m365-arc-sealers-input'), { target: { value } });
+      expect(screen.getByTestId('m365-arc-sealers-invalid')).toBeInTheDocument();
+      expect(screen.getByTestId('m365-arc-sealers-save')).toBeDisabled();
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks more than ten entries', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn()] }));
+      render(<M365MailboxCard />);
+      fireEvent.change(await screen.findByTestId('m365-arc-sealers-input'), {
+        target: { value: Array.from({ length: 11 }, (_, i) => `g${i}.example`).join(' ') },
+      });
+      expect(screen.getByTestId('m365-arc-sealers-save')).toBeDisabled();
+    });
+
+    it('is read-only without admin permission', async () => {
+      grantedActions.delete('ticket_mailbox:admin');
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      render(<M365MailboxCard />);
+      expect(await screen.findByTestId('m365-arc-sealers-readonly')).toHaveTextContent('gateway.example');
+      expect(screen.queryByTestId('m365-arc-sealers-input')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('m365-arc-sealers-save')).not.toBeInTheDocument();
+    });
+
+    it('hides it for a read-only user when the list is empty, and tolerates an API that omits it', async () => {
+      grantedActions.delete('ticket_mailbox:admin');
+      const { trustedArcSealers: _omitted, ...legacy } = conn();
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [legacy] }));
+      render(<M365MailboxCard />);
+      await screen.findByTestId('m365-connection');
+      expect(screen.queryByTestId('m365-arc-sealers-readonly')).not.toBeInTheDocument();
+    });
+
+    it('does not show it before consent completes', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ status: 'pending_consent' })] }));
+      render(<M365MailboxCard />);
+      await screen.findByTestId('m365-connection');
+      expect(screen.queryByTestId('m365-arc-sealers-input')).not.toBeInTheDocument();
+    });
+  });
+
   it('Re-test calls the retest endpoint', async () => {
     fetchWithAuth
       .mockResolvedValueOnce(
@@ -291,6 +415,65 @@ describe('M365MailboxCard', () => {
     );
     render(<M365MailboxCard />);
     expect(await screen.findByText('Mailbox verification failed: Graph 403 (ErrorAccessDenied)')).toBeInTheDocument();
+  });
+
+  describe('connect baseline note (#10863)', () => {
+    const row = (connectBaseline: unknown, status = 'connected') => ({
+      id: 'c1',
+      mailboxAddress: 'support@a.com',
+      displayName: null,
+      status,
+      lastPolledAt: null,
+      lastMessageAt: null,
+      verificationError: null,
+      connectBaseline,
+    });
+    const done = '2026-11-01T12:10:00.000Z';
+
+    it('says how many messages already in the inbox will not be imported', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 9487, completedAt: done })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-note');
+      expect(note.textContent).toContain('9487 messages already in this inbox will not be imported');
+      expect(screen.queryByTestId('m365-baseline-running')).toBeNull();
+    });
+
+    it('uses the singular for one message', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 1, completedAt: done })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-note');
+      expect(note.textContent).toContain('1 message already in this inbox will not be imported');
+    });
+
+    it('says the inbox is being read while the baseline runs, without a partial count', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 2000, completedAt: null })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-running');
+      expect(note.textContent).toMatch(/already in it will not be imported/);
+      expect(note.textContent).not.toContain('2000');
+      expect(screen.queryByTestId('m365-baseline-note')).toBeNull();
+    });
+
+    it.each([
+      ['an empty inbox', { skippedCount: 0, completedAt: done }, 'connected'],
+      ['a mailbox from before the floor', null, 'connected'],
+      ['an older API with no field', undefined, 'connected'],
+      ['a malformed count', { skippedCount: 'many', completedAt: done }, 'connected'],
+      ['a negative count', { skippedCount: -1, completedAt: done }, 'connected'],
+      ['a mailbox that is not polling', { skippedCount: 12, completedAt: done }, 'reauth_required'],
+    ])('stays quiet for %s', async (_label, value, status) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [row(value, status)] }));
+      render(<M365MailboxCard />);
+      expect(await screen.findByText('support@a.com')).toBeInTheDocument();
+      expect(screen.queryByTestId('m365-baseline-note')).toBeNull();
+      expect(screen.queryByTestId('m365-baseline-running')).toBeNull();
+    });
   });
 
   describe('repeated transient poll failures (#8308)', () => {

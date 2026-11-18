@@ -3,9 +3,9 @@ import type { AiPageContext } from '@breeze/shared/types/ai';
 /**
  * Server-side record of HOW an AI chat session's org was chosen (#6675).
  *
- * A chat opened from a device page anchors `ai_sessions.org_id` to that
- * device's org (#5593). Org-scoped AI writes default to that org when the
- * tool input names none — but only when the org really came from the page,
+ * A chat opened from a device or record page anchors `ai_sessions.org_id` to
+ * the server-resolved entity's org (#5593). Org-scoped AI writes default to
+ * that org when the tool input names none — but only when the org came from the page,
  * not from an explicit `orgId`, an explicitly bound device, or the
  * `accessibleOrgIds[0]` session fallback. `org_id` alone cannot tell those
  * apart, so `createSession` records the source in `context_snapshot`.
@@ -34,7 +34,7 @@ export function buildSessionContextSnapshot(
 }
 
 /**
- * The org a device-page chat's writes default to, or `undefined` when the
+ * The org a device/record-page chat's writes default to, or `undefined` when the
  * session has no page anchor. A device-bound session (`device_id` set) gets
  * none: its tool auth is already pinned to its org (#3087).
  */
@@ -47,6 +47,6 @@ export function pageContextWriteDefaultOrgId(session: {
   const snapshot = session.contextSnapshot;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
   const record = snapshot as Record<string, unknown>;
-  if (record.type !== 'device' || record[SESSION_ORG_ANCHOR_KEY] !== PAGE_CONTEXT_ORG_ANCHOR) return undefined;
+  if ((record.type !== 'device' && record.type !== 'record') || record[SESSION_ORG_ANCHOR_KEY] !== PAGE_CONTEXT_ORG_ANCHOR) return undefined;
   return session.orgId;
 }

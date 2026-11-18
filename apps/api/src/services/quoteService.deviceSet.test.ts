@@ -119,13 +119,14 @@ describe('addManualLine with a device set', () => {
     expect(lastInsertValues()).toMatchObject({ quantity: '0.00', lineTotal: '0.00' });
   });
 
-  it('400s for a group from another org', async () => {
+  it('characterization: 400s for a group from another org without inserting', async () => {
     queueDraftQuote({ id: QUOTE, orgId: 'org1', currencyCode: 'USD' });
     queueResult([]);
     await expect(addManualLine(QUOTE, {
       sourceType: 'manual', name: 'x', unitPrice: 1, taxable: false, recurrence: 'monthly',
       contractLineType: 'per_device_group', deviceGroupId: GROUP,
     } as never, ACTOR)).rejects.toMatchObject({ status: 400, code: 'GROUP_NOT_IN_ORG' });
+    expect(inserts).toEqual([]);
   });
 
   it('400s DEVICE_SET_UNCOUNTABLE when the count fails, rather than creating a zero line', async () => {

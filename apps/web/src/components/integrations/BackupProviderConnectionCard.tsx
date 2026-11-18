@@ -6,6 +6,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { showToast } from "../shared/Toast";
 import { ActionError, handleActionError, runAction } from "@/lib/runAction";
 import { formatRelativeTime } from "@/lib/dateTimeFormat";
+import { getBackupProviderForm, rotationCredentials, valuesAfterRotation, type BackupCredentialField } from "./backupProviderForms";
 import "@/lib/i18n";
 
 export type BackupProviderConnection = {
@@ -84,6 +85,52 @@ function Counter({ testId, label, value }: { testId: string; label: string; valu
   );
 }
 
+/** One credential input, shared by the create form and the rotate form. */
+export function BackupCredentialInput({
+  field,
+  testIdPrefix,
+  value,
+  onChange,
+  required,
+  revealed,
+  onToggleReveal,
+}: {
+  field: BackupCredentialField;
+  testIdPrefix: "backup-add" | "backup-connection";
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+  revealed: boolean;
+  onToggleReveal: () => void;
+}) {
+  const { t } = useTranslation("integrations");
+  const testId = `${testIdPrefix}-${field.testIdSuffix}`;
+  const inputClass = "h-9 w-full rounded-md border bg-background px-2 text-sm";
+  return (
+    <label className="text-sm">
+      <span className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ field.labelKey)}</span>
+      {field.input === "revealable_secret" ? (
+        <div className="mt-1 flex items-center gap-1">
+          <input data-testid={testId} type={revealed ? "text" : "password"} autoComplete="new-password" required={required} value={value} onChange={(e) => onChange(e.target.value)} className={inputClass} />
+          <button
+            type="button"
+            data-testid={`${testId}-toggle`}
+            aria-label={revealed ? t("backupProviders.hidePassword") : t("backupProviders.showPassword")}
+            onClick={onToggleReveal}
+            className="rounded-md border px-2 py-1.5"
+          >
+            {revealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
+      ) : field.input === "secret" ? (
+        <input data-testid={testId} type="password" autoComplete="new-password" required={required} value={value} onChange={(e) => onChange(e.target.value)} className={`mt-1 ${inputClass}`} />
+      ) : (
+        <input data-testid={testId} autoComplete={field.autoComplete} required={required} value={value} onChange={(e) => onChange(e.target.value)} className={`mt-1 ${inputClass}`} />
+      )}
+    </label>
+  );
+}
+
 export default function BackupProviderConnectionCard({
   connection,
   onChanged,
@@ -94,15 +141,18 @@ export default function BackupProviderConnectionCard({
   onTestResult: (result: BackupProviderTestResult) => void;
 }) {
   const { t } = useTranslation("integrations");
+  const form = getBackupProviderForm(connection.provider);
+  const isSaas = form.inventory === "saas";
   const [name, setName] = useState(connection.name);
   const [isActive, setIsActive] = useState(connection.isActive);
   const [showInPortal, setShowInPortal] = useState(connection.showProviderNameInPortal);
   const [editingCredentials, setEditingCredentials] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [partnerName, setPartnerName] = useState("");
+  const [values, setValues] = useState<Record<string, string>>({});
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState<null | "test" | "sync" | "save" | "delete">(null);
+
+  const rotation = editingCredentials ? rotationCredentials(form, values) : null;
+  const incompleteCredentials = rotation !== null && "incomplete" in rotation;
 
   const handleTest = async () => {
     setBusy("test");
@@ -147,13 +197,12 @@ export default function BackupProviderConnectionCard({
   };
 
   const handleSave = async () => {
+    if (incompleteCredentials) return;
     setBusy("save");
     const body: Record<string, unknown> = { name, isActive, showProviderNameInPortal: showInPortal };
-    // A blank password means "keep the stored secret" — never send an empty
-    // credentials blob, which the API would re-encrypt over a working one.
-    if (editingCredentials && password.trim()) {
-      body.credentials = { partnerName: partnerName.trim(), username: username.trim(), password };
-    }
+    // Blank means "keep the stored secret" — never send an empty credentials
+    // blob, which the API would re-encrypt over a working one.
+    if (rotation !== null && "credentials" in rotation) body.credentials = rotation.credentials;
     try {
       await runAction({
         request: () =>
@@ -166,7 +215,7 @@ export default function BackupProviderConnectionCard({
         successMessage: t("backupProviders.savedToast"),
       });
       setEditingCredentials(false);
-      setPassword("");
+      setValues((current) => valuesAfterRotation(form, current));
       onChanged();
     } catch (err) {
       handleActionError(err, t("backupProviders.errorSave"));
@@ -176,7 +225,7 @@ export default function BackupProviderConnectionCard({
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(t("backupProviders.deleteConfirm", { name: connection.name }))) return;
+    if (!window.confirm(t(/* i18n-dynamic */ isSaas ? "backupProviders.deleteWorkloadsConfirm" : "backupProviders.deleteConfirm", { name: connection.name }))) return;
     setBusy("delete");
     try {
       await runAction({
@@ -197,7 +246,7 @@ export default function BackupProviderConnectionCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold text-foreground">{connection.name}</h3>
-          <p className="text-sm text-muted-foreground">{t("backupProviders.cove")}</p>
+          <p data-testid="backup-connection-provider" className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `backupProviders.${connection.provider}`, { defaultValue: connection.provider })}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {connection.lastSyncAt
               ? t("backupProviders.lastSync", { relative: formatRelativeTime(connection.lastSyncAt) })
@@ -228,12 +277,12 @@ export default function BackupProviderConnectionCard({
         </div>
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <dl className={`mt-4 grid grid-cols-2 gap-2 ${isSaas ? "sm:grid-cols-3" : "sm:grid-cols-5"}`}>
         <Counter testId="backup-connection-customers" label={t("backupProviders.customers")} value={connection.lastSyncCustomers} />
-        <Counter testId="backup-connection-devices" label={t("backupProviders.devices")} value={connection.lastSyncDevices} />
-        <Counter testId="backup-connection-linked" label={t("backupProviders.linked")} value={connection.lastSyncLinkedDevices} />
-        <Counter testId="backup-connection-unmapped-devices" label={t("backupProviders.unmappedDevices")} value={connection.lastSyncUnmappedDevices} />
-        <Counter testId="backup-connection-ambiguous" label={t("backupProviders.ambiguous")} value={connection.lastSyncAmbiguousDevices} />
+        <Counter testId="backup-connection-devices" label={t(/* i18n-dynamic */ isSaas ? "backupProviders.workloads" : "backupProviders.devices")} value={connection.lastSyncDevices} />
+        {!isSaas && (<Counter testId="backup-connection-linked" label={t("backupProviders.linked")} value={connection.lastSyncLinkedDevices} />)}
+        <Counter testId="backup-connection-unmapped-devices" label={t(/* i18n-dynamic */ isSaas ? "backupProviders.unmappedWorkloads" : "backupProviders.unmappedDevices")} value={connection.lastSyncUnmappedDevices} />
+        {!isSaas && (<Counter testId="backup-connection-ambiguous" label={t("backupProviders.ambiguous")} value={connection.lastSyncAmbiguousDevices} />)}
       </dl>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -261,36 +310,18 @@ export default function BackupProviderConnectionCard({
 
       {editingCredentials && (
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <label className="text-sm">
-            <span className="text-xs text-muted-foreground">{t("backupProviders.partnerNameLabel")}</span>
-            <input data-testid="backup-connection-partner-name" value={partnerName} onChange={(e) => setPartnerName(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
-          </label>
-          <label className="text-sm">
-            <span className="text-xs text-muted-foreground">{t("backupProviders.usernameLabel")}</span>
-            <input data-testid="backup-connection-username" autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
-          </label>
-          <label className="text-sm">
-            <span className="text-xs text-muted-foreground">{t("backupProviders.passwordLabel")}</span>
-            <div className="mt-1 flex items-center gap-1">
-              <input
-                data-testid="backup-connection-password"
-                type={showPassword ? "text" : "password"}
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              />
-              <button
-                type="button"
-                data-testid="backup-connection-password-toggle"
-                aria-label={showPassword ? t("backupProviders.hidePassword") : t("backupProviders.showPassword")}
-                onClick={() => setShowPassword((v) => !v)}
-                className="rounded-md border px-2 py-1.5"
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </label>
+          {form.fields.map((field) => (
+            <BackupCredentialInput
+              key={field.key}
+              field={field}
+              testIdPrefix="backup-connection"
+              value={values[field.key] ?? ""}
+              onChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))}
+              revealed={showPassword}
+              onToggleReveal={() => setShowPassword((v) => !v)}
+            />
+          ))}
+          {form.reentryHelpKey && <p className="text-xs text-muted-foreground sm:col-span-3">{t(/* i18n-dynamic */ form.reentryHelpKey)}</p>}
         </div>
       )}
 
@@ -302,7 +333,17 @@ export default function BackupProviderConnectionCard({
         <button type="button" data-testid="backup-connection-sync" disabled={busy !== null} onClick={() => void handleSync()} className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 text-sm font-medium disabled:opacity-50">
           <RefreshCw className="h-4 w-4" /> {t("backupProviders.syncNow")}
         </button>
-        <button type="button" data-testid="backup-connection-save" disabled={busy !== null} onClick={() => void handleSave()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50">
+        {!editingCredentials && connection.status !== "reauth_required" && (
+          <button type="button" data-testid="backup-connection-rotate" disabled={busy !== null} onClick={() => setEditingCredentials(true)} className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 text-sm font-medium disabled:opacity-50">
+            {t("backupProviders.reenterCredentials")}
+          </button>
+        )}
+        {editingCredentials && connection.status !== "reauth_required" && (
+          <button type="button" data-testid="backup-connection-rotate-cancel" disabled={busy !== null} onClick={() => { setEditingCredentials(false); setValues({}); }} className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 text-sm font-medium disabled:opacity-50">
+            {t("common:actions.cancel")}
+          </button>
+        )}
+        <button type="button" data-testid="backup-connection-save" disabled={busy !== null || incompleteCredentials} onClick={() => void handleSave()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50">
           <Save className="h-4 w-4" /> {t("common:actions.save")}
         </button>
         <button type="button" data-testid="backup-connection-delete" disabled={busy !== null} onClick={() => void handleDelete()} className="ml-auto inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive disabled:opacity-50">

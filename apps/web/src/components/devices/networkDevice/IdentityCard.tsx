@@ -5,6 +5,7 @@
 // facts (spec §1 F1, F5) and both are really statements about the last sweep.
 
 import { useTranslation } from 'react-i18next';
+import { normalizeOsFingerprint } from '../../discovery/osFingerprint';
 import { isManualLink } from '../../discovery/networkTypes';
 import { typeConfig, type DiscoveredAsset } from '../../discovery/DiscoveredAssetList';
 import { Section, Field, UnknownValue } from './primitives';
@@ -173,7 +174,7 @@ export function IdentityCard({
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <Field label={t('networkDeviceDetailPage.fields.hostname')} value={asset.hostname || unknown} />
           <Field label={t('networkDeviceDetailPage.fields.netbiosName')} value={extras.netbiosName || unknown} />
-          <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || unknown} />
+          <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={normalizeOsFingerprint(asset.osFingerprint) || unknown} />
           <div data-testid="network-detail-first-seen">
             <dt className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.fields.firstSeen')}</dt>
             <dd className="font-medium" title={formatTimestamp(extras.firstSeenAt, timezone)}>

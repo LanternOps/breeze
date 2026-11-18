@@ -1,0 +1,19 @@
+### pfctl -sn
+nat-anchor "com.apple/*" all
+nat-anchor "com.apple.internet-sharing" all
+rdr-anchor "com.apple/*" all
+rdr-anchor "com.apple.internet-sharing" all
+### pfctl -sr
+scrub-anchor "com.apple/*" all fragment reassemble
+scrub-anchor "com.apple.internet-sharing" all fragment reassemble
+anchor "com.apple/*" all
+anchor "com.apple.internet-sharing" all
+### pfctl -sA
+  com.apple
+  com.apple.internet-sharing
+### pfctl -sI -v
+all
+en
+en0
+lo
+lo0

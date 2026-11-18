@@ -5,6 +5,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import PolicyLinkSelector from "./PolicyLinkSelector";
+import SoftwarePolicyCoverageBadge from "../../software/SoftwarePolicyCoverageBadge";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type PolicySummary = {
@@ -149,7 +150,12 @@ export default function SoftwarePolicyTab({
         {/* Read-only summary of linked policy */}
         {linkedPolicySummary && (
           <div className="rounded-md border bg-muted/20 p-4">
-            <h4 className="text-sm font-medium">{linkedPolicySummary.name}</h4>
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-sm font-medium">{linkedPolicySummary.name}</h4>
+              {selectedPolicyId && (
+                <SoftwarePolicyCoverageBadge policyId={selectedPolicyId} />
+              )}
+            </div>
             <p className="mt-1 text-xs text-muted-foreground capitalize">
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.softwarePolicyTab.mode",

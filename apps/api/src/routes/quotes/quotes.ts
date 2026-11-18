@@ -1,9 +1,11 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { listContracts } from '../../services/contractService';
+import { captureException } from '../../services/sentry';
 import {
   createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
@@ -19,7 +21,7 @@ import {
 } from '../../services/quoteService';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { quoteImages, quoteAcceptances } from '../../db/schema/quotes';
 import { users } from '../../db/schema/users';
 import { partners } from '../../db/schema/orgs';
@@ -34,6 +36,7 @@ import {
   loadContractPdfInputs,
   loadContractBlockAuthoring,
   attachContractAuthoring,
+  resolveQuoteEditorAutoVariables,
 } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
@@ -124,6 +127,50 @@ quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idPar
     return c.json({ data: revision });
   } catch (err) { return handleServiceError(c, err); }
 });
+/** One contract a quote's accept created, as the quote detail callout names it. */
+type GeneratedContractSummary = { id: string; name: string; status: string; intervalMonths: number };
+
+/**
+ * #10361: the contracts this quote's accept created (contracts.source_quote_id),
+ * so an accepted quote can point at the draft(s) waiting to be activated.
+ *
+ * Gated on contracts:read — quotes:read alone does not grant contract reads —
+ * and read through listContracts with the CALLER's actor, so the org axis
+ * (accessibleOrgIds) and the site axis (contract lines) apply exactly as on
+ * the contracts list. `contracts: null` = not shown: either no permission, or
+ * the lookup failed, which `contractsUnavailable` says so the page can tell the
+ * operator instead of implying no contract exists (display-only, so a failure
+ * degrades the callout rather than the page). `[]` without a query for a quote
+ * that was never accepted.
+ */
+async function loadGeneratedContracts(
+  c: Context,
+  quote: { id: string; orgId: string; status: string; acceptedAt?: Date | string | null },
+): Promise<{ contracts: GeneratedContractSummary[] | null; contractsUnavailable: boolean }> {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action)) {
+    return { contracts: null, contractsUnavailable: false };
+  }
+  const accepted = quote.status === 'accepted' || quote.status === 'converted' || !!quote.acceptedAt;
+  if (!accepted) return { contracts: [], contractsUnavailable: false };
+  try {
+    const qa = quoteActorFrom(c);
+    const rows = await listContracts(
+      { orgId: quote.orgId, sourceQuoteId: quote.id },
+      // Read-only: no permission evidence, so no write gate could ever pass on it.
+      { userId: qa.userId, partnerId: qa.partnerId, accessibleOrgIds: qa.accessibleOrgIds, allowedSiteIds: qa.allowedSiteIds },
+    );
+    return {
+      contracts: rows.map((r) => ({ id: r.id, name: r.name, status: r.status, intervalMonths: r.intervalMonths })),
+      contractsUnavailable: false,
+    };
+  } catch (err) {
+    console.error('GET /quotes/:id: generated-contract lookup failed', { quoteId: quote.id, err });
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return { contracts: null, contractsUnavailable: true };
+  }
+}
+
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
@@ -155,6 +202,22 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // carry `authoring`.
     const authoring = await loadContractBlockAuthoring(detail.blocks);
     const blocksForEditor = attachContractAuthoring(blocks, authoring);
+    // ADMIN-ONLY (#9867): each auto variable's value as the client will read it,
+    // so the editor's agreement block shows "Client name — Acme Co" instead of
+    // `{{client.name}}`. Quote-level (not per block) because the add-agreement
+    // form needs it before any contract block exists. Display-only: a failure
+    // degrades to null (the editor falls back to the token) rather than failing
+    // the whole quote load.
+    let contractAutoValues: Record<string, string> | null = null;
+    try {
+      contractAutoValues = resolveQuoteEditorAutoVariables(detail.quote, {
+        locale: branding.locale,
+        billTo: detail.billTo ?? null,
+        seller: branding.seller,
+      });
+    } catch (err) {
+      console.error('GET /quotes/:id: contract auto-variable resolution failed', { quoteId: id, err });
+    }
     // Who this quote actually went to. Written at send but, until now, only ever
     // read by the portal's signer-authorization check — so the tech who sent it
     // had no way to see the addresses. Empty on drafts and on legacy sends that
@@ -249,18 +312,20 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // quote-detail load.
     let partnerAutoEmailRow: { autoEmailInvoiceOnQuoteAccept: boolean } | undefined;
     try {
-      [partnerAutoEmailRow] = await db
+      // Savepoint so a failed read rolls back and the request transaction survives (#11203).
+      [partnerAutoEmailRow] = await withDbTransaction(async () => db
         .select({ autoEmailInvoiceOnQuoteAccept: partners.autoEmailInvoiceOnQuoteAccept })
         .from(partners)
         .where(eq(partners.id, detail.quote.partnerId))
-        .limit(1);
+        .limit(1));
     } catch (err) {
       console.error('GET /quotes/:id: partner auto-email lookup failed', { quoteId: id, partnerId: detail.quote.partnerId, err });
     }
     const autoEmailInvoiceOnAccept = partnerAutoEmailRow?.autoEmailInvoiceOnQuoteAccept ?? true;
+    const { contracts, contractsUnavailable } = await loadGeneratedContracts(c, detail.quote);
     return c.json({ data: {
       ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
-      acceptance,
+      acceptance, contractAutoValues, contracts, contractsUnavailable,
       stripeConnected, stripeAccountCurrency, currencyWarning,
       autoEmailInvoiceOnAccept,
       // #9256: whether the server has an email transport at all, so the web can

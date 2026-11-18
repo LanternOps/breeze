@@ -66,7 +66,8 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
   network_discovery: { file: 'aiToolsNetwork.ts', disposition: 'self-managed', maxWaitMs: 120_000 },
   security_scan: {
     file: 'aiToolsSecurity.ts', disposition: 'self-managed', maxWaitMs: 60_000,
-    waitingActions: ['scan', 'status', 'quarantine', 'remove', 'restore'],
+    // `scan` queues through startDeviceScan and returns without waiting (#6268).
+    waitingActions: ['status', 'quarantine', 'remove', 'restore'],
   },
   trigger_agent_upgrade: { file: 'aiToolsAgentMgmt.ts', disposition: 'self-managed', maxWaitMs: 50 * 60_000 }, // 60 s × ≤50 devices
   trigger_agent_restart: { file: 'aiToolsAgentMgmt.ts', disposition: 'self-managed', maxWaitMs: 50 * 60_000 },
@@ -90,6 +91,9 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
     why: 'list and kill are separate branches, each one aiExecuteCommand with timeoutMs 30000',
   },
   manage_scheduled_tasks: { file: 'aiToolsScripts.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  // Full-control W13 PR B (#6783): list_logs / query / get_event are separate branches, one 30 s command each.
+  browse_device_event_log: { file: 'aiToolsDeviceEventLog.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  get_vss_status: { file: 'aiToolsBackupVerification.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   registry_operations: { file: 'aiToolsScripts.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   set_agent_log_level: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   capture_agent_pprof: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },

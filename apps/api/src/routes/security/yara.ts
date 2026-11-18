@@ -22,7 +22,7 @@
  * Audit events carry names and ids only — never rule source (customer IP).
  */
 import { Hono, type Context } from 'hono';
-import { and, asc, count, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { asc, count, desc, eq } from 'drizzle-orm';
 import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import { YARA_MAX_RULES_PER_SET } from '@breeze/shared';
 
@@ -34,9 +34,18 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { publishRuleSet, type PublishRuleSetResult } from '../../services/yaraRuleSetPublisher';
+import { publishRuleSet } from '../../services/yaraRuleSetPublisher';
+import { yaracAvailable } from '../../services/yaraPrecheck';
 import { requireSecurityReadAccess } from './readAuthorization';
 import { getPolicyOrgId } from './helpers';
+import {
+  auditOwner,
+  loadVisibleSet,
+  publishAudit,
+  publishBody,
+  ruleSetAccessCondition,
+  writeDenial,
+} from './yaraAccess';
 import {
   createYaraRuleSchema,
   createYaraRuleSetSchema,
@@ -48,50 +57,28 @@ import {
 
 export const yaraRoutes = new Hono();
 
-const BUILTIN_READ_ONLY = 'The built-in rule set is read-only';
 const AUTO_QUARANTINE_EXECUTE_REQUIRED =
   'Auto-quarantine moves files on every device that scans with this rule set, so enabling it requires the devices:execute permission.';
-
-/**
- * Sets visible to the caller (on top of RLS, which is the real boundary):
- * own orgs, the caller's partner's partner-wide sets, and the built-in pack.
- * The partner-wide branch is safe for ORG tokens too: RLS grants them that
- * read through `yara_rule_sets_partner_wide_select` (breeze_current_partner_id
- * = the token's own partner), so app and DB agree.
- */
-function ruleSetAccessCondition(auth: AuthContext): SQL | undefined {
-  const orgCond = auth.orgCondition(yaraRuleSets.orgId);
-  if (!orgCond) return undefined; // system scope
-  const branches: SQL[] = [orgCond, sql`${yaraRuleSets.isBuiltin} = true`];
-  if (auth.partnerId) {
-    branches.push(sql`(${yaraRuleSets.orgId} IS NULL AND ${yaraRuleSets.partnerId} = ${auth.partnerId})`);
-  }
-  return sql`(${sql.join(branches, sql` OR `)})`;
-}
-
-async function loadVisibleSet(auth: AuthContext, id: string): Promise<YaraRuleSet | null> {
-  const conditions: SQL[] = [eq(yaraRuleSets.id, id)];
-  const access = ruleSetAccessCondition(auth);
-  if (access) conditions.push(access);
-  const [row] = await db.select().from(yaraRuleSets).where(and(...conditions)).limit(1);
-  return row ?? null;
-}
-
-/** null = allowed; otherwise the 403 message. */
-function writeDenial(auth: AuthContext, set: Pick<YaraRuleSet, 'isBuiltin' | 'orgId'>): string | null {
-  if (set.isBuiltin) return BUILTIN_READ_ONLY;
-  if (!canMutateOrgWideGovernance(auth)) return SITE_CEILING_WRITE_DENIED_MESSAGE;
-  if (set.orgId === null && !canManagePartnerWidePolicies(auth)) return PARTNER_WIDE_WRITE_DENIED_MESSAGE;
-  if (set.orgId !== null && !auth.canAccessOrg(set.orgId)) return 'Access denied';
-  return null;
-}
 
 function mayEnableAutoQuarantine(c: Context): boolean {
   const perms = c.get('permissions') as UserPermissions | undefined;
   return !!perms && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 }
 
-function summarize(row: YaraRuleSet) {
+/**
+ * Why a stale set is not published (#10306): `checker_unavailable` when this
+ * server cannot run breeze-yarac (a missing compiler is not an error in the
+ * user's rules), otherwise `errors`. null for a set that is not stale.
+ */
+export type YaraStaleReason = 'errors' | 'checker_unavailable' | null;
+
+/** Probes the compiler only when some row is stale. */
+async function checkerAvailableFor(rows: YaraRuleSet[]): Promise<boolean> {
+  return rows.some((r) => r.stale) ? yaracAvailable() : true;
+}
+
+function summarize(row: YaraRuleSet, checkerAvailable: boolean) {
+  const staleReason: YaraStaleReason = !row.stale ? null : checkerAvailable ? 'errors' : 'checker_unavailable';
   return {
     id: row.id,
     orgId: row.orgId,
@@ -108,37 +95,11 @@ function summarize(row: YaraRuleSet) {
     publishedAt: row.publishedAt?.toISOString() ?? null,
     publishedEngine: row.publishedEngine,
     stale: row.stale,
+    staleReason,
     ruleCount: row.ruleCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
-}
-
-function publishBody(result: PublishRuleSetResult) {
-  return {
-    published: result.published,
-    version: result.version,
-    currentVersion: result.currentVersion,
-    stale: result.stale,
-    errors: result.errors,
-    ...(result.autoQuarantineOnly ? { autoQuarantineOnly: true } : {}),
-    ...(result.unavailable ? { precheckUnavailable: true } : {}),
-  };
-}
-
-/** Publish outcome for audit details: an outage must read differently from a rule error. */
-function publishAudit(result: PublishRuleSetResult) {
-  return {
-    published: result.published,
-    version: result.version,
-    stale: result.stale,
-    ...(result.autoQuarantineOnly ? { autoQuarantineOnly: true } : {}),
-    ...(result.unavailable ? { precheckUnavailable: true } : {}),
-  };
-}
-
-function auditOwner(set: Pick<YaraRuleSet, 'orgId' | 'partnerId'>) {
-  return { orgId: set.orgId, partnerId: set.partnerId };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +118,8 @@ yaraRoutes.get(
       .from(yaraRuleSets)
       .where(access)
       .orderBy(desc(yaraRuleSets.isBuiltin), asc(yaraRuleSets.name));
-    return c.json({ data: rows.map(summarize) });
+    const checkerAvailable = await checkerAvailableFor(rows);
+    return c.json({ data: rows.map((r) => summarize(r, checkerAvailable)) });
   },
 );
 
@@ -225,7 +187,7 @@ yaraRoutes.post(
       details: { ownerScope: payload.ownerScope, autoQuarantine: created.autoQuarantine },
     });
 
-    return c.json({ data: summarize(created) }, 201);
+    return c.json({ data: summarize(created, await checkerAvailableFor([created])) }, 201);
   },
 );
 
@@ -258,7 +220,7 @@ yaraRoutes.get(
 
     return c.json({
       data: {
-        ...summarize(set),
+        ...summarize(set, await checkerAvailableFor([set])),
         rules: rules.map((r) => ({
           ...r,
           createdAt: r.createdAt.toISOString(),
@@ -294,7 +256,7 @@ yaraRoutes.patch(
     if (payload.enabled !== undefined) changes.enabled = payload.enabled;
     if (payload.autoQuarantine !== undefined) changes.autoQuarantine = payload.autoQuarantine;
     if (Object.keys(changes).length === 0) {
-      return c.json({ data: summarize(set) });
+      return c.json({ data: summarize(set, await checkerAvailableFor([set])) });
     }
     changes.updatedAt = new Date();
 
@@ -318,7 +280,7 @@ yaraRoutes.patch(
       details: { fields: Object.keys(payload), ...(publish ? publishAudit(publish) : {}) },
     });
 
-    return c.json({ data: updated ? summarize(updated) : null, ...(publish ? { publish: publishBody(publish) } : {}) });
+    return c.json({ data: updated ? summarize(updated, await checkerAvailableFor([updated])) : null, ...(publish ? { publish: publishBody(publish) } : {}) });
   },
 );
 

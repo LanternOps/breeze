@@ -1,0 +1,74 @@
+/**
+ * Wisp thread timeline (feature #10210): one newest-first, keyset-paged feed
+ * merging the thread's chat messages with durable proactive Wisp posts.
+ */
+import type { BriefSection } from './wispActivity';
+
+/** Default page size for the timeline. */
+export const WISP_TIMELINE_DEFAULT_LIMIT = 50;
+/** Largest page size the timeline accepts. */
+export const WISP_TIMELINE_MAX_LIMIT = 100;
+
+/**
+ * What kind of proactive output a post carries. Mirrored by the
+ * `wisp_thread_posts_kind_chk` CHECK (migration and Drizzle schema); change
+ * all together (pinned by apps/api threadPostKinds.contract.test.ts).
+ * `nudge_resolved` (#11427) is the follow-up to a nudge whose concern closed.
+ */
+export const WISP_TIMELINE_POST_KINDS = [
+  'brief', 'nudge', 'digest', 'check_in', 'specialist_result', 'first_look', 'nudge_resolved',
+] as const;
+export type WispTimelinePostKind = (typeof WISP_TIMELINE_POST_KINDS)[number];
+
+/**
+ * A `first_look` post that says no org could be looked at (#11145). Same kind
+ * (it reads and delivers the same) but it is not a first look: the welcome must
+ * not say "I've had a first look" because of it.
+ */
+export type WispTimelinePostVariant = 'couldnt_look';
+
+/** An ai_messages row from one of the thread's sessions. */
+export type WispTimelineMessage = {
+  source: 'message';
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+  content: string | null;
+  contentBlocks: unknown | null;
+  toolName: string | null;
+  toolInput: unknown | null;
+  toolOutput: unknown | null;
+  toolUseId: string | null;
+  createdAt: string; // ISO
+};
+
+/** Durable proactive Wisp output (brief, nudge, digest, check-in) posted on the thread. */
+export type WispTimelinePost = {
+  source: 'post';
+  id: string;
+  kind: WispTimelinePostKind;
+  /** Absent on every post but a couldn't-look one. */
+  variant?: WispTimelinePostVariant;
+  title: string;
+  body: string | null;
+  /**
+   * `markdown` when `body` is a specialist run's report, written by the model
+   * in markdown (#11673): the web renders it with the run page's safe subset.
+   * Absent: `body` is literal text.
+   */
+  bodyFormat?: 'markdown';
+  link: string | null;
+  sections: BriefSection[] | null;
+  concernId: string | null;
+  orgId: string | null;
+  read: boolean | null; // the linked notification's read flag, null when unlinked
+  createdAt: string;
+};
+
+/** One timeline entry, discriminated on `source`. */
+export type WispTimelineItem = WispTimelineMessage | WispTimelinePost;
+
+/** `GET /wisp/thread/:id/timeline` response: newest first, `nextCursor` is the keyset cursor. */
+export interface WispTimelineResponse {
+  data: { items: WispTimelineItem[]; nextCursor: string | null };
+}

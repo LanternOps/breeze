@@ -27,7 +27,6 @@ import type {
 import { db } from '../../db';
 import { deviceFunctionAssessments, deviceGroupMemberships, deviceGroups, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { requestLikeFromSnapshot, writeAuditEvent, type RequestLike } from '../auditEvents';
 import {
@@ -39,7 +38,7 @@ import {
 import { getMonitorDefinition, updateMonitorDefinition } from '../monitors/monitorService';
 import { attachFleetMonitors, ruleMonitorInput, snapshotFleetMonitors, watchMonitorInput } from './monitorAttachments';
 import { applyDesignFunctions } from '../deviceFunction';
-import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
+import { addManualGroupMemberships, removeManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { importBundle } from '../scriptBundle';
 import { findReusableGroup, recordApplied, recordFailed, updateCreatedRefs } from './ledger';
 import {
@@ -227,18 +226,9 @@ async function stepFunctions(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void>
       await addManualGroupMemberships({ groupId, orgId: ctx.orgId, deviceIds: devicesAdded }, tx);
     }
     if (devicesRemoved.length > 0) {
-      await tx
-        .delete(deviceGroupMemberships)
-        .where(and(
-          eq(deviceGroupMemberships.groupId, groupId),
-          eq(deviceGroupMemberships.orgId, ctx.orgId),
-          inArray(deviceGroupMemberships.deviceId, devicesRemoved),
-        ));
-      for (const deviceId of devicesRemoved) {
-        await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
-          console.error(`[fleetDesign] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
-        });
-      }
+      // The shared manual writer: export lock before the rows, and the
+      // removed devices' reconciliation scheduled after the commit.
+      await removeManualGroupMemberships({ groupId, deviceIds: devicesRemoved }, tx);
     }
 
     const createdRefs: FleetDesignCreatedRefs = { groupId, groupCreated, assessmentIds: written.map((w) => w.id), membershipSnapshot: wanted };
@@ -542,6 +532,7 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
       .where(and(eq(devices.id, rc.deviceId), eq(devices.orgId, ctx.orgId)))
       .limit(1);
     if (!current) throw new Error(`device_missing: ${rc.deviceId}`);
+    // own-device-row-allowlisted: fleet-design-apply-role-correction
     const [updated] = await tx
       .update(devices)
       .set({ deviceRole: rc.to, deviceRoleSource: 'ai', updatedAt: new Date() })
@@ -560,6 +551,7 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
     });
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'role_correction', step: 5,
+      createdRefs: { deviceRole: rc.to },
       beforeImage: { deviceRole: current.deviceRole, deviceRoleSource: current.deviceRoleSource },
       userId: ctx.userId,
     }, tx);

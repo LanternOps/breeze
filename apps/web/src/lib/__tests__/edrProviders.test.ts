@@ -119,6 +119,7 @@ describe('edrProviders client — mutations', () => {
 describe('edrProviderLabel', () => {
   it('maps a known key; unknown, prototype and empty keys are null', () => {
     expect(edrProviderLabel('bitdefender')).toBe('Bitdefender GravityZone');
+    expect(edrProviderLabel('emsisoft')).toBe('Emsisoft');
     expect(edrProviderLabel('acme')).toBeNull();
     expect(edrProviderLabel('toString')).toBeNull();
     expect(edrProviderLabel(null)).toBeNull();

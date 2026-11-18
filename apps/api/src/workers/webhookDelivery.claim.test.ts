@@ -1,294 +1,162 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-/**
- * The EXECUTION CLAIM (#4095).
- *
- * The delivery queue is a plain Redis list with no job identity, so nothing
- * stops one delivery being enqueued twice — and the recovery sweep does exactly
- * that whenever a job turns out to have been merely backlogged rather than
- * lost. Without a claim, recovery would trade a missed POST for a DUPLICATE
- * POST to the customer's endpoint, which is the one externally-visible failure
- * this system treats as unrecoverable.
- */
-
-const brpopMock = vi.hoisted(() => vi.fn());
-const lpushMock = vi.hoisted(() => vi.fn(async (_key: string, _payload: string) => 1));
-const lindexMock = vi.hoisted(() => vi.fn());
-const lremMock = vi.hoisted(() => vi.fn(async () => 1));
-const safeFetchMock = vi.hoisted(() => vi.fn());
-const captureExceptionMock = vi.hoisted(() => vi.fn());
-
-vi.mock('../services/eventBus', () => ({
-  getEventBus: () => ({ subscribe: vi.fn() }),
-  EVENT_TYPES: {}
-}));
-
-vi.mock('../db', () => ({
-  db: {},
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  runOutsideDbContext: (fn: () => unknown) => fn()
-}));
-
-vi.mock('../services/redis', () => ({
-  createBlockingRedisConnection: () => ({ brpop: brpopMock, status: 'ready' }),
-  getRedisConnection: () => ({ lpush: lpushMock, lindex: lindexMock, lrem: lremMock })
-}));
-
-vi.mock('../services/urlSafety', () => ({
-  safeFetch: safeFetchMock,
-  SsrfBlockedError: class SsrfBlockedError extends Error {}
-}));
-
-vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
-
-import { getWebhookWorker, type WebhookDeliveryJob } from './webhookDelivery';
-
-const JOB: WebhookDeliveryJob = {
-  id: 'delivery-1',
-  webhookId: 'webhook-1',
-  webhook: {
-    id: 'webhook-1',
-    orgId: 'org-1',
-    name: 'Ops hook',
-    url: 'https://example.test/hook',
-    events: ['*']
-  },
-  event: {
-    id: 'event-1',
-    type: 'alert.triggered',
-    orgId: 'org-1',
-    source: 'test',
-    priority: 'normal',
-    payload: {},
-    metadata: { timestamp: new Date('2026-09-11T12:00:00.000Z').toISOString() }
-  } as WebhookDeliveryJob['event'],
-  attempts: 0,
-  createdAt: new Date('2026-09-11T12:00:00.000Z').toISOString()
-};
-
-/** Reach the private single-iteration pump without starting the infinite loop. */
-function processOnce(): Promise<void> {
-  const worker = getWebhookWorker() as unknown as { processNextJob: () => Promise<void> };
-  return worker.processNextJob();
-}
-
-describe('webhook delivery execution claim', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
-  let errorSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    brpopMock.mockReset();
-    captureExceptionMock.mockReset();
-    lpushMock.mockClear();
-    lindexMock.mockReset();
-    safeFetchMock.mockReset();
-    safeFetchMock.mockResolvedValue({
-      status: 200,
-      ok: true,
-      text: async () => 'ok'
-    });
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
+const m = vi.hoisted(() => ({ fetch: vi.fn(), enqueue: vi.fn(), select: vi.fn(), capture: vi.fn() }));
+vi.mock('../db', () => ({ db: { select: m.select }, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn() }));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ WEBHOOK_DELIVERY_QUEUE: 'webhook-delivery', enqueueWebhookAttempt: m.enqueue, closeWebhookDeliveryQueue: vi.fn() }));
+vi.mock('../jobs/workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
+vi.mock('../services/webhookConfig', () => ({ toWebhookConfig: (row: unknown) => row }));
+vi.mock('../services/urlSafety', () => ({ safeFetch: m.fetch, SsrfBlockedError: class extends Error {} }));
+vi.mock('../services/sentry', () => ({ captureException: m.capture }));
+import { configureWebhookDeliveryExecution, processWebhookAttemptJob } from './webhookDelivery';
+const deliveryId = '11111111-1111-4111-8111-111111111111';
+const webhookId = '22222222-2222-4222-8222-222222222222';
+const now = new Date('2026-10-28T12:00:00Z');
+const row = { orgId: 'org-1', id: deliveryId, webhookId, eventId: 'event-1', eventType: 'alert.triggered', payload: { hello: true }, payloadVersion: 1 as const, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: 'root-event', attempts: 0 };
+const claim = vi.fn();
+const recordOutcome = vi.fn();
+const releaseClaim = vi.fn();
+const sleep = vi.fn(async () => {});
+function job(attemptsMade = 0) { return { data: { deliveryId, webhookId, generation: 3, attemptsMade }, moveToDelayed: vi.fn() } as unknown as Job; }
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  claim.mockResolvedValue({ claimed: true, delivery: row });
+  recordOutcome.mockReset().mockResolvedValue(true);
+  releaseClaim.mockResolvedValue(true);
+  configureWebhookDeliveryExecution({ claim, recordOutcome, releaseClaim, sleep });
+  m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: webhookId, orgId: 'org-1', status: 'active', approvalGeneration: 3, payloadVersion: 2, url: 'https://hooks.example.com', events: [] }] }) }) });
+  m.fetch.mockResolvedValue(new Response('ok'));
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+describe('durable webhook execution claims', () => {
+  it.each([0, 3])('claims every attempt (%i)', async attemptsMade => {
+    claim.mockResolvedValue({ claimed: true, delivery: { ...row, attempts: attemptsMade } });
+    await processWebhookAttemptJob(job(attemptsMade), 'token');
+    expect(claim).toHaveBeenCalledExactlyOnceWith({ deliveryId, attemptsMade });
+    expect(m.fetch).toHaveBeenCalledTimes(1);
   });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('does not POST when the claim is lost to another copy of the job', async () => {
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-    const claim = vi.fn(async () => ({ claimed: false as const, observedStatus: 'retrying' }));
-    const complete = vi.fn(async () => {});
-    getWebhookWorker().setDeliveryClaimCallback(claim);
-    getWebhookWorker().setDeliveryCallback(complete);
-
-    await processOnce();
-
-    expect(claim).toHaveBeenCalledTimes(1);
-    // The whole point: the customer's endpoint is NOT hit a second time.
-    expect(safeFetchMock).not.toHaveBeenCalled();
-    // And the losing copy must not overwrite the winner's outcome either.
-    expect(complete).not.toHaveBeenCalled();
-
-    const line = warnSpy.mock.calls
-      .map((c: unknown[]) => c.map(String).join(' '))
-      .find((l: string) => l.includes('WEBHOOK_DELIVERY_DUPLICATE_JOB_SKIPPED'));
-    expect(line, 'the dropped duplicate must be reported, not silent').toBeDefined();
-    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({
-      deliveryId: 'delivery-1',
-      webhookId: 'webhook-1',
-      eventId: 'event-1'
-    });
-  });
-
-  it('POSTs when the claim is won', async () => {
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-    const claim = vi.fn(async () => ({ claimed: true as const }));
-    getWebhookWorker().setDeliveryClaimCallback(claim);
-    getWebhookWorker().setDeliveryCallback(async () => {});
-
-    await processOnce();
-
-    expect(claim).toHaveBeenCalledTimes(1);
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('pages when the customer was POSTed but the outcome could not be recorded', async () => {
-    // The two sides of the POST are not equally recoverable. A failure BEFORE
-    // it leaves the row untouched for the sweep to reclaim; a failure HERE
-    // means the customer's endpoint was already called and that fact is now
-    // unrecorded — the sweep will later resolve the row as "outcome unknown"
-    // and can never repair it. Scrolling past that in a log is not enough.
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
-    getWebhookWorker().setDeliveryCallback(async () => {
-      throw new Error('db write failed');
-    });
-
-    await processOnce();
-
-    expect(safeFetchMock).toHaveBeenCalledTimes(1); // the POST really happened
-    expect(captureExceptionMock).toHaveBeenCalled();
-
-    const line = errorSpy.mock.calls
-      .map((c: unknown[]) => c.map(String).join(' '))
-      .find((l: string) => l.includes('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
-    expect(line, 'an unrecorded customer POST must be reported').toBeDefined();
-    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({
-      deliveryId: 'delivery-1',
-      delivered: true,
-      responseStatus: 200
-    });
-
-  });
-
-  it('does not run the retry ladder when a FAILED outcome could not be recorded', async () => {
-    // The failing half of the same rule. Here the ladder really would fire —
-    // the POST failed and retries remain — so re-queueing on top of an outcome
-    // we could not record would drive a second attempt whose result we also
-    // cannot reconcile. The row stays `retrying` for the sweep to resolve.
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-    safeFetchMock.mockResolvedValueOnce({
-      status: 500,
-      ok: false,
-      text: async () => 'server error'
-    });
-    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
-    getWebhookWorker().setDeliveryCallback(async () => {
-      throw new Error('db write failed');
-    });
-
-    await processOnce();
-
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
-    expect(lpushMock).not.toHaveBeenCalled();
-
-    const line = errorSpy.mock.calls
-      .map((c: unknown[]) => c.map(String).join(' '))
-      .find((l: string) => l.includes('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
-    expect(line).toBeDefined();
-    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({ delivered: false });
-  });
-
-  it('PRODUCES a DLQ replay job that is marked to bypass the claim', async () => {
-    // Producer-side pin. The consumer test below asserts the bypass is HONORED,
-    // but with nothing asserting it is SET, deleting `skipExecutionClaim: true`
-    // from retryFromDLQ was green repo-wide — and that deletion silently eats
-    // every operator-triggered replay.
-    const entry = JSON.stringify({ job: { ...JOB, id: 'dlq-original' } });
-    lindexMock.mockResolvedValueOnce(entry);
-
-    await getWebhookWorker().retryFromDLQ(0);
-
-    expect(lpushMock).toHaveBeenCalledTimes(1);
-    const queued = JSON.parse(lpushMock.mock.calls[0]![1]);
-    expect(queued.skipExecutionClaim).toBe(true);
-    // A fresh id is exactly WHY the bypass is needed: no row exists under it.
-    expect(queued.id).not.toBe('dlq-original');
-  });
-
-  it('STAMPS the outcome with whether a delivery row exists', async () => {
-    // Producer side of the DLQ fix. The outcome writer branches on
-    // `hasDeliveryRow`, but with nothing asserting the worker SETS it,
-    // hard-coding it to `true` was green — which puts the zero-row warning back
-    // on every routine replay with a cause that is untrue.
-    const seen: Array<boolean | undefined> = [];
-    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
-    getWebhookWorker().setDeliveryCallback(async (r) => { seen.push(r.hasDeliveryRow); });
-
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-    await processOnce();
-
-    brpopMock.mockResolvedValueOnce([
-      'queue',
-      JSON.stringify({ ...JOB, id: 'dlq-minted', skipExecutionClaim: true })
-    ]);
-    await processOnce();
-
-    expect(seen).toEqual([true, false]);
-  });
-
-  it('names the real cause when a job loses its claim', async () => {
-    // "duplicate" is only one of three ways to lose. Collapsing them mislabels
-    // the other two — the same mislabeling the DLQ fix removed elsewhere.
-    const cases: Array<[string | null, string]> = [
-      ['retrying', 'already-claimed'],
-      ['delivered', 'already-resolved'],
-      [null, 'no-delivery-row']
-    ];
-
-    for (const [observedStatus, expectedCause] of cases) {
-      warnSpy.mockClear();
-      brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
-      getWebhookWorker().setDeliveryClaimCallback(async () => ({
-        claimed: false as const,
-        observedStatus
-      }));
-      getWebhookWorker().setDeliveryCallback(async () => {});
-
-      await processOnce();
-
-      const line = warnSpy.mock.calls
-        .map((c: unknown[]) => c.map(String).join(' '))
-        .find((l: string) => l.includes('WEBHOOK_DELIVERY_DUPLICATE_JOB_SKIPPED'));
-      expect(line, `no log for observedStatus=${observedStatus}`).toBeDefined();
-      expect(JSON.parse(line!.slice(line!.indexOf('{'))))
-        .toMatchObject({ observedStatus, cause: expectedCause });
-    }
-  });
-
-  it('does not claim a DLQ replay, which has no delivery row to claim', async () => {
-    // retryFromDLQ mints a FRESH delivery id with no `webhook_deliveries` row
-    // behind it, so a pending-only CAS can never match. Without the bypass the
-    // operator's replay is dropped and reported as a "duplicate" — eating the
-    // retry and naming the wrong cause.
-    brpopMock.mockResolvedValueOnce([
-      'queue',
-      JSON.stringify({ ...JOB, id: 'brand-new-id', skipExecutionClaim: true })
-    ]);
-    const claim = vi.fn(async () => ({ claimed: false as const, observedStatus: 'retrying' }));
-    getWebhookWorker().setDeliveryClaimCallback(claim);
-    getWebhookWorker().setDeliveryCallback(async () => {});
-
-    await processOnce();
-
+  it('rejects malformed ids-only data before claiming', async () => {
+    await expect(processWebhookAttemptJob({ data: { deliveryId } } as Job, 'token')).rejects.toBeInstanceOf(UnrecoverableError);
     expect(claim).not.toHaveBeenCalled();
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
   });
-
-  it('does not re-claim a retry job, whose row has already left `pending`', async () => {
-    // A retry carries attempts > 0 and its row was moved to `failed` by the
-    // previous attempt's callback. Re-running the pending-only CAS would reject
-    // every legitimate retry and silently kill the whole backoff ladder.
-    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify({ ...JOB, attempts: 2 })]);
-    const claim = vi.fn(async () => ({ claimed: false as const, observedStatus: 'retrying' }));
-    getWebhookWorker().setDeliveryClaimCallback(claim);
-    getWebhookWorker().setDeliveryCallback(async () => {});
-
-    await processOnce();
-
-    expect(claim).not.toHaveBeenCalled();
-    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  it('drops erased delivery rows without writes or wake-ups', async () => {
+    claim.mockResolvedValue({ claimed: false, observedStatus: null, observedAttempts: null, dueInMs: null });
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_ROW_GONE'));
   });
+  it.each([['retrying', 0, 'already-claimed'], ['delivered', 1, 'already-resolved'], ['failed', 7, 'already-resolved'], ['pending', 2, 'stale-attempt'], ['scheduled', 2, 'stale-attempt']])('drops %s with the correct cause', async (observedStatus, observedAttempts, cause) => {
+    claim.mockResolvedValue({ claimed: false, observedStatus, observedAttempts, dueInMs: null });
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`"cause":"${cause}"`));
+  });
+  it.each([[90_000, 90_000], [0, 1000], [null, 1000]])('preserves the job on an early wake (%s ms)', async (dueInMs, delay) => {
+    claim.mockResolvedValue({ claimed: false, observedStatus: 'scheduled', observedAttempts: 0, dueInMs });
+    const queued = job();
+    await expect(processWebhookAttemptJob(queued, 'token')).rejects.toBeInstanceOf(DelayedError);
+    expect(queued.moveToDelayed).toHaveBeenCalledExactlyOnceWith(now.getTime() + delay!, 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_EARLY_WAKE'));
+  });
+  it('fails an early wake without a lock token so BullMQ can retry', async () => {
+    claim.mockResolvedValue({ claimed: false, observedStatus: 'scheduled', observedAttempts: 0, dueInMs: 10 });
+    const queued = job();
+    await expect(processWebhookAttemptJob(queued)).rejects.toThrow(/token/i);
+    expect(queued.moveToDelayed).not.toHaveBeenCalled();
+  });
+  it('uses the delivery-pinned v1 body and replay root even after the webhook moves to v2', async () => {
+    await processWebhookAttemptJob(job(), 'token');
+    const request = m.fetch.mock.calls[0]![1];
+    expect(JSON.parse(request.body)).not.toHaveProperty('schemaVersion');
+    expect(request.headers['X-Breeze-Replay-Of']).toBe('root-event');
+    expect(JSON.parse(request.body).timestamp).toBe(now.toISOString());
+  });
+  it('falls back to createdAt for a pre-versioning delivery timestamp', async () => {
+    claim.mockResolvedValue({ claimed: true, delivery: { ...row, eventTimestamp: null } });
+    await processWebhookAttemptJob(job(), 'token');
+    expect(JSON.parse(m.fetch.mock.calls[0]![1].body).timestamp).toBe(now.toISOString());
+  });
+  it('uses the recorded generation even when the job and current webhook are newer', async () => {
+    m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: webhookId, status: 'active', approvalGeneration: 4 }] }) }) });
+    const queued = job(); queued.data.generation = 4;
+    await processWebhookAttemptJob(queued, 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ superseded: true, nextAttemptAt: null }));
+    expect(m.enqueue).not.toHaveBeenCalled();
+  });
+  it('uses the job generation only for a legacy NULL row generation', async () => {
+    claim.mockResolvedValue({ claimed: true, delivery: { ...row, webhookGeneration: null } });
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('retains the row generation on the next wake-up despite newer job data', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    const queued = job(); queued.data.generation = 4;
+    await processWebhookAttemptJob(queued, 'token');
+    expect(m.fetch).toHaveBeenCalledTimes(1);
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ generation: 3 }), expect.any(Date));
+  });
+  it.each([false, true])('releases a pre-send error and preserves it (release throws %s)', async releaseThrows => {
+    const original = new Error('config SELECT failed');
+    m.select.mockImplementation(() => { throw original; });
+    if (releaseThrows) releaseClaim.mockRejectedValue(new Error('release failed'));
+    await expect(processWebhookAttemptJob(job(), 'token')).rejects.toBe(original);
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(releaseClaim).toHaveBeenCalledExactlyOnceWith({ deliveryId, attemptsMade: 0 });
+    expect(m.capture).toHaveBeenCalledWith(original);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_PRE_SEND_FAILED'));
+    if (releaseThrows) expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_CLAIM_RELEASE_FAILED'));
+  });
+  it('retries a known outcome locally and enqueues after the successful write', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    recordOutcome.mockRejectedValueOnce(new Error('temporary write failure')).mockResolvedValueOnce(true);
+    await processWebhookAttemptJob(job(), 'token');
+    expect(recordOutcome).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(250);
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ generation: 3, attemptsMade: 1 }), expect.any(Date));
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
+  });
+  it('does not enqueue a late failure whose outcome CAS missed', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    recordOutcome.mockResolvedValue(false);
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.enqueue).not.toHaveBeenCalled();
+  });
+  it.each([true, false])('reports and rethrows an unrecorded POST (success %s)', async success => {
+    m.fetch.mockResolvedValue(new Response('body', { status: success ? 200 : 503 }));
+    recordOutcome.mockRejectedValue(new Error('db write failed'));
+    await expect(processWebhookAttemptJob(job(), 'token')).rejects.toThrow('db write failed');
+    expect(m.fetch).toHaveBeenCalledTimes(1);
+    expect(recordOutcome).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[250], [1000]]);
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(m.capture).toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
+  });
+});
+
+
+it.each([null, 'event-org'])('uses the claimed delivery org %s in the partner envelope', async orgId => {
+  const webhook = { id: webhookId, orgId: null, partnerId: 'partner-1', status: 'active', approvalGeneration: 3, url: 'https://hooks.example.com', events: [] };
+  claim.mockResolvedValue({ claimed: true, delivery: { ...row, orgId } });
+  m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [webhook] }) }) });
+  if (orgId) m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1', live: true }] }) }) });
+  await processWebhookAttemptJob(job(), 'token');
+  expect(JSON.parse(m.fetch.mock.calls[0]![1].body).orgId).toBe(orgId);
+  expect(m.select).toHaveBeenCalledTimes(orgId ? 2 : 1);
 });

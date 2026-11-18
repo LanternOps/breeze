@@ -28,29 +28,20 @@ import {
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
-import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
+import { aiExecuteCommand, aiQueueCommand, requireAiOrigin } from './aiDispatch';
+import { startDeviceScan } from './securityScanStart';
 import { inToolDbPhase } from './aiToolDbContext';
 // Static, from the pure type module — NOT from './commandQueue', whose lazy
 // import used to be this file's last route to the queue (#5022 W01).
 // `commandTypes.ts` is a constant table with no dispatch surface, so importing
 // it does not re-open the hole the contract scan closes.
 import { CommandTypes } from './commandTypes';
-import type { ToolExecutionContext } from './toolExecutionContext';
+// #6911: remediate_sensitive_data writes auth.user.id into remediation_metadata.updatedBy, a users FK; refused on an approver-release mismatch.
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-}
-
-/**
- * #6911: `remediate_sensitive_data`'s mutating actions all write
- * `auth.user.id` into `sensitive_data_findings.remediation_metadata.updatedBy`
- * — under the rebuilt agent auth that id is an `aiAgents.id`, so refuse
- * rather than write a row whose owner the worker and this handler's auth
- * disagree about. Mirrors `aiToolsBrowser.ts`'s `approverReleaseMismatch`.
- */
-function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
-  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -78,7 +69,10 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     // The device actions wait up to 60 s for the agent, so they must not hold
     // the per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
-    // `vulnerabilities` only reads the DB and keeps it.
+    // `vulnerabilities` only reads the DB and keeps it. `scan` does not wait,
+    // but startDeviceScan opens and COMMITS its own caller-scoped transaction
+    // before enqueueing the claim job (#10057 gap 2), so it must not run
+    // inside a held per-call one either.
     selfManagedDbContext: ['scan', 'status', 'quarantine', 'remove', 'restore'],
     definition: {
       name: 'security_scan',
@@ -161,8 +155,28 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      if (input.action === 'scan') {
+        // #6268 (W05-11): the same "Scan now" service the UI route uses — a
+        // tracked security_scans row with its dispatched rule-set refs and
+        // command id, the device's AI remote-tools policy, and aiOrigin on the
+        // command. It queues and returns; it does not wait on the agent.
+        // Its own caller-scoped transaction (#10057 gap 2), so no inToolDbPhase.
+        const started = await startDeviceScan(auth, {
+          deviceId,
+          scanType: 'quick',
+          mfaSatisfied: false,
+          aiOrigin: requireAiOrigin(auth, 'security_scan'),
+        });
+        if (!started.ok) return JSON.stringify({ error: started.error, status: started.status });
+        return JSON.stringify({
+          scanId: started.scan.id,
+          status: 'queued',
+          deviceName: started.scan.deviceName,
+          scanType: started.scan.scanType,
+        });
+      }
+
       const actionMap: Record<string, string> = {
-        scan: 'security_scan',
         status: 'security_collect_status',
         quarantine: 'security_threat_quarantine',
         remove: 'security_threat_remove',
@@ -313,7 +327,12 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         criticalRiskDevices: counts.criticalRiskDevices
       };
 
-      const envelope = pageEnvelope({ key: 'devices', items: rows, limit, offset: cappedOffset, fingerprint, total: counts.total });
+      // maxOffset (#10385): chat compaction must not mint a resume cursor past
+      // the ceiling — it would be clamped back onto rows already shown.
+      const envelope = pageEnvelope({
+        key: 'devices', items: rows, limit, offset: cappedOffset, fingerprint, total: counts.total,
+        maxOffset: Math.max(0, POSTURE_OFFSET_CEILING - limit),
+      });
       if (atOffsetCeiling) {
         // Honest at the ceiling: no request can ever move this window
         // further, regardless of how large `total` is.

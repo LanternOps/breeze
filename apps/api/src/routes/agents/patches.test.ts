@@ -49,6 +49,8 @@ const tables = vi.hoisted(() => ({
     reportedSeverity: 'devicePatches.reportedSeverity',
     reportedSeveritySource: 'devicePatches.reportedSeveritySource',
     reportedCategory: 'devicePatches.reportedCategory',
+    reportedUpdateType: 'devicePatches.reportedUpdateType',
+    reportedUpdateOwner: 'devicePatches.reportedUpdateOwner',
     updatedAt: 'devicePatches.updatedAt',
   },
 }));
@@ -159,6 +161,7 @@ function mockPatchInsertTx() {
   const insertedRows: Array<Record<string, unknown>> = [];
   const devicePatchValues: Array<Record<string, unknown>> = [];
   const devicePatchConflictSets: Array<Record<string, unknown>> = [];
+  const patchConflictSets: Array<Record<string, unknown>> = [];
   const tx = {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -181,6 +184,7 @@ function mockPatchInsertTx() {
           if (table === patches) {
             const row = { id: PATCH_ID, ...values };
             insertedRows.push(row);
+            patchConflictSets.push(config?.set ?? {});
             return {
               returning: vi.fn().mockResolvedValue([row]),
             };
@@ -195,7 +199,7 @@ function mockPatchInsertTx() {
       })),
     })),
   };
-  return { tx, insertedRows, devicePatchValues, devicePatchConflictSets };
+  return { tx, insertedRows, devicePatchValues, devicePatchConflictSets, patchConflictSets };
 }
 
 type MockSqlFragment = {
@@ -1047,6 +1051,106 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
     });
   });
 
+  // #11073: what this device says the update is. It decides what Breeze patch jobs
+  // leave to a vendor lane on THIS device, so it must never reach the shared row.
+  describe('reported update type (#11073)', () => {
+    async function submit(patch: Record<string, unknown>) {
+      const mocks = mockPatchInsertTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(mocks.tx as unknown as Parameters<typeof fn>[0]));
+      const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'microsoft',
+          patches: [{ name: 'Dell Inc. - Display', source: 'microsoft', externalId: 'wu-driver-1', ...patch }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      return mocks;
+    }
+
+    it.each(['driver', 'firmware', 'quality', 'feature', 'definition', 'other'])(
+      'a scan writes device_patches.reported_update_type: %s',
+      async (value) => {
+        const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value });
+
+        expect(devicePatchValues[0]).toMatchObject({ reportedUpdateType: value });
+        expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateType', value);
+      },
+    );
+
+    it('never writes to patches, so one tenant cannot influence another', async () => {
+      const { insertedRows, patchConflictSets } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: 'dell' });
+
+      expect(insertedRows[0]).not.toHaveProperty('reportedUpdateType');
+      expect(patchConflictSets[0]).not.toHaveProperty('reportedUpdateType');
+      expect(JSON.stringify(insertedRows[0])).not.toContain('reportedUpdateType');
+      expect(JSON.stringify(patchConflictSets[0])).not.toContain('reportedUpdateType');
+      expect(JSON.stringify(insertedRows[0])).not.toContain('reportedUpdateOwner');
+      expect(JSON.stringify(patchConflictSets[0])).not.toContain('reportedUpdateOwner');
+    });
+
+    it('absent stays null, and a later scan without it keeps the stored value', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({});
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateType)).toContain(tables.devicePatches.reportedUpdateType);
+    });
+
+    // The value is refused, not the scan: as with severitySource above, a label from
+    // a newer agent must not cost the device its whole patch inventory. It replaces a
+    // stored type with null: the agent has said this is no longer what we recorded,
+    // and null leaves the patch with Windows Update.
+    it.each([
+      ['an unknown value', 'driver-ish'],
+      ['the wrong case', 'DRIVER'],
+      ['a category name that is not a type', 'security'],
+    ])('an unknown value is rejected: %s is not stored and the scan still lands', async (_label, value) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value, reportedUpdateOwner: 'dell' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateType', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it.each([
+      ['an oversized value', 'x'.repeat(200)],
+      ['a number', 7],
+    ])('malformed is as good as absent: %s', async (_label, value) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateType)).toContain(tables.devicePatches.reportedUpdateType);
+    });
+
+    it.each(['dell', 'surface', 'hp', 'lenovo'])('stores the owner the agent reports: %s', async (owner) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: owner });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', owner);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', owner);
+    });
+
+    it('a type reported without an owner clears a stored owner, since they describe one report', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: 'driver' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it('an unknown owner is refused and never trips the CHECK', async () => {
+      const { devicePatchValues } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: 'acer' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', 'driver');
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it('a scan with no type keeps the stored pair', async () => {
+      const { devicePatchConflictSets } = await submit({});
+
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateOwner)).toContain(tables.devicePatches.reportedUpdateOwner);
+    });
+  });
+
   it('full scan with empty coveredSources tombstones nothing', async () => {
     const { tx } = mockPatchInsertTx();
     vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
@@ -1192,8 +1296,18 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // device_patch_status enum is covered by patches.integration.test.ts.
     const statusText = (set.status as { strings: string[] }).strings.join('<col>');
     expect(statusText).toBe("CASE WHEN <col> = 'pending' THEN <col> ELSE 'installed' END");
-    // installedAt is likewise preserved for pending rows.
-    expect((set.installedAt as { values: unknown[] }).values).toContain(tables.devicePatches.installedAt);
+    // installedAt is likewise preserved for pending rows, while the installed
+    // version is unchanged (#9723): the THEN branch is the version-guarded
+    // keep of the stored column, not the reported value.
+    const keepStored = {
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    };
+    const installedAtCase = set.installedAt as { strings: string[]; values: unknown[] };
+    expect(installedAtCase.strings.join('<v>')).toBe("CASE WHEN <v> = 'pending' THEN <v> ELSE <v> END");
+    expect(installedAtCase.values[0]).toBe(tables.devicePatches.status);
+    expect(installedAtCase.values[1]).toEqual(keepStored);
     // installedVersion still updates — it reports the currently-installed
     // version whether or not an upgrade is pending.
     expect(set.installedVersion).toBe('2.51.0.2');
@@ -1219,11 +1333,48 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // The version-aware flip bypasses the pending-preserving CASE entirely:
     // it writes the plain 'installed' literal, not a conditional expression.
     expect(set.status).toBe('installed');
-    // ...and installedAt takes the plain installedAtParam value (NULL::timestamp
-    // here, since the payload has no installedAt), not the CASE that would
-    // otherwise reference the stored column.
-    expect(set.installedAt).toEqual({ op: 'sql', strings: ['NULL::timestamp'], values: [] });
+    // ...and installedAt takes the plain installedAtParam value, not the
+    // pending-preserving CASE. The payload has no installedAt, so that value
+    // keeps the stored date while the installed version is unchanged rather
+    // than writing NULL over it (#9723). Real execution of the version guard
+    // is covered by patches.integration.test.ts.
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    });
     expect(set.installedVersion).toBe('2.51.0.2');
+  });
+
+  it('writes a reported installedAt on conflict, so a reinstall moves the date (#9723)', async () => {
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.51.0.2');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+            installedAt: '2026-01-05T10:20:30Z',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const { values, set } = devicePatchUpserts[0]!;
+    expect(values.installedAt).toEqual(new Date('2026-01-05T10:20:30Z'));
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['', '::timestamp'],
+      values: ['2026-01-05T10:20:30.000Z'],
+    });
   });
 
   it('uses this device\'s own available_version, not a stale global patches.version, so a differently-stale catalog row cannot prematurely flip a still-pending row (#2736)', async () => {

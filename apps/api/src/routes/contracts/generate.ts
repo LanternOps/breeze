@@ -52,6 +52,9 @@ contractGenerateRoutes.post('/:id/generate', scopes, managePerm, zValidator('par
     // `result.priceBookGaps` (wave 3, #3775) rides along so the manual
     // "generate now" UI can show which catalog lines were billed at the contract
     // snapshot for want of a price in the contract's currency.
-    return c.json({ data: emailSent === undefined ? result : { ...result, emailSent } });
+    // `actor` (userId / partnerId / accessibleOrgIds) is internal: it only
+    // drives the issue/email calls above and must not reach the client.
+    const { actor: _actor, ...publicResult } = result;
+    return c.json({ data: emailSent === undefined ? publicResult : { ...publicResult, emailSent } });
   } catch (err) { return handleContractError(c, err); }
 });

@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(leer)",
       "noOutput": "Keine Ausgabe",
+      "purged": "Ausgabe nach Ablauf der Aufbewahrungsfrist entfernt ({{date}})",
       "title": "Ausgabe",
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"
@@ -720,6 +721,8 @@
       "timeout": "Zeitüberschreitung bei der Skriptausführung",
       "pending": "Das Skript wartet darauf, ausgeführt zu werden",
       "queued": "Das Skript wartet auf die Übermittlung an das Gerät",
+      "queuedAwaitingPickup": "Noch keine aktive Agent-Sitzung hat dies abgeholt. Das Skript wird zugestellt, sobald sich der Agent des Geräts das nächste Mal meldet.",
+      "deviceOffline": "Das Gerät ist offline. Das Skript wird zugestellt, sobald es wieder verbunden ist.",
       "cancelling": "Abbruch angefordert – warte auf Bestätigung durch das Gerät.",
       "cancelled": "Das Skript wurde auf dem Gerät gestoppt"
     },
@@ -743,7 +746,8 @@
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
       "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
-      "queuedOffline": "In Warteschlange — Gerät offline"
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "queuedAwaitingPickup": "In Warteschlange — wartet auf Abholung durch das Gerät"
     }
   },
   "executionHistory": {
@@ -774,7 +778,8 @@
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
       "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
-      "queuedOffline": "In Warteschlange — Gerät offline"
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "queuedAwaitingPickup": "In Warteschlange — wartet auf Abholung"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -803,7 +808,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Beschreiben Sie das Skript, das Sie benötigen ...",
-      "opening": "KI-Assistent wird geöffnet..."
+      "opening": "Breeze AI wird geöffnet..."
     },
     "actions": {
       "stopGenerating": "Hören Sie auf zu generieren",
@@ -822,12 +827,12 @@
       "reject": "Ablehnen"
     },
     "empty": {
-      "title": "Skript-KI-Assistent",
-      "description": "Beschreiben Sie, was Sie brauchen und ich schreibe das Skript für Sie."
+      "title": "Breeze AI",
+      "description": "Bitten Sie Breeze AI, dieses Skript zu schreiben oder zu prüfen."
     }
   },
   "scriptAiPanel": {
-    "title": "AI-Skriptassistent",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "KI-Änderung erneut anwenden",
       "redo": "Wiederholen",
@@ -966,11 +971,20 @@
       "allAdmitted": "Alle ausgewählten Geräte wurden zugelassen und in die Warteschlange gestellt.",
       "partiallyAdmitted": "Einige Geräte wurden zugelassen und in die Warteschlange gestellt. Prüfen Sie die übrigen Ziele.",
       "rejected": "Keine Geräte wurden zugelassen. Prüfen Sie die Gründe unten.",
-      "queued": "In Warteschlange"
+      "queued": "In Warteschlange",
+      "reasons": {
+        "not_found_or_inaccessible": "Gerät nicht gefunden oder nicht zugänglich",
+        "site_access_denied": "Sie haben keinen Zugriff auf den Standort dieses Geräts",
+        "script_org_mismatch": "Das Skript gehört zu einer anderen Organisation als das Gerät",
+        "os_incompatible": "Das Skript ist mit dem Betriebssystem dieses Geräts nicht kompatibel",
+        "device_decommissioned": "Das Gerät wurde außer Betrieb genommen",
+        "maintenance_suppressed": "Übersprungen: Das Gerät befindet sich in einem Wartungsfenster"
+      }
     },
     "confirm": {
       "title": "Bestätigen Sie die Ausführung",
-      "description": "Führen Sie „{{name}}“ auf {{count}} Geräten als {{runAs}} aus. Skripte werden in die Warteschlange gestellt und beginnen sofort mit der Ausführung."
+      "description": "Führen Sie „{{name}}“ auf {{count}} Geräten als {{runAs}} aus. Skripte werden in die Warteschlange gestellt und beginnen sofort mit der Ausführung.",
+      "descriptionOffline": "„{{name}}“ auf {{count}} Gerät(en) als {{runAs}} ausführen. Skripte werden jetzt in die Warteschlange gestellt: Online-Geräte starten sofort, {{offline}} Offline-Gerät(e) laufen, sobald sie wieder online sind."
     },
     "selectedCount": "{{count}} Gerät(e) ausgewählt",
     "executeBlocked": "Ausführen ist nicht verfügbar: Ein ausgewähltes Gerät kann dieses Skript hier nicht ausführen (es gehört möglicherweise zu einer anderen als der angezeigten Organisation oder ist nicht mehr zugänglich).",
@@ -1015,6 +1029,7 @@
       "submitting": "Wird an {{count}} Gruppe(n) gesendet...",
       "warningsTitle": "Hinweise vom Server",
       "confirmDescription": "„{{name}}“ auf {{groups}} Gerätegruppe(n) als {{runAs}} ausführen. Skripte werden in die Warteschlange gestellt und sofort ausgeführt.",
+      "confirmDescriptionOffline": "„{{name}}“ auf {{groups}} Gerätegruppe(n) als {{runAs}} ausführen. Skripte werden jetzt in die Warteschlange gestellt: Online-Geräte starten sofort, {{offline}} Offline-Gerät(e) laufen, sobald sie wieder online sind.",
       "confirmMembers": "Derzeit gehören {{count}} eindeutige Geräte zu diesen Gruppen; die Mitgliedschaft wird beim Bestätigen erneut gelesen.",
       "confirmMembersUnknown": "Die Anzahl der Geräte ist noch nicht bekannt; die Mitgliedschaft wird beim Bestätigen gelesen.",
       "errors": {
@@ -1122,8 +1137,8 @@
       "exitCodeSeverity": "Schweregrad des Exit-Codes"
     },
     "ai": {
-      "toggleTitle": "KI-Skriptassistent umschalten (⌘⇧I)",
-      "button": "KI-Assistent"
+      "toggleTitle": "Breeze AI umschalten (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Noch keine Parameter. Mit Parametern können Benutzer zur Laufzeit Werte angeben – verweisen Sie sie in Ihrem Skript als",
@@ -1538,6 +1553,22 @@
     "riskLow": "Niedrig",
     "riskMedium": "Mittel",
     "riskHigh": "Hoch",
-    "riskCritical": "Kritisch"
+    "riskCritical": "Kritisch",
+    "reviewInApprovals": "In Genehmigungen prüfen",
+    "status": {
+      "proposed": "Wartet auf Prüfung",
+      "scan_rejected": "Vom Sicherheitsscan abgelehnt",
+      "review_failed": "KI-Prüfung fehlgeschlagen",
+      "reviewed": "Geprüft",
+      "approved": "Genehmigt",
+      "rejected": "Abgelehnt",
+      "changes_requested": "Änderungen angefordert",
+      "expired": "Abgelaufen",
+      "superseded": "Ersetzt",
+      "executed": "Ausgeführt",
+      "verified": "Verifiziert",
+      "verification_failed": "Verifizierung fehlgeschlagen",
+      "promoted": "In der Bibliothek gespeichert"
+    }
   }
 }

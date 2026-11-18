@@ -350,12 +350,17 @@ func (m *SessionManager) watchSessionLifetime(
 			}
 
 			stop, reason := false, ""
+			revokedReason := ""
 			if session.leaseState != nil {
-				stop, reason = evaluateRevocationLease(now, session.leaseState.snapshot())
+				snap := session.leaseState.snapshot()
+				stop, reason = evaluateRevocationLease(now, snap)
+				revokedReason = snap.revokedReason
 			}
+			fromLifetime := false
 			if !stop {
 				lastActivity := time.Unix(0, session.lastInputUnixNano.Load())
 				stop, reason = shouldStopForLifetime(now, startWall, lastActivity, policy)
+				fromLifetime = stop
 			}
 			if !stop {
 				continue
@@ -368,13 +373,16 @@ func (m *SessionManager) watchSessionLifetime(
 			case StopReasonLeaseExpired:
 				slog.Warn("Desktop session revocation lease expired past its grace window, stopping",
 					"session", sessionID)
-			case "idle_timeout_exceeded":
+			case StopReasonIdleTimeout:
 				slog.Warn("Desktop session idle timeout, stopping", "session", sessionID)
 			default:
 				slog.Warn("Desktop session reached max duration, stopping",
 					"session", sessionID, "maxDuration", ClampMaxDuration(policy.MaxDuration))
 			}
 
+			// Tell the viewer why before the peer closes (#10421), so it shows
+			// the reason instead of auto-reconnecting into a dead session.
+			m.sendSessionEnding(session, sessionEndingNotice(reason, revokedReason, policy, fromLifetime))
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
 				// session.LastStopReason() is "" here — a lifetime/lease stop

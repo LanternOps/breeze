@@ -3,6 +3,7 @@
  * (ticket_sla_attainment, technician_time_billability, ar_aging). Kept free of
  * `db` so the dispatcher and the unit tests can import it cheaply.
  */
+import { sql, type SQL } from 'drizzle-orm';
 
 /**
  * Tickets, time entries and invoices carry no site axis, so a site-restricted
@@ -14,8 +15,8 @@
  * filter it could apply).
  */
 export const SITE_RESTRICTED_NOTE =
-  'This report ran under a site-restricted authority. Tickets, time entries and '
-  + 'invoices have no site dimension, so nothing was queried — the figures below '
+  'This report ran under a site-restricted authority. This report\'s records '
+  + 'have no site dimension, so nothing was queried — the figures below '
   + 'are not measured, and they are not zero.';
 
 /** Partner scope only. The org list is `resolvePartnerReportOrgIds`
@@ -40,4 +41,15 @@ export function rowsOf<T>(result: unknown): T[] {
  *  is null, never 0 and never NaN (spec §3.3). */
 export function ratio(part: number, whole: number): number | null {
   return whole > 0 ? part / whole : null;
+}
+
+/**
+ * A time entry's effective coverage: `coverage`, falling back to the billable
+ * flag for entries stamped before billing profiles (`coverage IS NULL`) — the
+ * R2 rule. Shared by technician time (R2) and client profitability (R4,
+ * #9828 W3) so the two reports cannot split the same minutes differently.
+ * `alias` is the `time_entries` alias, e.g. sql`te`.
+ */
+export function effectiveCoverageSql(alias: SQL): SQL {
+  return sql`COALESCE(${alias}.coverage, CASE WHEN ${alias}.is_billable THEN 'billable' ELSE 'non_billable' END)`;
 }

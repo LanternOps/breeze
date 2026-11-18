@@ -71,7 +71,6 @@ vi.mock('../db/schema', () => ({
     devicesFailed: 'devicesFailed',
     createdAt: 'createdAt'
   },
-  patchComplianceSnapshots: {},
   patches: {
     id: 'id',
     title: 'title',
@@ -80,6 +79,8 @@ vi.mock('../db/schema', () => ({
     severity: 'severity',
     category: 'category',
     osTypes: 'osTypes',
+    externalId: 'externalId',
+    version: 'version',
     releaseDate: 'releaseDate',
     requiresReboot: 'requiresReboot',
     downloadSizeMb: 'downloadSizeMb',
@@ -223,7 +224,7 @@ describe('updateRings routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
-              { patchId: PATCH_ID, status: 'approved' }
+              { patchId: PATCH_ID, status: 'approved', ringId: RING_ID, updatedAt: new Date('2026-02-01') }
             ])
           })
         } as any);
@@ -653,6 +654,128 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(403);
     });
+    // #9930: the shared PatchList renders `version` / `externalId` as the
+    // disambiguator for colliding titles (#9533); the ring list must project
+    // them from the catalog row exactly as GET /patches does.
+    describe('catalog identity and empty-ring severity (#9930)', () => {
+      // Flattens a Drizzle SQL tree to text; interpolated values appear inline, so a
+      // partner-id predicate is visible.
+      const flattenWithParams = (node: unknown): string => {
+        if (node === null || node === undefined) return '';
+        if (typeof node === 'string') return node;
+        if (Array.isArray(node)) return node.map(flattenWithParams).join('');
+        const n = node as { queryChunks?: unknown[]; value?: unknown };
+        if (Array.isArray(n.queryChunks)) return n.queryChunks.map(flattenWithParams).join('');
+        if (Array.isArray(n.value)) return (n.value as unknown[]).map(flattenWithParams).join('');
+        if (typeof n.value === 'string') return `<${n.value}>`;
+        return '';
+      };
+
+      function mockRingPatchesQueries(rows: Record<string, unknown>[]) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) })
+                })
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: rows.length }]) })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+            })
+          } as any);
+        // The approvals read only runs when the page has rows; an unconsumed
+        // once-mock would leak into the next test.
+        if (rows.length > 0) {
+          vi.mocked(db.select).mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+          } as any);
+        }
+      }
+
+      it('projects externalId and version from the patch catalog and returns them', async () => {
+        mockRingPatchesQueries([
+          {
+            id: PATCH_ID,
+            title: 'Google Chrome',
+            source: 'third_party',
+            severity: 'moderate',
+            osTypes: ['windows'],
+            externalId: 'Google.Chrome',
+            version: '130.0.6723.70',
+            createdAt: new Date('2026-01-01')
+          }
+        ]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        expect(projection.externalId).toBe('externalId');
+        expect(projection.version).toBe('version');
+        const body = await res.json();
+        expect(body.data[0].externalId).toBe('Google.Chrome');
+        expect(body.data[0].version).toBe('130.0.6723.70');
+      });
+
+      it('reads no device-reported severity/category when the ring has no devices', async () => {
+        // Default mock: the ring resolves zero devices. An empty ring has no
+        // evidence of its own, so device-derived severity stays Unrated; it
+        // must neither borrow the partner fleet's reports nor emit the
+        // broken `IN (NULL)` predicate.
+        mockRingPatchesQueries([]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        for (const key of ['severity', 'severitySource', 'category']) {
+          const text = flattenWithParams(projection[key]);
+          expect(text, key).not.toContain('IN (NULL)');
+          expect(text, key).not.toContain('device_patches');
+          expect(text, key).not.toContain('"organizations"');
+        }
+        // The trusted shared classification still drives the value.
+        const severityText = flattenWithParams(projection.severity);
+        expect(severityText).toBe(`COALESCE(NULLIF(severity::text, 'unknown'), NULL::text, 'unknown')::patch_severity`);
+        expect(flattenWithParams(projection.category)).toBe('COALESCE(category, NULL::text)');
+      });
+
+      it('keeps the ring-device scope (no partner fallback) when the ring has devices', async () => {
+        vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValueOnce({ deviceIds: ['d1', 'd2'], warnings: [] } as any);
+        mockRingPatchesQueries([]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        const text = flattenWithParams(projection.severity);
+        expect(text).toContain('"device_patches"."device_id" IN (d1, d2)');
+        expect(text).not.toContain('"organizations"."partner_id"');
+      });
+    });
   });
 
   // ----------------------------------------------------------------
@@ -675,7 +798,9 @@ describe('updateRings routes', () => {
         // approved patches (partner-scoped)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ patchId: PATCH_ID }])
+            where: vi.fn().mockResolvedValue([
+              { patchId: PATCH_ID, status: 'approved', ringId: RING_ID, updatedAt: new Date('2026-02-01') }
+            ])
           })
         } as any)
         // device patch status
@@ -760,6 +885,151 @@ describe('updateRings routes', () => {
   });
 
   // ----------------------------------------------------------------
+  // #9633 — partner-wide (ring_id NULL) approvals resolved latest-wins,
+  // exactly like patchEligibility, in patches / summary / compliance.
+  // ----------------------------------------------------------------
+  describe('partner-wide approvals (#9633)', () => {
+    const OTHER_RING = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const P2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const ringLookup = () => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID, name: 'Test Ring' }])
+        })
+      })
+    }) as any;
+    const rowsQuery = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) })
+    }) as any;
+
+    async function getPatches(approvalRows: unknown[]) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(ringLookup())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([
+                    { id: PATCH_ID, title: 'P', source: 'microsoft', osTypes: ['windows'] }
+                  ])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }) } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+          })
+        } as any)
+        .mockReturnValueOnce(rowsQuery(approvalRows));
+      const res = await app.request(`/update-rings/${RING_ID}/patches`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return (await res.json()).data[0];
+    }
+
+    it('patch list: partner-wide approve reads approved with approvalScope partner', async () => {
+      const row = await getPatches([
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') }
+      ]);
+      expect(row.approvalStatus).toBe('approved');
+      expect(row.approvalScope).toBe('partner');
+    });
+
+    it('patch list: newer ring-level reject beats older partner-wide approve', async () => {
+      const row = await getPatches([
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+        { patchId: PATCH_ID, status: 'rejected', ringId: RING_ID, updatedAt: new Date('2026-03-01') }
+      ]);
+      expect(row.approvalStatus).toBe('rejected');
+      expect(row.approvalScope).toBe('ring');
+    });
+
+    it('patch list: older ring approve + newer partner-wide approve attributes scope to partner', async () => {
+      const row = await getPatches([
+        { patchId: PATCH_ID, status: 'approved', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-03-01') }
+      ]);
+      expect(row.approvalStatus).toBe('approved');
+      expect(row.approvalScope).toBe('partner');
+    });
+
+    it('patch list: another ring’s decision is ignored; no decision stays pending', async () => {
+      const row = await getPatches([
+        { patchId: PATCH_ID, status: 'approved', ringId: OTHER_RING, updatedAt: new Date('2026-02-01') }
+      ]);
+      expect(row.approvalStatus).toBe('pending');
+      expect(row.approvalScope).toBeNull();
+    });
+
+    it('summary: counts include partner-wide approvals and latest-wins rejects', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(ringLookup())
+        .mockReturnValueOnce(rowsQuery([
+          { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'rejected', ringId: RING_ID, updatedAt: new Date('2026-03-01') },
+        ]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        } as any);
+      const res = await app.request(`/update-rings/${RING_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).approvalSummary).toEqual({ approved: 1, rejected: 1 });
+    });
+
+    it('summary: other rings’ rows are ignored; pending is counted only when undecided', async () => {
+      const P3 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      vi.mocked(db.select)
+        .mockReturnValueOnce(ringLookup())
+        .mockReturnValueOnce(rowsQuery([
+          { patchId: PATCH_ID, status: 'approved', ringId: OTHER_RING, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'pending', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'approved', ringId: null, updatedAt: new Date('2026-03-01') },
+          { patchId: P3, status: 'pending', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+        ]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        } as any);
+      const res = await app.request(`/update-rings/${RING_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect((await res.json()).approvalSummary).toEqual({ approved: 1, pending: 1 });
+    });
+
+    it('compliance: partner-wide approved patches are included, declined ones excluded', async () => {
+      vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValueOnce({ deviceIds: ['device-1'], warnings: [] });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(ringLookup())
+        .mockReturnValueOnce(rowsQuery([
+          { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'approved', ringId: null, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'rejected', ringId: RING_ID, updatedAt: new Date('2026-03-01') },
+        ]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ status: 'installed', count: 1 }])
+            })
+          })
+        } as any);
+      const res = await app.request(`/update-rings/${RING_ID}/compliance`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.approvedPatches).toBe(1);
+      expect(body.data.summary.installed).toBe(1);
+    });
+  });
+
+  // ----------------------------------------------------------------
   // Partner/System scope tests
   // ----------------------------------------------------------------
   describe('system scope', () => {
@@ -806,12 +1076,10 @@ describe('updateRings routes', () => {
             })
           })
         } as any)
-        // approval counts
+        // approval rows
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([])
-            })
+            where: vi.fn().mockResolvedValue([])
           })
         } as any)
         // recent jobs

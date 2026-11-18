@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   assembleFromOrgSchema, assembleFromTicketQuerySchema, manualLineSchema, recordPaymentSchema,
   partnerBillingSettingsSchema, orgBillingSettingsSchema,
-  orgCurrencyImpactQuerySchema, createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema
+  orgCurrencyImpactQuerySchema, createManualInvoiceSchema, updateInvoiceSchema, listInvoicesQuerySchema,
+  idempotencyKeySchema
 } from './invoices';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 
@@ -53,6 +54,33 @@ describe('recordPaymentSchema', () => {
     expect(recordPaymentSchema.safeParse({ amount: 0, method: 'check', receivedAt: '2026-06-14' }).success).toBe(false);
     expect(recordPaymentSchema.safeParse({ amount: 50, method: 'crypto', receivedAt: '2026-06-14' }).success).toBe(false);
   });
+
+  // #3803: a caller-supplied key makes a retried manual payment land once.
+  describe('idempotencyKey', () => {
+    const base = { amount: 50, method: 'check', receivedAt: '2026-06-14' } as const;
+
+    it('is optional and kept verbatim when present', () => {
+      expect(recordPaymentSchema.safeParse(base).success).toBe(true);
+      const r = recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'pay-7f1c:2026/06/14' });
+      expect(r.success && r.data.idempotencyKey).toBe('pay-7f1c:2026/06/14');
+    });
+
+    it('accepts exactly 255 visible ASCII characters and refuses 256', () => {
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'k'.repeat(255) }).success).toBe(true);
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: 'k'.repeat(256) }).success).toBe(false);
+    });
+
+    it.each([
+      ['empty', ''],
+      ['whitespace inside', 'abc def'],
+      ['leading space', ' abc'],
+      ['control character', 'abc\n'],
+      ['non-ASCII', 'clé'],
+    ])('refuses a %s key', (_label, key) => {
+      expect(recordPaymentSchema.safeParse({ ...base, idempotencyKey: key }).success).toBe(false);
+      expect(idempotencyKeySchema.safeParse(key).success).toBe(false);
+    });
+  });
 });
 
 describe('partnerBillingSettingsSchema', () => {
@@ -74,6 +102,33 @@ describe('partnerBillingSettingsSchema', () => {
     expect(partnerBillingSettingsSchema.parse({ ...base, invoiceDeviceAppendix: true }).invoiceDeviceAppendix).toBe(true);
     expect(partnerBillingSettingsSchema.parse(base).invoiceDeviceAppendix).toBeUndefined();
     expect(partnerBillingSettingsSchema.safeParse({ ...base, invoiceDeviceAppendix: 'true' }).success).toBe(false);
+  });
+
+  // #9075 W4a (OD8): agreement-request defaults live on the partner billing
+  // settings. Same bounds as the partners CHECKs (2027-01-06-141000).
+  it('#9075 W4a: bounds the agreement defaults and lets reminders be switched off with null', () => {
+    const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
+    const ok = (extra: Record<string, unknown>) => partnerBillingSettingsSchema.safeParse({ ...base, ...extra }).success;
+    expect(ok({ agreementDefaultExpiryDays: 1 })).toBe(true);
+    expect(ok({ agreementDefaultExpiryDays: 365 })).toBe(true);
+    expect(ok({ agreementDefaultExpiryDays: 0 })).toBe(false);
+    expect(ok({ agreementDefaultExpiryDays: 366 })).toBe(false);
+    expect(ok({ agreementDefaultExpiryDays: 7.5 })).toBe(false);
+    expect(ok({ agreementDefaultExpiryDays: null })).toBe(false);
+    expect(ok({ agreementReminderIntervalDays: null })).toBe(true);
+    expect(ok({ agreementReminderIntervalDays: 1 })).toBe(true);
+    expect(ok({ agreementReminderIntervalDays: 30 })).toBe(true);
+    expect(ok({ agreementReminderIntervalDays: 0 })).toBe(false);
+    expect(ok({ agreementReminderIntervalDays: 31 })).toBe(false);
+    expect(ok({ agreementMaxReminders: 1 })).toBe(true);
+    expect(ok({ agreementMaxReminders: 10 })).toBe(true);
+    expect(ok({ agreementMaxReminders: 0 })).toBe(false);
+    expect(ok({ agreementMaxReminders: 11 })).toBe(false);
+    expect(ok({ agreementMaxReminders: null })).toBe(false);
+    const omitted = partnerBillingSettingsSchema.parse(base);
+    expect(omitted.agreementDefaultExpiryDays).toBeUndefined();
+    expect(omitted.agreementReminderIntervalDays).toBeUndefined();
+    expect(omitted.agreementMaxReminders).toBeUndefined();
   });
 
   it('bounds defaultMarkupPercent to 0..9999.99 with 2-decimal precision', () => {

@@ -64,4 +64,16 @@ describe('ManualModelForm', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/already/i) })));
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  // The Drawer primitive adds no body padding or scroll: the caller owns both,
+  // and the footer must sit outside the scroll area so Save is never clipped.
+  it('pads and scrolls its body, with the actions in a footer outside it', () => {
+    render(<ManualModelForm connectionId={GW} onSaved={vi.fn()} onClose={vi.fn()} />);
+    const body = screen.getByTestId('ai-manual-model-drawer-body');
+    expect(body.className).toMatch(/\boverflow-y-auto\b/);
+    expect(body.className).toMatch(/\bpx-5\b/);
+    const footer = screen.getByTestId('ai-manual-model-drawer-footer');
+    expect(body.contains(footer)).toBe(false);
+    expect(footer.contains(screen.getByTestId('ai-manual-model-save'))).toBe(true);
+  });
 });

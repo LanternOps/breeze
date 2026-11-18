@@ -31,6 +31,7 @@ import { captureException } from './sentry';
 import { invoiceLineTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql } from './invoiceRenderHelpers';
 import { resolveInvoicePresentation } from './invoicePresentation';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 
 export type { CustomerDocumentMode } from '@breeze/shared/documents';
 export type { InvoiceRow } from './invoiceService';
@@ -140,12 +141,13 @@ export type DocumentPartner = {
   billingEmail: string | null;
   documentTheme: string | null;
   documentPageSize: string | null;
+  billingAddressCountry: string | null;
   settings: unknown;
 };
 
 /** Log AND report a fail-soft read: the document still renders, but a DB outage
  *  that blanks every customer's branding must reach Sentry, not just stdout. */
-function reportSoftFailure(what: 'partner' | 'branding', invoice: InvoiceRow, err: unknown): void {
+function reportSoftFailure(what: 'partner' | 'branding', invoice: Pick<InvoiceRow, 'id'>, err: unknown): void {
   console.error(`[customerDocument] ${what} lookup failed`, { invoiceId: invoice.id, err });
   captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
     phase: `customer_document_${what}`, invoice_id: invoice.id,
@@ -153,7 +155,7 @@ function reportSoftFailure(what: 'partner' | 'branding', invoice: InvoiceRow, er
 }
 
 /**
- * Branding plus the partner row it was read from (shared with the locale chain).
+ * The partner and portal-branding rows behind a customer document's branding.
  *
  * Both reads run in their OWN system context, keyed on the already-authorized
  * invoice row's partnerId / orgId:
@@ -165,10 +167,14 @@ function reportSoftFailure(what: 'partner' | 'branding', invoice: InvoiceRow, er
  * Each read fails soft on its own, as the portal always did — branding is
  * decoration on a document the customer came to read or pay — so a branding
  * failure keeps the partner name and locale, and vice versa.
+ *
+ * Inside an open transaction each read takes a SECOND pooled connection (#9585),
+ * so a caller holding one (the portal invoice route) calls this BEFORE opening it
+ * and hands the result to assembleCustomerInvoiceDocument as `preloaded`.
  */
-async function loadBrandingAndPartner(
-  invoice: InvoiceRow,
-): Promise<{ branding: CustomerDocumentBrandingDto; partner: DocumentPartner | null }> {
+export async function preloadCustomerDocumentBranding(
+  invoice: Pick<InvoiceRow, 'id' | 'partnerId' | 'orgId'>,
+): Promise<PreloadedBranding> {
   let partner: DocumentPartner | null = null;
   try {
     const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
@@ -177,6 +183,7 @@ async function loadBrandingAndPartner(
         billingEmail: partners.billingEmail,
         documentTheme: partners.documentTheme,
         documentPageSize: partners.documentPageSize,
+        billingAddressCountry: partners.billingAddressCountry,
         settings: partners.settings,
       }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1)));
     partner = row ?? null;
@@ -196,10 +203,19 @@ async function loadBrandingAndPartner(
     reportSoftFailure('branding', invoice, err);
   }
 
+  return { partner, brand };
+}
+
+/** Branding plus the partner row it was read from (shared with the locale chain). */
+async function loadBrandingAndPartner(
+  invoice: InvoiceRow,
+): Promise<{ branding: CustomerDocumentBrandingDto; partner: DocumentPartner | null }> {
+  const { partner, brand } = await preloadCustomerDocumentBranding(invoice);
   return { partner, branding: composeBranding(invoice, partner, brand) };
 }
 
-/** Branding the caller has ALREADY read (strictly, on its own connection). */
+/** Branding the caller has ALREADY read: strictly on its own connection (the PDF
+ *  render), or through preloadCustomerDocumentBranding before opening one (the portal). */
 export interface PreloadedBranding {
   partner: DocumentPartner | null;
   brand: { logoUrl: string | null; primaryColor: string | null } | null;
@@ -208,11 +224,13 @@ export interface PreloadedBranding {
 function composeBranding(
   invoice: InvoiceRow, partner: DocumentPartner | null, brand: PreloadedBranding['brand'],
 ): CustomerDocumentBrandingDto {
+  const docBrand = resolveDocumentBrand(brand ?? undefined, partner?.settings);
   return {
     partnerName: partner?.name ?? null,
     contactEmail: partner?.billingEmail ?? null,
-    logoUrl: brand?.logoUrl ?? null,
-    primaryColor: brand?.primaryColor ?? null,
+    // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
     // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
     ...resolveInvoicePresentation(invoice, partner),
   };

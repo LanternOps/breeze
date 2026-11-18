@@ -35,10 +35,10 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name' },
+  softwareCatalog: { id: 'id', orgId: 'org_id', partnerId: 'catalog_partner_id', name: 'name', deletedAt: 'deleted_at' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
   softwareUploadSessions: {
-    id: 'sus_id', orgId: 'sus_org_id', catalogId: 'sus_catalog_id',
+    id: 'sus_id', orgId: 'sus_org_id', partnerId: 'sus_partner_id', catalogId: 'sus_catalog_id',
     fileName: 'file_name', fileSize: 'file_size', chunkSize: 'chunk_size',
     bytesReceived: 'bytes_received', status: 'sus_status', tempPath: 'temp_path',
     ownerInstanceId: 'owner_instance_id',
@@ -48,7 +48,8 @@ vi.mock('../db/schema', () => ({
 }));
 
 const { permissionGate, mfaGate } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
+  // `denied` withholds single grants (e.g. 'devices:execute', #6958).
+  permissionGate: { deny: false, denied: new Set<string>() },
   mfaGate: { deny: false },
 }));
 
@@ -65,8 +66,10 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionGate.deny || permissionGate.denied.has(`${resource}:${action}`)) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -167,14 +170,26 @@ function captureChain(terminalValue: any) {
 }
 
 /**
- * software_upload_sessions lookups must always be scoped by BOTH orgId and
- * catalogId (never uploadId alone) — a user in another org must not be able
- * to touch this session by guessing its UUID. Asserting only on the (mocked,
- * non-filtering) return value would pass even if the scoping predicate were
- * deleted from the route entirely, so this inspects the actual `.where(...)`
- * argument — built from real drizzle-orm `and`/`eq` calls — and asserts the
- * org/catalog columns AND the caller-supplied values are present in it.
+ * A user in another org must not be able to touch a session by guessing its
+ * UUID. Since #9246 (plan D6) that guarantee has two layers: the first lookup
+ * is scoped by (uploadId, catalogId) under RLS and the caller is then
+ * authorized against the SESSION's own owner (authorizeUploadSessionAccess —
+ * the "another org's session → 404" tests below), and every in-lock re-read
+ * is scoped by the owner the caller was authorized against. Asserting only on
+ * the (mocked, non-filtering) return value would pass even if a predicate
+ * were deleted from the route, so these inspect the actual `.where(...)`
+ * argument — built from real drizzle-orm `and`/`eq` calls.
  */
+function expectScopedByCatalog(calls: Record<string, any[][]>, catalogId: string) {
+  const whereArg = calls.where?.[0]?.[0];
+  expect(whereArg).toBeDefined();
+  const json = JSON.stringify(whereArg);
+  expect(json).toContain('sus_id');
+  expect(json).toContain(UPLOAD_ID);
+  expect(json).toContain('sus_catalog_id');
+  expect(json).toContain(catalogId);
+}
+
 function expectScopedByOrgAndCatalog(calls: Record<string, any[][]>, orgId: string, catalogId: string) {
   const whereArg = calls.where?.[0]?.[0];
   expect(whereArg).toBeDefined();
@@ -191,6 +206,7 @@ describe('software upload-session routes', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    permissionGate.denied.clear();
     mfaGate.deny = false;
     vi.mocked(isS3Configured).mockReturnValue(true);
     app = new Hono();
@@ -431,7 +447,8 @@ describe('software upload-session routes', () => {
       const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...validBody, fileName: 'evil.zip' }),
+        // .zip became a supported type in #6958; .rar never was.
+        body: JSON.stringify({ ...validBody, fileName: 'evil.rar' }),
       });
       expect(res.status).toBe(400);
       expect((await res.json()).error).toContain('Unsupported file type');
@@ -487,20 +504,7 @@ describe('software upload-session routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
-    // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
-    // partner-wide package (#2135, org_id NULL) cannot book a session yet —
-    // the route must fail up front with an actionable message, not a 500.
-    it('400s with a URL-only hint for a partner-wide catalog item', async () => {
-      selectQueue([{ id: CATALOG_ID, orgId: null, partnerId: 'partner-123', name: 'Shared Installer' }]);
-      const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(validBody),
-      });
-      expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/partner-wide packages/);
-      expect(db.insert).not.toHaveBeenCalled();
-    });
+    // Partner-wide (org_id NULL) packages: see the '#9246' describe block.
 
     // GET/DELETE validate `:id` as a UUID (uploadParamSchema); create must too
     // — otherwise a non-UUID catalog id reaches a `uuid` column unvalidated
@@ -733,7 +737,7 @@ describe('software upload-session routes', () => {
     // actual predicate built for BOTH reads (the pre-lock guard and the
     // in-lock re-read), which are separate query-building call sites in the
     // route and could drift independently.
-    it('scopes both the pre-lock guard read and the in-lock re-read by org AND catalog', async () => {
+    it('scopes the pre-lock guard read by catalog and the in-lock re-read by org AND catalog', async () => {
       const guardCapture = captureChain([makeSession()]);
       const lockCapture = captureChain([makeSession()]);
       vi.mocked(db.select)
@@ -743,13 +747,22 @@ describe('software upload-session routes', () => {
 
       const res = await putChunk(0, 'hello');
       expect(res.status).toBe(200);
-      expectScopedByOrgAndCatalog(guardCapture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(guardCapture.calls, CATALOG_ID);
       expectScopedByOrgAndCatalog(lockCapture.calls, 'org-123', CATALOG_ID);
+    });
+
+    it('404s a session that belongs to another org, before any write', async () => {
+      selectQueue([makeSession({ orgId: 'org-other' })]);
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Upload session not found');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('GET /software/catalog/:id/versions/uploads/:uploadId (status)', () => {
-    it('returns bytesReceived/fileSize/status, scoped by org AND catalog (not uploadId alone)', async () => {
+    it('returns bytesReceived/fileSize/status, scoped by catalog (not uploadId alone)', async () => {
       const capture = captureChain([makeSession({ bytesReceived: 5 })]);
       vi.mocked(db.select).mockReturnValueOnce(capture.chain);
 
@@ -763,14 +776,12 @@ describe('software upload-session routes', () => {
         fileSize: 10,
         status: 'active',
       });
-      // A cross-tenant caller must not be able to reach a session by guessing
-      // its UUID: the query has to filter by orgId AND catalogId too. Queueing
-      // a return value alone can't prove this (the mock DB never actually
-      // filters), so this asserts on the WHERE predicate the route built.
-      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      // The lookup filters by catalog too (not uploadId alone); the org check
+      // is the session-owner authorization (next tests).
+      expectScopedByCatalog(capture.calls, CATALOG_ID);
     });
 
-    it('404s for an unknown session, having still queried scoped by org AND catalog', async () => {
+    it('404s for an unknown session, having still queried scoped by catalog', async () => {
       const capture = captureChain([]);
       vi.mocked(db.select).mockReturnValueOnce(capture.chain);
 
@@ -778,12 +789,21 @@ describe('software upload-session routes', () => {
         `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
       );
       expect(res.status).toBe(404);
-      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(capture.calls, CATALOG_ID);
+    });
+
+    it('404s a session that belongs to another org', async () => {
+      selectQueue([makeSession({ orgId: 'org-other' })]);
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
+      );
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Upload session not found');
     });
   });
 
   describe('DELETE /software/catalog/:id/versions/uploads/:uploadId (abort)', () => {
-    it('removes the temp file and the session row, scoped by org AND catalog', async () => {
+    it('removes the temp file and the session row, scoped by catalog', async () => {
       const tempPath = uploadSessionTempPath(UPLOAD_ID);
       await mkdir(dirname(tempPath), { recursive: true });
       await writeFile(tempPath, 'partial');
@@ -798,10 +818,10 @@ describe('software upload-session routes', () => {
       expect(await res.json()).toEqual({ success: true });
       expect(db.delete).toHaveBeenCalledTimes(1);
       await expect(readFile(tempPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(capture.calls, CATALOG_ID);
     });
 
-    it('404s for an unknown session, having still queried scoped by org AND catalog', async () => {
+    it('404s for an unknown session, having still queried scoped by catalog', async () => {
       const capture = captureChain([]);
       vi.mocked(db.select).mockReturnValueOnce(capture.chain);
 
@@ -811,7 +831,21 @@ describe('software upload-session routes', () => {
       );
       expect(res.status).toBe(404);
       expect(db.delete).not.toHaveBeenCalled();
-      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(capture.calls, CATALOG_ID);
+    });
+
+    it('404s a session that belongs to another org and deletes nothing', async () => {
+      const tempPath = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(tempPath), { recursive: true });
+      await writeFile(tempPath, 'partial');
+      selectQueue([makeSession({ orgId: 'org-other' })]);
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
+        { method: 'DELETE' },
+      );
+      expect(res.status).toBe(404);
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(await readFile(tempPath, 'utf8')).toBe('partial');
     });
   });
 
@@ -1006,14 +1040,22 @@ describe('software upload-session routes', () => {
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
 
-    it('404s for an unknown upload session, scoped by org AND catalog', async () => {
+    it('404s for an unknown upload session, scoped by catalog', async () => {
       const capture = captureChain([]);
       vi.mocked(db.select).mockReturnValueOnce(capture.chain);
 
       const res = await app.request(completeUrl, { method: 'POST' });
       expect(res.status).toBe(404);
-      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(capture.calls, CATALOG_ID);
       expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('404s a session that belongs to another org, before any S3 work', async () => {
+      selectQueue([makeSession({ orgId: 'org-other', bytesReceived: 10 })]);
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertLatestSoftwareVersion).not.toHaveBeenCalled();
     });
 
     it('404s for a catalog item outside the caller org, after the session checks out', async () => {
@@ -1064,7 +1106,7 @@ describe('software upload-session routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
-    it('scopes both the pre-lock guard read and the in-lock re-read by org AND catalog', async () => {
+    it('scopes the pre-lock guard read by catalog and the in-lock re-read by org AND catalog', async () => {
       await seedTempFile('helloworld');
       const guardCapture = captureChain([makeSession({ bytesReceived: 10 })]);
       const lockCapture = captureChain([makeSession({ bytesReceived: 10 })]);
@@ -1076,7 +1118,7 @@ describe('software upload-session routes', () => {
 
       const res = await app.request(completeUrl, { method: 'POST' });
       expect(res.status).toBe(201);
-      expectScopedByOrgAndCatalog(guardCapture.calls, 'org-123', CATALOG_ID);
+      expectScopedByCatalog(guardCapture.calls, CATALOG_ID);
       expectScopedByOrgAndCatalog(lockCapture.calls, 'org-123', CATALOG_ID);
     });
 
@@ -1134,5 +1176,437 @@ describe('software upload-session routes', () => {
         expect(deleteBinary).toHaveBeenCalledTimes(1);
       });
     });
+  });
+});
+
+// #6958 PR C: the chunked-upload path is a third version create path, so it
+// gets the same install-spec validation, devices.execute rule, supportedOs
+// de-duplication and built-in immutability as routes/software.ts.
+describe('chunked upload install spec (#6958)', () => {
+  let app: Hono;
+  const createUrl = `/software/catalog/${CATALOG_ID}/versions/uploads`;
+  const completeUrl = `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/complete`;
+  const baseBody = { fileName: 'client.msi', fileSize: 10, chunkSize: 5 * 1024 * 1024, version: '1.0.0' };
+
+  const reset = (mock: any, impl: () => unknown) => mock.mockReset().mockImplementation(impl);
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    reset(vi.mocked(db.select), () => chainMock([]));
+    reset(vi.mocked(db.insert), () => chainMock([]));
+    reset(vi.mocked(db.update), () => chainMock([]));
+    reset(vi.mocked(db.delete), () => chainMock(undefined));
+    vi.mocked(insertLatestSoftwareVersion).mockReset();
+    vi.mocked(uploadBinary).mockReset();
+    permissionGate.deny = false;
+    permissionGate.denied.clear();
+    mfaGate.deny = false;
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    app = new Hono();
+    app.route('/software', softwareUploadRoutes);
+    await rm(uploadSessionTempPath(UPLOAD_ID), { force: true });
+  });
+
+  const createSession = async (body: Record<string, unknown>, row: unknown = catalogRow) => {
+    selectQueue([row], [makeUsage()]);
+    const insertCapture = captureChain([{ id: UPLOAD_ID, chunkSize: baseBody.chunkSize }]);
+    vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
+    const res = await app.request(createUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...baseBody, ...body }),
+    });
+    return { res, inserted: insertCapture.calls.values?.[0]?.[0] };
+  };
+
+  describe('session create', () => {
+    it('(a) a zip with no post-install script → 400 before any session exists', async () => {
+      const { res, inserted } = await createSession({ fileName: 'client.zip', supportedOs: ['windows'] });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['zip_requires_post_install_script']);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(a) scripts on two OSes → 400 scripts_require_single_os', async () => {
+      const { res } = await createSession({ supportedOs: ['Windows', 'macOS'], postInstallScript: 'x' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['scripts_require_single_os']);
+    });
+
+    it('dedupes supportedOs (case-insensitively) before validation and stores the result', async () => {
+      const { res, inserted } = await createSession({ supportedOs: ['Windows', 'windows'], postInstallScript: 'x' });
+      expect(res.status).toBe(201);
+      expect(inserted.versionMetadata.supportedOs).toEqual(['Windows']);
+    });
+
+    it('rejects an empty supportedOs entry with 400', async () => {
+      const { res, inserted } = await createSession({ supportedOs: [''] });
+      expect(res.status).toBe(400);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(b) a script without devices.execute → 403 before any session exists', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, inserted } = await createSession({ supportedOs: ['windows'], preInstallScript: 'x' });
+      expect(res.status).toBe(403);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(b) no script needs no devices.execute', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res } = await createSession({ supportedOs: ['windows'] });
+      expect(res.status).toBe(201);
+    });
+
+    it('(d) a Breeze built-in package takes no upload → 403', async () => {
+      const { res, inserted } = await createSession({}, { ...catalogRow, builtinPackageKey: 'controld_windows' });
+      expect(res.status).toBe(403);
+      expect(inserted).toBeUndefined();
+    });
+  });
+
+  describe('completion', () => {
+    async function complete(versionMetadata: Record<string, unknown>, fileName = 'client.msi', row: unknown = catalogRow) {
+      const p = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(p), { recursive: true });
+      await writeFile(p, 'helloworld');
+      const session = makeSession({ bytesReceived: 10, fileName, versionMetadata: { version: '1.0.0', ...versionMetadata } });
+      selectQueue([session], [session], [row]);
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+      const res = await app.request(completeUrl, { method: 'POST' });
+      return { res, insertArgs: vi.mocked(insertLatestSoftwareVersion).mock.calls[0]?.[1] };
+    }
+
+    it('(b) enables scripts when the completing writer holds devices.execute', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'], postInstallScript: 'Copy-Item a b' }, 'client.zip');
+      expect(res.status).toBe(201);
+      expect(insertArgs).toMatchObject({ fileType: 'zip', installScriptsEnabled: true, supportedOs: ['windows'] });
+    });
+
+    it('(b) no script → installScriptsEnabled:false', async () => {
+      const { res, insertArgs } = await complete({});
+      expect(res.status).toBe(201);
+      expect(insertArgs!.installScriptsEnabled).toBe(false);
+    });
+
+    it('(b) re-checks devices.execute at completion (a grant revoked mid-upload) → 403, nothing uploaded', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'], preInstallScript: 'x' });
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertArgs).toBeUndefined();
+    });
+
+    it('(a) re-validates the stored spec at completion → 400, nothing uploaded', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'] }, 'client.zip');
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['zip_requires_post_install_script']);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertArgs).toBeUndefined();
+    });
+
+    it('stores supportedOs de-duplicated', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows', 'windows'] });
+      expect(res.status).toBe(201);
+      expect(insertArgs!.supportedOs).toEqual(['windows']);
+    });
+
+    it('(d) a Breeze built-in package is refused at completion too → 403', async () => {
+      const { res } = await complete({}, 'client.msi', { ...catalogRow, builtinPackageKey: 'controld_windows' });
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11412 W01 (origin #9246): uploads to partner-wide (org_id NULL) packages.
+// The session is owned by the catalog row's partner — never by the org the
+// switcher injects as ?orgId — and is gated by canManagePartnerWidePolicies.
+// ---------------------------------------------------------------------------
+describe('partner-wide package uploads (#9246)', () => {
+  let app: Hono;
+  const createUrl = `/software/catalog/${CATALOG_ID}/versions/uploads`;
+  const sessionUrl = `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`;
+  const S1_TEMPLATE = 'SITE_TOKEN={s1_site_token} /q /NORESTART';
+  const body = { fileName: 'installer.msi', fileSize: 10, chunkSize: 5 * 1024 * 1024, version: '24.1.2' };
+  const partnerCatalog = {
+    id: CATALOG_ID,
+    orgId: null,
+    partnerId: 'partner-123',
+    integrationProvider: 'sentinelone',
+    builtinPackageKey: null,
+    name: 'SentinelOne Agent',
+  };
+  const partnerSession = (overrides: Record<string, unknown> = {}) =>
+    makeSession({ orgId: null, partnerId: 'partner-123', fileName: 'installer.msi', ...overrides });
+
+  const reset = (mock: any, impl: () => unknown) => mock.mockReset().mockImplementation(impl);
+
+  /** The next request authenticates as a partner-scope user of partner-123. */
+  function asPartner(orgAccess: 'all' | 'selected' = 'all', partnerId = 'partner-123') {
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        userId: 'user-123',
+        scope: 'partner',
+        orgId: null,
+        partnerId,
+        partnerOrgAccess: orgAccess,
+        accessibleOrgIds: ['org-child-a', 'org-child-b'],
+        canAccessOrg: (orgId: string) => ['org-child-a', 'org-child-b'].includes(orgId),
+      });
+      return next();
+    });
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    reset(vi.mocked(db.select), () => chainMock([]));
+    reset(vi.mocked(db.insert), () => chainMock([]));
+    reset(vi.mocked(db.update), () => chainMock([]));
+    reset(vi.mocked(db.delete), () => chainMock(undefined));
+    vi.mocked(insertLatestSoftwareVersion).mockReset();
+    vi.mocked(uploadBinary).mockReset();
+    permissionGate.deny = false;
+    permissionGate.denied.clear();
+    mfaGate.deny = false;
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    app = new Hono();
+    app.route('/software', softwareUploadRoutes);
+    await rm(uploadSessionTempPath(UPLOAD_ID), { force: true });
+  });
+
+  const postCreate = (payload: Record<string, unknown> = body, query = '') =>
+    app.request(`${createUrl}${query}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+
+  describe('create', () => {
+    it('201 creates a partner-owned session for a full-partner admin', async () => {
+      asPartner('all');
+      selectQueue([partnerCatalog], [makeUsage()]);
+      const insertCapture = captureChain([{ id: UPLOAD_ID }]);
+      vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
+
+      const res = await postCreate();
+      expect(res.status, await res.clone().text()).toBe(201);
+      expect(insertCapture.calls.values?.[0]?.[0]).toMatchObject({ orgId: null, partnerId: 'partner-123' });
+    });
+
+    it('ignores ?orgId=<child> for a partner-owned package (switcher-selected org)', async () => {
+      asPartner('all');
+      const usageCapture = captureChain([makeUsage()]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([partnerCatalog]) as any)
+        .mockReturnValueOnce(usageCapture.chain);
+      const insertCapture = captureChain([{ id: UPLOAD_ID }]);
+      vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
+
+      const res = await postCreate(body, '?orgId=org-child-a');
+      expect(res.status, await res.clone().text()).toBe(201);
+      expect(insertCapture.calls.values?.[0]?.[0]).toMatchObject({ orgId: null, partnerId: 'partner-123' });
+      // The cap aggregate counts the PARTNER bucket, never the child org's.
+      const usageWhere = JSON.stringify(usageCapture.calls.where?.[0]?.[0]);
+      expect(usageWhere).toContain('sus_partner_id');
+      expect(usageWhere).toContain('partner-123');
+      expect(usageWhere).not.toContain('org-child-a');
+    });
+
+    it('403 for a partner user with orgAccess "selected", before any session exists', async () => {
+      asPartner('selected');
+      selectQueue([partnerCatalog]);
+      const res = await postCreate();
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe(
+        'Modifying a partner-wide package requires full partner org access (orgAccess must be "all")',
+      );
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('404 for another partner\'s package', async () => {
+      asPartner('all', 'partner-other');
+      selectQueue([partnerCatalog]);
+      const res = await postCreate();
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('404 for an org-scope caller on a partner-wide package', async () => {
+      selectQueue([partnerCatalog]); // default auth: org scope, org-123
+      const res = await postCreate();
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('partner caps use the partner bucket and partner error strings', async () => {
+      asPartner('all');
+      selectQueue([partnerCatalog], [makeUsage({ orgActive: MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG })]);
+      let res = await postCreate();
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe('Too many concurrent package uploads for this partner');
+
+      asPartner('all');
+      selectQueue([partnerCatalog], [makeUsage({ orgBytes: MAX_ACTIVE_UPLOAD_BYTES_PER_ORG })]);
+      res = await postCreate();
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe('Concurrent package uploads exceed the partner upload size budget');
+
+      asPartner('all');
+      selectQueue([partnerCatalog], [makeUsage({ userActive: MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER })]);
+      res = await postCreate();
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe('Too many concurrent package uploads for this user');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('400 install_args_missing_placeholders when S1 MSI args drop {s1_site_token}', async () => {
+      asPartner('all');
+      selectQueue([partnerCatalog]);
+      const res = await postCreate({ ...body, silentInstallArgs: 'msiexec /i "{file}" /qn' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Install arguments for SentinelOne Agent must include {s1_site_token}',
+        issues: ['install_args_missing_placeholders'],
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('an .exe on the S1 (MSI) package is not judged against the template', async () => {
+      asPartner('all');
+      selectQueue([partnerCatalog], [makeUsage()]);
+      vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: UPLOAD_ID }]) as any);
+      const res = await postCreate({ ...body, fileName: 'setup.exe', silentInstallArgs: '/S' });
+      expect(res.status, await res.clone().text()).toBe(201);
+    });
+  });
+
+  describe('session routes', () => {
+    it('chunk on a partner session with ?orgId=<child> → 200', async () => {
+      asPartner('all');
+      const lockCapture = captureChain([partnerSession()]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([partnerSession()]) as any)
+        .mockReturnValueOnce(lockCapture.chain);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{ bytesReceived: 5 }]) as any);
+
+      const res = await app.request(`${sessionUrl}/chunks?offset=0&orgId=org-child-a`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'hello',
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect((await res.json()).data).toEqual({ bytesReceived: 5 });
+      // The in-lock re-read is pinned to the partner owner, not the child org.
+      const lockWhere = JSON.stringify(lockCapture.calls.where?.[0]?.[0]);
+      expect(lockWhere).toContain('sus_partner_id');
+      expect(lockWhere).toContain('partner-123');
+      expect(lockWhere).not.toContain('org-child-a');
+    });
+
+    it('status on a partner session works with no ?orgId (All-organizations view)', async () => {
+      asPartner('all');
+      selectQueue([partnerSession({ bytesReceived: 5 })]);
+      const res = await app.request(sessionUrl);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toMatchObject({ uploadId: UPLOAD_ID, bytesReceived: 5 });
+    });
+
+    it('a partner user with orgAccess "selected" gets 403 on chunk/complete/delete of a partner session', async () => {
+      asPartner('selected');
+      selectQueue([partnerSession()]);
+      let res = await app.request(`${sessionUrl}/chunks?offset=0`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'hello',
+      });
+      expect(res.status).toBe(403);
+
+      asPartner('selected');
+      selectQueue([partnerSession({ bytesReceived: 10 })]);
+      res = await app.request(`${sessionUrl}/complete`, { method: 'POST' });
+      expect(res.status).toBe(403);
+
+      asPartner('selected');
+      selectQueue([partnerSession()]);
+      res = await app.request(sessionUrl, { method: 'DELETE' });
+      expect(res.status).toBe(403);
+
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('an org-scope caller gets 404 on status/complete/delete of a partner session', async () => {
+      selectQueue([partnerSession()]);
+      let res = await app.request(sessionUrl);
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Upload session not found');
+
+      selectQueue([partnerSession({ bytesReceived: 10 })]);
+      res = await app.request(`${sessionUrl}/complete`, { method: 'POST' });
+      expect(res.status).toBe(404);
+
+      selectQueue([partnerSession()]);
+      res = await app.request(sessionUrl, { method: 'DELETE' });
+      expect(res.status).toBe(404);
+
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('complete uploads to the partner-keyed path and stores the S1 template when args are blank', async () => {
+      const p = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(p), { recursive: true });
+      await writeFile(p, 'helloworld');
+      asPartner('all');
+      const catalogCapture = captureChain([partnerCatalog]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([partnerSession({ bytesReceived: 10 })]) as any)
+        .mockReturnValueOnce(chainMock([partnerSession({ bytesReceived: 10 })]) as any)
+        .mockReturnValueOnce(catalogCapture.chain);
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+
+      const res = await app.request(`${sessionUrl}/complete?orgId=org-child-a`, { method: 'POST' });
+      expect(res.status, await res.clone().text()).toBe(201);
+
+      const [, s3Key] = vi.mocked(uploadBinary).mock.calls[0]!;
+      expect(s3Key).toMatch(new RegExp(`^software/partner/partner-123/${CATALOG_ID}/[0-9a-f-]{36}/installer\\.msi$`));
+      const inserted = vi.mocked(insertLatestSoftwareVersion).mock.calls[0]![1] as Record<string, unknown>;
+      expect(inserted.s3Key).toBe(s3Key);
+      expect(inserted.silentInstallArgs).toBe(S1_TEMPLATE);
+      expect(inserted.silentUninstallArgs).toBe('msiexec /x "{file}" /qn /norestart');
+      // The catalog re-read is pinned to the partner owner.
+      const catalogWhere = JSON.stringify(catalogCapture.calls.where?.[0]?.[0]);
+      expect(catalogWhere).toContain('catalog_partner_id');
+      expect(catalogWhere).toContain('partner-123');
+      // Audit is not attributed to the switcher-selected child org.
+      expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({ orgId: null });
+    });
+
+    it('complete refuses placeholder-less stored args on the S1 package before any S3 work', async () => {
+      const p = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(p), { recursive: true });
+      await writeFile(p, 'helloworld');
+      asPartner('all');
+      const session = partnerSession({
+        bytesReceived: 10,
+        versionMetadata: { version: '24.1.2', silentInstallArgs: '/qn /norestart' },
+      });
+      selectQueue([session], [session], [partnerCatalog]);
+      const res = await app.request(`${sessionUrl}/complete`, { method: 'POST' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['install_args_missing_placeholders']);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+  });
+
+  it('an org-owned upload keeps the org object key and the generic MSI default', async () => {
+    const p = uploadSessionTempPath(UPLOAD_ID);
+    await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, 'helloworld');
+    selectQueue([makeSession({ bytesReceived: 10 })], [makeSession({ bytesReceived: 10 })], [catalogRow]);
+    vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+
+    const res = await app.request(`${sessionUrl}/complete`, { method: 'POST' });
+    expect(res.status).toBe(201);
+    const [, s3Key] = vi.mocked(uploadBinary).mock.calls[0]!;
+    expect(s3Key).toMatch(new RegExp(`^software/org-123/${CATALOG_ID}/[0-9a-f-]{36}/big\\.msi$`));
+    expect((vi.mocked(insertLatestSoftwareVersion).mock.calls[0]![1] as Record<string, unknown>).silentInstallArgs)
+      .toBe('msiexec /i "{file}" /qn /norestart');
   });
 });

@@ -41,7 +41,27 @@ vi.mock('./sensitiveCommandPayload', () => ({
     payload: c.payload,
   })),
 }));
-vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false), isAgentConnected: vi.fn().mockReturnValue(false) }));
+// #4142: scriptDispatch reaches agents through the relay facade. This mock
+// bridges over the agentWs mock above (a local socket send); the facade-outcome
+// tests drive dispatchCommandToAgent directly. The real mapping is pinned in
+// agentCommandRelay.test.ts.
+vi.mock('./agentCommandRelay', async () => {
+  const ws = await import('../routes/agentWs');
+  return {
+    dispatchCommandToAgent: vi.fn(async (agentId: string, frame: unknown) => (
+      vi.mocked(ws.sendCommandToAgent)(agentId, frame as never)
+        ? { status: 'sent', via: 'local' }
+        : { status: 'offline' }
+    )),
+    agentReachability: vi.fn(async (agentId: string) => (
+      vi.mocked(ws.isAgentConnected)(agentId) ? 'connected' : 'absent'
+    )),
+    dispatchDisposition: (o: { status: string }) => (
+      o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+    ),
+  };
+});
 vi.mock('./scriptSecretDelivery', () => ({
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'Agent upgrade required: mocked message',
   SECRET_GATE_UNAVAILABLE_MESSAGE: 'Secret gate unavailable: mocked message',
@@ -176,6 +196,44 @@ describe('dispatchScriptToDevice — aiOrigin conduit (#5022 W01)', () => {
         suppressAiCommandAudit: false,
       }),
     );
+  });
+
+  // Tool catalog W04 (#5219), Decision 16: a flow run's library-script
+  // dispatch (pre-approved or released) is stamped kind 'flow' on both rows
+  // and audited as system automation naming the run — not as a user (the
+  // flow's attribution id is not a users row) and not as an AI decision.
+  it('a flow dispatch stamps kind flow and is audited as system automation with its run id', async () => {
+    const { createAuditLogAsync } = await import('./auditService');
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+
+    const result = await dispatchScriptToDevice({
+      device: device(),
+      source: savedSource(),
+      triggeredBy: 'flow-1',
+      createdBy: 'flow-1',
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+      principalActorId: null,
+    } as never);
+
+    expect(result.ok).toBe(true);
+    expect(executionInsertValues.mock.calls[0]![0]).toMatchObject({
+      aiInitiatorKind: 'flow',
+      aiSessionId: null,
+      aiAgentRunId: null,
+      triggeredBy: null,
+    });
+    expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls[0]![0]).toMatchObject({
+      action: 'ai.script.executed',
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      initiatedBy: 'automation',
+      details: expect.objectContaining({ aiInitiatorKind: 'flow', flowRunId: 'flow-run-1' }),
+    });
   });
 
   it('a saved/proposal AI dispatch suppresses commandQueue audit and relies on its own ai.script.executed write', async () => {

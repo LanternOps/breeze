@@ -97,7 +97,10 @@ func TestPackageCleanup(t *testing.T) {
 				}
 			}
 			writeTeardownShims(t, bin)
-			cmd := exec.Command("/bin/bash", "-o", "pipefail", "-c", Script())
+			// Never consult this host's real isolation journal: if one existed,
+			// the script would run the installed agent.
+			script := strings.ReplaceAll(Script(), isolationDataDir, root+"/no-journal")
+			cmd := exec.Command("/bin/bash", "-o", "pipefail", "-c", script)
 			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "FIXTURE_ROOT="+root, "FAIL_COMMAND="+failure)
 			out, err := cmd.CombinedOutput()
 			failed := failure != "" && failure != "absent" && failure != "no_sessions" && failure != "many_receipts"

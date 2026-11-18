@@ -62,6 +62,8 @@ export function isDomainGranted(grant: McpDomainGrant, domain: AiToolDomain | un
 /** Domain of an MCP tool by canonical name. `whoami` is core; unknown names are unclassified. */
 export function mcpToolDomain(toolName: string): AiToolDomain | undefined {
   if (toolName === MCP_WHOAMI_TOOL_NAME) return 'core';
+  // Server-intrinsic action-intent tools (B-W04): never in the registry.
+  if (toolName === 'get_action_status' || toolName === 'cancel_action') return 'core';
   return getToolDomain(toolName);
 }
 
@@ -79,6 +81,9 @@ const MCP_RESOURCE_DOMAINS: Array<{ pattern: RegExp; domain: AiToolDomain }> = [
   { pattern: /^breeze:\/\/alerts$/, domain: 'monitoring' },
   { pattern: /^breeze:\/\/scripts$/, domain: 'scripts' },
   { pattern: /^breeze:\/\/automations$/, domain: 'scripts' },
+  // B-W05 (#6159, D-B43): the get_fleet_health MCP App view. Exact URI only;
+  // it has no MCP_RESOURCE_PERMISSIONS row (the app branch runs first).
+  { pattern: /^ui:\/\/breeze\/fleet-health\/v1$/, domain: 'devices' },
 ];
 
 export function mcpResourceDomain(uri: string): AiToolDomain | undefined {

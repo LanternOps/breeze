@@ -594,6 +594,9 @@ export default function DeviceHardwareInventory({
                     {t("deviceHardwareInventory.used")}
                   </th>
                   <th className="px-4 py-3">
+                    {t("deviceHardwareInventory.usedPercent")}
+                  </th>
+                  <th className="px-4 py-3">
                     {t("deviceHardwareInventory.health")}
                   </th>
                 </tr>
@@ -602,7 +605,7 @@ export default function DeviceHardwareInventory({
                 {diskRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={5}
                       className="px-4 py-6 text-center text-sm text-muted-foreground"
                     >
                       {t(
@@ -619,6 +622,9 @@ export default function DeviceHardwareInventory({
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {disk.usedLabel}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {disk.percentLabel}
                       </td>
                       <td className="px-4 py-3">
                         <span

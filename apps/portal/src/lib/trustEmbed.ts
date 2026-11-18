@@ -8,7 +8,7 @@ import { withBase } from './basePath';
 import { publicOriginFor } from './publicOrigin';
 import { pickTrustCopy } from '../components/trust/trustCopy';
 import { pageCopy } from '../components/trust/copy/pageCopy';
-import { cardMeta } from '../components/trust/trustPageFormat';
+import { cardMeta, formatTrustDate } from '../components/trust/trustPageFormat';
 
 export interface TrustEmbedCard extends TrustCard {
   /** Exact https origins allowed to frame this card; [] = embedding disabled (the page answers 404). */
@@ -45,12 +45,16 @@ export async function getTrustEmbedCard(partnerSlug: string, orgSlug: string | n
 export function embedCardView(card: TrustEmbedCard) {
   const meta = cardMeta(card);
   const t = pickTrustCopy(pageCopy, card.locale);
+  const verifiedAt = card.lastEvaluatedAt ?? card.publishedAt;
   return {
     lang: meta.lang,
     title: meta.title,
     badge: t.embedBadge,
     summary: t.embedSummary(card.controlsShown, card.catalogTotal, card.controlsMet),
     lastVerified: t.embedLastVerified,
+    /** ISO date for <time datetime>; the visible text is `verifiedOn`, in the page locale (#9964). */
+    verifiedOnIso: verifiedAt.slice(0, 10),
+    verifiedOn: formatTrustDate(verifiedAt, card.locale),
     paused: t.embedPaused,
     viewFull: t.embedViewFull,
   };

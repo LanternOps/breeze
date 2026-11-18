@@ -77,4 +77,64 @@ describe('DetectionRulesEditor', () => {
     fireEvent.click(screen.getAllByTestId('detection-rule-remove')[0]!);
     expect(onChange).toHaveBeenCalledWith([{ type: 'file_exists', path: 'C:\\b' }]);
   });
+
+  // #6958 PR D: service_running is authorable.
+  it('offers service_running as a rule type and switches to a blank service clause', () => {
+    const onChange = vi.fn();
+    render(<DetectionRulesEditor rules={[{ type: 'file_exists', path: 'C:\\x' }]} onChange={onChange} />);
+    const select = screen.getByTestId('detection-rule-type') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toContain('service_running');
+    fireEvent.change(select, { target: { value: 'service_running' } });
+    expect(onChange).toHaveBeenCalledWith([{ type: 'service_running', serviceName: '' }]);
+  });
+
+  it('round-trips a service_running clause through the service name input', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <DetectionRulesEditor rules={[{ type: 'service_running', serviceName: '' }]} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText('Service name') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'ctrld' } });
+    expect(onChange).toHaveBeenLastCalledWith([{ type: 'service_running', serviceName: 'ctrld' }]);
+
+    rerender(<DetectionRulesEditor rules={[{ type: 'service_running', serviceName: 'ctrld' }]} onChange={onChange} />);
+    expect((screen.getByLabelText('Service name') as HTMLInputElement).value).toBe('ctrld');
+    expect((screen.getByTestId('detection-rule-type') as HTMLSelectElement).value).toBe('service_running');
+    expect(screen.queryByTestId('detection-rule-service-invalid')).toBeNull();
+    expect(screen.queryByTestId('detection-rule-readonly')).toBeNull();
+  });
+
+  it('flags a service name the shared schema rejects (leading "-", blank)', () => {
+    const { rerender } = render(
+      <DetectionRulesEditor rules={[{ type: 'service_running', serviceName: '-x' }]} onChange={() => {}} />,
+    );
+    expect(screen.getByTestId('detection-rule-service-invalid').textContent).toMatch(/leading "-"/);
+    rerender(<DetectionRulesEditor rules={[{ type: 'service_running', serviceName: '   ' }]} onChange={() => {}} />);
+    expect(screen.getByTestId('detection-rule-service-invalid')).toBeTruthy();
+    // A fresh, still-empty clause is not shouted at.
+    rerender(<DetectionRulesEditor rules={[{ type: 'service_running', serviceName: '' }]} onChange={() => {}} />);
+    expect(screen.queryByTestId('detection-rule-service-invalid')).toBeNull();
+  });
+
+  it('renders a rule type it cannot author read-only and leaves it untouched on edits', () => {
+    const future = { type: 'process_running', processName: 'x' } as unknown as DetectionRule;
+    const rules: DetectionRule[] = [future, { type: 'file_exists', path: '' }];
+    const onChange = vi.fn();
+    render(<DetectionRulesEditor rules={rules} onChange={onChange} />);
+
+    const readOnly = screen.getByTestId('detection-rule-readonly');
+    expect(readOnly.textContent).toContain('process_running');
+    expect(readOnly.querySelector('input, select')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('File or folder path'), { target: { value: 'C:\\app.exe' } });
+    expect(onChange).toHaveBeenCalledWith([future, { type: 'file_exists', path: 'C:\\app.exe' }]);
+  });
+
+  it('lets a read-only rule be removed', () => {
+    const future = { type: 'process_running', processName: 'x' } as unknown as DetectionRule;
+    const onChange = vi.fn();
+    render(<DetectionRulesEditor rules={[future]} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId('detection-rule-remove'));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
 });

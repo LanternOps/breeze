@@ -16,13 +16,15 @@ import { useTranslation } from 'react-i18next';
 import ChartWidget from './ChartWidget';
 import GaugeWidget from './GaugeWidget';
 import QueryBuilder, { type QueryResult } from './QueryBuilder';
-import CapacityForecast, { type ForecastPoint, type Thresholds } from './CapacityForecast';
-import SLAComplianceCard from './SLAComplianceCard';
+import CapacityForecast, { type ForecastPoint } from './CapacityForecast';
+import SLAComplianceCard, { type SlaExclusions } from './SLAComplianceCard';
+import SLAEmptyState from './SLAEmptyState';
 import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
 import { FilterSelect } from '../shared/FilterSelect';
 import { cn, formatNumber } from '@/lib/utils';
-import { formatTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatTime } from '@/lib/dateTimeFormat';
+import { utcDateOnly } from '@/lib/dateOnly';
 import { formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -31,6 +33,9 @@ const dashboardOptions = [
   { value: 'capacity', labelKey: 'analytics.analyticsPage.dashboardOptions.capacity' },
   { value: 'sla', labelKey: 'analytics.analyticsPage.dashboardOptions.sla' }
 ];
+
+/** Online devices the Query Builder covers; the page says so when it is hit. */
+const QUERY_DEVICE_LIMIT = 100;
 
 const dateRanges = [
   { value: '24h', labelKey: 'analytics.analyticsPage.dateRanges.last24Hours' },
@@ -68,6 +73,8 @@ type SummaryMetrics = {
 
 type ComplianceStats = {
   complianceRate: number;
+  /** False when the response proves there is nothing to evaluate (zero checks). */
+  hasChecks?: boolean;
   totalPolicies?: number;
   enabledPolicies?: number;
 };
@@ -75,13 +82,15 @@ type ComplianceStats = {
 type CapacityState = {
   currentValue: number;
   data: ForecastPoint[];
-  thresholds?: Thresholds;
 };
 
 type SlaSummary = {
-  uptime: number;
+  /** Null when the definition targets no measurable device yet. */
+  uptime: number | null;
   target?: number;
-  incidents?: number;
+  /** Name of the SLA definition the figures belong to. */
+  name?: string;
+  exclusions?: SlaExclusions;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -124,7 +133,17 @@ const normalizeTrendData = (raw: unknown): Array<{ timestamp: string; value: num
     .filter((item): item is { timestamp: string; value: number } => Boolean(item));
 };
 
-const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
+const UTC_MIDNIGHT_RE = /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.0+)?Z$/;
+
+/**
+ * `/metrics/trends` day buckets arrive as UTC-midnight instants but mean a
+ * calendar date; reduce them to `YYYY-MM-DD` so the axis does not label them a
+ * day early west of UTC (#10937). Any other label passes through unchanged.
+ */
+const dayBucketLabel = (label: string): string =>
+  UTC_MIDNIGHT_RE.test(label) ? utcDateOnly(label) : label;
+
+export const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
   const record = getRecord(raw);
   const seriesRecord = isRecord(record.series) ? record.series : record;
   const cpuSeries = Array.isArray(seriesRecord.cpu) ? seriesRecord.cpu : null;
@@ -140,7 +159,7 @@ const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
       series.forEach((entry, index) => {
         const item = getRecord(entry);
         const label = item.timestamp ?? item.time ?? item.label ?? item.bucket;
-        const timestamp = label ? String(label) : String(index + 1);
+        const timestamp = label ? dayBucketLabel(String(label)) : String(index + 1);
         const value = pickNumber(item.value, item.percent, item.usage, item[key]);
         const existing = merged.get(timestamp) ?? { timestamp, cpu: 0, memory: 0 };
         existing[key] = value;
@@ -166,7 +185,7 @@ const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
   return data.map((entry, index) => {
     const item = getRecord(entry);
     const label = item.timestamp ?? item.time ?? item.label ?? item.bucket;
-    const timestamp = label ? String(label) : String(index + 1);
+    const timestamp = label ? dayBucketLabel(String(label)) : String(index + 1);
     const metrics = getRecord(item.metrics);
     const value = getRecord(item.value);
     const cpu = pickNumber(
@@ -274,7 +293,12 @@ const normalizeComplianceStats = (raw: unknown): ComplianceStats => {
     }
   }
 
+  const overviewTotal = ['compliant', 'non_compliant', 'nonCompliant', 'pending', 'error']
+    .reduce((sum, key) => sum + pickNumber(overview[key]), 0);
+  const hasOverview = Object.keys(overview).length > 0;
+
   return {
+    hasChecks: hasOverview ? overviewTotal > 0 : undefined,
     complianceRate: complianceRate ?? 0,
     totalPolicies: pickOptionalNumber(source.totalPolicies, source.total, source.policyCount),
     enabledPolicies: pickOptionalNumber(source.enabledPolicies, source.enabled)
@@ -302,18 +326,9 @@ const normalizeCapacity = (raw: unknown): CapacityState => {
     })
     : [];
 
-  const thresholdsRecord = getRecord(record.thresholds);
-  const thresholds = Object.keys(thresholdsRecord).length
-    ? {
-      warning: pickOptionalNumber(thresholdsRecord.warning, thresholdsRecord.warn),
-      critical: pickOptionalNumber(thresholdsRecord.critical, thresholdsRecord.crit)
-    }
-    : undefined;
-
   return {
     currentValue: pickNumber(record.currentValue, record.current, record.utilization, forecast[0]?.value),
-    data: forecast,
-    thresholds
+    data: forecast
   };
 };
 
@@ -335,8 +350,27 @@ const normalizeSla = (raw: unknown): SlaSummary | null => {
 
   return {
     uptime,
-    target: pickOptionalNumber(sourceRecord.targetPercentage, sourceRecord.target, sourceRecord.slaTarget),
-    incidents: pickOptionalNumber(sourceRecord.incidents, sourceRecord.incidentCount, sourceRecord.breachCount)
+    target: pickOptionalNumber(sourceRecord.targetPercentage, sourceRecord.target, sourceRecord.slaTarget)
+  };
+};
+
+/**
+ * Exclusions as the compliance route applied them (`exclusions`). Undefined
+ * when the route did not report them: the definition's own flags say what was
+ * requested, not what was applied, so they are not shown as fact.
+ */
+const normalizeSlaExclusions = (complianceExclusions: unknown): SlaExclusions | undefined => {
+  if (!isRecord(complianceExclusions)) return undefined;
+  const maintenance = complianceExclusions.maintenanceWindows;
+  return {
+    weekends: complianceExclusions.weekends === true,
+    maintenance: maintenance === 'applied'
+      ? 'applied'
+      : maintenance === 'skipped_too_many_devices'
+        ? 'skipped'
+        : maintenance === 'unavailable'
+          ? 'unavailable'
+          : 'off'
   };
 };
 
@@ -445,13 +479,41 @@ const OS_PIE_SLICE_LIMIT = 5;
 
 const isDashboardValue = (value: string) => dashboardOptions.some(option => option.value === value);
 
+/** `YYYY-MM-DD` for a local calendar day — the value shape `<input type="date">` uses. */
+const toDateInputValue = (date: Date) => {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
+/** Mirrors the API's MAX_CUSTOM_RANGE_DAYS (apps/api/src/routes/analyticsQueryScope.ts). */
+const MAX_CUSTOM_RANGE_DAYS = 366;
+
+/** A custom range as `YYYY-MM-DD` local calendar days, end inclusive. */
+type CustomRange = { start: string; end: string };
+
+/**
+ * A custom range is applied only when both dates are set, in order
+ * (`YYYY-MM-DD` compares correctly as a string) and within the API's cap
+ * (end date inclusive). The API rejects anything else with a 400; before
+ * #9649 it silently fell back to 30 days.
+ */
+const isCompleteCustomRange = (start: string, end: string) => {
+  if (!start || !end || start > end) return false;
+  const spanDays = (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000 + 1;
+  return Number.isFinite(spanDays) && spanDays <= MAX_CUSTOM_RANGE_DAYS;
+};
+
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
-  const { t } = useTranslation('reports');
+  const { t } = useTranslation(['reports', 'common']);
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
   const [dateRange, setDateRange] = useState('30d');
+  // The date inputs edit a draft; only an applied range is requested (#9942),
+  // so typing a date no longer reloads every card per keystroke.
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [appliedCustomRange, setAppliedCustomRange] = useState<CustomRange | null>(null);
   const [summaryMetrics, setSummaryMetrics] = useState<SummaryMetrics>({
     uptime: 0,
     sessions: 0
@@ -467,6 +529,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [complianceStats, setComplianceStats] = useState<ComplianceStats>({ complianceRate: 0 });
   const [capacityForecast, setCapacityForecast] = useState<CapacityState>({ currentValue: 0, data: [] });
   const [slaSummary, setSlaSummary] = useState<SlaSummary | null>(null);
+  // The SLA listing loaded and holds no definition (#9940) — distinct from a
+  // load failure, which the error banner reports instead.
+  const [slaEmpty, setSlaEmpty] = useState(false);
   const [fleetSummary, setFleetSummary] = useState<FleetSummary>({
     totalDevices: 0,
     onlineDevices: 0,
@@ -500,12 +565,51 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     if (typeof window !== 'undefined') window.location.hash = value;
   }, []);
 
-  const rangeLabel = useMemo(
-    () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
-    [dateRange, t]
-  );
+  const customDraftComplete = isCompleteCustomRange(customStartDate, customEndDate);
+  const customDraftApplied = appliedCustomRange !== null
+    && appliedCustomRange.start === customStartDate
+    && appliedCustomRange.end === customEndDate;
+  const canApplyCustomRange = customDraftComplete && !customDraftApplied;
+
+  const changeDateRange = useCallback((value: string) => {
+    if (value === 'custom') {
+      if (appliedCustomRange) {
+        // Coming back to a range applied earlier: show it again, drop any
+        // unapplied edits, so the inputs match what the cards show.
+        setCustomStartDate(appliedCustomRange.start);
+        setCustomEndDate(appliedCustomRange.end);
+      } else {
+        // First switch: seed the last 30 days and apply it at once, so the
+        // "Custom range" label sits over a real, visible window instead of an
+        // implicit default (#9649). That is the one load this switch costs.
+        const today = new Date();
+        const start = new Date(today);
+        start.setDate(start.getDate() - 30);
+        const seeded = { start: toDateInputValue(start), end: toDateInputValue(today) };
+        setCustomStartDate(seeded.start);
+        setCustomEndDate(seeded.end);
+        setAppliedCustomRange(seeded);
+      }
+    }
+    setDateRange(value);
+  }, [appliedCustomRange]);
+
+  /** Apply button and Enter in a date input (form submit) — the only way an edited range loads. */
+  const applyCustomRange = useCallback((event?: React.FormEvent) => {
+    event?.preventDefault();
+    if (!canApplyCustomRange) return;
+    setAppliedCustomRange({ start: customStartDate, end: customEndDate });
+  }, [canApplyCustomRange, customStartDate, customEndDate]);
 
   const fetchAnalyticsData = useCallback(async () => {
+    // Defensive: "custom" is only ever selected together with an applied
+    // range (see changeDateRange). Never request without a window — the API
+    // used to answer that with 30 days under a "Custom range" label.
+    if (dateRange === 'custom' && !appliedCustomRange) {
+      setError(undefined);
+      setLoading(false);
+      return;
+    }
     setError(undefined);
     setLoading(true);
     setAlertsAvailable(false);
@@ -514,11 +618,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     const errors: string[] = [];
     const params = new URLSearchParams();
 
-    if (dateRange !== 'custom') {
-      params.set('range', dateRange);
+    if (dateRange === 'custom' && appliedCustomRange) {
+      params.set('startDate', appliedCustomRange.start);
+      params.set('endDate', appliedCustomRange.end);
     } else {
-      if (customStartDate) params.set('startDate', customStartDate);
-      if (customEndDate) params.set('endDate', customEndDate);
+      params.set('range', dateRange);
     }
 
     const queryString = params.toString();
@@ -548,10 +652,12 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                 ? metricsRecord.uptimeChangeLabel
                 : undefined,
               sessions: pickNumber(
-                metricsRecord.remoteSessions,
+                // `sessions` is the in-range count; `remoteSessions` is the live
+                // active count and only a fallback when `sessions` is absent.
                 metricsRecord.sessions,
-                metrics.remoteSessions,
-                metrics.sessions
+                metricsRecord.remoteSessions,
+                metrics.sessions,
+                metrics.remoteSessions
               ),
               sessionsChange: pickOptionalNumber(metricsRecord.sessionsChange, metrics.sessionsChange),
               sessionsChangeLabel: typeof metricsRecord.sessionsChangeLabel === 'string'
@@ -642,36 +748,45 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             // live one call deeper. Prefer live compliance for the first
             // definition, falling back to whatever the listing carried.
             const definitions = getRecord(slaData).data;
-            const firstDefinition = getRecord(Array.isArray(definitions) ? definitions[0] : undefined);
+            const definitionList = Array.isArray(definitions) ? definitions : null;
+            const firstDefinition = getRecord(definitionList?.[0]);
             if (typeof firstDefinition.id === 'string') {
               try {
                 const compliance = getRecord(await fetchJson(`/analytics/sla/${firstDefinition.id}/compliance`));
                 const uptime = pickOptionalNumber(compliance.liveUptime);
-                if (uptime !== undefined) {
+                // `liveUptime: null` = the definition targets no device yet;
+                // still show its card rather than nothing (#9940).
+                if (uptime !== undefined || compliance.liveUptime === null) {
                   summary = {
-                    uptime,
+                    uptime: uptime ?? null,
                     target: pickOptionalNumber(compliance.uptimeTarget, firstDefinition.uptimeTarget) ?? summary?.target,
-                    incidents: summary?.incidents
+                    name: typeof firstDefinition.name === 'string' ? firstDefinition.name : undefined,
+                    exclusions: normalizeSlaExclusions(compliance.exclusions)
                   };
                 }
               } catch {
                 // A definition exists but its numbers couldn't be fetched.
-                // When the listing itself carried a figure we keep showing it;
-                // otherwise this is a load failure, not the "no SLA configured"
-                // empty state.
-                if (summary === null) errors.push('sla');
+                // When the listing itself carried a figure we keep showing it
+                // (the failure is reported just below otherwise).
               }
             }
 
+            const empty = definitionList !== null && definitionList.length === 0 && summary === null;
+            // A definition with no figure to show is a load failure, not the
+            // "no SLA configured" empty state — never render nothing silently.
+            if (summary === null && definitionList !== null && definitionList.length > 0) errors.push('sla');
+
             setSlaSummary(summary);
+            setSlaEmpty(empty);
           } catch (err) {
             errors.push('sla');
             setSlaSummary(null);
+            setSlaEmpty(false);
           }
         })(),
         (async () => {
           try {
-            const devicesData = await fetchJson('/devices?limit=100&status=online');
+            const devicesData = await fetchJson(`/devices?limit=${QUERY_DEVICE_LIMIT}&status=online`);
             const payload = getRecord(devicesData);
             const data = Array.isArray(payload.data) ? payload.data : [];
             setDeviceIds(
@@ -748,7 +863,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     } finally {
       setLoading(false);
     }
-  }, [dateRange, customEndDate, customStartDate, stableT]);
+  }, [dateRange, appliedCustomRange, stableT]);
 
   useEffect(() => {
     fetchAnalyticsData();
@@ -871,7 +986,6 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             {t('analytics.analyticsPage.widgets.alertTable.title')}
           </a>
         </h3>
-        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
       </div>
       {alertRows.length === 0 ? (
         <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
@@ -907,14 +1021,33 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   );
 
   const trendCard = (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
+    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs" data-testid="analytics-trend-card">
       <div className="mb-4 flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold">{fleetSummary.trendLabel}</h3>
         <p className="text-xs text-muted-foreground">{t('analytics.executiveSummary.weeklyTrend')}</p>
       </div>
-      {fleetSummary.trendData.length < 2 ? (
+      {fleetSummary.trendData.length === 0 ? (
         <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
           {t('analytics.chartWidget.noData')}
+        </div>
+      ) : fleetSummary.trendData.length === 1 ? (
+        // A line needs two points; one week of data is still data (#9942).
+        <div className="flex flex-1 flex-col justify-end gap-1" data-testid="analytics-trend-single-week">
+          <span className="text-2xl font-semibold tabular-nums">
+            {formatNumber(fleetSummary.trendData[0]!.value)}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {t('analytics.analyticsPage.trend.weekOf', {
+              // Week buckets are UTC midnights (date_trunc('week') on the
+              // API); format in UTC so the label does not slip a day west.
+              date: formatDate(fleetSummary.trendData[0]!.timestamp, {
+                timeZone: 'UTC',
+                month: 'short',
+                day: 'numeric',
+                fallback: fleetSummary.trendData[0]!.timestamp
+              })
+            })}
+          </span>
         </div>
       ) : (
         <div className="flex flex-1 flex-col justify-end">
@@ -933,6 +1066,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <GaugeWidget
       title={t('analytics.analyticsPage.widgets.complianceGauge.title')}
       value={complianceStats.complianceRate}
+      empty={complianceStats.hasChecks === false}
       description={complianceStats.totalPolicies !== undefined
         ? t('analytics.analyticsPage.widgets.complianceGauge.policiesEvaluated', {
           count: complianceStats.enabledPolicies ?? complianceStats.totalPolicies
@@ -945,27 +1079,18 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <SLAComplianceCard
       uptime={slaSummary.uptime}
       target={slaSummary.target}
-      incidents={slaSummary.incidents}
-      periodLabel={rangeLabel}
+      definitionName={slaSummary.name}
+      exclusions={slaSummary.exclusions}
     />
-  ) : (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
-      <div className="mb-4 flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold">{t('analytics.slaComplianceCard.title')}</h3>
-        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
-      </div>
-      <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
-        {t('analytics.chartWidget.noData')}
-      </div>
-    </div>
-  );
+  ) : slaEmpty ? (
+    <SLAEmptyState onCreated={() => void fetchAnalyticsData()} />
+  ) : null;
 
   const capacityCard = (
     <CapacityForecast
       title={t('analytics.analyticsPage.widgets.capacity.title')}
       currentValue={capacityForecast.currentValue}
       data={capacityForecast.data}
-      thresholds={capacityForecast.thresholds}
     />
   );
 
@@ -985,7 +1110,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           <FilterSelect
             label={t('analytics.analyticsPage.dateRangeSelectLabel')}
             value={dateRange}
-            onChange={event => setDateRange(event.target.value)}
+            onChange={event => changeDateRange(event.target.value)}
             className="h-9"
           >
             {dateRanges.map(option => (
@@ -1007,20 +1132,43 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       </div>
 
       {dateRange === 'custom' && (
-        <div className="flex flex-wrap items-center gap-3">
+        <form
+          className="flex flex-wrap items-center gap-3"
+          onSubmit={applyCustomRange}
+          data-testid="analytics-custom-range-form"
+        >
           <input
             type="date"
+            aria-label={t('analytics.queryBuilder.labels.startDate')}
+            data-testid="analytics-custom-range-start"
             value={customStartDate}
+            max={customEndDate || undefined}
             onChange={event => setCustomStartDate(event.target.value)}
             className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <input
             type="date"
+            aria-label={t('analytics.queryBuilder.labels.endDate')}
+            data-testid="analytics-custom-range-end"
             value={customEndDate}
+            min={customStartDate || undefined}
             onChange={event => setCustomEndDate(event.target.value)}
             className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
-        </div>
+          <button
+            type="submit"
+            data-testid="analytics-custom-range-apply"
+            disabled={!canApplyCustomRange}
+            className="inline-flex h-9 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('common:actions.apply')}
+          </button>
+          {!customDraftComplete && (
+            <p className="text-xs text-muted-foreground" role="status">
+              {t('analytics.analyticsPage.customRangeIncomplete')}
+            </p>
+          )}
+        </form>
       )}
 
       <div className="flex gap-1 border-b" role="tablist">
@@ -1191,6 +1339,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             </button>
             {exploreOpen && (
               <>
+                {deviceIds.length >= QUERY_DEVICE_LIMIT && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('analytics.queryBuilder.coverageNote', { count: QUERY_DEVICE_LIMIT })}
+                  </p>
+                )}
                 <QueryBuilder deviceIds={deviceIds} onQueryResult={handleQueryResult} />
                 {queryResult && (
                   <ChartWidget

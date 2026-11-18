@@ -43,6 +43,7 @@ vi.mock('../services/invoiceService', async (importActual) => ({
 vi.mock('../services/partnerStripe', async (importActual) => ({
   ...(await importActual<typeof import('../services/partnerStripe')>()),
   isPartnerOnlinePaymentAvailable: vi.fn(async () => true),
+  isPartnerOnlinePaymentAvailableOnCallerConnection: vi.fn(async () => true),
 }));
 vi.mock('../services/autopay/customerInvoiceStatus', () => ({ getCustomerInvoiceAutopay: vi.fn(async () => ({ enrolled: false, status: null })) }));
 vi.mock('../services/autopay/reservation', async (importActual) => ({

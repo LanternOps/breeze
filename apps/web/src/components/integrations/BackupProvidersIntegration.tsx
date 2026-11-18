@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eye, EyeOff, HardDrive, Loader2, Plus } from "lucide-react";
+import { HardDrive, Loader2, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { getJwtClaims } from "../../lib/authScope";
 import { fetchWithAuth } from "../../stores/auth";
 import { handleActionError, runAction } from "@/lib/runAction";
 import BackupProviderConnectionCard, {
+  BackupCredentialInput,
   type BackupProviderConnection,
   type BackupProviderTestResult,
 } from "./BackupProviderConnectionCard";
 import BackupProviderCustomerMapping, { type BackupProviderCustomer } from "./BackupProviderCustomerMapping";
+import { BACKUP_PROVIDER_FORMS, canSubmitCreate, createCredentials, getBackupProviderForm } from "./backupProviderForms";
 import "@/lib/i18n";
+
+const emptyForm = { provider: "cove", name: "", baseUrl: "", showInPortal: false, values: {} as Record<string, string> };
 
 export default function BackupProvidersIntegration() {
   const { t } = useTranslation("integrations");
@@ -23,10 +27,11 @@ export default function BackupProvidersIntegration() {
   const [customers, setCustomers] = useState<Record<string, BackupProviderCustomer[]>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<BackupProviderTestResult | null>(null);
+  const [testResult, setTestResult] = useState<(BackupProviderTestResult & { provider: string }) | null>(null);
 
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ name: "", partnerName: "", username: "", password: "", showInPortal: false });
+  const [form, setForm] = useState(emptyForm);
+  const providerForm = getBackupProviderForm(form.provider);
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -79,21 +84,18 @@ export default function BackupProvidersIntegration() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              provider: "cove",
+              provider: form.provider,
+              ...(providerForm.baseUrl ? { baseUrl: form.baseUrl.trim() } : {}),
               name: form.name.trim(),
               showProviderNameInPortal: form.showInPortal,
-              credentials: {
-                partnerName: form.partnerName.trim(),
-                username: form.username.trim(),
-                password: form.password,
-              },
+              credentials: createCredentials(providerForm, form.values),
             }),
           }),
         errorFallback: t("backupProviders.errorSave"),
         successMessage: t("backupProviders.savedToast"),
       });
       setAdding(false);
-      setForm({ name: "", partnerName: "", username: "", password: "", showInPortal: false });
+      setForm(emptyForm);
       await load();
     } catch (err) {
       handleActionError(err, t("backupProviders.errorSave"));
@@ -135,8 +137,10 @@ export default function BackupProvidersIntegration() {
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-sm">
               <span className="text-xs text-muted-foreground">{t("backupProviders.providerLabel")}</span>
-              <select data-testid="backup-add-provider" disabled className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm">
-                <option value="cove">{t("backupProviders.cove")}</option>
+              <select data-testid="backup-add-provider" value={form.provider} onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value, values: {} }))} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm">
+                {BACKUP_PROVIDER_FORMS.map((option) => (
+                  <option key={option.provider} value={option.provider}>{t(/* i18n-dynamic */ option.labelKey)}</option>
+                ))}
               </select>
             </label>
             <label className="text-sm">
@@ -144,52 +148,31 @@ export default function BackupProvidersIntegration() {
               <input
                 data-testid="backup-add-name"
                 value={form.name}
-                placeholder={t("backupProviders.namePlaceholder")}
+                placeholder={t(/* i18n-dynamic */ providerForm.namePlaceholderKey)}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
               />
             </label>
-            <label className="text-sm">
-              <span className="text-xs text-muted-foreground">{t("backupProviders.partnerNameLabel")}</span>
-              <input
-                data-testid="backup-add-partner-name"
-                value={form.partnerName}
-                onChange={(e) => setForm((f) => ({ ...f, partnerName: e.target.value }))}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+            {providerForm.fields.map((field) => (
+              <BackupCredentialInput
+                key={field.key}
+                field={field}
+                testIdPrefix="backup-add"
+                value={form.values[field.key] ?? ""}
+                onChange={(value) => setForm((f) => ({ ...f, values: { ...f.values, [field.key]: value } }))}
+                // The Cove token has never carried the attribute; only plain masked secrets do.
+                required={field.input === "secret" && field.requiredOnCreate}
+                revealed={showPassword}
+                onToggleReveal={() => setShowPassword((v) => !v)}
               />
-            </label>
-            <label className="text-sm">
-              <span className="text-xs text-muted-foreground">{t("backupProviders.usernameLabel")}</span>
-              <input
-                data-testid="backup-add-username"
-                autoComplete="off"
-                value={form.username}
-                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="text-xs text-muted-foreground">{t("backupProviders.passwordLabel")}</span>
-              <div className="mt-1 flex items-center gap-1">
-                <input
-                  data-testid="backup-add-password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                  value={form.password}
-                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                />
-                <button
-                  type="button"
-                  data-testid="backup-add-password-toggle"
-                  aria-label={showPassword ? t("backupProviders.hidePassword") : t("backupProviders.showPassword")}
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="rounded-md border px-2 py-1.5"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </label>
+            ))}
+            {providerForm.baseUrl && (
+              <label className="text-sm sm:col-span-2">
+                <span className="text-xs text-muted-foreground">{t("backupProviders.baseUrlLabel")}</span>
+                <input data-testid="backup-add-base-url" type="text" required placeholder={providerForm.baseUrl.placeholder} aria-describedby="backup-add-base-url-help" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
+                <span id="backup-add-base-url-help" className="mt-1 block text-xs text-muted-foreground">{t(/* i18n-dynamic */ providerForm.baseUrl.helpKey)}</span>
+              </label>
+            )}
             <label className="flex items-end gap-2 text-sm">
               <input
                 data-testid="backup-add-portal-toggle"
@@ -201,13 +184,13 @@ export default function BackupProvidersIntegration() {
             </label>
           </div>
           <p data-testid="backup-add-help" className="mt-3 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-            {t("backupProviders.credentialsHelp")}
+            {t(/* i18n-dynamic */ providerForm.helpKey)}
           </p>
           <div className="mt-4 flex gap-2">
             <button
               type="button"
               data-testid="backup-add-submit"
-              disabled={submitting || !form.name.trim() || !form.password}
+              disabled={submitting || !form.name.trim() || !canSubmitCreate(providerForm, form.values) || (providerForm.baseUrl !== null && !form.baseUrl.trim())}
               onClick={() => void handleCreate()}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
@@ -238,9 +221,10 @@ export default function BackupProvidersIntegration() {
       ) : (
         connections.map((connection) => (
           <div key={connection.id}>
-            <BackupProviderConnectionCard connection={connection} onChanged={() => void load()} onTestResult={setTestResult} />
+            <BackupProviderConnectionCard connection={connection} onChanged={() => void load()} onTestResult={(result) => setTestResult({ ...result, provider: connection.provider })} />
             <BackupProviderCustomerMapping
               connectionId={connection.id}
+              provider={connection.provider}
               customers={customers[connection.id] ?? []}
               onChanged={() => void load()}
             />
@@ -262,7 +246,7 @@ export default function BackupProvidersIntegration() {
             ) : (
               <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
                 <p>{testResult.error ?? testResult.message}</p>
-                <p className="mt-2 text-muted-foreground">{t("backupProviders.credentialsHelp")}</p>
+                <p className="mt-2 text-muted-foreground">{t(/* i18n-dynamic */ getBackupProviderForm(testResult.provider).helpKey)}</p>
               </div>
             )}
             <div className="mt-6 flex justify-end">

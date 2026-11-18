@@ -1,9 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EXTENSION_HOST_EVENT_NAME, type ExtensionHostEventV1 } from '@breeze/extension-web-sdk';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  EXTENSION_HOST_EVENT_NAME,
+  createExtensionHostApiV1,
+  type ExtensionHostEventV1,
+  type ExtensionHostTransport,
+} from '@breeze/extension-web-sdk';
 import { defineWorkspaceElements, WorkspaceDeviceIndex } from './index';
 import { WORKSPACE_API_BASE } from './api';
 
 const ORG_ID = 'org-1';
+
+// The host API transport — what the web host's authenticated fetch receives.
+// The GLOBAL fetch must never be used (#11922).
+let transport: Mock<ExtensionHostTransport> = vi.fn<ExtensionHostTransport>();
+const hostApi = createExtensionHostApiV1({
+  extensionName: 'workspace',
+  transport: (path, init) => transport(path, init),
+});
 const DEVICE_ID = 'dev-1';
 
 function tabContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -34,16 +47,22 @@ function summary(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
-async function mountTab(context: Record<string, unknown> = tabContext()): Promise<WorkspaceDeviceIndex> {
+async function mountTab(
+  context: Record<string, unknown> = tabContext(),
+  { withHostApi = true } = {},
+): Promise<WorkspaceDeviceIndex> {
   const element = document.createElement('workspace-device-index') as WorkspaceDeviceIndex;
   document.body.append(element);
+  // Same order as ExtensionElementHost: host API first, then context.
+  if (withHostApi) element.hostApi = hostApi;
   element.context = context;
   await element.updateComplete;
   return element;
 }
 
 describe('workspace-device-index', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: Mock<ExtensionHostTransport>;
+  let globalFetch: ReturnType<typeof vi.fn>;
   let hostEvents: ExtensionHostEventV1[];
   const captureEvent = (event: Event): void => {
     hostEvents.push((event as CustomEvent).detail as ExtensionHostEventV1);
@@ -51,23 +70,34 @@ describe('workspace-device-index', () => {
 
   beforeEach(() => {
     defineWorkspaceElements();
-    fetchMock = vi.fn(async () => jsonResponse(summary()));
-    vi.stubGlobal('fetch', fetchMock);
+    fetchMock = vi.fn<ExtensionHostTransport>(async () => jsonResponse(summary()));
+    transport = fetchMock;
+    globalFetch = vi.fn(async () => jsonResponse({ error: 'Missing or invalid authorization header' }, 401));
+    vi.stubGlobal('fetch', globalFetch);
     hostEvents = [];
     document.addEventListener(EXTENSION_HOST_EVENT_NAME, captureEvent);
   });
 
   afterEach(() => {
+    expect(globalFetch).not.toHaveBeenCalled();
     document.removeEventListener(EXTENSION_HOST_EVENT_NAME, captureEvent);
     document.body.replaceChildren();
     vi.unstubAllGlobals();
   });
 
-  it('fetches the aggregate summary for the device in context', async () => {
+  it('fetches the aggregate summary for the device in context through the host API', async () => {
     await mountTab();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${WORKSPACE_API_BASE}devices/${DEVICE_ID}/summary?orgId=${ORG_ID}`);
-    expect(init.credentials).toBe('same-origin');
+    expect(init.method).toBe('GET');
+  });
+
+  it('without a host API, renders an error and sends no request (never a bare fetch)', async () => {
+    const element = await mountTab(tabContext(), { withHostApi: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const alert = element.shadowRoot?.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('could not be loaded');
+    expect(alert?.textContent).not.toContain('not authorized');
   });
 
   it('renders only aggregate device indexing data', async () => {
@@ -90,14 +120,14 @@ describe('workspace-device-index', () => {
     const element = await mountTab(context as Record<string, unknown>);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(element.shadowRoot?.querySelector('[role="alert"]')?.textContent)
-      .toContain('invalid host context');
+      .toContain('Knowledge received an invalid host context');
   });
 
   it('renders a quiet empty state when the device has no index (404)', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Device not found' }, 404));
     const element = await mountTab();
     expect(element.shadowRoot?.querySelector('[role="status"]')?.textContent)
-      .toContain('no Workspace index');
+      .toContain('no Knowledge index');
   });
 
   it('shows an unauthorized message on 403 without echoing server text', async () => {
@@ -105,6 +135,8 @@ describe('workspace-device-index', () => {
     const element = await mountTab();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('not authorized');
+    expect(alert?.textContent).toContain('Knowledge index');
+    expect(alert?.textContent).not.toMatch(/workspace/i);
     expect(element.shadowRoot?.querySelector('b')).toBeNull();
   });
 
@@ -126,6 +158,7 @@ describe('workspace-device-index', () => {
     });
     const element = document.createElement('workspace-device-index') as WorkspaceDeviceIndex;
     document.body.append(element);
+    element.hostApi = hostApi;
     element.context = tabContext();
     expect(capturedSignal).toBeDefined();
     element.remove();

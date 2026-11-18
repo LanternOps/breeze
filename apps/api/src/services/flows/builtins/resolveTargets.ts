@@ -1,0 +1,93 @@
+/**
+ * Tool Catalog W06 (#5221) Task A4 — the `resolve_targets` built-in (Tier 1,
+ * `devices.read`): a target, a legacy condition array, explicit device ids, or
+ * an earlier fleet step's device set, resolved once in the run org. Its output is the fleet
+ * shape with every set equal to the resolved set, plus each device's hostname
+ * and display name (converted Jobs' per-device notices and alerts read them).
+ * A `fromStep … set: 'failed'` selector also gives each device the reason its
+ * dispatch failed (`failureReason`, #10705), read from the fleet step's
+ * per-device rows, so a converted Job's on-failure notice can name it.
+ *
+ * Refusals are policy failures (they end the run, like a legacy run that
+ * dispatched nothing): a broken target is `targets_unresolvable` with the
+ * legacy diagnostic text; more than FLEET_MAX_TARGETS devices is
+ * `targets_over_cap` — the set is never truncated.
+ */
+import { FLEET_MAX_TARGETS, type FlowFleetStepOutput, type FlowValue, type LegacyCondition, type DeploymentTargetConfig } from '@breeze/shared';
+import type { StepOutcome } from '../stepExecutor';
+import { resolveDeviceIdsInRunOrg, resolveTargetsOnce, type FleetDevice } from './fleetTargets';
+import { loadFleetDeviceFailureReasons, loadFleetStepOutput } from './stepOutputs';
+import type { BuiltinContext } from './types';
+
+export type ResolveTargetsInput =
+  | { target: DeploymentTargetConfig; conditions?: undefined; deviceIds?: undefined; fromStep?: undefined }
+  | { conditions: LegacyCondition[]; target?: undefined; deviceIds?: undefined; fromStep?: undefined }
+  | { deviceIds: string[]; target?: undefined; conditions?: undefined; fromStep?: undefined }
+  | { fromStep: { stepId: string; set: 'succeeded' | 'dispatched' | 'failed' }; target?: undefined; conditions?: undefined; deviceIds?: undefined };
+
+function policyFailure(code: 'targets_unresolvable' | 'targets_over_cap', message: string): StepOutcome {
+  return { kind: 'failed', code, message, policy: true };
+}
+
+/**
+ * A device's failure reason is cut to this many characters, so 500 failed
+ * devices stay well under the stored-output cap (`FLOW_RUN_LIMITS.maxStoredOutputBytes`;
+ * past it the output is a preview and every failure notice reading it is lost).
+ */
+export const FLEET_FAILURE_REASON_MAX_CHARS = 160;
+export const NO_FAILURE_REASON = 'No failure reason was recorded.';
+
+/** Cut to the cap without leaving the high half of a surrogate pair at the end. */
+function cutReason(reason: string): string {
+  return reason.slice(0, FLEET_FAILURE_REASON_MAX_CHARS).replace(/[\uD800-\uDBFF]$/, '');
+}
+
+export function overCapMessage(count: number): string {
+  return `The target resolved to ${count} devices; a flow step may target at most ${FLEET_MAX_TARGETS}. Nothing was run.`;
+}
+
+export async function executeResolveTargets(input: ResolveTargetsInput, ctx: BuiltinContext): Promise<StepOutcome> {
+  const run = { orgId: ctx.run.orgId, partnerId: ctx.auth.partnerId! };
+  let found: FleetDevice[];
+  let warnings: string[] = [];
+  if (input.fromStep) {
+    const sets = await loadFleetStepOutput(ctx.run.id, input.fromStep.stepId);
+    if (!sets) {
+      return policyFailure('targets_unresolvable', `Step '${input.fromStep.stepId}' has no device set to read.`);
+    }
+    const ids = input.fromStep.set === 'succeeded' ? sets.succeededDeviceIds
+      : input.fromStep.set === 'dispatched' ? sets.dispatchedDeviceIds
+        : sets.failedDeviceIds;
+    if (ids.length > FLEET_MAX_TARGETS) return policyFailure('targets_over_cap', overCapMessage(ids.length));
+    found = await resolveDeviceIdsInRunOrg(run, ids);
+    if (input.fromStep.set === 'failed' && found.length > 0) {
+      const reasons = await loadFleetDeviceFailureReasons(ctx.run.id, input.fromStep.stepId, found.map((d) => d.id));
+      found = found.map((d) => ({ ...d, failureReason: cutReason(reasons.get(d.id) ?? NO_FAILURE_REASON) }));
+    }
+  } else if (input.deviceIds) {
+    // Explicit ids (rendered templates included), kept to the run org's devices like a fromStep set.
+    if (input.deviceIds.length > FLEET_MAX_TARGETS) return policyFailure('targets_over_cap', overCapMessage(input.deviceIds.length));
+    found = await resolveDeviceIdsInRunOrg(run, input.deviceIds);
+  } else {
+    const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions! });
+    if (resolved.problems.length > 0) {
+      return policyFailure('targets_unresolvable', resolved.problems.join('; '));
+    }
+    if (resolved.deviceIds.length > FLEET_MAX_TARGETS) {
+      return policyFailure('targets_over_cap', overCapMessage(resolved.deviceIds.length));
+    }
+    found = resolved.devices;
+    warnings = resolved.warnings;
+  }
+  const ids = found.map((d) => d.id);
+  const output: FlowFleetStepOutput = {
+    dispatchedDeviceIds: ids,
+    succeededDeviceIds: ids,
+    failedDeviceIds: [],
+    skippedOfflineDeviceIds: [],
+    devices: found,
+    count: ids.length,
+    warnings,
+  };
+  return { kind: 'completed', output: output as unknown as FlowValue, truncated: false };
+}

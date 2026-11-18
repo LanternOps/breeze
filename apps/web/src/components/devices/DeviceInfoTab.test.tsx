@@ -107,6 +107,28 @@ describe('DeviceInfoTab — OS version display', () => {
     expect(screen.queryByText('macOS 26.5.1')).toBeNull();
   });
 
+  it('derives the OS Build row from a bare NT osVersion like the header does (#9610)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          osVersion: '10.0.22631.4317',
+          osBuild: '',
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Operating System');
+    const label = screen.getByText('OS Build');
+    expect(label.parentElement).toHaveTextContent('22631');
+  });
+
   it('capitalizes Linux distro names in the OS Version row', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -348,6 +370,43 @@ describe('DeviceInfoTab — hardware summary display', () => {
     expect(screen.getByText('ASUS')).toBeInTheDocument();
     expect(screen.queryByText('System Serial Number')).toBeNull();
     expect(screen.queryByText('System Product Name')).toBeNull();
+  });
+
+  describe('product number (#9593)', () => {
+    const renderWithHardware = async (hardware: Record<string, unknown>) => {
+      fetchWithAuthMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url === `/devices/${deviceId}` && method === 'GET') {
+          return makeJsonResponse({ ...baseDeviceInfoPayload, hardware });
+        }
+        if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+      render(<DeviceInfoTab deviceId={deviceId} />);
+      await screen.findByText('Hardware Summary');
+    };
+
+    it('shows the product number directly after the serial number', async () => {
+      await renderWithHardware({ serialNumber: 'SN-1', productSku: '5S3F8EA#ABB', manufacturer: 'HP' });
+
+      const value = screen.getByText('5S3F8EA#ABB');
+      const label = screen.getByText('Product Number');
+      expect(value.parentElement).toBe(label.parentElement);
+      expect(label.parentElement?.previousElementSibling).toHaveTextContent('Serial Number');
+    });
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['blank', '  '],
+      ['a placeholder', 'To be filled by O.E.M.'],
+    ])('hides the row when the value is %s', async (_label, productSku) => {
+      await renderWithHardware({ serialNumber: 'SN-1', productSku, manufacturer: 'HP' });
+
+      expect(screen.getByText('Serial Number')).toBeInTheDocument();
+      expect(screen.queryByText('Product Number')).toBeNull();
+    });
   });
 
   it('renders motherboard details in the hardware summary', async () => {
@@ -696,6 +755,28 @@ describe('DeviceInfoTab — Breeze Assist install issue (#6925)', () => {
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('helper-install-issue')).toBeNull();
   });
+
+  // #10183, #10185 (#10190 W01): Assist installed but not run by the agent.
+  it.each([
+    ['webview2_outdated', /WebView2 Runtime is older than Breeze Assist needs/, 'Unavailable: WebView2 Runtime too old'],
+    ['crash_loop', /kept closing right after it started.*6 hours/, 'Unavailable: keeps closing'],
+    ['unmanaged_install', /not installed by Breeze.*Deploy is off/, 'Unavailable: not installed by Breeze'],
+  ])('explains %s and shows Assist unavailable', async (issue, notice, status) => {
+    load({ helperVersion: '0.125.0', helperInstallIssue: issue, helperInstallIssueSince: '2026-10-01T00:00:00.000Z' });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect((await screen.findByTestId('helper-install-issue')).textContent).toMatch(notice);
+    expect(screen.getByTestId('assist-status').textContent).toContain(status);
+  });
+
+  it.each([
+    [{ helperVersion: '0.125.0', helperInstallIssue: null }, 'Installed'],
+    [{ helperVersion: null, helperInstallIssue: null }, 'Not deployed'],
+    [{ helperVersion: null, helperInstallIssue: 'awaiting_server_offer' }, 'Unavailable: not installed yet'],
+  ])('derives the Breeze Assist row from %j', async (extra, status) => {
+    load(extra);
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect((await screen.findByTestId('assist-status')).textContent).toBe(`Breeze Assist${status}`);
+  });
 });
 
 // #8620 — terminal watchdog-install failure banner. Read-only: the API only
@@ -974,5 +1055,160 @@ describe('DeviceInfoTab — logs not arriving after a level raise (#8612)', () =
     expect(line.textContent).toMatch(/No logs received since the log level was raised/);
     expect(line.textContent).not.toMatch(/fail|error|broken/i);
     expect(line.textContent).toContain('2026');
+  });
+});
+
+// #8868 — control-plane block notice. The API sends a derived
+// `controlPlaneBlock` view; locationHost / certIssuer come from whatever
+// answered on the device's network, so they render as escaped plain text only.
+describe('DeviceInfoTab — control-plane block notice (#8868)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(controlPlaneBlock: Record<string, unknown> | null) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, controlPlaneBlock });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  const ACTIVE = {
+    state: 'active',
+    kind: 'web_filter',
+    host: 'cp.example',
+    firstSeenAt: '2026-10-18T09:00:00.000Z',
+    lastSeenAt: '2026-10-18T09:03:00.000Z',
+    httpStatus: 302,
+    locationHost: 'warn.filter-a.example',
+    reachableViaEch: false,
+  };
+
+  async function notice() {
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    return screen.findByTestId('control-plane-block-notice');
+  }
+
+  function expectHowToFix(el: HTMLElement) {
+    const link = el.querySelector('a');
+    expect(link?.textContent).toBe('How to fix');
+    expect(link?.getAttribute('href')).toBe(
+      'https://docs.breezermm.com/agents/advanced-install/#blocked-by-a-network-filter',
+    );
+  }
+
+  it('web_filter: title, the filter host as text, and the how-to-fix link', async () => {
+    load(ACTIVE);
+    const el = await notice();
+    expect(el.textContent).toContain('Blocked by a network filter');
+    expect(el.textContent).toContain('answering in place of the Breeze server (warn.filter-a.example)');
+    expect(el.textContent).not.toContain('deviceInfoTab.');
+    expectHowToFix(el);
+    // The filter host is never a link.
+    expect(el.querySelectorAll('a')).toHaveLength(1);
+  });
+
+  it('web_filter without a Location host interpolates "no detail"', async () => {
+    load({ ...ACTIVE, locationHost: undefined });
+    const el = await notice();
+    expect(el.textContent).toContain('(no detail)');
+  });
+
+  it('captive_portal renders its own copy under the filter title', async () => {
+    load({ ...ACTIVE, kind: 'captive_portal', httpStatus: 511, locationHost: undefined });
+    const el = await notice();
+    expect(el.textContent).toContain('sign-in (captive portal) page');
+    expect(el.textContent).toContain('Blocked by a network filter');
+    expectHowToFix(el);
+  });
+
+  it('plaintext_unknown renders its own copy', async () => {
+    load({ ...ACTIVE, kind: 'plaintext_unknown', httpStatus: undefined, locationHost: undefined });
+    const el = await notice();
+    expect(el.textContent).toContain('answered the Breeze connection with plain HTTP instead of TLS');
+  });
+
+  it('untrusted_certificate uses its own title and names the issuer as text', async () => {
+    load({ ...ACTIVE, kind: 'untrusted_certificate', httpStatus: undefined, locationHost: undefined, certIssuer: 'Example Inspect CA' });
+    const el = await notice();
+    expect(el.textContent).toContain('Server certificate not trusted');
+    expect(el.textContent).not.toContain('Blocked by a network filter');
+    expect(el.textContent).toContain('(issued by Example Inspect CA)');
+    expect(el.textContent).toContain('Breeze will not bypass it.');
+    expectHowToFix(el);
+  });
+
+  it('renders markup in the filter host as literal text', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    load({ ...ACTIVE, locationHost: payload });
+    const el = await notice();
+    expect(el.textContent).toContain(payload);
+    expect(el.querySelector('img')).toBeNull();
+  });
+
+  it('renders markup in the certificate issuer as literal text', async () => {
+    load({ ...ACTIVE, kind: 'untrusted_certificate', locationHost: undefined, certIssuer: '<b>Evil</b> CA' });
+    const cert = await notice();
+    expect(cert.textContent).toContain('<b>Evil</b> CA');
+    expect(cert.querySelector('b')).toBeNull();
+  });
+
+  it('active and reachable via ECH says so', async () => {
+    load({ ...ACTIVE, reachableViaEch: true });
+    const el = await notice();
+    expect(el.textContent).toContain('Currently reachable via Encrypted Client Hello.');
+  });
+
+  it('active without ECH does not claim ECH', async () => {
+    load(ACTIVE);
+    const el = await notice();
+    expect(el.textContent).not.toContain('Encrypted Client Hello');
+  });
+
+  it('cleared shows the blocked window and not the ECH line', async () => {
+    load({ ...ACTIVE, state: 'cleared', clearedAt: '2026-10-18T11:00:00.000Z', reachableViaEch: true });
+    const el = await notice();
+    expect(el.textContent).toMatch(/Was blocked from .+ to .+\./);
+    expect(el.textContent).not.toContain('Encrypted Client Hello');
+    expect(el.textContent).not.toContain('answering in place of');
+  });
+
+  it('last_known (device stopped reporting) says when it was last reported, muted, without the ECH line', async () => {
+    load({ ...ACTIVE, state: 'last_known', lastReportedAt: '2026-10-18T09:05:00.000Z', reachableViaEch: true });
+    const el = await notice();
+    expect(el.getAttribute('data-state')).toBe('last_known');
+    expect(el.textContent).toContain('Blocked by a network filter');
+    expect(el.textContent).toContain('answering in place of the Breeze server (warn.filter-a.example)');
+    expect(el.textContent).toMatch(/Last reported .+\. The device has not reported since, so this may no longer apply\./);
+    expect(el.textContent).not.toContain('Encrypted Client Hello');
+    expect(el.textContent).not.toContain('deviceInfoTab.');
+    expect(el.className).toContain('text-muted-foreground');
+    expectHowToFix(el);
+  });
+
+  it('active carries data-state="active"', async () => {
+    load(ACTIVE);
+    const el = await notice();
+    expect(el.getAttribute('data-state')).toBe('active');
+    expect(el.textContent).not.toContain('has not reported since');
+  });
+
+  it('null renders nothing', async () => {
+    load(null);
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('control-plane-block-notice')).toBeNull();
+  });
+
+  it('an unknown kind from a newer API renders nothing', async () => {
+    load({ ...ACTIVE, kind: 'brand_new_kind' });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('control-plane-block-notice')).toBeNull();
   });
 });

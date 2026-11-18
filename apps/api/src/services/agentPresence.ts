@@ -105,3 +105,65 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
     return null;
   }
 }
+
+export type AgentPresenceProbe = { present: boolean } | { unavailable: true };
+
+/**
+ * Like {@link readAgentPresence}, but tells "no lease" apart from "Redis could
+ * not answer". The reattach confirm (#8318 §6.5) counts a live lease as a
+ * liveness signal of the target and must fail closed (`liveness_unknown`)
+ * when it cannot read one.
+ */
+export async function probeAgentPresence(agentId: string): Promise<AgentPresenceProbe> {
+  let redis: ReturnType<typeof getRedis>;
+  try {
+    redis = getRedis();
+  } catch {
+    return { unavailable: true };
+  }
+  if (!redis) return { unavailable: true };
+  try {
+    const raw = await redis.get(presenceKey(agentId));
+    return { present: typeof raw === 'string' && raw.length > 0 };
+  } catch {
+    return { unavailable: true };
+  }
+}
+
+/** Keys per MGET in {@link readAgentPresenceBatch}. */
+export const PRESENCE_BATCH_READ_SIZE = 500;
+
+/**
+ * Read many leases at once (#4142), one MGET per {@link PRESENCE_BATCH_READ_SIZE}
+ * ids. Absent and malformed leases map to `null`. Unlike
+ * {@link readAgentPresence}, a Redis failure (or no Redis client) THROWS: the
+ * relay-evict producer then answers `unavailable` for those agents, never
+ * `not_connected`, because a failed read proves nothing about a live socket.
+ * Duplicate ids are read once.
+ */
+export async function readAgentPresenceBatch(
+  agentIds: readonly string[],
+): Promise<Map<string, AgentPresenceLease | null>> {
+  const ids = [...new Set(agentIds)];
+  const leases = new Map<string, AgentPresenceLease | null>();
+  if (ids.length === 0) return leases;
+  const redis = getRedis();
+  if (!redis) throw new Error('[AgentPresence] Redis unavailable: cannot read presence leases');
+  for (let i = 0; i < ids.length; i += PRESENCE_BATCH_READ_SIZE) {
+    const chunk = ids.slice(i, i + PRESENCE_BATCH_READ_SIZE);
+    const raws = await redis.mget(...chunk.map(presenceKey));
+    chunk.forEach((id, j) => leases.set(id, parseLease(raws[j])));
+  }
+  return leases;
+}
+
+function parseLease(raw: string | null | undefined): AgentPresenceLease | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as AgentPresenceLease;
+    if (typeof parsed?.instanceId !== 'string' || typeof parsed?.connectionToken !== 'string') return null;
+    return { instanceId: parsed.instanceId, connectionToken: parsed.connectionToken };
+  } catch {
+    return null;
+  }
+}

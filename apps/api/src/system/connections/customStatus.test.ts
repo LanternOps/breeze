@@ -191,6 +191,10 @@ describe('non-core custom statuses', () => {
   it('workspace extension uses the strict === "true" check of builtinExtensions.ts', () => {
     expect(workspaceExtensionStatus({ BREEZE_WORKSPACE_ENABLED: 'true' }).status).toBe('enabled');
     expect(workspaceExtensionStatus({ BREEZE_WORKSPACE_ENABLED: '1' }).status).toBe('disabled');
+    // W08: the connector flag alias enables it too; the engine flag does not.
+    expect(workspaceExtensionStatus({ BREEZE_WISP_CONNECTOR_ENABLED: 'true' }).status).toBe('enabled');
+    expect(workspaceExtensionStatus({ BREEZE_WISP_CONNECTOR_ENABLED: '1' }).status).toBe('disabled');
+    expect(workspaceExtensionStatus({ BREEZE_WISP_ENABLED: 'true' }).status).toBe('disabled');
   });
 
   it('transport security needs FORCE_HTTPS and PUBLIC_API_URL', () => {

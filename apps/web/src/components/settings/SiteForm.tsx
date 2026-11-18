@@ -93,6 +93,7 @@ export default function SiteForm({
           </label>
           <input
             id="site-name"
+            data-testid="site-form-name"
             placeholder={t('siteForm.placeholders.name')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
@@ -267,6 +268,7 @@ export default function SiteForm({
         </button>
         <button
           type="submit"
+          data-testid="site-form-submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >

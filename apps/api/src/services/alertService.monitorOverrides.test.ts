@@ -42,6 +42,8 @@ const { dbMock, resultsQueue, captureExceptionMock, resolveMonitorsForDeviceMock
   };
 });
 
+vi.mock('./alertLifecycle/resolve', async (importOriginal) =>
+  (await import('../testUtils/alertLifecycleMock')).legacyLifecycleModule(await importOriginal()));
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),

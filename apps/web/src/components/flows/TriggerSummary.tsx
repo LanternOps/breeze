@@ -16,6 +16,8 @@ export function TriggerSummary({ trigger }: { trigger: FlowDocumentV1['trigger']
       const pairs = Object.entries(trigger.filter ?? {}).map(([k, v]) => `${k}=${String(v)}`);
       return <>{pairs.length > 0 ? `${label}: ${trigger.event} [${pairs.join(', ')}]` : `${label}: ${trigger.event}`}</>;
     }
+    case 'webhook':
+      return <>{`${label}: ${t(/* i18n-dynamic */ `webhook.authMode.${trigger.auth === 'token' ? 'token' : 'hmac'}`)}`}</>;
     default:
       return <>{label}</>;
   }

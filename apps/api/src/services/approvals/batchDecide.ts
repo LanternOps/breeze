@@ -32,8 +32,9 @@ import {
  * HOMOGENEITY rule below: the set must be one decision. Every row must be
  *   - still `pending`,
  *   - fanned out to the deciding user,
- *   - linked to a SUPERVISED, AGENT-ORIGINATED intent (`approvalScope ===
- *     'supervised'` AND `requestingAgentRunId != null`), and
+ *   - linked to a SUPERVISED, AGENT- or FLOW-ORIGINATED intent
+ *     (`approvalScope === 'supervised'` AND `requestingAgentRunId != null`
+ *     or `requestingFlowRunId != null`), and
  *   - in the same `(orgId, actionToolName, normalized action)` group.
  * Anything else fails the WHOLE batch with 422 and decides nothing — never a
  * partial decide off a set the approver may have misread. Four-eyes cards are
@@ -171,7 +172,10 @@ export async function loadHomogeneousBatch(
       found.approval.status !== 'pending' ||
       !intent ||
       intent.approvalScope !== 'supervised' ||
-      intent.requestingAgentRunId == null ||
+      // Requester-less: an AGENT- or (tool catalog W04, #5219) FLOW-originated
+      // intent — the two shapes the decide core sends through the
+      // action-and-target pool branch.
+      (intent.requestingAgentRunId == null && intent.requestingFlowRunId == null) ||
       // Live authorization, the SAME rule every other read surface applies
       // (`isIntentRowLiveAuthorized` in routes/approvals.ts), specialised to
       // the one shape a batch member can have. Row ownership alone is a

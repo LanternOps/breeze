@@ -321,6 +321,42 @@ describe('DeviceScriptHistory run context (#4888)', () => {
   });
 });
 
+describe('DeviceScriptHistory purged output (#4342 W2)', () => {
+  function mockHistory(execution: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [execution] });
+      }
+      return jsonResponse({}, 404);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the retention note instead of "No output" when outputPurgedAt is set', async () => {
+    mockHistory({ ...executionRow, stdout: null, stderr: null, outputPurgedAt: '2026-01-01T00:00:00Z' });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect((await screen.findAllByText(/Output removed after the retention window \([^{}]*\d[^{}]*\)/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No output')).toBeNull();
+  });
+
+  it('keeps the existing "No output" copy when outputPurgedAt is null', async () => {
+    mockHistory({ ...executionRow, stdout: '', stderr: '', outputPurgedAt: null });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect((await screen.findAllByText('No output')).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Output removed after the retention window/)).toBeNull();
+  });
+});
+
 describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
   function mockHistory(execution: Record<string, unknown>) {
     fetchWithAuthMock.mockImplementation(async (input: string) => {
@@ -368,5 +404,57 @@ describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
     expect(screen.getByTestId('run-context-chip')).toBeInTheDocument();
     // Two chips render: the row's and the detail drawer's.
     expect(screen.getAllByTestId('ai-initiator-chip').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// #9563 — the device page's post-run details read "Queued — device offline"
+// while the header above it said Online. `queued` only means no live agent
+// session took the command; the device's own status decides the copy.
+describe('DeviceScriptHistory queued copy follows the device status (#9563)', () => {
+  beforeEach(() => {
+    window.location.hash = '#scripts/view=all';
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [{
+          ...executionRow,
+          status: 'queued',
+          exitCode: null,
+          stdout: '',
+          startedAt: null,
+          completedAt: null,
+          createdAt: '2026-02-08T00:00:00.000Z',
+        }] });
+      }
+      return jsonResponse({}, 404);
+    });
+  });
+
+  it('an online device shows awaiting-pickup copy, never "device offline"', async () => {
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="online" highlightExecutionId="exec-1" />);
+
+    expect(await screen.findByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.getByText('Queued — awaiting pickup')).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+  });
+
+  it('the default per-script latest view badge follows the device status too', async () => {
+    window.location.hash = '#scripts';
+    const { unmount } = render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="offline" />);
+    expect((await screen.findByTestId('device-script-latest-status-script-1')).textContent).toBe('Queued — device offline');
+    unmount();
+
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="online" />);
+    expect((await screen.findByTestId('device-script-latest-status-script-1')).textContent).toBe('Queued — awaiting pickup');
+  });
+
+  it('an offline device keeps the device-offline copy', async () => {
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} deviceStatus="offline" highlightExecutionId="exec-1" />);
+
+    expect(await screen.findByText('Execution Details')).toBeInTheDocument();
+    // Row chip and detail banner both say offline.
+    expect(screen.getAllByText('Queued — device offline').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
   });
 });

@@ -116,6 +116,13 @@ describe('coveAdapter.listCustomers / listDevices', () => {
     expect(customers).toHaveLength(1);
   });
 
+  it('returns devices with no failed customers after a complete enumeration', async () => {
+    const devices = [{ vendorDeviceId: '2001' }];
+    stubClient({ enumerateAccountStatisticsAll: vi.fn(async () => devices) });
+    await expect(coveAdapter.listDevices(CREDS, BASE_URL, '1000'))
+      .resolves.toEqual({ devices, failedCustomerIds: [] });
+  });
+
   it('propagates a ProviderRequestError from listDevices unchanged (all-or-nothing)', async () => {
     stubClient({
       enumerateAccountStatisticsAll: vi.fn(async () => {

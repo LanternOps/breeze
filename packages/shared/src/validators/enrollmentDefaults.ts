@@ -137,6 +137,10 @@ export interface ResolvedEnrollmentDefaults {
   ttlMinutes: number;
   deviceCount: number;
   maxTtlMinutes: number;
+  /** True only when a partner or org default expiry is explicitly configured (not the product fallback). */
+  ttlConfigured: boolean;
+  /** True only when a partner or org default device count is explicitly configured (not the product fallback). */
+  deviceCountConfigured: boolean;
 }
 
 type Defaults = Record<string, unknown>;
@@ -166,10 +170,11 @@ export function resolveEnrollmentDefaults(
   partnerDefaults: Defaults,
   orgDefaults: Defaults,
 ): ResolvedEnrollmentDefaults {
-  const pick = (field: string, fallback: number): number => {
+  const configured = (field: string): number | undefined => {
     const raw = field in orgDefaults ? orgDefaults[field] : partnerDefaults[field];
-    return typeof raw === 'number' ? raw : fallback;
+    return typeof raw === 'number' ? raw : undefined;
   };
+  const pick = (field: string, fallback: number): number => configured(field) ?? fallback;
   const rawCap = partnerDefaults.maxEnrollmentLinkTtlMinutes;
   const maxTtlMinutes = typeof rawCap === 'number' ? rawCap : MAX_ENROLLMENT_TTL_MINUTES;
   const ttlMinutes = pick('defaultEnrollmentTtlMinutes', PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES);
@@ -177,5 +182,7 @@ export function resolveEnrollmentDefaults(
     ttlMinutes: Math.min(ttlMinutes, maxTtlMinutes),
     deviceCount: pick('defaultEnrollmentDeviceCount', PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT),
     maxTtlMinutes,
+    ttlConfigured: configured('defaultEnrollmentTtlMinutes') !== undefined,
+    deviceCountConfigured: configured('defaultEnrollmentDeviceCount') !== undefined,
   };
 }

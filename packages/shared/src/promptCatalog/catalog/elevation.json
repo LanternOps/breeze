@@ -1,0 +1,355 @@
+{
+  "namespace": "elevation",
+  "messages": {
+    "action.cancel": {
+      "en": "Cancel",
+      "de-DE": "Abbrechen",
+      "es-419": "Cancelar",
+      "fr-FR": "Annuler",
+      "fr-CA": "Annuler",
+      "it-IT": "Annulla",
+      "pt-BR": "Cancelar",
+      "tr-TR": "İptal"
+    },
+    "action.cancelRequest": {
+      "en": "Cancel request",
+      "de-DE": "Anfrage zurückziehen",
+      "es-419": "Cancelar solicitud",
+      "fr-FR": "Annuler la demande",
+      "fr-CA": "Annuler la demande",
+      "it-IT": "Annulla richiesta",
+      "pt-BR": "Cancelar solicitação",
+      "tr-TR": "İsteği iptal et"
+    },
+    "action.hide": {
+      "en": "Hide",
+      "de-DE": "Ausblenden",
+      "es-419": "Ocultar",
+      "fr-FR": "Masquer",
+      "fr-CA": "Masquer",
+      "it-IT": "Nascondi",
+      "pt-BR": "Ocultar",
+      "tr-TR": "Gizle"
+    },
+    "action.sendRequest": {
+      "en": "Send request",
+      "de-DE": "Anfrage senden",
+      "es-419": "Enviar solicitud",
+      "fr-FR": "Envoyer la demande",
+      "fr-CA": "Envoyer la demande",
+      "it-IT": "Invia richiesta",
+      "pt-BR": "Enviar solicitação",
+      "tr-TR": "İsteği gönder"
+    },
+    "approved.body": {
+      "en": "{partner} approved {program}. It is starting.",
+      "de-DE": "{partner} hat {program} genehmigt. Das Programm wird gestartet.",
+      "es-419": "{partner} aprobó {program}. Se está iniciando.",
+      "fr-FR": "{partner} a approuvé {program}. Le programme démarre.",
+      "fr-CA": "{partner} a approuvé {program}. Le programme démarre.",
+      "it-IT": "{partner} ha approvato {program}. Il programma si sta avviando.",
+      "pt-BR": "{partner} aprovou {program}. O programa está sendo iniciado.",
+      "tr-TR": "{partner} ekibi {program} programını onayladı. Program başlatılıyor."
+    },
+    "approved.bodyFrom": {
+      "en": "{technician} at {partner} approved {program}. It is starting.",
+      "de-DE": "{technician} ({partner}) hat {program} genehmigt. Das Programm wird gestartet.",
+      "es-419": "{technician}, de {partner}, aprobó {program}. Se está iniciando.",
+      "fr-FR": "{technician} ({partner}) a approuvé {program}. Le programme démarre.",
+      "fr-CA": "{technician} ({partner}) a approuvé {program}. Le programme démarre.",
+      "it-IT": "{technician} ({partner}) ha approvato {program}. Il programma si sta avviando.",
+      "pt-BR": "{technician}, de {partner}, aprovou {program}. O programa está sendo iniciado.",
+      "tr-TR": "{partner} ekibinden {technician}, {program} programını onayladı. Program başlatılıyor."
+    },
+    "approved.bodyGeneric": {
+      "en": "Your IT support team approved {program}. It is starting.",
+      "de-DE": "Ihr IT-Support-Team hat {program} genehmigt. Das Programm wird gestartet.",
+      "es-419": "Su equipo de soporte de TI aprobó {program}. Se está iniciando.",
+      "fr-FR": "Votre équipe d'assistance informatique a approuvé {program}. Le programme démarre.",
+      "fr-CA": "Votre équipe de soutien informatique a approuvé {program}. Le programme démarre.",
+      "it-IT": "Il tuo team di assistenza IT ha approvato {program}. Il programma si sta avviando.",
+      "pt-BR": "Sua equipe de suporte de TI aprovou {program}. O programa está sendo iniciado.",
+      "tr-TR": "BT destek ekibiniz {program} programını onayladı. Program başlatılıyor."
+    },
+    "approved.bodyTechnician": {
+      "en": "{technician} approved {program}. It is starting.",
+      "de-DE": "{technician} hat {program} genehmigt. Das Programm wird gestartet.",
+      "es-419": "{technician} aprobó {program}. Se está iniciando.",
+      "fr-FR": "{technician} a approuvé {program}. Le programme démarre.",
+      "fr-CA": "{technician} a approuvé {program}. Le programme démarre.",
+      "it-IT": "{technician} ha approvato {program}. Il programma si sta avviando.",
+      "pt-BR": "{technician} aprovou {program}. O programa está sendo iniciado.",
+      "tr-TR": "{technician}, {program} programını onayladı. Program başlatılıyor."
+    },
+    "approved.title": {
+      "en": "Request approved",
+      "de-DE": "Anfrage genehmigt",
+      "es-419": "Solicitud aprobada",
+      "fr-FR": "Demande approuvée",
+      "fr-CA": "Demande approuvée",
+      "it-IT": "Richiesta approvata",
+      "pt-BR": "Solicitação aprovada",
+      "tr-TR": "İstek onaylandı"
+    },
+    "ask.body": {
+      "en": "{program} needs administrator rights. Send a request to {partner}?",
+      "de-DE": "{program} benötigt Administratorrechte. Eine Anfrage an {partner} senden?",
+      "es-419": "{program} necesita permisos de administrador. ¿Enviar una solicitud a {partner}?",
+      "fr-FR": "{program} a besoin des droits administrateur. Envoyer une demande à {partner} ?",
+      "fr-CA": "{program} a besoin des droits d'administrateur. Envoyer une demande à {partner}?",
+      "it-IT": "{program} richiede i diritti di amministratore. Inviare una richiesta a {partner}?",
+      "pt-BR": "{program} precisa de direitos de administrador. Enviar uma solicitação para {partner}?",
+      "tr-TR": "{program} yönetici hakları gerektiriyor. {partner} ekibine istek gönderilsin mi?"
+    },
+    "ask.bodyGeneric": {
+      "en": "{program} needs administrator rights. Send a request to your IT support team?",
+      "de-DE": "{program} benötigt Administratorrechte. Eine Anfrage an Ihr IT-Support-Team senden?",
+      "es-419": "{program} necesita permisos de administrador. ¿Enviar una solicitud a su equipo de soporte de TI?",
+      "fr-FR": "{program} a besoin des droits administrateur. Envoyer une demande à votre équipe d'assistance informatique ?",
+      "fr-CA": "{program} a besoin des droits d'administrateur. Envoyer une demande à votre équipe de soutien informatique?",
+      "it-IT": "{program} richiede i diritti di amministratore. Inviare una richiesta al tuo team di assistenza IT?",
+      "pt-BR": "{program} precisa de direitos de administrador. Enviar uma solicitação para sua equipe de suporte de TI?",
+      "tr-TR": "{program} yönetici hakları gerektiriyor. BT destek ekibinize istek gönderilsin mi?"
+    },
+    "ask.expiry": {
+      "en": "If you don't answer within {remaining}, the request is not sent.",
+      "de-DE": "Wenn Sie nicht innerhalb von {remaining} antworten, wird die Anfrage nicht gesendet.",
+      "es-419": "Si no responde en {remaining}, la solicitud no se envía.",
+      "fr-FR": "Sans réponse dans {remaining}, la demande n'est pas envoyée.",
+      "fr-CA": "Sans réponse d'ici {remaining}, la demande n'est pas envoyée.",
+      "it-IT": "Se non rispondi entro {remaining}, la richiesta non viene inviata.",
+      "pt-BR": "Se você não responder em {remaining}, a solicitação não será enviada.",
+      "tr-TR": "{remaining} içinde yanıt vermezseniz istek gönderilmez."
+    },
+    "ask.title": {
+      "en": "Request administrator access?",
+      "de-DE": "Administratorzugriff anfordern?",
+      "es-419": "¿Solicitar acceso de administrador?",
+      "fr-FR": "Demander un accès administrateur ?",
+      "fr-CA": "Demander un accès administrateur?",
+      "it-IT": "Richiedere l'accesso come amministratore?",
+      "pt-BR": "Solicitar acesso de administrador?",
+      "tr-TR": "Yönetici erişimi istensin mi?"
+    },
+    "cancelled.body": {
+      "en": "You cancelled the request for {program}.",
+      "de-DE": "Sie haben die Anfrage für {program} zurückgezogen.",
+      "es-419": "Canceló la solicitud para {program}.",
+      "fr-FR": "Vous avez annulé la demande pour {program}.",
+      "fr-CA": "Vous avez annulé la demande pour {program}.",
+      "it-IT": "Hai annullato la richiesta per {program}.",
+      "pt-BR": "Você cancelou a solicitação para {program}.",
+      "tr-TR": "{program} isteğini iptal ettiniz."
+    },
+    "cancelled.title": {
+      "en": "Request cancelled",
+      "de-DE": "Anfrage zurückgezogen",
+      "es-419": "Solicitud cancelada",
+      "fr-FR": "Demande annulée",
+      "fr-CA": "Demande annulée",
+      "it-IT": "Richiesta annullata",
+      "pt-BR": "Solicitação cancelada",
+      "tr-TR": "İstek iptal edildi"
+    },
+    "denied.body": {
+      "en": "{partner} denied the request for {program}.",
+      "de-DE": "{partner} hat die Anfrage für {program} abgelehnt.",
+      "es-419": "{partner} denegó la solicitud para {program}.",
+      "fr-FR": "{partner} a refusé la demande pour {program}.",
+      "fr-CA": "{partner} a refusé la demande pour {program}.",
+      "it-IT": "{partner} ha negato la richiesta per {program}.",
+      "pt-BR": "{partner} negou a solicitação para {program}.",
+      "tr-TR": "{partner} ekibi {program} isteğini reddetti."
+    },
+    "denied.bodyGeneric": {
+      "en": "Your IT support team denied the request for {program}.",
+      "de-DE": "Ihr IT-Support-Team hat die Anfrage für {program} abgelehnt.",
+      "es-419": "Su equipo de soporte de TI denegó la solicitud para {program}.",
+      "fr-FR": "Votre équipe d'assistance informatique a refusé la demande pour {program}.",
+      "fr-CA": "Votre équipe de soutien informatique a refusé la demande pour {program}.",
+      "it-IT": "Il tuo team di assistenza IT ha negato la richiesta per {program}.",
+      "pt-BR": "Sua equipe de suporte de TI negou a solicitação para {program}.",
+      "tr-TR": "BT destek ekibiniz {program} isteğini reddetti."
+    },
+    "denied.title": {
+      "en": "Request denied",
+      "de-DE": "Anfrage abgelehnt",
+      "es-419": "Solicitud denegada",
+      "fr-FR": "Demande refusée",
+      "fr-CA": "Demande refusée",
+      "it-IT": "Richiesta negata",
+      "pt-BR": "Solicitação negada",
+      "tr-TR": "İstek reddedildi"
+    },
+    "expired.body": {
+      "en": "Your request for {program} expired before {partner} answered.",
+      "de-DE": "Ihre Anfrage für {program} ist abgelaufen, bevor {partner} geantwortet hat.",
+      "es-419": "Su solicitud para {program} venció antes de que {partner} respondiera.",
+      "fr-FR": "Votre demande pour {program} a expiré avant la réponse de {partner}.",
+      "fr-CA": "Votre demande pour {program} a expiré avant la réponse de {partner}.",
+      "it-IT": "La richiesta per {program} è scaduta prima che {partner} rispondesse.",
+      "pt-BR": "Sua solicitação para {program} expirou antes de {partner} responder.",
+      "tr-TR": "{program} isteğinizin süresi, {partner} ekibi yanıt vermeden doldu."
+    },
+    "expired.bodyGeneric": {
+      "en": "Your request for {program} expired before your IT support team answered.",
+      "de-DE": "Ihre Anfrage für {program} ist abgelaufen, bevor Ihr IT-Support-Team geantwortet hat.",
+      "es-419": "Su solicitud para {program} venció antes de que su equipo de soporte de TI respondiera.",
+      "fr-FR": "Votre demande pour {program} a expiré avant la réponse de votre équipe d'assistance informatique.",
+      "fr-CA": "Votre demande pour {program} a expiré avant la réponse de votre équipe de soutien informatique.",
+      "it-IT": "La richiesta per {program} è scaduta prima che il tuo team di assistenza IT rispondesse.",
+      "pt-BR": "Sua solicitação para {program} expirou antes de sua equipe de suporte de TI responder.",
+      "tr-TR": "{program} isteğinizin süresi, BT destek ekibiniz yanıt vermeden doldu."
+    },
+    "expired.title": {
+      "en": "Request expired",
+      "de-DE": "Anfrage abgelaufen",
+      "es-419": "Solicitud vencida",
+      "fr-FR": "Demande expirée",
+      "fr-CA": "Demande expirée",
+      "it-IT": "Richiesta scaduta",
+      "pt-BR": "Solicitação expirada",
+      "tr-TR": "İsteğin süresi doldu"
+    },
+    "fact.commandLine": {
+      "en": "Command line",
+      "de-DE": "Befehlszeile",
+      "es-419": "Línea de comandos",
+      "fr-FR": "Ligne de commande",
+      "fr-CA": "Ligne de commande",
+      "it-IT": "Riga di comando",
+      "pt-BR": "Linha de comando",
+      "tr-TR": "Komut satırı"
+    },
+    "fact.program": {
+      "en": "Program",
+      "de-DE": "Programm",
+      "es-419": "Programa",
+      "fr-FR": "Programme",
+      "fr-CA": "Programme",
+      "it-IT": "Programma",
+      "pt-BR": "Programa",
+      "tr-TR": "Program"
+    },
+    "fact.publisher": {
+      "en": "Publisher",
+      "de-DE": "Herausgeber",
+      "es-419": "Editor",
+      "fr-FR": "Éditeur",
+      "fr-CA": "Éditeur",
+      "it-IT": "Autore",
+      "pt-BR": "Fornecedor",
+      "tr-TR": "Yayımcı"
+    },
+    "fact.reason": {
+      "en": "Reason",
+      "de-DE": "Grund",
+      "es-419": "Motivo",
+      "fr-FR": "Motif",
+      "fr-CA": "Motif",
+      "it-IT": "Motivo",
+      "pt-BR": "Motivo",
+      "tr-TR": "Neden"
+    },
+    "failed.body": {
+      "en": "{program} was approved but couldn't start. Contact {partner}.",
+      "de-DE": "{program} wurde genehmigt, konnte aber nicht starten. Wenden Sie sich an {partner}.",
+      "es-419": "{program} se aprobó, pero no pudo iniciarse. Comuníquese con {partner}.",
+      "fr-FR": "{program} a été approuvé mais n'a pas pu démarrer. Contactez {partner}.",
+      "fr-CA": "{program} a été approuvé, mais n'a pas pu démarrer. Communiquez avec {partner}.",
+      "it-IT": "{program} è stato approvato ma non è stato possibile avviarlo. Contatta {partner}.",
+      "pt-BR": "{program} foi aprovado, mas não pôde ser iniciado. Entre em contato com {partner}.",
+      "tr-TR": "{program} onaylandı ancak başlatılamadı. {partner} ekibiyle iletişime geçin."
+    },
+    "failed.bodyGeneric": {
+      "en": "{program} was approved but couldn't start. Contact your IT support team.",
+      "de-DE": "{program} wurde genehmigt, konnte aber nicht starten. Wenden Sie sich an Ihr IT-Support-Team.",
+      "es-419": "{program} se aprobó, pero no pudo iniciarse. Comuníquese con su equipo de soporte de TI.",
+      "fr-FR": "{program} a été approuvé mais n'a pas pu démarrer. Contactez votre équipe d'assistance informatique.",
+      "fr-CA": "{program} a été approuvé, mais n'a pas pu démarrer. Communiquez avec votre équipe de soutien informatique.",
+      "it-IT": "{program} è stato approvato ma non è stato possibile avviarlo. Contatta il tuo team di assistenza IT.",
+      "pt-BR": "{program} foi aprovado, mas não pôde ser iniciado. Entre em contato com sua equipe de suporte de TI.",
+      "tr-TR": "{program} onaylandı ancak başlatılamadı. BT destek ekibinizle iletişime geçin."
+    },
+    "failed.title": {
+      "en": "The program couldn't start",
+      "de-DE": "Das Programm konnte nicht starten",
+      "es-419": "El programa no pudo iniciarse",
+      "fr-FR": "Le programme n'a pas pu démarrer",
+      "fr-CA": "Le programme n'a pas pu démarrer",
+      "it-IT": "Impossibile avviare il programma",
+      "pt-BR": "O programa não pôde ser iniciado",
+      "tr-TR": "Program başlatılamadı"
+    },
+    "waiting.body": {
+      "en": "Your request to run {program} as an administrator was sent.",
+      "de-DE": "Ihre Anfrage, {program} als Administrator auszuführen, wurde gesendet.",
+      "es-419": "Se envió su solicitud para ejecutar {program} como administrador.",
+      "fr-FR": "Votre demande d'exécution de {program} en tant qu'administrateur a été envoyée.",
+      "fr-CA": "Votre demande d'exécution de {program} en tant qu'administrateur a été envoyée.",
+      "it-IT": "La richiesta di eseguire {program} come amministratore è stata inviata.",
+      "pt-BR": "Sua solicitação para executar {program} como administrador foi enviada.",
+      "tr-TR": "{program} programını yönetici olarak çalıştırma isteğiniz gönderildi."
+    },
+    "waiting.deadline": {
+      "en": "The request stays open until {until}.",
+      "de-DE": "Die Anfrage bleibt bis {until} offen.",
+      "es-419": "La solicitud sigue abierta hasta las {until}.",
+      "fr-FR": "La demande reste ouverte jusqu'à {until}.",
+      "fr-CA": "La demande reste ouverte jusqu'à {until}.",
+      "it-IT": "La richiesta resta aperta fino alle {until}.",
+      "pt-BR": "A solicitação fica aberta até {until}.",
+      "tr-TR": "İstek {until} saatine kadar açık kalır."
+    },
+    "waiting.dismissUnproven": {
+      "en": "You can close the Windows prompt; your request stays with {partner}.",
+      "de-DE": "Sie können die Windows-Abfrage schließen; {partner} erhält Ihre Anfrage trotzdem.",
+      "es-419": "Puede cerrar el aviso de Windows; su solicitud sigue con {partner}.",
+      "fr-FR": "Vous pouvez fermer la fenêtre Windows ; votre demande reste chez {partner}.",
+      "fr-CA": "Vous pouvez fermer la fenêtre Windows; votre demande reste chez {partner}.",
+      "it-IT": "Puoi chiudere la finestra di Windows; la richiesta resta a {partner}.",
+      "pt-BR": "Você pode fechar o aviso do Windows; sua solicitação continua com {partner}.",
+      "tr-TR": "Windows istemini kapatabilirsiniz; isteğiniz {partner} ekibinde kalır."
+    },
+    "waiting.dismissUnprovenGeneric": {
+      "en": "You can close the Windows prompt; your request stays with your IT support team.",
+      "de-DE": "Sie können die Windows-Abfrage schließen; Ihr IT-Support-Team erhält Ihre Anfrage trotzdem.",
+      "es-419": "Puede cerrar el aviso de Windows; su solicitud sigue con su equipo de soporte de TI.",
+      "fr-FR": "Vous pouvez fermer la fenêtre Windows ; votre demande reste chez votre équipe d'assistance informatique.",
+      "fr-CA": "Vous pouvez fermer la fenêtre Windows; votre demande reste chez votre équipe de soutien informatique.",
+      "it-IT": "Puoi chiudere la finestra di Windows; la richiesta resta al tuo team di assistenza IT.",
+      "pt-BR": "Você pode fechar o aviso do Windows; sua solicitação continua com sua equipe de suporte de TI.",
+      "tr-TR": "Windows istemini kapatabilirsiniz; isteğiniz BT destek ekibinizde kalır."
+    },
+    "waiting.expiry": {
+      "en": "If no one answers by {until}, the request expires.",
+      "de-DE": "Wenn bis {until} niemand antwortet, läuft die Anfrage ab.",
+      "es-419": "Si nadie responde antes de las {until}, la solicitud vence.",
+      "fr-FR": "Sans réponse avant {until}, la demande expire.",
+      "fr-CA": "Sans réponse avant {until}, la demande expire.",
+      "it-IT": "Se nessuno risponde entro le {until}, la richiesta scade.",
+      "pt-BR": "Se ninguém responder até {until}, a solicitação expira.",
+      "tr-TR": "{until} saatine kadar kimse yanıt vermezse isteğin süresi dolar."
+    },
+    "waiting.title": {
+      "en": "Waiting for {partner}",
+      "de-DE": "Warten auf {partner}",
+      "es-419": "Esperando a {partner}",
+      "fr-FR": "En attente de {partner}",
+      "fr-CA": "En attente de {partner}",
+      "it-IT": "In attesa di {partner}",
+      "pt-BR": "Aguardando {partner}",
+      "tr-TR": "{partner} ekibinin yanıtı bekleniyor"
+    },
+    "waiting.titleGeneric": {
+      "en": "Waiting for your IT support team",
+      "de-DE": "Warten auf Ihr IT-Support-Team",
+      "es-419": "Esperando a su equipo de soporte de TI",
+      "fr-FR": "En attente de votre équipe d'assistance informatique",
+      "fr-CA": "En attente de votre équipe de soutien informatique",
+      "it-IT": "In attesa del tuo team di assistenza IT",
+      "pt-BR": "Aguardando sua equipe de suporte de TI",
+      "tr-TR": "BT destek ekibinizin yanıtı bekleniyor"
+    }
+  }
+}

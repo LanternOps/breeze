@@ -72,6 +72,9 @@ export const MAIL_PURPOSES = {
   'staff.contract_renewal': { lane: 'platform' },
   'staff.trust_declaration_reminder': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
+  // #9075 W2b: the request creator (MSP staff) is told the client signed or
+  // declined an agreement request. Send site: services/agreementOutcomeNotify.ts.
+  'staff.agreement_outcome': { lane: 'platform' },
   // W03. The notice that a partner's own sending domain is verified / at risk
   // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying
   // "your sending domain is broken" must never be sent from that domain
@@ -88,6 +91,21 @@ export const MAIL_PURPOSES = {
   // Connection health daily digest to MSP staff and grant owners (spec 2026-10-15 §4).
   // Send site: services/connectionHealth/digest.ts.
   'staff.connection_health_digest': { lane: 'platform' },
+  // Portal registration W4 (#11381, plan D7): Breeze tells a partner's admins
+  // that another organization proved the Microsoft tenant one of their orgs was
+  // linked to, so that link was removed. Platform lane, like the trust notices:
+  // mail from Breeze to the partner's own staff. Send site:
+  // services/portalEntraTenantProof.ts (EmailService.sendPortalEntraTenantDisplaced).
+  'partner.portal_entra_tenant.displaced': { lane: 'platform' },
+  // Portal registration W5 (#11382): Breeze tells a partner's admins that a
+  // customer org's domain is no longer verified. Platform lane, like the entra
+  // notice above. Send site: EmailService.sendPortalDomainVerificationLost.
+  'partner.portal_domain_verification.lost': { lane: 'platform' },
+  // Portal registration W8 (#11385): Breeze tells a partner's admins that a
+  // customer org's directory deprovisioning run is held for their approval.
+  // Platform lane, like the W5 notice above. Send site:
+  // EmailService.sendPortalDirectoryHeld (services/portalDirectory/notify.ts).
+  'partner.portal_directory.held': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 
@@ -95,6 +113,16 @@ export const MAIL_PURPOSES = {
   'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.invite': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  // Portal registration W3 (#11380, OD3): the decision on a portal access
+  // request, to the person who asked. Customer-facing, same envelope as the
+  // invite. Send sites: EmailService.sendPortalAccessApproved / ...Declined.
+  'portal.access_request.approved': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.access_request.declined': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  // Portal registration W6 (#11383): the self-registration verify link and the
+  // "you already have an account" mail. Customer-facing, same envelope as the
+  // invite. Send sites: EmailService.sendPortalSelfRegistrationLink / ...ExistingAccount.
+  'portal.self_registration.verify': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.self_registration.existing_account': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   // Caller verification (#6354 W03): the request-confirmation link sent to the
   // customer contact. Customer-facing, so it rides the partner's support stream
   // (their sending domain when verified, company-name fallback otherwise).
@@ -104,6 +132,15 @@ export const MAIL_PURPOSES = {
   // when a tech accepts on their behalf. Same envelope as the quote itself;
   // its own purpose so delivery history never reports it as a quote send.
   'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  // #9075 W2b: the agreement request (signing link) emailed to the client's
+  // recipients — the same envelope as a quote send. Send site:
+  // services/agreementRequestEmail.ts.
+  'agreement.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  // #9075 W2b: "Your signed copy" to the signer and every request recipient,
+  // with the signed agreement attached. Customer-facing, its own purpose so
+  // delivery history never reports it as a request send. Send site:
+  // services/agreementSignedCopyEmail.ts.
+  'agreement.signed_copy': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },

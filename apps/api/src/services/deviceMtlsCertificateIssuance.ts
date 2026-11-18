@@ -28,6 +28,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
 import { deviceMtlsCertificates, devices } from '../db/schema';
+import { updateOwnDeviceRow } from './agentOwnDeviceRow';
 import { normalizeCertificateSerial } from './agentCertificateBinding';
 import { captureException } from './sentry';
 import type { CfCertResult, CloudflareMtlsService, ParsedIssuedCertificate } from './cloudflareMtls';
@@ -40,6 +41,13 @@ import {
 export interface IssuedCertificateActivation {
   orgId: string;
   deviceId: string;
+  /**
+   * The row's `agent_id` (#8318 §6.4): the bearer identity on `/renew-cert`,
+   * or — for server-side issuance from enroll, provisioning and quarantine
+   * approve — the value read from the row the caller holds `FOR UPDATE`. The
+   * legacy `devices.mtls_cert_*` write is bound to it.
+   */
+  agentId: string;
   cert: CfCertResult;
   parsedCert: ParsedIssuedCertificate;
   now: Date;
@@ -70,7 +78,7 @@ export async function activateIssuedCertificateCore(
   tx: Tx,
   input: IssuedCertificateActivation,
 ): Promise<IssuedCertificateActivationResult> {
-  const { orgId, deviceId, cert, parsedCert, now } = input;
+  const { orgId, deviceId, agentId, cert, parsedCert, now } = input;
 
   const [existingActive] = await tx
     .select({ id: deviceMtlsCertificates.id })
@@ -117,17 +125,13 @@ export async function activateIssuedCertificateCore(
   // `cert.serialNumber` is Cloudflare's raw `serial_number` field, whose
   // format is not guaranteed; store it in the canonical form the binding
   // decision compares against.
-  const legacyUpdated = await tx
-    .update(devices)
-    .set({
-      mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
-      mtlsCertExpiresAt: new Date(cert.expiresOn),
-      mtlsCertIssuedAt: new Date(cert.issuedOn),
-      mtlsCertCfId: cert.id,
-      updatedAt: now,
-    })
-    .where(eq(devices.id, deviceId))
-    .returning({ id: devices.id });
+  const legacyUpdated = await updateOwnDeviceRow(tx, { deviceId, agentId }, {
+    mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
+    mtlsCertExpiresAt: new Date(cert.expiresOn),
+    mtlsCertIssuedAt: new Date(cert.issuedOn),
+    mtlsCertCfId: cert.id,
+    updatedAt: now,
+  });
 
   if (legacyUpdated.length !== 1) {
     throw new Error('legacy_device_update_failed');
@@ -310,7 +314,7 @@ export async function recordIssuedCertificateForDevice(input: {
     result = await withSystemDbAccessContext(() =>
       db.transaction(async (tx) => {
         const [device] = await tx
-          .select({ id: devices.id })
+          .select({ id: devices.id, agentId: devices.agentId })
           .from(devices)
           .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
           .limit(1)
@@ -318,7 +322,16 @@ export async function recordIssuedCertificateForDevice(input: {
         if (!device) {
           throw new DeviceNotIssuableError();
         }
-        return activateIssuedCertificateCore(tx, { orgId, deviceId, cert, parsedCert, now: new Date() });
+        // The identity read under this row lock is the one the legacy column
+        // write is bound to (#8318 §6.4).
+        return activateIssuedCertificateCore(tx, {
+          orgId,
+          deviceId,
+          agentId: device.agentId,
+          cert,
+          parsedCert,
+          now: new Date(),
+        });
       }),
     );
   } catch (err) {

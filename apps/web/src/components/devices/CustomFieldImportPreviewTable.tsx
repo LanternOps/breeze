@@ -207,10 +207,32 @@ interface Props {
   /** Row index → the candidate deviceId picked for an ambiguous/identity-conflict row. */
   picks: ReadonlyMap<number, string>;
   onPick: (rowIndex: number, deviceId: string) => void;
+  /** Row index → human label (the file's hostname/serial) for rows whose candidates the API didn't return. */
+  rowLabels?: ReadonlyMap<number, string>;
 }
 
-export default function CustomFieldImportPreviewTable({ rows, selected, onSelectedChange, picks, onPick }: Props) {
+function candidateLabel(c: DeviceCandidate | undefined): string | null {
+  if (!c) return null;
+  return c.hostname || c.displayName || c.serialNumber || null;
+}
+
+export default function CustomFieldImportPreviewTable({
+  rows,
+  selected,
+  onSelectedChange,
+  picks,
+  onPick,
+  rowLabels,
+}: Props) {
   const { t } = useTranslation('devices');
+
+  /** Hostname-first label for the Device column; the raw id is the last resort. */
+  function deviceLabel(row: AnnotatedValueRow, pickedId: string | undefined): string | null {
+    const id = row.deviceId ?? pickedId ?? null;
+    if (!id) return null; // unresolved: never imply a device was matched
+    const fromCandidate = candidateLabel(row.candidates.find((c) => c.deviceId === id));
+    return fromCandidate ?? rowLabels?.get(row.index) ?? id;
+  }
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const bulkRows = bulkSelectableValueRows(rows);
 
@@ -293,7 +315,7 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
                     />
                   </td>
                   <td className="px-2 py-1.5 align-top text-muted-foreground">
-                    {row.deviceId ?? t('customFieldImportPreview.unresolved')}
+                    {deviceLabel(row, pickedId) ?? t('customFieldImportPreview.unresolved')}
                   </td>
                   <td className="px-2 py-1.5 align-top">
                     <span
@@ -319,7 +341,9 @@ export default function CustomFieldImportPreviewTable({ rows, selected, onSelect
                         data-testid={`cf-import-picked-${row.index}`}
                         className="ml-2 text-xs text-muted-foreground"
                       >
-                        {t('customFieldImportPreview.picked', { deviceId: pickedId })}
+                        {t('customFieldImportPreview.picked', {
+                          deviceId: candidateLabel(row.candidates.find((c) => c.deviceId === pickedId)) ?? pickedId,
+                        })}
                       </span>
                     )}
                   </td>

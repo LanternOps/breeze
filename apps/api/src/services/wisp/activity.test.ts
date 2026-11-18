@@ -1,0 +1,433 @@
+/**
+ * Wisp W06 Task 14 — the derived activity timeline (w00 A31). Drizzle is
+ * mocked: each `select().from(<table>)` chain resolves to the rows queued for
+ * that table name (the mock does NOT evaluate SQL), and its WHERE is captured
+ * so the tests can render it. The SQL ceiling / keyset predicates are pinned
+ * by rendering; the in-process belts (assertWithinCeiling, keyset re-check)
+ * are pinned by the returned items. `grantAuthority` is the real module with
+ * only `inSystemContext` replaced by a pass-through recorder.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+
+const h = vi.hoisted(() => ({
+  calls: [] as string[],
+  rows: {} as Record<string, unknown[]>,
+  wheres: {} as Record<string, unknown[]>,
+  selected: {} as Record<string, string[]>,
+}));
+
+vi.mock('../../db', async () => {
+  const { getTableName } = await import('drizzle-orm');
+  const select = vi.fn((fields?: Record<string, unknown>) => {
+    let table = '';
+    const chain: Record<string, unknown> = {};
+    chain.from = (t: Parameters<typeof getTableName>[0]) => {
+      table = getTableName(t); h.calls.push(`select:${table}`);
+      (h.selected[table] ??= []).push(...Object.keys(fields ?? {}));
+      return chain;
+    };
+    for (const m of ['leftJoin', 'innerJoin', 'orderBy', 'limit']) chain[m] = () => chain;
+    chain.where = (w: unknown) => { (h.wheres[table] ??= []).push(w); return chain; };
+    chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+      Promise.resolve([...(h.rows[table] ?? [])]).then(res, rej);
+    return chain;
+  });
+  return {
+    db: { select },
+    withDbTransaction: vi.fn((fn: () => Promise<unknown>) => fn()),
+    getCurrentDbAccessContext: vi.fn(() => undefined),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+  };
+});
+
+vi.mock('./grantAuthority', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./grantAuthority')>();
+  return {
+    ...actual,
+    inSystemContext: vi.fn((fn: () => Promise<unknown>) => { h.calls.push('system'); return fn(); }),
+  };
+});
+
+import type { GrantCeiling } from './grantAuthority';
+import {
+  InvalidActivityCursorError,
+  currentActivity,
+  decodeActivityCursor,
+  encodeActivityCursor,
+  listActivity,
+} from './activity';
+
+const P1 = '11111111-1111-4111-8111-111111111111';
+const U1 = '22222222-2222-4222-8222-222222222222';
+const O1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const O2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const G1 = '99999999-9999-4999-8999-999999999999';
+const R1 = '88888888-8888-4888-8888-888888888888';
+const T1 = '77777777-7777-4777-8777-777777777777';
+
+const ceiling = (over: Partial<GrantCeiling> = {}): GrantCeiling => ({
+  grantId: G1, revisionId: R1, partnerId: P1, grantorUserId: U1, scopeOrgId: null, partnerWide: false,
+  orgIds: new Set([O1]), siteIds: null, permissionKeys: new Set(), toolAllowlist: null,
+  deniedTools: new Set(), orgTerms: new Map(), status: 'active', ...over,
+});
+
+const uid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const t = (min: number) => new Date(Date.UTC(2026, 9, 24, 10, min, 0, 0));
+
+const runRow = (n: number, orgId: string, at: Date, over: Record<string, unknown> = {}) => ({
+  id: uid(n), orgId, orgName: orgId === O1 ? 'Greenwood' : 'Other Co', status: 'completed', summary: 'All quiet',
+  costCents: 7, queuedAt: at, startedAt: at, finishedAt: at, ...over,
+});
+const concernRow = (n: number, orgId: string | null, at: Date, over: Record<string, unknown> = {}) => ({
+  id: uid(n), orgId, summary: 'Backup failing on FS01', severity: 'high', status: 'open', outcome: null, updatedAt: at, ...over,
+});
+const intentRow = (n: number, orgId: string, at: Date) => ({
+  id: uid(n), orgId, status: 'pending_approval', targetSummary: 'Restart Print Spooler on FS01', createdAt: at,
+});
+const memoryRow = (n: number, ownerKind: string, ownerOrgId: string | null, at: Date) => ({
+  id: uid(n), ownerKind, ownerOrgId, blockType: 'org_fact', subjectKey: 'backup:vendor', status: 'unconfirmed', createdAt: at,
+});
+const instructionRow = (n: number, at: Date, content: Record<string, unknown>) => ({
+  id: uid(n), ownerKind: 'user', ownerOrgId: null, blockType: 'standing_instruction',
+  subjectKey: 'device:11111111-1111-4111-8111-111111111111:reboot:0123456789abcdef', content, status: 'unconfirmed', createdAt: at,
+});
+const notifRow = (n: number, orgId: string | null, at: Date, isBrief = false) => ({
+  id: uid(n), orgId, title: isBrief ? 'Good morning' : 'Wisp needs you', message: 'Backup failing', link: `/ai/wisp/thread/${T1}`, isBrief, createdAt: at,
+});
+
+const render = (w: unknown) => new PgDialect().sqlToQuery(w as SQL);
+
+beforeEach(() => {
+  h.calls.length = 0;
+  for (const k of Object.keys(h.rows)) delete h.rows[k];
+  for (const k of Object.keys(h.wheres)) delete h.wheres[k];
+});
+
+describe('cursor', () => {
+  it('round-trips (at, kind, id)', () => {
+    const c = encodeActivityCursor({ at: '2026-10-24T10:00:00.123Z', kind: 'concern', id: uid(1) });
+    expect(c).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(decodeActivityCursor(c)).toEqual({ at: new Date('2026-10-24T10:00:00.123Z'), kind: 'concern', id: uid(1) });
+  });
+
+  it.each([
+    ['not base64 garbage', '!!!'],
+    ['two parts', Buffer.from('2026-10-24T10:00:00.000Z|concern').toString('base64url')],
+    ['bad date', Buffer.from(`yesterday|concern|${uid(1)}`).toString('base64url')],
+    ['bad kind', Buffer.from(`2026-10-24T10:00:00.000Z|bogus|${uid(1)}`).toString('base64url')],
+    ['bad id', Buffer.from('2026-10-24T10:00:00.000Z|concern|x; drop table').toString('base64url')],
+  ])('malformed (%s) → InvalidActivityCursorError from listActivity', async (_label, cursor) => {
+    await expect(listActivity(ceiling(), { cursor })).rejects.toBeInstanceOf(InvalidActivityCursorError);
+    expect(h.calls.filter((c) => c.startsWith('select:'))).toEqual([]);
+  });
+});
+
+describe('listActivity — ceiling filter', () => {
+  it('items from two orgs where the ceiling covers one → only that org’s items come back', async () => {
+    h.rows.ai_agent_runs = [runRow(1, O1, t(1)), runRow(2, O2, t(2))];
+    h.rows.wisp_concerns = [concernRow(3, O1, t(3)), concernRow(4, O2, t(4))];
+    h.rows.action_intents = [intentRow(5, O1, t(5)), intentRow(6, O2, t(6))];
+    h.rows.ai_memory_blocks = [memoryRow(7, 'org', O1, t(7)), memoryRow(8, 'org', O2, t(8))];
+    h.rows.user_notifications = [notifRow(9, O1, t(9)), notifRow(10, O2, t(10))];
+
+    const { items, nextCursor } = await listActivity(ceiling());
+
+    expect(items.map((i) => i.id).sort()).toEqual([uid(1), uid(3), uid(5), uid(7), uid(9)]);
+    expect(items.every((i) => i.orgId === O1)).toBe(true);
+    expect(nextCursor).toBeNull();
+    expect(h.calls[0]).toBe('system');
+
+    // The SQL filter itself is pinned to the covered org (the belt is a second line).
+    for (const table of ['ai_agent_runs', 'wisp_concerns', 'action_intents', 'ai_memory_blocks', 'user_notifications']) {
+      const q = render(h.wheres[table]![0]);
+      expect(q.params, table).toContain(O1);
+      expect(q.params, table).not.toContain(O2);
+    }
+    expect(render(h.wheres.ai_agent_runs![0]).params).toContain(G1);
+    expect(render(h.wheres.user_notifications![0]).params).toContain(U1);
+    expect(render(h.wheres.user_notifications![0]).sql).toContain(`->> 'grantId'`);
+  });
+
+  // #10104: the thread page of a PAUSED grant reads its history through an
+  // allowPaused ceiling (status 'paused'). The belt must still filter by org
+  // — and must not drop every org-bearing item just because the ceiling is
+  // paused (assertWithinCeiling refuses any non-active ceiling by design).
+  it('a PAUSED ceiling reads the same items an active one does, still org-filtered (#10104)', async () => {
+    const rows = () => {
+      h.rows.ai_agent_runs = [runRow(1, O1, t(1)), runRow(2, O2, t(2))];
+      h.rows.wisp_concerns = [concernRow(3, O1, t(3)), concernRow(4, O2, t(4)), concernRow(11, null, t(11))];
+      h.rows.action_intents = [intentRow(5, O1, t(5)), intentRow(6, O2, t(6))];
+      h.rows.ai_memory_blocks = [memoryRow(7, 'org', O1, t(7)), memoryRow(8, 'org', O2, t(8))];
+      h.rows.user_notifications = [notifRow(9, O1, t(9)), notifRow(10, O2, t(10))];
+    };
+    rows();
+    const paused = await listActivity(ceiling({ status: 'paused' }));
+    expect(paused.items.map((i) => i.id).sort()).toEqual([uid(1), uid(3), uid(5), uid(7), uid(9)]);
+
+    rows();
+    const pausedWide = await listActivity(ceiling({ status: 'paused', partnerWide: true }));
+    expect(pausedWide.items.map((i) => i.id).sort()).toEqual([uid(1), uid(11), uid(3), uid(5), uid(7), uid(9)].sort());
+  });
+
+  it('builds each item field by field with the right kind, href and cost', async () => {
+    h.rows.ai_agent_runs = [runRow(1, O1, t(1))];
+    h.rows.wisp_concerns = [concernRow(2, O1, t(2), { summary: 'x'.repeat(300) })];
+    h.rows.action_intents = [intentRow(3, O1, t(3))];
+    h.rows.ai_memory_blocks = [memoryRow(4, 'org', O1, t(4))];
+    h.rows.user_notifications = [notifRow(5, O1, t(5)), notifRow(6, null, t(6), true)];
+
+    const { items } = await listActivity(ceiling(), { threadId: T1 });
+    const byId = new Map(items.map((i) => [i.id, i]));
+
+    expect(byId.get(uid(1))).toEqual({
+      id: uid(1), at: t(1).toISOString(), kind: 'assessment', orgId: O1, title: 'Checked Greenwood',
+      detail: 'All quiet', href: `/ai-agents/runs/${uid(1)}`, costCents: 7,
+    });
+    const concern = byId.get(uid(2))!;
+    expect(concern.kind).toBe('concern');
+    expect(concern.title.length).toBeLessThanOrEqual(140);
+    expect(concern.href).toBe(`/ai/wisp/thread/${T1}#concern=${uid(2)}`);
+    expect(concern.costCents).toBeNull();
+    expect(byId.get(uid(3))).toMatchObject({ kind: 'approval', href: `/approvals#intent-${uid(3)}`, orgId: O1 });
+    const memory = byId.get(uid(4))!;
+    expect(memory).toMatchObject({ kind: 'memory', orgId: O1, href: null });
+    expect(memory.title).toContain('backup:vendor');
+    expect(byId.get(uid(5))).toMatchObject({ kind: 'nudge', title: 'Wisp needs you', href: `/ai/wisp/thread/${T1}` });
+    expect(byId.get(uid(6))).toMatchObject({ kind: 'brief', orgId: null });
+    // newest first
+    expect(items.map((i) => i.id)).toEqual([uid(6), uid(5), uid(4), uid(3), uid(2), uid(1)]);
+  });
+
+  it('a standing-instruction memory row shows the instruction text, never the raw subject key (#11612)', async () => {
+    h.rows.ai_memory_blocks = [
+      instructionRow(1, t(1), { text: "Don't reboot PC-01" }),
+      instructionRow(2, t(2), {}),
+    ];
+    const { items } = await listActivity(ceiling());
+    const byId = new Map(items.map((i) => [i.id, i]));
+    expect(byId.get(uid(1))!.title).toBe("Remembered standing instruction: Don't reboot PC-01");
+    const fallback = byId.get(uid(2))!.title;
+    expect(fallback).toBe('Remembered standing instruction');
+    for (const i of items) expect(i.title).not.toMatch(/device:|0123456789abcdef/);
+    // The mock returns queued rows whatever is selected, so pin that the query loads `content` itself.
+    expect(h.selected.ai_memory_blocks).toContain('content');
+  });
+
+  it('a long standing-instruction text is capped in the title', async () => {
+    h.rows.ai_memory_blocks = [instructionRow(1, t(1), { text: 'x'.repeat(400) })];
+    const { items } = await listActivity(ceiling());
+    expect(items[0]!.title.length).toBeLessThan(150);
+  });
+
+  it('concern href is null without a threadId', async () => {
+    h.rows.wisp_concerns = [concernRow(2, O1, t(2))];
+    const { items } = await listActivity(ceiling());
+    expect(items[0]!.href).toBeNull();
+  });
+
+  it('org-NULL concerns need a partner-wide grant with full reach; org-NULL nudges/memory are the grantor’s own', async () => {
+    const rows = () => {
+      h.rows.wisp_concerns = [concernRow(1, null, t(1))];
+      h.rows.ai_memory_blocks = [memoryRow(2, 'user', null, t(2)), memoryRow(3, 'partner', null, t(3))];
+      h.rows.user_notifications = [notifRow(4, null, t(4))];
+    };
+    rows();
+    const narrow = await listActivity(ceiling({ partnerWide: false }));
+    expect(narrow.items.map((i) => i.id).sort()).toEqual([uid(2), uid(3), uid(4)]);
+    expect(render(h.wheres.wisp_concerns![0]).sql).not.toContain('is null');
+
+    rows();
+    const wide = await listActivity(ceiling({ partnerWide: true }));
+    expect(wide.items.map((i) => i.id).sort()).toEqual([uid(1), uid(2), uid(3), uid(4)]);
+    expect(render(h.wheres.wisp_concerns![1]).sql).toContain('"wisp_concerns"."org_id" is null');
+  });
+
+  it('a site-restricted ceiling (or org membership) reads no org-bearing rows of that org', async () => {
+    h.rows.ai_agent_runs = [runRow(1, O1, t(1)), runRow(2, O2, t(2))];
+    h.rows.wisp_concerns = [concernRow(3, O1, t(3))];
+    const restricted = ceiling({
+      orgIds: new Set([O1, O2]),
+      orgTerms: new Map([[O2, { permissionKeys: new Set(['*:*']), siteIds: new Set(['s1']) }]]),
+    });
+    const { items } = await listActivity(restricted);
+    expect(items.map((i) => i.id).sort()).toEqual([uid(1), uid(3)]);
+    expect(render(h.wheres.ai_agent_runs![0]).params).not.toContain(O2);
+
+    h.calls.length = 0;
+    const siteWide = await listActivity(ceiling({ siteIds: new Set(['s1']) }));
+    expect(siteWide.items).toEqual([]);
+    // no readable org and no partner level: the org-only sources are not even queried
+    expect(h.calls).not.toContain('select:ai_agent_runs');
+    expect(h.calls).not.toContain('select:action_intents');
+    expect(h.calls).not.toContain('select:wisp_concerns');
+  });
+});
+
+describe('listActivity — keyset pagination', () => {
+  it('clamps limit to 1..100 and defaults to 50', async () => {
+    h.rows.user_notifications = Array.from({ length: 120 }, (_, i) => notifRow(i + 1, null, new Date(t(0).getTime() + i * 1000)));
+    expect((await listActivity(ceiling())).items).toHaveLength(50);
+    expect((await listActivity(ceiling(), { limit: 500 })).items).toHaveLength(100);
+    expect((await listActivity(ceiling(), { limit: 0 })).items).toHaveLength(1);
+  });
+
+  it('is stable: page 2 starts strictly after page 1, and a newer insert does not appear on page 2', async () => {
+    // Ties on `at` across kinds and within a kind exercise the (at, kind, id) tiebreak.
+    h.rows.ai_agent_runs = [runRow(1, O1, t(5)), runRow(2, O1, t(1))];
+    h.rows.wisp_concerns = [concernRow(3, O1, t(5)), concernRow(4, O1, t(3))];
+    h.rows.action_intents = [intentRow(5, O1, t(4))];
+    h.rows.ai_memory_blocks = [memoryRow(6, 'org', O1, t(5)), memoryRow(7, 'org', O1, t(5))];
+    h.rows.user_notifications = [notifRow(8, null, t(2))];
+
+    const page1 = await listActivity(ceiling(), { limit: 3 });
+    // t(5): memory(7) > memory(6) > concern(3) > assessment(1)
+    expect(page1.items.map((i) => i.id)).toEqual([uid(7), uid(6), uid(3)]);
+    expect(page1.nextCursor).not.toBeNull();
+
+    // A new item lands newer than everything on page 1.
+    h.rows.user_notifications = [notifRow(99, null, t(30)), ...h.rows.user_notifications];
+
+    const page2 = await listActivity(ceiling(), { limit: 3, cursor: page1.nextCursor! });
+    expect(page2.items.map((i) => i.id)).toEqual([uid(1), uid(5), uid(4)]);
+    expect(page2.items.map((i) => i.id)).not.toContain(uid(99));
+
+    const page3 = await listActivity(ceiling(), { limit: 3, cursor: page2.nextCursor! });
+    expect(page3.items.map((i) => i.id)).toEqual([uid(8), uid(2)]);
+    expect(page3.nextCursor).toBeNull();
+
+    // The keyset is in SQL too, at millisecond precision.
+    const q = render(h.wheres.wisp_concerns!.at(-1));
+    expect(q.sql).toContain(`date_trunc('milliseconds', "wisp_concerns"."updated_at")`);
+  });
+
+  it('nextCursor is the cursor of the last returned item', async () => {
+    h.rows.user_notifications = [notifRow(1, null, t(3)), notifRow(2, null, t(2)), notifRow(3, null, t(1))];
+    const page = await listActivity(ceiling(), { limit: 2 });
+    expect(decodeActivityCursor(page.nextCursor!)).toEqual({ at: t(2), kind: 'nudge', id: uid(2) });
+  });
+});
+
+describe('listActivity — specialist runs (#11084)', () => {
+  const specialistRow = (n: number, orgId: string, at: Date, over: Record<string, unknown> = {}) => runRow(n, orgId, at, {
+    profile: 'device_troubleshooting', triggerSource: 'wisp_specialist', deviceHostname: 'FRONT-DESK-01',
+    status: 'running', summary: null, finishedAt: null, ...over,
+  });
+
+  it("lists the grant's specialist runs as kind specialist, with status, device and run link", async () => {
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(1), { status: 'awaiting_approval', finishedAt: t(3), summary: 'Asked to rebuild the Outlook profile' }),
+      specialistRow(2, O1, t(2)),
+      runRow(3, O1, t(4)),
+    ];
+    const { items } = await listActivity(ceiling());
+    const specialists = items.filter((i) => i.kind === 'specialist');
+    expect(specialists.map((i) => i.id)).toEqual([uid(1), uid(2)]);
+    expect(specialists[0]).toEqual({
+      id: uid(1), at: t(3).toISOString(), kind: 'specialist', orgId: O1, title: 'Device troubleshooting · FRONT-DESK-01',
+      detail: 'Asked to rebuild the Outlook profile', href: `/ai-agents/runs/${uid(1)}`, costCents: 7, runStatus: 'awaiting_approval',
+      pendingApprovals: 0, pendingIntentId: null,
+    });
+    // Only an approval-parked run carries the pending-approval fields.
+    expect(specialists[1]).not.toHaveProperty('pendingApprovals');
+    expect(specialists[1]).toMatchObject({ runStatus: 'running', at: t(2).toISOString() });
+    // The assessment row is still an assessment.
+    expect(items.find((i) => i.id === uid(3))).toMatchObject({ kind: 'assessment' });
+    // The run query is pinned to the grant and selects both shapes.
+    const q = render(h.wheres.ai_agent_runs![0]);
+    expect(q.params).toEqual(expect.arrayContaining([G1, 'assessment', 'wisp_specialist']));
+  });
+
+  // `awaiting_approval` is terminal for a run: it stays there after its steps
+  // are decided. The count is what tells the Workers card whether anything is
+  // actually still waiting on a person.
+  it('an approval-parked specialist reports how many steps are still pending and the oldest one to open', async () => {
+    const pending = (n: number, runN: number, at: Date, over: Record<string, unknown> = {}) => ({
+      id: uid(n), orgId: O1, status: 'pending_approval', targetSummary: 'Restart Print Spooler', createdAt: at,
+      runId: uid(runN), ...over,
+    });
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(1), { status: 'awaiting_approval', finishedAt: t(5) }),
+      specialistRow(2, O1, t(2), { status: 'awaiting_approval', finishedAt: t(6) }),
+    ];
+    // The mock does not sort: rows are queued in the query's (created_at ASC) order.
+    h.rows.action_intents = [
+      pending(10, 1, t(3)),
+      pending(11, 1, t(4)),
+      // Decided, and another run's: neither counts for run 1 or run 2.
+      pending(12, 1, t(2), { status: 'completed' }),
+      pending(13, 99, t(1)),
+    ];
+    const { items } = await listActivity(ceiling());
+    const byId = new Map(items.filter((i) => i.kind === 'specialist').map((i) => [i.id, i]));
+    expect(byId.get(uid(1))).toMatchObject({ pendingApprovals: 2, pendingIntentId: uid(10) });
+    expect(byId.get(uid(2))).toMatchObject({ pendingApprovals: 0, pendingIntentId: null });
+    // The lookup is pinned to those runs, pending steps only, inside the ceiling's orgs.
+    const lookup = h.wheres.action_intents!.map(render).find((q) => q.params.includes(uid(2)));
+    expect(lookup?.params).toEqual(expect.arrayContaining([uid(1), uid(2), 'pending_approval', O1]));
+    // Bound to the right columns, all three required. (The mock does not run
+    // ORDER BY, so "oldest first" is pinned only by the fixture order above.)
+    expect(lookup?.sql).toMatch(/"requesting_agent_run_id" in \(/);
+    expect(lookup?.sql).toMatch(/"status" = \$\d+/);
+    expect(lookup?.sql).toMatch(/"org_id" in \(/);
+    expect(lookup?.sql).not.toMatch(/ or /i);
+  });
+
+  it('makes no pending-approval lookup when no specialist is approval-parked', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1))];
+    await listActivity(ceiling());
+    // One action_intents read: the approval timeline source, nothing else.
+    expect(h.calls.filter((c) => c === 'select:action_intents')).toHaveLength(1);
+  });
+
+  it('a specialist run in an org outside the ceiling is dropped (SQL org filter + belt)', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1)), specialistRow(2, O2, t(2))];
+    const { items } = await listActivity(ceiling());
+    expect(items.map((i) => i.id)).toEqual([uid(1)]);
+    expect(render(h.wheres.ai_agent_runs![0]).params).not.toContain(O2);
+  });
+
+  it('#11673: a specialist names the device by its display name, the hostname only as a fallback', async () => {
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(2), { deviceHostname: 'nw-42eccf-00001', deviceDisplayName: 'NW-XRAY-WS' }),
+      specialistRow(2, O1, t(1), { deviceHostname: 'nw-42eccf-00002', deviceDisplayName: ' ' }),
+    ];
+    const { items } = await listActivity(ceiling());
+    expect(items.map((i) => i.title)).toEqual(['Device troubleshooting · NW-XRAY-WS', 'Device troubleshooting · nw-42eccf-00002']);
+  });
+
+  it('a specialist without a device names the org instead', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1), { profile: 'patch', deviceHostname: null })];
+    const { items } = await listActivity(ceiling());
+    expect(items[0]).toMatchObject({ kind: 'specialist', title: 'Patch plan · Greenwood' });
+  });
+
+  it('keyset pagination is intact across specialist and assessment items', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(5)), runRow(2, O1, t(3)), specialistRow(3, O1, t(1))];
+    const page1 = await listActivity(ceiling(), { limit: 2 });
+    expect(page1.items.map((i) => i.id)).toEqual([uid(1), uid(2)]);
+    expect(page1.nextCursor).not.toBeNull();
+    const page2 = await listActivity(ceiling(), { limit: 2, cursor: page1.nextCursor! });
+    expect(page2.items.map((i) => i.id)).toEqual([uid(3)]);
+  });
+});
+
+describe('currentActivity', () => {
+  it('is null when nothing is queued or running', async () => {
+    h.rows.ai_agent_runs = [];
+    await expect(currentActivity(G1)).resolves.toBeNull();
+    const q = render(h.wheres.ai_agent_runs![0]);
+    expect(q.params).toEqual(expect.arrayContaining([G1, 'assessment', 'queued', 'running']));
+    // #11084: a queued/running specialist counts as current work too.
+    expect(q.params).toEqual(expect.arrayContaining(['wisp_specialist']));
+  });
+
+  it('returns the oldest queued/running assessment with its org name', async () => {
+    h.rows.ai_agent_runs = [{ orgId: O1, orgName: 'Greenwood', startedAt: null, queuedAt: t(4) }];
+    await expect(currentActivity(G1)).resolves.toEqual({ orgId: O1, orgName: 'Greenwood', startedAt: t(4).toISOString() });
+    h.rows.ai_agent_runs = [{ orgId: O1, orgName: 'Greenwood', startedAt: t(6), queuedAt: t(4) }];
+    await expect(currentActivity(G1)).resolves.toEqual({ orgId: O1, orgName: 'Greenwood', startedAt: t(6).toISOString() });
+  });
+});

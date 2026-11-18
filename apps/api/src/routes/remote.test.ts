@@ -20,6 +20,19 @@ const mockAuthState = vi.hoisted(() => ({
 
 vi.mock('../services', () => ({}));
 
+// Existing route cases exercise the non-isolated ICE plan (relay-only has its
+// own suites: remote/sessions.relayOnly.test.ts, desktopWs.relayOnly.test.ts).
+vi.mock('./remote/desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./remote/helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./remote/helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../services/permissions', () => ({
   canAccessSite: (permissions: { allowedSiteIds?: string[] }, siteId: string) => !permissions.allowedSiteIds || permissions.allowedSiteIds.includes(siteId),
   PERMISSIONS: {
@@ -60,7 +73,9 @@ vi.mock('../db', () => ({
   hasDbAccessContext: vi.fn(() => true),
   // resolveRemoteSessionPromptConfig reads in the request's own context via a
   // savepoint when one is active.
-  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn())
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

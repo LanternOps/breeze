@@ -143,6 +143,12 @@ func parseWorkloadSettings(raw any) (workloads.Settings, bool) {
 		return workloads.Settings{}, false
 	}
 	s.IntervalMinutes = minutes
+	// #9067: only a server that says so accepts Workload.ImageProvenance.
+	// Anything but a literal true keeps the key off the wire; it never
+	// invalidates the rest of the settings.
+	if v, exists := pick("accepts_image_provenance", "acceptsImageProvenance"); exists {
+		s.AcceptsImageProvenance, _ = v.(bool)
+	}
 	return s, true
 }
 

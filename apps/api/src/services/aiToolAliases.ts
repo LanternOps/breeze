@@ -34,6 +34,9 @@
 export const DEPRECATED_TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   // #5362 — renamed in v0.112. Remove one release after v0.112 ships.
   ['get_fleet_status', 'get_invite_funnel'],
+  // W02 D3 (#6756) — renamed in v0.125 so the billing price book is never
+  // mistaken for the software catalog. Remove one release after v0.125 ships.
+  ['manage_catalog', 'manage_billing_catalog'],
 ]);
 
 /**

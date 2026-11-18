@@ -88,7 +88,9 @@ describe('contract: AI-tools verifyDeviceAccess enforces the exact-device axis f
 const SITE_ONLY_CALL_SITES: ReadonlyArray<{ file: string; call: string; count: number }> = [
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, rule.targetId)', count: 1 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, group?.siteId ?? null)', count: 1 },
-  { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, group.siteId)', count: 2 },
+  // get, membership_log, and the add_devices/remove_devices group-site gate
+  // (#10149, which then checks every requested device with its id).
+  { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, group.siteId)', count: 3 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, (input.siteId as string) ?? null)', count: 1 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, existing.siteId)', count: 2 },
 ];

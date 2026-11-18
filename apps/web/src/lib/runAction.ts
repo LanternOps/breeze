@@ -49,11 +49,12 @@ export interface RunActionOptions<T> {
   treatUnauthorizedAsError?: boolean | ((body: unknown) => boolean);
   /**
    * Skip the error toast for a failure the caller handles as an expected
-   * outcome (still throws ActionError). Receives the HTTP status and `code`.
+   * outcome (still throws ActionError). Receives HTTP status, `code`, and the
+   * parsed response body. Status 0 means the request rejected before a response.
    * E.g. the accounting workbench treats a post-decision `sync_in_progress`
    * 409 as "the worker is already syncing this row" (#7386).
    */
-  suppressErrorToast?: (status: number, code: string | undefined) => boolean;
+  suppressErrorToast?: (status: number, code: string | undefined, body?: unknown) => boolean;
 }
 
 function isZodValidationFailure(data: unknown): boolean {
@@ -93,7 +94,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   try {
     response = await opts.request();
   } catch {
-    showToast({ message: opts.errorFallback, type: 'error' });
+    if (!opts.suppressErrorToast?.(0, undefined)) {
+      showToast({ message: opts.errorFallback, type: 'error' });
+    }
     throw new ActionError(opts.errorFallback, 0);
   }
 
@@ -175,7 +178,7 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
         message = headline;
       }
     }
-    if (opts.suppressErrorToast?.(response.status, code)) {
+    if (opts.suppressErrorToast?.(response.status, code, data)) {
       // Caller treats this as an expected outcome and renders its own state.
     } else if (response.status === 403 && isTrustDenial(data)) {
       // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
@@ -195,7 +198,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   try {
     result = (opts.parseSuccess ? opts.parseSuccess(data) : (data as T));
   } catch {
-    showToast({ message: opts.errorFallback, type: 'error' });
+    if (!opts.suppressErrorToast?.(response.status, undefined, data)) {
+      showToast({ message: opts.errorFallback, type: 'error' });
+    }
     throw new ActionError(opts.errorFallback, response.status);
   }
   if (opts.successMessage) {

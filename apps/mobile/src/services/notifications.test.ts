@@ -28,7 +28,7 @@ const notif = vi.hoisted(() => ({
   getPresentedNotificationsAsync: vi.fn(),
   dismissNotificationAsync: vi.fn(),
   setBadgeCountAsync: vi.fn(),
-  AndroidImportance: { MAX: 5 },
+  AndroidImportance: { MAX: 5, HIGH: 4, DEFAULT: 3 },
 }));
 vi.mock('expo-notifications', () => notif);
 
@@ -44,6 +44,7 @@ import {
   parseTicketData,
   parseTicketNotification,
   parseTimeSuggestionsNotification,
+  parseWispNudgeData,
   shouldSetBadgeFor,
 } from './notifications';
 import {
@@ -432,5 +433,65 @@ describe('the tickets Android channel (#4336)', () => {
       'tickets',
       expect.objectContaining({ name: 'Tickets' })
     );
+  });
+});
+
+describe('parseWispNudgeData (Wisp W06)', () => {
+  // Wire contract: buildWispNudgePush (apps/api/src/services/expoPush.ts, W06a)
+  // emits { type: 'wisp_nudge', threadId, concernId, grantId, deepLink, approvalIntentId? }.
+  it('accepts the server payload', () => {
+    expect(
+      parseWispNudgeData({
+        type: 'wisp_nudge',
+        threadId: 't1',
+        grantId: 'g1',
+        concernId: 'c1',
+        deepLink: 'breeze://wisp/thread/t1?concern=c1',
+        approvalIntentId: 'i1',
+      })
+    ).toEqual({ threadId: 't1', grantId: 'g1', concernId: 'c1', approvalIntentId: 'i1' });
+  });
+
+  it('a digest (concernId null, no approval key) parses with nulls', () => {
+    expect(
+      parseWispNudgeData({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1', concernId: null, deepLink: 'breeze://wisp/thread/t1' })
+    ).toEqual({ threadId: 't1', grantId: 'g1', concernId: null, approvalIntentId: null });
+  });
+
+  it('falls back to deepLink for threadId/concernId, never for grantId', () => {
+    expect(
+      parseWispNudgeData({ type: 'wisp_nudge', grantId: 'g1', deepLink: 'breeze://wisp/thread/t1?concern=c1' })
+    ).toEqual({ threadId: 't1', grantId: 'g1', concernId: 'c1', approvalIntentId: null });
+    expect(parseWispNudgeData({ type: 'wisp_nudge', deepLink: 'breeze://wisp/thread/t1' })).toBeNull();
+  });
+
+  it('rejects other types, empty ids, foreign deep links and garbage', () => {
+    expect(parseWispNudgeData({ type: 'ticket', ticketId: 't', reason: 'assigned' })).toBeNull();
+    expect(parseWispNudgeData({ type: 'wisp_nudge', threadId: '', grantId: 'g1' })).toBeNull();
+    expect(parseWispNudgeData({ type: 'wisp_nudge', threadId: 't1', grantId: '' })).toBeNull();
+    expect(parseWispNudgeData({ type: 'wisp_nudge', grantId: 'g1', deepLink: 'https://evil.example/wisp/thread/t1' })).toBeNull();
+    expect(parseWispNudgeData({ type: 'wisp_nudge', grantId: 'g1', deepLink: 'breeze://wisp/thread/' })).toBeNull();
+    expect(parseWispNudgeData(null)).toBeNull();
+    expect(parseWispNudgeData(undefined)).toBeNull();
+  });
+
+  it('drops a non-string approvalIntentId / concernId rather than rejecting the push', () => {
+    expect(
+      parseWispNudgeData({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1', concernId: 5, approvalIntentId: {} })
+    ).toEqual({ threadId: 't1', grantId: 'g1', concernId: null, approvalIntentId: null });
+  });
+
+  it('wisp nudges never touch the badge', () => {
+    expect(shouldSetBadgeFor({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1' })).toBe(false);
+  });
+});
+
+describe('Android wisp channel (Wisp W06)', () => {
+  it('registers a "wisp" channel at DEFAULT importance', async () => {
+    platform.OS = 'android';
+    await registerForPushNotifications();
+    const wisp = notif.setNotificationChannelAsync.mock.calls.find((c: unknown[]) => c[0] === 'wisp');
+    expect(wisp).toBeDefined();
+    expect(wisp?.[1]).toMatchObject({ name: 'Wisp', importance: 3, sound: 'default' });
   });
 });

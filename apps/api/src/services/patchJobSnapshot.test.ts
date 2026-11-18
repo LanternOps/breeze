@@ -20,6 +20,7 @@ function makePolicyLocal(overrides: {
       excludeCategories: [],
       autoApprove: { security: true },
       appRules: [],
+      featureUpdates: { mode: 'block' },
       ...overrides.ring,
     },
   };
@@ -36,6 +37,7 @@ describe('buildPatchesSnapshot', () => {
           { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
           { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
         ],
+        featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' },
       },
     }));
 
@@ -51,6 +53,7 @@ describe('buildPatchesSnapshot', () => {
         { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
         { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
       ],
+      ringFeatureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' },
       ringValidation: {
         classification: 'valid_ring',
         valid: true,

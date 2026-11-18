@@ -99,3 +99,33 @@ describe('every slice is wiped on sign-out', () => {
     expect(after.notificationPrefs).toEqual(initial);
   });
 });
+
+// ── Wisp (W06c) ────────────────────────────────────────────────────────────
+describe('wispPrefs is wiped on sign-out', () => {
+  it('wispPrefs is registered in combineReducers, so withLogoutReset clears it', async () => {
+    // Nudge preferences are per USER: the next technician on this phone must
+    // not see (or PUT back) the previous account's channels and brief time.
+    const { store } = await import('./index');
+    expect(store.getState()).toHaveProperty('wispPrefs');
+  });
+
+  it('a populated wispPrefs slice returns to its initial state on LOGOUT', async () => {
+    const { default: reducer, loadWispNudgePrefs } = await import('./wispPrefsSlice');
+    const initial = reducer(undefined, { type: '@@init' });
+    const populated = reducer(
+      initial,
+      loadWispNudgePrefs.fulfilled(
+        { ...initial.prefs, proactivity: 'chatty', briefTimeLocal: null },
+        'r',
+        undefined
+      )
+    );
+    expect(populated.prefs.proactivity).toBe('chatty');
+
+    const { withLogoutReset } = await import('./resettable');
+    const { combineReducers } = await import('@reduxjs/toolkit');
+    const root = withLogoutReset(combineReducers({ wispPrefs: reducer }));
+    const after = root({ wispPrefs: populated }, { type: logout.type });
+    expect(after.wispPrefs).toEqual(initial);
+  });
+});

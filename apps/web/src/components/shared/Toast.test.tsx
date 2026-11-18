@@ -334,6 +334,29 @@ describe('ToastContainer', () => {
   });
 });
 
+describe('ToastContainer action button (#9840 W3)', () => {
+  beforeEach(() => _resetToastQueueForTests());
+  afterEach(() => _resetToastQueueForTests());
+
+  it('renders a labelled action on any toast type; clicking runs it once and dismisses the toast', () => {
+    render(<ToastContainer />);
+    const onClick = vi.fn();
+    act(() => {
+      showToast({ type: 'warning', message: 'Investigations open from the topology map', action: { label: 'Open in side panel', onClick } });
+    });
+    const button = within(screen.getByTestId('toast')).getByRole('button', { name: 'Open in side panel' });
+    act(() => { button.click(); });
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
+  });
+
+  it('a toast without an action renders no action button', () => {
+    render(<ToastContainer />);
+    act(() => { showToast({ type: 'warning', message: 'plain' }); });
+    expect(screen.queryByTestId('toast-action')).not.toBeInTheDocument();
+  });
+});
+
 describe('ToastContainer bottom anchor (#2151)', () => {
   beforeEach(() => _resetToastQueueForTests());
   afterEach(() => {
@@ -355,5 +378,21 @@ describe('ToastContainer bottom anchor (#2151)', () => {
     // Still bottom-right — only the offset became a variable.
     expect(container.className).toContain('fixed');
     expect(container.className).toContain('right-6');
+  });
+
+  it('duration 0 keeps the toast until dismissed and copyValue renders a copyable field (#9603)', () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToastContainer />);
+      act(() => {
+        showToast({ type: 'warning', message: 'Share this link', duration: 0, copyValue: 'https://x.test/i', copyLabel: 'Copy link', copiedLabel: 'Copied' });
+      });
+      act(() => { vi.advanceTimersByTime(60_000); });
+      expect(screen.getByTestId('toast')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('https://x.test/i')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

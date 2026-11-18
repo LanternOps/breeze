@@ -10,17 +10,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// MB_ICONWARNING. The consent dialog uses MB_ICONQUESTION because it asks a
-// question about someone else's request; a pending restart of the machine the
-// user is working on is a warning about their own session.
-const notifyPromptMBIconWarning = 0x00000030
-
 // showNotifyPromptOS renders the interactive notification as a native Yes/No
 // message box, reusing the MessageBoxTimeoutW proc consent_dialog_windows.go
 // already declares — it is the only Win32 message box with a real countdown.
 //
 // Buttons come from MB_YESNO: Yes is Actions[0] (the affirmative, "Restart now")
-// and No is Actions[1] (the postponement). A message box cannot render arbitrary
+// and No is Actions[1] (the postponement), which is the default button
+// (restartPromptFlags, #10190 P8). A message box cannot render arbitrary
 // button labels, so the legend is appended to the body text; the daemon only ever
 // sends two actions for a reboot prompt.
 //
@@ -55,7 +51,7 @@ func showNotifyPromptOS(req ipc.NotifyRequest) (clicked string, shown bool) {
 		return "", false
 	}
 
-	flags := uintptr(consentMBYesNo | notifyPromptMBIconWarning | consentMBTopMost | consentMBSystemModal | consentMBSetForeground)
+	flags := uintptr(restartPromptFlags())
 	ret, _, _ := procMessageBoxTimeoutW.Call(
 		0,
 		uintptr(unsafe.Pointer(body)),

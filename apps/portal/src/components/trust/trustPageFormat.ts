@@ -79,6 +79,16 @@ export function formatTrustDateTime(iso: string, locale?: string | null): string
   return new Intl.DateTimeFormat(safeLocale(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(d);
 }
 
+/**
+ * Calendar date in the page's locale, read in UTC so it names the same day as the ISO date part (#9964). An
+ * unparseable value falls back to its first ten characters so the card never shows a blank.
+ */
+export function formatTrustDate(iso: string, locale?: string | null): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return new Intl.DateTimeFormat(safeLocale(locale), { dateStyle: 'medium', timeZone: 'UTC' }).format(d);
+}
+
 /** <title>, description and <html lang> for the SSR shell, from the card (null = card fetch failed → English). */
 export function cardMeta(
   card: { orgName: string; locale: string; controlsShown: number; catalogTotal: number; controlsMet: number } | null,

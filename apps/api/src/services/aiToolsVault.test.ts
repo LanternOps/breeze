@@ -21,11 +21,18 @@ vi.mock('./commandQueue', () => ({
 
 vi.mock('./vaultDeviceCommands', () => ({
   buildVaultConfigurePayload: vi.fn(),
-  resolveLatestVaultSyncSnapshotId: vi.fn(),
+  resolveVaultSyncSource: vi.fn(),
 }));
 
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(),
+}));
+
+// The site-locked update is stubbed; every other vault write runs through the
+// real service over the mocked db.
+vi.mock('./localVaultUpdate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./localVaultUpdate')>()),
+  updateVaultWithinCurrentSite: vi.fn(),
 }));
 
 import { db } from '../db';
@@ -34,7 +41,8 @@ import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerVaultTools } from './aiToolsVault';
-import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
+import { buildVaultConfigurePayload, resolveVaultSyncSource } from './vaultDeviceCommands';
+import { updateVaultWithinCurrentSite } from './localVaultUpdate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
@@ -50,7 +58,7 @@ const EXPECTED_TOOLS = [
 const EXPECTED_TIERS: Record<(typeof EXPECTED_TOOLS)[number], number> = {
   query_vaults: 1,
   get_vault_status: 1,
-  trigger_vault_sync: 2,
+  trigger_vault_sync: 3, // W03 (#6757): supervised
   configure_vault: 2,
 };
 
@@ -129,7 +137,7 @@ function setDefaultDbMocks() {
     error: null,
   } as any);
   vi.mocked(buildVaultConfigurePayload).mockResolvedValue({ vaultPath: '/vaults/main', retentionCount: 7, enabled: true });
-  vi.mocked(resolveLatestVaultSyncSnapshotId).mockResolvedValue('snap-latest');
+  vi.mocked(resolveVaultSyncSource).mockResolvedValue({ ok: true, snapshotId: 'snap-latest', destination: null });
 }
 
 function mockSelectSequence(rowsList: any[][]) {
@@ -145,7 +153,7 @@ function mockUpdateSequence(rowsList: any[][]) {
 function makeAuth(): AuthContext {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: null,
     orgId: ORG_ID,
     scope: 'organization',
@@ -319,6 +327,45 @@ describe('aiToolsVault handlers', () => {
     }
   });
 
+  const restrictedAuth = () => ({
+    ...makeAuth(), allowedSiteIds: ['site-1'], canAccessSite: (siteId: string | null) => siteId === 'site-1',
+  }) as unknown as AuthContext;
+
+  // W03-D12 (#6757, quorum QW5): a site-restricted update row-locks the device
+  // inside the caller's sites, exactly as PATCH /backup/vault/:id does, so a
+  // concurrent site move cannot slip between the check and the write.
+  it('routes a site-restricted configure_vault update through the locked update (W03-D12)', async () => {
+    prepareHandlerMocks('configure_vault');
+    // vault row, then deviceIdSiteDenied's device-site read (in the caller's site).
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+    vi.mocked(updateVaultWithinCurrentSite).mockResolvedValue({ id: VAULT_ID, vaultPath: '/vaults/updated' } as any);
+    const auth = restrictedAuth();
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' }, auth,
+    ));
+
+    expect(result.success).toBe(true);
+    expect(updateVaultWithinCurrentSite).toHaveBeenCalledWith(
+      ORG_ID, VAULT_ID, expect.objectContaining({ vaultPath: '/vaults/updated' }), ['site-1'],
+    );
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the update when the locked update finds the device outside the sites (W03-D12)', async () => {
+    prepareHandlerMocks('configure_vault');
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+    vi.mocked(updateVaultWithinCurrentSite).mockResolvedValue(undefined);
+    const auth = restrictedAuth();
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' }, auth,
+    ));
+
+    expect(result.error).toBe('Vault not found or access denied');
+    expect(buildVaultConfigurePayload).not.toHaveBeenCalled();
+  });
+
   it('binds the AI configure_vault update to (id, orgId, deviceId), not id alone', async () => {
     prepareHandlerMocks('configure_vault');
     const updateChains: any[] = [];
@@ -345,7 +392,7 @@ describe('aiToolsVault handlers', () => {
     prepareHandlerMocks('trigger_vault_sync');
     await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
 
-    expect(resolveLatestVaultSyncSnapshotId).toHaveBeenCalledWith(DEVICE_ID, ORG_ID);
+    expect(resolveVaultSyncSource).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, null);
     expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
       expect.anything(),
       'trigger_vault_sync',
@@ -358,11 +405,48 @@ describe('aiToolsVault handlers', () => {
 
   it('refuses an AI vault sync when the device has no snapshot to sync', async () => {
     prepareHandlerMocks('trigger_vault_sync');
-    vi.mocked(resolveLatestVaultSyncSnapshotId).mockResolvedValueOnce(null);
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: false, status: 400, error: 'No backup snapshot to sync yet: run a file backup on this device first',
+    });
 
     const result = JSON.parse(await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth()));
 
     expect(result.error).toMatch(/no backup snapshot/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // #11858: the AI sync names the destination the snapshot was written to,
+  // like the route.
+  it('names the destination the snapshot was written to in an AI vault sync', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    const ref = { configId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', orgId: ORG_ID };
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: true, snapshotId: 'snap-chosen', destination: { provider: 'local', providerConfigRef: ref },
+    });
+
+    await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID, snapshotId: 'snap-chosen' }, makeAuth());
+
+    expect(resolveVaultSyncSource).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'snap-chosen');
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_vault_sync',
+      DEVICE_ID,
+      'vault_sync',
+      { vaultId: VAULT_ID, vaultPath: '/vaults/main', snapshotId: 'snap-chosen', provider: 'local', providerConfigRef: ref },
+      expect.anything(),
+    );
+  });
+
+  it('refuses an AI vault sync whose snapshot destination no longer resolves', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: false, status: 422, error: 'Backup destination configuration not found for this snapshot',
+    });
+
+    const result = JSON.parse(await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth()));
+
+    expect(result.error).toBe('Backup destination configuration not found for this snapshot');
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
   });
@@ -428,5 +512,83 @@ describe('aiToolsVault handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+});
+
+describe('configure_vault refuses network share vaults', () => {
+  let toolMap: Map<string, AiTool>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    setDefaultDbMocks();
+    toolMap = buildToolMap();
+    // The real site-locked update, so its own refusal is what is exercised.
+    const actual = await vi.importActual<typeof import('./localVaultUpdate')>('./localVaultUpdate');
+    vi.mocked(updateVaultWithinCurrentSite).mockImplementation(actual.updateVaultWithinCurrentSite);
+  });
+
+  const restrictedAuth = () => ({
+    ...makeAuth(), allowedSiteIds: ['site-1'], canAccessSite: (siteId: string | null) => siteId === 'site-1',
+  }) as unknown as AuthContext;
+
+  it.each([
+    [{ action: 'create', deviceId: DEVICE_ID, vaultPath: '/vaults/main', vaultType: 'smb' }],
+    [{ action: 'create', deviceId: DEVICE_ID, vaultPath: '\\\\nas\\vault', vaultType: 'local' }],
+    [{ action: 'update', vaultId: VAULT_ID, vaultType: 'smb' }],
+    [{ action: 'update', vaultId: VAULT_ID, vaultPath: '//nas/vault' }],
+  ])('the input schema refuses %j', (input) => {
+    const result = validateToolInput('configure_vault', input as Record<string, unknown>);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).toMatch(/not supported/);
+  });
+
+  it.each([
+    ['an SMB share type', { vaultPath: '/vaults/main', vaultType: 'smb' }],
+    ['a UNC path', { vaultPath: '\\\\nas\\vault', vaultType: 'usb' }],
+    ['a device path', { vaultPath: '\\\\.\\E:\\vault', vaultType: 'usb' }],
+  ])('create with %s is refused before any write or device push', async (_label, target) => {
+    mockSelectSequence([[{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]]);
+    vi.mocked(db.insert).mockImplementation(() => createInsertChain([{ id: VAULT_ID }]) as any);
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'create', deviceId: DEVICE_ID, ...target }, makeAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an SMB share type', { vaultType: 'smb' }],
+    ['a UNC path', { vaultPath: '\\\\?\\UNC\\nas\\vault' }],
+  ])('update with %s is refused before any write or device push', async (_label, target) => {
+    prepareHandlerMocks('configure_vault');
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, ...target }, makeAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('a site-restricted update to an SMB share type is refused before any write', async () => {
+    prepareHandlerMocks('configure_vault');
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultType: 'smb' }, restrictedAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('no longer advertises the SMB share vault type', () => {
+    const def = toolMap.get('configure_vault')!.definition as any;
+    expect(def.input_schema.properties.vaultType.enum).toEqual(['local', 'usb']);
   });
 });

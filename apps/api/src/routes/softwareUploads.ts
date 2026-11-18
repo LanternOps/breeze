@@ -24,15 +24,26 @@
  * requests, so an API restart mid-upload only costs a resume, never a
  * corrupt checksum.
  *
- * The legacy POST /catalog/:id/versions/upload multipart route is untouched
- * and remains supported for scripts/API consumers.
+ * The legacy POST /catalog/:id/versions/upload multipart route remains
+ * supported for scripts/API consumers.
+ *
+ * OWNERSHIP (#9246): a session is owned by whoever owns the catalog row — an
+ * org for an org-owned package, the partner for a partner-wide package (e.g.
+ * the built-in SentinelOne package). Partner sessions require system scope or
+ * a full-partner admin (canManagePartnerWidePolicies), ignore `?orgId`, spend
+ * the partner's own cap bucket, and store one object at
+ * software/partner/<partnerId>/<catalogId>/<versionId>/<fileName>. The four
+ * session routes load the session by (id, catalog_id) under RLS, then
+ * authorize against its owner (services/softwareUploadOwner.ts). "Plan D<n>"
+ * below refers to the design decisions in
+ * docs/superpowers/plans/integrations/2026-11-08-partner-wide-package-upload.md.
  *
  * Mounted from routes/software.ts (softwareRoutes.route('/', ...)) AFTER its
  * `use('*', authMiddleware)`, so every handler runs behind auth. This module
  * must never import routes/software.ts (cycle) — shared helpers live in
  * services/softwareVersionShared.ts.
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, gte, isNull, sql } from 'drizzle-orm';
@@ -60,13 +71,28 @@ import {
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
-  authorizeCatalogItemRead,
   getFileExtension,
+  hasInstallScript,
   insertLatestSoftwareVersion,
+  installSpecError,
   lockSoftwareCatalogForVersionInsert,
+  normalizeSupportedOs,
   resolveScopedOrgId,
 } from '../services/softwareVersionShared';
-import { detectionRulesSchema, successExitCodesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
+import {
+  authorizeCatalogItemWrite,
+  defaultSilentArgsForCatalogItem,
+  integrationInstallArgsError,
+} from '../services/softwareCatalogOps';
+import {
+  authorizeUploadSessionAccess,
+  softwarePackageObjectKey,
+  uploadOwnerColumns,
+  uploadOwnerOf,
+  uploadOwnerSessionCondition,
+  type UploadOwner,
+} from '../services/softwareUploadOwner';
+import { detectionRulesSchema, successExitCodesSchema } from '@breeze/shared';
 
 export const softwareUploadRoutes = new Hono();
 
@@ -92,6 +118,50 @@ const requireSoftwareWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.resource,
   PERMISSIONS.DEVICES_WRITE.action,
 );
+const requireSoftwareExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
+
+/**
+ * #6958 — the version rules of routes/software.ts for this third create path:
+ * a Breeze built-in package takes no upload, `supportedOs` is de-duplicated
+ * before the single-OS rule, a script needs devices.execute (it runs as
+ * SYSTEM/root), and the install spec must validate. Checked at session create
+ * (fail before 400MB move) AND at completion (the authoritative write: a
+ * grant can be revoked mid-upload, and stored metadata is re-parsed there).
+ * Returns the refusal response, or the normalized supportedOs and whether the
+ * version's scripts are enabled.
+ */
+async function checkUploadInstallSpec(
+  c: Context,
+  catalogItem: { builtinPackageKey?: string | null },
+  input: {
+    fileType: string;
+    supportedOs: unknown;
+    silentInstallArgs: string | null | undefined;
+    preInstallScript: string | null | undefined;
+    postInstallScript: string | null | undefined;
+  },
+): Promise<{ refused: Response } | { supportedOs: string[] | null | undefined; scriptsEnabled: boolean }> {
+  const auth = c.get('auth') as { scope: string };
+  if (catalogItem.builtinPackageKey != null && auth.scope !== 'system') {
+    return { refused: c.json({ error: 'Built-in packages are managed by Breeze and cannot be changed' }, 403) };
+  }
+  const normalizedOs = normalizeSupportedOs(input.supportedOs);
+  if (!normalizedOs.ok) return { refused: c.json({ error: normalizedOs.error }, 400) };
+  const scriptsEnabled = hasInstallScript(input);
+  if (scriptsEnabled) {
+    let allowed = false;
+    const res = await requireSoftwareExecute(c, async () => { allowed = true; });
+    if (!allowed) {
+      return { refused: res ?? c.json({ error: 'Install scripts require the devices.execute permission' }, 403) };
+    }
+  }
+  const specError = installSpecError({ ...input, supportedOs: normalizedOs.value ?? null });
+  if (specError) return { refused: c.json(specError, 400) };
+  return { supportedOs: normalizedOs.value, scriptsEnabled };
+}
 
 export const MIN_CHUNK_SIZE = 256 * 1024; // 256 KB
 export const MAX_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB — bodyLimit carve-out is 9MB
@@ -100,6 +170,8 @@ export const MAX_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB — bodyLimit carve-out i
 // up to MAX_UPLOAD_SIZE (500MB) of API-host temp disk, so concurrency must be
 // bounded per tenant AND per user. Checked at create, before the row insert;
 // each limit answers 429 with its own error string so the cause is diagnosable.
+// The _PER_ORG limits apply per upload owner: a partner-wide package's
+// sessions get their own bucket of the same size (#9246), never a child org's.
 export const MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG = 5;
 export const MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER = 2;
 export const MAX_ACTIVE_UPLOAD_BYTES_PER_ORG = 2.5 * 1024 * 1024 * 1024; // 2.5 GB declared file_size, summed
@@ -212,44 +284,61 @@ softwareUploadRoutes.post(
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
-    // Same narrowing rule as the software.ts catalog reads: an org-owned item
-    // must belong to the org this request resolves to. The contextOrg check
-    // further down would catch the mismatch too, but authorize before touching
-    // anything else so the boundary is enforced in one place.
-    const catalogReadError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
-    if (catalogReadError) return c.json({ error: catalogReadError.error }, catalogReadError.status);
-    // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
-    // partner-wide package (#2135, org_id NULL) has no org to book the session
-    // under yet. Fail up front with an actionable message instead of a 500.
-    if (catalogItem.orgId === null) {
-      return c.json(
-        { error: 'File upload is not yet available for partner-wide packages — provide a download URL instead.' },
-        400,
-      );
-    }
-    const orgId = catalogItem.orgId;
-    // The chunk/status/complete/delete routes all resolve the org from the
-    // REQUEST context (resolveScopedOrgId on ?orgId=) and filter the session
-    // by it. If that resolution won't land on this catalog's org — e.g. the
-    // All-organizations view injects no orgId, or a different org is selected
-    // — the session would be created successfully and then every chunk would
-    // fail with a misleading "not found", leaving an orphaned session counting
-    // against the org's quota. Fail the create up front instead.
-    const contextOrg = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in contextOrg) return c.json({ error: contextOrg.error }, contextOrg.status);
-    if (contextOrg.orgId !== orgId) {
-      return c.json({ error: 'Catalog item not found' }, 404);
+    // The session's owner is the catalog row's owner (#9246) — never the
+    // org selected in the switcher. Authorize before touching anything else so
+    // the boundary is enforced in one place: an org-owned item must belong to
+    // the org this request resolves to; a partner-wide item (org_id NULL)
+    // needs system scope or a full-partner admin of the owning partner
+    // (canManagePartnerWidePolicies), whatever `?orgId` says.
+    const catalogWriteError = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (catalogWriteError) return c.json({ error: catalogWriteError.error }, catalogWriteError.status);
+    const owner = uploadOwnerOf(catalogItem);
+    if (owner.kind === 'organization') {
+      // Org sessions are driven through resolveScopedOrgId on ?orgId= (see
+      // authorizeUploadSessionAccess). If that resolution won't land on this
+      // catalog's org — e.g. the All-organizations view injects no orgId, or
+      // a different org is selected — the session would be created and then
+      // every chunk would fail with a misleading "not found", leaving an
+      // orphaned session counting against the org's quota. Fail the create up
+      // front instead. Partner sessions ignore ?orgId, so they skip this.
+      const contextOrg = resolveScopedOrgId(auth, c.req.query('orgId'));
+      if ('error' in contextOrg) return c.json({ error: contextOrg.error }, contextOrg.status);
+      if (contextOrg.orgId !== owner.orgId) {
+        return c.json({ error: 'Catalog item not found' }, 404);
+      }
     }
 
     const {
       fileName, fileSize, chunkSize,
-      ...metadata
+      ...rawMetadata
     } = payload;
+
+    const fileType = ext.slice(1);
+    const spec = await checkUploadInstallSpec(c, catalogItem, {
+      fileType,
+      supportedOs: rawMetadata.supportedOs,
+      silentInstallArgs: rawMetadata.silentInstallArgs,
+      preInstallScript: rawMetadata.preInstallScript,
+      postInstallScript: rawMetadata.postInstallScript,
+    });
+    if ('refused' in spec) return spec.refused;
+    // #9246: refuse args that drop a built-in package's per-org placeholder
+    // before a byte moves. Blank args are judged as the default /complete will
+    // store (the package template), so they pass.
+    const placeholderError = integrationInstallArgsError(
+      catalogItem,
+      fileType,
+      rawMetadata.silentInstallArgs || defaultSilentArgsForCatalogItem(catalogItem, fileType)?.install,
+    );
+    if (placeholderError) return c.json(placeholderError, 400);
+    const metadata = spec.supportedOs === undefined ? rawMetadata : { ...rawMetadata, supportedOs: spec.supportedOs ?? undefined };
 
     // Session caps: each active session can pin up to 500MB of API-host temp
     // disk for hours, so concurrency is bounded before the row is inserted.
-    // One aggregate over the org's active sessions; pg returns count()/sum()
-    // as strings, hence the Number() coercions.
+    // One aggregate over the owner's active sessions — an org, or a partner
+    // with its own bucket (a partner upload never spends a child org's
+    // budget); pg returns count()/sum() as strings, hence the Number()
+    // coercions.
     // `IS NOT DISTINCT FROM` (not `=`) for the per-user predicate: `createdBy`
     // is null for system-scope/service-principal callers (requireScope admits
     // 'system'), and `created_by = NULL` is never true in SQL — a plain `=`
@@ -257,14 +346,15 @@ softwareUploadRoutes.post(
     // MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER, defeating the local-disk-exhaustion
     // guard for exactly the tokens least likely to be a human clicking
     // "cancel". `IS NOT DISTINCT FROM` treats NULL = NULL as true, so all
-    // null-user sessions in an org share one bucket and are still capped.
+    // null-user sessions under the same owner (org or partner) share one
+    // bucket and are still capped.
     //
     // Staleness filter (#2951 final review Finding 1): a session whose
     // last_activity_at is already past the reaper's idle TTL is about to be
     // deleted by softwareUploadSessionCleanup — it must not count against
     // ANY of the three cap dimensions below, or a couple of cancelled/failed
     // uploads (whose rows sit idle until the next hourly reap) lock a user or
-    // org out of the feature for up to (idle TTL + cron latency) hours.
+    // owner out of the feature for up to (idle TTL + cron latency) hours.
     // `getIdleTtlHours()` is imported from the reaper job itself so the two
     // can never drift apart into independently-tuned copies of the same knob.
     const idleCutoff = new Date(Date.now() - getIdleTtlHours() * 3_600_000);
@@ -277,18 +367,19 @@ softwareUploadRoutes.post(
       })
       .from(softwareUploadSessions)
       .where(and(
-        eq(softwareUploadSessions.orgId, orgId),
+        uploadOwnerSessionCondition(owner),
         eq(softwareUploadSessions.status, 'active'),
         gte(softwareUploadSessions.lastActivityAt, idleCutoff),
       ));
+    const ownerNoun = owner.kind === 'organization' ? 'organization' : 'partner';
     if (Number(usage?.orgActive ?? 0) >= MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG) {
-      return c.json({ error: 'Too many concurrent package uploads for this organization' }, 429);
+      return c.json({ error: `Too many concurrent package uploads for this ${ownerNoun}` }, 429);
     }
     if (Number(usage?.userActive ?? 0) >= MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER) {
       return c.json({ error: 'Too many concurrent package uploads for this user' }, 429);
     }
     if (Number(usage?.orgBytes ?? 0) + fileSize > MAX_ACTIVE_UPLOAD_BYTES_PER_ORG) {
-      return c.json({ error: 'Concurrent package uploads exceed the organization upload size budget' }, 429);
+      return c.json({ error: `Concurrent package uploads exceed the ${ownerNoun} upload size budget` }, 429);
     }
 
     const uploadId = randomUUID();
@@ -296,7 +387,7 @@ softwareUploadRoutes.post(
     const [session] = await db.insert(softwareUploadSessions)
       .values({
         id: uploadId,
-        orgId,
+        ...uploadOwnerColumns(owner),
         catalogId,
         fileName,
         fileSize,
@@ -314,6 +405,43 @@ softwareUploadRoutes.post(
     return c.json({ data: { uploadId, bytesReceived: 0, chunkSize } }, 201);
   },
 );
+
+/**
+ * Load a session by `(id, catalog_id)` under RLS, then authorize the caller
+ * against the session's own owner (plan D6) — the owner is read from the row,
+ * not recomputed from `?orgId`, so a partner session works with any org (or
+ * none) selected in the switcher. A session RLS hides answers 404 before any
+ * `?orgId` check runs (don't reveal existence).
+ */
+async function loadAuthorizedSession(
+  c: Context,
+  catalogId: string,
+  uploadId: string,
+): Promise<
+  | { session: typeof softwareUploadSessions.$inferSelect; owner: UploadOwner }
+  | { refused: Response }
+> {
+  const [session] = await db.select().from(softwareUploadSessions).where(and(
+    eq(softwareUploadSessions.id, uploadId),
+    eq(softwareUploadSessions.catalogId, catalogId),
+  ));
+  if (!session) return { refused: c.json({ error: 'Upload session not found' }, 404) };
+  const denied = authorizeUploadSessionAccess(c.get('auth'), session, c.req.query('orgId'));
+  if (denied) return { refused: c.json({ error: denied.error }, denied.status) };
+  return { session, owner: uploadOwnerOf(session) };
+}
+
+/**
+ * The in-lock re-read predicate: the session row, still under the owner the
+ * caller was authorized against.
+ */
+function ownedSessionCondition(owner: UploadOwner, uploadId: string, catalogId: string) {
+  return and(
+    eq(softwareUploadSessions.id, uploadId),
+    eq(softwareUploadSessions.catalogId, catalogId),
+    uploadOwnerSessionCondition(owner),
+  );
+}
 
 class ChunkTooLargeError extends Error {}
 
@@ -343,10 +471,6 @@ softwareUploadRoutes.put(
   requireMfa(),
   zValidator('param', uploadParamSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
     const { id: catalogId, uploadId } = c.req.valid('param');
 
     // Validate the RAW string, not just the coerced number: `Number('')` is
@@ -368,12 +492,9 @@ softwareUploadRoutes.put(
     // The temp file lives on the process that created the session; another
     // process can never append to it. Fail fast and non-retryably instead of
     // letting the client burn its 409-resync budget on an unwinnable loop.
-    const [owned] = await db.select().from(softwareUploadSessions).where(and(
-      eq(softwareUploadSessions.id, uploadId),
-      eq(softwareUploadSessions.orgId, orgId),
-      eq(softwareUploadSessions.catalogId, catalogId),
-    ));
-    if (!owned) return c.json({ error: 'Upload session not found' }, 404);
+    const loaded = await loadAuthorizedSession(c, catalogId, uploadId);
+    if ('refused' in loaded) return loaded.refused;
+    const { session: owned, owner } = loaded;
     if (owned.ownerInstanceId !== PROCESS_INSTANCE_ID) {
       return c.json(
         {
@@ -387,11 +508,8 @@ softwareUploadRoutes.put(
 
     return withSessionLock(uploadId, async () => {
       // Re-read INSIDE the lock so bytesReceived reflects the previous append.
-      const [session] = await db.select().from(softwareUploadSessions).where(and(
-        eq(softwareUploadSessions.id, uploadId),
-        eq(softwareUploadSessions.orgId, orgId),
-        eq(softwareUploadSessions.catalogId, catalogId),
-      ));
+      const [session] = await db.select().from(softwareUploadSessions)
+        .where(ownedSessionCondition(owner, uploadId, catalogId));
       if (!session) return c.json({ error: 'Upload session not found' }, 404);
       if (session.status !== 'active') {
         return c.json(
@@ -519,17 +637,10 @@ softwareUploadRoutes.get(
   requireMfa(),
   zValidator('param', uploadParamSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
     const { id: catalogId, uploadId } = c.req.valid('param');
-    const [session] = await db.select().from(softwareUploadSessions).where(and(
-      eq(softwareUploadSessions.id, uploadId),
-      eq(softwareUploadSessions.orgId, orgResult.orgId),
-      eq(softwareUploadSessions.catalogId, catalogId),
-    ));
-    if (!session) return c.json({ error: 'Upload session not found' }, 404);
+    const loaded = await loadAuthorizedSession(c, catalogId, uploadId);
+    if ('refused' in loaded) return loaded.refused;
+    const { session } = loaded;
 
     return c.json({
       data: {
@@ -559,21 +670,14 @@ softwareUploadRoutes.post(
   requireMfa(),
   zValidator('param', uploadParamSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
     const { id: catalogId, uploadId } = c.req.valid('param');
 
     // Instance-ownership guard — BEFORE the lock and before any S3/db work
     // (same contract as the chunk route; complete reads the temp file, which
     // only exists on the owning process).
-    const [owned] = await db.select().from(softwareUploadSessions).where(and(
-      eq(softwareUploadSessions.id, uploadId),
-      eq(softwareUploadSessions.orgId, orgId),
-      eq(softwareUploadSessions.catalogId, catalogId),
-    ));
-    if (!owned) return c.json({ error: 'Upload session not found' }, 404);
+    const loaded = await loadAuthorizedSession(c, catalogId, uploadId);
+    if ('refused' in loaded) return loaded.refused;
+    const { session: owned, owner } = loaded;
     if (owned.ownerInstanceId !== PROCESS_INSTANCE_ID) {
       return c.json(
         { error: 'upload_instance_mismatch', message: INSTANCE_MISMATCH_MESSAGE },
@@ -583,11 +687,8 @@ softwareUploadRoutes.post(
 
     return withSessionLock(uploadId, async () => {
       // Re-read INSIDE the lock so bytesReceived reflects the last append.
-      const [session] = await db.select().from(softwareUploadSessions).where(and(
-        eq(softwareUploadSessions.id, uploadId),
-        eq(softwareUploadSessions.orgId, orgId),
-        eq(softwareUploadSessions.catalogId, catalogId),
-      ));
+      const [session] = await db.select().from(softwareUploadSessions)
+        .where(ownedSessionCondition(owner, uploadId, catalogId));
       if (!session) return c.json({ error: 'Upload session not found' }, 404);
       if (session.status !== 'active') {
         return c.json({ error: 'Upload session is not active' }, 409);
@@ -606,10 +707,14 @@ softwareUploadRoutes.post(
         return c.json({ error: 'S3 storage is not configured' }, 503);
       }
 
+      // The catalog must still be owned exactly as the session is: the version
+      // lands under the owner the caller was authorized against.
       const [catalogItem] = await db.select().from(softwareCatalog)
         .where(and(
           eq(softwareCatalog.id, catalogId),
-          eq(softwareCatalog.orgId, orgId),
+          owner.kind === 'organization'
+            ? eq(softwareCatalog.orgId, owner.orgId)
+            : and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, owner.partnerId)),
           isNull(softwareCatalog.deletedAt),
         ));
       if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
@@ -684,10 +789,12 @@ softwareUploadRoutes.post(
       const meta = parsedMeta.data;
 
       const fileType = getFileExtension(session.fileName).slice(1);
-      // Auto-detect MSI silent args (parity with the legacy multipart route).
+      // Default blank silent args (parity with the legacy multipart route): a
+      // built-in integration package's own installer gets the package's
+      // template (#9246), anything else the file-type default (MSI msiexec).
       let silentInstallArgs = meta.silentInstallArgs ?? null;
       let silentUninstallArgs = meta.silentUninstallArgs ?? null;
-      const silentDefaults = defaultSilentArgsForFileType(fileType);
+      const silentDefaults = defaultSilentArgsForCatalogItem(catalogItem, fileType);
       if (silentDefaults && !silentInstallArgs) {
         silentInstallArgs = silentDefaults.install;
       }
@@ -695,8 +802,20 @@ softwareUploadRoutes.post(
         silentUninstallArgs = silentDefaults.uninstall;
       }
 
+      // #6958: re-checked here, before any bytes reach object storage.
+      const spec = await checkUploadInstallSpec(c, catalogItem, {
+        fileType,
+        supportedOs: meta.supportedOs,
+        silentInstallArgs,
+        preInstallScript: meta.preInstallScript,
+        postInstallScript: meta.postInstallScript,
+      });
+      if ('refused' in spec) return spec.refused;
+      const placeholderError = integrationInstallArgsError(catalogItem, fileType, silentInstallArgs);
+      if (placeholderError) return c.json(placeholderError, 400);
+
       const versionId = randomUUID();
-      const s3Key = `software/${orgId}/${catalogId}/${versionId}/${session.fileName}`;
+      const s3Key = softwarePackageObjectKey(owner, catalogId, versionId, session.fileName);
 
       // Map object-storage faults to a status that says whose problem it is
       // (#2794): S3ConfigError->503 via clientMessage (never `.message`,
@@ -737,12 +856,13 @@ softwareUploadRoutes.post(
           originalFileName: session.fileName,
           checksum,
           fileSize: session.fileSize,
-          supportedOs: meta.supportedOs ?? null,
+          supportedOs: spec.supportedOs ?? null,
           architecture: meta.architecture ?? null,
           silentInstallArgs,
           silentUninstallArgs,
           preInstallScript: meta.preInstallScript ?? null,
           postInstallScript: meta.postInstallScript ?? null,
+          installScriptsEnabled: spec.scriptsEnabled,
           detectionRules: meta.detectionRules ?? null,
           successExitCodes: meta.successExitCodes ?? [],
         });
@@ -763,7 +883,8 @@ softwareUploadRoutes.post(
       }
 
       writeRouteAudit(c, {
-        orgId,
+        // null for a partner-wide package, like the JSON version create.
+        orgId: catalogItem.orgId,
         action: 'software.catalog.version.upload',
         resourceType: 'software_version',
         resourceId: versionRecord.id,
@@ -801,18 +922,11 @@ softwareUploadRoutes.delete(
   requireMfa(),
   zValidator('param', uploadParamSchema),
   async (c) => {
-    const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-
     const { id: catalogId, uploadId } = c.req.valid('param');
     return withSessionLock(uploadId, async () => {
-      const [session] = await db.select().from(softwareUploadSessions).where(and(
-        eq(softwareUploadSessions.id, uploadId),
-        eq(softwareUploadSessions.orgId, orgResult.orgId),
-        eq(softwareUploadSessions.catalogId, catalogId),
-      ));
-      if (!session) return c.json({ error: 'Upload session not found' }, 404);
+      const loaded = await loadAuthorizedSession(c, catalogId, uploadId);
+      if ('refused' in loaded) return loaded.refused;
+      const { session } = loaded;
 
       await unlink(session.tempPath).catch(() => {});
       await db.delete(softwareUploadSessions)

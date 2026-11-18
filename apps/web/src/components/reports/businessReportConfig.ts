@@ -6,7 +6,8 @@
  * The server's business config schemas (`apps/api/src/services/
  * reportConfigSchemas.ts`, `BUSINESS_SELECTOR_REFUSALS`) answer 400 when any of
  * these legacy builder selectors "selects something": a business report
- * selects by its own period and its owner scope, never by these.
+ * selects by its own period and its owner scope, never by these. The
+ * org-owned types in `SELECTORLESS_ORG_REPORT_TYPES` refuse them too.
  */
 export const BUSINESS_REFUSED_CONFIG_KEYS = [
   'dateRange',
@@ -29,7 +30,21 @@ export const BUSINESS_OPTION_CONFIG_KEYS = [
   'weeklyCapacityHours',
   'asOf',
   'includePaidInPeriod',
+  'renewalHorizonDays',
+  'laborCostPerHour',
+  'includeSubjects',
 ] as const;
+
+/**
+ * Org-owned curated types whose server schema refuses the builder selectors like
+ * a business type (#11018), while keeping an org-owned report's contact
+ * recipients and delivery, which a business type does not have.
+ */
+const SELECTORLESS_ORG_REPORT_TYPES: ReadonlySet<string> = new Set(['ticket_sla_performance']);
+
+export function isSelectorlessOrgReportType(type: string | undefined): boolean {
+  return !!type && SELECTORLESS_ORG_REPORT_TYPES.has(type);
+}
 
 export function omitConfigKeys(
   config: Record<string, unknown> | undefined,

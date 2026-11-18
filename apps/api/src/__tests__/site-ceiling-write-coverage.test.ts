@@ -81,6 +81,16 @@ const GOVERNANCE_TABLE_NAMES = [
   // that attaches them (and may auto-quarantine there); no site axis.
   'yaraRuleSets',
   'yaraRules',
+  // A generic deployment has no site column: its target (all devices, a
+  // filter, groups or a device list) resolves against the whole organization
+  // at initialization, so creating or driving one is an org-wide change.
+  'deployments',
+  // AI for Office: the Entra tenant mapping and the policy both apply to the
+  // whole organization (sign-in, user access, providers, write mode).
+  'clientAiTenantMappings',
+  'clientAiOrgPolicies',
+  // AI for Office prompt templates are organization- or partner-scoped.
+  'clientAiPromptTemplates',
 ] as const;
 
 /**
@@ -88,13 +98,35 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // Portal Entra tenant proof writes to the AI for Office tenant mapping table.
+  // recordEntraTenantProof, removePortalEntraTenant and
+  // proveEntraTenantFromM365Connection are reached only through
+  // routes/orgPortalEntraTenant.ts (requireScope('partner', 'system'); those
+  // scopes never carry a site ceiling) and the public portal tenant-proof
+  // callback (routes/portal/oidcTenantProof.ts), which re-authorizes the
+  // partner-scope link creator. The organization-scope writers of the same
+  // table (routes/clientAi/admin.ts) call canMutateOrgWideGovernance.
+  'services/portalEntraTenantProof.ts':
+    'reached only through partner/system-scope routes in routes/orgPortalEntraTenant.ts and the portal tenant-proof callback (routes/portal/oidcTenantProof.ts), neither of which a site-restricted caller reaches — verify both callers when editing this file',
+  // Generic deployment state transitions take a deployment id and no caller.
+  // Their only caller is routes/deployments.ts, whose initialize/pause/resume/
+  // cancel routes run requireUnrestrictedDeploymentAccess
+  // (canMutateOrgWideGovernance) before reading the deployment.
+  'services/deploymentEngine.ts':
+    'initialize/pause/resume/cancel are called only from routes/deployments.ts routes that run canMutateOrgWideGovernance first — verify every caller still gates when editing this file',
+  // Marks a deployment completed/failed once its last member device settles;
+  // runs in the reaper worker in system context with no caller identity.
+  'jobs/staleCommandReaper.ts':
+    'sets a deployment completed/failed after its last member device settles, from the reaper worker in system context — no caller-scoped auth object reaches this path',
   // #6263 W03a. Called only from the mutating routes in
   // routes/security/yara.ts, each of which runs writeDenial
   // (canMutateOrgWideGovernance) before reaching it.
   'services/yaraBuiltinPackStore.ts':
     'boot-only system-scope upsert of THE built-in set (no org, no site); no caller, so no site-restricted actor can reach it (#6263 W03b)',
   'services/yaraRuleSetPublisher.ts':
-    'reached only through routes/security/yara.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing either file',
+    'reached only through routes/security/yara.ts and services/yaraIocImportService.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing any of these files',
+  'services/yaraIocImportService.ts':
+    'every mutation runs writeDenial (services/yaraRuleSetAccess.ts: canMutateOrgWideGovernance + canManagePartnerWidePolicies) first; 403s pinned in yaraIocImportService.test.ts and routes/security/yaraIocImport.test.ts (#6263 W04; extracted for the AI ioc_hunt import_iocs path, #6268)',
   // Background probe of a destination's create-only write support, started
   // after a brokered backup write is issued. Writes only the
   // provider_capabilities.conditionalWrites record, in system context; no
@@ -205,6 +237,13 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // services/aiToolsDns.ts) gate before enqueueing.
   'jobs/dnsSyncJob.ts':
     'updates only syncStatus/lastSynced/syncError on a saved DNS policy from the sync worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
+
+  // DNS integration background delete (#10019): removes the policies of an
+  // integration the DELETE route already deactivated. That route is the
+  // caller-facing gate (requireOrgWideIntegrationAccess rejects any site
+  // ceiling); the worker reloads the row by id in system context.
+  'jobs/dnsSecurityRetention.ts':
+    'deletes dns_policies only for an integration already marked deleting by DELETE /dns-security/integrations/:id (site-ceiling gated by requireOrgWideIntegrationAccess); runs in a BullMQ worker in system context — no caller-scoped auth object reaches this path',
 
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',

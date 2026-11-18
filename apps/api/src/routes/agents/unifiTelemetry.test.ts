@@ -256,14 +256,14 @@ describe('agent unifi telemetry routes', () => {
     const collector = { id: 'c1', collectorDeviceId: 'dev-1', orgId: 'org-1' };
     const enqueued = () => (worker.enqueueUnifiTelemetry as any).mock.calls[0][0];
 
-    it('ingests a v2 companion through the same synchronous path and marks the legacy payload as v2-owned', async () => {
+    it('ingests a v2 companion through the same synchronous path without stamping any request-wide ownership on the legacy payload', async () => {
       (authority.loadUnifiCollector as any).mockResolvedValue(collector);
       (adapter.adaptUnifiTopology as any).mockResolvedValue({ accepted: true, producerEpoch: 'e', reportSequence: '4', resources: [] });
       const res = await post({ ...legacy, topologyV2: reportV2 });
       expect(res.status).toBe(202);
       expect(await res.json()).toMatchObject({ accepted: true, topology: { accepted: true } });
       expect((adapter.adaptUnifiTopology as any).mock.calls[0][2]).toMatchObject({ version: 2, sequence: '4' });
-      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+      expect(enqueued()).not.toHaveProperty('topologyV2Present');
       expect(enqueued()).not.toHaveProperty('topologyV2');
     });
 
@@ -280,22 +280,22 @@ describe('agent unifi telemetry routes', () => {
       expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
     });
 
-    it('rejects both companions in one request as ambiguous, still delivers legacy telemetry, and keeps the v2 fence on', async () => {
+    it('rejects both companions in one request as ambiguous, still delivers legacy telemetry', async () => {
       const res = await post({ ...legacy, topologyV1: reportV1, topologyV2: reportV2 });
       expect(res.status).toBe(202);
       expect(await res.json()).toEqual({ accepted: true, topology: { accepted: false, reason: 'ambiguous_topology_companion', resources: [] } });
       expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
       expect(authority.loadUnifiCollector).not.toHaveBeenCalled();
       expect(worker.enqueueUnifiTelemetry).toHaveBeenCalledTimes(1);
-      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+      expect(enqueued()).not.toHaveProperty('topologyV2Present');
     });
 
-    it('rejects a malformed v2 companion in its receipt, still delivers legacy telemetry, and keeps the v2 fence on', async () => {
+    it('rejects a malformed v2 companion in its receipt, still delivers legacy telemetry', async () => {
       const res = await post({ ...legacy, topologyV2: { ...reportV2, resources: 'nope' } });
       expect(res.status).toBe(202);
       expect(await res.json()).toEqual({ accepted: true, topology: { accepted: false, reason: 'invalid_report', reportSequence: '4', resources: [] } });
       expect(adapter.adaptUnifiTopology).not.toHaveBeenCalled();
-      expect(enqueued()).toMatchObject({ topologyV2Present: true });
+      expect(enqueued()).not.toHaveProperty('topologyV2Present');
     });
 
     it('is version-bound: topologyV2 refuses a v1 report and topologyV1 refuses a v2 report', async () => {

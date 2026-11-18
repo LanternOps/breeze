@@ -13,6 +13,7 @@
 // of a refusal. These functions therefore refuse first and let the CHECK be
 // the backstop it is meant to be.
 
+import { assertContactLinkSystemAllowed } from '../contacts/externalLinkSystems';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -23,6 +24,7 @@ import {
 } from '../../db/schema/aiOperatorTaskGraph';
 import { contactExternalLinks } from '../../db/schema/contacts';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
+import { reserveTaskAccount } from './accountReservations';
 
 /** Mirrors `ai_operator_task_targets_label_len_chk`. */
 const MAX_TARGET_LABEL_CHARS = 255;
@@ -193,6 +195,15 @@ export async function freezeTargetAccount(
     throw new Error('[aiOperator] freezeTargetAccount: upsert returned no row');
   }
 
+  // #9981: an account is never frozen onto a task without being reserved for
+  // it. The caller must already have run `lockAndCheckAccountReservations` in
+  // this transaction; if it did not and another task holds the account, this
+  // throws and the whole freeze rolls back.
+  await reserveTaskAccount(dbh, {
+    orgId: input.orgId, taskId: input.taskId, provider: input.provider,
+    externalId: values.externalId, principalLabel: values.principalLabel,
+  });
+
   if (input.actor) {
     await appendTaskEvent(dbh, {
       orgId: input.orgId,
@@ -300,6 +311,10 @@ export async function upsertContactExternalLinks(
   input: UpsertContactExternalLinksInput,
 ): Promise<number> {
   if (input.links.length === 0) return 0;
+  // The type allows only m365/google, but the systems reach here from
+  // provider payloads at run time: a ticket import's reserved namespace is
+  // refused outright (#8313 W4b).
+  for (const link of input.links) assertContactLinkSystemAllowed(link.system);
 
   const inserted = await dbh
     .insert(contactExternalLinks)

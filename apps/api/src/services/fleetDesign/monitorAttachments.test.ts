@@ -130,6 +130,21 @@ describe('snapshotFleetMonitors', () => {
     expect(snap[MONITOR]).not.toHaveProperty('compiledHash');
     expect(snap[MONITOR]).not.toHaveProperty('updatedAt');
   });
+  it('a W2-backfilled (inherit) monitor still matches the snapshot apply stored before W2 (#10765)', async () => {
+    const snap = async (row: Record<string, unknown>) => {
+      const exec = { select: () => ({ from: () => ({ where: async () => [{ id: MONITOR, ...row }] }) }) } as unknown as Tx;
+      return (await snapshotFleetMonitors([MONITOR], exec))[MONITOR];
+    };
+    // Stored at apply time, before the lifecycle columns existed / were backfilled.
+    const preW2 = await snap({ name: 'W', cooldownMinutes: 5, autoResolve: false });
+    // The same monitor after the migration nulled the old defaults.
+    const backfilled = await snap({ name: 'W', cooldownMinutes: null, autoResolve: null, rearmMode: null, rearmDelayMinutes: null });
+    expect(backfilled).toEqual(preW2);
+    // A real re-arm or cooldown edit still reads as an edit.
+    expect(await snap({ name: 'W', cooldownMinutes: null, autoResolve: null, rearmMode: 'after_delay', rearmDelayMinutes: 30 }))
+      .not.toEqual(preW2);
+    expect(await snap({ name: 'W', cooldownMinutes: 10, autoResolve: null })).not.toEqual(preW2);
+  });
   it('returns an empty map without querying for no ids', async () => {
     const exec = { select: vi.fn() } as unknown as Tx;
     expect(await snapshotFleetMonitors([], exec)).toEqual({});

@@ -25,7 +25,9 @@ vi.mock('../../db', () => {
           return { onConflictDoNothing: onConflictMock };
         }
       })
-    }
+    },
+    withDbTransaction: (fn: () => unknown) => fn(),
+    withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   };
 });
 

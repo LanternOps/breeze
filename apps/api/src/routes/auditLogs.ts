@@ -33,6 +33,12 @@ auditLogRoutes.use('*', authMiddleware);
 const listLogsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
+  // The Audit Trail's user picker (#9671): match the actor by identity
+  // (audit_logs.actor_id), which also covers rows written without an actor
+  // email such as agent.command.*. ANDed with the org scope, so it only
+  // narrows what the caller can already see.
+  userId: z.string().guid().optional(),
+  // Free-text user match (email / name); see buildFilterConditions.
   user: z.string().min(1).optional(),
   action: z.string().min(1).optional(),
   resource: z.string().min(1).optional(),
@@ -247,6 +253,10 @@ function redactedDetails(log: DbRow['log']): Record<string, unknown> | null {
   return redactPersistedToolInput(log.details) as Record<string, unknown>;
 }
 
+function isUpdateAction(action: string): boolean {
+  return action === 'update' || action.endsWith('.update');
+}
+
 function flattenEntry(row: DbRow) {
   const log = row.log;
   const rawDetails = log.details as Record<string, unknown> | null;
@@ -265,13 +275,15 @@ function flattenEntry(row: DbRow) {
     user: {
       name: actorName,
       email: log.actorEmail ?? '',
-      role: log.actorType,
-      department: ''
+      role: log.actorType
     },
     initiatedBy: log.initiatedBy ?? null,
+    // #9672: only an update has a meaningful "after" snapshot; for every other
+    // action echoing the whole details object made the UI report "N fields
+    // updated" on a script run. No before-state is stored, so `before` is empty.
     changes: {
       before: {},
-      after: details ?? {}
+      after: isUpdateAction(log.action) ? (details ?? {}) : {}
     }
   };
 }
@@ -317,17 +329,32 @@ function parseCommaList(raw: string | undefined): string[] {
 
 function buildFilterConditions(
   orgCond: SQL | undefined,
-  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string; excludeActions?: string }
+  filters: {
+    userId?: string;
+    user?: string;
+    action?: string;
+    resource?: string;
+    from?: string;
+    to?: string;
+    excludeActions?: string;
+  }
 ): SQL | undefined {
   const conditions: SQL[] = [];
 
   if (orgCond) conditions.push(orgCond);
 
+  if (filters.userId) {
+    conditions.push(eq(auditLogsTable.actorId, filters.userId));
+  }
+
   if (filters.user) {
     const term = `%${escapeIlike(filters.user)}%`;
+    // users.email (via the actor join) as well as actor_email: rows such as
+    // agent.command.* carry actor_id but no actor_email (#9671).
     conditions.push(
       or(
         ilike(auditLogsTable.actorEmail, term),
+        ilike(users.email, term),
         ilike(users.name, term)
       )!
     );
@@ -342,7 +369,14 @@ function buildFilterConditions(
     conditions.push(sql`false`);
   } else if (actionTerms.length > 0) {
     conditions.push(
-      or(...actionTerms.map((t) => ilike(auditLogsTable.action, `%${escapeIlike(t)}%`)))!
+      // #9672: a dotted-code prefix (`script` matches `script.run`), not a
+      // substring - `dataset` or `device` would otherwise match unrelated codes.
+      or(
+        ...actionTerms.flatMap((t) => [
+          ilike(auditLogsTable.action, escapeIlike(t)),
+          ilike(auditLogsTable.action, `${escapeIlike(t)}.%`)
+        ])
+      )!
     );
   }
 
@@ -353,10 +387,10 @@ function buildFilterConditions(
     conditions.push(
       or(
         ...resourceTerms.flatMap((t) => {
-          const term = `%${escapeIlike(t)}%`;
           return [
-            ilike(auditLogsTable.resourceType, term),
-            ilike(auditLogsTable.resourceName, term)
+            // resource_type matches as a prefix (#9672); the free-text name stays a substring.
+            ilike(auditLogsTable.resourceType, `${escapeIlike(t)}%`),
+            ilike(auditLogsTable.resourceName, `%${escapeIlike(t)}%`)
           ];
         })
       )!
@@ -692,7 +726,9 @@ function paginatedListHandler(
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
     // count — it never displays "X of Y total". Pass skipCount=true there.
     const skipCount = query.skipCount === 'true';
-    const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    // The LATERAL fast path applies none of these filters, so any of them
+    // (userId included, #9671) must force the standard path.
+    const hasFilters = !!(query.userId || query.user || query.action || query.resource || query.from || query.to);
     // excludeActions is compatible with the fast path — it's applied inside the
     // LATERAL subquery before the per-org LIMIT. The standard path picks it up
     // via buildFilterConditions(orgCond, query) above.
@@ -880,7 +916,7 @@ auditLogRoutes.post(
 // Accepts the same filter set as the list/search endpoints (#8366) and builds
 // the WHERE through the same helpers, so the file matches what the viewer shows.
 const exportGetSchema = z.object({
-  userId: z.string().guid().optional(),
+  userId: listLogsSchema.shape.userId,
   user: listLogsSchema.shape.user,
   action: listLogsSchema.shape.action,
   resource: listLogsSchema.shape.resource,
@@ -913,14 +949,14 @@ auditLogRoutes.get(
       .map((column) => column.trim())
       .filter((column): column is AuditExportColumn => (auditExportColumns as readonly string[]).includes(column));
     const exportColumns = normalizeExportColumns(parsedColumns, includeDetails);
-    const listWhere = buildListWhere(scope.orgCond, query);
-    const where = userId
-      ? (listWhere ? and(listWhere, eq(auditLogsTable.actorId, userId)) : eq(auditLogsTable.actorId, userId))
-      : listWhere;
+    const where = buildListWhere(scope.orgCond, query);
     const rows = await queryRows(where, 10000, 0);
 
+    // #9672: record the export in the trail that was exported. A partner
+    // technician has no orgId of their own, so a pinned (accessible - checked
+    // above) org wins; with none pinned the row stays partner-level.
     writeRouteAudit(c, {
-      orgId: auth.orgId,
+      orgId: query.orgId ?? auth.orgId,
       action: 'audit_logs.export',
       resourceType: 'audit_log',
       details: {

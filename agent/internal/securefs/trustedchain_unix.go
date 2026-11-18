@@ -51,6 +51,11 @@ func EnsureTrustedDirChain(root, dir string, uid, gid int, mode os.FileMode) err
 	return nil
 }
 
+// ErrUnsafeNonEmptyDir is returned (wrapped) when a trusted-chain component
+// already exists with unsafe ownership or permissions and is not empty, so it
+// is refused rather than repaired. Callers and tests match it with errors.Is.
+var ErrUnsafeNonEmptyDir = errors.New("unsafe non-empty directory")
+
 // ensureTrustedDirComponent secures a single path component (base/name)
 // without ever resolving a symlink at that component: an existing entry is
 // inspected with StatFile (an O_NOFOLLOW open under the hood), and the
@@ -79,8 +84,8 @@ func ensureTrustedDirComponent(base, name string, uid, gid int, mode os.FileMode
 					sys.Uid, info.Mode().Perm(), rerr)
 			}
 			if len(entries) != 0 {
-				return fmt.Errorf("exists with unsafe ownership (uid=%d mode=%o) and is not empty; refusing to reuse it",
-					sys.Uid, info.Mode().Perm())
+				return fmt.Errorf("exists with unsafe ownership (uid=%d mode=%o) and is not empty; refusing to reuse it: %w",
+					sys.Uid, info.Mode().Perm(), ErrUnsafeNonEmptyDir)
 			}
 			// Empty and unsafely owned: safe to repair. The repair itself
 			// still goes through InstallDir's pinned walk below, never a

@@ -5,6 +5,8 @@
  * (https://pushover.net/api). One HTTP POST per alert; form-encoded body.
  */
 
+import type { AlertOwnerKind } from '@breeze/shared';
+
 import type { AlertSeverity } from '../email';
 import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
 import { collectChannelSecretStrings } from '../notificationChannelSecrets';
@@ -33,8 +35,10 @@ export interface PushoverNotificationPayload {
   alertName: string;
   severity: AlertSeverity;
   summary: string;
-  deviceId?: string;
+  deviceId?: string | null;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   orgId: string;
   orgName?: string;
   triggeredAt: string;
@@ -134,9 +138,11 @@ export async function sendPushoverNotification(
     : severityToPriority(payload.severity);
 
   const title = `${payload.alertName}`.slice(0, 250);
+  const subjectName = payload.subjectName || payload.deviceName;
+  const subjectLabel = payload.ownerKind && payload.ownerKind !== 'device' ? 'Subject' : 'Device';
   const messageLines = [
     payload.summary,
-    payload.deviceName ? `Device: ${payload.deviceName}` : null,
+    subjectName ? `${subjectLabel}: ${subjectName}` : null,
     payload.orgName ? `Org: ${payload.orgName}` : null,
     payload.dashboardUrl ? payload.dashboardUrl : null,
   ].filter((line): line is string => Boolean(line));

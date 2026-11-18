@@ -31,6 +31,36 @@ describe('toDeviceListRow', () => {
     expect(row.tags).toEqual(['vip']);
   });
 
+  it('carries the hardware serial number through', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber: 'TEST-SERIAL-01' } });
+    expect(row.hardware?.serialNumber).toBe('TEST-SERIAL-01');
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores invalid hardware serial number %j', serialNumber => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber } });
+    expect(row.hardware?.serialNumber).toBeUndefined();
+  });
+
+  it('carries the hardware product number through (#9593)', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { productSku: '5S3F8EA#ABB' } });
+    expect(row.hardware?.productSku).toBe('5S3F8EA#ABB');
+  });
+
+  it('carries the hardware model through exactly as reported (#11332)', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { model: 'VMware20,1' } });
+    expect(row.hardware?.model).toBe('VMware20,1');
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores an invalid hardware model %j', model => {
+    const row = toDeviceListRow({ ...RAW, hardware: { model } });
+    expect(row.hardware?.model).toBeUndefined();
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores an invalid hardware product number %j', productSku => {
+    const row = toDeviceListRow({ ...RAW, hardware: { productSku } });
+    expect(row.hardware?.productSku).toBeUndefined();
+  });
+
   it('prefers nested metrics and clamps to 0–100', () => {
     expect(toDeviceListRow({ ...RAW, metrics: { cpuPercent: 250 }, cpuPercent: 5 }).cpuPercent).toBe(100);
   });
@@ -42,5 +72,29 @@ describe('toDeviceListRow', () => {
 
   it('falls back to the Unknown label when hostname is missing', () => {
     expect(toDeviceListRow({ ...RAW, hostname: undefined }).hostname).toBe('Unknown');
+  });
+
+  // #9863 — Warranty column.
+  it('carries the warranty end date and a known status through', () => {
+    const row = toDeviceListRow({ ...RAW, warrantyEndDate: '2026-12-31', warrantyStatus: 'subscription_active' });
+    expect(row.warrantyEndDate).toBe('2026-12-31');
+    expect(row.warrantyStatus).toBe('subscription_active');
+  });
+
+  it('nulls missing or unrecognised warranty values', () => {
+    expect(toDeviceListRow(RAW)).toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
+    expect(toDeviceListRow({ ...RAW, warrantyEndDate: 42, warrantyStatus: 'bogus' }))
+      .toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
+  });
+});
+
+describe('toDeviceListRow — wakeAvailability (#10838)', () => {
+  const availability = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false };
+  it('carries the server-decided availability through the explicit whitelist', () => {
+    expect(toDeviceListRow({ ...RAW, wakeAvailability: availability }).wakeAvailability).toEqual(availability);
+  });
+  it('leaves it undefined when absent or malformed, so older APIs keep Wake', () => {
+    expect(toDeviceListRow(RAW).wakeAvailability).toBeUndefined();
+    expect(toDeviceListRow({ ...RAW, wakeAvailability: { show: 'no' } }).wakeAvailability).toBeUndefined();
   });
 });

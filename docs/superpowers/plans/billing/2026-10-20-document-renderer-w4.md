@@ -14,4 +14,4 @@
 3. `DocumentCover` takes `pageSize`; new exported `DocumentCoverCrop` (frame + image slot + optional band marker) is the one source the editor reuses. `QuoteDocumentView` passes `model.branding.pageSize`. Regenerate quote snapshots (review the diff).
 4. **Red → green:** editor test — cover image preview renders inside the crop frame with the quote's `presentation.pageSize` (default a4). `QuoteImagePreview` gains an optional `crop` prop.
 5. Playwright matrix in `document-renderer.spec.ts` (spec §8.2): kind {invoice, quote} × surface {Preview, public, logged-in portal} × viewport {1280, 390} × theme {classic, condensed} × web density {compact, dense} × locale {en, pt-BR}, plus cover variants (A4/Letter, with image) — Preview vs portal pixel-compared per variant under the production `style-src-attr 'none'` CSP.
-6. Gates: document-ui vitest, web `components/billing/quotes` vitest, tsc (document-ui, web, portal), matrix on wt-stack (document-ui `docker cp` workaround, #9519).
+6. Gates: document-ui vitest, web `components/billing/quotes` vitest, tsc (document-ui, web, portal), matrix on wt-stack (document-ui is bind-mounted into web and portal, #9519).

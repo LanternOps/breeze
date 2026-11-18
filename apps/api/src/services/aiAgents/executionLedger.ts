@@ -14,7 +14,9 @@
  * Tool OUTPUT is deliberately not persisted here: `ai_tool_executions.tool_output`
  * stays NULL. Redaction rules for what is safe to store land with Part B's
  * closed operation manifest — storing raw outputs now would put unredacted
- * command results into a table with no redaction contract yet.
+ * command results into a table with no redaction contract yet. A FAILED row
+ * does keep its reason (#10411): the result's own `error` string, bounded,
+ * never the output itself (`toolErrorTextForLedger`).
  *
  * All writes run in a SYSTEM db context (matching the pattern already used by
  * `runService.transitionRunStatus`): `ai_tool_executions` has no `org_id` of
@@ -24,16 +26,18 @@
  * open, and the run loop generally holds none at all (see the DB-context note
  * atop `runLoop.ts`).
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import type { PgInsertValue } from 'drizzle-orm/pg-core';
 import {
   db,
   getCurrentDbAccessContext,
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../../db';
-import { aiSessions, aiToolExecutions } from '../../db/schema/ai';
+import { aiMessages, aiSessions, aiToolExecutions } from '../../db/schema/ai';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { redactSensitiveToolInput } from '../aiToolOutput';
+import { isSdkBuiltinToolUse } from '../aiToolSearchPolicy';
 
 /**
  * Same skip-if-already-system shape as `runService.inSystemDbContext` /
@@ -151,6 +155,37 @@ export interface CompleteToolExecutionArgs {
   executionId: string;
   isError: boolean;
   durationMs: number;
+  /**
+   * The result the tool returned, as the post hook received it. Read ONLY on
+   * a failed call, and only for its `error` string (`toolErrorTextForLedger`,
+   * #10411) — the output itself is never written.
+   */
+  output?: string;
+}
+
+/** Stored when a failed call's result carried no `error` string of its own. */
+export const LEDGER_ERROR_WITHOUT_TEXT = 'tool reported an error without an error message';
+
+const LEDGER_ERROR_MAX_CHARS = 1_000;
+
+/**
+ * The error text a failed call's ledger row keeps (#10411). Only the result's
+ * own `error` string — already scrubbed and redacted by
+ * `compactToolResultForChat`, which every handler runs before the post hook —
+ * and bounded. It never falls back to the raw output: `tool_output` stays
+ * unpersisted (module docstring), and a failed command's stdout must not
+ * reach this table through the error column instead.
+ */
+export function toolErrorTextForLedger(output: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return LEDGER_ERROR_WITHOUT_TEXT;
+  }
+  const error = parsed && typeof parsed === 'object' ? (parsed as { error?: unknown }).error : undefined;
+  if (typeof error !== 'string' || error.trim().length === 0) return LEDGER_ERROR_WITHOUT_TEXT;
+  return error.length > LEDGER_ERROR_MAX_CHARS ? `${error.slice(0, LEDGER_ERROR_MAX_CHARS - 1)}…` : error;
 }
 
 /** Terminal-marks a tool-execution row. `tool_output` is deliberately never written — see module docstring. */
@@ -160,6 +195,9 @@ export async function completeToolExecution(args: CompleteToolExecutionArgs): Pr
       .update(aiToolExecutions)
       .set({
         status: args.isError ? 'failed' : 'completed',
+        ...(args.isError
+          ? { errorMessage: args.output === undefined ? LEDGER_ERROR_WITHOUT_TEXT : toolErrorTextForLedger(args.output) }
+          : {}),
         durationMs: args.durationMs,
         completedAt: new Date(),
       })
@@ -201,5 +239,95 @@ export async function closeAgentRunSession(
   console.info('[executionLedger] closing agent run session', { sessionId, runOutcome: status });
   await inSystemDbContext(async () => {
     await db.update(aiSessions).set({ status: 'closed' }).where(eq(aiSessions.id, sessionId));
+  });
+}
+
+/**
+ * The run's transcript (#11971). A run's turns used to live nowhere: its
+ * session row had no messages, so a reviewer could not read what the run was
+ * told or what it answered. They are written to `ai_messages` on the run's
+ * session in the same shape a chat turn uses (`streamingSessionManager.ts`):
+ * the task prompt as the `user` message, each assistant message as an
+ * `assistant` row, and one `tool_use` row per Breeze tool it called.
+ *
+ * Same redaction contract as the rest of this ledger: tool inputs are written
+ * through `redactSensitiveToolInput`, and tool OUTPUT is still never stored —
+ * no `tool_result` rows (see the module docstring). A failed call's reason is
+ * on its `ai_tool_executions` row. Thinking blocks are not kept either: the
+ * answer and the calls are what a review reads.
+ *
+ * Best-effort like every function here: callers catch, and a failed write
+ * never changes the run. Transcript retention (#4342) treats `agent` sessions
+ * as technician sessions, so these rows are purged on the org's window.
+ */
+export async function recordRunTaskPrompt(sessionId: string, prompt: string): Promise<void> {
+  await inSystemDbContext(async () => {
+    // Once per session: a failover hop (or a resumed run) is sent the same
+    // prompt again, and a second row would skew the transcript (#12133).
+    const [existing] = await db.select({ id: aiMessages.id }).from(aiMessages)
+      .where(and(eq(aiMessages.sessionId, sessionId), eq(aiMessages.role, 'user')))
+      .limit(1);
+    if (existing) return;
+    await db.insert(aiMessages).values({ sessionId, role: 'user', content: prompt });
+  });
+}
+
+const BREEZE_MCP_PREFIX = 'mcp__breeze__';
+
+type ContentBlock = { type?: unknown; text?: unknown; id?: unknown; name?: unknown; input?: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Stores one SDK `assistant` message. The rows go in ONE statement, so their
+ * `created_at` is `clock_timestamp()` (strictly increasing per row) rather than
+ * the column default `now()`, which is the same for every row of a statement
+ * and would leave the assistant row and its tool calls unordered.
+ */
+export async function recordRunAssistantTurn(sessionId: string, message: unknown): Promise<void> {
+  const inner = isRecord(message) && isRecord(message.message) ? message.message : undefined;
+  const content = Array.isArray(inner?.content) ? (inner!.content as ContentBlock[]) : [];
+  const blocks: Array<Record<string, unknown>> = [];
+  const toolRows: Array<PgInsertValue<typeof aiMessages>> = [];
+  const texts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      blocks.push({ type: 'text', text: block.text });
+      if (block.text.trim()) texts.push(block.text);
+    } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+      const input = redactSensitiveToolInput(isRecord(block.input) ? block.input : {});
+      const id = typeof block.id === 'string' ? block.id : null;
+      blocks.push({ type: 'tool_use', id, name: block.name, input });
+      // ToolSearch stays in the blocks but gets no tool row (same as chat, A-W04).
+      if (!isSdkBuiltinToolUse(block.name)) {
+        toolRows.push({
+          sessionId,
+          role: 'tool_use',
+          toolName: (block.name.startsWith(BREEZE_MCP_PREFIX) ? block.name.slice(BREEZE_MCP_PREFIX.length) : block.name).slice(0, 100),
+          toolInput: input,
+          toolUseId: id ? id.slice(0, 100) : null,
+          createdAt: sql`clock_timestamp()`,
+        });
+      }
+    }
+  }
+  if (blocks.length === 0) return;
+
+  const usage = isRecord(inner?.usage) ? inner!.usage : {};
+  const tokens = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0);
+  const assistantRow: PgInsertValue<typeof aiMessages> = {
+    sessionId,
+    role: 'assistant',
+    content: texts.length > 0 ? texts.join('\n\n') : null,
+    contentBlocks: blocks,
+    inputTokens: tokens(usage.input_tokens),
+    outputTokens: tokens(usage.output_tokens),
+    createdAt: sql`clock_timestamp()`,
+  };
+  await inSystemDbContext(async () => {
+    await db.insert(aiMessages).values([assistantRow, ...toolRows]);
   });
 }

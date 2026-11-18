@@ -95,6 +95,40 @@ describe('pendingRegistration service', () => {
     expect(typeof stored?.rawToken).toBe('string');
   });
 
+  it('drops a smuggled legacy launch tuple at runtime', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    await createPendingRegistration({ ...baseRecord, purchaseSelection } as never);
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+  });
+
+  it('retains the signup intent through storage and consumption, and never writes a purchaseSelection key', async () => {
+    const signupIntent = { intent: 'cloud' as const, offer: 'founding' };
+    const { tokenHash } = await createPendingRegistration({ ...baseRecord, signupIntent });
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(stored.signupIntent).toEqual(signupIntent);
+    // Rollback safety (plan 3.7): an older deploy reading this record must not see a launch tuple.
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+    expect((await peekPendingRegistration(tokenHash))?.signupIntent).toEqual(signupIntent);
+    expect((await consumePendingRegistration(tokenHash))?.signupIntent).toEqual(signupIntent);
+  });
+
+  it('stores the cloud default when a caller omits intent', async () => {
+    const { tokenHash } = await createPendingRegistration(baseRecord);
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(stored.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+    expect((await consumePendingRegistration(tokenHash))?.signupIntent).toEqual({ intent: 'cloud' });
+  });
+
+  it.each([null, {}, { intent: 'hosting' }, { intent: 'cloud', priceId: 'price_untrusted' }])(
+    'rejects invalid signup intent without parking or superseding a pending signup: %j', async (signupIntent) => {
+      await expect(createPendingRegistration({ ...baseRecord, signupIntent: signupIntent as never })).rejects.toThrow();
+      expect(fakeRedis.eval).not.toHaveBeenCalled();
+      expect(store.size).toBe(0);
+    },
+  );
+
   it('peek is non-consuming and exposes rawToken; a subsequent consume still wins', async () => {
     const { rawToken, tokenHash } = await createPendingRegistration(baseRecord);
     const peeked = await peekPendingRegistration(tokenHash);

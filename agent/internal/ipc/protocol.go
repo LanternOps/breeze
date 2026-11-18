@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -59,7 +60,32 @@ type Conn struct {
 	// with respect to other Recv calls, so a Conn must have a single reader;
 	// every caller today runs one Recv loop.
 	recvSeq atomic.Uint64
-	mu      sync.Mutex // serializes writes
+	// Partial-frame read state, owned by the single reader (see recvSeq).
+	// Callers arm a short read deadline before each Recv and treat a timeout as
+	// an idle tick (the user helper every 5s, breeze-backup every 1s), so a
+	// deadline can fire after part of a frame has been consumed. These fields
+	// keep those bytes so the next Recv resumes the same frame instead of
+	// parsing body bytes as a length header (issue #10541).
+	rhdr   [4]byte
+	rhdrN  int    // header bytes read so far
+	rbody  []byte // non-nil once the header is complete and valid
+	rbodyN int    // body bytes read so far
+	// recvErr makes a framing failure sticky: once the stream has lost sync
+	// (oversize length, frame deadline) every later Recv returns it.
+	recvErr error
+	// frameDeadlineAt is the absolute time by which the frame in progress
+	// must complete; zero when no frame deadline is armed. Reader-owned.
+	frameDeadlineAt time.Time
+	// lastFrameLen is the body length of the most recent frame Recv
+	// returned. Reader-owned; see LastRecvFrameSize.
+	lastFrameLen int
+	// maxRecv caps the body length Recv accepts, checked against the header
+	// before any allocation; 0 means MaxMessageSize (see SetMaxRecvSize).
+	maxRecv atomic.Uint32
+	// frameDeadlineNanos, when > 0, bounds how long one frame may take from
+	// its first header byte to its last body byte (see SetFrameDeadline).
+	frameDeadlineNanos atomic.Int64
+	mu                 sync.Mutex // serializes writes
 	// writeTimeoutNanos, when > 0, overrides the package-level writeTimeout for
 	// this Conn's Send() calls (see SetWriteTimeout). 0 means "use the default".
 	writeTimeoutNanos atomic.Int64
@@ -277,23 +303,66 @@ func (c *Conn) effectiveWriteTimeout() time.Duration {
 }
 
 // Recv reads a length-prefixed JSON message, validates HMAC and sequence.
+//
+// Recv is resumable across read-deadline timeouts. If the deadline fires
+// partway through a frame, Recv returns the (wrapped) timeout error and keeps
+// the bytes already read; the next call continues the same frame. Without
+// this, the bytes consumed before the timeout were lost and the next Recv
+// started mid-frame, reading `{"id` as a length — the "message too large:
+// 2065852772" desync of issue #10541. The wire format is unchanged.
+//
+// A framing error (impossible length) is sticky: the stream has lost sync and
+// cannot recover, so every later Recv reports the same error rather than
+// guessing at a frame boundary. Callers already treat it as fatal.
 func (c *Conn) Recv() (*Envelope, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
-		return nil, fmt.Errorf("ipc: read header: %w", err)
+	if c.recvErr != nil {
+		return nil, c.recvErr
+	}
+	if c.rbody == nil {
+		if c.rhdrN == 0 {
+			if err := c.beginFrame(); err != nil {
+				return nil, err
+			}
+		}
+		n, err := io.ReadFull(c.conn, c.rhdr[c.rhdrN:])
+		c.rhdrN += n
+		if err != nil {
+			return nil, c.frameReadError("header", err)
+		}
+
+		length := binary.BigEndian.Uint32(c.rhdr[:])
+		if limit := c.maxRecvSize(); length > uint32(limit) {
+			// Checked before make(): a peer cannot make the reader allocate
+			// more than the cap by announcing it. The raw header bytes make
+			// a desync diagnosable from the shipped log line: ASCII here
+			// means the reader is inside a JSON body.
+			c.recvErr = fmt.Errorf("ipc: message too large: %d > %d (header %x)", length, limit, c.rhdr[:])
+			return nil, c.recvErr
+		}
+		if length == 0 {
+			c.recvErr = fmt.Errorf("ipc: zero-length message")
+			return nil, c.recvErr
+		}
+		c.rbody = make([]byte, length)
+		c.rbodyN = 0
 	}
 
-	length := binary.BigEndian.Uint32(header)
-	if length > uint32(MaxMessageSize) {
-		return nil, fmt.Errorf("ipc: message too large: %d > %d", length, MaxMessageSize)
-	}
-	if length == 0 {
-		return nil, fmt.Errorf("ipc: zero-length message")
+	n, err := io.ReadFull(c.conn, c.rbody[c.rbodyN:])
+	c.rbodyN += n
+	if err != nil {
+		return nil, c.frameReadError("payload", err)
 	}
 
-	data := make([]byte, length)
-	if _, err := io.ReadFull(c.conn, data); err != nil {
-		return nil, fmt.Errorf("ipc: read payload: %w", err)
+	// Frame complete: reset for the next one before validating, so a frame
+	// that fails HMAC or sequence checks is not re-read.
+	data := c.rbody
+	c.rhdrN, c.rbody, c.rbodyN = 0, nil, 0
+	c.lastFrameLen = len(data)
+	if !c.frameDeadlineAt.IsZero() {
+		c.frameDeadlineAt = time.Time{}
+		// Waiting for the next frame to begin is unbounded again (the
+		// keepalive owns idleness). A failed clear surfaces on the next read.
+		_ = c.conn.SetReadDeadline(time.Time{})
 	}
 
 	var env Envelope
@@ -318,6 +387,82 @@ func (c *Conn) Recv() (*Envelope, error) {
 	c.recvSeq.Store(env.Seq)
 
 	return &env, nil
+}
+
+// PreAuthMaxMessageSize is the largest frame the broker accepts from a peer
+// it has not admitted yet. An auth request is a few KiB at most.
+const PreAuthMaxMessageSize = 64 << 10
+
+// SetMaxRecvSize caps the body length Recv will accept on this Conn. The cap
+// is compared with the 4-byte length header before the body buffer is
+// allocated, so an unauthenticated or hostile peer cannot make the reader
+// allocate more than n by announcing a large frame. 0 (or anything above
+// MaxMessageSize) means MaxMessageSize. Safe to call between Recvs.
+func (c *Conn) SetMaxRecvSize(n uint32) {
+	if n > MaxMessageSize {
+		n = 0
+	}
+	c.maxRecv.Store(n)
+}
+
+func (c *Conn) maxRecvSize() int {
+	if n := c.maxRecv.Load(); n > 0 {
+		return int(n)
+	}
+	return MaxMessageSize
+}
+
+// SetFrameDeadline bounds how long one frame may take, measured from its
+// first header byte to its last body byte; 0 turns it off. Waiting for a
+// frame to begin stays unbounded. A frame that misses the deadline fails Recv
+// permanently (the peer is trickling, and the stream cannot be trusted to
+// resynchronise). While it is on, Recv owns the connection's read deadline:
+// callers must not arm their own with SetReadDeadline.
+func (c *Conn) SetFrameDeadline(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	c.frameDeadlineNanos.Store(int64(d))
+}
+
+// LastRecvFrameSize is the body length, in bytes, of the frame behind the
+// envelope Recv most recently returned. Like Recv it belongs to the single
+// reader.
+func (c *Conn) LastRecvFrameSize() int {
+	return c.lastFrameLen
+}
+
+// beginFrame runs before the first header byte of a frame is read. With a
+// frame deadline armed it waits (unbounded) for that first byte, then sets
+// the absolute deadline the rest of the frame must meet.
+func (c *Conn) beginFrame() error {
+	d := time.Duration(c.frameDeadlineNanos.Load())
+	if d <= 0 {
+		return nil
+	}
+	n, err := io.ReadFull(c.conn, c.rhdr[:1])
+	c.rhdrN += n
+	if err != nil {
+		return fmt.Errorf("ipc: read header: %w", err)
+	}
+	c.frameDeadlineAt = time.Now().Add(d)
+	if err := c.conn.SetReadDeadline(c.frameDeadlineAt); err != nil {
+		c.recvErr = fmt.Errorf("ipc: arm frame deadline: %w", err)
+		return c.recvErr
+	}
+	return nil
+}
+
+// frameReadError wraps a read failure. A timeout while a frame deadline is
+// armed means the peer did not finish its frame in time: sticky.
+func (c *Conn) frameReadError(part string, err error) error {
+	var netErr net.Error
+	if !c.frameDeadlineAt.IsZero() && errors.As(err, &netErr) && netErr.Timeout() {
+		c.recvErr = fmt.Errorf("ipc: frame deadline exceeded reading %s (%d header, %d body bytes received): %w",
+			part, c.rhdrN, c.rbodyN, err)
+		return c.recvErr
+	}
+	return fmt.Errorf("ipc: read %s: %w", part, err)
 }
 
 // SendTyped is a convenience that wraps a typed payload into an Envelope and sends it.

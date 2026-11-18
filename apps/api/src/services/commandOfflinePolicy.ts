@@ -163,6 +163,10 @@ const LIVE: readonly string[] = [
   // already passed; the arm simply mints the next one when the collector is
   // back, so an offline collector is a rejection, never a queued row.
   C.TOPOLOGY_INTERFACE_POLL,
+  // Vendor updates (#11065): refused for an offline device. The seam
+  // (services/oemUpdates/dispatch.ts) stamps deliver_by from the run's notAfter,
+  // so a device that drops offline after dispatch cannot start past its window.
+  C.OEM_UPDATE_RUN,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two
@@ -213,6 +217,13 @@ const BACKUP_AND_RESTORE: readonly string[] = [
 const LIVE_ONLY: readonly string[] = [
   C.SYSTEM_CLEANUP_LIST,
   C.SYSTEM_CLEANUP_RUN,
+  // #8729: "Force reboot now" means now. Plain `reboot` waits up to a day for
+  // an offline device; a force-close of unsaved work landing on a laptop hours
+  // later, while someone is using it, is exactly the wrong outcome. The route
+  // also refuses an offline device up front. Still behind the power-state
+  // barrier (commandClaimEligibility.ts), so a reboot held by in-flight work
+  // expires visibly instead of firing late.
+  C.FORCE_REBOOT,
 ];
 
 /**
@@ -239,6 +250,10 @@ const SHORT: readonly string[] = [
   'set_auto_update',
   // Policy push that converges: the next sync supersedes a stale one.
   'apply_browser_policy',
+  // #8928 PAM outcome notice. The enqueue stamps its own 60-minute deliverBy
+  // (insertQueuedCommandInTransaction does not consult this policy); `short`
+  // is the classification for any other caller.
+  C.PAM_REQUEST_NOTIFY,
 ];
 
 /**
@@ -315,7 +330,11 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,
   C.EXECUTE_CONTAINMENT,
+  C.RELEASE_CONTAINMENT,
   C.SYSTEM_STATE_COLLECT,
+  // Vendor updates (#11065): a policy removal must hand the vendor tool's
+  // schedule back even if the device is offline right now, so it queues.
+  C.OEM_UPDATE_RELEASE,
 ];
 
 const TIME_SYNC: readonly string[] = [

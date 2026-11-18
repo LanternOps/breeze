@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -16,6 +15,8 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v3/host"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // psTimeout is the maximum duration for any single PowerShell invocation.
@@ -105,7 +106,7 @@ foreach ($d in $data) { $obj[$d.Name] = $d.'#text' }
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("powershell boot diag query failed: %w", err)
@@ -211,7 +212,7 @@ $items | ConvertTo-Json -Compress -Depth 2
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("registry run key query failed: %w", err)
@@ -305,7 +306,7 @@ Get-CimInstance -ClassName Win32_Service -Filter "StartMode='Auto'" -ErrorAction
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("auto-start service query failed: %w", err)
@@ -376,7 +377,7 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Warn("failed to collect process performance data", "error", err)
@@ -516,7 +517,7 @@ func runServiceConfig(name, startType string) error {
 
 	// sc.exe requires the format "start= <type>" (space between = and value).
 	// Go's exec.Command joins "start=" and the start type with a space automatically.
-	cmd := exec.CommandContext(ctx, "sc.exe", "config", name, "start=", startType)
+	cmd := procspawn.CommandContext(ctx, "sc.exe", "config", name, "start=", startType)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("sc.exe config failed: %s: %w", strings.TrimSpace(string(output)), err)
@@ -529,7 +530,7 @@ func resolveServiceKeyName(name string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sc.exe", "getkeyname", name)
+	cmd := procspawn.CommandContext(ctx, "sc.exe", "getkeyname", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("sc.exe getkeyname failed: %s: %w", strings.TrimSpace(string(output)), err)
@@ -550,13 +551,13 @@ func manageRunKey(name, path, action string) error {
 
 	if action == "disable" {
 		// Delete the registry value from HKCU Run key
-		cmd := exec.CommandContext(ctx, "reg.exe", "delete",
+		cmd := procspawn.CommandContext(ctx, "reg.exe", "delete",
 			`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
 			"/v", name, "/f")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			// Also try HKLM
-			cmd2 := exec.CommandContext(ctx, "reg.exe", "delete",
+			cmd2 := procspawn.CommandContext(ctx, "reg.exe", "delete",
 				`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
 				"/v", name, "/f")
 			output2, err2 := cmd2.CombinedOutput()
@@ -572,7 +573,7 @@ func manageRunKey(name, path, action string) error {
 			return fmt.Errorf("path is required to enable run_key item %q", name)
 		}
 		// Add the registry value to HKCU Run key
-		cmd := exec.CommandContext(ctx, "reg.exe", "add",
+		cmd := procspawn.CommandContext(ctx, "reg.exe", "add",
 			`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
 			"/v", name, "/t", "REG_SZ", "/d", path, "/f")
 		output, err := cmd.CombinedOutput()

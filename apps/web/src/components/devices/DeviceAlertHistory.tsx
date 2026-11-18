@@ -266,7 +266,7 @@ export default function DeviceAlertHistory({
               "bg-muted/40 text-muted-foreground border-muted";
             const alertId = alert.id;
             const status = (alert.status || "").toLowerCase();
-            const title = alert.title || alert.message || alert.summary || "Alert reported";
+            const title = alert.title || alert.summary || alert.message || "Alert reported";
             const actionable: ActionableItem | null = alertId
               ? { id: alertId, title, status }
               : null;

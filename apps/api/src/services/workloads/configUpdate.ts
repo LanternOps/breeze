@@ -10,6 +10,13 @@ export interface WorkloadInventoryConfigUpdate {
   hyperv_enabled: boolean;
   proxmox_enabled: boolean;
   interval_minutes: number;
+  /**
+   * #9067: this server's ingest schema accepts `imageProvenance`. Not a
+   * setting: the schema is strict, so a server that predates the field rejects
+   * the whole report if the key is present, and the agent sends it only when
+   * this is true. Agents that predate it ignore the key.
+   */
+  accepts_image_provenance: true;
 }
 
 export function toWorkloadInventoryConfigUpdate(
@@ -22,6 +29,7 @@ export function toWorkloadInventoryConfigUpdate(
     hyperv_enabled: settings.hypervEnabled,
     proxmox_enabled: settings.proxmoxEnabled,
     interval_minutes: settings.intervalMinutes,
+    accepts_image_provenance: true,
   };
 }
 

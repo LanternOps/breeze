@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Assistente de IA",
+    "assistant": "Breeze AI",
     "agent": "Agente de IA",
+    "flow": "Fluxo",
     "originUnavailable": "Origem não disponível",
     "openSession": "Abrir conversa",
     "openAgentRun": "Abrir execução do agente",
@@ -21,13 +22,13 @@
     "pendingApprovals_one": "{{count}} aprovação pendente",
     "pendingApprovals_other": "{{count}} aprovações pendentes",
     "tickets": "Chamados",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "remoteAccess": "Acesso Remoto",
     "scripts": "Scripts",
     "patches": "Correções",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "aiForOffice": "IA para Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Rede",
     "jobs": "Jobs",
     "flows": "Fluxos",
@@ -48,6 +49,7 @@
     "timesheets": "Folhas de Horas",
     "productCatalog": "Catálogo de Produtos",
     "deviceGroups": "Grupos de dispositivos",
+    "sites": "Sites",
     "unassignedDevices": "Dispositivos não atribuídos",
     "configPolicies": "Políticas de Configuração",
     "integrations": "Integrações",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Criação de scripts",
     "toolSources": "Fontes de ferramentas",
     "aiAgents": "Agentes de IA",
-    "aiAgentRuns": "Execuções de Agentes de IA",
-    "aiImpact": "Impacto da IA",
-    "fixMemory": "Memória de correções",
-    "fleetDesign": "Design de frota",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
     "moreSettings": "Mais configurações",
@@ -89,12 +87,11 @@
     "variables": "Variáveis",
     "llmProviderCatalog": "Catálogo de Provedores de LLM",
     "aiKillSwitch": "Interruptor de emergência de IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestão de Frota",
     "sectionBilling": "Faturamento",
     "sectionAdministration": "Administração",
-    "fleetOrchestration": "Orquestração de Frota",
-    "aiAssistant": "Assistente de IA",
     "software": "Software",
     "softwareInventory": "Inventário de software",
     "softwarePolicies": "Políticas de software",
@@ -111,12 +108,23 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments",
+    "payments": "Pagamentos",
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Mudanças",
-    "endpointMessages": "Mensagens"
+    "endpointMessages": "Mensagens",
+    "securityDetectionRules": "Regras de detecção",
+    "planAndFeatures": "Plano e recursos",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Trabalhadores",
+    "agents": "Agentes",
+    "runs": "Execuções",
+    "aiTasks": "Tarefas de IA",
+    "findings": "Descobertas",
+    "impact": "Impacto",
+    "aiKnowledgeSources": "Fontes de conhecimento",
+    "wispLockedServer": "O Wisp é executado no Breeze Cloud. Ele não está disponível neste servidor."
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -427,13 +435,21 @@
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "empty": "Ainda sem dados de patches",
       "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
-      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas",
+      "devicesNeedPatches_one": "{{count}} dispositivo precisa de patches",
+      "devicesNeedPatches_other": "{{count}} dispositivos precisam de patches",
+      "viewPendingDevices": "Ver dispositivos com patches pendentes",
+      "viewFailedDevices": "Ver dispositivos com patches com falha",
+      "viewCriticalDevices": "Ver dispositivos com patches críticos"
     },
     "vuln": {
       "title": "Vulnerabilidades",
       "criticalOpen": "Críticas abertas",
       "kev": "Exploração conhecida",
       "patchReady": "Patch disponível",
+      "viewCritical": "Ver CVEs críticas",
+      "viewPatchReady": "Ver CVEs com patch pronto",
+      "viewOpen": "Ver CVEs abertas",
       "totalOpen": "{{count}} descobertas abertas",
       "totalOpen_one": "{{count}} descoberta aberta",
       "totalOpen_other": "{{count}} descobertas abertas",
@@ -553,7 +569,9 @@
       "after": "é posterior a",
       "between": "está entre",
       "withinLast": "nos últimos",
-      "notWithinLast": "não nos últimos"
+      "notWithinLast": "não nos últimos",
+      "below": "inferior a",
+      "atLeast": "pelo menos"
     },
     "value": {
       "noValue": "Nenhum valor necessário",
@@ -575,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removido"
-      }
+      },
+      "softwareName": "Nome do software",
+      "softwareVersion": "Versão do software"
     }
   },
   "account": {
@@ -659,7 +679,7 @@
     },
     "apps": {
       "title": "Aplicativos conectados",
-      "description": "Assistentes de IA e outros clientes MCP (Claude.ai, ChatGPT, Cursor, …) que você autorizou a agir em seu nome. Revogue o acesso a qualquer momento — os tokens param de funcionar em até 10 minutos.",
+      "description": "Clientes de IA (Claude.ai, ChatGPT, Cursor, …) que você autorizou a agir em seu nome. Revogue o acesso a qualquer momento — os tokens param de funcionar em até 10 minutos.",
       "empty": "Nenhum aplicativo conectado",
       "emptyDescription": "Ao autorizar uma conversa no Claude.ai, ChatGPT, Cursor ou outro cliente MCP, ele aparecerá aqui para que você possa revogá-lo depois.",
       "authorized": "Autorizado",
@@ -669,7 +689,7 @@
       "revokeTitle": "Revogar {{app}}?",
       "revokeDescription": "Todas as concessões e tokens de atualização deste cliente serão apagados. Os tokens param de funcionar em até 10 minutos. Será necessário autorizar novamente no próximo uso.",
       "onlyAppTitle": "Este é seu único aplicativo autorizado.",
-      "onlyAppDescription": "Após revogar, será necessário autorizar novamente antes que um assistente de IA possa agir no seu tenant.",
+      "onlyAppDescription": "Após revogar, será necessário autorizar novamente antes que qualquer cliente de IA possa agir no seu tenant.",
       "reasonPlaceholder": "Não é mais necessário, atividade suspeita, …",
       "revokeAction": "Revogar acesso"
     }
@@ -726,8 +746,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Abrir menu de navegação",
-      "ai": "Assistente de IA",
-      "aiTitle": "Assistente de IA (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Ajuda e documentação",
       "helpTitle": "Ajuda e documentação (Cmd+Shift+H)",
       "theme": "Tema",
@@ -771,9 +791,9 @@
     },
     "search": {
       "prompt": "Pesquisar no Breeze",
-      "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
+      "placeholder": "Pesquisar dispositivos, scripts, alertas e configurações…",
       "searching": "Pesquisando…",
-      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
+      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas e configurações.",
       "noResults": "Nenhum resultado encontrado. Tente outra busca.",
       "navigationHint": "Use as setas para navegar e Enter para abrir",
       "closeHint": "Esc para fechar",
@@ -796,9 +816,15 @@
         "alertRules": "Regras de alerta",
         "alertRulesDescription": "Gerenciar alertas nas Políticas de configuração",
         "keyboardShortcuts": "Atalhos de teclado",
-        "keyboardShortcutsDescription": "Todas as teclas e sequências em um só cartão"
+        "keyboardShortcutsDescription": "Todas as teclas e sequências em um só cartão",
+        "askBreezeAi": "Perguntar ao Breeze AI",
+        "askBreezeAiDescription": "Abrir o painel lateral do Breeze AI",
+        "wispHome": "Abrir o Wisp",
+        "wispHomeDescription": "Ir para a sua página inicial do Wisp"
       },
-      "numberHint": "{{mod}}1–9 para abrir"
+      "numberHint": "{{mod}}1–9 para abrir",
+      "thisCustomerOnly": "Somente este cliente",
+      "partnerWide": "Todo o parceiro"
     },
     "notifications": {
       "title": "Notificações",
@@ -810,6 +836,8 @@
       "unread_other": "{{count}} não lidas",
       "markAllRead": "Marcar todas como lidas",
       "markAllUnread": "Marcar todas como não lidas",
+      "muteSound": "Silenciar som de aprovações",
+      "unmuteSound": "Ativar som de aprovações",
       "confirmClear": "Confirmar limpeza",
       "clearAll": "Limpar tudo",
       "loading": "Carregando notificações…",
@@ -863,6 +891,8 @@
       "cycleSidebar": "Alternar o modo da barra lateral",
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
+      "orgSwitcher": "Abrir o seletor de organização",
+      "aiSidebar": "Mostrar ou ocultar o Breeze AI",
       "close": "Fechar uma caixa de diálogo ou menu",
       "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo.",
       "create": "Criar",
@@ -877,7 +907,20 @@
       },
       "charKeysOn": "Os atalhos de tecla única estão ativados.",
       "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
-      "charKeysManage": "Alterar nas configurações do perfil"
+      "charKeysManage": "Alterar nas configurações do perfil",
+      "queueTitle": "Fila de chamados",
+      "queueHint": "Na página de chamados, fora de um campo de texto.",
+      "queue": {
+        "next": "Próximo chamado",
+        "previous": "Chamado anterior",
+        "open": "Abrir o chamado (após resolver: o próximo sugerido)",
+        "toggleBulk": "Adicionar à seleção em massa ou remover dela",
+        "assignMe": "Atribuir a mim",
+        "reply": "Escrever uma resposta",
+        "internal": "Escrever uma nota interna",
+        "resolve": "Resolver com uma nota",
+        "back": "Voltar para a fila"
+      }
     }
   },
   "migrationBanner": {
@@ -1058,6 +1101,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Chamados de alertas",
+        "scopeNote": "Vale para todo o parceiro; sem substituição por organização.",
+        "pausedBanner": "Pausado: o PSA rejeitou as credenciais. Execute “Testar conexão” para retomar.",
+        "yes": "Ativados",
+        "no": "Desativados",
+        "selectPlaceholder": "Selecionar…",
+        "priorityDefault": "Padrão do PSA",
+        "closedSuffix": "{{name}} (fechado)",
+        "saved": "Configurações dos chamados de alertas salvas",
+        "saving": "Salvando…",
+        "save": "Salvar",
+        "conflict": "Estas configurações foram alteradas em outro lugar. Os valores mais recentes foram carregados; revise-os e salve novamente.",
+        "errors": {
+          "save": "Não foi possível salvar as configurações dos chamados de alertas"
+        },
+        "status": {
+          "active": "Os chamados de alertas estão ativados para esta conexão.",
+          "notExternal": "Vincule esta conexão como o PSA de gerenciamento de serviços (modo externo) para usar chamados de alertas.",
+          "disabled": "Os chamados de alertas estão desativados.",
+          "paused": "Os chamados de alertas estão pausados até que a conexão com o PSA volte a funcionar.",
+          "companyLinksUnverified": "Confirme os vínculos de empresas desta instância do PSA.",
+          "invalidConfig": "As configurações salvas dos chamados de alertas não são válidas. Revise-as e salve novamente.",
+          "unsupportedProvider": "Os chamados de alertas não estão disponíveis para este provedor de PSA.",
+          "credentialsUnusable": "As credenciais desta conexão estão incompletas ou ilegíveis. Edite a conexão e insira-as novamente."
+        },
+        "fields": {
+          "enabled": "Ativar chamados de alertas",
+          "board": "Quadro",
+          "openStatus": "Status de chamado novo",
+          "closedStatus": "Status fechado",
+          "priorityHeading": "Prioridade do PSA por gravidade do alerta",
+          "minSeverity": "Gravidade mínima",
+          "minSeverityHelp": "Baixa inclui monitores de nível de aviso",
+          "closeOnResolve": "Fechar o chamado quando o alerta for resolvido",
+          "noteOnAcknowledge": "Adicionar uma nota quando o alerta for reconhecido",
+          "confirmCompanyLinks": "Os vínculos de empresas das organizações correspondem a esta instância do PSA"
+        },
+        "severity": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Média",
+          "low": "Baixa",
+          "info": "Informativo"
+        },
+        "options": {
+          "error": "Não foi possível carregar as opções do PSA",
+          "retry": "Tentar novamente",
+          "truncated": "Somente os primeiros resultados do PSA são exibidos."
+        },
+        "readOnly": {
+          "enabled": "Chamados de alertas"
+        },
+        "loadError": {
+          "message": "Não foi possível carregar as configurações de chamados de alertas",
+          "retry": "Tentar novamente"
+        },
+        "configInvalid": {
+          "warning": "Não foi possível ler as configurações salvas de chamados de alertas. Salvar as substituirá.",
+          "confirm": "Substituir as configurações ilegíveis"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importar empresas",
         "subtitle": "Crie organizações a partir das empresas em {{name}}.",
@@ -1151,27 +1256,10 @@
           "basicInformation": "Informações básicas",
           "connectionDetails": "Detalhes da conexão",
           "credentials": "Credenciais",
-          "syncSettings": "Configurações de sincronização"
+          "syncSettings": "Sincronização de tickets"
         },
         "sync": {
-          "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
-          "enable": "Ativar sincronização",
-          "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
-          "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirecional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Diariamente",
-          "every15Minutes": "A cada 15 minutos",
-          "every30Minutes": "A cada 30 minutos",
-          "every6Hours": "A cada 6 horas",
-          "everyHour": "A cada hora"
+          "unavailable": "A sincronização de tickets ainda não está disponível. As conexões podem ser testadas e usadas para importar empresas como organizações; nenhum dado de ticket é trocado entre o Breeze e o seu PSA."
         },
         "testDirtyHint": "Salve primeiro — o teste verifica as credenciais armazenadas, não suas edições não salvas.",
         "validation": {
@@ -1195,7 +1283,7 @@
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
-          "noConnections": "Conecte um provedor PSA para começar a sincronizar tickets.",
+          "noConnections": "Conecte um provedor PSA para testá-lo e importar suas empresas.",
           "noMatches": "Nenhuma conexão corresponde à sua pesquisa ou filtros.",
           "title": "Nenhuma conexão PSA configurada"
         },
@@ -1229,7 +1317,7 @@
           "tryAgain": "Tentar novamente"
         },
         "delete": {
-          "activeWarning": "Esta conexão está ativa. A sincronização de tickets será interrompida imediatamente.",
+          "activeWarning": "Esta conexão está ativa. Ao excluí-la, a conexão é removida imediatamente.",
           "confirm": "Tem certeza de que deseja excluir {{name}}?",
           "irreversible": "Esta ação não pode ser desfeita.",
           "title": "Excluir conexão PSA",
@@ -1248,10 +1336,10 @@
         "modal": {
           "addDescription": "Configure uma nova conexão PSA para sua organização.",
           "addTitle": "Adicionar conexão PSA",
-          "editDescription": "Atualize os detalhes da conexão PSA e as preferências de sincronização.",
+          "editDescription": "Atualize os detalhes da conexão PSA.",
           "editTitle": "Editar conexão PSA"
         },
-        "subtitle": "Conecte seu PSA para sincronizar tickets e vincular alertas.",
+        "subtitle": "Teste conexões PSA e importe empresas como organizações.",
         "test": {
           "failedMessage": "Não foi possível conectar ao provedor PSA.",
           "failedTitle": "Conexão falhou",
@@ -1266,8 +1354,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "Sincronize sua primeira conexão PSA para ver tickets aqui.",
-          "title": "Nenhum ticket PSA sincronizado"
+          "noTickets": "Ainda não há tickets de alertas. Ative os tickets de alertas na conexão vinculada do ConnectWise Manage.",
+          "title": "Nenhum ticket do PSA"
         },
         "filters": {
           "allStatuses": "Todos os status",
@@ -1275,23 +1363,57 @@
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
-          "ticket": "Ticket",
+          "ticket": "Chamado",
           "updated": "Atualizado"
         },
         "searchPlaceholder": "Pesquisar tickets",
-        "status": {
-          "closed": "Fechado",
-          "inProgress": "Em andamento",
-          "open": "Aberto",
-          "resolved": "Resolvido",
-          "waiting": "Aguardando"
-        },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets sincronizados",
+        "title": "Tickets de alertas",
         "unlinked": "Não vinculado"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Atividade dos tickets",
+        "refresh": "Atualizar",
+        "redrive": "Reprocessar",
+        "loading": "Carregando atividade dos tickets…",
+        "loadFailed": "Não foi possível carregar a atividade dos tickets. Atualize para tentar novamente.",
+        "actionFailed": "Não foi possível atualizar a atividade dos tickets.",
+        "actionSucceeded": "Atividade dos tickets atualizada.",
+        "help": "Reprocessar tenta novamente as criações com falha e os alertas sem empresa vinculada. Marcar como tratado interrompe o processamento sem alterar o ticket do PSA.",
+        "empty": "Nenhum ticket precisa de atenção.",
+        "viewAlert": "Ver alerta",
+        "createAnyway": "Criar mesmo assim",
+        "markHandled": "Marcar como tratado",
+        "duplicateWarning": "Talvez já exista um ticket no PSA. Verifique primeiro: esta única nova tentativa pode criar uma duplicata.",
+        "confirmCreate": "Criar mais um ticket",
+        "cancel": "Cancelar",
+        "previous": "Anterior",
+        "next": "Próxima",
+        "page": "Página {{page}} de {{total}}",
+        "states": {
+          "never_attempted": "Na fila",
+          "create_in_flight": "Criando",
+          "created": "Criado",
+          "create_outcome_unknown": "Resultado da criação desconhecido",
+          "rejected": "Rejeitado",
+          "failed": "Falha",
+          "needs_attention": "Precisa de atenção",
+          "handled": "Tratado",
+          "skipped_no_company": "Sem empresa vinculada",
+          "skipped_ambiguous_company": "Vínculo de empresa ambíguo",
+          "skipped_resolved_before_create": "Resolvido antes da criação"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propriedade",
+        "allOrganizations": "Todas as organizações",
+        "thisOrganizationOnly": "Somente esta organização",
+        "all": "Todas",
+        "organization": "Organização",
+        "test": "Teste"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativas de entrega",
         "empty": "Ainda não há tentativas de entrega.",
@@ -1344,6 +1466,14 @@
             "description": "Acionado quando um dispositivo conecta.",
             "label": "Dispositivo online"
           },
+          "deviceReinstallSuspected": {
+            "description": "Acionado quando um dispositivo recém-registrado parece ser uma reinstalação de um registro de dispositivo existente e inativo.",
+            "label": "Possível reinstalação de dispositivo"
+          },
+          "deviceReinstalled": {
+            "description": "Acionado quando uma máquina reinstalada é vinculada novamente ao registro de dispositivo existente.",
+            "label": "Dispositivo reinstalado"
+          },
           "scriptCompleted": {
             "description": "Acionado quando um script termina.",
             "label": "Script concluído"
@@ -1351,6 +1481,10 @@
           "ticketCreated": {
             "description": "Acionado quando um ticket é criado.",
             "label": "Ticket criado"
+          },
+          "ticketMerged": {
+            "description": "Acionado quando um ticket é mesclado em outro ticket.",
+            "label": "Ticket mesclado"
           },
           "ticketCommented": {
             "description": "Acionado quando um comentário ou nota é adicionado a um ticket.",
@@ -1379,6 +1513,18 @@
           "integrationHealthResolved": {
             "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
             "label": "Incidente de integridade da conexão resolvido"
+          },
+          "alertAcknowledged": {
+            "label": "Alerta reconhecido",
+            "description": "Disparado quando um alerta é reconhecido."
+          },
+          "alertSuppressed": {
+            "label": "Alerta suprimido",
+            "description": "Disparado quando um alerta é suprimido."
+          },
+          "alertEscalated": {
+            "label": "Alerta escalado",
+            "description": "Disparado quando uma etapa de uma política de escalonamento é executada para um alerta ainda ativo."
           }
         },
         "fields": {
@@ -1400,6 +1546,12 @@
           "signingSecret": "Use este segredo para verificar assinaturas de webhook."
         },
         "invalidJsonPreview": "JSON inválido no modelo.",
+        "otherEvents": {
+          "allEvents": "Todos os eventos (*)",
+          "allEventsHint": "Este webhook está inscrito em todos os eventos, então os eventos individuais abaixo não são usados. Remova \"Todos os eventos\" para escolher eventos específicos.",
+          "remove": "Remover {{event}}",
+          "title": "Outros eventos assinados"
+        },
         "payload": {
           "previewEmpty": "A prévia aparece quando o JSON estiver válido.",
           "subtitle": "Defina o formato do payload JSON enviado ao seu destino.",
@@ -1413,7 +1565,7 @@
           "name": "Webhook de produção",
           "signingSecret": "Informe um segredo de assinatura"
         },
-        "subtitle": "Defina entrega, autenticação e comportamento do payload.",
+        "subtitle": "Defina o destino, os eventos, a autenticação e os cabeçalhos.",
         "title": "Configuração do webhook",
         "validation": {
           "eventRequired": "Selecione pelo menos um evento",
@@ -1424,6 +1576,22 @@
           "secretRequired": "Segredo é obrigatório para autenticação HMAC",
           "tokenRequired": "Token é obrigatório para autenticação bearer",
           "urlRequired": "URL é obrigatória"
+        },
+        "neverDelivered": {
+          "marker": "Nunca entregue",
+          "explanation": "O Breeze nunca envia este evento. Ele será removido quando você salvar este webhook.",
+          "banner": "O Breeze nunca envia este evento, portanto este webhook nunca realizou uma entrega. Escolha outro evento antes de salvar."
+        },
+        "payloadVersion": {
+          "title": "Versão dos dados",
+          "v2": {
+            "label": "v2 (recomendada)",
+            "description": "Os eventos de alerta incluem nome do host, local, organização, status e um link para o alerta."
+          },
+          "v1": {
+            "label": "v1 (versão original)",
+            "description": "Os dados de alerta originais, mantidos para as integrações existentes."
+          }
         }
       },
       "WebhookList": {
@@ -1475,7 +1643,7 @@
           "noPayloadTemplate": "Ainda não há modelo de payload salvo.",
           "payloadPreview": "Prévia do modelo de payload",
           "testEvent": "Evento de teste",
-          "testEventHelp": "Os testes usam o evento selecionado e seu modelo de payload.",
+          "testEventHelp": "Envia um payload de exemplo do evento selecionado para este endpoint.",
           "title": "Detalhes do webhook"
         },
         "emptySelection": "Selecione um webhook para ver histórico de entrega e ferramentas de teste.",
@@ -1505,7 +1673,8 @@
           "enabled": "Webhook ativado",
           "retryQueued": "Nova tentativa de entrega enfileirada",
           "testQueued": "Entrega de teste enfileirada",
-          "updated": "Webhook atualizado"
+          "updated": "Webhook atualizado",
+          "deleted": "Webhook \"{{name}}\" excluído"
         },
         "title": "Webhooks"
       }
@@ -1705,7 +1874,7 @@
         "errors": {
           "stopFailed": "Falha ao parar o cronômetro."
         },
-        "ticketFallback": "ticket",
+        "ticketFallback": "chamado",
         "stopTimer": "Parar cronômetro",
         "descriptionPlaceholder": "Em que você trabalhou?",
         "billable": "Faturável",
@@ -1995,8 +2164,8 @@
         "errors": {
           "loadFailed": "Falha ao carregar estatísticas da frota"
         },
-        "title": "Orquestração da Frota",
-        "description": "Gerencie políticas, implantações, correções e automações em toda a sua frota",
+        "title": "Descobertas",
+        "description": "Padrões entre dispositivos encontrados pelos trabalhadores: uma ação em vez de muitas",
         "partialWarning": "Alguns dados podem estar incompletos. Falha ao carregar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",
@@ -2010,7 +2179,7 @@
           "reports": "Relatórios"
         },
         "aiFleetActions": "Ações de IA para a Frota",
-        "aiFleetActionsHint": "Clique para perguntar ao assistente de IA",
+        "aiFleetActionsHint": "Clique para perguntar ao Breeze AI",
         "quickActions": {
           "checkCompliance": "Verificar conformidade",
           "activeDeployments": "Implantações ativas",
@@ -2223,7 +2392,7 @@
         },
         "loading": "Carregando incidentes...",
         "tryAgain": "Tentar novamente",
-        "title": "Incidentes",
+        "title": "Incidentes de segurança",
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
@@ -2253,6 +2422,11 @@
         "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Técnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente não encontrado",
           "fetchFailed": "Falha ao buscar incidente"
@@ -2300,6 +2474,7 @@
           "invalidTimeRange": "A hora inicial deve ser anterior à hora final.",
           "searchFailed": "Falha ao pesquisar logs",
           "saveFailed": "Falha ao salvar consulta",
+          "savedQueriesFailed": "Não foi possível carregar as consultas salvas.",
           "noRowsExport": "Não há linhas para exportar."
         },
         "savePrompt": "Nome desta consulta salva:",
@@ -2319,10 +2494,14 @@
         },
         "searchFleetLogs": "Pesquisar Logs da Frota",
         "saveQuery": "Salvar Consulta",
+        "usingSavedFilters": "Esta pesquisa usa os filtros salvos.",
+        "customSearch": "Pesquisa personalizada",
+        "savedQueries": "Consultas salvas",
         "exportCsv": "Exportar CSV",
         "resultsTitle": "Resultados da Pesquisa",
         "loading": "Carregando...",
         "resultsCount": "{{shown}} exibido(s) de {{total}} no total",
+        "resultsCountWithoutTotal": "{{shown}} exibidos",
         "table": {
           "timestamp": "Data/hora",
           "level": "Nível",
@@ -2332,6 +2511,7 @@
         "unknownSite": "Local desconhecido",
         "empty": "Nenhum log correspondeu aos filtros atuais.",
         "pageCount": "Página {{page}} de {{totalPages}}",
+        "currentPage": "Página {{page}}",
         "previous": "Anterior"
       }
     },
@@ -2385,15 +2565,15 @@
           },
           "search": {
             "title": "Pesquise qualquer coisa",
-            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas, usuários ou configurações instantaneamente."
+            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas ou configurações instantaneamente."
           },
           "switchOrgs": {
             "title": "Troque de organização",
             "description": "Gerencia vários clientes? Troque entre organizações aqui."
           },
           "aiHelp": {
-            "title": "Ajuda com IA",
-            "description": "Faça perguntas sobre sua frota, solucione problemas ou gere relatórios. Pressione Cmd+Shift+A a qualquer momento."
+            "title": "Breeze AI",
+            "description": "Faça perguntas sobre sua frota em linguagem natural, solucione problemas ou gere relatórios. Pressione ⌘⇧A a qualquer momento."
           }
         },
         "skipTour": "Pular tour",
@@ -2544,7 +2724,7 @@
           "parameters": "Parâmetros"
         },
         "accept": "Aceitar",
-        "reject": "Rejeitar",
+        "reject": "Negar",
         "execute": "Executar",
         "requestApprovalTitle": "Solicitar aprovação PAM antes da execução",
         "requesting": "Solicitando...",
@@ -2778,5 +2958,12 @@
     "title": "Esta seção falhou",
     "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
     "retry": "Tentar novamente"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloqueado",
+    "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }

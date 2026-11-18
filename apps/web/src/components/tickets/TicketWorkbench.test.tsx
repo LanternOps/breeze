@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { configure, fireEvent, getConfig, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,9 +22,9 @@ vi.mock('../../stores/auth', () => ({
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
 // Capture the props the rail hands the parts card (#3775: the ticket org's currency).
-const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string } }));
+const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string; readOnly?: boolean } }));
 vi.mock('./TicketPartsCard', () => ({
-  default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
+  default: (p: { ticketId: string; currencyCode?: string; readOnly?: boolean }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
 }));
 
 // Stubbed for the same reason TicketPartsCard is: this suite is not testing the
@@ -33,8 +35,9 @@ vi.mock('./TicketPartsCard', () => ({
 // #5808 W01), which would block the status changes these tests assert. The
 // checklist's own behaviour is covered by TicketChecklistCard.test.tsx and
 // TicketWorkbench.checklistConfirm.test.tsx.
+const checklistCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; readOnly?: boolean } }));
 vi.mock('./TicketChecklistCard', () => ({
-  default: () => <div data-testid="ticket-checklist-card-stub" />,
+  default: (p: { ticketId: string; readOnly?: boolean }) => { checklistCardProps.last = p; return <div data-testid="ticket-checklist-card-stub" />; },
 }));
 
 // Same reason as the checklist: the links card self-fetches /tickets/:id/links.
@@ -43,6 +46,14 @@ vi.mock('./TicketChecklistCard', () => ({
 const linksCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; orgId?: string; ticketType?: string; canWrite?: boolean } }));
 vi.mock('./TicketLinksCard', () => ({
   default: (p: { ticketId: string; orgId?: string; ticketType?: string; canWrite?: boolean }) => { linksCardProps.last = p; return <div data-testid="ticket-links-card-stub" />; },
+}));
+
+// The real button self-gates on the Wisp flag + grant (its own suite covers
+// that); here we only assert the header mounts it with the ticket's ref.
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
+  ),
 }));
 
 vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
@@ -116,6 +127,12 @@ function mockTicketApi(detailById: Record<string, TicketDetail>) {
 const mutationCalls = () =>
   fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET');
 
+// Move to another org, Merge into and Delete live in the header's More menu.
+function openMoreMenu() {
+  const more = screen.getByTestId('ticket-workbench-more');
+  if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+}
+
 // Reset the grant set before every test (some opt into tickets:manage).
 beforeEach(() => { authState.permissions = []; });
 
@@ -128,6 +145,7 @@ describe('TicketWorkbench — organization record link', () => {
     mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9', orgName: 'Globex Inc' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-9', label: 'T-2026-0001 Printer is down' })));
 
     const link = screen.getByTestId('org-record-link');
     expect(link.tagName).toBe('A');
@@ -135,21 +153,50 @@ describe('TicketWorkbench — organization record link', () => {
     expect(link).toHaveTextContent('Globex Inc');
   });
 
-  it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {
+  it('omits trailing whitespace from a ticket context with an empty subject', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: '' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-1', label: 'T-2026-0001',
+    })));
+  });
+
+  // The device moved from the header meta line to the situation column's
+  // endpoint panel (focus layout); the hostname still links to the device.
+  it('links the endpoint panel hostname to /devices/:id (ui-flow W03)', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
 
-    expect(screen.getByTestId('device-record-link')).toHaveAttribute('href', '/devices/dev-1');
+    expect(screen.getByTestId('ticket-workbench-device-link')).toHaveAttribute('href', '/devices/dev-1');
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
   });
 
-  it('prints the header hostname as text when the ticket has no deviceId', async () => {
+  it('prints the hostname as text when the ticket has no deviceId', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: 'DESKTOP-123' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
 
-    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-device-link')).toBeNull();
     expect(screen.getAllByText('DESKTOP-123').length).toBeGreaterThan(0);
+  });
+});
+
+describe('TicketWorkbench — Link to Wisp (W08 Task 10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('mounts the Talk-to-Wisp button in the header with the loaded ticket and its org', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    const button = screen.getByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
+    expect(button).toHaveAttribute('data-kind', 'ticket');
+    expect(button).toHaveAttribute('data-id', 'tk-1');
+    expect(button).toHaveAttribute('data-org', 'org-9');
   });
 });
 
@@ -254,6 +301,19 @@ describe('TicketWorkbench resolve-flow gating', () => {
     expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
   });
 
+  it('opening the resolve form moves focus to the note, from `e` and from the status select', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" resolveRequestToken={0} />);
+    await screen.findByTestId('ticket-workbench');
+
+    rerender(<TicketWorkbench ticketId="tk-1" resolveRequestToken={1} />);
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-resolve-note')).toHaveFocus());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-resolve-note')).toHaveFocus());
+  });
+
   it('switching tickets closes the resolve form and clears the note', async () => {
     mockTicketApi({
       'tk-a': makeTicket({ id: 'tk-a', internalNumber: 'T-2026-0001', subject: 'Ticket A' }),
@@ -278,6 +338,34 @@ describe('TicketWorkbench resolve-flow gating', () => {
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
     expect(screen.getByTestId('ticket-workbench-resolve-note')).toHaveValue('');
     expect(mutationCalls()).toHaveLength(0);
+  });
+});
+
+describe('TicketWorkbench keyboard and screen-reader affordances', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  // The "open full page" link is gone (focus is in place at every width);
+  // the header's icon-only control is now the More menu trigger.
+  it('names the icon-only More trigger with aria-label, not only a tooltip', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const more = await screen.findByTestId('ticket-workbench-more');
+    expect(screen.queryByTestId('ticket-workbench-expand')).toBeNull();
+    expect(more).toHaveAttribute('aria-label', 'More actions');
+    expect(more).toHaveAccessibleName('More actions');
+    expect(more.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('shows the hover-only Edit buttons when they take keyboard focus', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ description: 'Toner is out' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const description = await screen.findByTestId('ticket-workbench-description-edit-btn');
+    const requester = screen.getByTestId('ticket-workbench-requester-edit');
+    for (const button of [description, requester]) {
+      expect(button.className).toContain('opacity-0');
+      expect(button.className).toContain('group-hover:opacity-100');
+      expect(button.className).toContain('focus-visible:opacity-100');
+    }
   });
 });
 
@@ -1547,7 +1635,7 @@ describe('TicketWorkbench sticky composer across refreshes', () => {
 
     await screen.findByTestId('ticket-workbench');
     fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
-    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
 
     fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'internal note body' } });
     fireEvent.click(screen.getByTestId('ticket-composer-send'));
@@ -1565,7 +1653,7 @@ describe('TicketWorkbench sticky composer across refreshes', () => {
 
     // Mid-refresh: the skeleton must NOT replace the mounted tree.
     expect(screen.queryByTestId('ticket-workbench-loading')).toBeNull();
-    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
 
     releaseReload!();
 
@@ -1573,7 +1661,7 @@ describe('TicketWorkbench sticky composer across refreshes', () => {
     await waitFor(() => {
       expect(screen.getByTestId('ticket-workbench')).not.toHaveAttribute('aria-busy');
     });
-    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('ticket-composer-tab-internal')).toHaveAttribute('aria-checked', 'true');
   });
 
   it('switching tickets still shows the skeleton and resets the composer (no draft/mode leak)', async () => {
@@ -1594,7 +1682,7 @@ describe('TicketWorkbench sticky composer across refreshes', () => {
     });
     // Ticket B must not inherit ticket A's draft or internal mode.
     expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
-    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('ticket-composer-tab-reply')).toHaveAttribute('aria-checked', 'true');
   });
 });
 
@@ -1785,6 +1873,42 @@ describe('TicketWorkbench custom-status select (config path)', () => {
     });
   });
 
+  it('resolve patch carries the custom status name/colour so the host banner never shows the stale name', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    fireEvent.change(select, { target: { value: 'st-done' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Verified the fix.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: 'Done & verified', statusColor: '#00aa55',
+      }));
+    });
+  });
+
+  it('a plain resolve clears the stale custom status name in the patch', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Replaced the toner.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: null, statusColor: null,
+      }));
+    });
+  });
+
   it('picking a custom PENDING-core status opens the pending form and submits {statusId, pendingReason}', async () => {
     fetchConfigMock.mockResolvedValue(makeConfig());
     mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
@@ -1842,6 +1966,24 @@ describe('TicketWorkbench custom-status select (config path)', () => {
     await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
     // Selected option is the matching custom row.
     await waitFor(() => expect(select.value).toBe('st-waiting'));
+  });
+
+  // The `e` route opens the form without a pendingStatusId; the select used
+  // to keep showing the old status while the Resolve form was open.
+  it('`e` shows the Resolved row in the status select while the form is open, and Cancel restores it', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" resolveRequestToken={0} />);
+    const select = await screen.findByTestId('ticket-workbench-status') as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    expect(select.value).toBe('st-open');
+
+    rerender(<TicketWorkbench ticketId="tk-1" resolveRequestToken={1} />);
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(select.value).toBe('st-resolved');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(select.value).toBe('st-open');
   });
 
   it('cancelling the resolve form clears pendingStatusId so a subsequent `e` shortcut posts {status:resolved}', async () => {
@@ -1920,19 +2062,63 @@ describe('TicketWorkbench subject inline edit', () => {
     }
   });
 
-  it('renders an editable subject input with testid ticket-workbench-subject-edit', async () => {
+  const grantWrite = () => { authState.permissions = [{ resource: 'tickets', action: 'write' }]; };
+  const subjectPatches = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'));
+  // A save applies the patch optimistically and then reloads in the background;
+  // the static mock would hand the stale subject back, so this one applies PATCH
+  // bodies to the stored detail the way the server does.
+  const mockPatchableTicket = (ticket: TicketDetail) => {
+    const detail = { ...ticket };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: detail });
+      if (init?.method === 'PATCH' && url === '/tickets/tk-1') Object.assign(detail, JSON.parse(String(init.body)));
+      return makeJsonResponse({ success: true });
+    });
+  };
+
+  it('renders the subject as a heading, not a form field, until an edit is requested', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    await screen.findByTestId('ticket-workbench-subject-edit');
-    expect(screen.getByTestId('ticket-workbench-subject-edit')).toBeInTheDocument();
+    const heading = await screen.findByTestId('ticket-workbench-subject');
+    expect(heading.tagName).toBe('H2');
+    expect(heading).toHaveTextContent('Printer is down');
+    // Truncated titles stay readable on hover.
+    expect(heading).toHaveAttribute('title', 'Printer is down');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-subject-edit-btn')).toHaveAttribute('aria-label', 'Edit subject');
   });
 
-  it('saves an edited subject via PATCH /tickets/:id on blur', async () => {
+  it('hides the edit affordance without tickets:write', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    await screen.findByTestId('ticket-workbench-subject');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit-btn')).not.toBeInTheDocument();
+  });
+
+  it('opens a focused input holding the current subject when the edit button is pressed', async () => {
+    grantWrite();
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit') as HTMLInputElement;
+    expect(input.value).toBe('Printer is down');
+    expect(input).toHaveFocus();
+    expect(screen.queryByTestId('ticket-workbench-subject')).not.toBeInTheDocument();
+  });
+
+  it('saves an edited subject via PATCH /tickets/:id on blur and returns to the heading', async () => {
+    grantWrite();
+    mockPatchableTicket(makeTicket({ subject: 'Printer is down' }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
     fireEvent.change(input, { target: { value: 'Printer is broken' } });
     fireEvent.blur(input);
 
@@ -1942,13 +2128,19 @@ describe('TicketWorkbench subject inline edit', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Printer is broken' }) })
       );
     });
+    // The heading is back immediately; the new text lands once the PATCH resolves.
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is broken'));
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
   });
 
-  it('saves an edited subject via PATCH on Enter key', async () => {
-    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+  it('saves exactly once on Enter even though the input then loses focus', async () => {
+    grantWrite();
+    mockPatchableTicket(makeTicket({ subject: 'Printer is down' }));
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
+    input.focus();
     fireEvent.change(input, { target: { value: 'Network outage' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -1958,33 +2150,55 @@ describe('TicketWorkbench subject inline edit', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Network outage' }) })
       );
     });
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-subject')).toHaveTextContent('Network outage'));
+    // Leaving edit mode blurs the input; that must not re-send the same patch.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(subjectPatches()).toHaveLength(1);
+  });
+
+  it('Escape discards the draft and returns to the heading without a PATCH', async () => {
+    grantWrite();
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
+    input.focus();
+    fireEvent.change(input, { target: { value: 'Something else' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(subjectPatches()).toHaveLength(0);
   });
 
   it('does NOT PATCH when subject is unchanged on blur', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
-    fireEvent.blur(input); // blur without changing value
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    fireEvent.blur(screen.getByTestId('ticket-workbench-subject-edit')); // blur without changing value
 
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
     await new Promise((r) => setTimeout(r, 50));
-    expect(
-      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
-    ).toHaveLength(0);
+    expect(subjectPatches()).toHaveLength(0);
   });
 
   it('does NOT PATCH when subject is cleared (empty) on blur', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
     fireEvent.change(input, { target: { value: '' } });
     fireEvent.blur(input);
 
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
     await new Promise((r) => setTimeout(r, 50));
-    expect(
-      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
-    ).toHaveLength(0);
+    expect(subjectPatches()).toHaveLength(0);
   });
 });
 
@@ -2149,14 +2363,23 @@ describe('TicketWorkbench comment edit/delete', () => {
     ).toHaveLength(0);
   });
 
-  it('portal-authored comments do NOT show edit/delete controls (canManageComment gate)', async () => {
-    const comment = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
-    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+  // A requester's words are never rewritten (no Edit), but a tickets:manage
+  // holder can still remove them, e.g. to redact a pasted password (Delete).
+  // Without tickets:manage the server refuses (assertCommentEditable): see
+  // TicketWorkbench.layout.test.tsx for that side.
+  it('requester-authored comments offer Delete for redaction but never Edit', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'manage' }];
+    const portal = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
+    const seeded = makeComment({ id: 'c-portal-type', content: 'Seeded portal reply', portalUserId: null, authorType: 'portal' });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [portal, seeded] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-comment-c-portal');
-    expect(screen.queryByTestId('ticket-comment-edit-c-portal')).toBeNull();
-    expect(screen.queryByTestId('ticket-comment-delete-c-portal')).toBeNull();
+    for (const id of ['c-portal', 'c-portal-type']) {
+      expect(screen.queryByTestId(`ticket-comment-edit-${id}`)).toBeNull();
+      expect(screen.getByTestId(`ticket-comment-delete-${id}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`ticket-comment-requester-${id}`)).toHaveTextContent('Requester');
+    }
   });
 
   it('staff-authored comments DO show edit/delete controls', async () => {
@@ -2605,6 +2828,7 @@ describe('TicketWorkbench move-org action', () => {
     await screen.findByTestId('ticket-workbench');
 
     // Open the move-org UI
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     // The picker should appear; select org-2 (Globex Inc)
@@ -2631,6 +2855,7 @@ describe('TicketWorkbench move-org action', () => {
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     const picker = await screen.findByTestId('ticket-workbench-move-org-select');
@@ -2690,6 +2915,7 @@ describe('TicketWorkbench move-org action', () => {
     });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2705,6 +2931,7 @@ describe('TicketWorkbench move-org action', () => {
     mockTicketApiWithOrgs(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2717,6 +2944,7 @@ describe('TicketWorkbench move-org action', () => {
     mockBlockedMove(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2747,6 +2975,7 @@ describe('TicketWorkbench move-org action', () => {
     mockBlockedMove(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     const picker = await screen.findByTestId('ticket-workbench-move-org-select');
     fireEvent.change(picker, { target: { value: 'org-2' } });
@@ -2766,6 +2995,7 @@ describe('TicketWorkbench move-org action', () => {
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     await screen.findByTestId('ticket-workbench-move-org-select');
@@ -2984,6 +3214,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     expect(screen.queryByTestId('ticket-delete-button')).toBeNull();
   });
 
@@ -2991,9 +3222,11 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     authState.permissions = [{ resource: 'tickets', action: 'manage' }];
     mockTicketApi({ 'tk-1': makeTicket() });
     const onChanged = vi.fn();
-    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} />);
+    const onDeleted = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} onDeleted={onDeleted} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
 
     // Dialog is up; no DELETE fired yet.
@@ -3009,8 +3242,10 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     await waitFor(() => {
       expect(onChanged).toHaveBeenCalled();
     });
+    // #9564: tells the host which ticket is gone so it drops any hold on it.
+    expect(onDeleted).toHaveBeenCalledWith('tk-1');
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Ticket deleted' }));
-    // Split-pane mode: the host handles re-selection, so no navigation here.
+    // Hosted (the queue's focus view): the host goes back to its board, so no navigation here.
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
@@ -3020,6 +3255,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     render(<TicketWorkbench ticketId="tk-1" expanded />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
     fireEvent.click(await screen.findByTestId('ticket-delete-confirm'));
 
@@ -3148,5 +3384,447 @@ describe('TicketWorkbench — ticket type (#7900)', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-links-card-stub');
     expect(linksCardProps.last).toMatchObject({ canWrite: false });
+  });
+});
+
+// ─── Merge (#8972 W2) ────────────────────────────────────────────────────────
+
+// The dialog has its own suite (MergeTicketDialog.test.tsx); here a stub lets
+// the workbench's open/onMerged wiring be driven directly. vi.mock is hoisted.
+const mergeDialogProps = vi.hoisted(() => ({ last: null as null | { open: boolean; source: { id: string } } }));
+vi.mock('./MergeTicketDialog', () => ({
+  default: (p: { open: boolean; source: { id: string }; onClose: () => void; onMerged: (s: { id: string; internalNumber: string | null }) => void }) => {
+    mergeDialogProps.last = p;
+    if (!p.open) return null;
+    return (
+      <div data-testid="ticket-merge-dialog">
+        <button type="button" data-testid="stub-merge-done" onClick={() => p.onMerged({ id: 'tk-surv', internalNumber: 'T-2026-0002' })} />
+        <button type="button" data-testid="stub-merge-close" onClick={p.onClose} />
+      </div>
+    );
+  },
+}));
+
+describe('TicketWorkbench — merge header action (#8972)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mergeDialogProps.last = null;
+  });
+
+  it('shows "Merge into…" for tickets:write and opens the dialog on the source', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    openMoreMenu();
+    const open = screen.getByTestId('ticket-merge-open');
+    expect(open).toHaveTextContent('Merge into…');
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+    fireEvent.click(open);
+    expect(screen.getByTestId('ticket-merge-dialog')).toBeInTheDocument();
+    expect(mergeDialogProps.last?.source.id).toBe('tk-1');
+    fireEvent.click(screen.getByTestId('stub-merge-close'));
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('hides "Merge into…" without tickets:write', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'read' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
+    expect(screen.queryByTestId('ticket-merge-open')).toBeNull();
+  });
+
+  it('hands the survivor to onMerged when the host supplies it (split pane)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const onMerged = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onMerged={onMerged} />);
+    await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(onMerged).toHaveBeenCalledWith('tk-surv', 'T-2026-0002');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('navigates to the survivor without an onMerged host (full-page view)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" expanded />);
+    await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(navigateTo).toHaveBeenCalledWith('/tickets/tk-surv');
+  });
+});
+
+describe('TicketWorkbench — merged tombstone (#8972)', () => {
+  const TOMBSTONE = makeTicket({
+    id: 'tk-1',
+    internalNumber: 'T-2026-0009',
+    status: 'closed',
+    resolutionNote: 'Merged into T-2026-0002',
+    mergedIntoTicketId: 'tk-surv',
+    mergedAt: '2026-10-20T12:00:00.000Z',
+    assignedTo: 'u-1',
+    assigneeName: 'Alex',
+    comments: [{
+      id: 'c-1', userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment',
+      content: 'Old reply', isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z',
+    }],
+  });
+  const SURVIVOR = makeTicket({ id: 'tk-surv', internalNumber: 'T-2026-0002' });
+
+  /** Tombstone + survivor detail, plus a triage suggestion and an AI draft —
+   *  each of which would render write controls on a live ticket. */
+  function mockTombstoneApi(opts: { survivorStatus?: number } = {}) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const get = !init?.method || init.method === 'GET';
+      if (get && url === '/tickets/tk-1') return makeJsonResponse({ data: TOMBSTONE });
+      if (get && url === '/tickets/tk-surv') {
+        return opts.survivorStatus
+          ? makeJsonResponse({ error: 'Ticket not found' }, false, opts.survivorStatus)
+          : makeJsonResponse({ data: SURVIVOR });
+      }
+      if (get && url === '/tickets/tk-1/triage-suggestion') {
+        return makeJsonResponse({ enabled: true, suggestion: { modelVersion: 'v0', confidence: 0.8, priority: 'high', categoryId: null, categoryName: null, reasons: [] } });
+      }
+      if (get && url === '/tickets/tk-1/ai-drafts') {
+        return makeJsonResponse({ data: [{ id: 'd-1', kind: 'reply', content: 'Draft', createdAt: '2026-10-01T00:00:00.000Z', runId: null }] });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    linksCardProps.last = null;
+    authState.permissions = [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'manage' }];
+  });
+
+  it('shows the banner with the survivor number (read from its detail) and a link', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('This ticket was merged into T-2026-0002'));
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveTextContent('Open T-2026-0002');
+  });
+
+  it('shows the deleted-survivor variant with no link when the survivor read 404s', async () => {
+    mockTombstoneApi({ survivorStatus: 404 });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('into a ticket that was deleted or that you cannot see'));
+    expect(screen.queryByTestId('ticket-merged-banner-link')).toBeNull();
+  });
+
+  it('disables or hides every write control', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" assignees={[{ id: 'u-1', name: 'Alex', email: 'a@example.com' }]} categories={[{ id: 'cat-1', name: 'Hardware' }]} />);
+    await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(screen.getByTestId('ticket-merged-banner')).toHaveTextContent('T-2026-0002'));
+
+    // Hidden outright on a tombstone.
+    const mustBeAbsent = [
+      'ticket-workbench-subject-edit', 'ticket-workbench-subject-edit-btn', 'ticket-workbench-type', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice', 'ticket-workbench-move-org',
+      'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn', 'ticket-workbench-requester-edit',
+      'ticket-workbench-tag-input', 'ticket-workbench-device-edit', 'ticket-workbench-device-unlink',
+      'ticket-triage-suggestion', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply',
+      'ticket-ai-draft-reply-send', 'ticket-ai-draft-reply-discard', 'ticket-composer', 'ticket-composer-input',
+      'ticket-comment-edit-c-1', 'ticket-comment-delete-c-1', 'ticket-workbench-resolve-form', 'ticket-workbench-pending-form',
+    ];
+    for (const id of mustBeAbsent) expect(screen.queryByTestId(id), id).toBeNull();
+    // Still shown for reading, but inert.
+    const mustBeDisabled = [
+      'ticket-workbench-status', 'ticket-workbench-priority', 'ticket-workbench-category',
+      'ticket-workbench-assignee', 'ticket-workbench-due',
+    ];
+    for (const id of mustBeDisabled) expect(screen.getByTestId(id), id).toBeDisabled();
+    // The type is shown as a chip instead of a select.
+    expect(screen.getByTestId('ticket-workbench-type-chip')).toBeInTheDocument();
+    // A tombstone never asks for AI suggestions or drafts.
+    const requested = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(requested).not.toContain('/tickets/tk-1/triage-suggestion');
+    expect(requested).not.toContain('/tickets/tk-1/ai-drafts');
+    expect(requested).not.toContain('/tickets/tk-1/ai-proposal');
+    // The composer's place shows the read-only note instead.
+    expect(screen.getByTestId('ticket-merged-readonly')).toHaveTextContent('Merged tickets are read-only.');
+    expect(linksCardProps.last).toMatchObject({ canWrite: false });
+    // #10073: the rail's time, billing and parts writes all 409 TICKET_MERGED,
+    // so they are inert too, with the reason and the survivor link above them.
+    for (const id of ['ticket-billing-start-timer', 'ticket-billing-quick-add-toggle', 'timer-work-type']) {
+      expect(screen.getByTestId(id), id).toBeDisabled();
+    }
+    expect(partsCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(checklistCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(screen.getByTestId('ticket-rail-merged-readonly')).toHaveTextContent('Time, billing and parts are read-only');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveTextContent('Open T-2026-0002');
+    // Reading is fine: the feed still renders the tombstone's history.
+    expect(screen.getByTestId('ticket-comment-c-1')).toHaveTextContent('Old reply');
+  });
+
+  it('a live ticket has no merged banner', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-merged-banner')).toBeNull();
+    expect(screen.getByTestId('ticket-composer')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-rail-merged-readonly')).toBeNull();
+    expect(screen.getByTestId('ticket-billing-start-timer')).toBeEnabled();
+    expect(partsCardProps.last).toMatchObject({ readOnly: false });
+    expect(checklistCardProps.last).toMatchObject({ readOnly: false });
+  });
+});
+
+describe('TicketWorkbench — survivor timeline (#8972)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('resolves each distinct source ticket once and marks moved comments "from <number>"', async () => {
+    const comment = (id: string, mergedFromTicketId: string | null) => ({
+      id, userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment' as const,
+      content: `Body ${id}`, isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z', mergedFromTicketId,
+    });
+    mockTicketApi({
+      'tk-1': makeTicket({ comments: [comment('c-1', 'tk-src'), comment('c-2', 'tk-src'), comment('c-3', null)] }),
+      'tk-src': makeTicket({ id: 'tk-src', internalNumber: 'T-2026-0007', mergedIntoTicketId: 'tk-1' }),
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(screen.getByTestId('ticket-comment-merged-from-c-1')).toHaveTextContent('from T-2026-0007'));
+    expect(screen.getByTestId('ticket-comment-merged-from-c-2')).toHaveTextContent('from T-2026-0007');
+    expect(screen.queryByTestId('ticket-comment-merged-from-c-3')).toBeNull();
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/tickets/tk-src')).toHaveLength(1);
+  });
+});
+
+// Operator Recipe Library W06 R1b (#6171) — MOUNT proof for the ticket launch
+// point. The launcher only SUGGESTS the requester as the person leaving (#10075)
+// and sends NO source citation: identity_offboarding refuses one and opens its
+// own checklist ticket.
+describe('TicketWorkbench — Offboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const workflow = (readiness: string) => ({
+    recipeKey: 'identity_offboarding', recipeVersion: 4, name: 'Offboard a person', summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) return makeJsonResponse({ data: [workflow(opts.readiness ?? 'ready')] });
+      if (url === '/ai/operator/task-drafts') {
+        return makeJsonResponse({ data: {
+          recipeKey: 'identity_offboarding', recipeVersion: 4, input: {}, workflow: workflow('ready'),
+          person: { resolved: { id: REQUESTER, name: 'Pat', email: 'pat@example.com' }, candidates: [] },
+          plannedEffectTools: ['m365_disable_user'], degradedEffectTools: [], manualWork: [],
+        } });
+      }
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders on the real workbench and opens the form with the person empty and the requester only suggested', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-recipe-person-contact')).toBeNull();
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('Pat');
+
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    expect(screen.getByTestId('start-recipe-person-contact')).toHaveTextContent('Pat');
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    expect(await screen.findByTestId('start-recipe-preview')).toHaveTextContent('the task opens its own checklist ticket');
+    const draftCall = fetchMock.mock.calls.find(([u]) => String(u) === '/ai/operator/task-drafts');
+    const body = JSON.parse(String((draftCall![1] as RequestInit).body)) as Record<string, any>;
+    expect(body.orgId).toBe(OP_ORG);
+    expect(body.inputs).toMatchObject({ contactId: REQUESTER, personHint: null });
+    expect(body).not.toHaveProperty('sourceKind');
+    expect(body).not.toHaveProperty('sourceId');
+  });
+
+  it('suggests, but does not pre-fill, the submitter email when the ticket has no requester contact', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: null, submitterEmail: 'pat@example.com' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect((await screen.findByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['the recipe is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('offboard-launcher-ticket')).not.toBeInTheDocument();
+  });
+});
+
+// Operator Recipe Library W07 R2b (#6172, Task 18) — MOUNT proof for the
+// ticket "Onboard a person" launcher, through the real workbench. The ticket's
+// requester pre-fills the MANAGER (never the new hire), and no source is sent.
+describe('TicketWorkbench — Onboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const wf = (recipeKey: string, readiness: string) => ({
+    recipeKey, recipeVersion: 4, name: recipeKey, summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) {
+        return makeJsonResponse({ data: [wf('identity_offboarding', 'ready'), wf('identity_onboarding', opts.readiness ?? 'ready')] });
+      }
+      if (url.startsWith(`/orgs/organizations/${OP_ORG}/contacts`)) {
+        return makeJsonResponse({ data: [{ id: REQUESTER, name: 'Pat Requester', email: 'pat@customer.example', phone: null, siteId: null }], pagination: { total: 1 } });
+      }
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders beside the offboard launcher and opens the onboarding form with the requester as manager', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat Requester' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    expect(await screen.findByTestId('offboard-launcher-ticket')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('launch-onboard-person-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toHaveAttribute('data-recipe-key', 'identity_onboarding');
+    expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('its requester is set as the manager, not as the new person');
+    await waitFor(() => expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe(REQUESTER));
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['onboarding is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('launch-onboard-person-ticket')).not.toBeInTheDocument();
+  });
+
+  it('every page that hosts the workbench mounts it as a client:load island', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const pages = join(__dirname, '../../pages/tickets');
+    // /tickets/[id] renders the same focus view as /tickets#<key>.
+    const detail = readFileSync(join(pages, '[id].astro'), 'utf8');
+    expect(detail).toMatch(/<TicketsPage[^>]*routeTicketId[^>]*client:load/);
+    const queue = readFileSync(join(pages, 'index.astro'), 'utf8');
+    expect(queue).toMatch(/<TicketsPage[^>]*client:load/);
+    // The launcher sits with the requester, in the focus view's situation column.
+    const requester = readFileSync(join(__dirname, 'TicketRequesterBlock.tsx'), 'utf8');
+    expect(requester).toContain('<OnboardPersonLauncher');
+  });
+});
+
+// The composer's reason toast and runAction's suppressErrorToast are unit-tested
+// apart; this pins the wiring between them in the workbench upload path. Without
+// the suppression a refused file shows two toasts (runAction's and the composer's).
+describe('TicketWorkbench attachment upload refusals', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockUpload(status: number, payload: unknown) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'POST' && /^\/tickets\/tk-1\/attachments/.test(url)) {
+        return makeJsonResponse(payload, status < 400, status);
+      }
+      if ((!init?.method || init.method === 'GET') && /^\/tickets\/tk-1$/.test(url)) {
+        return makeJsonResponse({ data: makeTicket() });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  const pick = (name: string, type: string) =>
+    fireEvent.change(screen.getByTestId('ticket-composer-file-input'), {
+      target: { files: [new File(['x'], name, { type })] },
+    });
+
+  it('a 415 refusal drops the chip and shows exactly one toast, naming the file', async () => {
+    mockUpload(415, { error: 'Only JPEG, PNG, WebP images and PDFs can be attached', code: 'UNSUPPORTED_ATTACHMENT_TYPE' });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-composer-file-input');
+    pick('notes.txt', 'text/plain');
+
+    await waitFor(() => expect(screen.queryByTestId('ticket-composer-chip-notes.txt')).toBeNull());
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('notes.txt') }));
+    expect(screen.queryByTestId('ticket-composer-chip-retry-notes.txt')).toBeNull();
+  });
+
+  it('a 503 keeps the runAction toast and a Retry chip', async () => {
+    mockUpload(503, { error: 'Storage unavailable', code: 'STORAGE_UNAVAILABLE' });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-composer-file-input');
+    pick('a.png', 'image/png');
+
+    await screen.findByTestId('ticket-composer-chip-retry-a.png');
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });

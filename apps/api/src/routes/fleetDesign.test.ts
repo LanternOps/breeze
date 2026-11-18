@@ -362,6 +362,27 @@ describe('POST /ai/fleet-design/runs', () => {
     });
   });
 
+  it('503s enqueue_failed, audits a failure, and returns no runId when the run could not be enqueued (#11182)', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({
+      created: true,
+      run: { id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' },
+    });
+    const res = await postRuns(buildApp(), { orgId: ORG_ID });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'enqueue_failed', error: expect.stringContaining('could not be queued') });
+    expect(body).not.toHaveProperty('runId');
+
+    expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      action: 'ai_fleet_design.run.manual_trigger',
+      resourceId: AGENT_ID,
+      result: 'failure',
+      details: { skipped: 'enqueue_failed' },
+    });
+  });
+
   it('404s when the org has no effective designer agent', async () => {
     resolveEffectiveAgentMock.mockResolvedValue(null);
     const app = buildApp();

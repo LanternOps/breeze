@@ -19,7 +19,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError } from './index';
+import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, interpolateTemplate, retiredConditionTypeError, withMetConditionDescriptions } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 import { interpolateAlertTemplate } from '@breeze/shared';
@@ -28,6 +28,10 @@ import { bandwidthKind } from '../monitors/kinds/bandwidth';
 import { networkErrorsKind } from '../monitors/kinds/networkErrors';
 import { serviceKind } from '../monitors/kinds/service';
 import { processKind } from '../monitors/kinds/process';
+import { scriptKind } from '../monitors/kinds/script';
+import { backupContinuityKind } from '../monitors/kinds/backupContinuity';
+import { compositeKind } from '../monitors/kinds/composite';
+import { eventLogKind } from '../monitors/kinds/eventLog';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -456,6 +460,236 @@ describe('evaluateConditions context for service/process watches (issue #7966)',
         'device-1'
       );
       expect(result.context.serviceName).toBe('Nested');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+const COMPILE_CTX = { monitorId: '00000000-0000-4000-8000-000000000001' };
+
+function renderKindMessage(
+  messageTemplate: string,
+  result: Awaited<ReturnType<typeof evaluateConditions>>,
+  extra: Record<string, unknown>,
+): string {
+  return interpolateTemplate(
+    messageTemplate,
+    withMetConditionDescriptions({ ...result.context, ...extra }, result.conditionsMet),
+  );
+}
+
+describe('monitor templates fill met-condition text before interpolation (issue #10740)', () => {
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getRecentMetricsMock.mockReset();
+    getLatestMetricMock.mockReset();
+    getLatestMetricMock.mockResolvedValue(null as never);
+  });
+
+  it('script message renders the handler description from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({
+      passed: true,
+      description: 'Defender Exploit Guard blocked a payload',
+    });
+    try {
+      const compiled = scriptKind.toAlertCondition(
+        scriptKind.conditionSchema.parse({
+          scriptId: '00000000-0000-4000-8000-000000000002',
+          intervalMinutes: 15,
+          timeoutSeconds: 60,
+          breachOnNonZeroExit: true,
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      expect(result.triggered).toBe(true);
+      expect(result.context).not.toHaveProperty('description');
+      const message = renderKindMessage(scriptKind.messageTemplate, result, {
+        ruleName: 'Monitor Defender for Blocks',
+        deviceName: 'PC-1',
+      });
+      expect(message).toBe('Monitor Defender for Blocks: Defender Exploit Guard blocked a payload');
+      expect(message).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('backup-continuity message renders the handler description from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockResolvedValue({
+      passed: true,
+      description: 'No successful backup in the last 48h',
+    });
+    try {
+      const compiled = backupContinuityKind.toAlertCondition(
+        backupContinuityKind.conditionSchema.parse({
+          check: 'no_successful_backup',
+          maxAgeHours: 48,
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      const message = renderKindMessage(backupContinuityKind.messageTemplate, result, {
+        ruleName: 'Backup stale',
+        deviceName: 'FS-1',
+      });
+      expect(message).toBe('Backup stale: FS-1 — No successful backup in the last 48h');
+      expect(message).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('composite message renders the joined met-condition list from the compiled template', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate').mockImplementation(async (cond) => {
+      const type = (cond as { type?: string }).type;
+      if (type === 'backup_continuity') {
+        return { passed: true, description: 'No successful backup in the last 48h' };
+      }
+      if (type === 'offline') {
+        return { passed: true, description: 'Device offline for 15min' };
+      }
+      return { passed: false, description: `unexpected ${type ?? 'condition'}` };
+    });
+    try {
+      const compiled = compositeKind.toAlertCondition(
+        compositeKind.conditionSchema.parse({
+          match: 'all',
+          children: [
+            { kind: 'backup_continuity', condition: { check: 'no_successful_backup', maxAgeHours: 48 } },
+            { kind: 'offline', condition: { durationMinutes: 15 } },
+          ],
+        }),
+        COMPILE_CTX,
+      );
+      const result = await evaluateConditions(compiled, 'device-1');
+      expect(result.conditionsMet).toHaveLength(2);
+      const message = renderKindMessage(compositeKind.messageTemplate, result, {
+        ruleName: 'Backup and offline',
+        deviceName: 'FS-1',
+      });
+      expect(message).toBe(`Backup and offline: ${result.conditionsMet.join(', ')}`);
+      expect(message).toContain('No successful backup in the last 48h');
+      expect(message).toContain('Device offline for 15min');
+      expect(message).not.toContain('{{');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('event_log alert messages', () => {
+  const queueEventLogReads = (...results: Array<Array<Record<string, unknown>>>) => {
+    for (const rows of results) {
+      const query = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
+      };
+      mockDbSelect.mockReturnValueOnce(query as never);
+    }
+  };
+  // Carries event text so the assertions below prove the handler ignores it.
+  const newestRow = () => ({
+    id: 'event-1',
+    timestamp: new Date('2026-10-30T11:30:00.000Z'),
+    createdAt: new Date('2026-10-30T11:31:00.000Z'),
+    logName: 'Application',
+    recordId: '42',
+    message: 'DEVICE-TEXT',
+  });
+  const leaf = { type: 'event_log', category: 'application', level: 'error', countThreshold: 5, windowMinutes: 60 };
+
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getLatestMetricMock.mockReset();
+    getLatestMetricMock.mockResolvedValue(null as never);
+  });
+
+  it('renders the monitor kind template with the real count, category and window', async () => {
+    queueEventLogReads([{ count: 7 }], [newestRow()]);
+    const compiled = eventLogKind.toAlertCondition(
+      eventLogKind.conditionSchema.parse({
+        category: 'application', level: 'error', countThreshold: 5, windowMinutes: 60,
+      }),
+      COMPILE_CTX,
+    );
+
+    const result = await evaluateConditions(compiled, 'device-1');
+
+    expect(result.triggered).toBe(true);
+    expect(renderKindMessage(eventLogKind.messageTemplate, result, { deviceName: 'PC-1' }))
+      .toBe('7 matching application events on PC-1 within 60 minutes');
+  });
+
+  // The built-in event log templates in db/seed.ts run on the same handler.
+  it.each([
+    ['{{count}} hardware/disk errors detected on {{hostname}} within 30 minutes', '7 hardware/disk errors detected on PC-1 within 30 minutes'],
+    ['Application crash detected on {{hostname}}: {{message}}', 'Application crash detected on PC-1: application/error events >= 5 in 60min (found 7)'],
+  ])('renders the built-in template %s', async (template, expected) => {
+    queueEventLogReads([{ count: 7 }], [newestRow()]);
+
+    const result = await evaluateConditions(leaf, 'device-1');
+
+    expect(renderKindMessage(template, result, { hostname: 'PC-1' })).toBe(expected);
+  });
+
+  it('leaves no token when the leaf is below threshold', async () => {
+    queueEventLogReads([{ count: 0 }]);
+
+    const result = await evaluateConditions(
+      { logic: 'or', conditions: [leaf] } as never,
+      'device-1',
+    );
+
+    const message = renderKindMessage('{{count}} events: {{message}}', result, {});
+    expect(message).toBe('0 events: application/error events >= 5 in 60min (found 0)');
+  });
+
+  it('describes the leaf that passed when several event_log leaves share a group', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate')
+      .mockImplementationOnce(async () => ({
+        passed: false,
+        description: 'first',
+        templateValues: { count: 0, category: 'security', windowMinutes: 10, message: 'first' },
+      }))
+      .mockImplementationOnce(async () => ({
+        passed: true,
+        description: 'second',
+        templateValues: { count: 9, category: 'system', windowMinutes: 30, message: 'second' },
+      }));
+    try {
+      const result = await evaluateConditions(
+        { logic: 'or', conditions: [{ type: 'event_log' }, { type: 'event_log' }] } as never,
+        'device-1',
+      );
+      expect(result.context).toMatchObject({ count: 9, category: 'system', windowMinutes: 30, message: 'second' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps the threshold leaf as actualValue while {{count}} still comes from the event_log leaf', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate')
+      .mockImplementationOnce(async () => ({ passed: true, description: 'cpu', actualValue: 95 }))
+      .mockImplementationOnce(async () => ({
+        passed: true,
+        description: 'events',
+        actualValue: 3,
+        templateValues: { count: 3, category: 'system', windowMinutes: 30, message: 'events' },
+      }));
+    try {
+      const result = await evaluateConditions(
+        { logic: 'and', conditions: [
+          { type: 'metric', metric: 'cpu', operator: 'gt', value: 90 },
+          { type: 'event_log' },
+        ] } as never,
+        'device-1',
+      );
+      expect(result.context).toMatchObject({ actualValue: 95, count: 3 });
     } finally {
       spy.mockRestore();
     }

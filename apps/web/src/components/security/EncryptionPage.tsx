@@ -17,6 +17,7 @@ import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 import RecoveryKeysPanel from "./RecoveryKeysPanel";
+import { encryptionMethodLabel, encryptionStatusLabel } from "./encryptionLabels";
 type Volume = {
   drive: string;
   encrypted: boolean;
@@ -31,7 +32,8 @@ type EncryptionDevice = {
   encryptionMethod: string;
   encryptionStatus: "encrypted" | "partial" | "unencrypted";
   volumes: Volume[];
-  tpmPresent: boolean;
+  // null when the agent did not report TPM state (#9607).
+  tpmPresent: boolean | null;
   recoveryKeyEscrowed: boolean;
 };
 type Summary = {
@@ -44,6 +46,8 @@ type Summary = {
     filevault: number;
     luks: number;
     none: number;
+    // Encrypted devices whose agent reported no method (#9607).
+    unknown: number;
   };
   recoveryKeysEscrowed: number;
 };
@@ -66,7 +70,7 @@ export default function EncryptionPage() {
     fullyEncrypted: 0,
     partial: 0,
     unencrypted: 0,
-    methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0 },
+    methodCounts: { bitlocker: 0, filevault: 0, luks: 0, none: 0, unknown: 0 },
     recoveryKeysEscrowed: 0,
   });
   const [pagination, setPagination] = useState<Pagination>({
@@ -177,7 +181,7 @@ export default function EncryptionPage() {
   const hasData = errorKind !== "other";
   const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="encryption-page">
       <SecurityPageHeader
         title={t("securityEncryptionPage.encryptionStatus")}
         subtitle={t("securityEncryptionPage.diskEncryptionAcrossAllDevices")}
@@ -189,52 +193,77 @@ export default function EncryptionPage() {
         <SecurityStatCard
           icon={Lock}
           label={t("securityEncryptionPage.totalDevices")}
+          testId="encryption-state-total"
           value={stat(summary.total)}
         />
         <SecurityStatCard
           icon={Lock}
           label={t("securityEncryptionPage.fullyEncrypted")}
+          testId="encryption-state-encrypted"
           value={stat(summary.fullyEncrypted)}
           variant={hasData ? "success" : "default"}
         />
         <SecurityStatCard
           icon={HardDrive}
           label={t("securityEncryptionPage.partial")}
+          testId="encryption-state-partial"
           value={stat(summary.partial)}
           variant={hasData ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={HardDrive}
           label={t("securityEncryptionPage.unencrypted")}
+          testId="encryption-state-unencrypted"
           value={stat(summary.unencrypted)}
           variant={hasData ? "danger" : "default"}
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-4">
-        <div className="rounded-md border bg-muted/30 p-3 text-center">
+      <div className="grid gap-4 sm:grid-cols-5">
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-bitlocker"
+        >
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.bitlocker")}
           </p>
           <p className="text-lg font-semibold">{stat(mc.bitlocker)}</p>
         </div>
-        <div className="rounded-md border bg-muted/30 p-3 text-center">
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-filevault"
+        >
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.filevault")}
           </p>
           <p className="text-lg font-semibold">{stat(mc.filevault)}</p>
         </div>
-        <div className="rounded-md border bg-muted/30 p-3 text-center">
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-luks"
+        >
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.luks")}
           </p>
           <p className="text-lg font-semibold">{stat(mc.luks)}</p>
         </div>
-        <div className="rounded-md border bg-muted/30 p-3 text-center">
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-none"
+        >
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.none")}
           </p>
           <p className="text-lg font-semibold">{stat(mc.none)}</p>
+        </div>
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-center"
+          data-testid="encryption-method-unknown"
+        >
+          <p className="text-xs text-muted-foreground">
+            {t("securityEncryptionPage.unknown")}
+          </p>
+          <p className="text-lg font-semibold">{stat(mc.unknown ?? 0)}</p>
         </div>
       </div>
 
@@ -249,6 +278,7 @@ export default function EncryptionPage() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
+            data-testid="encryption-search"
             placeholder={t("securityEncryptionPage.searchDevices")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -257,6 +287,7 @@ export default function EncryptionPage() {
         </div>
         <FilterSelect
           label={t("securityEncryptionPage.statusFilterLabel")}
+          data-testid="encryption-filter-status"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           className="h-10"
@@ -272,6 +303,7 @@ export default function EncryptionPage() {
         </FilterSelect>
         <FilterSelect
           label={t("securityEncryptionPage.osFilterLabel")}
+          data-testid="encryption-filter-os"
           value={osFilter}
           onChange={(e) => setOsFilter(e.target.value)}
           className="h-10"
@@ -283,6 +315,7 @@ export default function EncryptionPage() {
         </FilterSelect>
         <FilterSelect
           label={t("securityEncryptionPage.escrowFilterLabel")}
+          data-testid="encryption-filter-escrow"
           value={escrowFilter}
           onChange={(e) => setEscrowFilter(e.target.value)}
           className="h-10"
@@ -300,7 +333,7 @@ export default function EncryptionPage() {
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card shadow-xs">
-        <table className="min-w-full divide-y">
+        <table className="min-w-full divide-y" data-testid="encryption-table">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3 w-8" />
@@ -334,7 +367,7 @@ export default function EncryptionPage() {
               devices.map((d) => {
                 const isExpanded = expanded.has(d.deviceId);
                 return (
-                  <tr key={d.deviceId}>
+                  <tr key={d.deviceId} data-testid={`encryption-row-${d.deviceId}`}>
                     <td colSpan={7} className="p-0">
                       <div
                         className="flex cursor-pointer items-center transition hover:bg-muted/40"
@@ -353,25 +386,39 @@ export default function EncryptionPage() {
                         <div className="px-4 py-3 text-sm capitalize text-muted-foreground">
                           {d.os}
                         </div>
-                        <div className="px-4 py-3 text-sm capitalize">
-                          {d.encryptionMethod}
+                        <div className="px-4 py-3 text-sm">
+                          {encryptionMethodLabel(d.encryptionMethod, t)}
                         </div>
                         <div className="px-4 py-3">
                           <span
                             className={cn(
-                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize",
+                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
                               encStatusBadge[d.encryptionStatus],
                             )}
                           >
-                            {d.encryptionStatus}
+                            {encryptionStatusLabel(d.encryptionStatus, t)}
                           </span>
                         </div>
-                        <div className="px-4 py-3 text-sm">
-                          {d.tpmPresent
+                        <div
+                          className="px-4 py-3 text-sm"
+                          data-testid={`encryption-tpm-${d.deviceId}`}
+                          title={
+                            typeof d.tpmPresent === "boolean"
+                              ? undefined
+                              : t("securityEncryptionPage.tpmNotReported")
+                          }
+                        >
+                          {/* null = the agent did not report TPM state (#9607) */}
+                          {d.tpmPresent === true
                             ? t("securityEncryptionPage.yes")
-                            : t("securityEncryptionPage.no")}
+                            : d.tpmPresent === false
+                              ? t("securityEncryptionPage.no")
+                              : "—"}
                         </div>
-                        <div className="px-4 py-3 text-sm">
+                        <div
+                          className="px-4 py-3 text-sm"
+                          data-testid={`encryption-escrow-${d.deviceId}`}
+                        >
                           {d.recoveryKeyEscrowed ? (
                             <span className="inline-flex rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700">
                               {t("securityEncryptionPage.escrowed")}
@@ -423,10 +470,10 @@ export default function EncryptionPage() {
                                     )}
                                   </td>
                                   <td className="py-1 text-muted-foreground">
-                                    {v.method}
+                                    {encryptionMethodLabel(v.method, t)}
                                   </td>
                                   <td className="py-1 text-muted-foreground">
-                                    {v.status ?? "-"}
+                                    {encryptionStatusLabel(v.status, t)}
                                     {typeof v.percentEncrypted === "number"
                                       ? ` (${Math.round(v.percentEncrypted)}%)`
                                       : ""}

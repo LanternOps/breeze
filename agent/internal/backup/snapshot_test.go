@@ -519,7 +519,7 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64, snapshotID string) { got = append(got, bd) }, nil, nil, nil)
+		func(p RunProgress) { got = append(got, p.BytesDone) }, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,8 +550,8 @@ func TestSnapshotProgressCarriesSnapshotIDFromFirstEmission(t *testing.T) {
 	}
 	var got []emission
 	snapshot, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64, snapshotID string) {
-			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		func(p RunProgress) {
+			got = append(got, emission{filesDone: p.FilesDone, bytesDone: p.BytesDone, snapshotID: p.SnapshotID})
 		}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1179,11 +1179,12 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	}
 }
 
-// #3006: on a RESUMED run the forced snapshot-registration emission must
-// report the pre-seeded resume counters, not zeros. Emitting before the resume
-// seed would make progress appear to go backwards to 0 and then jump — exactly
-// what the counters are not allowed to do (a server-side reaper reads them as
-// liveness), and sticky if the resumed run dies right after registering.
+// #3006: on a RESUMED run the done counters jump straight to the pre-seeded
+// resume totals — the forced snapshot-registration emission (the first one
+// reporting done work) carries them, never a partial or zero value after the
+// seed. Since #11014 the resume pass emits verified-only progress (done
+// counters still 0) before it; every emission carries the snapshot ID, and no
+// counter ever goes backwards.
 func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	restore := setProgressThrottleForTest(0)
 	defer restore()
@@ -1219,8 +1220,8 @@ func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	}
 	var got []emission
 	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files,
-		func(fd, ft int, bd, bt int64, snapshotID string) {
-			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		func(p RunProgress) {
+			got = append(got, emission{filesDone: p.FilesDone, bytesDone: p.BytesDone, snapshotID: p.SnapshotID})
 		}, journal, nil, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
@@ -1231,9 +1232,20 @@ func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	if got[0].snapshotID != snapshot.ID {
 		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
 	}
-	if got[0].filesDone != 1 || got[0].bytesDone != resumedSize {
-		t.Fatalf("registration emission must report the resumed counters (1 file, %d bytes), got filesDone=%d bytesDone=%d",
-			resumedSize, got[0].filesDone, got[0].bytesDone)
+	// #11014: the resume pass now reports its checks (VerifiedFiles) as it
+	// goes, so emissions with zero done counters can precede the seed. The
+	// done counters must still jump straight to the resumed totals — the
+	// first emission that reports any done work reports all of it.
+	var seeded *emission
+	for i := range got {
+		if got[i].filesDone > 0 {
+			seeded = &got[i]
+			break
+		}
+	}
+	if seeded == nil || seeded.filesDone != 1 || seeded.bytesDone != resumedSize {
+		t.Fatalf("first emission with done work must report the resumed counters (1 file, %d bytes), got %+v",
+			resumedSize, seeded)
 	}
 	// And nothing ever regresses.
 	for i := 1; i < len(got); i++ {
@@ -1721,9 +1733,9 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := createSnapshotWithProgress(context.Background(), provider, files,
-			func(fd, ft int, bd, bt int64, snapshotID string) {
+			func(p RunProgress) {
 				select {
-				case progressed <- emission{fd, ft, bd, bt}:
+				case progressed <- emission{p.FilesDone, p.FilesTotal, p.BytesDone, p.BytesTotal}:
 				default:
 				}
 			}, nil, nil, nil)

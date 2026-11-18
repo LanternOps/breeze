@@ -13,6 +13,8 @@
  */
 
 import { z } from 'zod';
+import { CommandTypes } from './commandTypes';
+import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
@@ -74,6 +76,9 @@ import { handleInstallPatchesResult } from './patchJobFinalizer';
 import { handleCallerVerifyResult } from './callerVerification/workstationResult';
 import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMessaging/commandResults';
 import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
+// #9662: AI/incident containment actions follow their command's real outcome.
+import { handleExecuteContainmentResult } from './incidentContainmentResults';
+import { applyOemUpdateRelease, applyOemUpdateResult } from './oemUpdates/results';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -581,9 +586,12 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       //     process reached a real outcome, so keep it (OD9-C) and record the
       //     losing cancel request in `cancel_state` alone. `status` is never
       //     `cancelled` here: we cannot prove the stop.
-      const cancelledMarker = (result as Record<string, unknown> | null)?.cancelled === true;
-      const rawMarkerCommandId = (result as Record<string, unknown> | null)?.cancelledByCommandId;
-      const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
+      //
+      // Both fields are declared on `commandResultSchema` (#10377). Until they
+      // were, the transport parse stripped them and the PROVEN write below was
+      // unreachable from a real agent.
+      const cancelledMarker = result.cancelled === true;
+      const markerCommandId = result.cancelledByCommandId ?? null;
 
       phase = 'cancel-confirm-cas';
       let cancelClosed: TerminalExecution[] = [];
@@ -615,6 +623,9 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       }
 
       let updatedExecutions: TerminalExecution[] = [];
+      // #7279: set when the #3607 recovery below records this result onto an
+      // execution a server sweep already terminalised.
+      let recoveredLateResult = false;
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -677,6 +688,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
+            recoveredLateResult = true;
             console.warn(
               `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
             );
@@ -814,9 +826,13 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
         // AI Suggested Fixes W1 (D-a) — advance any fix attempt riding on this
         // execution. Inline, own savepoint, never throws; NOT a public event.
+        // A late result also reconciles an attempt the sweep's verdict already
+        // closed (#7279, scriptTerminalHook lateResultWrites).
         await advanceOutcomesForTerminalExecution({
           executionId: effectiveExecution.id,
           status: cancelConfirmed ? 'cancelled' : scriptStatus,
+          completedAt: executionValues.completedAt,
+          lateResult: recoveredLateResult,
         });
 
         if (effectiveExecution.proposalId) {
@@ -942,6 +958,27 @@ async function handleCisResult({ command, result, stdout }: Parameters<CommandRe
     durationMs: result.durationMs,
     error: result.error,
   } as any);
+}
+
+/**
+ * #10376: the websocket transport dispatches ONLY through this registry, so
+ * until the security types were listed here every WS-delivered security
+ * result was dropped — a `security_scans` row stayed `running` (and an IOC
+ * sweep never finished), no threat was ingested, and quarantine/remove/restore
+ * never moved the threat row. The REST route keeps its inline call (these
+ * types are deliberately absent from its REGISTRY_DISPATCHED_COMMAND_TYPES),
+ * so each transport runs the same leaf exactly once.
+ */
+async function handleSecurityResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { handleSecurityCommandResult } = await import('../routes/agents/helpers');
+  await handleSecurityCommandResult(command, {
+    status: result.status,
+    exitCode: result.exitCode,
+    stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    error: result.error,
+  });
 }
 
 const peripheralPolicyResultV2Schema = z.object({
@@ -1224,7 +1261,47 @@ export async function handleSystemCleanupRunResult(
   });
 }
 
+async function handleWakeOnLanResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  const attemptId = payload?.wakeAttemptId;
+  if (typeof attemptId !== 'string' || !PG_UUID_REGEX.test(attemptId)) return;
+  const parsed = parseAgentJson(z.object({ packetsSent: z.number().int().nonnegative() }), stdout);
+  if (result.status === 'completed' && parsed === null) {
+    console.warn('[wakeAttempts] relay reported completed with unreadable output; recording send_failed', { commandId: command.id, attemptId });
+  }
+  await applyWakeRelayResult(attemptId, result.status === 'completed' && parsed !== null && parsed.packetsSent > 0);
+}
+
+/**
+ * Vendor updates (#11065). The agent reports its normalized result as JSON on
+ * stdout; anything else reaches the strict parser as-is and is recorded as
+ * `result_unparseable`.
+ */
+async function handleOemUpdateRunResult({ commandId, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  let result: unknown = stdout;
+  try {
+    result = JSON.parse(stdout ?? '');
+  } catch {
+    // Left as the raw text: the parser refuses it.
+  }
+  await applyOemUpdateResult({ commandId, deviceId: resolvedDeviceId, result });
+}
+
+/** The agent's answer to a vendor schedule release, the same way: JSON on stdout. */
+async function handleOemUpdateReleaseResult({ commandId, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  let result: unknown = stdout;
+  try {
+    result = JSON.parse(stdout ?? '');
+  } catch {
+    // Left as the raw text: the parser refuses it.
+  }
+  await applyOemUpdateRelease({ commandId, deviceId: resolvedDeviceId, result });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
+  [CommandTypes.OEM_UPDATE_RUN]: handleOemUpdateRunResult,
+  [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
+  [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,
@@ -1250,6 +1327,12 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   quarantine_file: handleSensitiveDataResult,
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
+  // #10376: security results over the websocket (REST calls the same leaf inline).
+  security_collect_status: handleSecurityResult,
+  security_scan: handleSecurityResult,
+  security_threat_quarantine: handleSecurityResult,
+  security_threat_remove: handleSecurityResult,
+  security_threat_restore: handleSecurityResult,
   peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,
@@ -1264,4 +1347,11 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   // #8743 W03: endpoint live chat. chat_close carries no state to record.
   chat_open: handleChatOpenResult,
   chat_message: handleChatMessageResult,
+  // #9662: the incident action (and, on success, the incident) follows the
+  // agent's containment result.
+  execute_containment: handleExecuteContainmentResult,
+  release_containment: async args => {
+    const { handleReleaseContainmentResult } = await import('./networkIsolation/finalizer');
+    return handleReleaseContainmentResult(args);
+  },
 };

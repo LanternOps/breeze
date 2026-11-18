@@ -4,11 +4,13 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { vpnPresenceIngestSchema, ERROR_CODES } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import {
   devices,
   deviceHardware,
 } from '../../db/schema';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { syncDeviceDisks, syncDeviceNetwork, writeHardwareReport } from '../../services/inventoryChildSync';
 import {
   agentMemoryInventorySchema,
@@ -20,6 +22,7 @@ import {
   type AgentMemoryInventory,
 } from './schemas';
 import { sanitizeDate } from './helpers';
+import { detectReinstallCandidates, shouldDetectAfterHardwareReport } from '../../services/reinstallCandidates';
 import { upsertAgentWarranty } from '../../services/warrantySync';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
@@ -83,6 +86,15 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
   // One short transaction: the hardware upsert, the memory_* summary columns
   // and the per-slot rows commit together (services/inventoryChildSync.ts).
   await db.transaction((tx) => writeHardwareReport(tx, device, hardware, memory, new Date()));
+
+  // #8318 §7.3: a report that carries hardware evidence may reveal (or
+  // upgrade) a probable reinstall. Registered to run only once the request's
+  // transaction has COMMITTED, so the search sees this report's values; it
+  // runs in its own system contexts and never throws.
+  if (shouldDetectAfterHardwareReport(hardware, device)) {
+    runAfterDbContextCommit('reinstall-candidates', () =>
+      detectReinstallCandidates({ sourceDeviceId: device.id, trigger: 'hardware_report' }));
+  }
 
   // Enqueue a warranty sync only when this report makes both the manufacturer
   // and serial number known for the first time (empty/absent -> populated).
@@ -240,7 +252,7 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
       }))
     : null;
 
-  await db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     // Lock ordering: take the devices-row lock BEFORE touching device_network.
     // Every other writer that spans both tables (re-enrollment, site move,
     // moveOrg) locks devices first, then child tables — updating devices last
@@ -250,15 +262,33 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
     // Leave devices.activeVpns untouched when the agent didn't report VPN
     // state, so an old agent (or a transient collection failure) never
     // overwrites last-known-good.
+    //
+    // #8318 §6.4: bound to the authenticated agent_id (`:id`, which the row
+    // was read by) through updateOwnDeviceRow. A 0-row write persisted
+    // nothing, so the request is not answered as a success, and the adapter
+    // sync is skipped with it: a row that changed hands after the read above
+    // gets the stale-credential 401, a vanished row the 404 the read gives.
     if (vpnProvided) {
-      await tx
-        .update(devices)
-        .set({ activeVpns, updatedAt: now })
-        .where(eq(devices.id, device.id));
+      const identity = { deviceId: device.id, agentId };
+      const written = await updateOwnDeviceRow(tx, identity, { activeVpns, updatedAt: now });
+      if (written.length === 0) {
+        return (await ownDeviceRowChangedHands(tx, identity)) ? 'stale_caller' as const : 'device_missing' as const;
+      }
     }
 
     await syncDeviceNetwork(tx, device, data.adapters, now);
+    return 'written' as const;
   });
+  if (outcome === 'stale_caller') {
+    console.warn('[agents.network] stale network submit: the device row changed hands after auth; refusing it', {
+      deviceId: device.id,
+      agentId,
+    });
+    throw staleAgentCredentialRejection();
+  }
+  if (outcome === 'device_missing') {
+    return c.json({ error: 'Device not found' }, 404);
+  }
 
   return c.json({
     success: true,

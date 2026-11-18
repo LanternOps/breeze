@@ -64,6 +64,9 @@ const TICKET_OUTBOX_EVENT_BUS_TYPES: Partial<Record<TicketOutboxEvent, EventType
   'ticket.status_changed': 'ticket.status_changed',
   'ticket.updated': 'ticket.updated',
   'ticket.assigned': 'ticket.assigned',
+  // #8972 ticket merge: { sourceTicketId, targetTicketId, sourceInternalNumber,
+  // targetInternalNumber } on the survivor's row.
+  'ticket.merged': 'ticket.merged',
 };
 
 type PublisherJobData = { type: 'publish-ticket-outbox'; queuedAt: string };

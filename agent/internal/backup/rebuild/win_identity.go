@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,14 +38,19 @@ func winIdentity(_ context.Context, r *run) error {
 	if r.rootVolume == "" {
 		return errors.New("identity: no root volume recorded for this run")
 	}
-	breeze := winBreezeDir(r)
+	breeze := filepath.Join("ProgramData", "Breeze")
+	tree, err := os.OpenRoot(r.rootVolume)
+	if err != nil {
+		return fmt.Errorf("identity: %w", err)
+	}
+	defer func() { _ = tree.Close() }()
 	switch r.opts.Identity {
 	case IdentityOriginal:
 		if r.opts.Marker == nil {
 			r.warn("no recovery marker given; the server will not auto-complete this recovery")
 			return nil
 		}
-		return writeRecoveryMarker(r, filepath.Join(breeze, "data"))
+		return writeRecoveryMarker(r, r.rootVolume, filepath.Join(breeze, "data"))
 	case IdentityNew:
 		if err := r.ensureWinHives(); err != nil {
 			return fmt.Errorf("identity: %w", err)
@@ -71,10 +77,10 @@ func winIdentity(_ context.Context, r *run) error {
 		if _, err := winhive.NewMachineGuid(r.hives["SOFTWARE"].Root()); err != nil {
 			return fmt.Errorf("identity: rotate MachineGuid: %w", err)
 		}
-		if err := removeSecretsAndTemps(breeze); err != nil {
+		if err := removeSecretsAndTempsAt(tree, breeze); err != nil {
 			return fmt.Errorf("identity: %w", err)
 		}
-		return stripEnrollment(filepath.Join(breeze, "agent.yaml"))
+		return stripEnrollmentAt(tree, filepath.Join(breeze, "agent.yaml"))
 	default:
 		return fmt.Errorf("unknown identity mode %q", r.opts.Identity)
 	}

@@ -1,7 +1,7 @@
 // apps/api/src/services/backupHealthRows.test.ts
 import { describe, expect, it } from 'vitest';
 
-import { EXTERNAL_BACKUP_STATUSES, deriveBackupHealth, mapBackupJobStatus } from '@breeze/shared';
+import { EXTERNAL_BACKUP_STATUSES, deriveBackupHealth, mapBackupJobStatus, type ExternalBackupStatus } from '@breeze/shared';
 import { RESTORABLE_BACKUP_JOB_STATUSES } from '../db/schema/backup';
 import {
   BACKUP_HISTORY_DAYS,
@@ -12,6 +12,7 @@ import {
   fillHistoryWindow,
   foldBackupHealthSummary,
   foldJobsIntoDays,
+  foldProviderLedgerIntoDays,
   invertBackupJobStatus,
   isConnectionStale,
   mergeSortedRows,
@@ -72,7 +73,41 @@ const providerLeg = (o: Partial<ProviderLegRow> = {}): ProviderLegRow => ({
   connectionIsActive: true,
   connectionLastSyncAt: '2026-09-15T11:50:00.000Z',
   connectionSyncIntervalMinutes: 30,
+  verifiedBootableAt: null,
+  verifiedBootable: null,
+  verifiedBootableFailedChecks: null,
   ...o,
+});
+
+describe('verified-bootable fields', () => {
+  it('toBreezeHealthRow sets all three verified-bootable fields to null', () => {
+    const row = toBreezeHealthRow(breezeLeg(), { now: NOW });
+    expect(row.verifiedBootableAt).toBeNull();
+    expect(row.verifiedBootable).toBeNull();
+    expect(row.verifiedBootableFailedChecks).toBeNull();
+  });
+
+  it('toProviderHealthRow carries verified-bootable fields with an ISO timestamp', () => {
+    const row = toProviderHealthRow(
+      providerLeg({
+        provider: 'axcient',
+        verifiedBootableAt: new Date('2026-11-05T03:12:00.000Z'),
+        verifiedBootable: false,
+        verifiedBootableFailedChecks: ['system_boot'],
+      }),
+      { now: NOW, labels: 'vendor' },
+    );
+    expect(row.verifiedBootableAt).toBe('2026-11-05T03:12:00.000Z');
+    expect(row.verifiedBootable).toBe(false);
+    expect(row.verifiedBootableFailedChecks).toEqual(['system_boot']);
+  });
+
+  it('toProviderHealthRow leaves the fields null for a provider without the evidence', () => {
+    const row = toProviderHealthRow(providerLeg({ provider: 'cove' }), { now: NOW, labels: 'vendor' });
+    expect(row.verifiedBootableAt).toBeNull();
+    expect(row.verifiedBootable).toBeNull();
+    expect(row.verifiedBootableFailedChecks).toBeNull();
+  });
 });
 
 describe('invertBackupJobStatus', () => {
@@ -257,6 +292,19 @@ describe('toProviderHealthRow', () => {
     expect(toProviderHealthRow(providerLeg({ accountType: 'm365' }), { now: NOW, labels: 'vendor' }).accountType).toBe('m365');
   });
 
+  it('preserves gws account type and excludes linked and unlinked SaaS rows from endpoint counts', () => {
+    const rows = [null, DEVICE].map(breezeDeviceId => toProviderHealthRow(
+      providerLeg({ provider: 'dropsuite', accountType: 'gws', breezeDeviceId, dataSources: ['gws_drive'] }),
+      { now: NOW, labels: 'vendor' },
+    ));
+    expect(rows.map(row => row.accountType)).toEqual(['gws', 'gws']);
+    const summary = foldBackupHealthSummary(rows);
+    expect(summary.endpoints).toEqual({ total: 0, covered: 0, uncovered: 0 });
+    expect(summary.providerOnly).toBe(0);
+    expect(summary.m365Accounts).toBe(2);
+    expect(summary.byStatus.completed).toBe(2);
+  });
+
   it('forces health unknown and covered false when the sync is stale, and says so', () => {
     const row = toProviderHealthRow(
       providerLeg({ connectionLastSyncAt: '2026-09-15T09:00:00.000Z' }), // 3h > 2 x 30min
@@ -316,6 +364,95 @@ describe('foldJobsIntoDays', () => {
   });
 });
 
+describe('foldProviderLedgerIntoDays (#12025)', () => {
+  const TODAY = '2026-09-15';
+  const ledgerRow = (day: string, status: ExternalBackupStatus, lastSuccessAt: string | null) => ({ day, status, lastSuccessAt });
+
+  it('turns a re-polled, unchanged old success into missed days, not green ones', () => {
+    // The device's last session completed on Mar 23; every poll since has
+    // re-read that same snapshot and the ledger stored `completed` per poll day.
+    const stale = '2026-03-23T02:00:00.000Z';
+    const days = foldProviderLedgerIntoDays(
+      [
+        ledgerRow('2026-09-12', 'completed', stale),
+        ledgerRow('2026-09-13', 'completed', stale),
+        ledgerRow('2026-09-14', 'completed', stale),
+        ledgerRow('2026-09-15', 'completed', stale),
+      ],
+      { lastSuccessAt: stale, today: TODAY },
+    );
+    expect(days.get('2026-09-12')).toBe('no_backups');
+    expect(days.get('2026-09-13')).toBe('no_backups');
+    expect(days.get('2026-09-14')).toBe('no_backups');
+    // Today is not over: a nightly run may still come, so it is not yet a miss.
+    expect(days.has('2026-09-15')).toBe(false);
+    expect([...days.values()]).not.toContain('completed');
+  });
+
+  it('keeps a day green when a success landed on it', () => {
+    const days = foldProviderLedgerIntoDays(
+      [
+        ledgerRow('2026-09-13', 'completed', '2026-09-13T01:00:00.000Z'),
+        ledgerRow('2026-09-14', 'completed', '2026-09-14T01:00:00.000Z'),
+        ledgerRow('2026-09-15', 'completed', '2026-09-15T01:00:00.000Z'),
+      ],
+      { lastSuccessAt: '2026-09-15T01:00:00.000Z', today: TODAY },
+    );
+    expect(days.get('2026-09-13')).toBe('completed');
+    expect(days.get('2026-09-14')).toBe('completed');
+    expect(days.get('2026-09-15')).toBe('completed');
+  });
+
+  it("credits a late-night session first seen by the next day's poll to the day it ran", () => {
+    // 23:55 session on the 13th; the last poll of the 13th ran before it, so
+    // the 13th's own row still carries the 12th's success.
+    const days = foldProviderLedgerIntoDays(
+      [
+        ledgerRow('2026-09-13', 'completed', '2026-09-12T23:50:00.000Z'),
+        ledgerRow('2026-09-14', 'completed', '2026-09-13T23:55:00.000Z'),
+      ],
+      { lastSuccessAt: '2026-09-13T23:55:00.000Z', today: TODAY },
+    );
+    expect(days.get('2026-09-13')).toBe('completed');
+    expect(days.get('2026-09-14')).toBe('no_backups');
+  });
+
+  it("counts the device's current lastSuccessAt as evidence even when no ledger row carried it", () => {
+    const days = foldProviderLedgerIntoDays(
+      [ledgerRow('2026-09-14', 'completed', '2026-09-13T01:00:00.000Z')],
+      { lastSuccessAt: '2026-09-14T22:00:00.000Z', today: TODAY },
+    );
+    expect(days.get('2026-09-14')).toBe('completed');
+  });
+
+  it('leaves non-green statuses as observed — they never claimed a fresh success', () => {
+    const old = '2026-09-01T01:00:00.000Z';
+    const days = foldProviderLedgerIntoDays(
+      [
+        ledgerRow('2026-09-11', 'failed', old),
+        ledgerRow('2026-09-12', 'completed_with_errors', old),
+        ledgerRow('2026-09-13', 'paused', old),
+        ledgerRow('2026-09-14', 'in_progress', old),
+        ledgerRow('2026-09-15', 'failed', old),
+      ],
+      { lastSuccessAt: old, today: TODAY },
+    );
+    expect(days.get('2026-09-11')).toBe('failed');
+    expect(days.get('2026-09-12')).toBe('completed_with_errors');
+    expect(days.get('2026-09-13')).toBe('paused');
+    expect(days.get('2026-09-14')).toBe('in_progress');
+    expect(days.get('2026-09-15')).toBe('failed');
+  });
+
+  it('treats a completed row with no success timestamp at all as a missed day', () => {
+    const days = foldProviderLedgerIntoDays(
+      [ledgerRow('2026-09-14', 'completed', null)],
+      { lastSuccessAt: null, today: TODAY },
+    );
+    expect(days.get('2026-09-14')).toBe('no_backups');
+  });
+});
+
 describe('mergeSortedRows', () => {
   const r = (name: string, key: string) => ({ name, key });
 
@@ -348,6 +485,7 @@ describe('foldBackupHealthSummary', () => {
     expect(Object.keys(empty.byStatus).sort()).toEqual([...EXTERNAL_BACKUP_STATUSES].sort());
     expect(empty.byHealth).toEqual({ healthy: 0, warning: 0, critical: 0, unknown: 0 });
     expect(empty.byRecency).toEqual({ under_24h: 0, under_48h: 0, over_48h: 0, never: 0 });
+    expect(Object.values(empty.byStatusBucket).every((n) => n === 0)).toBe(true);
   });
 
   it('counts a dual-source device ONCE in endpoints and ORs its coverage', () => {
@@ -377,6 +515,20 @@ describe('foldBackupHealthSummary', () => {
     expect(summary.m365Accounts).toBe(1);
     expect(summary.providerOnly).toBe(0);
     expect(summary.endpoints.total).toBe(0);
+  });
+
+  it('counts a completed row with no recent success as overdue, not completed (#12025)', () => {
+    const summary = foldBackupHealthSummary([
+      row({ key: 'breeze:1', deviceId: '1', status: 'completed', recency: 'under_24h' }),
+      row({ key: 'breeze:2', deviceId: '2', status: 'completed', recency: 'over_48h' }),
+      row({ key: 'breeze:3', deviceId: '3', status: 'completed', recency: 'never' }),
+      row({ key: 'breeze:4', deviceId: '4', status: 'failed', recency: 'over_48h' }),
+    ]);
+    expect(summary.byStatusBucket.completed).toBe(1);
+    expect(summary.byStatusBucket.overdue).toBe(2);
+    expect(summary.byStatusBucket.unsuccessful).toBe(1);
+    // The raw vendor status stays as reported, for the ?status= filter.
+    expect(summary.byStatus.completed).toBe(3);
   });
 
   it('keeps uncovered = total - covered', () => {

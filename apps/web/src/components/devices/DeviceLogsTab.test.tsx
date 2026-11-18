@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import DeviceLogsTab from './DeviceLogsTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -35,4 +36,54 @@ describe('DeviceLogsTab', () => {
     expect(screen.getByLabelText('Start Date')).toBeInTheDocument();
     expect(screen.getByLabelText('End Date')).toBeInTheDocument();
   });
+
+  it.each([null, {}, { eventId: 1058, logName: 'System' }])(
+    'expands the complete message and collapses it again with details %j',
+    async (details) => {
+      const user = userEvent.setup();
+      const message = `Group policy processing failed. ${'Additional diagnostic information. '.repeat(30)}\n${'x'.repeat(300)}\nEnd of error message.`;
+      fetchWithAuthMock.mockResolvedValue(makeResponse({
+        data: [{
+          id: 'log-1',
+          deviceId: 'device-1',
+          timestamp: '2026-10-21T08:00:00Z',
+          level: 'error',
+          category: 'system',
+          source: 'Microsoft-Windows-GroupPolicy',
+          eventId: '1058',
+          message,
+          details,
+          createdAt: '2026-10-21T08:00:00Z',
+        }],
+        pagination: { total: 1 },
+      }));
+
+      render(<DeviceLogsTab deviceId="device-1" />);
+      const entry = await screen.findByTestId('device-log-entry-log-1');
+      const messageElement = screen.getByText((_, element) =>
+        element?.tagName === 'P' && element.textContent === message,
+      );
+      expect(entry).toHaveAttribute('aria-expanded', 'false');
+      expect(messageElement).toHaveClass('truncate');
+
+      await user.click(entry);
+
+      expect(entry).toHaveAttribute('aria-expanded', 'true');
+      expect(messageElement).not.toHaveClass('truncate');
+      expect(messageElement).toHaveClass('whitespace-pre-wrap', '[overflow-wrap:anywhere]');
+      expect(messageElement.textContent).toBe(message);
+      if (details) {
+        expect(entry.querySelector('pre')?.textContent).toBe(JSON.stringify(details, null, 2));
+      } else {
+        expect(entry.querySelector('pre')).toBeNull();
+      }
+
+      // Clicking focuses the native button; keyboard users can toggle it too.
+      await user.keyboard('{Enter}');
+
+      expect(entry).toHaveAttribute('aria-expanded', 'false');
+      expect(messageElement).toHaveClass('truncate');
+      expect(entry.querySelector('pre')).toBeNull();
+    },
+  );
 });

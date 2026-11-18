@@ -74,6 +74,14 @@ describe('buildWhoamiResult', () => {
     expect(buildWhoamiResult(base({ mfaGatedActionsUnavailable: true })).notes.join(' ')).toMatch(/multi-factor/);
   });
 
+  it('B-W04: reports approvalGate.tier3 and an approval-intent note', () => {
+    const r = buildWhoamiResult(base({ approvalGate: { tier3: 'approval_intent', tier3RequiresWebApp: false, unattendedPrincipal: false } }));
+    expect(r.approvalGate).toEqual({ tier3: 'approval_intent', tier3RequiresWebApp: false, unattendedPrincipal: false });
+    expect(r.notes.join(' ')).toMatch(/get_action_status/);
+    expect(r.notes.join(' ')).not.toMatch(/not available over MCP\. Run them/);
+    expect(buildWhoamiResult(base()).approvalGate).toEqual({ tier3: 'web_app_only', tier3RequiresWebApp: true, unattendedPrincipal: false });
+  });
+
   it('carries principal and tenant through', () => {
     const r = buildWhoamiResult(base({
       principal: { kind: 'oauth', id: 'grant-1', name: 'OAuth bearer', clientId: 'client-1' },

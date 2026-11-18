@@ -7,6 +7,7 @@ import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { closeEndpointChat, openEndpointChat, sendEndpointChatMessage } from '../../services/endpointMessaging/chat';
+import type { GENERIC_SENDER_REASON } from '../../services/endpointMessaging/brandingSnapshot';
 import {
   conversationView,
   findConversationForCaller,
@@ -69,6 +70,11 @@ conversationRoutes.post(
           allowUserReply: outcome.conversation.allowUserReply,
           bodySha256: outcome.bodySha256,
           bodyLength: input.body.length,
+          // #10190 W04: the partner's name sanitized to nothing; the chat
+          // opened under the catalog's generic sender. No name, ever.
+          ...(outcome.senderIdentity === 'generic'
+            ? { senderIdentity: 'generic', senderIdentityReason: 'partner_name_sanitized_empty' satisfies typeof GENERIC_SENDER_REASON }
+            : {}),
         },
         ipAddress: getTrustedClientIpOrUndefined(c),
       });

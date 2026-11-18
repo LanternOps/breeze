@@ -66,7 +66,8 @@ const INTERNAL_DETAIL_PATTERNS: RegExp[] = [
   /column\s+"[^"]+"\s+(?:of relation\b|does not exist|cannot be null|is of type)/i,
   /(?:violates|on table|constraint)\s+"[^"]+"\s*$/i,
   /duplicate key value violates/i,
-  /violates (?:foreign key|not-null|check|unique) constraint/i,
+  // Postgres 18 words a RESTRICT refusal "violates RESTRICT setting of foreign key constraint" (#11624).
+  /violates (?:RESTRICT setting of )?(?:foreign key|not-null|check|unique) constraint/i,
   /violates row-level security policy/i,
   /syntax error at or near/i,
   /operator does not exist/i,

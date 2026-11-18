@@ -16,14 +16,18 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
+import { isFlowPrincipal } from '../middleware/principalKind';
 import {
   getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
 } from '../db';
 import { captureException } from './sentry';
+import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
 import {
-  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectProposalExecutions,
-  waitForReviewCompletion,
+  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectLatestModelReview,
+  selectProposalExecutions, waitForReviewCompletion,
 } from './scriptProposals';
+import { projectFindings } from './scriptProposals/reviewFindings';
+import type { ScriptProposalReviewRow } from '../db/schema/scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
 const INLINE_REVIEW_WAIT_MS = 45_000;
@@ -43,19 +47,24 @@ const INLINE_REVIEW_WAIT_MS = 45_000;
 async function resolveProposalOrgId(
   deviceIds: string[],
   auth: AuthContext,
-): Promise<{ orgId: string } | { error: string }> {
-  const orgIds = new Set<string>();
+): Promise<{ orgId: string } | { error: string } | SplitByOrg> {
+  // Insertion-ordered: the first device's org is listed first.
+  const byOrg = new Map<string, string[]>();
   for (const deviceId of deviceIds) {
     const access = await verifyDeviceAccess(deviceId, auth);
     if ('error' in access) return { error: access.error };
-    orgIds.add(access.device.orgId);
+    const group = byOrg.get(access.device.orgId);
+    if (group) group.push(deviceId); else byOrg.set(access.device.orgId, [deviceId]);
   }
-  if (orgIds.size > 1) {
-    return { error: 'invalid_input: all target devices must belong to one organization' };
+  if (byOrg.size > 1) {
+    return splitByOrg(byOrg, {
+      tool: 'propose_script',
+      hint: 'A proposal belongs to one organization. Call propose_script once per group.',
+    });
   }
   // Fall back to the caller's own org only if a device somehow resolved
   // without one — the page-context org, exactly as routes/ai.ts resolves it.
-  const [orgId] = [...orgIds];
+  const [orgId] = [...byOrg.keys()];
   const resolved = orgId ?? auth.orgId;
   if (!resolved) return { error: 'invalid_input: could not resolve the organization for these devices' };
   return { orgId: resolved };
@@ -80,6 +89,27 @@ async function resolveProposalOrgId(
 function inOwnCommittedContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
   const context = getCurrentDbAccessContext() ?? dbAccessContextFromAuth(auth);
   return runOutsideDbContext(() => withDbAccessContext(context, fn));
+}
+
+/**
+ * The reviewer's outcome as the model reads it (#10399). `verdict` is the
+ * reviewer's recommendation in one word (`approve` | `changes` | `reject`,
+ * null when the review did not complete), so the model reports what the
+ * reviewer actually said instead of inferring "it passed" from
+ * `status: 'completed'`. Advisory: a human still approves every run.
+ */
+function reviewForModel(review: ScriptProposalReviewRow) {
+  const stored = (review.verdict ?? {}) as { findings?: unknown };
+  return {
+    status: review.status,
+    verdict: review.recommendedAction ?? null,
+    summary: review.summary ?? null,
+    riskTier: review.riskTier ?? null,
+    goalMatch: review.goalMatch ?? null,
+    reversible: review.reversible ?? null,
+    verificationAdequate: review.verificationAdequate ?? null,
+    findings: projectFindings(stored.findings),
+  };
 }
 
 function disabled(): string {
@@ -124,6 +154,9 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
     },
     handler: async (input, auth) => {
       if (!aiScriptAuthoringEnabled()) return disabled();
+      // Tool catalog W04 (#5219): a proposal's author is an agent run or a chat
+      // session; a flow is neither, and its run id is not an agent run id.
+      if (isFlowPrincipal(auth)) return JSON.stringify({ error: 'flow_principal_unsupported', action: 'propose_script' });
       const parsed = proposeScriptInputSchema.safeParse(input);
       if (!parsed.success) {
         return JSON.stringify({ error: `invalid_input: ${parsed.error.issues.map((i) => i.message).join('; ')}` });
@@ -153,7 +186,9 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         if ('error' in resolvedOrg) return resolvedOrg;
         return createScriptProposal(auth, parsed.data, author, resolvedOrg.orgId);
       });
-      if ('error' in created) return JSON.stringify({ error: created.error });
+      if ('error' in created) {
+        return JSON.stringify(created.error === 'split_by_org' ? created : { error: created.error });
+      }
       const { proposal, scan } = created;
       const staticScan = {
         basicHits: scan.basicHits, strictHits: scan.strictHits, touchClasses: scan.touchClasses,
@@ -200,12 +235,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         status: review?.status === 'completed' ? 'reviewed' : proposal.status,
         staticScan,
         review: review
-          ? {
-            status: review.status, riskTier: review.riskTier, summary: review.summary,
-            goalMatch: review.goalMatch, reversible: review.reversible,
-            verificationAdequate: review.verificationAdequate,
-            recommendedAction: review.recommendedAction,
-          }
+          ? reviewForModel(review)
           // The review is queued but had not finished inside the inline wait
           // (or the wait was skipped under a caller-held transaction). It means
           // "not yet", never "failed". `nextStep` spells out the poll-and-retry
@@ -238,6 +268,22 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
       if (!aiScriptAuthoringEnabled()) return disabled();
       const proposal = await getScriptProposalForPrincipal(auth, String(input.proposalId));
       if (!proposal) return JSON.stringify({ error: 'not_found: no such proposal in this organization' });
+      // #10399: the newest model review, read in the same caller context as
+      // the runs below. Without it the model saw only `status: 'reviewed'`
+      // and told the user the review "passed" a proposal whose reviewer had
+      // asked for changes. No row: still queued (`proposed`), never requested
+      // (a BASIC scan hit stops before review), failed before writing one
+      // (`review_failed`), or otherwise missing — never a verdict to infer.
+      const latestReview = await selectLatestModelReview(proposal.id);
+      const review = latestReview
+        ? reviewForModel(latestReview)
+        : {
+          status: proposal.status === 'proposed' ? 'pending'
+            : proposal.status === 'scan_rejected' ? 'not_requested'
+              : proposal.status === 'review_failed' ? 'failed'
+                : 'unavailable',
+          verdict: null,
+        };
       // #7918: a run that outlived its run_script call still completed on the
       // device. Its execution id is the only way the model can read that
       // output (get_script_execution), so every run is echoed — narrowed to
@@ -271,6 +317,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
           basicHits: proposal.basicHits, strictHits: proposal.strictHits,
           touchClasses: proposal.touchClasses, scannerVersion: proposal.scannerVersion,
         },
+        review,
         decision: {
           decidedBy: proposal.decidedBy, decidedAt: proposal.decidedAt, note: proposal.decisionNote,
         },

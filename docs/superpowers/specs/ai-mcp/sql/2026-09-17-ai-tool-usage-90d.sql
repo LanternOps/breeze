@@ -23,6 +23,7 @@ SELECT
   COUNT(*) FILTER (WHERE e.status = 'completed')         AS completed,
   COUNT(*) FILTER (WHERE e.status = 'failed')            AS failed,
   COUNT(*) FILTER (WHERE e.status = 'rejected')          AS rejected,
+  COUNT(*) FILTER (WHERE e.status = 'refused')           AS refused,
   COUNT(DISTINCT e.session_id)                           AS distinct_sessions,
   AVG(e.duration_ms) FILTER (WHERE e.status = 'completed') AS avg_duration_ms,
   MAX(e.created_at)                                      AS last_used_at,

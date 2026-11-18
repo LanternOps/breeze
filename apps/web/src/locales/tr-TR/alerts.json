@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% güven"
   },
   "alertDetailPage": {
+    "externalTickets": "Harici destek talepleri",
+    "externalTicketsFailedToLoad": "Harici destek talepleri yüklenemedi.",
     "loadingAlert": "Uyarı yükleniyor...",
     "backToAlerts": "Uyarılara geri dön",
     "goBack": "Geri dön",
@@ -60,14 +62,14 @@
     "resolved": "Çözüldü",
     "contextData": "Bağlam Verileri",
     "alertNotFound": "Uyarı Bulunamadı",
-    "failedToFetchAlert": "Uyarı Getirilemedi",
+    "failedToFetchAlert": "Uyarı yüklenemedi",
     "unknownDevice": "Bilinmeyen Cihaz",
-    "failedToAcknowledgeAlert": "Uyarı Kabul Edilemedi",
-    "alertAcknowledged": "Uyarı Onaylandı",
-    "failedToResolveAlert": "Uyarı Çözümlenemedi",
-    "alertResolved": "Uyarı Çözümlendi",
-    "alertsBreadcrumb": "Uyarılar İçerik Kırıntısı",
-    "alertFallback": "Geri Dönüş Uyarısı",
+    "failedToAcknowledgeAlert": "Uyarı onaylanamadı",
+    "alertAcknowledged": "Uyarı onaylandı",
+    "failedToResolveAlert": "Uyarı çözülemedi",
+    "alertResolved": "Uyarı çözüldü",
+    "alertsBreadcrumb": "Uyarılar",
+    "alertFallback": "Uyarı",
     "unknownMetric": "Bilinmeyen Metrik",
     "severity": {
       "critical": "Kritik",
@@ -82,6 +84,21 @@
       "resolved": "Çözüldü",
       "suppressed": "Bastırıldı",
       "dismissed": "Görevden alındı"
+    },
+    "createPsaTicket": "PSA bileti oluştur",
+    "psaTicketRequested": "PSA bileti istendi",
+    "failedToCreatePsaTicket": "PSA bileti istenemedi",
+    "lifecycleLine": {
+      "text": "{{rearm}} · bekleme süresi {{minutes}} dk ({{source}})",
+      "rearmNewEvidence": "Yeni kanıtla yeniden devreye girer",
+      "rearmAfterDelay": "{{minutes}} dk sonra yeniden devreye girer",
+      "sources": {
+        "monitor": "bu monitör",
+        "org": "kuruluş varsayılanı",
+        "partner": "iş ortağı varsayılanı",
+        "builtin": "yerleşik varsayılan",
+        "legacy": "uyarı kuralı"
+      }
     }
   },
   "alertDetails": {
@@ -112,6 +129,7 @@
     "close": "Kapat",
     "createALinkedTicketPreFilledFrom": "Bu uyarıdan önceden doldurulmuş bağlantılı bir bilet oluşturun",
     "createTicket": "Bilet oluştur",
+    "viewTicket": "Bileti görüntüle {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Bu uyarıyı sessize alın — bildirimleri çözüme kavuşturmadan durdurur",
     "suppress": "Bastır",
     "dismissPermanentlyHidesThisAlertForGood": "Kalıcı olarak kapat — bu uyarıyı tamamen gizler (garanti süresinin dolması aynı bitiş tarihi için yeniden uyarı vermez; diğer koşullar tekrarlanırsa yine de yeni bir uyarı açabilir)",
@@ -124,7 +142,7 @@
     "unknownMetric": "Bilinmeyen Metrik",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Çözüm Uyarısı",
-    "ticketCreationFailedRetry": "Bilet Oluşturma Başarısız Yeniden Deneme",
+    "ticketCreationFailedRetry": "Bilet oluşturulamadı. Tekrar deneyin",
     "ticketCreated": "Bilet {{ticket}} oluşturuldu",
     "severity": {
       "critical": "Kritik",
@@ -235,7 +253,7 @@
     "partnerWideTargetsEveryDeviceEachOrg": "(iş ortağı çapında — her cihazı hedefler; her kuruluşun varsayılan bildirim yönlendirmesi geçerlidir)",
     "thisOrganizationOnly": "Yalnızca bu kuruluş",
     "failedToFetchAlertRule": "Uyarı Kuralı Getirilemedi",
-    "genericError": "Genel Hata",
+    "genericError": "Bir hata oluştu",
     "failedToSaveAlertRule": "Uyarı Kuralı Kaydedilemedi",
     "createAlertRule": "Uyarı Kuralı Oluştur",
     "editAlertRule": "Uyarı Kuralını Düzenle",
@@ -311,12 +329,12 @@
     "automaticallyResolveWhenConditionIsNoLonger": "Koşul artık karşılanmadığında otomatik olarak çözümle",
     "whenEnabledAlertsWillAutoResolveIf": "Etkinleştirildiğinde, ölçüm normale dönerse uyarılar otomatik olarak çözümlenir",
     "cancel": "İptal",
-    "severityHelp": "Önem Derecesi Yardımı",
+    "severityHelp": "Bildirimlerin yönlendirilmesini ve panodaki önceliği belirler. Kritik uyarılar nöbetçi kişiyi hemen çağırır.",
     "selectTargetType": "Hedef Türünü Seçin",
     "noTargetsAvailable": "Mevcut Hedef Yok",
-    "conditionsHelp": "Koşullar Yardımı",
-    "notificationChannelsHelp": "Bildirim Kanalları Yardımı",
-    "cooldownHelp": "Bekleme Süresi Yardımı",
+    "conditionsHelp": "Uyarının tetiklenmesi için tüm koşulların aynı anda karşılanması gerekir. Bileşik kurallar için birden fazla koşul ekleyin.",
+    "notificationChannelsHelp": "Uyarıların nereye gönderileceği. Kanalları Ayarlar > Bildirim kanalları bölümünden yapılandırın.",
+    "cooldownHelp": "Tetiklendikten sonra kural, aynı cihaz için yeniden tetiklenebilmeden önce bu süre kadar bekler.",
     "saveRule": "Kuralı Kaydet",
     "severityOption": {
       "critical": "Kritik",
@@ -457,23 +475,21 @@
     "loadingAlerts": "Uyarılar yükleniyor...",
     "tryAgain": "Tekrar deneyin",
     "alerts": "Uyarılar",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Cihazlarınız genelinde uyarıları izleyin. Kurallar şurada yönetilir:",
-    "configurationPolicies": "Yapılandırma Politikaları",
     "alert": "uyarı",
     "dismissedAlertsAreHiddenForGoodWarranty": "Kapatılan uyarılar tamamen gizlenir. Garantinin sona ermesi aynı bitiş tarihi için yeniden uyarı vermez; diğer uyarılar, durumları tekrarlanırsa yine de tetiklenebilir.",
     "cancel": "İptal",
     "allClear": "Her şey yolunda",
     "noActiveAlertsYourFleetIsHealthy": "Etkin uyarı yok. Filonuz sağlıklı.",
     "setUpAlertRules": "Uyarı kurallarını ayarlama",
-    "failedToFetchAlerts": "Uyarılar Alınamadı",
-    "unknownDevice": "Bilinmeyen Cihaz",
-    "genericError": "Genel Hata",
-    "failedToAcknowledgeAlert": "Uyarı Kabul Edilemedi",
-    "alertAcknowledged": "Uyarı Onaylandı",
-    "failedToResolveAlert": "Uyarı Çözümlenemedi",
-    "alertResolved": "Uyarı Çözüldü",
+    "failedToFetchAlerts": "Uyarılar yüklenemedi",
+    "unknownDevice": "Bilinmiyor",
+    "genericError": "Bir hata oluştu",
+    "failedToAcknowledgeAlert": "Uyarı onaylanamadı",
+    "alertAcknowledged": "Uyarı onaylandı",
+    "failedToResolveAlert": "Uyarı çözülemedi",
+    "alertResolved": "Uyarı çözüldü",
     "alertSuppressed": "\"{{title}}\" bastırıldı",
-    "failedToSuppressAlert": "Uyarıyı Bastıramadı",
+    "failedToSuppressAlert": "Uyarı bastırılamadı",
     "failedToRestoreAlert": "Uyarı geri yüklenemedi. Hâlâ sessize alınmış durumda.",
     "failedBulkAction": "{{action}} uyarıları alınamadı",
     "skippedCount": "{{count}} atlandı",
@@ -504,7 +520,8 @@
     "noDevicesInstallAgentToSeeAlerts": "Burada uyarıları görmeye başlamak için ilk cihazınıza aracıyı yükleyin.",
     "installYourFirstDevice": "İlk cihazınızı yükleyin",
     "noActiveAlerts": "Etkin uyarı yok",
-    "deviceStatusUnavailable": "Cihaz durumunuz yüklenemedi. Yeniden denemek için sayfayı yenileyin."
+    "deviceStatusUnavailable": "Cihaz durumunuz yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+    "subtitle": "Cihazlarınız genelinde uyarıları izleyin. Eşikler <monitors>İzleyiciler</monitors> bölümünde tanımlanır; bunları müşterilere <policies>Yapılandırma Politikaları</policies> ile dağıtın."
   },
   "alertsSummary": {
     "activeAlerts": "Aktif Uyarılar",
@@ -544,7 +561,8 @@
     "sections": {
       "channels": "Kanallar",
       "routing": "Yönlendirme",
-      "escalation": "Yükseltme ilkeleri"
+      "escalation": "Yükseltme ilkeleri",
+      "inheritedChannels": "Ortağınız tarafından paylaşılanlar"
     },
     "routing": {
       "everythingElse": "Diğer her şey",
@@ -651,6 +669,7 @@
       "info": "Bilgi"
     },
     "status": {
+      "open": "Açık",
       "active": "Aktif",
       "acknowledged": "Onaylandı",
       "resolved": "Çözüldü",
@@ -856,7 +875,7 @@
     "noRecipients": "Alıcı Yok",
     "emailNotification": "E-posta Bildirimi",
     "slackNotification": "Slack Bildirim",
-    "teamsNotification": "Ekipler Bildirimi",
+    "teamsNotification": "Microsoft Teams bildirimi",
     "pagerDutyIntegration": "Çağrı Cihazı Görev Entegrasyonu",
     "customWebhook": "Özel Web Kancası",
     "pushoverKey": "Anahtar {{key}}…",
@@ -928,12 +947,12 @@
     "routingRuleDeleted": "Yönlendirme kuralı silindi",
     "failedToDeleteRoutingRule": "Yönlendirme kuralı silinemedi",
     "failedToFetchNotificationChannels": "Bildirim Kanalları Getirilemedi",
-    "genericError": "Genel Hata",
+    "genericError": "Bir hata oluştu",
     "ruleCount": "Kural Sayısı",
     "createNotificationChannel": "Bildirim Kanalı Oluştur",
     "editNotificationChannel": "Bildirim Kanalını Düzenle",
     "createChannel": "Kanal Oluştur",
-    "deleteChannelConfirm": "Kanalı Sil Onayla",
+    "deleteChannelConfirm": "“{{name}}” kanalı silinsin mi? Yalnızca bu kanala yönlendirilen uyarılar artık iletilmeyecek.",
     "deleting": "Siliniyor",
     "editRoutingRule": "Yönlendirme Kuralını Düzenle",
     "newRoutingRule": "Yeni Yönlendirme Kuralı",
@@ -964,5 +983,10 @@
       "body": "Mevcut şablonlar burada düzenlenebilir kalır ve bir sonraki sürümde dönüştürülür.",
       "link": "Monitörleri aç"
     }
+  },
+  "subject": {
+    "label": "Etkilenen öğe",
+    "backupWorkload": "Yedekleme iş yükü",
+    "topologySite": "Topoloji sitesi"
   }
 }

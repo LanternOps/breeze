@@ -85,19 +85,20 @@ function deferred() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Waits until some backend is blocked on a lock while running `queryPrefix`. */
-async function waitForBlocked(queryPrefix: string, timeoutMs = 10_000): Promise<void> {
+/** Observe the real blocked statement without depending on its projected columns. */
+async function waitForBlocked(queryMatch: string | RegExp, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const [row] = await getTestDb().execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE datname = current_database() AND wait_event_type = 'Lock'
-         AND query ILIKE ${`${queryPrefix}%`}`) as unknown as Array<{ n: number }>;
-    if (Number(row?.n ?? 0) > 0) return;
+    const rows = await getTestDb().execute<{ query: string }>(sql`
+      SELECT query FROM pg_stat_activity
+       WHERE datname = current_database() AND wait_event_type = 'Lock'`) as unknown as Array<{ query: string }>;
+    if (rows.some(({ query }) => typeof queryMatch === 'string'
+      ? query.toLowerCase().startsWith(queryMatch.toLowerCase())
+      : queryMatch.test(query))) return;
     await sleep(25);
   }
   const waiting = await getTestDb().execute(sql`SELECT wait_event_type, wait_event, state, left(query, 120) AS q FROM pg_stat_activity WHERE datname = current_database() AND state <> 'idle'`);
-  throw new Error(`no statement starting with ${queryPrefix} became blocked on a lock: ${JSON.stringify(waiting)}`);
+  throw new Error(`no statement matching ${queryMatch} became blocked on a lock: ${JSON.stringify(waiting)}`);
 }
 
 async function assignedLedgerRows(deviceIds: string[]) {
@@ -179,14 +180,20 @@ describe('billing and licensed capacity leave parked devices out', () => {
       stepUp: null,
       audit: request,
     });
-    await waitForBlocked('select "max_devices" from "partners"');
-    release.resolve();
-    await enrollment;
+    const settled = Promise.allSettled([enrollment, assignment]);
+    try {
+      await waitForBlocked(/^select\b[\s\S]*\bfrom\s+"partners"\s+where\b[\s\S]*\bfor\s+update\b/i);
+      release.resolve();
+      await enrollment;
 
-    expect(await assignment).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
-    const [row] = await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, parked.id));
-    expect(row!.orgId).toBe(pool.orgId);
-    expect(await assignedLedgerRows([parked.id])).toHaveLength(0);
+      expect(await assignment).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
+      const [row] = await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, parked.id));
+      expect(row!.orgId).toBe(pool.orgId);
+      expect(await assignedLedgerRows([parked.id])).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await settled;
+    }
   });
 });
 
@@ -403,14 +410,19 @@ describe('expiry and assignment of the same device — exactly one wins', () => 
 });
 
 describe('parked-device purge', () => {
-  async function expireAndAge(days: number) {
+  async function expireAndAge(days: number, opts: { agentCollected?: boolean } = {}) {
     const parked = await seedParkedDevice(pool.orgId, pool.siteId);
     expect(await expireParkedDevice({ partnerId, deviceId: parked.id, actorUserId: null, reason: 'parking_window' }))
       .toMatchObject({ expired: true });
     const when = new Date(Date.now() - days * DAY_MS);
     await getTestDb().update(devices).set({ decommissionedAt: when }).where(eq(devices.id, parked.id));
-    // The agent collected (or never collected) its uninstall long ago.
-    await getTestDb().update(deviceCommands).set({ deviceRemoveExpiresAt: when }).where(eq(deviceCommands.deviceId, parked.id));
+    // The uninstall's window closed long ago. #11153: whether the agent
+    // collected and completed it decides whether the purge may proceed.
+    await getTestDb().update(deviceCommands)
+      .set(opts.agentCollected === false
+        ? { deviceRemoveExpiresAt: when }
+        : { deviceRemoveExpiresAt: when, status: 'completed', completedAt: when })
+      .where(eq(deviceCommands.deviceId, parked.id));
     return parked;
   }
 
@@ -429,6 +441,20 @@ describe('parked-device purge', () => {
 
     expect(await deviceRow(recent.id)).toBeDefined();
     expect(await ledgerRows(recent.id, 'purged')).toHaveLength(0);
+  });
+
+  it('never purges a parked device whose agent never collected its uninstall, and counts it (#11153)', async () => {
+    const neverCollected = await expireAndAge(PARKED_PURGE_AFTER_EXPIRY_DAYS + 3, { agentCollected: false });
+    const collected = await expireAndAge(PARKED_PURGE_AFTER_EXPIRY_DAYS + 1);
+
+    const summary = await runParkedDevicePurgeOnce();
+
+    // Kept out of the candidates (so it cannot stall the oldest-first list),
+    // counted, and left in place; the newer confirmed one still goes.
+    expect(summary.skippedUninstallNotConfirmed).toBeGreaterThanOrEqual(1);
+    expect(await deviceRow(neverCollected.id)).toBeDefined();
+    expect(await ledgerRows(neverCollected.id, 'purged')).toHaveLength(0);
+    expect(await deviceRow(collected.id)).toBeUndefined();
   });
 
   it('leaves a device whose uninstall is still collectable', async () => {

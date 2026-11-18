@@ -8,6 +8,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import CisBaselineForm from './CisBaselineForm';
 import type { Baseline } from './types';
 
@@ -47,6 +48,9 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
   const [error, setError] = useState<string>();
   const [editBaseline, setEditBaseline] = useState<Baseline | null | undefined>(undefined);
   const [scanningId, setScanningId] = useState<string | null>(null);
+  // A partner-wide baseline scanned with no org selected fans out to every org:
+  // confirm that first (#9606).
+  const [confirmScanAll, setConfirmScanAll] = useState<Baseline | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchBaselines = useCallback(async () => {
@@ -85,7 +89,15 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
     return () => abortRef.current?.abort();
   }, [fetchBaselines, refreshKey]);
 
-  const handleTriggerScan = async (baseline: Baseline) => {
+  const handleTriggerScan = (baseline: Baseline) => {
+    if (baseline.partnerId !== null && !currentOrgId) {
+      setConfirmScanAll(baseline);
+      return;
+    }
+    void runScan(baseline);
+  };
+
+  const runScan = async (baseline: Baseline) => {
     setScanningId(baseline.id);
     setError(undefined);
     try {
@@ -96,7 +108,9 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
       await runAction({
         request: () => fetchWithAuth('/cis/scan', {
           method: 'POST',
-          body: JSON.stringify({ baselineId: baseline.id }),
+          // With an org selected the server narrows even a partner-wide
+          // baseline to that org's devices; without one it scans all of them.
+          body: JSON.stringify({ baselineId: baseline.id, ...(currentOrgId ? { orgId: currentOrgId } : {}) }),
         }),
         errorFallback: t('cisHardeningCisBaselinesTab.messages.triggerScanFailed'),
         successMessage: t('cisHardeningCisBaselinesTab.messages.triggerScanQueued', { name: baseline.name }),
@@ -118,7 +132,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
   };
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cis-baselines-tab">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -178,7 +192,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
               </tr>
             ) : (
               baselines.map((bl) => (
-                <tr key={bl.id} className="text-sm">
+                <tr key={bl.id} className="text-sm" data-testid={`cis-baseline-row-${bl.id}`}>
                   <td className="px-4 py-3 font-medium">
                     <div className="flex items-center gap-2">
                       <span>{bl.name}</span>
@@ -256,6 +270,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                       <button
                         type="button"
                         onClick={() => handleTriggerScan(bl)}
+                        data-testid={`cis-baseline-scan-${bl.id}`}
                         disabled={scanningId === bl.id || !bl.isActive}
                         className="rounded-md p-1.5 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         title={t('cisHardeningCisBaselinesTab.actions.triggerScan')}
@@ -274,6 +289,23 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={confirmScanAll !== null}
+        onClose={() => setConfirmScanAll(null)}
+        onConfirm={() => {
+          const target = confirmScanAll;
+          setConfirmScanAll(null);
+          if (target) void runScan(target);
+        }}
+        variant="warning"
+        confirmTestId="cis-scan-all-orgs-confirm"
+        title={t('cisHardeningCisBaselinesTab.scanAll.title')}
+        message={confirmScanAll
+          ? t('cisHardeningCisBaselinesTab.scanAll.message', { name: confirmScanAll.name, orgCount })
+          : ''}
+        confirmLabel={t('cisHardeningCisBaselinesTab.scanAll.confirm')}
+      />
     </div>
   );
 }

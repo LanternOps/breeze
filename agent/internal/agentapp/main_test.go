@@ -19,6 +19,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -725,15 +726,22 @@ func TestUserHelperRoleDefault(t *testing.T) {
 }
 
 func TestDesktopHelperRoleDoesNotClaimSystemOnDarwin(t *testing.T) {
-	got := desktopHelperRole()
-	if runtime.GOOS == "darwin" {
-		if got != "user" {
-			t.Fatalf("desktopHelperRole() = %q on darwin, want user", got)
-		}
-		return
+	if got, want := desktopHelperRole(), desktopHelperRoleFor(runtime.GOOS); got != want {
+		t.Fatalf("desktopHelperRole() = %q, want %q on %s", got, want, runtime.GOOS)
 	}
-	if got != "system" {
-		t.Fatalf("desktopHelperRole() = %q on %s, want system", got, runtime.GOOS)
+	if got := desktopHelperRoleFor("darwin"); got != ipc.HelperRoleUser {
+		t.Fatalf("desktopHelperRoleFor(darwin) = %q, want user", got)
+	}
+	if got := desktopHelperRoleFor("windows"); got != ipc.HelperRoleSystem {
+		t.Fatalf("desktopHelperRoleFor(windows) = %q, want system", got)
+	}
+}
+
+// The Linux desktop helper runs as the logged-in user; the broker admits a
+// user-role desktop helper only with a spawn ticket (#12117).
+func TestDesktopHelperRole_LinuxIsUser(t *testing.T) {
+	if got := desktopHelperRoleFor("linux"); got != ipc.HelperRoleUser {
+		t.Fatalf("desktopHelperRoleFor(linux) = %q, want user", got)
 	}
 }
 

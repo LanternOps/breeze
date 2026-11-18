@@ -17,7 +17,7 @@
  *   docker run -d --name pr4-pg -e POSTGRES_USER=breeze -e POSTGRES_PASSWORD=breeze \
  *     -e POSTGRES_DB=breeze_test -p 5455:5432 \
  *     --tmpfs /var/lib/postgresql/data:rw,size=2g postgres:16-alpine
- *   docker run -d --name pr4-redis -p 6399:6379 redis:7-alpine
+ *   docker run -d --name pr4-redis -p 6399:6379 redis:8-alpine
  *   until docker exec pr4-pg pg_isready -U breeze >/dev/null 2>&1; do sleep 1; done
  *
  *   cd apps/api && \
@@ -48,10 +48,11 @@ import {
 } from '../../db/schema';
 import { consumeVerificationToken, generateVerificationToken } from '../../services/emailVerification';
 import { requestPendingEmailChange } from '../../services/pendingEmail';
+import { hashPassword } from '../../services/password';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPendingRegistration } from '../../services/pendingRegistration';
 import { handleAuthEmailJob } from '../../jobs/authEmailWorker';
-import { recordAccountFailure } from '../../services/rate-limit';
+import { reserveAccountAttempt } from '../../services/rate-limit';
 import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb, getTestRedis } from './setup';
 
@@ -410,13 +411,19 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
   const STEP1_UA = 'integration-signup/1.0';
   const CLICK_UA = 'mail-scanner/9.9 (link-prefetch)';
 
-  function park(companyName: string, email: string) {
+  // Step 2 confirms the password chosen at step 1, so the parked record holds
+  // a real hash of it and every click sends it.
+  const SIGNUP_PASSWORD = 'Sup3rSecure!Passw0rd';
+  let signupHash: Promise<string> | undefined;
+
+  async function park(companyName: string, email: string, signupIntent?: { intent: 'cloud' | 'wisp'; offer?: string }) {
+    signupHash ??= hashPassword(SIGNUP_PASSWORD);
     return createPendingRegistration({
+      ...(signupIntent ? { signupIntent } : {}),
       email,
       companyName,
       name: 'New Admin',
-      passwordHash:
-        '$argon2id$v=19$m=65536,t=3,p=4$dGVzdHNhbHR0ZXN0$Zm9vYmFyYmF6Zm9vYmFyYmF6Zm9vYmFyYmF6',
+      passwordHash: await signupHash,
       acceptTerms: true,
       termsVersion: 'v1',
       hostedExpectation: true,
@@ -439,7 +446,7 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     return app.request('/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': userAgent, cookie: binding.cookie },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, password: SIGNUP_PASSWORD }),
     });
   }
 
@@ -529,6 +536,22 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     expect((row as { signup_user_agent: string }).signup_user_agent).not.toBe(CLICK_UA);
   });
 
+  it('step 2 stores the parked signup intent in partners.purchase_selection', async () => {
+    const marker = uniq();
+    const companyName = `IntentCo-${marker}`;
+    const email = `intent-${marker}@example.com`;
+
+    const { rawToken } = await park(companyName, email, { intent: 'wisp', offer: 'founding' });
+    const res = await verify(rawToken);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.verified).toBe(true);
+
+    const [row] = await getTestDb().select({ purchaseSelection: partners.purchaseSelection })
+      .from(partners).where(eq(partners.id, body.partner.id));
+    expect(row!.purchaseSelection).toEqual({ intent: 'wisp', offer: 'founding' });
+  });
+
   it('CONCURRENCY: two clicks on the same pending-registration token — exactly one partner is created', async () => {
     const marker = uniq();
     const companyName = `RaceRegCo-${marker}`;
@@ -559,15 +582,27 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     // (a different partner + user holding the same address).
     const otherPartner = await createPartner({ name: `OtherCo-${marker}` });
     await createUser({ partnerId: otherPartner.id, email, withMembership: true });
+    const [before] = await getTestDb().select({
+      purchaseSelection: partners.purchaseSelection, plan: partners.plan, maxDevices: partners.maxDevices,
+    }).from(partners).where(eq(partners.id, otherPartner.id));
+    expect(before!.purchaseSelection).toBeNull();
 
     const res = await verify(rawToken);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ verified: false, status: 'sign_in' });
+    expect(await res.json()).toEqual({
+      verified: false,
+      status: 'sign_in',
+      signupIntent: { intent: 'cloud' },
+    });
 
     // No DUPLICATE tenant: the pending company was never created, and the address
     // still resolves to exactly the one pre-existing account.
     expect(await countPartnersByName(pendingCompany)).toBe(0);
     expect(await countUsersByEmail(email)).toBe(1);
+    const [after] = await getTestDb().select({
+      purchaseSelection: partners.purchaseSelection, plan: partners.plan, maxDevices: partners.maxDevices,
+    }).from(partners).where(eq(partners.id, otherPartner.id));
+    expect(after).toEqual(before);
   });
 });
 
@@ -655,8 +690,8 @@ describe('SR2-23 login lockout — real Postgres', () => {
     const redis = getTestRedis();
     let locked = false;
     for (let i = 0; i < 6 && !locked; i++) {
-      const r = await recordAccountFailure(redis, email);
-      locked = r.locked;
+      const r = await reserveAccountAttempt(redis, email);
+      locked = r.reachesLimit;
     }
     expect(locked).toBe(true);
 

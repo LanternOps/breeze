@@ -158,12 +158,18 @@ const reconcileHungExecutions = vi.hoisted(() =>
   vi.fn<(sessionId: string) => Promise<number>>());
 const closeAgentRunSession = vi.hoisted(() =>
   vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
+const recordRunTaskPrompt = vi.hoisted(() =>
+  vi.fn<(sessionId: string, prompt: string) => Promise<void>>(async () => undefined));
+const recordRunAssistantTurn = vi.hoisted(() =>
+  vi.fn<(sessionId: string, message: unknown) => Promise<void>>(async () => undefined));
 vi.mock('./executionLedger', () => ({
   createAgentRunSession,
   startToolExecution,
   completeToolExecution,
   reconcileHungExecutions,
   closeAgentRunSession,
+  recordRunTaskPrompt,
+  recordRunAssistantTurn,
 }));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
@@ -267,11 +273,14 @@ const createBreezeMcpServer = vi.hoisted(() =>
 // #7427: the names the REAL SDK server declares. Default (set in the
 // top-level beforeEach) is the whole `aiTools` registry, i.e. "every exposure
 // name is declared"; a test narrows it to model the real
-// KNOWN_MISSING_TOOL_TIERS gap (registry tools with no `tool()` declaration).
+// gap of registry tools with no `tool()` declaration (historically #3300's
+// KNOWN_MISSING_TOOL_TIERS, emptied in full-control W04 #6758).
 const listChatSurfaceToolNames = vi.hoisted(() => vi.fn<() => string[]>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   listChatSurfaceToolNames,
+  // #11395: read only under a constrained tool profile (a `custom` allow-list's domains).
+  chatToolDomain: () => undefined,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
   // Mirrors BREEZE_MCP_TOOL_NAMES above (one tool, bare name) — runLoop.ts's
   // full-profile exposure (WQ3, #6755) derives from Object.keys(TOOL_TIERS)
@@ -418,12 +427,15 @@ const nextAgentHop = vi.hoisted(() => vi.fn());
 const probeAgentHop = vi.hoisted(() => vi.fn());
 const recordServedHop = vi.hoisted(() => vi.fn(async () => undefined));
 const markStaleHopReservations = vi.hoisted(() => vi.fn(async () => 0));
+const hopReservationSessionId = vi.hoisted(() =>
+  vi.fn<(input: { orgId: string; idempotencyKey: string }) => Promise<string | null | undefined>>(async () => undefined));
 vi.mock('./agentRunFailover', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./agentRunFailover')>()),
   nextAgentHop,
   probeAgentHop,
   recordServedHop,
   markStaleHopReservations,
+  hopReservationSessionId,
 }));
 const noteProviderFailure = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure }));
@@ -451,6 +463,7 @@ const realSettle = await vi.importActual<typeof import('../aiModels/settleInvoca
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
 import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 import { aiTools } from '../aiToolNames';
+import { SDK_PERMISSION_MODE } from '../llm/sdkChildEnvGuards';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -601,7 +614,8 @@ function seedRows(options: {
 const hooks: Hooks = {};
 
 interface QueryScript {
-  toolCalls?: Array<{ tool: string; input: Record<string, unknown> }>;
+  /** `result`: what an ALLOWED call's tool returned (default `{"ok":true}`, not an error). */
+  toolCalls?: Array<{ tool: string; input: Record<string, unknown>; result?: { output: string; isError: boolean } }>;
   assistantText?: string;
   results?: Array<Record<string, unknown>>;
   hangUntilAbort?: boolean;
@@ -670,7 +684,7 @@ function scriptQuery(script: QueryScript) {
         const verdict = await hooks.pre!(call.tool, call.input);
         preVerdicts.push(verdict);
         if (verdict.allowed) {
-          await hooks.post!(call.tool, call.input, '{"ok":true}', false, 5);
+          await hooks.post!(call.tool, call.input, call.result?.output ?? '{"ok":true}', call.result?.isError ?? false, 5);
         } else {
           await hooks.post!(call.tool, call.input, JSON.stringify({ error: verdict.error }), true, 0);
         }
@@ -758,6 +772,9 @@ beforeEach(() => {
   completeToolExecution.mockResolvedValue(undefined);
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
+  recordRunTaskPrompt.mockReset().mockResolvedValue(undefined);
+  recordRunAssistantTurn.mockReset().mockResolvedValue(undefined);
+  hopReservationSessionId.mockReset().mockResolvedValue(undefined);
   resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   prepareSdkChild.mockImplementation(async () => ({ env: { CI: 'true' }, revoke: vi.fn() }));
   // The billed number the real settlement returns: the registry price.
@@ -898,7 +915,7 @@ describe('executeAgentRun', () => {
 
     expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
     expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
-      orgId: ORG_ID, agentRunId: RUN_ID, userId: null, sessionId: null, sourceRef: null,
+      orgId: ORG_ID, agentRunId: RUN_ID, userId: null, sessionId: 'session-1', sourceRef: null,
       reservationId: '00000000-0000-4000-8000-0000000000e1',
     }));
   });
@@ -940,6 +957,34 @@ describe('executeAgentRun', () => {
     expect(lastQueryOptions!.env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:9999' });
     // The grant never outlives the run.
     expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('#11395: a gateway run under a constrained tool profile asks prepareSdkChild for compacted schemas', async () => {
+    seedRows();
+    const gateway = makeResolvedModel('openai_compatible', {
+      surface: 'ai_agents',
+      toolProfileFacts: { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' },
+    });
+    resolveModel.mockResolvedValue(gateway);
+    await executeAgentRun(RUN_ID);
+    expect(prepareSdkChild).toHaveBeenCalledWith(gateway, {
+      key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1', compactSchemas: true,
+    });
+    // The server advertises under the same exposure (compact descriptions; no session to read it from).
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toMatchObject({ toolExposure: { profile: 'minimal', promptMode: 'constrained' } });
+    // And the ledger records it.
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'minimal', fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/) },
+    }));
+  });
+
+  it('#11395: the identity tool profile passes no toolExposure to the server (registration unchanged)', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5] ?? {}).not.toHaveProperty('toolExposure');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, toolExposure: { profile: 'full', fingerprint: 'full' },
+    }));
   });
 
   it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {
@@ -1079,7 +1124,7 @@ describe('executeAgentRun', () => {
     expect((final.patch.outcome as AgentRunOutcome).budgetExceeded).toBeFalsy();
     // 1000 input + 100 output at the bound rate: 0.3 cents, never $500.
     expect(final.patch.costCents).toBe(Math.round(registryCents({ input: 1000, output: 100 })));
-    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: RUN_ID, userId: null, sessionId: null }));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: RUN_ID, userId: null, sessionId: 'session-1' }));
     const settled = settleInvocation.mock.calls[0]![0] as { usage: Array<{ model: string; tokens: Record<string, number> }> };
     expect(settled.usage).toEqual([expect.objectContaining({
       model: 'claude-sonnet-5-5', tokens: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 },
@@ -2449,6 +2494,19 @@ describe('executeAgentRun', () => {
     expect(lastQueryOptions!.model).toBe('claude-sonnet-5-5');
     expect(lastQueryOptions!.persistSession).toBe(false);
     expect(lastQueryOptions!.settingSources).toEqual([]);
+    // #11817: an explicit mode, never the SDK's provider-dependent default.
+    expect(lastQueryOptions!.permissionMode).toBe(SDK_PERMISSION_MODE);
+  });
+
+  it("#11817: a gateway child's extra query options cannot override the permission mode", async () => {
+    seedRows();
+    prepareSdkChild.mockImplementation(async () => ({
+      env: { CI: 'true' }, queryOptions: { permissionMode: 'bypassPermissions' }, revoke: vi.fn(),
+    }));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.permissionMode).toBe(SDK_PERMISSION_MODE);
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {
@@ -3010,6 +3068,38 @@ describe('executeAgentRun', () => {
     })]);
   });
 
+  it('#10413: bills every modelUsage key of the fresh hop query (the CLI background call included), confirmed', async () => {
+    seedRows();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const BG = 'claude-haiku-4-5-20251001';
+    const main = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 5_000 };
+    const base = resultMessage({ num_turns: 5, usage: main });
+    scriptQuery({
+      assistantText: 'done',
+      results: [{
+        ...base,
+        modelUsage: {
+          ...(base.modelUsage as Record<string, unknown>),
+          [BG]: { inputTokens: 900, outputTokens: 15, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0 },
+        },
+      }],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const input = settleInvocation.mock.calls[0]![0] as { usage: unknown; outcome: unknown };
+    expect(input.usage).toEqual([
+      expect.objectContaining({ model: AGENT_WIRE_MODEL, tokens: { input: 10, output: 20, cacheRead: 90_000, cacheWrite: 5_000 } }),
+      expect.objectContaining({ model: BG, tokens: { input: 900, output: 15, cacheRead: 0, cacheWrite: 0 } }),
+    ]);
+    expect(input.outcome).toMatchObject({ servedModel: AGENT_WIRE_MODEL, fallbackUsed: false });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('ai_usage_unconfirmed'))).toBe(false);
+    // The premise of billing from zero: the hop query neither resumes nor persists a transcript.
+    expect(lastQueryOptions).toMatchObject({ persistSession: false });
+    expect(lastQueryOptions).not.toHaveProperty('resume');
+  });
+
   it('a run that ended with no result marks its reservation indeterminate instead of settling', async () => {
     seedRows();
     queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
@@ -3132,6 +3222,28 @@ describe('executeAgentRun', () => {
     const final = finalTransition()!;
     const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string }> };
     expect(outcome.executedActions[0]!.executionId).toBe('exec-1');
+  });
+
+  // #10411: a failed run tool call kept only status 'failed' — the reason
+  // survived only in the model's prose.
+  it('a failed allowed tool call hands its result to the ledger row for the error text', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{
+        tool: 'query_devices',
+        input: { status: 'online' },
+        result: { output: JSON.stringify({ error: 'Device is offline' }), isError: true },
+      }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(completeToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-1',
+      isError: true,
+      output: JSON.stringify({ error: 'Device is offline' }),
+    }));
   });
 
   it('a ledger write failure never blocks the tool call — falls back to (inline)', async () => {
@@ -3590,8 +3702,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
   });
 
   // #7427: `fullRunToolExposure` walks the `aiTools` registry, which carries
-  // tools the SDK server never declares (KNOWN_MISSING_TOOL_TIERS —
-  // manage_tags, manage_tickets, …). Passing one as `onlyTools` makes
+  // tools the SDK server may not declare (historically #3300's
+  // KNOWN_MISSING_TOOL_TIERS, emptied in W04 #6758). Passing one as `onlyTools` makes
   // `createBreezeMcpServer` throw outside production and log an error on
   // every full run in production. Exposure — `onlyTools` AND `allowedTools` —
   // must be the floor intersected with what the server actually declares.
@@ -3971,6 +4083,47 @@ describe('W09 run failover', () => {
       `agent-run:${RUN_ID}`, `agent-run:${RUN_ID}:1`,
     ]);
     expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('#11971: each hop reserves and settles on the run\'s session with that hop\'s own turns', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [retry(1), retry(2)],     // hop 0: aborted before any result
+      [successResult()],        // hop 1 serves
+    ]);
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget.mock.calls.map((c) => (c[0] as { sessionId?: unknown }).sessionId)).toEqual(['session-1', 'session-1']);
+    const settled = settleInvocation.mock.calls.map((c) => c[0] as { sessionId: unknown; turnCount: unknown; reservationId: string });
+    expect(settled.map((s) => [s.reservationId, s.sessionId, s.turnCount])).toEqual([
+      ['res-0', 'session-1', 0],
+      ['res-1', 'session-1', (successResult() as { num_turns: number }).num_turns],
+    ]);
+  });
+
+  it('#11971: each hop looks up its OWN key\'s claim; the transcript records the prompt each hop was sent', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    // Hop 0 was claimed sessionless before #11971; hop 1 is a fresh claim.
+    hopReservationSessionId.mockImplementation(async ({ idempotencyKey }) =>
+      (idempotencyKey === `ai-agent-run:${RUN_ID}` ? null : undefined));
+    scriptQueries([
+      [retry(1), retry(2)],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+
+    expect(hopReservationSessionId.mock.calls.map((c) => c[0].idempotencyKey)).toEqual([
+      `ai-agent-run:${RUN_ID}`, `ai-agent-run:${RUN_ID}:hop:1`,
+    ]);
+    expect(reserveAiBudget.mock.calls.map((c) => (c[0] as { sessionId?: unknown }).sessionId)).toEqual([null, 'session-1']);
+    expect(settleInvocation.mock.calls.map((c) => (c[0] as { sessionId: unknown }).sessionId)).toEqual([null, 'session-1']);
+    // A fresh query per hop is sent the task prompt again, so the transcript holds it once per hop.
+    expect(recordRunTaskPrompt).toHaveBeenCalledTimes(2);
     expect(finalTransition()!.to).toBe('completed');
   });
 
@@ -4395,5 +4548,122 @@ describe('W09 run failover', () => {
     expect(markStaleHopReservations).toHaveBeenCalledWith({ runId: RUN_ID, orgId: ORG_ID, uptoHop: 1 });
     expect(markStaleHopReservations.mock.invocationCallOrder[0]!).toBeLessThan(reserveAiBudget.mock.invocationCallOrder[0]!);
     expect(settles()[0]!.binding.failover).toEqual({ fromOfferingId: 'p', hop: 1, cause: 'overloaded' });
+  });
+});
+
+describe('#11971 the run\'s session carries its usage and transcript', () => {
+  it('reserves and settles on the run\'s session, with the run\'s turns', async () => {
+    seedRows();
+    scriptQuery({ assistantText: 'done', results: [resultMessage({ num_turns: 6 })] });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('completed');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: `ai-agent-run:${RUN_ID}`, sessionId: 'session-1',
+    }));
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, sessionId: 'session-1', turnCount: 6,
+    }));
+  });
+
+  it('a run whose session could not be created stays sessionless end to end', async () => {
+    seedRows();
+    createAgentRunSession.mockRejectedValueOnce(new Error('db down'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('completed');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+    expect(recordRunTaskPrompt).not.toHaveBeenCalled();
+    expect(recordRunAssistantTurn).not.toHaveBeenCalled();
+  });
+
+  it('a re-driven hop keeps the session binding its reservation was first claimed with', async () => {
+    seedRows();
+    // Claimed before #11971 shipped: sessionless. Re-reserving it on a session
+    // would be refused as a conflicting dispatch, and settling it on one too.
+    hopReservationSessionId.mockResolvedValueOnce(null);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(hopReservationSessionId).toHaveBeenCalledWith({ orgId: ORG_ID, idempotencyKey: `ai-agent-run:${RUN_ID}` });
+    expect(finalTransition()!.to).toBe('completed');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
+
+  it('a re-driven hop claimed on another session settles on THAT session, not the run\'s current one', async () => {
+    seedRows();
+    hopReservationSessionId.mockResolvedValueOnce('session-claimed');
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-claimed' }));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-claimed' }));
+  });
+
+  it('a run stopped at a ceiling settles its last hop on the session its reservation was claimed with', async () => {
+    seedRows();
+    hopReservationSessionId.mockResolvedValueOnce(null);
+    scriptQuery({ results: [resultMessage({ subtype: 'error_max_budget_usd', is_error: true, num_turns: 4 })] });
+
+    await executeAgentRun(RUN_ID);
+
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).budgetExceeded).toBe(true);
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null, turnCount: 4 }));
+  });
+
+  it('a failed claim lookup fails the hop before anything is reserved, rather than guessing a binding', async () => {
+    seedRows();
+    hopReservationSessionId.mockRejectedValueOnce(new Error('connection reset'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('failed');
+  });
+
+  it('a transcript write failure is reported, not only logged', async () => {
+    seedRows();
+    recordRunAssistantTurn.mockRejectedValueOnce(new Error('value too long'));
+
+    await executeAgentRun(RUN_ID);
+
+    const report = captureException.mock.calls.find(([e]) => /transcript/.test(String((e as Error).message)));
+    expect(report).toBeDefined();
+    expect(report![2]).toMatchObject({ org_id: ORG_ID, ai_agent_run_id: RUN_ID });
+  });
+
+  it('records the task prompt the SDK was sent and every assistant message on the session', async () => {
+    seedRows();
+    scriptQuery({ assistantText: 'Looked at it; all good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(recordRunTaskPrompt).toHaveBeenCalledTimes(1);
+    const sentPrompt = (queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt;
+    expect(recordRunTaskPrompt).toHaveBeenCalledWith('session-1', sentPrompt);
+    expect(recordRunAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(recordRunAssistantTurn).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      type: 'assistant', message: { content: [{ type: 'text', text: 'Looked at it; all good.' }] },
+    }));
+    expect(recordRunTaskPrompt.mock.invocationCallOrder[0]!).toBeLessThan(recordRunAssistantTurn.mock.invocationCallOrder[0]!);
+  });
+
+  it('a transcript write failure never changes the run\'s outcome', async () => {
+    seedRows();
+    recordRunTaskPrompt.mockRejectedValueOnce(new Error('insert failed'));
+    recordRunAssistantTurn.mockRejectedValueOnce(new Error('insert failed'));
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('completed');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }));
   });
 });

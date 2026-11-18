@@ -14,7 +14,11 @@ const {
   releaseSendingDomainsForPartnerMock,
   findEvidenceHoldMock,
   releaseEmptyEvidenceHoldsMock,
+  cancelDeviceCommandsMock,
 } = vi.hoisted(() => ({
+  // #9719 — every bulk cancel in this module must go through
+  // cancelDeviceCommands so the per-type cancellation hooks run.
+  cancelDeviceCommandsMock: vi.fn(),
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   insertMock: vi.fn(),
@@ -50,6 +54,29 @@ vi.mock('../db', () => {
     getCurrentDbAccessContext: getCurrentDbAccessContextMock,
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
+
+// The real helper is covered by commandCancelPropagation.bulk.test.ts. Here it is
+// replaced by a recorder that still performs the same builder-chain UPDATE, so
+// this suite's positional update/returning assertions keep seeing the cancel.
+vi.mock('./commandCancelPropagation', async () => {
+  const schema = await import('../db/schema');
+  const dbModule = await import('../db');
+  return {
+    cancelDeviceCommands: async (args: {
+      where: unknown;
+      result: Record<string, unknown>;
+      executor?: { update: (t: unknown) => any };
+    }) => {
+      cancelDeviceCommandsMock(args);
+      const ex = args.executor ?? (dbModule.db as unknown as { update: (t: unknown) => any });
+      return ex
+        .update(schema.deviceCommands)
+        .set({ status: 'cancelled', completedAt: new Date(), result: args.result })
+        .where(args.where)
+        .returning();
+    },
   };
 });
 
@@ -417,6 +444,16 @@ describe('beginOrganizationOffboarding', () => {
     ]);
     expect(result.devicesTargeted).toBe(2);
     expect(result.uninstallsQueued).toBe(1);
+    // #9719 — the other pending commands are cancelled through the shared
+    // helper, inside the drain transaction, so per-type hooks run.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledTimes(1);
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: { reason: 'tenant_offboarding' },
+        executor: expect.anything(),
+        isolateFailures: true,
+      }),
+    );
   });
 
   it('queues nothing for an org with no (non-decommissioned) devices', async () => {
@@ -578,6 +615,10 @@ describe('abortOrganizationOffboarding', () => {
     expect(JSON.stringify(strip!.values.uninstallReasons)).toContain('array_remove');
     expect(cancel!.values.status).toBe('cancelled');
     expect(cancel!.values.result).toEqual({ reason: 'organization_offboarding_aborted' });
+    // #9719 — cancelled through the shared helper so per-type hooks run.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { reason: 'organization_offboarding_aborted' } }),
+    );
     expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1']);
   });
 
@@ -978,6 +1019,12 @@ describe('finalizeOrganizationOffboarding', () => {
     );
     expect(cancel!.values.status).toBe('cancelled');
     expect((cancel!.values.result as Record<string, unknown>).reason).toBe('offboarding_window_closed');
+    // #9719 — cancelled through the shared helper so per-type hooks run.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({ reason: 'offboarding_window_closed' }),
+      }),
+    );
     // The cancel step is bounded to the ids the strip actually emptied.
     expect(JSON.stringify(cancel!.where)).toContain(
       '"inArray":["deviceCommands.id",["cmd-1","cmd-2"]]'

@@ -39,6 +39,7 @@ function buildApp(role: 'agent' | 'watchdog' = 'agent', claimTypeAllowlist?: str
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       claimTypeAllowlist,
       deviceId: '30000000-0000-4000-8000-000000000001',
       orgId: '40000000-0000-4000-8000-000000000001',

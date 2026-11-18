@@ -11,7 +11,10 @@
  */
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
-import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
+import { mcpAppsServerExtensions } from './mcpAppsConfig';
+import { buildMcpServerInstructions } from './mcpGuidance';
+import { mcpTasksEffective, mcpTier3IntentsEnabled } from './mcpIntentConfig';
+import { MCP_TASKS_EXTENSION_ID } from './mcpClientExtensions';
 import type { McpRejectReason } from './mcpModernEnvelope';
 import { supportedMcpProtocolVersions } from './mcpProtocol';
 import { captureMessage } from './sentry';
@@ -48,9 +51,16 @@ export function decorateModernResult(method: string, result: Record<string, unkn
   const existingMeta = typeof result._meta === 'object' && result._meta !== null && !Array.isArray(result._meta)
     ? (result._meta as Record<string, unknown>)
     : {};
+  // B-W04 (#6158, D-B32): a tools/call result may itself be an MRTR
+  // `input_required` (URL-mode approval elicitation); keep it. tools/call is
+  // not cacheable, so no ttlMs/cacheScope is ever added to it.
+  // B-W06 (#6160, D-B54): likewise a SEP-2663 CreateTaskResult (`task`); its
+  // own top-level `ttlMs` is the task lifetime and is never overwritten.
+  const keepToolResultType = method === 'tools/call'
+    && (result.resultType === 'input_required' || result.resultType === 'task');
   const decorated: Record<string, unknown> = {
     ...result,
-    resultType: 'complete',
+    resultType: keepToolResultType ? result.resultType : 'complete',
     _meta: { ...existingMeta, [SERVER_INFO_META_KEY]: serverInfo() },
   };
   if (isCacheableMethod(method)) {
@@ -61,11 +71,19 @@ export function decorateModernResult(method: string, result: Record<string, unkn
 }
 
 export function buildDiscoverResult(): Record<string, unknown> {
+  // B-W05 (#6159, D-B40): the MCP Apps extension, only while MCP_APPS_ENABLED.
+  // B-W06 (#6160, D-B55): the Tasks extension in the SAME object, only while
+  // Tasks are effective. Neither on → no `extensions` key (pre-W05 bytes).
+  const apps = mcpAppsServerExtensions();
+  const extensions = apps || mcpTasksEffective()
+    ? { ...(apps ?? {}), ...(mcpTasksEffective() ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}) }
+    : undefined;
   return {
     resultType: 'complete',
     supportedVersions: [...supportedMcpProtocolVersions(true)],
-    capabilities: { tools: {}, resources: {}, prompts: {} },
-    instructions: MCP_SERVER_INSTRUCTIONS,
+    capabilities: { tools: {}, resources: {}, prompts: {}, ...(extensions ? { extensions } : {}) },
+    // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
     _meta: { [SERVER_INFO_META_KEY]: serverInfo() },
     ttlMs: MCP_CACHE_TTL_MS['server/discover'],
     cacheScope: 'private',

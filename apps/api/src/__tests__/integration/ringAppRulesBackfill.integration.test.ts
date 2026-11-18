@@ -165,13 +165,20 @@ type Rule = Record<string, unknown>;
  * `policyAppRuleSchema` as it stood when this migration shipped, copied so a
  * later ring-side change to the live schema cannot redden a comparison
  * against SQL that can no longer change.
+ *
+ * Lengths are UTF-16 code units, as zod measured them when the migration
+ * shipped and as its SQL still does. zod 4.6 lets a string whose code-unit
+ * length exceeds .max() pass if its code-point length fits, so .min()/.max()
+ * are spelled out on .length here to keep the frozen semantics.
  */
+const w02String = (min: number, max: number) =>
+  z.string().refine((s) => s.length >= min && s.length <= max);
 const W02_APP_RULE_SCHEMA = z.object({
   source: z.enum(['third_party', 'custom']),
-  packageId: z.string().min(1).max(256),
-  displayName: z.string().max(255).optional(),
+  packageId: w02String(1, 256),
+  displayName: w02String(0, 255).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).max(64).optional(),
+  pinnedVersion: w02String(1, 64).optional(),
 }).refine((r) => r.action !== 'pin' || !!r.pinnedVersion);
 
 /** W02-era canonical key: third_party/custom share a bucket, id lowercased. */
@@ -447,7 +454,7 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
         { source: 'winget', packageId: 'Baz.App', action: 'block' },
         // over-long displayName — invalid, dropped whole
         { source: 'third_party', packageId: 'Long.Name', action: 'block', displayName: 'x'.repeat(300) },
-        // 128 astral chars = 256 UTF-16 code units > 255 — invalid in zod
+        // 128 astral chars = 256 UTF-16 code units > 255 — invalid in W02-era zod
         { source: 'third_party', packageId: 'Emoji.Name', action: 'block', displayName: '\u{1F600}'.repeat(128) },
         // numeric packageId — invalid
         { source: 'third_party', packageId: 12345, action: 'block' },

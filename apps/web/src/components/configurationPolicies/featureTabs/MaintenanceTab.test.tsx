@@ -302,3 +302,105 @@ describe('MaintenanceTab — timezone picker', () => {
     expect(payload.featurePolicyId).toBeNull();
   });
 });
+
+// #9574: weekly / monthly windows choose their day. Before this, the scheduler
+// pinned them to Sunday / the 1st and the form could only state that (#9565).
+describe('MaintenanceTab — day picker (#9574)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({ id: 'link-1', featureType: 'maintenance', featurePolicyId: null, inlineSettings: {} });
+  });
+
+  const renderTab = (inlineSettings?: Record<string, unknown>) => render(
+    <MaintenanceTab
+      policyId="policy-1"
+      existingLink={inlineSettings
+        ? ({ id: 'link-1', featureType: 'maintenance', featurePolicyId: null, inlineSettings } as never)
+        : undefined}
+      linkedPolicyId={null}
+      onLinkChanged={vi.fn()}
+    />,
+  );
+
+  const savedSettings = async () => {
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { inlineSettings: Record<string, unknown> }];
+    return payload.inlineSettings;
+  };
+
+  it('offers a weekday picker for a weekly window, defaulting to Sunday', () => {
+    renderTab();
+    const picker = screen.getByTestId('maintenance-day-of-week') as HTMLSelectElement;
+    expect(picker.value).toBe('sun');
+    expect(screen.getByRole('option', { name: 'Sunday' })).toBeTruthy();
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
+    expect(screen.queryByTestId('maintenance-day-of-month')).toBeNull();
+  });
+
+  it('saves the chosen weekday', async () => {
+    renderTab();
+    fireEvent.change(screen.getByTestId('maintenance-day-of-week'), { target: { value: 'wed' } });
+    expect((await savedSettings()).dayOfWeek).toBe('wed');
+  });
+
+  it('offers days 1–31 for a monthly window, says what a short month does, and saves the choice', async () => {
+    renderTab();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'monthly' } });
+    expect(screen.queryByTestId('maintenance-day-of-week')).toBeNull();
+    const picker = screen.getByTestId('maintenance-day-of-month') as HTMLSelectElement;
+    expect(picker.value).toBe('1');
+    expect(picker.options).toHaveLength(31);
+    expect(screen.getByTestId('maintenance-day-of-month-hint')).toHaveTextContent(/last day/i);
+    fireEvent.change(picker, { target: { value: '31' } });
+    const saved = await savedSettings();
+    expect(saved.dayOfMonth).toBe(31);
+    expect(saved.recurrence).toBe('monthly');
+  });
+
+  it('shows no day picker for daily or one-off windows', () => {
+    renderTab();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'daily' } });
+    expect(screen.queryByTestId('maintenance-day-of-week')).toBeNull();
+    expect(screen.queryByTestId('maintenance-day-of-month')).toBeNull();
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'once' } });
+    expect(screen.queryByTestId('maintenance-day-of-week')).toBeNull();
+    expect(screen.queryByTestId('maintenance-day-of-month')).toBeNull();
+  });
+
+  it('shows a stored day and keeps it on save', async () => {
+    renderTab({ recurrence: 'weekly', dayOfWeek: 'fri', dayOfMonth: 15, windowStart: '02:00', durationHours: 2, timezone: 'UTC' });
+    expect((screen.getByTestId('maintenance-day-of-week') as HTMLSelectElement).value).toBe('fri');
+    const saved = await savedSettings();
+    expect(saved).toMatchObject({ dayOfWeek: 'fri', dayOfMonth: 15 });
+  });
+
+  it('shows Sunday / the 1st for a window saved before the day was configurable', async () => {
+    renderTab({ recurrence: 'weekly', windowStart: '02:00', durationHours: 2, timezone: 'UTC' });
+    expect((screen.getByTestId('maintenance-day-of-week') as HTMLSelectElement).value).toBe('sun');
+    expect(await savedSettings()).toMatchObject({ dayOfWeek: 'sun', dayOfMonth: 1 });
+  });
+});
+
+describe('MaintenanceTab — copy and test ids (#9634)', () => {
+  const renderTab = () => render(
+    <MaintenanceTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+  );
+
+  it('reboot-if-pending toggle has a literal data-testid (#9634)', () => {
+    renderTab();
+    expect(screen.getByTestId('maintenance-reboot-if-pending-toggle')).toBeTruthy();
+  });
+
+  it('describes Suppress patching as skipping, not delaying (#9634)', () => {
+    renderTab();
+    expect(screen.queryByText(/delay patch installations/i)).toBeNull();
+    expect(screen.getByText(/skipped and run at the next scheduled occurrence/i)).toBeTruthy();
+  });
+
+  it('points the reboot description at the patch policy reboot delay (#9634)', () => {
+    renderTab();
+    expect(screen.queryByText(/~5 minutes/)).toBeNull();
+    expect(screen.getByText(/patch policy reboot delay/i)).toBeTruthy();
+  });
+});

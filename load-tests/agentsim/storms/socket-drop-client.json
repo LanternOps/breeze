@@ -1,6 +1,6 @@
 {
   "name": "socket-drop-client",
-  "description": "Drop every socket, client side: the simulator closes all of its agent WebSockets at once and every agent redials immediately. Exercises only the socket path; HTTP keep-alives and in-flight requests are untouched.",
+  "description": "Drop every socket, client side: the simulator closes all of its agent WebSockets at once, with no close frame, and every agent redials on the shipped agent's reconnect pacing (W09: a stable socket waits U(1 s, 30 s); the --pre-w09-fraction cohort waits U(1 s, 5 s)). Exercises only the socket path; HTTP keep-alives and in-flight requests are untouched.",
   "events": [
     {
       "name": "socket-drop-client",

@@ -17,7 +17,9 @@ export type Script = {
   category: string;
   osTypes: OSType[];
   runAs?: ScriptRunAs;
-  lastRun?: string;
+  // #9563 — newest execution the caller can see, from GET /scripts. Null (or
+  // absent on a mock/legacy row) renders "Never".
+  lastRunAt?: string | null;
   status?: ScriptStatus;
   createdAt: string;
   updatedAt: string;
@@ -82,7 +84,7 @@ const ORIGIN_KEY_SUFFIX: Record<ScriptOrigin, string> = {
   system: 'System',
 };
 
-function formatLastRun(dateString: string | undefined, t: ScriptsT, timezone?: string): string {
+function formatLastRun(dateString: string | null | undefined, t: ScriptsT, timezone?: string): string {
   if (!dateString) return t('scriptList.never');
 
   const date = new Date(dateString);
@@ -181,7 +183,7 @@ export default function ScriptList({
           cmp = a.category.localeCompare(b.category);
           break;
         case 'lastRun':
-          cmp = (a.lastRun ?? '').localeCompare(b.lastRun ?? '');
+          cmp = (a.lastRunAt ?? '').localeCompare(b.lastRunAt ?? '');
           break;
         case 'status':
           cmp = (a.status ?? 'active').localeCompare(b.status ?? 'active');
@@ -420,7 +422,7 @@ export default function ScriptList({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatLastRun(script.lastRun, t, timezone)}
+                    {formatLastRun(script.lastRunAt, t, timezone)}
                   </td>
                   <td className="px-4 py-3">
                     {(() => {

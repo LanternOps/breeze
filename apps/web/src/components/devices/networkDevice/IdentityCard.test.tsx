@@ -147,3 +147,12 @@ describe('IdentityCard', () => {
   });
 
 });
+
+// #9645: an object-shaped osFingerprint must not crash the Identity card.
+describe('IdentityCard — object os fingerprint (#9645)', () => {
+  it('renders the os name when osFingerprint arrives as { os }', () => {
+    renderIdentity({ osFingerprint: { os: 'Windows' } as unknown as string });
+
+    expect(screen.getByText('Windows')).toBeInTheDocument();
+  });
+});

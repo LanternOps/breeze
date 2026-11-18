@@ -16,6 +16,8 @@ import type {
 } from '@breeze/shared';
 import { envFlag, isHosted } from '../../config/env';
 import { agentRunModelRole } from './agentModelRole';
+import { ASSESSMENT_MAX_CONCURRENT_RUNS, ASSESSMENT_MAX_RUNS_PER_HOUR } from './assessmentProfile';
+import { TROUBLESHOOT_MAX_CONCURRENT_RUNS, TROUBLESHOOT_MAX_RUNS_PER_HOUR } from './troubleshootProfile';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
@@ -29,7 +31,10 @@ import {
 // every partial-mock unit test of those paths to stub the whole schema surface.
 import {
   aiAgents, aiAgentRuns, type AiAgentRunRow, type AiAgentRunStagedInputs,
+  type AiRunExportGrants, type AnalysisScopeKind,
 } from '../../db/schema/aiAgents';
+import { resolveAnalysisFrame } from './analysisFrame';
+import { ANALYSIS_SETTLED_STATUSES, chainCommittedCents, chainRootOf } from './analysisContinuation';
 import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
@@ -51,8 +56,18 @@ import {
   RUN_TERMINAL_OUTBOX_TRANSITION_SEQ,
   enqueueTaskOutbox,
 } from '../aiOperator/taskOutbox';
+import { assertDepthOneRequester, lineageFor } from './grantDepthGuard';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import {
+  assertWithinCeiling,
+  ceilingSiteIdsForOrg,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
 import { agentRunMatchesResourceScope } from './runResourceScope';
 import { recordAgentRunSkip } from './skipVisibility';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
@@ -230,6 +245,15 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            (researchLimits(), researchProfile.ts): substitute
  *                            for maxBudgetCentsPerRun on a research-profile
  *                            run, keyed by depth; not enforced here.
+ *  - analysisMaxChainDepth — HERE (admission step 4d, analysis only, under the
+ *                            analysis-compute lock): longest continuation
+ *                            chain, in links from the root. Merged with min.
+ *  - analysisMaxChainRuns  — HERE (admission step 4d, analysis only, under the
+ *                            analysis-compute lock): runs per chain, root
+ *                            included. Merged with min.
+ *  - analysisMaxChainBudgetCents — HERE (admission step 4d, analysis only,
+ *                            under the analysis-compute lock): total spend of
+ *                            one chain, in cents. Merged with min.
  */
 
 export interface CreateAgentRunInput {
@@ -389,9 +413,54 @@ export interface CreateAgentRunInput {
    * Both are written verbatim to `ai_agent_runs.staged_inputs` and are the
    * ONLY things `workspace_stage` will accept (spec §8 "Data minimisation").
    * Required for an `analysis` run; ignored for every other profile.
+   *
+   * Wisp analysis sessions W02: `scope` says what the frozen set is expanded
+   * from. `devices` freezes `deviceIds` (bounded by
+   * `analysisMaxInputDevicesPerRun`); `site` / `org` expand `siteId` / the
+   * whole org HERE, under the live grant ceiling's site allowlist, bounded by
+   * `analysisMaxFrameDevices` (step 4d). `scope` is required so every producer
+   * chooses one.
+   *
+   * `exportGrants` is TRUSTED INTERNAL INPUT, like `grant` and `task`: the Wisp
+   * analysis launcher computes it from the coordinator's live ceiling and it is
+   * frozen verbatim into `staged_inputs.exportGrants`. Nothing may build it
+   * from a request body.
    */
-  analysis?: { deviceIds: string[]; inputHandles: string[] };
+  analysis?: {
+    scope: AnalysisScopeKind;
+    siteId: string | null;
+    deviceIds: string[];
+    inputHandles: string[];
+    exportGrants?: AiRunExportGrants;
+    /**
+     * Wisp analysis sessions W03 — TRUSTED INTERNAL INPUT, like `grant` and
+     * `exportGrants`: this run continues `fromRunId`, whose chain root and
+     * this run's depth the launcher derived. Step 4d re-reads the prior under
+     * the admission locks, refuses a lineage that disagrees with it, enforces
+     * the three chain bounds, and writes the lineage columns.
+     */
+    continuation?: { fromRunId: string; chainRootRunId: string; chainDepth: number };
+  };
+  /**
+   * Wisp W02 (Wisp design §4.3, §4.5) — TRUSTED INTERNAL INPUT, like `task`:
+   * the delegation grant and the revision this run is admitted under. Never
+   * forwarded from a caller's payload. Admission step 1d resolves the live
+   * ceiling (pinned revision ∩ the grantor's live authority) and skips
+   * `grant_inactive` / `grant_org_out_of_ceiling`; the inserted run's
+   * allowlist is intersected with the ceiling and the pair is stamped on the
+   * row, so the run loop and release re-check the SAME pin.
+   *
+   * `requestedByRunId` is the depth guard's input (w00 A11): when set, it must
+   * name Wisp's own assessment run (depth 0, profile `assessment`) under the
+   * same grant and org; the inserted row is then a depth-1 specialist child
+   * carrying the lineage. W07's `requestSpecialist.requestedByRunId` forwards it.
+   */
+  grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
 }
+
+// Wisp W02/W07 (w00 A11): the depth-one guard lives in a leaf module shared
+// with Operator task admission; re-exported here, where W02 published it.
+export { GrantDepthExceededError } from './grantDepthGuard';
 
 export type AgentRunSkipReason =
   | 'kill_switch_off' | 'no_effective_agent' | 'agent_disabled' | 'mode_off'
@@ -440,6 +509,24 @@ export type AgentRunSkipReason =
   // profileCaps()). Same posture as every pair above: deliberately NOT added
   // to PUBLISHED_SKIP_REASONS — volume guards on a scheduled shape.
   | 'max_concurrent_patch_runs' | 'patch_rate'
+  // Wisp W05 — the assessment-profile equivalents, counted against the
+  // ASSESSMENT_MAX_CONCURRENT_RUNS/ASSESSMENT_MAX_RUNS_PER_HOUR constants
+  // (assessmentProfile.ts; admission rule 6b, via profileCaps()). Same
+  // posture as every pair above: deliberately NOT added to
+  // PUBLISHED_SKIP_REASONS — the wake coordinator's alert-storm coalescing
+  // leans on them, so they are volume guards, not policy events.
+  | 'max_concurrent_assessment_runs' | 'assessment_rate'
+  // Wisp delegation W1 (#11084) — the device_troubleshooting volume guards
+  // (TROUBLESHOOT_MAX_CONCURRENT_RUNS / TROUBLESHOOT_MAX_RUNS_PER_HOUR,
+  // troubleshootProfile.ts). Not published, same posture as the pair above.
+  | 'max_concurrent_troubleshoot_runs' | 'troubleshoot_rate'
+  // #11084 — a device_troubleshooting admission without a grant; a caller
+  // bug surfaced as a skip (same posture as assessment_requires_grant).
+  | 'troubleshoot_requires_grant'
+  // Wisp W05 — an assessment admitted without a grant (rule 2a). A caller
+  // bug, surfaced as a skip rather than a throw so the wake coordinator never
+  // wedges on it; not published (nothing an admin can act on).
+  | 'assessment_requires_grant'
   // Execution plane W04 (spec §8). The first four are POLICY events, not
   // volume guards, so unlike every other profile's pair they ARE published:
   // a technician who launched an analysis and got nothing needs to see why.
@@ -458,6 +545,17 @@ export type AgentRunSkipReason =
   // technician must never see for the entirely benign act of selecting too
   // many of their own devices. Published.
   | 'too_many_input_devices'
+  // Wisp analysis sessions W02 — the site/org frame resolved at step 4d is
+  // over `analysisMaxFrameDevices`, names a site outside the org or the grant's
+  // site allowlist, or holds no eligible device. Published, like
+  // `too_many_input_devices`: each is a policy outcome a technician acts on.
+  | 'frame_too_large' | 'site_not_in_scope' | 'frame_empty'
+  // Wisp analysis sessions W03 — a continuation's lineage disagrees with its
+  // prior run (missing, another org/grant/profile, or a different root or
+  // depth than the launcher derived): NOT published, it is a race or a caller
+  // bug, not a policy event. The chain bounds (depth / run count, reserved
+  // spend) ARE published: each names a limit a technician acts on.
+  | 'analysis_continuation_not_found' | 'analysis_chain_too_long' | 'analysis_chain_budget_exceeded'
   // The sandbox backend's circuit breaker is open (R5, spec §9). Published:
   // a technician whose analysis will not start deserves to know the provider
   // is down rather than that they did something wrong.
@@ -472,7 +570,11 @@ export type AgentRunSkipReason =
   // fix memory already has an attachable proven fix for the alert; the
   // automation lane attaches it instead. Not published: an expected,
   // memory-served outcome, not a policy event.
-  | 'proven_fix_available';
+  | 'proven_fix_available'
+  // Wisp W02 (admission step 1d): the pinned delegation grant is not usable
+  // (paused / revoked / expired / grantor lost standing), or the run's org is
+  // outside its live ceiling. Policy events — published.
+  | 'grant_inactive' | 'grant_org_out_of_ceiling';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -606,15 +708,29 @@ async function deviceMatchesAnyGroup(
 /**
  * #6749 — alert sources that are lifecycle/administrative (date-driven, not
  * fault-driven) and must NEVER admit a triage run, regardless of how the
- * agent's other filters are configured. `warrantyAlertEvaluator.ts` hard-
- * codes warranty alerts `critical`/`high` (an expired warranty is urgent to
- * see, not urgent to investigate), so severity alone can't exclude them —
- * every fleet's warranty alerts would otherwise burn a full triage run each.
+ * agent's other filters are configured. Warranty alerts are graded
+ * `info`/`low`/`medium` since #10371, but any agent whose `alertSeverities`
+ * includes one of those levels would still admit them (an expired warranty is
+ * worth seeing, never worth investigating), so severity alone can't exclude
+ * them — every such fleet's warranty alerts would otherwise burn a full
+ * triage run each.
  * Unconditional exclusion (not an opt-in `alertSources` filter) because
  * there is nothing for a triage agent to ever usefully do with one of these:
  * no tenant should have to remember to opt out per agent.
  */
 const LIFECYCLE_ALERT_SOURCES: ReadonlySet<string> = new Set(['warranty_evaluator']);
+
+/**
+ * #11328 — alerts an AI agent raises about its OWN work: an unattended action
+ * that failed verification (`actVerify.ts`) and a fix that did not hold
+ * (`fixWatch.ts`). They publish `alert.triggered` so channels, routing and
+ * escalation page a human, but they must never admit an agent run: a triage
+ * agent in act mode would act on its own failure, fail again and raise a new
+ * alert for the new run, a loop bounded only by cooldown, rate and budget
+ * caps. Same reasoning as the automation-output guard in automationWorker.ts.
+ * Unconditional, like the lifecycle set above.
+ */
+const AGENT_OUTPUT_ALERT_SOURCES: ReadonlySet<string> = new Set(['ai_agent_act_verify', 'ai_agent_fix_watch']);
 
 export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
@@ -622,7 +738,7 @@ export async function evaluateAgentTriggerFilters(
   deviceId: string | null,
   orgId: string,
 ): Promise<boolean> {
-  if (ctx.source != null && LIFECYCLE_ALERT_SOURCES.has(ctx.source)) return false;
+  if (ctx.source != null && (LIFECYCLE_ALERT_SOURCES.has(ctx.source) || AGENT_OUTPUT_ALERT_SOURCES.has(ctx.source))) return false;
 
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;
@@ -772,9 +888,35 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
   'analysis_region_unavailable', 'compute_budget_exceeded', 'compute_credits_exhausted',
   'too_many_input_devices', 'workspace_unavailable',
+  // Wisp analysis sessions W02 — analysis frame refusals.
+  'frame_too_large', 'site_not_in_scope', 'frame_empty',
+  // Wisp analysis sessions W03 — the chain bounds.
+  'analysis_chain_too_long', 'analysis_chain_budget_exceeded',
   // AI model registry W03 — a policy event an admin must act on.
   'model_unavailable',
+  // Wisp W02 — delegation-ceiling refusals.
+  'grant_inactive', 'grant_org_out_of_ceiling',
 ]);
+
+/**
+ * Wisp W02: the run's allowlist under a delegation ceiling — entries whose
+ * tool is never delegable are dropped, and with a ceiling allowlist only its
+ * tools survive. Entry shape (`tool` or `tool:action`) is preserved. Never
+ * wider than `allowlist`.
+ */
+export function intersectAllowlistWithCeiling(
+  allowlist: readonly string[],
+  ceiling: Pick<GrantCeiling, 'toolAllowlist' | 'deniedTools'>,
+): string[] {
+  return allowlist.filter((entry) => {
+    const colon = entry.indexOf(':');
+    const tool = colon === -1 ? entry : entry.slice(0, colon);
+    // #11433: an action-floored tool is callable only by a human's Wisp turn, never by a run (the run loop's
+    // ceiling check passes no action), so it stays out of the allowlist as when it was a whole-tool deny.
+    if (ceiling.deniedTools.has(tool) || WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(tool)) return false;
+    return ceiling.toolAllowlist === null || ceiling.toolAllowlist.has(tool);
+  });
+}
 
 /**
  * The fallback daily sandbox-compute ceiling for an org with no `ai_budgets`
@@ -1067,6 +1209,28 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_research_runs',
         rateSkip: 'research_rate',
       };
+    // Wisp W05 — per-(agent, org) assessment caps. Module CONSTANTS, not
+    // policy limits (assessmentProfile.ts; W05 planner call 4): no policy
+    // page configures this profile. The hourly cap is what bounds an alert
+    // storm after the wake coordinator's debounce.
+    case 'assessment':
+      return {
+        maxConcurrent: ASSESSMENT_MAX_CONCURRENT_RUNS,
+        maxPerWindow: ASSESSMENT_MAX_RUNS_PER_HOUR,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_assessment_runs',
+        rateSkip: 'assessment_rate',
+      };
+    // Wisp delegation W1 (#11084) — per-(agent, org) caps for Wisp hand-offs.
+    // The partner troubleshoot agent is every org's agentId, so this is per org.
+    case 'device_troubleshooting':
+      return {
+        maxConcurrent: TROUBLESHOOT_MAX_CONCURRENT_RUNS,
+        maxPerWindow: TROUBLESHOOT_MAX_RUNS_PER_HOUR,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_troubleshoot_runs',
+        rateSkip: 'troubleshoot_rate',
+      };
     default: {
       const exhaustive: never = profile;
       throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
@@ -1239,10 +1403,67 @@ export async function createAndEnqueueAgentRun(
     return skip('workspace_unavailable');
   }
 
+  // 1d. Wisp W02 — the delegation ceiling (Wisp design §4.3, §4.5). Before the
+  //     policy read: a run under a grant that cannot be used must not resolve
+  //     an agent at all. The depth guard first (w00 A11): a grant-bearing
+  //     request may come only from Wisp's own run under the same grant and org.
+  let grantCeiling: GrantCeiling | null = null;
+  if (input.grant) {
+    const { grantId, grantRevisionId, requestedByRunId } = input.grant;
+    if (requestedByRunId) {
+      const [requester] = await inSystemDbContext(() => db
+        .select({
+          grantId: aiAgentRuns.grantId,
+          orgId: aiAgentRuns.orgId,
+          depth: aiAgentRuns.depth,
+          profile: aiAgentRuns.profile,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, requestedByRunId))
+        .limit(1));
+      // W07: the true depth-one predicate (lineage columns), shared with
+      // Operator task admission.
+      assertDepthOneRequester(requester, grantId, orgId, 'createAndEnqueueAgentRun');
+    }
+    try {
+      grantCeiling = await resolveGrantCeiling(grantId, grantRevisionId);
+    } catch (err) {
+      if (err instanceof GrantInactiveError) return skip('grant_inactive');
+      throw err;
+    }
+    try {
+      // The single comparator, not a hand-rolled set lookup.
+      assertWithinCeiling(grantCeiling, { orgId });
+    } catch (err) {
+      if (err instanceof CeilingViolationError) return skip('grant_org_out_of_ceiling');
+      throw err;
+    }
+  }
+
+  // Wisp W07 (w00 A11): a grant-bearing run requested by Wisp's assessment
+  // (the guard above proved it) is a specialist child — depth 1, pointing at
+  // its requester and the revision it was requested under. A grant-bearing
+  // run with no requester (the assessment itself) and every grant-less run
+  // are depth 0 with no lineage.
+  const lineage = lineageFor(grantCeiling ? input.grant : null);
+
   // 2. Effective policy. Throws 404 when the org itself is missing — that is a
   //    caller bug, not a skip, and is deliberately allowed to propagate.
-  const resolved = await resolveEffectiveAgentSystem(orgId, kind);
-  if (!resolved) return skip('no_effective_agent');
+  const resolvedPolicy = await resolveEffectiveAgentSystem(orgId, kind);
+  if (!resolvedPolicy) return skip('no_effective_agent');
+  // Wisp W02: under a grant the run is admitted — and recorded — with its
+  // allowlist intersected with the ceiling, computed ONCE here so every later
+  // gate (the workspace capability check below) and the stored policySnapshot
+  // agree. Narrower ⇒ release denies more ⇒ fail closed.
+  const resolved: AiAgentPolicySnapshot = grantCeiling
+    ? {
+        ...resolvedPolicy,
+        effective: {
+          ...resolvedPolicy.effective,
+          toolAllowlist: intersectAllowlistWithCeiling(resolvedPolicy.effective.toolAllowlist, grantCeiling),
+        },
+      }
+    : resolvedPolicy;
   snapshot = resolved;
 
   // 2a. Fleet Designer (W01) — the kind/profile pairing, BOTH directions, and
@@ -1262,6 +1483,23 @@ export async function createAndEnqueueAgentRun(
   // AI Suggested Fixes W2 — same shape as the designer arm: a research agent
   // runs its read-only, zero-action profile or it does not run.
   if (kind === 'research' && (input.profile ?? 'full') !== 'remediation_research') return skip('ownership_mismatch');
+  // Wisp W05 — an assessment is the org's triage agent working under a Wisp
+  // grant, or it does not run: another kind is an ownership mismatch, and a
+  // grant-less assessment would run with no ceiling, no budget accounting and
+  // no grantor (`assessment_requires_grant`, a caller bug surfaced as a skip).
+  if ((input.profile ?? 'full') === 'assessment' && (kind !== 'triage' || !input.grant)) {
+    return skip(kind !== 'triage' ? 'ownership_mismatch' : 'assessment_requires_grant');
+  }
+  // Wisp delegation W1 (#11084) — both directions, like the designer/research
+  // arms: the troubleshoot agent runs its device-pinned, forced-shadow profile
+  // or it does not run (the manual route's `full` default would otherwise run
+  // it with its stored mutating allowlist and none of the profile's floor),
+  // and that profile is the troubleshoot agent's on exactly one device under a
+  // Wisp grant. A grant-less run would have no ceiling and no origin thread.
+  if (kind === 'troubleshoot' && (input.profile ?? 'full') !== 'device_troubleshooting') return skip('ownership_mismatch');
+  if ((input.profile ?? 'full') === 'device_troubleshooting' && (kind !== 'troubleshoot' || !deviceId || !input.grant)) {
+    return skip(kind !== 'troubleshoot' || !deviceId ? 'ownership_mismatch' : 'troubleshoot_requires_grant');
+  }
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
@@ -1305,10 +1543,25 @@ export async function createAndEnqueueAgentRun(
   // narrower than "not forced shadow": the lift is keyed on the ticket
   // condition specifically, so it can never reach the anomaly force below —
   // an unproven detector has no lift at all, full stop.
+  //
+  // Wisp W05b (#9917) — assessment runs are ALSO always forced shadow, with
+  // no lift. An assessment reads tenant-authored text (tickets, alerts, the
+  // thread) and w00 allows it Tier 1 plus auto-approved Tier 2 only: an
+  // `act` start would make intentService's `resolvePolicyDecisionState`
+  // treat a supervised Tier-3 `propose_action` intent as policy-decidable,
+  // i.e. executable with no human. Shadow keeps every assessment proposal
+  // pending a human decision; like the anomaly force it changes only
+  // `modeAtStart`, never admission precedence.
+  //
+  // Wisp delegation W1 (#11084) — device_troubleshooting runs are ALSO always
+  // forced shadow, with no lift, for the same reason: the run reads device
+  // output and every change it wants must stay a pending human decision.
   const ticketAutonomy = (triggerKind === 'ticket' || input.ticketId)
     && effective.mode === 'act' && effective.triggers.ticketAutonomousWrites === true;
   const modeAtStart = ((triggerKind === 'ticket' || input.ticketId) && !ticketAutonomy)
-    || triggerKind === 'anomaly' || input.anomalyIncidentId ? 'shadow' : effective.mode;
+    || triggerKind === 'anomaly' || input.anomalyIncidentId
+    || (input.profile ?? 'full') === 'assessment'
+    || (input.profile ?? 'full') === 'device_troubleshooting' ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -1490,6 +1743,14 @@ export async function createAndEnqueueAgentRun(
     //     BEFORE any counter, so a refused analysis never consumes a slot.
     let analysisReservationCents = 0;
     let stagedInputs: AiAgentRunStagedInputs | null = null;
+    // Wisp analysis sessions W03: the analysis-chain lineage columns. Zeros for
+    // every run that continues nothing (`ai_agent_runs_chain_chk`).
+    let chainLineage: { continuedFromRunId: string | null; chainRootRunId: string | null; chainDepth: number } = {
+      continuedFromRunId: null, chainRootRunId: null, chainDepth: 0,
+    };
+    // Wisp analysis sessions W02 review fix: the trigger_ref written on the
+    // row. A `site` frame records its (verified) site below.
+    let triggerRef: Record<string, unknown> = input.triggerRef ?? {};
     if (profile === 'analysis') {
       const analysis = input.analysis;
       if (!analysis) return skip('analysis_not_available');
@@ -1525,26 +1786,132 @@ export async function createAndEnqueueAgentRun(
         return skip('analysis_region_unavailable');
       }
 
-      // (d) Freeze the input set. `deviceIds` are frozen here and nowhere
+      // (d) Freeze the input set. The device set is frozen here and nowhere
       //     else — `buildAgentAuthContext` pins `allowedDeviceIds` to exactly
       //     this list at loop start, so a device added to the org afterwards
       //     is not reachable by an already-admitted run.
-      const maxDevices = effective.limits.analysisMaxInputDevicesPerRun
-        ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun;
-      // Too many of the technician's OWN devices is its own refusal —
-      // `device_not_in_org` is a tenancy signal and must not be reused for it.
-      if (analysis.deviceIds.length > maxDevices) return skip('too_many_input_devices');
-      if (analysis.deviceIds.length > 0) {
-        const rows = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(and(inArray(devices.id, analysis.deviceIds), eq(devices.orgId, orgId)));
-        if (rows.length !== new Set(analysis.deviceIds).size) return skip('device_not_in_org');
+      //
+      //     Wisp analysis sessions W02: a `site` / `org` frame is EXPANDED
+      //     here, under the live ceiling's site allowlist for this org (step
+      //     1d resolved that ceiling from the same pinned grant and revision),
+      //     and bounded by `analysisMaxFrameDevices`; an explicit `devices`
+      //     list stays bounded by `analysisMaxInputDevicesPerRun`. An empty
+      //     frame is refused (`frame_empty`) and never frozen as `[]`. The
+      //     export grants arrive from the launcher, evaluated against the same
+      //     live ceiling, and are frozen verbatim.
+      //
+      //     Fail closed, in order:
+      //     1. a site/org frame needs a grant: without one there is no human
+      //        authority to bound it (`workspace_launch_analysis` stays
+      //        denied, #6086);
+      //     2. a grant-bearing analysis must arrive WITH its export grants,
+      //        never fall back to the legacy set;
+      //     3. export grants without a grant are refused: nothing would
+      //        bound them, and freezing them would give the run authority no
+      //        human ceiling was checked for.
+      if (analysis.scope !== 'devices' && !grantCeiling) return skip('analysis_not_available');
+      if (grantCeiling && !analysis.exportGrants) return skip('analysis_not_available');
+      if (!grantCeiling && analysis.exportGrants) return skip('analysis_not_available');
+      const frame = await resolveAnalysisFrame({
+        orgId,
+        scope: analysis.scope,
+        deviceIds: analysis.deviceIds,
+        siteId: analysis.siteId,
+        allowedSiteIds: grantCeiling ? ceilingSiteIdsForOrg(grantCeiling, orgId) : null,
+        maxInputDevices: effective.limits.analysisMaxInputDevicesPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun,
+        maxFrameDevices: effective.limits.analysisMaxFrameDevices
+          ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxFrameDevices,
+      });
+      if (!frame.ok) return skip(frame.refusal);
+      // A site frame's site belongs to the org and the grant reaches it (the
+      // frame refuses otherwise), and every frozen device is in it, so it is
+      // the run's visibility site: site-restricted users see its artifacts
+      // through `trigger_ref.siteId`. The caller can only verify a site for an
+      // explicit device list (`verifiedAnalysisSiteId`); for a site frame the
+      // devices are known only here, after expansion.
+      //
+      // W03: a continuation records NO visibility site. Its seed and inherited
+      // files come from earlier runs of the chain, which may have covered more
+      // than this site, so its outputs stay with unrestricted users (fails
+      // closed; `artifactSiteScopeCondition` already hides a run that staged
+      // files, but a continuation whose inherited files were all dropped
+      // still carries the prior's seed).
+      if (analysis.continuation) {
+        triggerRef = { ...triggerRef, siteId: null };
+      } else {
+        // A run that continues nothing never stores a continuation seed.
+        const { continuation: _stray, ...rest } = triggerRef;
+        triggerRef = frame.scope.kind === 'site' && frame.scope.siteId
+          ? { ...rest, siteId: frame.scope.siteId }
+          : rest;
       }
+
+      // (e) Wisp analysis sessions W03 — a continuation. Re-validated HERE,
+      //     under the (agent, org) and analysis-compute locks and before any
+      //     counter, so two concurrent continuations of one chain serialise
+      //     on the chain sum and a refusal consumes no slot. The launcher
+      //     validated and derived the lineage outside the lock; this re-reads
+      //     the prior and refuses a lineage that disagrees with it.
+      const continuation = analysis.continuation;
+      if (continuation) {
+        const [prior] = await db
+          .select({
+            id: aiAgentRuns.id,
+            profile: aiAgentRuns.profile,
+            grantId: aiAgentRuns.grantId,
+            status: aiAgentRuns.status,
+            chainRootRunId: aiAgentRuns.chainRootRunId,
+            chainDepth: aiAgentRuns.chainDepth,
+          })
+          .from(aiAgentRuns)
+          .where(and(eq(aiAgentRuns.id, continuation.fromRunId), eq(aiAgentRuns.orgId, orgId)))
+          .limit(1);
+        // The same LIVE grant on both runs, never "both grant-less": a run with
+        // no grant can never be continued (W00 C6). The prior must still be a
+        // settled analysis run, as the launcher checked.
+        const settled = (ANALYSIS_SETTLED_STATUSES as readonly string[]).includes(prior?.status ?? '');
+        if (!prior || prior.profile !== 'analysis' || !grantCeiling || !prior.grantId
+          || prior.grantId !== input.grant!.grantId || !settled) {
+          return skip('analysis_continuation_not_found');
+        }
+        // The stored seed must describe THIS lineage: `trigger_ref.continuation`
+        // is what the run loop renders, so a seed naming another run (or no
+        // seed at all) would put one run's context on another's chain.
+        const refContinuation = (triggerRef as { continuation?: { fromRunId?: unknown } }).continuation;
+        if (!refContinuation || refContinuation.fromRunId !== continuation.fromRunId) {
+          return skip('analysis_continuation_not_found');
+        }
+        // A prior whose root was deleted can no longer have its chain counted;
+        // treating it as a new root would silently reset every bound.
+        const root = chainRootOf(prior);
+        if (root === null) return skip('analysis_chain_too_long');
+        if (root !== continuation.chainRootRunId || prior.chainDepth + 1 !== continuation.chainDepth) {
+          return skip('analysis_continuation_not_found');
+        }
+        const limits = effective.limits;
+        if (continuation.chainDepth > (limits.analysisMaxChainDepth ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainDepth)) {
+          return skip('analysis_chain_too_long');
+        }
+        const { committedCents, runCount } = await chainCommittedCents(db, { orgId, chainRootRunId: root });
+        if (runCount >= (limits.analysisMaxChainRuns ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainRuns)) {
+          return skip('analysis_chain_too_long');
+        }
+        const thisRunAllowance = (limits.analysisMaxBudgetCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxBudgetCentsPerRun)
+          + (limits.analysisMaxComputeCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun);
+        if (committedCents + thisRunAllowance
+          > (limits.analysisMaxChainBudgetCents ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainBudgetCents)) {
+          return skip('analysis_chain_budget_exceeded');
+        }
+        chainLineage = { continuedFromRunId: prior.id, chainRootRunId: root, chainDepth: continuation.chainDepth };
+      }
+
       stagedInputs = {
         handles: [...new Set(analysis.inputHandles)],
-        deviceIds: [...new Set(analysis.deviceIds)],
+        deviceIds: frame.deviceIds,
         region,
+        scope: frame.scope,
+        ...(analysis.exportGrants ? { exportGrants: analysis.exportGrants } : {}),
       };
       analysisReservationCents = effective.limits.analysisMaxComputeCentsPerRun
         ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun;
@@ -1736,6 +2103,12 @@ export async function createAndEnqueueAgentRun(
     if (profile === 'remediation_research' && (agentRow.kind !== 'research' || deviceId === null)) {
       return skip('ownership_mismatch');
     }
+    // 8a (troubleshoot, #11084). Re-asserted against the ROW, not the input
+    //     kind: device_troubleshooting is driven only by a troubleshoot agent,
+    //     against exactly one device.
+    if (profile === 'device_troubleshooting' && (agentRow.kind !== 'troubleshoot' || deviceId === null)) {
+      return skip('ownership_mismatch');
+    }
 
     // 8b. device ∈ org. `assertRunOwnership` covers agent<->org only; the
     //     (orgId, deviceId) pair arrives from the caller and was inserted
@@ -1792,7 +2165,7 @@ export async function createAndEnqueueAgentRun(
         scheduleId: input.scheduleId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
-        triggerRef: input.triggerRef ?? {},
+        triggerRef,
         dedupeKey,
         modeAtStart,
         policySnapshot: resolved,
@@ -1803,6 +2176,13 @@ export async function createAndEnqueueAgentRun(
         taskStepKey: input.task?.taskStepKey ?? null,
         taskAttemptOrdinal: input.task?.attemptOrdinal ?? null,
         promptVersion: input.task?.promptVersion ?? null,
+        // Wisp W02: both or none (`ai_agent_runs_grant_link_chk`).
+        grantId: grantCeiling ? input.grant!.grantId : null,
+        grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
+        // Wisp W07: specialist lineage (`ai_agent_runs_depth_chk`).
+        ...lineage,
+        // Wisp analysis sessions W03: analysis-chain lineage (`ai_agent_runs_chain_chk`).
+        ...chainLineage,
         // Stamped by runLoop.ts with the model the run actually used, once
         // resolveModel has bound the offering (spec §6.2). Admission knows only
         // the offering, not a model string (W08: the policy model string is gone).
@@ -1878,7 +2258,7 @@ export async function createAndEnqueueAgentRun(
         correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
-        triggerRef: input.triggerRef ?? {},
+        triggerRef,
         modeAtStart,
         policySnapshot: resolved,
         status: 'queued',
@@ -1887,6 +2267,12 @@ export async function createAndEnqueueAgentRun(
         finishedAt: null,
         queuedAt: new Date(),
         correlationId: randomUUID(),
+        // #9451 — a new attempt: reopen its compute settlement. The new
+        // `queuedAt` above is the attempt identity in its debit key
+        // (`ai-compute:<run id>:<attempt>`), so it can never collide with the
+        // previous attempt's.
+        computeCents: null,
+        computeSettledAt: null,
         // Execution plane W04 — a reclaimed row must never carry a PREVIOUS
         // attempt's frozen inputs: this attempt froze its own set (or, for a
         // non-analysis profile, none at all).
@@ -1895,6 +2281,14 @@ export async function createAndEnqueueAgentRun(
         fundingSource: billingSource,
         admittedOfferingId,
         ...admissionServed,
+        // Wisp W02: this attempt's own grant pin. A reclaim must never leave a
+        // previous attempt's pin (or none) on a row admitted under a ceiling —
+        // the run loop and release enforce whatever the row carries.
+        grantId: grantCeiling ? input.grant!.grantId : null,
+        grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
+        ...lineage,
+        // W03: this attempt's own chain lineage (zeros when it continues nothing).
+        ...chainLineage,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),
@@ -2052,6 +2446,9 @@ export async function transitionRunStatus(
         // AI model registry W03 — the funding admission checked; the release
         // below settles on it rather than re-deriving one per org.
         fundingSource: aiAgentRuns.fundingSource,
+        // #9451 — NULL = the run never left `queued`, so no sandbox ever ran:
+        // the release below settles it at 0, not at the reservation.
+        startedAt: aiAgentRuns.startedAt,
       });
     const row = rows[0] ?? null;
 
@@ -2128,13 +2525,18 @@ export async function transitionRunStatus(
   // settle at the reservation, never $0" — a run we lost track of is exactly
   // the case where the measured number is gone. A normally finished run has
   // already settled (which NULLs the column), so this is a no-op for it, and
-  // `settleComputeCents` is idempotent against a cleared reservation.
+  // `settleComputeCents` settles each run attempt at most once (#9451: the
+  // first settle claims it; a later one changes nothing and bills nothing).
+  //
+  // #9451 — a run that never STARTED (enqueue failure, cancelled while
+  // queued) ran no sandbox, so it is settled at 0: billing it the worst case
+  // would charge an org for compute that never existed.
   const outstandingReservation = moved.computeReservedCents ?? 0;
   if (isTerminalRunStatus(to) && outstandingReservation > 0) {
     try {
       await settleComputeCents(
         // NULL = admitted before W03: the previous fail-safe.
-        moved.orgId, moved.id, outstandingReservation, moved.fundingSource ?? 'platform',
+        moved.orgId, moved.id, moved.startedAt ? outstandingReservation : 0, moved.fundingSource ?? 'platform',
       );
     } catch (error) {
       console.error('[aiAgentRunService] compute reservation release failed; the org keeps a held reservation', {

@@ -21,7 +21,7 @@
 
 import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { monitorDeviceState, monitorEpisodes } from '../../db/schema';
+import { monitorDefinitions, monitorDeviceState, monitorEpisodes } from '../../db/schema';
 import type { MonitorDefinitionRow } from '../../db/schema';
 import type { MonitorResponseOutcome } from '../../db/schema/monitorEpisodes';
 
@@ -131,6 +131,17 @@ export async function allocateSubjectEpisode(
     if (!open) throw new Error('Subject episode allocation lost its open episode');
     return open.id;
   });
+}
+
+export async function recordRecoveryObservation(
+  monitorId: string,
+  deviceId: string,
+  orgId: string,
+): Promise<void> {
+  const [monitor] = await db.select().from(monitorDefinitions)
+    .where(eq(monitorDefinitions.id, monitorId)).limit(1);
+  if (!monitor) return;
+  await recordMonitorEvaluation({ monitor, deviceId, orgId, observation: 'ok' });
 }
 
 export async function recordMonitorEvaluation(

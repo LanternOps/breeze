@@ -57,6 +57,7 @@ func parseArgs(args []string, getenv func(string) string, dryRun *bool) (sim.Con
 	fs.DurationVar(&cfg.Gates.MaxGap, "gate-max-gap", 0, "fail when any agent goes this long without a successful heartbeat (off when 0)")
 	fs.Float64Var(&cfg.Gates.LostPct, "gate-lost-pct", 0, "fail when more than this percent of requests are lost after retries (off when 0)")
 	fs.Float64Var(&cfg.LegacyRetryFraction, "legacy-retry-fraction", 0, "fraction of agents that ignore Retry-After (agents older than v0.64.3)")
+	fs.Float64Var(&cfg.PreW09Fraction, "pre-w09-fraction", 0, "fraction of agents that pace reconnects like the #9145 agent (no start jitter, 1-5 s after a server close, drain hints ignored)")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -115,6 +116,9 @@ func printDryRun(w io.Writer, sc sim.Scenario) {
 
 func actionString(a sim.Action) string {
 	if a.Internal != "" {
+		if a.WithinMs != nil {
+			return fmt.Sprintf("(internal) %s withinMs=%d", a.Internal, *a.WithinMs)
+		}
 		return "(internal) " + a.Internal
 	}
 	return strings.Join(a.Exec, " ")

@@ -27,6 +27,7 @@ const run: PortalRunDto = {
   startedAt: '2026-09-02T12:00:00.000Z',
   completedAt: '2026-09-02T12:01:00.000Z',
   rowCount: 4,
+  csvAvailable: true,
   createdAt: '2026-09-02T12:00:00.000Z',
 };
 
@@ -87,6 +88,14 @@ describe('ReportRunList', () => {
     ).toBe(
       '/api/v1/portal/reports/runs/run-1/csv',
     );
+  });
+
+  it('offers CSV only for runs whose result has rows (#9774)', () => {
+    const noRows: PortalRunDto = { ...run, id: 'run-nr', csvAvailable: false };
+    render(<ReportRunList initialRuns={[run, noRows]} timezone="America/Denver" />);
+    expect(screen.getByTestId('portal-report-run-csv-run-1')).toBeTruthy();
+    expect(screen.getByTestId('portal-report-run-pdf-run-nr')).toBeTruthy();
+    expect(screen.queryByTestId('portal-report-run-csv-run-nr')).toBeNull();
   });
 
   it('renders generated timestamps in the organization timezone with its label', () => {
@@ -367,6 +376,26 @@ describe('ReportRunList', () => {
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
 
+  // #11018 W2: customer-safe, unlike its MSP-internal sibling below, and evidence
+  // rather than self-service: listed once delivered, never generated here.
+  it('shows a delivered ticket_sla_performance run with PDF and CSV', () => {
+    const slaRun: PortalRunDto = {
+      ...run,
+      id: 'run-sla',
+      name: 'Service evidence — SLA performance',
+      type: 'ticket_sla_performance',
+      csvAvailable: true,
+    };
+    render(<ReportRunList initialRuns={[slaRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-sla')).toBeInTheDocument();
+    expect(screen.getByText('SLA performance')).toBeInTheDocument();
+    expect(screen.queryByText(/service evidence/i)).toBeNull();
+    expect(screen.getByTestId('portal-report-run-pdf-run-sla')).toBeInTheDocument();
+    expect(screen.getByTestId('portal-report-run-csv-run-sla')).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-ticket-sla-performance')).toBeNull();
+    expect(screen.queryByText(/generate .*sla/i)).toBeNull();
+  });
+
   // #3198 W03, plus ai_usage_by_client (#7608 W10). These types are internal
   // by construction: they are absent from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
   // are org- or partner-owned MSP reports. If a row of one ever reaches this
@@ -377,6 +406,9 @@ describe('ReportRunList', () => {
     { type: 'technician_time_billability', name: 'Technician time & billability' },
     { type: 'ar_aging', name: 'AR aging' },
     { type: 'ai_usage_by_client', name: 'AI usage by client' },
+    { type: 'mrr_renewals', name: 'MRR & renewals' },
+    { type: 'quote_win_rate', name: 'Quote win rate' },
+    { type: 'client_profitability', name: 'Client profitability' },
   ] as const;
   const leakedRun = (type: string, name: string) =>
     ({ ...run, id: `run-${type}`, name, type }) as unknown as PortalRunDto;

@@ -1,8 +1,6 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { db } from '../../db';
-import { deviceLinkGroups, devices } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -13,12 +11,14 @@ import {
 } from './helpers';
 import { createLinkGroupSchema, updateLinkGroupSchema } from './schemas';
 import {
-  MAX_LINK_GROUP_SIZE,
-  LinkGroupSiteAccessError,
-  deleteLinkGroup,
-  dissolveLinkGroupIfBelowMinimum,
-  lockAndAuthorizeLinkGroupMutation,
-} from '../../services/deviceLinkGroups';
+  createLinkGroup,
+  dissolveLinkGroup,
+  getDeviceLinkGroup,
+  getLinkGroup,
+  listLinkGroups,
+  updateLinkGroup,
+  type CheckDevice,
+} from '../../services/deviceLinkGroupOps';
 import { captureException } from '../../services/sentry';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -34,6 +34,9 @@ import type { AuthContext } from '../../middleware/auth';
  * rules). The device-detail Linked Profiles tab lists all members and hosts
  * the unlink/dissolve actions.
  *
+ * The logic lives in services/deviceLinkGroupOps.ts (shared with the AI
+ * tools); these handlers are thin adapters.
+ *
  * Mounted BEFORE coreRoutes so the static `/link-groups` paths are not eaten by
  * the core `/:id` matcher.
  */
@@ -41,81 +44,12 @@ export const linksRoutes = new Hono();
 
 linksRoutes.use('*', authMiddleware);
 
-/**
- * Thrown inside a link/patch transaction when the guarded membership UPDATE
- * claims fewer rows than expected — i.e. a concurrent request linked one of
- * the devices between the pre-check and the transaction. Aborts (rolls back)
- * the whole operation; the route maps it to a 409.
- */
-class LinkRaceError extends Error {
-  constructor() {
-    super('link group membership changed concurrently');
-    this.name = 'LinkRaceError';
-  }
-}
-
-/** Client-facing shape of one member (boot profile / host / guest) in a link group. */
-interface LinkGroupMember {
-  deviceId: string;
-  hostname: string;
-  displayName: string | null;
-  osType: string;
-  osVersion: string;
-  agentVersion: string;
-  status: string;
-  lastSeenAt: Date | null;
-  /** 'host' | 'guest' within a vm_host group (#2308); null for multiboot peers. */
-  role: string | null;
-}
-
-/**
- * Fetch the boot-profile members of one or more groups, honoring the caller's
- * site-scope restriction. A site-restricted caller only sees members in sites
- * they can access — so a group can render with a subset of its profiles, never
- * with devices from a forbidden site.
- */
-async function loadMembers(
-  groupIds: string[],
-  auth: Pick<AuthContext, 'canAccessSite'>,
-): Promise<Map<string, LinkGroupMember[]>> {
-  const byGroup = new Map<string, LinkGroupMember[]>();
-  if (groupIds.length === 0) return byGroup;
-
-  const rows = await db
-    .select({
-      deviceId: devices.id,
-      linkGroupId: devices.linkGroupId,
-      siteId: devices.siteId,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-      osType: devices.osType,
-      osVersion: devices.osVersion,
-      agentVersion: devices.agentVersion,
-      status: devices.status,
-      lastSeenAt: devices.lastSeenAt,
-      role: devices.linkGroupRole,
-    })
-    .from(devices)
-    .where(inArray(devices.linkGroupId, groupIds));
-
-  for (const r of rows) {
-    if (!r.linkGroupId) continue;
-    if (auth.canAccessSite && !auth.canAccessSite(r.siteId)) continue;
-    const list = byGroup.get(r.linkGroupId) ?? [];
-    list.push({
-      deviceId: r.deviceId,
-      hostname: r.hostname,
-      displayName: r.displayName,
-      osType: r.osType,
-      osVersion: r.osVersion,
-      agentVersion: r.agentVersion,
-      status: r.status,
-      lastSeenAt: r.lastSeenAt,
-      role: r.role ?? null,
-    });
-    byGroup.set(r.linkGroupId, list);
-  }
-  return byGroup;
+/** Hono-bound device lookup for the service: org + site check, SITE_ACCESS_DENIED → 'site_denied'. */
+function deviceChecker(c: Context, auth: AuthContext): CheckDevice {
+  return async (id) => {
+    const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
+    return device === SITE_ACCESS_DENIED ? 'site_denied' : device;
+  };
 }
 
 // GET /devices/link-groups — every link group in the caller's accessible orgs,
@@ -126,29 +60,8 @@ linksRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
-
-    const orgFilter = auth.orgCondition(deviceLinkGroups.orgId);
-    const groups = await db
-      .select()
-      .from(deviceLinkGroups)
-      .where(orgFilter ?? undefined);
-
-    const members = await loadMembers(groups.map((g) => g.id), auth);
-
-    return c.json({
-      data: groups
-        .filter((g) => auth.allowedSiteIds === undefined || members.has(g.id))
-        .map((g) => ({
-        id: g.id,
-        orgId: g.orgId,
-        kind: g.kind,
-        name: g.name,
-        createdBy: g.createdBy,
-        createdAt: g.createdAt,
-        updatedAt: g.updatedAt,
-        members: members.get(g.id) ?? [],
-      })),
-    });
+    const r = await listLinkGroups({ auth, audit: (e) => writeRouteAudit(c, e) });
+    return c.json(r.body, r.status);
   },
 );
 
@@ -163,124 +76,18 @@ linksRoutes.post(
   zValidator('json', createLinkGroupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { kind, name, deviceIds, hostDeviceId } = c.req.valid('json');
-
-    const uniqueIds = [...new Set(deviceIds)];
-    if (uniqueIds.length < 2) {
-      return c.json({ error: 'A link group needs at least two distinct devices' }, 400);
-    }
-
-    // Validate every device: org + site access, existence, not already linked,
-    // and collect the rows so we can enforce the same-org invariant.
-    const resolved: (typeof devices.$inferSelect)[] = [];
-    for (const id of uniqueIds) {
-      const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
-      if (device === SITE_ACCESS_DENIED) {
-        return c.json({ error: 'Access to a device site denied' }, 403);
-      }
-      if (!device) {
-        return c.json({ error: `Device ${id} not found` }, 404);
-      }
-      if (device.linkGroupId) {
-        return c.json({ error: `Device ${id} is already part of a link group` }, 409);
-      }
-      resolved.push(device);
-    }
-
-    // Same-org invariant — the DB composite FK enforces it too, but a clean 400
-    // beats a raw constraint error. All boot profiles are one physical machine
-    // in one org.
-    const orgId = resolved[0]!.orgId;
-    if (resolved.some((d) => d.orgId !== orgId)) {
-      return c.json({ error: 'All linked devices must belong to the same organization' }, 400);
-    }
-
-    let groupId: string;
-    try {
-      await db.transaction(async (tx) => {
-        // The friendly checks above precede this transaction. Lock and
-        // re-authorize every unique target before inserting the group: a site
-        // move committed in that window must not let the subsequent claim run
-        // with stale authority. The insert follows the check so denial leaves
-        // neither an empty group nor partial membership behind.
-        await lockAndAuthorizeLinkGroupMutation(
-          tx,
-          null,
-          auth.allowedSiteIds,
-          uniqueIds,
-        );
-        const [group] = await tx
-          .insert(deviceLinkGroups)
-          .values({ orgId, kind, name: name ?? null, createdBy: auth.user.id })
-          .returning({ id: deviceLinkGroups.id });
-        groupId = group!.id;
-        // Self-guarding claim: only devices STILL unlinked take the group id.
-        // The pre-check above ran outside this transaction, so a concurrent
-        // link could have claimed a device in between (TOCTOU) — without the
-        // guard the winner's group would silently lose the device. A row-count
-        // mismatch aborts the whole link with a 409 instead.
-        //
-        // vm_host (#2308) claims in two batches purely because the role value
-        // differs per member (host vs guests); the guard semantics are the
-        // same — total claimed rows must equal the requested membership.
-        // Multiboot members are peers, so role stays NULL (set explicitly to
-        // self-heal any stale value, though unlink paths always clear it).
-        const batches: Array<{ ids: string[]; role: string | null }> =
-          kind === 'vm_host'
-            ? [
-                { ids: [hostDeviceId!], role: 'host' },
-                { ids: uniqueIds.filter((id) => id !== hostDeviceId), role: 'guest' },
-              ]
-            : [{ ids: uniqueIds, role: null }];
-        for (const batch of batches) {
-          const claimed = await tx
-            .update(devices)
-            .set({ linkGroupId: groupId, linkGroupRole: batch.role, updatedAt: new Date() })
-            .where(and(inArray(devices.id, batch.ids), isNull(devices.linkGroupId)))
-            .returning({ id: devices.id });
-          if (claimed.length !== batch.ids.length) {
-            throw new LinkRaceError();
-          }
-        }
-      });
-    } catch (err) {
-      if (err instanceof LinkGroupSiteAccessError) {
-        return c.json({ error: 'Access to a device site denied' }, 403);
-      }
-      if (err instanceof LinkRaceError) {
-        return c.json({ error: 'A device was linked by another request — retry' }, 409);
-      }
-      throw err;
-    }
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'device_link_group.create',
-      resourceType: 'device_link_group',
-      resourceId: groupId!,
-      resourceName: name ?? null,
-      details: { kind, deviceIds: uniqueIds, ...(hostDeviceId ? { hostDeviceId } : {}) },
-    });
-
-    const members = await loadMembers([groupId!], auth);
-    return c.json(
-      { id: groupId!, orgId, kind, name: name ?? null, members: members.get(groupId!) ?? [] },
-      201,
+    const r = await createLinkGroup(
+      {
+        auth,
+        checkDevice: deviceChecker(c, auth),
+        audit: (e) => writeRouteAudit(c, e),
+        actorUserId: auth.user.id,
+      },
+      c.req.valid('json'),
     );
+    return c.json(r.body, r.status);
   },
 );
-
-/** Load a group and enforce org access. Returns null (→ 404) when hidden. */
-async function getGroupWithOrgCheck(groupId: string, auth: AuthContext) {
-  const [group] = await db
-    .select()
-    .from(deviceLinkGroups)
-    .where(eq(deviceLinkGroups.id, groupId))
-    .limit(1);
-  if (!group) return null;
-  if (!(await ensureOrgAccess(group.orgId, auth))) return null;
-  return group;
-}
 
 // GET /devices/link-groups/:groupId — one group with its members.
 linksRoutes.get(
@@ -289,25 +96,15 @@ linksRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('groupId')!;
-
-    const group = await getGroupWithOrgCheck(groupId, auth);
-    if (!group) return c.json({ error: 'Link group not found' }, 404);
-
-    const members = await loadMembers([groupId], auth);
-    if (auth.allowedSiteIds !== undefined && !members.has(groupId)) {
-      return c.json({ error: 'Link group not found' }, 404);
-    }
-    return c.json({
-      id: group.id,
-      orgId: group.orgId,
-      kind: group.kind,
-      name: group.name,
-      createdBy: group.createdBy,
-      createdAt: group.createdAt,
-      updatedAt: group.updatedAt,
-      members: members.get(groupId) ?? [],
-    });
+    const r = await getLinkGroup(
+      {
+        auth,
+        hasOrgAccess: (orgId) => ensureOrgAccess(orgId, auth),
+        audit: (e) => writeRouteAudit(c, e),
+      },
+      c.req.param('groupId')!,
+    );
+    return c.json(r.body, r.status);
   },
 );
 
@@ -320,154 +117,17 @@ linksRoutes.patch(
   zValidator('json', updateLinkGroupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('groupId')!;
-    const { name, addDeviceIds, removeDeviceIds } = c.req.valid('json');
-
-    const group = await getGroupWithOrgCheck(groupId, auth);
-    if (!group) return c.json({ error: 'Link group not found' }, 404);
-
-    // Validate additions up front (org + site + not-already-linked-elsewhere)
-    // before mutating anything.
-    const toAdd = [...new Set(addDeviceIds ?? [])];
-    for (const id of toAdd) {
-      const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
-      if (device === SITE_ACCESS_DENIED) {
-        return c.json({ error: 'Link group not found' }, 404);
-      }
-      if (!device) {
-        return c.json({ error: `Device ${id} not found` }, 404);
-      }
-      if (device.orgId !== group.orgId) {
-        return c.json({ error: 'All linked devices must belong to the same organization' }, 400);
-      }
-      if (device.linkGroupId && device.linkGroupId !== groupId) {
-        return c.json({ error: `Device ${id} is already part of another link group` }, 409);
-      }
-    }
-
-    // Validate removals through the SAME org+site chokepoint as additions and
-    // reads (loadMembers), so a site-restricted caller cannot unlink a boot
-    // profile in a site they can't access just by knowing its id.
-    const toRemove = [...new Set(removeDeviceIds ?? [])];
-    for (const id of toRemove) {
-      const device = await getDeviceWithOrgAndSiteCheck(c, id, auth);
-      if (device === SITE_ACCESS_DENIED) {
-        return c.json({ error: 'Link group not found' }, 404);
-      }
-      if (!device) {
-        return c.json({ error: `Device ${id} not found` }, 404);
-      }
-      // Removing a device that is NOT a member of this group would silently
-      // no-op (the tx update is scoped to this group) while returning 200 and
-      // recording a false audit entry. Reject it instead.
-      if (device.linkGroupId !== groupId) {
-        return c.json({ error: `Device ${id} is not a member of this link group` }, 409);
-      }
-    }
-
-    // Enforce the size ceiling on the resulting membership.
-    const currentMembers = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(eq(devices.linkGroupId, groupId));
-    const currentIds = new Set(currentMembers.map((m) => m.id));
-    for (const id of toRemove) currentIds.delete(id);
-    for (const id of toAdd) currentIds.add(id);
-    if (currentIds.size > MAX_LINK_GROUP_SIZE) {
-      return c.json({ error: `A link group may contain at most ${MAX_LINK_GROUP_SIZE} devices` }, 400);
-    }
-
-    let dissolved = false;
-    try {
-      await db.transaction(async (tx) => {
-        await lockAndAuthorizeLinkGroupMutation(
-          tx,
-          groupId,
-          auth.allowedSiteIds,
-          [...toAdd, ...toRemove],
-        );
-        if (name !== undefined || toAdd.length > 0 || toRemove.length > 0) {
-          await tx
-            .update(deviceLinkGroups)
-            .set({ ...(name !== undefined ? { name } : {}), updatedAt: new Date() })
-            .where(eq(deviceLinkGroups.id, groupId));
-        }
-        if (toRemove.length > 0) {
-          // Only unlink devices actually in THIS group. Role is cleared with
-          // the membership — it is meaningless outside a group (#2308).
-          await tx
-            .update(devices)
-            .set({ linkGroupId: null, linkGroupRole: null, updatedAt: new Date() })
-            .where(and(inArray(devices.id, toRemove), eq(devices.linkGroupId, groupId)));
-        }
-        if (toAdd.length > 0) {
-          // Self-guarding claim (same TOCTOU rationale as the create route):
-          // only devices still unlinked — or already in this group — take the
-          // group id. A concurrent link stealing one of them aborts with 409
-          // instead of silently succeeding with fewer members.
-          //
-          // Two batches so a no-op RE-add of an existing member keeps its role
-          // (#2308: overwriting would demote a vm_host group's host to guest
-          // and dissolve the group). Batch 1 touches only rows already in this
-          // group; batch 2 only still-unlinked rows — disjoint by WHERE, so
-          // the combined row count is the same guard as the single update.
-          const reAdded = await tx
-            .update(devices)
-            .set({ linkGroupId: groupId, updatedAt: new Date() })
-            .where(and(inArray(devices.id, toAdd), eq(devices.linkGroupId, groupId)))
-            .returning({ id: devices.id });
-          // vm_host (#2308): a group's host is fixed at create time, so every
-          // newly linked member is a guest. Multiboot members are peers (NULL).
-          const claimed = await tx
-            .update(devices)
-            .set({
-              linkGroupId: groupId,
-              linkGroupRole: group.kind === 'vm_host' ? 'guest' : null,
-              updatedAt: new Date(),
-            })
-            .where(and(inArray(devices.id, toAdd), isNull(devices.linkGroupId)))
-            .returning({ id: devices.id });
-          if (reAdded.length + claimed.length !== toAdd.length) {
-            throw new LinkRaceError();
-          }
-        }
-        // A group that fell below the minimum after removals is meaningless —
-        // dissolve it (unlink the lone survivor, delete the row). For vm_host
-        // this also dissolves a group whose HOST was just removed: guests
-        // without their nesting anchor are a headless group (#2308).
-        dissolved = await dissolveLinkGroupIfBelowMinimum(tx, groupId, auth.allowedSiteIds);
-      });
-    } catch (err) {
-      if (err instanceof LinkGroupSiteAccessError) {
-        return c.json({ error: 'Link group not found' }, 404);
-      }
-      if (err instanceof LinkRaceError) {
-        return c.json({ error: 'A device was linked by another request — retry' }, 409);
-      }
-      throw err;
-    }
-
-    writeRouteAudit(c, {
-      orgId: group.orgId,
-      action: dissolved ? 'device_link_group.dissolve' : 'device_link_group.update',
-      resourceType: 'device_link_group',
-      resourceId: groupId,
-      resourceName: name ?? group.name,
-      details: { addDeviceIds: toAdd, removeDeviceIds: toRemove, dissolved },
-    });
-
-    if (dissolved) {
-      return c.json({ id: groupId, dissolved: true, members: [] });
-    }
-
-    const members = await loadMembers([groupId], auth);
-    return c.json({
-      id: group.id,
-      orgId: group.orgId,
-      kind: group.kind,
-      name: name !== undefined ? name : group.name,
-      members: members.get(groupId) ?? [],
-    });
+    const r = await updateLinkGroup(
+      {
+        auth,
+        checkDevice: deviceChecker(c, auth),
+        hasOrgAccess: (orgId) => ensureOrgAccess(orgId, auth),
+        audit: (e) => writeRouteAudit(c, e),
+      },
+      c.req.param('groupId')!,
+      c.req.valid('json'),
+    );
+    return c.json(r.body, r.status);
   },
 );
 
@@ -479,31 +139,15 @@ linksRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const groupId = c.req.param('groupId')!;
-
-    const group = await getGroupWithOrgCheck(groupId, auth);
-    if (!group) return c.json({ error: 'Link group not found' }, 404);
-
-    try {
-      await db.transaction(async (tx) => {
-        await deleteLinkGroup(tx, groupId, auth.allowedSiteIds);
-      });
-    } catch (err) {
-      if (err instanceof LinkGroupSiteAccessError) {
-        return c.json({ error: 'Link group not found' }, 404);
-      }
-      throw err;
-    }
-
-    writeRouteAudit(c, {
-      orgId: group.orgId,
-      action: 'device_link_group.delete',
-      resourceType: 'device_link_group',
-      resourceId: groupId,
-      resourceName: group.name,
-    });
-
-    return c.json({ success: true });
+    const r = await dissolveLinkGroup(
+      {
+        auth,
+        hasOrgAccess: (orgId) => ensureOrgAccess(orgId, auth),
+        audit: (e) => writeRouteAudit(c, e),
+      },
+      c.req.param('groupId')!,
+    );
+    return c.json(r.body, r.status);
   },
 );
 
@@ -516,51 +160,14 @@ linksRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id')!;
-
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
-    if (device === SITE_ACCESS_DENIED) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-
-    if (!device.linkGroupId) {
-      return c.json({ group: null, members: [] });
-    }
-
-    const [group] = await db
-      .select()
-      .from(deviceLinkGroups)
-      .where(eq(deviceLinkGroups.id, device.linkGroupId))
-      .limit(1);
-    if (!group) {
-      // Dangling reference — impossible under the composite FK, so if it ever
-      // fires something bypassed the constraint (manual fix-up, bad migration,
-      // RLS filtering the group row while the device stays visible). Be LOUD:
-      // silently rendering "not linked" would mask data corruption.
-      console.error(
-        `Device ${deviceId} references link group ${device.linkGroupId} which is not visible/present`,
-      );
-      captureException(
-        new Error(`device link group dangling reference: device ${deviceId} -> group ${device.linkGroupId}`),
-        c,
-      );
-      return c.json({ group: null, members: [] });
-    }
-
-    const members = await loadMembers([group.id], auth);
-    return c.json({
-      group: {
-        id: group.id,
-        orgId: group.orgId,
-        kind: group.kind,
-        name: group.name,
-        createdAt: group.createdAt,
-        updatedAt: group.updatedAt,
+    const r = await getDeviceLinkGroup(
+      {
+        auth,
+        checkDevice: deviceChecker(c, auth),
+        reportDanglingReference: (err) => captureException(err, c),
       },
-      members: members.get(group.id) ?? [],
-    });
+      c.req.param('id')!,
+    );
+    return c.json(r.body, r.status);
   },
 );

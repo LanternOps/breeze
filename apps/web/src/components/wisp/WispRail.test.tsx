@@ -1,0 +1,221 @@
+/**
+ * W01 (#10211) Task 10: the Wisp rail. Sections in order (identity with the
+ * grant controls, needs you, workers, linked items, activity, footer links),
+ * the hash-target ids, and the props each child receives. Heavy children are
+ * stubs that record their props.
+ */
+import { render, screen, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Concern, WispThreadLink } from '@breeze/shared';
+import type { WispState } from '@/stores/aiStore';
+import WispRail, { type WispRailProps } from './WispRail';
+
+const h = vi.hoisted(() => ({
+  headerProps: null as null | Record<string, unknown>,
+  controlsArgs: null as null | Record<string, unknown>,
+  controls: {
+    openRefresh: () => {}, openSettings: () => {}, askRevoke: () => {}, settings: { open: false },
+  } as Record<string, unknown>,
+  needsYouProps: null as null | Record<string, unknown>,
+  workersProps: null as null | Record<string, unknown>,
+  linksProps: null as null | Record<string, unknown>,
+  activityProps: null as null | Record<string, unknown>,
+}));
+
+// The rail owns the grant controls' state so the action buttons can sit in the
+// identity card's title row; the buttons are real, the rest of the controls a stub.
+vi.mock('../ai/useWispGrantControls', () => ({
+  useWispGrantControls: (args: Record<string, unknown>) => {
+    h.controlsArgs = args;
+    return h.controls;
+  },
+}));
+vi.mock('../ai/WispThreadHeader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ai/WispThreadHeader')>()),
+  WispGrantDetails: (props: Record<string, unknown>) => {
+    h.headerProps = props;
+    return <div data-testid="wisp-grant-details" />;
+  },
+}));
+// The real component owns `id="needs-you"`; the stub carries it the same way.
+vi.mock('./WispNeedsYou', () => ({
+  default: (props: Record<string, unknown>) => {
+    h.needsYouProps = props;
+    return <section id="needs-you" data-testid="wisp-needs-you" />;
+  },
+}));
+vi.mock('./WispWorkersPanel', () => ({
+  default: (props: Record<string, unknown>) => {
+    h.workersProps = props;
+    return <section data-testid="wisp-workers" />;
+  },
+}));
+// The real component owns `id="links"`; the stub carries it the same way.
+vi.mock('./WispLinksPanel', () => ({
+  default: (props: Record<string, unknown>) => {
+    h.linksProps = props;
+    return <section id="links" data-testid="wisp-links-panel" />;
+  },
+}));
+vi.mock('./WispActivityPanel', () => ({
+  default: (props: Record<string, unknown>) => {
+    h.activityProps = props;
+    return <div data-testid="wisp-activity" />;
+  },
+}));
+
+const mkWisp = (extra: Partial<NonNullable<WispState>> = {}): NonNullable<WispState> => ({
+  grantId: 'g1', threadId: 't1', scopeOrgId: 'o1', focusOrgId: null, focusOrgName: null,
+  status: 'active', expiresAt: new Date(Date.now() + 86400_000).toISOString(), summary: '',
+  budgetCentsPerDay: 500, floorTickMinutes: 15, wideningAvailable: true, ...extra,
+});
+
+const concern = { id: 'c1', status: 'open' } as unknown as Concern;
+const link = { id: 'l1' } as unknown as WispThreadLink;
+
+const mkProps = (extra: Partial<WispRailProps> = {}): WispRailProps => ({
+  wisp: mkWisp(),
+  orgName: 'Acme',
+  current: null,
+  needsYou: [concern],
+  links: [link],
+  onLinksChange: vi.fn(),
+  onWispChange: vi.fn(),
+  onRevoked: vi.fn(),
+  activityKey: 3,
+  ...extra,
+});
+
+const ORDER = ['wisp-identity', 'wisp-needs-you', 'wisp-workers', 'wisp-links-panel', 'wisp-activity', 'wisp-rail-nav'];
+
+describe('WispRail', () => {
+  beforeEach(() => {
+    h.headerProps = null;
+    h.controlsArgs = null;
+    h.needsYouProps = null;
+    h.workersProps = null;
+    h.linksProps = null;
+    h.activityProps = null;
+  });
+
+  describe('the brief line (#10402)', () => {
+    const schedule = { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: null };
+
+    it('shows the brief time and the resolved zone beside the grant controls', () => {
+      render(<WispRail {...mkProps({ briefSchedule: schedule })} />);
+      expect(screen.getByTestId('wisp-rail-brief-at')).toHaveTextContent('Your morning brief goes out at 08:00 (America/Denver).');
+    });
+
+    it('is absent with the brief off, without a schedule (thread page), or once the delegation ended', () => {
+      const { rerender } = render(<WispRail {...mkProps({ briefSchedule: { ...schedule, timeLocal: null } })} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+      rerender(<WispRail {...mkProps()} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+      rerender(<WispRail {...mkProps({ briefSchedule: schedule, wisp: mkWisp({ status: 'revoked' }) })} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+    });
+  });
+
+  it('renders sections in order with their ids and the footer links', () => {
+    const props = mkProps({ current: { orgId: 'o1', orgName: 'Greenwood', startedAt: new Date().toISOString() } });
+    const { container } = render(<WispRail {...props} />);
+    const rail = screen.getByTestId('wisp-rail');
+
+    const seen = Array.from(rail.querySelectorAll('[data-testid]'))
+      .map((el) => el.getAttribute('data-testid'))
+      .filter((id): id is string => ORDER.includes(id ?? ''));
+    expect(seen).toEqual(ORDER);
+
+    // Hash deep links land on the rail sections, each exactly once.
+    for (const id of ['needs-you', 'links', 'activity']) {
+      expect(container.querySelectorAll(`#${id}`)).toHaveLength(1);
+    }
+    expect(within(container.querySelector('#activity') as HTMLElement).getByTestId('wisp-activity')).toBeTruthy();
+
+    // The grant controls sit inside the identity card; the live line is the card's, not the header's.
+    const identity = screen.getByTestId('wisp-identity');
+    expect(within(identity).getByTestId('wisp-grant-details')).toBeTruthy();
+    expect(screen.getByTestId('wisp-state-line').textContent).toContain('Greenwood');
+    expect(h.controlsArgs).toMatchObject({
+      wisp: props.wisp, orgName: 'Acme', onWispChange: props.onWispChange, onRevoked: props.onRevoked,
+    });
+    // The rail keeps the full controls (spend meter, pause); no focus picker, no live line of its own.
+    expect(h.headerProps).toEqual({ wisp: props.wisp, wideningAvailable: true, controls: h.controls });
+
+    expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern], refreshKey: 3 });
+    expect(h.workersProps).toMatchObject({ threadId: 't1', refreshKey: 3 });
+    expect(h.linksProps).toMatchObject({ threadId: 't1', links: [link], onLinksChange: props.onLinksChange });
+    expect(h.activityProps).toMatchObject({ threadId: 't1', refreshKey: 3, collapsible: true });
+
+    const chats = screen.getByTestId('wisp-home-chats');
+    expect(chats.getAttribute('href')).toBe('/ai/chat');
+    expect(chats.textContent).toContain('All chats');
+    const memory = screen.getByTestId('wisp-home-memory');
+    expect(memory.getAttribute('href')).toBe('/settings/wisp-memory');
+    expect(memory.textContent).toContain('Memory');
+    expect(screen.getByTestId('wisp-rail-nav').tagName).toBe('NAV');
+  });
+
+  // The full header's top row held only the three icons once the identity card
+  // took its scope and status: an icon-only row under the card's title.
+  it('the grant actions sit in the identity card’s title row, once, with no icon-only row under it', () => {
+    render(<WispRail {...mkProps()} />);
+    const identity = screen.getByTestId('wisp-identity');
+    const title = within(identity).getByTestId('wisp-identity-title');
+    expect(title).toContainElement(within(identity).getByRole('heading', { level: 2 }));
+    for (const id of ['wisp-refresh-grant', 'wisp-settings', 'wisp-revoke']) {
+      expect(within(identity).getAllByTestId(id)).toHaveLength(1);
+      expect(title).toContainElement(within(identity).getByTestId(id));
+    }
+    // Widening available: Refresh stays the primary, labelled button.
+    expect(within(title).getByTestId('wisp-refresh-grant')).toHaveAttribute('data-variant', 'primary');
+  });
+
+  it('needsYou null hides the section', () => {
+    const { container } = render(<WispRail {...mkProps({ needsYou: null })} />);
+    expect(screen.queryByTestId('wisp-needs-you')).toBeNull();
+    expect(h.needsYouProps).toBeNull();
+    expect(container.querySelector('#needs-you')).toBeNull();
+    expect(screen.getByTestId('wisp-workers')).toBeTruthy();
+  });
+
+  it('links null hides the section', () => {
+    const { container } = render(<WispRail {...mkProps({ links: null })} />);
+    expect(screen.queryByTestId('wisp-links-panel')).toBeNull();
+    expect(h.linksProps).toBeNull();
+    expect(container.querySelector('#links')).toBeNull();
+    expect(screen.getByTestId('wisp-activity')).toBeTruthy();
+  });
+
+  it('links panel canAdd follows the grant status', () => {
+    const { rerender } = render(<WispRail {...mkProps()} />);
+    expect(h.linksProps?.canAdd).toBe(true);
+    rerender(<WispRail {...mkProps({ wisp: mkWisp({ status: 'paused' }) })} />);
+    expect(h.linksProps?.canAdd).toBe(false);
+  });
+
+  // #10104: an ended delegation authorizes no reads (the API answers 409
+  // grant_inactive), so the rail says so instead of three "Couldn't load" panes.
+  it.each(['revoked', 'expired'] as const)('a %s grant shows the ended notice and mounts no reading section', (status) => {
+    const { container } = render(<WispRail {...mkProps({ wisp: mkWisp({ status }) })} />);
+    const notice = screen.getByTestId('wisp-rail-ended');
+    expect(notice.textContent).toBe('This delegation has ended, so its concerns, workers and activity are no longer shown.');
+    expect(h.needsYouProps).toBeNull();
+    expect(h.workersProps).toBeNull();
+    expect(h.linksProps).toBeNull();
+    expect(h.activityProps).toBeNull();
+    for (const id of ['needs-you', 'links']) expect(container.querySelector(`#${id}`)).toBeNull();
+    // The grant controls and the way out stay.
+    expect(within(screen.getByTestId('wisp-identity')).getByTestId('wisp-grant-details')).toBeTruthy();
+    expect(within(screen.getByTestId('wisp-identity-title')).getByTestId('wisp-revoke')).toBeTruthy();
+    expect(screen.getByTestId('wisp-rail-nav')).toBeTruthy();
+  });
+
+  it('a paused grant keeps its reading sections and shows no ended notice', () => {
+    render(<WispRail {...mkProps({ wisp: mkWisp({ status: 'paused' }) })} />);
+    expect(screen.queryByTestId('wisp-rail-ended')).toBeNull();
+    expect(h.needsYouProps).not.toBeNull();
+    expect(h.workersProps).not.toBeNull();
+    expect(h.activityProps).not.toBeNull();
+  });
+});

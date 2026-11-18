@@ -39,6 +39,7 @@ const alertsSummary: AlertsSummary = {
 };
 
 const noVulns: VulnerabilityStats = {
+  openFindings: 0,
   criticalOpen: 0,
   kevCveCount: 0,
   kevDeviceCount: 0,

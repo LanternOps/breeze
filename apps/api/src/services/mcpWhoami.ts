@@ -49,15 +49,23 @@ export type WhoamiInput = {
   /** Effective ai:* scopes as the server enforces them. */
   scopes: string[];
   domainGrant: McpDomainGrant;
-  approvalGate: { tier3RequiresWebApp: boolean; unattendedPrincipal: boolean };
+  /**
+   * B-W04 (#6158, D-B34): how a Tier-3 call is handled for this connection.
+   * `tier3RequiresWebApp` is a deprecated mirror of tier3 === 'web_app_only',
+   * kept for one release.
+   */
+  approvalGate: { tier3?: McpTier3Handling; tier3RequiresWebApp: boolean; unattendedPrincipal: boolean };
   mfaGatedActionsUnavailable: boolean;
 };
+
+export type McpTier3Handling = 'approval_intent' | 'web_app_only' | 'unattended';
 
 export type WhoamiResult = WhoamiInput['principal'] & {
   tenant: WhoamiInput['tenant'];
   capability: 'read' | 'write' | 'execute';
   scopes: string[];
   domains: { restricted: boolean; granted: AiToolDomain[]; available: AiToolDomain[] };
+  approvalGate: { tier3: McpTier3Handling; tier3RequiresWebApp: boolean; unattendedPrincipal: boolean };
   notes: string[];
 };
 
@@ -81,7 +89,13 @@ export function buildWhoamiResult(input: WhoamiInput): WhoamiResult {
   } else {
     notes.push('This connection may use tools in every domain, including areas added later. Scopes, roles and approvals still apply.');
   }
-  if (input.approvalGate.tier3RequiresWebApp) {
+  const tier3: McpTier3Handling = input.approvalGate.tier3
+    ?? (input.approvalGate.unattendedPrincipal ? 'unattended' : input.approvalGate.tier3RequiresWebApp ? 'web_app_only' : 'unattended');
+  if (tier3 === 'approval_intent') {
+    notes.push(
+      'Actions that require approval (tier 3) are filed for a person to approve in the Breeze mobile or web app: the call returns status pending_approval with an actionId and nothing runs until it is approved. Poll get_action_status; do not re-issue the call.',
+    );
+  } else if (input.approvalGate.tier3RequiresWebApp) {
     notes.push(
       'Actions that require interactive approval (tier 3) are not available over MCP. Run them from the Breeze web app AI assistant.',
     );
@@ -101,6 +115,11 @@ export function buildWhoamiResult(input: WhoamiInput): WhoamiResult {
     capability,
     scopes: [...input.scopes],
     domains: { restricted: domainGrant.restricted, granted, available: [...AI_TOOL_DOMAINS] },
+    approvalGate: {
+      tier3,
+      tier3RequiresWebApp: input.approvalGate.tier3RequiresWebApp,
+      unattendedPrincipal: input.approvalGate.unattendedPrincipal,
+    },
     notes,
   };
 }

@@ -141,6 +141,14 @@ vi.mock('../../jobs/softwareComplianceWorker', () => ({
   scheduleSoftwareComplianceCheck: vi.fn(),
 }));
 vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => true) }));
+// #7516 — the local-build servability check is its own unit
+// (services/localBinaryBuild.test.ts); here it is a seam the resolvers consult.
+const { isUpgradeTargetServableMock } = vi.hoisted(() => ({
+  isUpgradeTargetServableMock: vi.fn(async (_args: { component: string; version: string }) => true),
+}));
+vi.mock('../../services/localBinaryBuild', () => ({
+  isUpgradeTargetServable: isUpgradeTargetServableMock,
+}));
 
 // ---------------------------------------------------------------------------
 // Import under test — AFTER all mocks are installed.
@@ -150,9 +158,11 @@ import {
   getOrgAgentUpdateConfig,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
+  resolvePinnedUpgradeTargets,
   agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
+import { resolveAgentUpdateConfig } from '../../services/agentUpdateConfig';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { withSystemDbAccessContext } from '../../db';
 import { AGENT_ORG_SETTINGS_CACHE_TTL_MS, invalidateAgentOrgSettingsCaches } from '../../services/agentOrgSettingsCache';
@@ -595,6 +605,63 @@ describe('resolvePinnedUpgradeTarget', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #7516 — an offer this server cannot serve is withheld at the resolver, so
+// every offer path (heartbeat agent/helper/watchdog, watchdog-failover
+// recovery, edition auto-migrate) stops handing agents a target whose download
+// fails checksum verification on every attempt.
+// ---------------------------------------------------------------------------
+describe('resolvers withhold targets the local build cannot serve (#7516)', () => {
+  const base = { component: 'agent', platform: 'windows', architecture: 'amd64' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isUpgradeTargetServableMock.mockImplementation(async ({ version }) => version === '0.118.2');
+  });
+
+  afterEach(() => {
+    isUpgradeTargetServableMock.mockImplementation(async () => true);
+  });
+
+  it('resolvePinnedUpgradeTarget: promoted 0.118.1, server holds 0.118.2 → null', async () => {
+    dbMock._setResult([{ version: '0.118.1' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBeNull();
+    expect(isUpgradeTargetServableMock).toHaveBeenCalledWith(
+      expect.objectContaining({ component: 'agent', platform: 'windows', architecture: 'amd64', version: '0.118.1' }),
+    );
+  });
+
+  it('resolvePinnedUpgradeTarget: a pin the local build cannot serve → null', async () => {
+    dbMock._setResult([{ version: '0.118.1' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: '0.118.1' })).resolves.toBeNull();
+  });
+
+  it('resolvePinnedUpgradeTarget: a servable promoted target is offered unchanged', async () => {
+    dbMock._setResult([{ version: '0.118.2' }]);
+    await expect(resolvePinnedUpgradeTarget({ ...base, pin: null })).resolves.toBe('0.118.2');
+  });
+
+  it('resolvePinnedUpgradeTargets: withholds per component, keeps servable ones', async () => {
+    dbMock._setResult([
+      { component: 'agent', version: '0.118.1', isLatest: true },
+      { component: 'helper', version: '0.118.2', isLatest: true },
+      { component: 'watchdog', version: '0.118.1', isLatest: true },
+    ]);
+    const targets = await resolvePinnedUpgradeTargets({
+      platform: 'windows',
+      architecture: 'amd64',
+      requests: [
+        { component: 'agent', pin: null },
+        { component: 'helper', pin: null },
+        { component: 'watchdog', pin: null },
+      ],
+    });
+    expect(targets.get('agent')).toBeNull();
+    expect(targets.get('helper')).toBe('0.118.2');
+    expect(targets.get('watchdog')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // agentAcceptsServedEdition (#4072) — can the binary doing the download apply
 // an artifact of THIS server's edition? The updater's edition check (agent
 // v0.105.0+) runs client-side after download; offering a version the build
@@ -665,5 +732,44 @@ describe('agentAcceptsServedEdition (#4072)', () => {
     it('withholds from a hosted-build agent — hosted builds hard-refuse self-host artifacts by design', () => {
       expect(agentAcceptsServedEdition({ reportedEdition: 'hosted', agentVersion: '0.107.1' })).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure core (#9170): getOrgAgentUpdateConfig is a thin loader around
+// resolveAgentUpdateConfig (services/agentUpdateConfig.ts), which the partner
+// settings inheritance read model calls too. Each fixture is asserted on the
+// core, then fed as the mocked join row through the async wrapper.
+// ---------------------------------------------------------------------------
+describe('resolveAgentUpdateConfig (pure core, #9170)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetMalformedWindowWarnCache();
+  });
+
+  const fixtures: { name: string; partner: Record<string, unknown> | null; org: Record<string, unknown> | null; policy: string; window: string | null; agentPin: string | null }[] = [
+    { name: 'neither level configured', partner: null, org: null, policy: 'staged', window: null, agentPin: null },
+    { name: 'org only', partner: null, org: { agentUpdatePolicy: 'manual', maintenanceWindow: 'Sun 02:00-04:00', agentVersionPins: { agent: '0.90.0' } }, policy: 'manual', window: 'Sun 02:00-04:00', agentPin: '0.90.0' },
+    { name: 'partner locks the policy, org pin overrides the partner pin', partner: { agentUpdatePolicy: 'auto', agentVersionPins: { agent: '0.91.0' } }, org: { agentUpdatePolicy: 'manual', agentVersionPins: { agent: '0.90.0' } }, policy: 'auto', window: null, agentPin: '0.90.0' },
+    { name: 'a partner key present as null still locks', partner: { agentUpdatePolicy: null }, org: { agentUpdatePolicy: 'manual' }, policy: 'staged', window: null, agentPin: null },
+  ];
+
+  for (const f of fixtures) {
+    it(`${f.name}: core output`, () => {
+      const result = resolveAgentUpdateConfig(f.partner, f.org);
+      expect(result.settings).toEqual({ policy: f.policy, maintenanceWindow: f.window });
+      expect(result.pins.agent).toBe(f.agentPin);
+    });
+
+    it(`${f.name}: the async wrapper returns the core output`, async () => {
+      seed(f.org === null ? {} : { defaults: f.org }, f.partner === null ? null : { defaults: f.partner });
+      expect(await getOrgAgentUpdateConfig(ORG_ID)).toEqual(resolveAgentUpdateConfig(f.partner, f.org));
+    });
+  }
+
+  it('never throws on malformed stored shapes', () => {
+    for (const junk of [null, undefined, 'x', 5, []]) {
+      expect(resolveAgentUpdateConfig(junk, junk)).toEqual({ settings: { policy: 'staged', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
+    }
   });
 });

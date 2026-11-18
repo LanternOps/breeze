@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% di affidabilità"
   },
   "alertDetailPage": {
+    "externalTickets": "Ticket esterni",
+    "externalTicketsFailedToLoad": "Impossibile caricare i ticket esterni.",
     "loadingAlert": "Caricamento avviso...",
     "backToAlerts": "Torna agli avvisi",
     "goBack": "Indietro",
@@ -66,8 +68,8 @@
     "alertAcknowledged": "Avviso confermato",
     "failedToResolveAlert": "Impossibile risolvere l'avviso",
     "alertResolved": "Avviso risolto",
-    "alertsBreadcrumb": "Breadcrumb avvisi",
-    "alertFallback": "Avviso di fallback",
+    "alertsBreadcrumb": "Avvisi",
+    "alertFallback": "Avviso",
     "unknownMetric": "Metrica sconosciuta",
     "severity": {
       "critical": "Critica",
@@ -82,6 +84,21 @@
       "resolved": "Risolto",
       "suppressed": "Soppresso",
       "dismissed": "Ignorato"
+    },
+    "createPsaTicket": "Crea ticket PSA",
+    "psaTicketRequested": "Ticket PSA richiesto",
+    "failedToCreatePsaTicket": "Impossibile richiedere il ticket PSA",
+    "lifecycleLine": {
+      "text": "{{rearm}} · raffreddamento {{minutes}} min ({{source}})",
+      "rearmNewEvidence": "Si riattiva con nuove evidenze",
+      "rearmAfterDelay": "Si riattiva dopo {{minutes}} min",
+      "sources": {
+        "monitor": "questo monitor",
+        "org": "predefinito dell'organizzazione",
+        "partner": "predefinito del partner",
+        "builtin": "predefinito integrato",
+        "legacy": "regola di avviso"
+      }
     }
   },
   "alertDetails": {
@@ -112,6 +129,7 @@
     "close": "Chiudi",
     "createALinkedTicketPreFilledFrom": "Crea un ticket collegato precompilato da questo avviso",
     "createTicket": "Crea ticket",
+    "viewTicket": "Visualizza ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Metti in silenzio questo avviso - interrompe le notifiche senza risolverlo",
     "suppress": "Sopprimi",
     "dismissPermanentlyHidesThisAlertForGood": "Ignora definitivamente - nasconde questo avviso in modo permanente (la scadenza della garanzia non genererà un nuovo avviso per la stessa data di fine; altre condizioni possono comunque aprire un nuovo avviso se si ripresentano)",
@@ -124,7 +142,7 @@
     "unknownMetric": "Metrica sconosciuta",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Risolvi avviso",
-    "ticketCreationFailedRetry": "Creazione ticket non riuscita. Riprova",
+    "ticketCreationFailedRetry": "Impossibile creare il ticket. Riprova",
     "ticketCreated": "Ticket {{ticket}} creato",
     "severity": {
       "critical": "Critica",
@@ -235,7 +253,7 @@
     "partnerWideTargetsEveryDeviceEachOrg": "(a livello di partner - include ogni dispositivo; si applica l'instradamento notifiche predefinito di ogni organizzazione)",
     "thisOrganizationOnly": "Solo questa organizzazione",
     "failedToFetchAlertRule": "Impossibile recuperare la regola avviso",
-    "genericError": "Errore generico",
+    "genericError": "Si è verificato un errore",
     "failedToSaveAlertRule": "Impossibile salvare la regola avviso",
     "createAlertRule": "Crea regola avviso",
     "editAlertRule": "Modifica regola avviso",
@@ -311,12 +329,12 @@
     "automaticallyResolveWhenConditionIsNoLonger": "Risolvi automaticamente quando la condizione non è più soddisfatta",
     "whenEnabledAlertsWillAutoResolveIf": "Se abilitato, gli avvisi verranno risolti automaticamente quando la metrica torna alla normalità",
     "cancel": "Annulla",
-    "severityHelp": "Guida gravità",
+    "severityHelp": "Determina l'instradamento delle notifiche e la priorità nella dashboard. Gli avvisi critici contattano subito il reperibile.",
     "selectTargetType": "Seleziona tipo target",
     "noTargetsAvailable": "Nessun target disponibile",
-    "conditionsHelp": "Guida condizioni",
-    "notificationChannelsHelp": "Guida canali di notifica",
-    "cooldownHelp": "Guida cooldown",
+    "conditionsHelp": "Tutte le condizioni devono essere soddisfatte contemporaneamente per attivare l'avviso. Aggiungine più di una per creare regole composte.",
+    "notificationChannelsHelp": "Dove inviare gli avvisi. Configura i canali in Impostazioni > Canali di notifica.",
+    "cooldownHelp": "Dopo l'attivazione, la regola attende questo intervallo prima di potersi attivare di nuovo per lo stesso dispositivo.",
     "saveRule": "Salva regola",
     "severityOption": {
       "critical": "Critica",
@@ -457,8 +475,6 @@
     "loadingAlerts": "Caricamento avvisi...",
     "tryAgain": "Riprova",
     "alerts": "Avvisi",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Monitora gli avvisi su tutti i dispositivi. Le regole sono gestite in",
-    "configurationPolicies": "Criteri di configurazione",
     "alert": "avviso",
     "dismissedAlertsAreHiddenForGoodWarranty": "Gli avvisi ignorati vengono nascosti definitivamente. La scadenza della garanzia non genererà un nuovo avviso per la stessa data di fine; altri avvisi possono comunque attivarsi di nuovo se la relativa condizione si ripresenta.",
     "cancel": "Annulla",
@@ -471,8 +487,8 @@
     "deviceStatusUnavailable": "Impossibile caricare lo stato dei dispositivi. Aggiorna per riprovare.",
     "setUpAlertRules": "Configura regole avviso",
     "failedToFetchAlerts": "Impossibile recuperare gli avvisi",
-    "unknownDevice": "Dispositivo sconosciuto",
-    "genericError": "Errore generico",
+    "unknownDevice": "Sconosciuto",
+    "genericError": "Si è verificato un errore",
     "failedToAcknowledgeAlert": "Impossibile confermare l'avviso",
     "alertAcknowledged": "Avviso confermato",
     "failedToResolveAlert": "Impossibile risolvere l'avviso",
@@ -504,7 +520,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} avviso?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} avviso?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} avvisi?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} avvisi?",
+    "subtitle": "Monitora gli avvisi su tutti i dispositivi. Le soglie si definiscono in <monitors>Monitor</monitors>; distribuiscile ai clienti con <policies>Criteri di configurazione</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Avvisi attivi",
@@ -544,7 +561,8 @@
     "sections": {
       "channels": "Canali",
       "routing": "Instradamento",
-      "escalation": "Criteri di escalation"
+      "escalation": "Criteri di escalation",
+      "inheritedChannels": "Condivisi dal tuo partner"
     },
     "routing": {
       "everythingElse": "Tutto il resto",
@@ -651,6 +669,7 @@
       "info": "Info"
     },
     "status": {
+      "open": "Aperto",
       "active": "Attivo",
       "acknowledged": "Confermato",
       "resolved": "Risolto",
@@ -856,7 +875,7 @@
     "noRecipients": "Nessun destinatario",
     "emailNotification": "Notifica email",
     "slackNotification": "Notifica Slack",
-    "teamsNotification": "Notifica Teams",
+    "teamsNotification": "Notifica di Microsoft Teams",
     "pagerDutyIntegration": "Integrazione PagerDuty",
     "customWebhook": "Webhook personalizzato",
     "pushoverKey": "Chiave {{key}}...",
@@ -928,12 +947,12 @@
     "routingRuleDeleted": "Regola di instradamento eliminata",
     "failedToDeleteRoutingRule": "Impossibile eliminare la regola di instradamento",
     "failedToFetchNotificationChannels": "Impossibile recuperare i canali di notifica",
-    "genericError": "Errore generico",
+    "genericError": "Si è verificato un errore",
     "ruleCount": "Numero regole",
     "createNotificationChannel": "Crea canale di notifica",
     "editNotificationChannel": "Modifica canale di notifica",
     "createChannel": "Crea canale",
-    "deleteChannelConfirm": "Conferma eliminazione canale",
+    "deleteChannelConfirm": "Eliminare il canale “{{name}}”? Gli avvisi indirizzati solo a questo canale non verranno più recapitati.",
     "deleting": "Eliminazione",
     "editRoutingRule": "Modifica regola di instradamento",
     "newRoutingRule": "Nuova regola di instradamento",
@@ -964,5 +983,10 @@
       "body": "I modelli esistenti restano modificabili qui e verranno convertiti nella prossima versione.",
       "link": "Apri Monitor"
     }
+  },
+  "subject": {
+    "label": "Elemento interessato",
+    "backupWorkload": "Carico di backup",
+    "topologySite": "Sito topologico"
   }
 }

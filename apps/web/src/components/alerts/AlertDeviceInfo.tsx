@@ -1,10 +1,9 @@
 import { ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
+import AlertSubjectChip, { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 
-export type AlertDeviceInfoProps = {
-  deviceId: string;
-  deviceName: string;
+export type AlertDeviceInfoProps = AlertSubjectFields & {
   ruleName?: string;
   monitorId?: string | null;
 };
@@ -20,20 +19,21 @@ export type AlertDeviceInfoProps = {
  * lay this out differently (grid vs. stacked), so each caller keeps its own
  * wrapper and just places this inside it.
  */
-export default function AlertDeviceInfo({ deviceId, deviceName, ruleName, monitorId }: AlertDeviceInfoProps) {
+export default function AlertDeviceInfo(props: AlertDeviceInfoProps) {
+  const { deviceId, deviceName, ruleName, monitorId } = props;
   const { t } = useTranslation('alerts');
 
   return (
     <>
       <div>
-        <p className="text-xs text-muted-foreground">{t('alertDetails.device')}</p>
-        <a
+        <p className="text-xs text-muted-foreground">{isDeviceAlert(props) ? t('alertDetails.device') : t('subject.label')}</p>
+        {isDeviceAlert(props) ? <a
           href={`/devices/${deviceId}`}
           className="flex items-center gap-1 text-sm font-medium hover:underline"
         >
           {deviceName}
           <ExternalLink className="h-3 w-3" />
-        </a>
+        </a> : <AlertSubjectChip {...props} />}
       </div>
       {ruleName && (
         <div>

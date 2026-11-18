@@ -18,6 +18,7 @@ import {
   topologyDiagnosticSteps,
 } from '../../db/schema';
 import { hasSatisfiedMfa } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { getPermissionAuthorityVersion, getUserPermissions } from '../permissions';
 import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import {
@@ -211,7 +212,7 @@ async function requireDiagnosticAuthority(ctx: TopologyRequestContext): Promise<
   if (current.scope.orgId !== ctx.scope.orgId) {
     throw new TopologyOperationError('topology_site_not_found', 404);
   }
-  if (!hasSatisfiedMfa(ctx.auth) || ctx.auth.principal?.kind === 'ai_agent') {
+  if (!hasSatisfiedMfa(ctx.auth) || isAutomationPrincipal(ctx.auth)) {
     throw new TopologyOperationError('mfa_required', 403);
   }
   const flags = await loadTopologyFlags(ctx);
@@ -537,7 +538,7 @@ export async function createVerifiedTopologyDiagnosticRun(
 
   const current = await requireTopologySiteAccess(ctx.auth, ctx.permissions, ctx.scope.siteId, 'execute');
   if (current.scope.orgId !== ctx.scope.orgId) throw new TopologyOperationError('topology_site_not_found', 404);
-  if (ctx.auth.principal?.kind === 'ai_agent') throw new TopologyOperationError('human_approval_required', 403);
+  if (isAutomationPrincipal(ctx.auth)) throw new TopologyOperationError('human_approval_required', 403);
   const flags = await loadTopologyFlags(ctx);
   if (!flags.materialization || !flags.diagnostics) throw new TopologyOperationError('diagnostics_disabled', 409);
   await start.authorize(ctx);

@@ -89,6 +89,13 @@ export default function EdrPage() {
         <p className="text-sm text-muted-foreground">
           {t("securityEdrPage.threatsAndIncidentsAcrossYourFleetFrom")}
         </p>
+        <a
+          href="/security/scans"
+          data-testid="edr-ioc-scans-link"
+          className="mt-1 inline-block text-sm font-medium text-primary hover:underline"
+        >
+          {t("securityEdrPage.iocScansLink")}
+        </a>
       </div>
       <div className="flex gap-2 border-b">
         {LEGACY_TABS.map((tab) => (

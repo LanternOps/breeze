@@ -12,15 +12,15 @@
  * row, flattened: the sandbox reads these with pandas/jq, so nested objects and
  * a `logs: [...]` envelope would both be hostile.
  */
-import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, desc, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { agentLogs, deviceMetrics, devices } from '../db/schema';
+import { agentLogs, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { searchFleetLogs } from './logSearch';
-import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
-import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerability';
 import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
@@ -31,38 +31,23 @@ import {
 // siteScope.ts — importing it from the latter is a module-not-found at runtime.
 import { aiLiveReportAuthority } from './aiToolsFleet';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
-import type { readCustomFieldDefinitions as ReadCustomFieldDefinitionsFn } from './aiToolsDevice';
-import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
-import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
+import type { ExportPager } from './aiToolsExportWriter';
+import type { ExportDataset } from './aiToolsExportDatasetNames';
+import { bootPerformanceAdapter } from './aiToolsExportDatasets/boot';
+// W05 carry-over: the three datasets that predate the run frame, set-based.
+import { metricsAdapter } from './aiToolsExportDatasets/metrics';
+import { vulnerabilitiesAdapter } from './aiToolsExportDatasets/vulnerabilities';
+import { customFieldsAdapter } from './aiToolsExportDatasets/customFields';
+import { hardwareEventsAdapter } from './aiToolsExportDatasets/hardware';
+import { serviceChecksAdapter } from './aiToolsExportDatasets/serviceChecks';
+import { alertsAdapter } from './aiToolsExportDatasets/alerts';
+import { changeLogAdapter } from './aiToolsExportDatasets/changes';
+import { patchStateAdapter, patchAttemptsAdapter } from './aiToolsExportDatasets/patches';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
 
-/**
- * Lazy (call-time) imports of the two hub modules, NOT static ones.
- *
- * `aiToolsDevice.ts` already imports a value from `./aiTools`
- * (`verifyDeviceAccess`), and `aiTools.ts` eagerly calls `registerExportTools`
- * (this file's consumer) at ITS OWN module top level — so a static import here
- * closes a 4-hop cycle (aiToolsDevice → aiTools → aiToolsExport →
- * aiToolsExportDatasets → aiToolsDevice) on top of the pre-existing 2-hop one.
- * Under Vite's SSR module runner that manifested as a real, order-dependent
- * "Cannot access '__vite_ssr_import_N__' before initialization" failure that
- * only reproduced under the full test suite (whichever spec's import graph
- * happened to reach `aiToolsDevice.ts` first). Every real call site below is
- * already inside an async function — never module-eval time — so resolving
- * these via `import()` costs nothing (the module is cached after first load)
- * and removes this file from the synchronous part of the cycle entirely.
- */
-async function getVerifyDeviceAccess(): Promise<typeof VerifyDeviceAccessFn> {
-  return (await import('./aiTools')).verifyDeviceAccess;
-}
-async function getReadCustomFieldDefinitions(): Promise<typeof ReadCustomFieldDefinitionsFn> {
-  return (await import('./aiToolsDevice')).readCustomFieldDefinitions;
-}
-
-export const EXPORT_DATASETS = [
-  'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
-  'metrics', 'vulnerabilities', 'custom_fields',
-] as const;
-export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+// The names live in a zero-import leaf so the Zod enums can derive from them
+// without an import cycle (see that file). Re-exported unchanged.
+export { EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasetNames';
 
 export interface DatasetRequest {
   auth: AuthContext;
@@ -76,6 +61,20 @@ export interface DatasetRequest {
   runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
+  /**
+   * Wisp analysis sessions W02 — the run's frozen export grants: always the
+   * effective set, never absent (`LEGACY_EXPORT_GRANTS` for a run admitted
+   * before W02). The handler has already refused a dataset outside
+   * `datasets`; an adapter reads `sensitiveGates` to decide which rows a
+   * sensitive gate withholds.
+   */
+  exportGrants: AiRunExportGrants;
+  /**
+   * Plain sentences an adapter appends for the run's model (rows withheld by a
+   * gate, a filter it could not apply). Created empty by the handler for each
+   * call and copied into the tool result as `notes` when non-empty.
+   */
+  notes: string[];
 }
 
 export interface DatasetAdapter {
@@ -110,14 +109,30 @@ async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null
  *
  * An absent/empty `runTargets` means "no run frame" (direct chat/MCP), not "no
  * devices" — see `ToolExecutionContext.runTargets`.
+ *
+ * Wisp analysis sessions W02: the caller's EXACT-DEVICE axis
+ * (`auth.allowedDeviceIds`) narrows too, whenever it is an array. An empty one
+ * means "no devices", never "no frame": an analysis run admitted before W02
+ * with no devices (W02 now refuses that launch as `frame_empty`) carries
+ * `allowedDeviceIds: []` and no run frame, and without this
+ * the `event_logs` adapter read that as unrestricted and exported the whole
+ * org's non-security logs. It is intersected here directly rather than through
+ * `resolveSiteAllowedDeviceIds`, which only answers the site axis.
+ *
+ * Result: exact-device ∩ run frame ∩ site axis. `[]` = export nothing; `null`
+ * is reserved for a caller restricted on no axis at all.
  */
 async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
-  const siteScoped = await siteScopedDeviceIds(req);
   const frame = req.runTargets && req.runTargets.length > 0 ? req.runTargets : null;
-  if (!frame) return siteScoped;
-  if (!siteScoped) return [...frame];
-  const inSite = new Set(siteScoped);
-  return frame.filter((id) => inSite.has(id));
+  const exact = Array.isArray(req.auth.allowedDeviceIds) ? req.auth.allowedDeviceIds : null;
+  const site = await siteScopedDeviceIds(req);
+  // The result keeps the order of the most specific axis present.
+  const base = frame ?? exact ?? site;
+  if (!base) return null;
+  const axes: Array<readonly string[] | null> = [frame, exact, site];
+  const others: Set<string>[] = [];
+  for (const axis of axes) if (axis !== null && axis !== base) others.push(new Set(axis));
+  return base.filter((id) => others.every((axis) => axis.has(id)));
 }
 
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
@@ -189,7 +204,13 @@ const eventLogsAdapter: DatasetAdapter = {
     // it would let a site-restricted tech export the whole org's logs.
     const allowedDeviceIds = await scopedDeviceIds(req);
     if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
-    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(req.auth);
+    // W02: the security category reads the run's FROZEN `security_events`
+    // gate. `export_dataset` runs only under an `ai_agent` run principal, which
+    // has no role, so the RBAC check this replaces always answered false.
+    const canReadSensitiveCategory = req.exportGrants.sensitiveGates.includes('security_events');
+    if (!canReadSensitiveCategory) {
+      req.notes.push('Security-category event logs are not in this export: this run does not hold the security_events gate (devices:execute).');
+    }
 
     return async (cursor) => {
       const result = await searchFleetLogs(req.auth, {
@@ -314,7 +335,7 @@ const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
-    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, false);
+    if (isAutomationPrincipal(req.auth)) return agentInventoryPager(req, false);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // #5776: `generateDeviceInventoryReport` now honours `filters.deviceIds`
@@ -340,7 +361,7 @@ const softwareInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
-    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, true);
+    if (isAutomationPrincipal(req.auth)) return agentInventoryPager(req, true);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // This generator DOES honour filters.deviceIds, so the restriction goes
@@ -358,223 +379,6 @@ const softwareInventoryAdapter: DatasetAdapter = {
   },
 };
 
-/** `analyze_metrics` is single-device by construction (`deviceArgs:
- *  ['deviceId']`). The export fans out across the requested devices, PACED at
- *  EXPORT_DEVICE_CONCURRENCY so one analysis cannot saturate the API (spec
- *  §5.4) — but unlike the other device-scoped adapters (vulnerabilities,
- *  custom_fields), a device's samples are NOT a one-shot bounded read: at
- *  minute granularity, 24h of `hoursBack` is already ~1,440 rows, well past
- *  `req.pageSize` (500). A hard per-device cap would silently drop the rest
- *  (#5775) — the writer's row/wall caps can't see it, because the truncation
- *  would happen one layer below what they observe.
- *
- *  So each device in the CURRENT concurrency batch pages within itself on a
- *  `timestamp` keyset (querying strictly older than the oldest row seen so
- *  far) until a page comes back short of `pageSize`, which is the only signal
- *  that no more rows exist for it in the window — only THEN does the batch
- *  advance to the next slice of devices. `(device_id, timestamp)` is the
- *  table's own primary key, so timestamps are unique per device and the `lt`
- *  cursor can't skip or double-count a row at the boundary. `verifyDeviceAccess`
- *  runs once per device (at batch entry), not once per page.
- *
- *  TWO ACCEPTED TRADEOFFS from running potentially many rounds per device
- *  instead of one:
- *  (1) The site axis (`allowedSiteIds`/`canAccessSite` — RLS does NOT enforce
- *      it, see this file's own header) is checked once at batch entry and NOT
- *      re-verified on later rounds for that same device. A device whose site
- *      access is revoked mid-export keeps paging until exhausted rather than
- *      stopping immediately. Accepted because a re-check per round would add a
- *      DB round trip per page for no observed threat model change, and the
- *      window is still bounded by `hoursBack` (≤168h) and the writer's own
- *      120s wall cap.
- *  (2) A long run of access-denied devices is scanned to the end of
- *      `deviceIds` within ONE `pager()` call (the inner `for(;;)` only returns
- *      once it has rows or has exhausted every device), so the writer's
- *      wall-clock check can't interrupt mid-scan the way it could when every
- *      batch used to return control after one query. Accepted because the
- *      practical device-count bound (`analysisMaxInputDevicesPerRun`) keeps a
- *      denied-only run cheap; a future caller without that bound should
- *      revisit this. */
-const metricsAdapter: DatasetAdapter = {
-  tier: 1,
-  deviceScoped: true,
-  async createPager(req) {
-    const hoursBack = Math.min(Math.max(1, Number(req.filters.hoursBack) || 24), 168);
-    const since = new Date(Date.now() - hoursBack * 3_600_000);
-    // W04: an analysis run that names no devices gets its frozen set.
-    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
-
-    interface BatchDevice {
-      deviceId: string;
-      hostname: string | null;
-      before: Date | null;
-      done: boolean;
-    }
-    let batchStart = 0;
-    let batch: BatchDevice[] = [];
-    let batchInitialized = false;
-
-    async function initBatch(): Promise<void> {
-      const slice = deviceIds.slice(batchStart, batchStart + EXPORT_DEVICE_CONCURRENCY);
-      const next: BatchDevice[] = [];
-      await runWithConcurrency(slice, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-        // The same per-device gate `analyze_metrics` performs. The central
-        // `enforceDeviceArgs` gate already ran over `deviceIds`; this is the
-        // builder's own check and is kept so the two paths stay identical.
-        const verifyDeviceAccess = await getVerifyDeviceAccess();
-        const access = await verifyDeviceAccess(deviceId, req.auth);
-        if ('error' in access) return;
-        next.push({ deviceId, hostname: access.device.hostname, before: null, done: false });
-      });
-      batch = next;
-      batchInitialized = true;
-    }
-
-    return async () => {
-      for (;;) {
-        if (!batchInitialized) await initBatch();
-        const active = batch.filter((d) => !d.done);
-        if (active.length === 0) {
-          batchStart += EXPORT_DEVICE_CONCURRENCY;
-          if (batchStart >= deviceIds.length) return { rows: [], nextCursor: null };
-          batchInitialized = false;
-          continue;
-        }
-
-        const collected: Array<Record<string, unknown>> = [];
-        await runWithConcurrency(active, EXPORT_DEVICE_CONCURRENCY, async (entry) => {
-          const conditions = [eq(deviceMetrics.deviceId, entry.deviceId), gt(deviceMetrics.timestamp, since)];
-          if (entry.before) conditions.push(lt(deviceMetrics.timestamp, entry.before));
-          const samples = await db
-            .select()
-            .from(deviceMetrics)
-            .where(and(...conditions))
-            .orderBy(desc(deviceMetrics.timestamp))
-            .limit(req.pageSize);
-          for (const sample of samples) {
-            collected.push({
-              deviceId: entry.deviceId,
-              hostname: entry.hostname,
-              timestamp: sample.timestamp instanceof Date ? sample.timestamp.toISOString() : String(sample.timestamp),
-              cpuPercent: sample.cpuPercent,
-              ramPercent: sample.ramPercent,
-              ramUsedMb: sample.ramUsedMb,
-              diskPercent: sample.diskPercent,
-              diskUsedGb: sample.diskUsedGb,
-            });
-          }
-          const last = samples[samples.length - 1];
-          if (samples.length < req.pageSize || !last) {
-            entry.done = true;
-          } else {
-            entry.before = last.timestamp instanceof Date ? last.timestamp : new Date(last.timestamp as unknown as string);
-          }
-        });
-
-        const moreInBatch = batch.some((d) => !d.done);
-        const moreBatches = batchStart + EXPORT_DEVICE_CONCURRENCY < deviceIds.length;
-        return { rows: collected, nextCursor: moreInBatch || moreBatches ? 'more' : null };
-      }
-    };
-  },
-};
-
-const vulnerabilitiesAdapter: DatasetAdapter = {
-  tier: 1,
-  deviceScoped: true,
-  async createPager(req) {
-    const status = normStatus(req.filters.status);
-    // W04: an analysis run that names no devices gets its frozen set.
-    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
-    let index = 0;
-
-    return async () => {
-      if (index >= deviceIds.length) return { rows: [], nextCursor: null };
-      const batch = deviceIds.slice(index, index + EXPORT_DEVICE_CONCURRENCY);
-      index += batch.length;
-
-      const collected: Array<Record<string, unknown>> = [];
-      await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-        // Same per-device gate the metrics and custom_fields adapters make. It
-        // is arguably redundant — `enforceDeviceArgs` already ran over every id
-        // and `readDeviceFindings` is org-scoped — but "arguably redundant" is
-        // not a reason for one of three device-scoped adapters to be the odd
-        // one out; symmetry is what makes a missing gate visible in review.
-        const verifyDeviceAccess = await getVerifyDeviceAccess();
-        const access = await verifyDeviceAccess(deviceId, req.auth);
-        if ('error' in access) return;
-        const findings = await readDeviceFindings(req.orgId, { status, deviceId });
-        const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
-        const byId = new Map(catalog.map((c) => [c.id, c]));
-        for (const finding of findings) {
-          const cve = byId.get(finding.vulnerabilityId);
-          if (!cve) continue;
-          collected.push({
-            id: finding.id,
-            deviceId,
-            cveId: cve.cveId,
-            severity: cve.severity,
-            cvssScore: cve.cvssScore,
-            epssScore: cve.epssScore,
-            riskScore: finding.riskScore,
-            status: finding.status,
-            knownExploited: cve.knownExploited ?? false,
-            patchAvailable: cve.patchAvailable ?? false,
-          });
-        }
-      });
-
-      return { rows: collected, nextCursor: index < deviceIds.length ? String(index) : null };
-    };
-  },
-};
-
-/** `query_custom_fields` has two actions; the export produces the JOINED view
- *  (one row per device x definition) because that is the shape an analysis
- *  script wants, and the tool's own two shapes are not joinable downstream. */
-const customFieldsAdapter: DatasetAdapter = {
-  tier: 1,
-  deviceScoped: true,
-  async createPager(req) {
-    // Task 4's shared reader, NOT a fresh `eq(orgId, req.orgId)` select: custom
-    // field definitions are org XOR partner: a partner-wide definition has
-    // `org_id IS NULL` and an org filter drops every one of them — which for an
-    // MSP that defines its fields once is most of the fields on the device.
-    const readCustomFieldDefinitions = await getReadCustomFieldDefinitions();
-    const definitions = await readCustomFieldDefinitions(req.auth);
-
-    // W04: an analysis run that names no devices gets its frozen set.
-    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
-    let index = 0;
-
-    return async () => {
-      if (index >= deviceIds.length) return { rows: [], nextCursor: null };
-      const batch = deviceIds.slice(index, index + EXPORT_DEVICE_CONCURRENCY);
-      index += batch.length;
-
-      const collected: Array<Record<string, unknown>> = [];
-      await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-        const verifyDeviceAccess = await getVerifyDeviceAccess();
-        const access = await verifyDeviceAccess(deviceId, req.auth);
-        if ('error' in access) return;
-        const values = (access.device.customFields ?? {}) as Record<string, unknown>;
-        for (const definition of definitions) {
-          collected.push({
-            deviceId,
-            hostname: access.device.hostname,
-            fieldKey: definition.fieldKey,
-            fieldName: definition.name,
-            fieldType: definition.type,
-            value: values[definition.fieldKey] ?? null,
-          });
-        }
-      });
-
-      return { rows: collected, nextCursor: index < deviceIds.length ? String(index) : null };
-    };
-  },
-};
-
 export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> = {
   event_logs: eventLogsAdapter,
   agent_logs: agentLogsAdapter,
@@ -583,4 +387,14 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   metrics: metricsAdapter,
   vulnerabilities: vulnerabilitiesAdapter,
   custom_fields: customFieldsAdapter,
+  reliability_scores: reliabilityScoresAdapter,
+  reliability_history: reliabilityHistoryAdapter,
+  reliability_events: reliabilityEventsAdapter,
+  boot_performance: bootPerformanceAdapter,
+  hardware_events: hardwareEventsAdapter,
+  service_checks: serviceChecksAdapter,
+  alerts: alertsAdapter,
+  patch_state: patchStateAdapter,
+  patch_attempts: patchAttemptsAdapter,
+  change_log: changeLogAdapter,
 };

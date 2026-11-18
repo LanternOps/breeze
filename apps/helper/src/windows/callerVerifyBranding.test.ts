@@ -25,6 +25,31 @@ describe('loadCallerBranding', () => {
     expect(helperRequestMock).toHaveBeenCalledWith(cfg, 'https://api.example.com/api/v1/helper/config', { method: 'GET' });
   });
 
+  it('reads branding.logo.sha256 (W04) and ignores anything but 64 lowercase hex of a known type', async () => {
+    const sha = 'c96253573225f1fa2044af43896a96056903b359eed7af9fad90bd626127ba99';
+    const reply = (logo: unknown) =>
+      helperRequestMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ branding: { partnerName: 'N', logoUrl: null, logo } }),
+      });
+    reply({ sha256: sha, mime: 'image/png' });
+    await expect(loadCallerBranding()).resolves.toEqual({ partnerName: 'N', logoUrl: null, logoSha256: sha });
+    for (const bad of [
+      null,
+      { sha256: sha.toUpperCase(), mime: 'image/png' },
+      { sha256: sha.slice(1), mime: 'image/png' },
+      { sha256: sha, mime: 'image/svg+xml' },
+      { sha256: 5, mime: 'image/png' },
+      'c96253',
+    ]) {
+      reply(bad);
+      const b = await loadCallerBranding();
+      expect(b?.logoSha256 ?? null, JSON.stringify(bad)).toBeNull();
+      expect(b?.partnerName).toBe('N');
+    }
+  });
+
   it('drops non-https logos but keeps the partner name', async () => {
     helperRequestMock.mockResolvedValue({
       ok: true,

@@ -1,0 +1,32 @@
+{
+  "id": "export-window-over-180-days",
+  "title": "An export window over the 180-day cap is narrowed or reported, never silently shortened",
+  "issue": null,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "timeRangeFromFilters refuses a span over 180 days with invalid_time_range (aiToolsExportShared.ts). The prompt asks for 365 days to make the run try one. It is a rate, not a constant: if neither the chat model nor the run ever sends a window over the cap the precondition fails and the run is inconclusive (UNEXPECTED FAIL). The pass condition is that the answer names the limit or the narrower window actually used. The tool row status is not asserted; the refusal is read from ai_tool_executions.tool_output.",
+  "steps": [
+    { "name": "ready", "type": "shell", "argv": ["analysis-ready.sh"] },
+    { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Start an analysis across the whole Northwind Dental organization. Export the hardware events (the hardware_events dataset) for the whole of the last 365 days and count the events per device." },
+    { "name": "settled", "type": "wait_sql", "timeoutSec": 420, "required": true, "equals": "true",
+      "sql": "select (count(*) > 0)::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}} and status in ('completed','failed','cancelled')" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "report", "type": "say", "approve": "none", "maxSec": 120,
+      "text": "What period did the analysis cover, and what did it find?" }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "launch_specialist", "step": "launch", "origin": "chat", "precondition": true,
+      "inputMatches": "\"kind\":\"analysis\"" },
+    { "kind": "sql_equals", "equals": "true", "precondition": true,
+      "sql": "select (count(*) > 0)::text from ai_tool_executions where tool_name = 'export_dataset' and created_at > {{since}} and tool_output::text like '%invalid_time_range%'",
+      "note": "the run really asked for a window over 180 days and was refused" },
+    { "kind": "tool_called", "tool": "export_dataset", "origin": "run", "inputMatches": "hardware_events",
+      "note": "the run exported hardware_events (a dataset whose window is checked by timeRangeFromFilters; event_logs is not)" },
+    { "kind": "reply_matches", "step": "report", "flags": "i",
+      "pattern": "180|limit|narrow|shorter|cap|maximum|split",
+      "note": "the answer names the limit or the narrower window it used" },
+    { "kind": "no_error_banner", "step": "launch" },
+    { "kind": "no_error_banner", "step": "report" }
+  ]
+}

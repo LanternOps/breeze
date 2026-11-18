@@ -25,6 +25,7 @@ import {
   type AiOperatorOutboxSourceKind,
 } from '../../db/schema/aiOperatorTasks';
 import { intentOutbox } from '../../db/schema/actionIntents';
+import { scheduleFlowRunWake } from '../flows/wake';
 
 /** The subset of drizzle's `db` these helpers need — lets them join a caller's transaction. */
 type DbHandle = Pick<typeof db, 'insert'>;
@@ -141,7 +142,11 @@ export const INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ: Record<IntentTerminalOutboxE
  *  (a) an `intent_outbox` row — UNCONDITIONAL, ids-only payload, matching the
  *      shape every existing writer already uses (`{ intentId, orgId }`); and
  *  (b) — only when the intent is task-linked (`taskId` non-null) — an
- *      `ai_operator_task_outbox` row via `enqueueTaskOutbox` above.
+ *      `ai_operator_task_outbox` row via `enqueueTaskOutbox` above; and
+ *  (c) — only when the intent is flow-originated (`requestingFlowRunId`
+ *      non-null, tool catalog W04 #5219) — a post-commit wake of the parked
+ *      flow run (`scheduleFlowRunWake`; flowIntentTerminalWriters.contract.test.ts
+ *      pins every writer reaching it).
  *
  * MUST be called inside the SAME transaction as the terminal status write
  * (spec §6.3: "Add a task outbox record atomically with each task-affecting
@@ -151,7 +156,10 @@ export const INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ: Record<IntentTerminalOutboxE
  */
 export async function publishIntentTerminalOutbox(
   dbh: DbHandle,
-  intent: { id: string; orgId: string; taskId: string | null },
+  // Tool catalog W04 (#5219): `requestingFlowRunId` is REQUIRED (not optional)
+  // so every caller must thread it — a writer that forgot it would silently
+  // strand a parked flow run (flowIntentTerminalWriters.contract.test.ts).
+  intent: { id: string; orgId: string; taskId: string | null; requestingFlowRunId: string | null },
   event: IntentTerminalOutboxEvent,
 ): Promise<void> {
   await dbh.insert(intentOutbox).values({
@@ -161,6 +169,10 @@ export async function publishIntentTerminalOutbox(
     // intent_created/intent_approved/intent_rejected/intent_expired/intent_cancelled row.
     payload: { intentId: intent.id, orgId: intent.orgId },
   });
+
+  // (c) — only for a flow-origin intent — wake the run parked on it, after
+  // this transaction commits (services/flows/wake.ts).
+  if (intent.requestingFlowRunId) scheduleFlowRunWake(intent.requestingFlowRunId);
 
   if (intent.taskId) {
     await enqueueTaskOutbox(dbh, {

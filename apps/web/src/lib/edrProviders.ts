@@ -117,6 +117,10 @@ export interface EdrTenant {
   lastDetectionSyncStatus: EdrSyncStatus | null;
   lastDetectionSyncError: string | null;
   hasInstallerSecret: boolean;
+  installerFetchedAt: string | null;
+  installerExpiresAt: string | null;
+  /** A code from EDR_INSTALLER_FETCH_ERROR_CODES; an unknown one falls back to generic copy. */
+  installerFetchError: string | null;
 }
 
 /** Name-match suggestion: shown as a badge, NEVER applied automatically (spec §4.5). */
@@ -418,6 +422,7 @@ export function sendEdrPushTest(id: string, opts: EdrActionOptions) {
  */
 export const EDR_PROVIDER_LABELS: Readonly<Record<string, string>> = {
   bitdefender: 'Bitdefender GravityZone',
+  emsisoft: 'Emsisoft',
 };
 
 /** The known label for a provider key, or null so callers render a translated generic fallback. */

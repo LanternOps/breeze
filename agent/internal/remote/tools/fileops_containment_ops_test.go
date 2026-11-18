@@ -88,7 +88,11 @@ type sourceGatedOp struct {
 	// denialInResult is true for ops that report the denial inside a successful
 	// result payload (a scan error) rather than failing the whole command.
 	denialInResult bool
-	invoke         func(t *testing.T, target, scratch string) CommandResult
+	// resultStatus is the command status expected alongside denialInResult
+	// (default "completed"). A sensitive-data scan whose only root is denied
+	// walked nothing, so it fails — still carrying the denial (#10380).
+	resultStatus string
+	invoke       func(t *testing.T, target, scratch string) CommandResult
 }
 
 func sourceGatedOps() []sourceGatedOp {
@@ -151,7 +155,7 @@ func sourceGatedOps() []sourceGatedOp {
 					},
 				})
 			}},
-		{name: "scan sensitive data includePaths", needsDir: true, denialInResult: true,
+		{name: "scan sensitive data includePaths", needsDir: true, denialInResult: true, resultStatus: "failed",
 			invoke: func(_ *testing.T, target, _ string) CommandResult {
 				return ScanSensitiveData(map[string]any{
 					"scope": scanScope(target),
@@ -181,8 +185,12 @@ func TestOperationsDenySensitiveSource(t *testing.T) {
 			res := op.invoke(t, target, scratch)
 
 			if op.denialInResult {
-				if res.Status != "completed" {
-					t.Fatalf("expected a completed result carrying the denial, got status %q err %q", res.Status, res.Error)
+				wantStatus := op.resultStatus
+				if wantStatus == "" {
+					wantStatus = "completed"
+				}
+				if res.Status != wantStatus {
+					t.Fatalf("expected a %s result carrying the denial, got status %q err %q", wantStatus, res.Status, res.Error)
 				}
 				if !strings.Contains(res.Stdout, "denied on sensitive path") {
 					t.Fatalf("expected a containment denial in the result payload, got: %s", res.Stdout)

@@ -30,6 +30,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { actionIntents, aiAgents, aiAgentRuns, auditLogs } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser, reapplyOrgIdFkDeferrability } from './db-utils';
 
 describe('agent-originated action_intents constraints', () => {
@@ -139,16 +140,20 @@ describe('agent-originated action_intents constraints', () => {
    * `expectSqlState`). A plain `.rejects.toMatchObject({ code })` against the
    * top-level error silently mismatches, so unwrap `.cause` first.
    */
-  async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<void> {
+  async function expectSqlState(fn: () => Promise<unknown>, code: string | readonly string[]): Promise<void> {
     let raised: unknown;
     try {
       await fn();
     } catch (err) {
       raised = err;
     }
-    expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
+    expect(raised, `expected SQLSTATE ${String(code)}, but the statement succeeded`).toBeDefined();
     const cause = (raised as { cause?: { code?: string } })?.cause;
-    expect(cause?.code ?? (raised as { code?: string })?.code).toBe(code);
+    const actual = cause?.code ?? (raised as { code?: string })?.code;
+    // A list means any of them: FOREIGN_KEY_VIOLATION_SQLSTATES for a RESTRICT
+    // refusal, which Postgres 18 reports as 23001 and older versions as 23503.
+    if (typeof code === 'string') expect(actual).toBe(code);
+    else expect(code).toContain(actual);
   }
 
   it('accepts an intent with a run and no human actor', async () => {
@@ -261,7 +266,7 @@ describe('agent-originated action_intents constraints', () => {
     );
   });
 
-  it('refuses to delete a run that an intent still attributes (23503)', async () => {
+  it('refuses to delete a run that an intent still attributes (RESTRICT: 23503, or 23001 on Postgres 18)', async () => {
     await insertIntent({
       requestedByUserId: null,
       requestingApiKeyId: null,
@@ -270,7 +275,7 @@ describe('agent-originated action_intents constraints', () => {
       originPrincipalId: agentId,
       source: 'ai_agent',
     });
-    await expectSqlState(() => deleteRun(runId), '23503');
+    await expectSqlState(() => deleteRun(runId), FOREIGN_KEY_VIOLATION_SQLSTATES);
   });
 
   it('treats requesting_agent_run_id as immutable content', async () => {
@@ -380,6 +385,24 @@ describe('agent-originated action_intents constraints', () => {
     await reapplyOrgIdFkDeferrability(getTestDb(), [
       'action_intents_requesting_agent_run_id_org_id_fkey',
     ]);
+    // 2026-09-05-a's unconditional DROP+ADD also rewinds
+    // action_intents_one_actor_chk / _source_chk / _origin_principal_kind_chk
+    // to their pre-flow (three-actor) definitions, which would make every
+    // later flow-origin intent insert in this shared DB violate
+    // one_actor_chk (tool catalog W04, #5219). Replay the newest migration
+    // that defines them (idempotent) so the schema is current again.
+    await getTestDb().execute(sql.raw(readFileSync(
+      join(__dirname, '../../../migrations/2027-01-06-130000-flow-runs.sql'),
+      'utf8',
+    )));
+    // ...and that replay CREATE OR REPLACEs action_intents_block_content_update()
+    // and flow_runs_immutable_guard() back to their W04 bodies, dropping
+    // invoked_flow_id / parent_agent_run_id / triggered_by_api_key_id from the
+    // immutable sets (tool catalog W05, #5220). Replay the W05 file too.
+    await getTestDb().execute(sql.raw(readFileSync(
+      join(__dirname, '../../../migrations/2027-01-07-140000-flow-webhooks-tools-budgets.sql'),
+      'utf8',
+    )));
 
     // The re-added composite FK validated existing rows; the pre-existing
     // agent intent must have survived, and the constraints must still fire.

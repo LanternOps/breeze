@@ -9,6 +9,7 @@ vi.mock('@/stores/auth', () => ({
     statusText: 'OK',
     json: vi.fn().mockResolvedValue({ data: [] }),
   }),
+  useAuthStore: (selector: (s: { user: null }) => unknown) => selector({ user: null }),
   registerOrgIdProvider: vi.fn(),
 }));
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { Building2, Shield } from 'lucide-react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { Building2, Shield, Ticket } from 'lucide-react';
 import '@/lib/i18n';
 
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
@@ -64,5 +64,70 @@ describe('SettingsSectionNav (#9168)', () => {
     } finally {
       HTMLElement.prototype.scrollIntoView = original;
     }
+  });
+
+  // The CSS bound (100vh - 7rem) only fits once the rail is stuck. Before that
+  // it sits under the page title and its bottom ran off-screen, hiding the last
+  // sections until the page was scrolled. Size it from where it actually is.
+  it('sizes the rail from its on-screen top so its bottom never runs past the viewport', () => {
+    const { container } = render(
+      <main>
+        <SettingsSectionNav groups={groups} activeKey="company" onNavigate={vi.fn()} selectId="nav-select" />
+      </main>,
+    );
+    const rail = container.querySelector('nav') as HTMLElement;
+    const main = container.querySelector('main') as HTMLElement;
+    let top = 194;
+    rail.getBoundingClientRect = () => ({ top } as DOMRect);
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(rail.style.maxHeight).toBe('682px'); // 900 - 194 - 24
+
+    top = 88; // scrolled until stuck at top-6 under the 4rem app header
+    act(() => { main.dispatchEvent(new Event('scroll')); });
+    expect(rail.style.maxHeight).toBe('788px');
+  });
+
+  describe('link items (#9787)', () => {
+    const linkGroups: SettingsNavGroup[] = [
+      {
+        label: 'Comms',
+        items: [
+          { key: 'company', hash: 'company', label: 'Company', description: 'Name', icon: Building2 },
+          { key: 'ticketing', hash: 'ticketing', label: 'Ticketing', description: 'Tickets', icon: Ticket, href: '/settings/ticketing', dirty: true },
+        ],
+      },
+    ];
+
+    it('link item renders a real href', () => {
+      const onNavigate = vi.fn();
+      render(<SettingsSectionNav groups={linkGroups} activeKey="ticketing" onNavigate={onNavigate} selectId="nav-select" testIdPrefix="nav" />);
+      const link = screen.getByTestId('nav-tab-ticketing');
+      expect(link.getAttribute('href')).toBe('/settings/ticketing');
+      expect(link.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+      // Never current, never dirty, even when the caller says so.
+      expect(link).not.toHaveAttribute('aria-current');
+      expect(link.getAttribute('aria-label')).toBe('Ticketing');
+      fireEvent.click(link);
+      expect(onNavigate).not.toHaveBeenCalled();
+    });
+
+    it('select option for a link item assigns location and leaves the selection unchanged', () => {
+      const onNavigate = vi.fn();
+      const assign = vi.fn();
+      const original = window.location;
+      Object.defineProperty(window, 'location', { configurable: true, value: { ...original, assign } });
+      try {
+        render(<SettingsSectionNav groups={linkGroups} activeKey="company" onNavigate={onNavigate} selectId="nav-select" testIdPrefix="nav" />);
+        const select = screen.getByRole('combobox') as HTMLSelectElement;
+        fireEvent.change(select, { target: { value: 'ticketing' } });
+        expect(assign).toHaveBeenCalledWith('/settings/ticketing');
+        expect(onNavigate).not.toHaveBeenCalled();
+        expect(select.value).toBe('company');
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: original });
+      }
+    });
   });
 });

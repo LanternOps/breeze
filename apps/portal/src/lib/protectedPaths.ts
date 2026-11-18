@@ -19,6 +19,7 @@ export const PORTAL_PROTECTED_PREFIXES = [
   '/profile',
   '/quotes',
   '/invoices',
+  '/agreements',
   '/payment-methods',
   '/dashboard',
   '/security',

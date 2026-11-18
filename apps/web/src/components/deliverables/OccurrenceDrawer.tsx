@@ -75,6 +75,7 @@ function isEvidenceRequired(err: unknown): boolean {
   return Boolean(body && typeof body === 'object' && body.code === 'EVIDENCE_REQUIRED');
 }
 
+/** Short-id fallback for a chip whose record the API could not name (#9961). */
 function evidenceRef(ev: OccurrenceEvidence): string {
   const raw = ev.kind === 'document' ? ev.documentId
     : ev.kind === 'contract_document' ? ev.contractDocumentId
@@ -415,7 +416,11 @@ export default function OccurrenceDrawer({ fetcher, orgId, deliverable, onClose,
                         data-testid={`evidence-chip-${ev.id}`}
                       >
                         {t(/* i18n-dynamic */ EVIDENCE_KIND_KEY[ev.kind])}
-                        <span className="font-mono">{evidenceRef(ev)}</span>
+                        {ev.label ? (
+                          <span className="max-w-[16rem] truncate" title={ev.label}>{ev.label}</span>
+                        ) : (
+                          <span className="font-mono">{evidenceRef(ev)}</span>
+                        )}
                         <button
                           type="button"
                           onClick={() => remove(occ.id, ev.id)}

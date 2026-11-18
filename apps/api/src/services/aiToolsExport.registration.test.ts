@@ -4,6 +4,12 @@ import { TOOL_TIERS, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { AGENT_CAPABILITIES, TOOL_CAPABILITY } from './aiAgents/agentToolCatalog';
 import { toolInputSchemas } from './aiToolSchemas';
 import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { readFileSync } from 'node:fs';
+import { DATASET_ADAPTERS, EXPORT_DATASETS } from './aiToolsExportDatasets';
+import { EXPORT_DATASETS as LEAF_EXPORT_DATASETS } from './aiToolsExportDatasetNames';
+import { EXPORT_DATASET_REQUIREMENTS } from './aiToolsExportPermissions';
+
+const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
 describe('export_dataset registration', () => {
   it('1. is in the aiTools registry', () => {
@@ -44,5 +50,31 @@ describe('export_dataset registration', () => {
 
   it('6. has an RBAC permission entry', () => {
     expect(TOOL_PERMISSIONS.export_dataset).toEqual({ resource: 'devices', action: 'read' });
+  });
+});
+
+describe('export_dataset dataset lists cannot drift', () => {
+  it('the hub re-exports the leaf list unchanged', () => {
+    expect(EXPORT_DATASETS).toBe(LEAF_EXPORT_DATASETS);
+  });
+
+  it('both Zod enums derive from EXPORT_DATASETS', () => {
+    const schema = toolInputSchemas.export_dataset as unknown as { shape: { dataset: { options: string[] } } };
+    expect(schema.shape.dataset.options).toEqual([...EXPORT_DATASETS]);
+    for (const file of ['./aiToolSchemas.ts', './aiAgentSdkTools.ts']) {
+      expect(src(file)).toContain('dataset: z.enum(EXPORT_DATASETS)');
+      expect(src(file)).not.toMatch(/dataset: z\.enum\(\['event_logs'/);
+    }
+  });
+
+  it('adapters, requirements, description and docs name every dataset', () => {
+    expect(Object.keys(DATASET_ADAPTERS).sort()).toEqual([...EXPORT_DATASETS].sort());
+    expect(Object.keys(EXPORT_DATASET_REQUIREMENTS).sort()).toEqual([...EXPORT_DATASETS].sort());
+    const description = aiTools.get('export_dataset')!.definition.description;
+    const docs = src('../../../docs/src/content/docs/features/ai-tools.mdx');
+    for (const name of EXPORT_DATASETS) {
+      expect(description).toContain(name);
+      expect(docs).toContain(`\`${name}\``);
+    }
   });
 });

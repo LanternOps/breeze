@@ -20,7 +20,8 @@ export type SenderAuthVerdict = 'pass' | 'fail' | 'neutral' | 'none' | 'unknown'
 // spoofable, so identity/state actions (treating a sender as a known portal user,
 // or threading a reply by ticket token) must gate on `verified`. `verified` is the
 // derived trust decision: a trusted DMARC pass, or (Microsoft 365 mailbox only)
-// Exchange's intra-tenant stamp — see `source`. When the provider omits all
+// Exchange's intra-tenant stamp, Exchange's own stamp on external mail, or a trusted
+// ARC sealer's verdict — see `source`. When the provider omits all
 // verdicts, `verified` is false (fail closed) — mail is quarantined for human
 // review, never auto-trusted and never hard-dropped.
 export interface SenderAuth {
@@ -34,10 +35,26 @@ export interface SenderAuth {
    * received mail that the tenant's own Exchange stamped as sent from inside the
    * tenant (normalizeGraphMessage, #8299). That proves the message originated
    * inside the tenant, not that the From address is the real sender: a tenant user
-   * or connector allowed to send as another address passes too. Absent: `verified`
-   * is the DMARC result.
+   * or connector allowed to send as another address passes too.
+   * 'exchange-online': the DMARC verdict came from Exchange Online's own stamp on
+   * external mail, for the message's From domain (#10862).
+   * 'trusted-arc-sealer': the sender-auth verdict (a DMARC pass, or an aligned DKIM or
+   * SPF pass) came from a gateway the connection lists as a trusted ARC sealer, whose
+   * seal verified and whose verdict is for the From domain (#10862).
+   * Absent: `verified` is the DMARC result of a provider stamp.
    */
-  source?: 'exchange-internal';
+  source?: 'exchange-internal' | 'exchange-online' | 'trusted-arc-sealer';
+  /**
+   * The RFC 5322 From domain (lower-case) that the verdict behind `verified` is
+   * for, set by the normalizer that read the verdict. The pipeline accepts
+   * `verified` only when this equals the domain of `from`, so a verdict about one
+   * domain can never vouch for an address on another. Every normalizer sets it
+   * whenever `verified` is true: null when the verdict names no single From
+   * domain (a different `header.from`, several From addresses, no usable From
+   * address), and the sender is then treated as unverified. A verified verdict
+   * with no such key was queued by an earlier release (see processInboundEmail).
+   */
+  authenticatedDomain?: string | null;
 }
 
 // Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a
@@ -58,7 +75,12 @@ export interface NormalizedInboundEmail {
    *  mailbox), skip recipient-based resolution. This is feeder-trusted, not
    *  derived from untrusted message content. */
   resolvedPartnerId?: string;
-  from: string;          // sender (untrusted)
+  /** The RFC 5322 From mailbox address: the sender identity. Untrusted unless
+   *  `senderAuth` is verified for its domain (see SenderAuth.authenticatedDomain). */
+  from: string;
+  /** The SMTP envelope sender (MAIL FROM), when the provider reports it. Used only
+   *  for loop handling; never an identity. */
+  envelopeFrom?: string;
   fromName?: string;
   subject: string;
   text: string;          // plain body
@@ -110,6 +132,11 @@ export interface NormalizedInboundEmail {
   // obtained (vs a genuine DMARC fail) — observability for the silent-quarantine failure
   // modes. Absent on a normal pass/fail. See SenderAuthDiagnostic.
   senderAuthDiagnostic?: SenderAuthDiagnostic;
+  // Which sender-auth source was read and what it said, for the quarantine reason on
+  // a Microsoft 365 mailbox (#10862). Ordinary unverified mail, so unlike the
+  // diagnostic above it raises no alert. Fixed text plus a sealer from the
+  // connection's own list: never a value taken from the message.
+  senderAuthConsulted?: string;
   /**
    * Provider-reported attachments. Across the queue this is METADATA ONLY
    * (Mailgun emits [] today; M365 emits [] and sets `hasAttachments`). The

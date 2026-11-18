@@ -31,6 +31,14 @@ const { emitMock, auditMock, dbState } = vi.hoisted(() => ({
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 
+// #8972 W0: writers lock the ticket row first; the lock helper has its own tests, so
+// here it echoes the ticket back (same org as the fixtures) and records the id.
+const { lockMock } = vi.hoisted(() => ({
+  lockMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: '22222222-2222-2222-2222-222222222222', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 const setMock = vi.fn();
 const updateWhereMock = vi.fn();
 const insertValuesMock = vi.fn();
@@ -414,6 +422,7 @@ describe('addAiTriageNote — AI-origin internal comment (P2-4, #4191)', () => {
     const result = await addAiTriageNote(TICKET_ID, RUN_ID, 'The disk is at 95% capacity.', ORG_ID);
 
     expect(result).toEqual({ comment: { id: 'comment-1' } });
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID); // #8972 W0: ticket locked first
     const insertArg = insertValuesMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(insertArg).toMatchObject({
       ticketId: TICKET_ID,

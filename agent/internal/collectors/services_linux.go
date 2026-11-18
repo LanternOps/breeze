@@ -13,6 +13,9 @@ import (
 )
 
 func collectServices() ([]ServiceInfo, error) {
+	if !hostHasSystemd() {
+		return []ServiceInfo{}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

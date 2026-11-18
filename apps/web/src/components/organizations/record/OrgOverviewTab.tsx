@@ -6,6 +6,7 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
 import { EntityLink } from '@/components/shared/EntityLink';
+import AlertSubjectChip, { isDeviceAlert } from '@/components/alerts/AlertSubjectChip';
 import HashLink from '@/components/shared/HashLink';
 import OrgKeyDatesCard from './OrgKeyDatesCard';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
@@ -464,12 +465,17 @@ export default function OrgOverviewTab({
               {alerts.map((alert) => (
                 <li key={alert.id} className="px-4 py-2.5 text-sm">
                   <a className="font-medium hover:underline" href={`/alerts/${alert.id}`}>
-                    {resolveAlertTitle(alert.title ?? alert.message, alert.deviceHostname, alert.id)}
+                    {resolveAlertTitle(alert.title ?? alert.message, alert.subjectName || alert.deviceHostname, alert.id)}
                   </a>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {alert.deviceHostname && (
+                    {alert.ownerKind && alert.ownerKind !== 'device' ? (
                       <>
-                        <EntityLink kind="device" id={alert.deviceId ?? ''} name={alert.deviceHostname} tone="muted" />
+                        <AlertSubjectChip {...alert} />
+                        {' · '}
+                      </>
+                    ) : alert.deviceHostname && (
+                      <>
+                        <EntityLink kind="device" id={isDeviceAlert(alert) ? alert.deviceId ?? '' : ''} name={alert.deviceHostname} tone="muted" />
                         {' · '}
                       </>
                     )}

@@ -139,6 +139,7 @@ export default function ApiKeyList({
               <th className="px-4 py-3">{t('apiKeyList.scopes')}</th>
               <th className="px-4 py-3">{t('apiKeyList.created')}</th>
               <th className="px-4 py-3">{t('apiKeyList.lastUsed')}</th>
+              <th className="px-4 py-3">{t('apiKeyList.expires')}</th>
               <th className="px-4 py-3">{t('apiKeyList.status')}</th>
               <th className="px-4 py-3 text-right">{t('apiKeyList.actions')}</th>
             </tr>
@@ -146,7 +147,7 @@ export default function ApiKeyList({
           <tbody className="divide-y">
             {filteredApiKeys.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center">
+                <td colSpan={8} className="px-4 py-12 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <svg
                       className="h-12 w-12 text-muted-foreground/50"
@@ -203,6 +204,9 @@ export default function ApiKeyList({
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(apiKey.createdAt)}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(apiKey.lastUsedAt)}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground" data-testid={`api-key-expires-${apiKey.id}`}>
+                    {apiKey.expiresAt ? formatDate(apiKey.expiresAt) : t('apiKeyList.neverExpires')}
+                  </td>
                   <td className="px-4 py-3 text-sm">
                     <span
                       className={cn(

@@ -43,6 +43,43 @@
       "description": "Integrierte Monitore einer Richtlinie zuordnen."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Ein",
+    "autoResolveOff": "Aus",
+    "rearmLabel": "Wiederaktivierung",
+    "rearmNewEvidence": "Neue Hinweise",
+    "rearmAfterDelay": "Nach N Minuten",
+    "rearmAfterMinutes_one": "Nach {{count}} Minute",
+    "rearmAfterMinutes_other": "Nach {{count}} Minuten",
+    "rearmDelayLabel": "Wiederaktivieren nach (Minuten)",
+    "rearmHelp": "Neue Hinweise: Nur ein Ereignis, das der geschlossene Alarm noch nicht gesehen hat, öffnet ihn erneut. Nach N Minuten: Auch ältere Ereignisse können ihn erneut öffnen, sobald seit dem Schließen N Minuten vergangen sind.",
+    "inheritOption": "Erben ({{value}}, {{source}})",
+    "inheritOptionPlain": "Erben",
+    "sources": {
+      "org": "Organisationsstandard",
+      "partner": "Partnerstandard",
+      "builtin": "Integrierter Standard"
+    },
+    "errors": {
+      "cooldown": "Geben Sie eine ganze Zahl von 0 bis 1440 ein.",
+      "cooldownOrInherit": "Geben Sie eine ganze Zahl von 0 bis 1440 ein oder lassen Sie das Feld leer, um den Wert zu erben.",
+      "rearmDelay": "Geben Sie eine ganze Anzahl von Minuten von 1 bis 1440 ein."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Lebenszyklus-Standards",
+    "descriptionPartner": "Der Standard für die Monitore aller Organisationen. Eine Organisation kann ihn überschreiben, und die eigene Einstellung eines Monitors hat Vorrang vor beiden.",
+    "descriptionOrg": "Überschreibt den Partnerstandard für diese Organisation. Lassen Sie ein Feld leer, um ihn zu erben. Die eigene Einstellung eines Monitors hat Vorrang.",
+    "readOnly": "Sie haben keine Berechtigung, den Partnerstandard zu ändern.",
+    "saved": "Lebenszyklus-Standards gespeichert",
+    "saveAction": "Standards speichern",
+    "overrideCount_one": "{{count}} Monitor überschreibt dies",
+    "overrideCount_other": "{{count}} Monitore überschreiben dies",
+    "errors": {
+      "load": "Die Lebenszyklus-Standards konnten nicht geladen werden.",
+      "save": "Die Lebenszyklus-Standards konnten nicht gespeichert werden."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor erstellt und der Richtlinie zugeordnet",
     "titleNew": "Neuer Monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Was überwacht werden soll",
-      "noise": "Schweregrad & Rauschunterdrückung",
+      "lifecycle": "Alarm-Lebenszyklus",
       "respond": "Reagieren",
       "notify": "Benachrichtigen",
       "escalate": "An eine Person eskalieren",
       "deployed": "Bereitgestellt für"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Dieser Monitor überschreibt den Organisationsstandard ({{value}})",
+        "partner": "Dieser Monitor überschreibt den Partnerstandard ({{value}})",
+        "builtin": "Dieser Monitor überschreibt den integrierten Standard ({{value}})",
+        "unknown": "Dieser Monitor überschreibt den geerbten Standard."
+      },
+      "partnerWideHint": "Eine Organisation mit eigenem Standard verwendet diesen statt des hier angezeigten geerbten Werts.",
+      "inheritedUnavailable": "Die geerbten Werte konnten nicht geladen werden. Sie können trotzdem speichern.",
+      "windowWarning": "Das Ereignisfenster ({{window}} Min.) ist kürzer als die Abklingzeit ({{cooldown}} Min.). Ein neues Ereignis während der Abklingzeit kann aus dem Fenster herausfallen, bevor der Alarm erneut geöffnet wird."
     },
     "tabs": {
       "settings": "Einstellungen",
@@ -77,7 +125,8 @@
       "recurrenceThreshold": "Eskalieren nach",
       "recurrenceWindowDays": "Vorfällen innerhalb (Tagen)",
       "pauseResponses": "Automatische Reaktionen anhalten, bis eine Person sie zurücksetzt",
-      "aiAgent": "KI-Agent (aktiviert KI-Triage-Reaktionen)"
+      "aiAgent": "KI-Agent (aktiviert KI-Triage-Reaktionen)",
+      "psaBoard": "PSA-Board für Alarm-Tickets"
     },
     "deliveryModes": {
       "inherit": "Routing-Regeln verwenden",
@@ -122,7 +171,8 @@
     "testDialog": {
       "title": "Auf einem Gerät testen",
       "selectDevice": "Gerät",
-      "run": "Test ausführen"
+      "run": "Test ausführen",
+      "saveToTest": "Speichern, um Ihre Änderungen zu testen"
     },
     "deliveryPreview": {
       "selectOrg": "Wählen Sie eine Organisation für die Zustellungsvorschau.",
@@ -169,6 +219,23 @@
       "failed": "Assets konnten nicht geladen werden",
       "orgRequired": "Wählen Sie eine Organisation als Eigentümer, um ein Asset zu binden.",
       "pingName": "Ping für {{label}}"
+    },
+    "psaBoardDefault": "Standard-Board der Verbindung verwenden",
+    "psaBoardHelp": "Alarm-Tickets für diesen Monitor werden in diesem Board statt im Standard-Board der Verbindung erstellt.",
+    "psaBoardReadOnly": "Alarm-Tickets gehen an PSA-Board #{{id}}",
+    "psaBoardUnavailable": "PSA-Boards konnten nicht geladen werden, daher ist die Board-Überschreibung derzeit nicht verfügbar.",
+    "clearsWhen": {
+      "title": "Wird aufgehoben, wenn",
+      "hint": "Wird nur durch ein Ereignis aufgehoben, das nach dem auslösenden Ereignis des Alarms protokolliert wurde.",
+      "noneHint": "Es ist keine Wiederherstellungsbedingung festgelegt. Der Alarm wird aufgehoben, sobald der Auslöser nicht mehr zutrifft.",
+      "add": "Wiederherstellungsbedingung hinzufügen",
+      "removeCondition": "Entfernen",
+      "keepCustom": "Benutzerdefinierte Bedingung behalten",
+      "customTitle": "Benutzerdefinierte Wiederherstellungsbedingung (API)",
+      "customHint": "Diese Bedingung wurde über die API festgelegt und kann hier nicht bearbeitet werden. Beim Speichern bleibt sie unverändert.",
+      "replaceCustom": "Ersetzen",
+      "invalid": "Einer der Werte der Wiederherstellungsbedingung ist ungültig.",
+      "customUnusable": "Diese Bedingung kann nicht ausgewertet werden, daher werden die Alarme dieses Monitors nicht automatisch aufgehoben. Ersetzen Sie sie, um das zu beheben."
     }
   },
   "kinds": {
@@ -246,8 +313,8 @@
     "nameserver": "DNS-Server",
     "degradedIsFailure": "Beeinträchtigt als Ausfall werten",
     "maxResponseMs": "Fehler bei Antwort langsamer als (ms)",
-    "eventLogCollectionNoSource": "Informations- und Warnungsereignisse aus dem Anwendungsprotokoll werden nur von {{providers}} erfasst. Ereignisse anderer Quellen lösen diese Regel nur auf den Stufen Fehler oder Kritisch aus.",
-    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Informations- oder Warnungsereignisse aus dem Anwendungsprotokoll von „{{source}}“, daher greift diese Regel nur bei deren Fehler- oder kritischen Ereignissen. Erfasste Anbieter: {{providers}}."
+    "eventLogCollectionNoSource": "Anwendungsereignisse der Stufen Information und Warnung werden nur von {{providers}} erfasst. Ereignisse anderer Quellen entsprechen dieser Regel nur bei Fehler oder Kritisch, sofern die Quelle nicht in einer Ereignisprotokoll-Konfigurationsrichtlinie aufgeführt ist (Konfigurationsrichtlinie → Ereignisprotokolle → Anwendungsanbieter).",
+    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Anwendungsereignisse der Stufen Information oder Warnung von „{{source}}“, sofern die Quelle nicht in einer Ereignisprotokoll-Konfigurationsrichtlinie aufgeführt ist (Konfigurationsrichtlinie → Ereignisprotokolle → Anwendungsanbieter). Andernfalls entspricht diese Regel nur ihren Fehler- oder kritischen Ereignissen. Integrierte Anbieter: {{providers}}."
   },
   "operators": {
     "gt": "größer als",
@@ -332,10 +399,13 @@
     "cancel": "Abbrechen",
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {
+      "loadGroups": "Gerätegruppen konnten nicht geladen werden.",
       "attach": "Monitor konnte nicht angehängt werden",
       "detach": "Monitor konnte nicht gelöst werden",
       "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."
-    }
+    },
+    "partnerWideGroups": "Alle Org. (partnerweit)",
+    "organizationGroups": "Organisationsgruppen"
   },
   "policyTab": {
     "title": "Monitore",

@@ -1,7 +1,9 @@
 package collectors
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -14,7 +16,14 @@ const (
 	// securityUnifiedLogPredicate matches auth failures and TCC changes.
 	securityUnifiedLogPredicate = `subsystem == "com.apple.opendirectoryd" OR eventMessage CONTAINS[c] "authentication" OR subsystem == "com.apple.TCC"`
 	// hardwareUnifiedLogPredicate matches disk, thermal, and kernel errors.
-	hardwareUnifiedLogPredicate = `(subsystem CONTAINS "com.apple.iokit" AND messageType >= error) OR eventMessage CONTAINS[c] "thermal" OR eventMessage CONTAINS[c] "kernel panic"`
+	// The IOKit CFPlugIn loader subsystem is excluded: it logs routine
+	// plug-in load failures at error level, which are not hardware faults
+	// but were counted by hardware event-log alert rules.
+	hardwareUnifiedLogPredicate = `(subsystem CONTAINS "com.apple.iokit" AND subsystem != "` + iokitCFPluginSubsystem + `" AND messageType >= error) OR eventMessage CONTAINS[c] "thermal" OR eventMessage CONTAINS[c] "kernel panic"`
+
+	// iokitCFPluginSubsystem is the IOKit plug-in loader's unified-log
+	// subsystem. Its error entries are software noise, never hardware.
+	iokitCFPluginSubsystem = "com.apple.iokit.cfplugin"
 )
 
 // unifiedLogMaxLookback bounds the `log show --start` window. Querying the
@@ -89,4 +98,81 @@ func unifiedLogQueryStart(since, now time.Time) time.Time {
 		return oldest
 	}
 	return since
+}
+
+// unifiedLogEntry matches the JSON output of `log show --style json`
+type unifiedLogEntry struct {
+	Timestamp        string `json:"timestamp"`
+	Subsystem        string `json:"subsystem"`
+	Category         string `json:"category"`
+	EventMessage     string `json:"eventMessage"`
+	MessageType      string `json:"messageType"` // Default, Info, Debug, Error, Fault
+	ProcessImagePath string `json:"processImagePath"`
+	ProcessID        int    `json:"processID"`
+
+	// Per-entry identity for unifiedLogEntryEventID. Captured raw so an
+	// unexpected JSON type can never fail the whole `log show` parse.
+	MachTimestamp json.RawMessage `json:"machTimestamp"`
+	BootUUID      json.RawMessage `json:"bootUUID"`
+	ThreadID      json.RawMessage `json:"threadID"`
+	TraceID       json.RawMessage `json:"traceID"`
+}
+
+// unifiedLogEvents converts parsed `log show` entries to events, keeping only
+// error/fault entries and re-categorizing each via classifyUnifiedLogCategory.
+func unifiedLogEvents(entries []unifiedLogEntry, securityEnabled, hardwareEnabled bool) []EventLogEntry {
+	var results []EventLogEntry
+	for _, e := range entries {
+		level := mapUnifiedLevel(e.MessageType)
+		// Only include error/fault level by default
+		if level != "error" && level != "critical" {
+			continue
+		}
+		category := classifyUnifiedLogCategory(e.Subsystem, e.EventMessage, securityEnabled, hardwareEnabled)
+		// The predicate already excludes the CFPlugIn loader; this guard keeps
+		// a "thermal"/"kernel panic" message clause match from it out too.
+		if category == "hardware" && strings.EqualFold(e.Subsystem, iokitCFPluginSubsystem) {
+			continue
+		}
+
+		source := e.Subsystem
+		if source == "" {
+			source = filepath.Base(e.ProcessImagePath)
+		}
+
+		results = append(results, EventLogEntry{
+			Timestamp: e.Timestamp,
+			Level:     level,
+			Category:  category,
+			Source:    truncateCollectorString(source),
+			EventID:   unifiedLogEntryEventID(fmt.Sprintf("%s:%d", source, e.ProcessID), e),
+			Message:   truncateString(e.EventMessage, 500),
+			Details: map[string]any{
+				"subsystem":   truncateCollectorString(e.Subsystem),
+				"processId":   e.ProcessID,
+				"logCategory": e.Category,
+			},
+		})
+		if len(results) >= collectorResultLimit {
+			break
+		}
+	}
+
+	return results
+}
+
+// mapUnifiedLevel maps macOS unified log message types to our level enum
+func mapUnifiedLevel(messageType string) string {
+	switch strings.ToLower(messageType) {
+	case "fault":
+		return "critical"
+	case "error":
+		return "error"
+	case "default", "info":
+		return "info"
+	case "debug":
+		return "info"
+	default:
+		return "info"
+	}
 }

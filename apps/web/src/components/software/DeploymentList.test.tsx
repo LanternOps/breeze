@@ -96,6 +96,37 @@ describe("DeploymentList", () => {
     expect(screen.queryByTestId("deployment-progress-dep-3")).not.toBeInTheDocument();
   });
 
+  it("shows 100% (not a dash) for a completed deployment, matching the detail view", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(listPayload([DEP_COMPLETED])));
+
+    render(<DeploymentList />);
+    await screen.findByText("Firefox Patch");
+
+    expect(screen.getByTestId("deployment-progress-done-dep-3")).toHaveTextContent("100%");
+  });
+
+  it("spells the cancelled status 'Cancelled', matching the detail view", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        listPayload([
+          {
+            ...DEP_COMPLETED,
+            id: "dep-4",
+            name: "Cancelled Job",
+            status: "cancelled",
+            counts: { pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 2, total: 2 },
+          },
+        ]),
+      ),
+    );
+
+    render(<DeploymentList />);
+    await screen.findByText("Cancelled Job");
+
+    expect(screen.getAllByText("Cancelled").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Canceled")).not.toBeInTheDocument();
+  });
+
   it("shows Cancel only for pending/in_progress rows and cancels via POST + refetch", async () => {
     let listCalls = 0;
     fetchMock.mockImplementation((url: string, options?: RequestInit) => {

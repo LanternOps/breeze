@@ -3,9 +3,11 @@
 package patching
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-ole/go-ole"
@@ -27,14 +29,46 @@ const (
 	wuaResultAborted         = 5
 )
 
+// maxWUAHistoryEntries bounds how many Windows Update history entries one
+// installed-inventory pass reads, from index 0. WUA is understood to list the
+// most recent entry first; this is not checked here, and dates are compared
+// rather than taken in order. The cap counts every operation (definition
+// updates, failures, uninstalls), so an update installed long ago can fall
+// outside it and keep an unknown date.
+const maxWUAHistoryEntries = 1000
+
 // WindowsUpdateProvider integrates with Windows Update.
 type WindowsUpdateProvider struct {
 	cfg *config.Config
+	// featurePolicy is the ring's Windows feature-release decision, pushed by
+	// the heartbeat (SetFeatureUpdatePolicy) and read by every scan. Atomic
+	// because scans run on their own goroutine. Starts as block
+	// (DefaultFeatureUpdatePolicy) until the server has said otherwise.
+	featurePolicy atomic.Pointer[FeatureUpdatePolicy]
 }
 
 // NewWindowsUpdateProvider creates a new WindowsUpdateProvider.
 func NewWindowsUpdateProvider(cfg *config.Config) *WindowsUpdateProvider {
-	return &WindowsUpdateProvider{cfg: cfg}
+	w := &WindowsUpdateProvider{cfg: cfg}
+	initial := DefaultFeatureUpdatePolicy()
+	w.featurePolicy.Store(&initial)
+	return w
+}
+
+var _ FeatureUpdatePolicySetter = (*WindowsUpdateProvider)(nil)
+
+// SetFeatureUpdatePolicy replaces the feature-release filter for later scans.
+func (w *WindowsUpdateProvider) SetFeatureUpdatePolicy(policy FeatureUpdatePolicy) {
+	w.featurePolicy.Store(&policy)
+}
+
+// currentFeatureUpdatePolicy is the policy scans filter with; block when the
+// provider was built without the constructor (tests, zero value).
+func (w *WindowsUpdateProvider) currentFeatureUpdatePolicy() FeatureUpdatePolicy {
+	if p := w.featurePolicy.Load(); p != nil {
+		return *p
+	}
+	return DefaultFeatureUpdatePolicy()
 }
 
 // ID returns the provider identifier.
@@ -51,7 +85,7 @@ func (w *WindowsUpdateProvider) Name() string {
 func (w *WindowsUpdateProvider) Scan() ([]AvailablePatch, error) {
 	var patches []AvailablePatch
 	return patches, w.withSession(func(session *ole.IDispatch) error {
-		updates, err := w.searchUpdates(session, "IsInstalled=0")
+		updates, err := w.searchUpdates(session, "IsInstalled=0", false)
 		if err != nil {
 			return err
 		}
@@ -198,6 +232,120 @@ func (w *WindowsUpdateProvider) InstallWithHook(patchID string, before BeforeIns
 	return result, nil
 }
 
+// SearchDriverUpdates returns every pending, visible driver and firmware update.
+// A result it cannot read fails the whole search: a partial list would read as
+// "nothing for this machine", and a skip must never hide a degraded enumeration.
+func (w *WindowsUpdateProvider) SearchDriverUpdates(ctx context.Context) ([]DriverUpdate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []DriverUpdate
+	err := w.withSession(func(session *ole.IDispatch) error {
+		searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
+		if err != nil {
+			return fmt.Errorf("create searcher failed: %w", err)
+		}
+		searcher := searcherVar.ToIDispatch()
+		if searcher == nil {
+			return fmt.Errorf("create searcher failed: nil searcher")
+		}
+		defer searcher.Release()
+
+		resultVar, err := w.callWithRetry("Search", func() (*ole.VARIANT, error) {
+			return oleutil.CallMethod(searcher, "Search", driverSearchCriteria)
+		})
+		if err != nil {
+			return fmt.Errorf("driver search failed: %w", err)
+		}
+		result := resultVar.ToIDispatch()
+		if result == nil {
+			return fmt.Errorf("driver search failed: nil result")
+		}
+		defer result.Release()
+
+		updatesVar, err := oleutil.GetProperty(result, "Updates")
+		if err != nil {
+			return fmt.Errorf("updates collection failed: %w", err)
+		}
+		updates := updatesVar.ToIDispatch()
+		if updates == nil {
+			return fmt.Errorf("updates collection missing")
+		}
+		defer updates.Release()
+
+		countVar, err := oleutil.GetProperty(updates, "Count")
+		if err != nil {
+			return fmt.Errorf("updates count failed: %w", err)
+		}
+		count := int(countVar.Val)
+		_ = countVar.Clear()
+
+		found := make([]DriverUpdate, 0, count)
+		for i := 0; i < count; i++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			u, err := w.readDriverUpdate(updates, i)
+			if err != nil {
+				return fmt.Errorf("driver search result %d of %d unreadable: %w", i+1, count, err)
+			}
+			found = append(found, u)
+		}
+		out = found
+		return nil
+	})
+	return out, err
+}
+
+func (w *WindowsUpdateProvider) readDriverUpdate(updates *ole.IDispatch, index int) (DriverUpdate, error) {
+	itemVar, err := getCollectionItem(updates, index)
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	update := itemVar.ToIDispatch()
+	if update == nil {
+		return DriverUpdate{}, fmt.Errorf("no update object")
+	}
+	defer update.Release()
+
+	identityVar, err := oleutil.GetProperty(update, "Identity")
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	identity := identityVar.ToIDispatch()
+	if identity == nil {
+		return DriverUpdate{}, fmt.Errorf("update identity missing")
+	}
+	defer identity.Release()
+	id, err := w.getStringProperty(identity, "UpdateID")
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	return driverUpdateFrom(id, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
+}
+
+// InstallDriverUpdates installs the given updates one at a time through
+// InstallWithHook, so each gets the same skip, download and post-install checks
+// as a patch job, and each reports its own outcome. Once ctx ends the rest are
+// not started and report its error.
+func (w *WindowsUpdateProvider) InstallDriverUpdates(ctx context.Context, ids []string) []DriverInstallOutcome {
+	out := make([]DriverInstallOutcome, 0, len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			out = append(out, DriverInstallOutcome{UpdateID: id, Err: err})
+			continue
+		}
+		// The hook runs at the true mutation boundary: after the skip check and the
+		// download, right before the installer is created.
+		started := false
+		res, err := w.InstallWithHook(id, func(string) { started = true })
+		out = append(out, DriverInstallOutcome{UpdateID: id, Result: res, Err: err, InstallStarted: started})
+	}
+	return out
+}
+
 // Uninstall removes a Windows Update by update ID.
 func (w *WindowsUpdateProvider) Uninstall(patchID string) error {
 	return w.withSession(func(session *ole.IDispatch) error {
@@ -237,7 +385,7 @@ func (w *WindowsUpdateProvider) Uninstall(patchID string) error {
 func (w *WindowsUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 	var patches []InstalledPatch
 	return patches, w.withSession(func(session *ole.IDispatch) error {
-		updates, err := w.searchUpdates(session, "IsInstalled=1")
+		updates, err := w.searchUpdates(session, "IsInstalled=1", true)
 		if err != nil {
 			return err
 		}
@@ -252,8 +400,149 @@ func (w *WindowsUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 			})
 		}
 
+		// IUpdate's only date, LastDeploymentChangeTime, is when Microsoft
+		// deployed the update, not when it was installed; the update history
+		// records installs (#9723). A history failure leaves the dates
+		// unknown, never the inventory.
+		history, err := w.queryInstallHistory(session)
+		if err != nil {
+			log.Warn("WUA install history unavailable; install dates left unknown", "error", err.Error())
+			return nil
+		}
+		applyWUAInstallDates(patches, newestWUAInstallDates(history))
 		return nil
 	})
+}
+
+// queryInstallHistory reads Windows Update history entries 0 to
+// maxWUAHistoryEntries-1. If any entry in that range that is, or could be, a
+// successful install cannot be read, it returns an error and no entries: that
+// entry could be an update's newest install, and answering from the rest
+// would give an older date.
+func (w *WindowsUpdateProvider) queryInstallHistory(session *ole.IDispatch) ([]wuaHistoryEntry, error) {
+	searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
+	if err != nil {
+		return nil, fmt.Errorf("create searcher failed: %w", err)
+	}
+	searcher := searcherVar.ToIDispatch()
+	if searcher == nil {
+		return nil, fmt.Errorf("create searcher failed: nil searcher")
+	}
+	defer searcher.Release()
+
+	totalVar, err := oleutil.CallMethod(searcher, "GetTotalHistoryCount")
+	if err != nil {
+		return nil, fmt.Errorf("history count failed: %w", err)
+	}
+	total := int(totalVar.Val)
+	_ = totalVar.Clear()
+	if total <= 0 {
+		return nil, nil
+	}
+	if total > maxWUAHistoryEntries {
+		log.Debug("WUA history longer than the read cap; older installs keep an unknown date",
+			"total", total, "cap", maxWUAHistoryEntries)
+		total = maxWUAHistoryEntries
+	}
+
+	historyVar, err := oleutil.CallMethod(searcher, "QueryHistory", 0, total)
+	if err != nil {
+		return nil, fmt.Errorf("query history failed: %w", err)
+	}
+	history := historyVar.ToIDispatch()
+	if history == nil {
+		return nil, fmt.Errorf("query history failed: nil collection")
+	}
+	defer history.Release()
+
+	count, err := w.getIntProperty(history, "Count")
+	if err != nil {
+		return nil, fmt.Errorf("history entry count failed: %w", err)
+	}
+
+	entries := make([]wuaHistoryEntry, 0, count)
+	unreadable := 0
+	var firstErr error
+	for i := 0; i < count; i++ {
+		itemVar, err := getCollectionItem(history, i)
+		if err != nil {
+			unreadable++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		item := itemVar.ToIDispatch()
+		if item == nil {
+			unreadable++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("entry %d: nil dispatch", i)
+			}
+			continue
+		}
+		entry, err := w.readHistoryEntry(item)
+		item.Release()
+		if err != nil {
+			unreadable++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("entry %d (operation %d, result %d): %w", i, entry.Operation, entry.ResultCode, err)
+			}
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	if unreadable > 0 {
+		return nil, fmt.Errorf("%d of %d history entries unreadable (first: %w)", unreadable, count, firstErr)
+	}
+	return entries, nil
+}
+
+// readHistoryEntry reads the fields of one IUpdateHistoryEntry that date an
+// install. Operation and ResultCode decide whether the entry can date one;
+// an entry that cannot (an uninstall, a failed attempt) returns with only
+// those two set, so an unusual row of that kind cannot fail the whole
+// history. For a successful install, every field must read.
+func (w *WindowsUpdateProvider) readHistoryEntry(item *ole.IDispatch) (wuaHistoryEntry, error) {
+	var entry wuaHistoryEntry
+	var err error
+	if entry.Operation, err = w.getIntProperty(item, "Operation"); err != nil {
+		return entry, fmt.Errorf("read Operation: %w", err)
+	}
+	if entry.ResultCode, err = w.getIntProperty(item, "ResultCode"); err != nil {
+		return entry, fmt.Errorf("read ResultCode: %w", err)
+	}
+	if !isSuccessfulWUAInstall(entry.Operation, entry.ResultCode) {
+		return entry, nil
+	}
+
+	dateVar, err := oleutil.GetProperty(item, "Date")
+	if err != nil {
+		return entry, fmt.Errorf("read Date: %w", err)
+	}
+	// WUA documents Date as UTC. go-ole labels the converted VT_DATE as UTC
+	// without shifting it, and returns a float64 instead of a time.Time
+	// when it cannot convert.
+	t, ok := dateVar.Value().(time.Time)
+	_ = dateVar.Clear()
+	if !ok {
+		return entry, fmt.Errorf("read Date: not convertible to a time")
+	}
+	entry.Date = t
+
+	identityVar, err := oleutil.GetProperty(item, "UpdateIdentity")
+	if err != nil {
+		return entry, fmt.Errorf("read UpdateIdentity: %w", err)
+	}
+	identity := identityVar.ToIDispatch()
+	if identity == nil {
+		return entry, fmt.Errorf("read UpdateIdentity: nil dispatch")
+	}
+	entry.UpdateID, err = w.getStringProperty(identity, "UpdateID")
+	identity.Release()
+	if err != nil {
+		return entry, fmt.Errorf("read UpdateID: %w", err)
+	}
+	return entry, nil
 }
 
 func (w *WindowsUpdateProvider) withSession(action func(session *ole.IDispatch) error) error {
@@ -286,7 +575,11 @@ func (w *WindowsUpdateProvider) withSession(action func(session *ole.IDispatch) 
 	return action(session)
 }
 
-func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria string) ([]AvailablePatch, error) {
+// searchUpdates runs one WUA search. installed=true is the inventory pass
+// (IsInstalled=1): the ring's feature-update policy filters what is OFFERED,
+// never what is already installed, so an installed feature release stays in
+// the inventory under every policy.
+func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria string, installed bool) ([]AvailablePatch, error) {
 	searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
 	if err != nil {
 		return nil, fmt.Errorf("create searcher failed: %w", err)
@@ -354,7 +647,7 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 		}
 
 		// Filter excluded update types
-		if w.shouldExcludePatch(patch) {
+		if w.shouldExcludePatch(patch, installed) {
 			excluded++
 			continue
 		}
@@ -403,16 +696,17 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	// behaviour (collectors/patches_windows.go). Empty when unavailable.
 	releaseDate := w.getDateProperty(update, "LastDeploymentChangeTime")
 
-	// Determine update type: software, driver, or feature
-	updateType := "software"
+	// Determine update type: software, driver, feature (a Windows feature
+	// release: the Upgrades classification, or a BrowseOnly update whose
+	// title is one — the flag clears once Microsoft pushes the release while
+	// the classification stays) or optional (any other BrowseOnly update).
 	typeVal, _ := w.getIntProperty(update, "Type")
-	if typeVal == 2 {
-		updateType = "driver"
-	}
 	browseOnly, _ := w.getBoolProperty(update, "BrowseOnly")
-	if browseOnly {
-		updateType = "feature"
-	}
+	updateType := windowsUpdateType(typeVal, browseOnly, categoryNames, title)
+
+	reportedType, reportedOwner := reportedWindowsUpdate(updateType, category, title, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
 
 	return AvailablePatch{
 		ID:             updateID,
@@ -427,7 +721,10 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 		RebootRequired: rebootBehavior != 0,
 		ReleaseDate:    releaseDate,
 		UpdateType:     updateType,
-		EulaAccepted:   eulaAccepted,
+		// Reported per device: the API keeps it off the shared patches row.
+		ReportedUpdateType:  reportedType,
+		ReportedUpdateOwner: reportedOwner,
+		EulaAccepted:        eulaAccepted,
 	}, nil
 }
 
@@ -990,16 +1287,25 @@ func (w *WindowsUpdateProvider) acceptEulaIfNeeded(update *ole.IDispatch) error 
 }
 
 // shouldExcludePatch returns true if the patch should be filtered out based on config.
-func (w *WindowsUpdateProvider) shouldExcludePatch(patch AvailablePatch) bool {
-	if w.cfg == nil {
-		return false
+func (w *WindowsUpdateProvider) shouldExcludePatch(patch AvailablePatch, installed bool) bool {
+	// Optional (BrowseOnly, non-feature) updates were never surfaced; keep it
+	// that way on both passes.
+	if patch.UpdateType == UpdateTypeOptional {
+		return true
 	}
-
-	if w.cfg.PatchExcludeDrivers && patch.UpdateType == "driver" {
+	if w.cfg != nil && w.cfg.PatchExcludeDrivers && patch.UpdateType == UpdateTypeDriver {
 		log.Debug("excluding driver update", "title", patch.Title, "id", patch.ID)
 		return true
 	}
-	if w.cfg.PatchExcludeFeatureUpdates && patch.UpdateType == "feature" {
+	// Windows feature releases follow the ring's policy (block / allow / pin),
+	// pushed by the heartbeat; the local config key is only an operator kill
+	// switch that always excludes them. The policy governs what is offered, so
+	// the installed-inventory pass is exempt.
+	if installed {
+		return false
+	}
+	killSwitch := w.cfg != nil && w.cfg.PatchExcludeFeatureUpdates
+	if excludeFeatureUpdate(killSwitch, w.currentFeatureUpdatePolicy(), patch) {
 		log.Debug("excluding feature update", "title", patch.Title, "id", patch.ID)
 		return true
 	}

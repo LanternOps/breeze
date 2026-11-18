@@ -24,6 +24,7 @@ const ALLOWLIST: Record<string, string> = {
   'jobs/intentExpiryReaper.ts': 'sweeps sealed credentials past the reveal window',
   'jobs/intentReleaseWorker.ts': 'seals on the durable path',
   'services/m365ToolsHeadless.ts': 'comment only ("temporaryPassword is encrypted at rest") — no code reference to the field, no carrier construction',
+  '__tests__/integration/identityOnboardingHarness.ts': 'integration-test fixture only: the fake Graph create-user response whose fake credential the real release-worker seal path must seal (R2a)',
 };
 
 /**

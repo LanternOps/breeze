@@ -14,7 +14,9 @@ type PeripheralEvent = {
   product?: string;
   serialNumber?: string;
   deviceId: string;
+  deviceName?: string | null;
   policyId?: string;
+  policyName?: string | null;
   occurredAt: string;
   details?: Record<string, unknown>;
 };
@@ -256,7 +258,9 @@ export default function PeripheralActivityLog({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {event.peripheralType}
+                      {t(/* i18n-dynamic */ `peripheralPoliciesList.classes.${event.peripheralType}`, {
+                        defaultValue: event.peripheralType,
+                      })}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {event.vendor ?? "—"}
@@ -268,14 +272,34 @@ export default function PeripheralActivityLog({
                       {event.serialNumber ?? "—"}
                     </td>
                     {!deviceId && (
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                        {event.deviceId.slice(0, 8)}...
+                      <td className="px-4 py-3 text-xs">
+                        {event.deviceName ? (
+                          <a
+                            href={`/devices/${event.deviceId}`}
+                            className="text-primary hover:underline"
+                            data-testid="peripheral-activity-device-link"
+                          >
+                            {event.deviceName}
+                          </a>
+                        ) : (
+                          <span className="font-mono text-muted-foreground">
+                            {event.deviceId.slice(0, 8)}...
+                          </span>
+                        )}
                       </td>
                     )}
-                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                      {event.policyId
-                        ? `${event.policyId.slice(0, 8)}...`
-                        : "—"}
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {event.policyName ? (
+                        <span data-testid="peripheral-activity-policy-name">
+                          {event.policyName}
+                        </span>
+                      ) : event.policyId ? (
+                        <span className="font-mono">
+                          {event.policyId.slice(0, 8)}...
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                   </tr>
                 ))}

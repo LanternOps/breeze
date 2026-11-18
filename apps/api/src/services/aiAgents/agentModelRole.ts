@@ -24,6 +24,12 @@ export const AGENT_PROFILE_ROLE = {
   patch: 'analysis',
   // AI Suggested Fixes W2 — read-only research reasoning, never act-mode.
   remediation_research: 'analysis',
+  // Wisp W05 (spec §14) — an assessment is a cheap "what changed" look under
+  // a grant; it defaults to the registry's triage role and is never act-mode.
+  assessment: 'triage',
+  // Wisp delegation W1 (#11084) — a device investigation that only proposes
+  // changes (forced shadow): the analysis role, never act-mode remediation.
+  device_troubleshooting: 'analysis',
 } as const satisfies Record<AiAgentRunProfile, AiAgentEscalationRole>;
 
 /** Profiles whose act mode executes actions on devices. */

@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('./backupConnectionFreshness', () => ({ loadBackupConnectionFreshness: vi.fn() }));
 vi.mock('./securityComplianceReportVulnerabilities', () => ({ loadOpenVulnerabilityCounts: vi.fn(async () => new Map()) }));
 vi.mock('./securityComplianceReportBackupProviders', () => ({ loadBackupProviderEvidence: vi.fn(async () => ({ evidence: [], coveredDeviceCount: 0 })) }));
 vi.mock('./authenticatorPolicy', async (orig) => ({ ...(await orig<typeof import('./authenticatorPolicy')>()), loadPartnerPolicy: vi.fn(async () => null) }));
 
 import { db } from '../db';
+import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadPostureEvidence, postureEvidencePolicyFromReportConfig, TRUST_PAGE_EVIDENCE_POLICY } from './postureEvidence';
 import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 
@@ -36,7 +38,7 @@ function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrS
     /* 8 */ [{ isActive: true, provider: 's3', encryption: true }], /* 9 */ [], /* 10 */ [{ status: 'active' }], /* 11 */ [],
     /* 12 */ [{ uacInterceptionEnabled: true }], /* 13 */ [{ id: 'r1' }], /* 14 */ [],
     /* 16 */ [{ overallScore: 82 }],
-    /* 17 */ [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10 }],
+    /* 17 */ [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 90 }],
     /* 18 */ [{ deviceId: 'd1' }, { deviceId: 'd2' }],
   ];
   for (const [i, rows] of Object.entries(over)) if (rows) seq[Number(i) - 1] = rows;
@@ -49,7 +51,13 @@ function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrS
 }
 
 describe('loadPostureEvidence', () => {
-  beforeEach(() => mockQueries());
+  beforeEach(() => {
+    mockQueries();
+    vi.mocked(loadBackupConnectionFreshness).mockResolvedValue(new Map([
+      ['connection-1', { isActive: true, lastSyncAt: AS_OF, syncIntervalMinutes: 30 }],
+      ['connection-2', { isActive: true, lastSyncAt: AS_OF, syncIntervalMinutes: 30 }],
+    ]));
+  });
 
   it('counts eligible/assessed/passing per control from the same facts the report uses', async () => {
     const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
@@ -59,7 +67,8 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.report.edrUnknown).toBe(1);
     expect(ev.report.anyAvUnknown).toBe(1);
-    expect(ev.report.unprotected).toBe(2);
+    // d3 has no protection evidence → not assessed, not unprotected (#12044).
+    expect(ev.report.unprotected).toBe(1);
     expect(ev.report.reporting).toBe(2);
     expect(ev.controls.disk_encryption).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.controls.host_firewall).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
@@ -79,6 +88,83 @@ describe('loadPostureEvidence', () => {
     // every device is assessed; d1/d2 checked in 2h ago (inside 24h), d3 never.
     expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 2, newestEvidenceAt: recent.toISOString() });
     expect(ev.report.orgWide?.postureRow).toEqual({ overallScore: 82 });
+  });
+
+  it('includes healthy org-mapped SaaS workloads as products without endpoint coverage', async () => {
+    mockQueries({ 9: [{ status: 'active', provider: 'm365' }] });
+    const saas = (accountType: string, dataSource: string, overrides = {}) => ({
+      orgId: ORG, provider: 'dropsuite', portalShowProviderName: true, connectionId: 'connection-1', accountType, dataSources: [dataSource],
+      status: 'completed', lastSuccessAt: recent, errorsCount: 0, ...overrides,
+    });
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? [
+        saas('m365', 'm365_mail'), saas('gws', 'gws_shared_drive'),
+        saas('m365', 'm365_teams', { status: 'failed' }),
+        saas('gws', 'gws_drive', { orgId: 'another-org' }),
+        saas('backup_manager', 'files'),
+        saas('m365', 'm365_onedrive', { lastSuccessAt: new Date('2026-10-01') }),
+      ] : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    const products = ev.report.productEvidence.filter((p) => p.product.startsWith('NinjaOne'));
+    expect(products).toEqual([{
+      product: 'NinjaOne SaaS Backup (Dropsuite) — Google shared drives, Microsoft 365 mail',
+      category: 'backup', active: true, lastSyncStatus: null,
+    }]);
+    expect(ev.report.productEvidence).toContainEqual({ product: 'SaaS backup (m365)', category: 'backup', active: true, lastSyncStatus: null });
+    expect(ev.report.backupProviders.coveredDeviceCount).toBe(0);
+    expect(ev.deviceCount).toBe(3);
+  });
+
+  it.each([
+    { hidden: false, expected: 'NinjaOne SaaS Backup (Dropsuite)' },
+    { hidden: true, expected: 'Managed cloud backup' },
+  ])('groups SaaS evidence with D5 labels (hidden=$hidden)', async ({ hidden, expected }) => {
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? [
+        { orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true, accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: recent, errorsCount: 0 },
+        { orgId: ORG, provider: 'dropsuite', connectionId: 'connection-2', portalShowProviderName: !hidden, accountType: 'm365', dataSources: ['m365_onedrive'], status: 'completed', lastSuccessAt: recent, errorsCount: 0 },
+      ] : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([{
+      product: `${expected} — Microsoft 365 OneDrive, Microsoft 365 mail`,
+      category: 'backup', active: true, lastSyncStatus: null,
+    }]);
+    if (hidden) expect(JSON.stringify(ev.report.productEvidence)).not.toMatch(/dropsuite|ninjaone/i);
+  });
+
+  it('excludes unknown SaaS health but keeps healthy and warning evidence', async () => {
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? ['completed', 'completed_with_errors', 'unknown'].map((status, i) => ({
+        orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true,
+        accountType: 'm365', dataSources: [['m365_mail', 'm365_onedrive', 'm365_teams'][i]],
+        status, lastSuccessAt: recent, errorsCount: 0,
+      })) : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([{
+      product: 'NinjaOne SaaS Backup (Dropsuite) — Microsoft 365 OneDrive, Microsoft 365 mail',
+      category: 'backup', active: true, lastSyncStatus: null,
+    }]);
+  });
+
+  it.each([
+    { reason: 'stale', freshness: { isActive: true, lastSyncAt: recent, syncIntervalMinutes: 30 } },
+    { reason: 'inactive', freshness: { isActive: false, lastSyncAt: AS_OF, syncIntervalMinutes: 30 } },
+    { reason: 'missing', freshness: undefined },
+  ])('excludes SaaS evidence from a $reason connection', async ({ freshness }) => {
+    vi.mocked(loadBackupConnectionFreshness).mockResolvedValue(
+      freshness ? new Map([['connection-1', freshness]]) : new Map(),
+    );
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? [{
+        orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true,
+        accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: recent, errorsCount: 0,
+      }] : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([]);
   });
 
   it('the trust-page policy IS the report default configuration', () => {
@@ -104,10 +190,59 @@ describe('loadPostureEvidence', () => {
     expect(ev.controls.edr_coverage).toMatchObject({ eligible: 3, assessed: 2, passing: 0 });
     expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 2, passing: 1 });
     expect(ev.report.edrUnknown).toBe(1);
-    expect(ev.report.anyAvUnknown).toBe(1);
-    expect(ev.report.unprotected).toBe(2);
+    // The report needs protection evidence, not a check-in alone (#12044):
+    // 'in' and 'out' are both not assessed there, and neither is unprotected.
+    expect(ev.report.anyAvUnknown).toBe(2);
+    expect(ev.report.unprotected).toBe(0);
     // Neither is inside the 24h monitoring window.
     expect(ev.controls.continuous_monitoring).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
+  });
+
+  describe('report protection figures (#12044)', () => {
+    it('a checked-in device with no protection evidence is not assessed in the report, never unprotected', async () => {
+      // d3 checked in recently but has no status row and no agent: its protection is unknown.
+      mockQueries({ 2: [
+        { id: 'd1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: recent },
+        { id: 'd2', hostname: 'pc-2', osType: 'macos', siteName: 'HQ', lastSeenAt: recent },
+        { id: 'd3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote', lastSeenAt: recent },
+      ] });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.devices.find((d) => d.id === 'd3')?.protection).toBe('unknown');
+      expect(ev.report.unprotected).toBe(1); // d2 only (provider "other", RTP off)
+      expect(ev.report.anyAvUnknown).toBe(1);
+      expect(ev.report.avAssessed).toBe(2);
+      expect(ev.report.avProtected).toBe(1);
+      // The shared control the trust page reads is unchanged: d3 stays assessed and failing there.
+      expect(ev.controls.endpoint_protection).toMatchObject({ eligible: 3, assessed: 3, passing: 1 });
+    });
+
+    it('an EDR product the device itself reports counts toward the report EDR figure', async () => {
+      // d1's security status names SentinelOne, but no SentinelOne integration row links it.
+      mockQueries({
+        3: [{ deviceId: 'd1', provider: 'sentinelone', realTimeProtection: true, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: recent }],
+        5: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.report.edrProtected).toBe(1);
+      // The inventory lists the same product, so the two figures now reconcile.
+      expect(ev.report.productEvidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ product: 'SentinelOne', category: 'edr' }),
+      ]));
+      expect(ev.controls.edr_coverage.passing).toBe(0); // trust-page control unchanged
+    });
+
+    it.each([
+      ['an EDR with real-time protection off', 'sentinelone', false],
+      ['an EDR with an unknown real-time-protection reading', 'crowdstrike', null],
+      ['a non-EDR antivirus', 'windows_defender', true],
+    ] as const)('%s does not count toward the report EDR figure', async (_label, provider, realTimeProtection) => {
+      mockQueries({
+        3: [{ deviceId: 'd1', provider, realTimeProtection, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: recent }],
+        5: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.report.edrProtected).toBe(0);
+    });
   });
 
   it('a stale security_status row is not assessed for encryption/firewall; EDR/AV assessment then rests on the agent row or check-in', async () => {
@@ -180,10 +315,33 @@ describe('loadPostureEvidence', () => {
       expect(ev.devices.find((d) => d.id === 'stale')?.patchAssessed).toBe(false);
     });
 
+    it('#9606: the aggregate averages the stored per-device score, not a re-derived passed/total', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [
+          { deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 79, checkedAt: recent },
+          { deviceId: 'd2', passedChecks: 9, totalChecks: 10, score: 80, checkedAt: recent },
+          { deviceId: 'd3', passedChecks: 9, totalChecks: 10, score: 79, checkedAt: recent },
+        ],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline.aggregatePct).toBe(79);
+    });
+
+    it('#9606: a scan that evaluated zero checks (stored score 100) is not assessed as passing', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [{ deviceId: 'd1', passedChecks: 0, totalChecks: 0, score: 100, checkedAt: recent }],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline).toMatchObject({ assessed: 0, aggregatePct: null });
+      expect(ev.devices.find((d) => d.id === 'd1')?.cisPassRate).toBeNull();
+    });
+
     it('a CIS scan older than the window is not assessed and leaves the aggregate out', async () => {
       mockQueries({
         3: [], 5: [], 6: [],
-        16: [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, checkedAt: old }, { deviceId: 'd2', passedChecks: 5, totalChecks: 10, checkedAt: recent }],
+        16: [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 90, checkedAt: old }, { deviceId: 'd2', passedChecks: 5, totalChecks: 10, score: 50, checkedAt: recent }],
       });
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
       expect(ev.controls.hardening_baseline).toMatchObject({ eligible: 3, assessed: 1, aggregatePct: 50 });
@@ -216,7 +374,7 @@ describe('loadPostureEvidence', () => {
     // No device reads (3–6, 17, 18) run for zero devices: the org-wide reads follow slot 2 directly.
     mockQueries({ 2: [], 3: [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'success' }], 4: [{ isActive: true, provider: 's3', encryption: true }], 5: [], 6: [{ status: 'active' }], 7: [], 8: [{ uacInterceptionEnabled: true }], 9: [{ id: 'r1' }], 10: [], 11: [{ overallScore: 82 }] });
     const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(12); // +1: the M365 MFA rollup read (unrestricted only)
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(13); // +2: M365 MFA rollup and provider SaaS workloads (unrestricted only)
     expect(ev.deviceCount).toBe(0);
     expect(ev.controls.disk_encryption).toMatchObject({ eligible: 0, assessed: 0, passing: 0 });
     expect(ev.controls.identity_provider).toMatchObject({ eligible: 1, assessed: 1, passing: 1 });
@@ -238,20 +396,20 @@ describe('loadPostureEvidence', () => {
     it('without the callback no edr_endpoints query is issued', async () => {
       await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
       // 1–14, 16, 17, 18 — exactly the 17 positional reads, nothing between slots 6 and 7.
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // +2: M365 rollup + backup_jobs device set
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20); // +3: M365 rollup, backup_jobs device set, provider SaaS workloads
     });
 
     it('a callback returning false reads no EDR evidence either', async () => {
       const allowed = vi.fn(async () => false);
       await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF, { edrEvidenceAllowed: allowed });
       expect(allowed).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // +2: M365 rollup + backup_jobs device set
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20); // +3: M365 rollup, backup_jobs device set, provider SaaS workloads
     });
 
     it('with the callback allowing it, a healthy endpoint counts the device as managed and protected', async () => {
       mockQueries({}, { edrSlot: [{ deviceId: 'd3' }] });
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF, { edrEvidenceAllowed: async () => true });
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20); // +2: M365 rollup + backup_jobs device set
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(21); // +3: M365 rollup, backup_jobs device set, provider SaaS workloads
       const d3 = ev.devices.find((d) => d.id === 'd3')!;
       expect(d3.managed).toEqual(['Managed endpoint protection']);
       expect(d3.protection).toBe('protected');
@@ -268,7 +426,7 @@ describe('loadPostureEvidence', () => {
 
   describe('per-safeguard hardening evidence (W3e)', () => {
     const withSafeguards = { ...TRUST_PAGE_EVIDENCE_POLICY, includeCisSafeguards: true };
-    const scan = (deviceId: string, over: Record<string, unknown> = {}) => ({ id: `scan-${deviceId}`, deviceId, passedChecks: 9, totalChecks: 10, checkedAt: recent, ...over });
+    const scan = (deviceId: string, over: Record<string, unknown> = {}) => ({ id: `scan-${deviceId}`, deviceId, passedChecks: 9, totalChecks: 10, score: 90, checkedAt: recent, ...over });
     const f = (checkId: string, status: string) => ({ checkId, title: `Ensure '${checkId}' verbatim recommendation text`, severity: 'medium', status });
     const run = async (cisRows: unknown[], findingRows: unknown[], policy = withSafeguards) => {
       mockQueries({ 16: cisRows }, { cisFindings: findingRows });
@@ -309,7 +467,7 @@ describe('loadPostureEvidence', () => {
       const old = new Date(AS_OF.getTime() - 31 * 86400000);
       mockQueries({ 16: [scan('d1', { checkedAt: old })] }); // no findings slot: a stale scan must not trigger the read
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, withSafeguards, AS_OF);
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20);
       expect(ev.controls.hardening_baseline.safeguards!['4.5']).toMatchObject({ assessed: 0, passing: 0 });
     });
 
@@ -334,7 +492,7 @@ describe('loadPostureEvidence', () => {
     it('includeCisSafeguards = false issues no findings query and leaves safeguards undefined', async () => {
       mockQueries();
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // unchanged from the no-safeguards baseline above
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(20); // unchanged from the no-safeguards baseline above
       expect(ev.controls.hardening_baseline.safeguards).toBeUndefined();
     });
 
@@ -342,7 +500,7 @@ describe('loadPostureEvidence', () => {
       mockQueries();
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, { ...withSafeguards, includeCis: false }, AS_OF);
       expect(ev.controls.hardening_baseline.safeguards).toBeUndefined();
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(18); // no cis read, no findings read
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // no cis read, no findings read
     });
 
     it('the loader reads the live getter when handed TRUST_PAGE_EVIDENCE_POLICY itself (no spread freezing it)', async () => {

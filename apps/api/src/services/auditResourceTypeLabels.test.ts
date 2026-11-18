@@ -1,0 +1,127 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * Contract (#9856): every audit `resourceType` the API can write has a label in
+ * the web catalog (`admin:audit.resourceTypes`), so Recent Activity never shows
+ * a raw token. It lives in test-api, not test-web, because it reads the whole
+ * API source: test-api already runs on web changes (a locale edit re-checks it),
+ * while test-web is not gated on every API change.
+ *
+ * Audit rows are written by the API (and the ee/ extensions it hosts) with a
+ * literal `resourceType: '<snake_case>'`, occasionally behind a ternary, a `??`
+ * default, or a literal union on a helper's parameter type. Only literals in a
+ * value position count: a string passed to a call (`action.startsWith('layout')`)
+ * is a condition, not a type.
+ *
+ * Best effort, not a proof: a type passed through a variable or a positional
+ * helper argument, or hardcoded inside a raw `sql` insert, is not seen here.
+ * Those still render humanized (never raw) through the web's
+ * `formatAuditResourceType`.
+ */
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+const TYPE_LITERAL = /(?:resourceType:|\?\?|\?|:|\|)\s*['"]([a-z][a-z0-9_]*)['"](?!\s*\))/g;
+// Where one `resourceType` value ends: the next property, or the end of the
+// object / statement.
+const VALUE_END = /,\s*[A-Za-z_]+\??\s*:|\n\s*[A-Za-z_]+\??\s*:|[};]/;
+
+function sourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (name === 'node_modules' || name === '__tests__') continue;
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...sourceFiles(full));
+    else if (name.endsWith('.ts') && !name.endsWith('.test.ts') && !name.endsWith('.d.ts')) out.push(full);
+  }
+  return out;
+}
+
+function typesInSource(source: string): string[] {
+  const types: string[] = [];
+  for (const at of source.matchAll(/resourceType:/g)) {
+    const rest = source.slice(at.index! + 'resourceType:'.length);
+    // A schema descriptor (`resourceType: { type: 'string' }`) is not a value.
+    if (/^\s*\{/.test(rest)) continue;
+    const end = rest.search(VALUE_END);
+    const value = `resourceType:${end === -1 ? rest : rest.slice(0, end)}`;
+    for (const m of value.matchAll(TYPE_LITERAL)) types.push(m[1]!);
+  }
+  return types;
+}
+
+function emittedResourceTypes(): Set<string> {
+  const roots = [path.join(REPO_ROOT, 'apps/api/src')];
+  for (const ext of readdirSync(path.join(REPO_ROOT, 'ee'))) {
+    const src = path.join(REPO_ROOT, 'ee', ext, 'src');
+    try {
+      if (statSync(src).isDirectory()) roots.push(src);
+    } catch {
+      // not an extension package
+    }
+  }
+  const types = new Set<string>();
+  for (const file of roots.flatMap(sourceFiles)) {
+    for (const type of typesInSource(readFileSync(file, 'utf8'))) types.add(type);
+  }
+  // `monitor.conversion.retire` audits the converted row under its source
+  // table name (monitorDefinitions.conversion.ts: `resourceType: sourceTable`).
+  const conversions = readFileSync(path.join(REPO_ROOT, 'apps/api/src/db/schema/monitorConversions.ts'), 'utf8');
+  const block = conversions.match(/MONITOR_CONVERSION_SOURCE_TABLES = \[([\s\S]*?)\]/);
+  expect(block).not.toBeNull();
+  for (const m of block![1]!.matchAll(/'([a-z_]+)'/g)) types.add(m[1]!);
+  return types;
+}
+
+function englishCatalog(): Record<string, string> {
+  const admin = JSON.parse(readFileSync(path.join(REPO_ROOT, 'apps/web/src/locales/en/admin.json'), 'utf8'));
+  return admin.audit.resourceTypes as Record<string, string>;
+}
+
+describe('audit resource type labels (#9856)', () => {
+  it('reads every value shape of a resourceType property', () => {
+    expect(
+      typesInSource(`
+        a({ resourceType: "dq", resourceId: x });
+        function f(resourceType: 'u1' | 'u2', id: string) {}
+        type T = {
+          resourceType:
+            | 'm1'
+            | 'm2';
+          resourceId: string;
+        };
+        b({ resourceType: ok ? 't1' : 't2', id });
+        c({ resourceType: audit.resourceType ?? 'd1' });
+        d({ resourceType: action.startsWith('cond') ? 'r1' : 'r2' });
+        e({ resourceType: { type: 'string' } });
+      `).sort(),
+    ).toEqual(['d1', 'dq', 'm1', 'm2', 'r1', 'r2', 't1', 't2', 'u1', 'u2']);
+  });
+
+  it('extracts the API resource types (sanity: the scan found the real set)', () => {
+    const types = emittedResourceTypes();
+    expect(types.size).toBeGreaterThan(200);
+    // A plain literal, a ternary branch, a `??` default, a double-quoted
+    // literal, a later union member, a multi-line union, a conversion table.
+    expect(types).toContain('saved_filter');
+    expect(types).toContain('time_suggestion');
+    expect(types).toContain('topology_view_exclusion');
+    expect(types).toContain('invoice');
+    expect(types).toContain('agent_version');
+    expect(types).toContain('tunnel_allowlist');
+    expect(types).toContain('report_run');
+    expect(types).toContain('config_policy_alert_rules');
+    // Call arguments inside a ternary condition are not types.
+    expect(types).not.toContain('layout');
+    expect(types).not.toContain('string');
+  });
+
+  it('has an en label for every resource type the API can emit', () => {
+    const catalog = englishCatalog();
+    const missing = [...emittedResourceTypes()].filter((type) => !catalog[type]?.trim()).sort();
+    expect(missing, `add these to admin:audit.resourceTypes in every web locale:\n${missing.join('\n')}`).toEqual([]);
+  });
+});

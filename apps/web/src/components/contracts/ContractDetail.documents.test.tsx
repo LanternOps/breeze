@@ -117,25 +117,56 @@ describe('ContractDetail — executed documents section', () => {
     await waitFor(() => expect(screen.getByTestId('contract-documents-empty')).toBeInTheDocument());
   });
 
-  it('downloads the PDF via an authenticated fetch when Download is clicked', async () => {
+  it('downloads the certified PDF via an authenticated fetch when Download is clicked', async () => {
     fetchWithAuthMock.mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers({ 'X-Agreement-Copy': 'certified' }),
       blob: vi.fn().mockResolvedValue(new Blob(['%PDF'])),
     } as unknown as Response);
     Object.assign(window.URL, {
       createObjectURL: vi.fn().mockReturnValue('blob:mock'),
       revokeObjectURL: vi.fn(),
     });
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const saved: string[] = [];
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push(this.download);
+    });
 
     render(<ContractDetail detail={activeDetail} onChanged={vi.fn()} />);
     const downloadBtn = await screen.findByTestId('contract-document-download-doc-1');
     fireEvent.click(downloadBtn);
 
     await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/contracts/contract-documents/doc-1/pdf'),
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/contracts/contract-documents/doc-1/pdf?copy=certified'),
     );
+    await waitFor(() => expect(saved).toEqual(['signed-agreement-doc-1.pdf']));
+    clickSpy.mockRestore();
+  });
+
+  it('names the file for the original when the server falls back (X-Agreement-Copy: original)', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'X-Agreement-Copy': 'original' }),
+      blob: vi.fn().mockResolvedValue(new Blob(['%PDF'])),
+    } as unknown as Response);
+    Object.assign(window.URL, {
+      createObjectURL: vi.fn().mockReturnValue('blob:mock'),
+      revokeObjectURL: vi.fn(),
+    });
+    const saved: string[] = [];
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push(this.download);
+    });
+
+    render(<ContractDetail detail={activeDetail} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('contract-document-download-doc-1'));
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/contracts/contract-documents/doc-1/pdf?copy=certified'),
+    );
+    await waitFor(() => expect(saved).toEqual(['signed-agreement-doc-1-original.pdf']));
     clickSpy.mockRestore();
   });
 });

@@ -4,8 +4,11 @@ import {
   isWebRTCSupported,
   createWebRTCSession,
   WebRTCUnsupportedError,
+  RelayRequiredError,
+  RELAY_REQUIRED_MESSAGE,
   type AuthenticatedConnectionParams,
 } from './webrtc';
+import { connectWebRTC, type WebRTCDeps } from './transports/webrtc';
 
 function setVideoSize(video: HTMLVideoElement, w: number, h: number) {
   Object.defineProperty(video, 'videoWidth', { value: w, configurable: true });
@@ -322,5 +325,160 @@ describe('createWebRTCSession — trickle ICE', () => {
     expect(posted).toEqual([{ candidate: { candidate: 'candidate:late-viewer-relay', sdpMid: '0', sdpMLineIndex: 0 } }]);
     session.close();
     expect(localListener).toBeNull();
+  });
+});
+
+
+describe('createWebRTCSession — isolated device relay policy', () => {
+  const params: AuthenticatedConnectionParams = {
+    sessionId: 'isolated-session',
+    apiUrl: 'https://relay.example.test',
+    accessToken: 'viewer-token',
+  };
+  const relayMessage = 'Remote desktop needs the TURN relay while this device is isolated';
+  const turnServers = [{ urls: 'turn:relay.example.test:3478', username: 'viewer', credential: 'secret' }];
+  const stunServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const afterConstruction = new Error('stop after peer construction');
+
+  function stubResponse(body: unknown, status = 200): void {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: status === 200, status, headers: new Headers(),
+      json: async () => body, text: async () => JSON.stringify(body),
+    })));
+  }
+
+  function stubPeer(rejectFirst = false): RTCConfiguration[] {
+    const configs: RTCConfiguration[] = [];
+    vi.stubGlobal('RTCPeerConnection', class {
+      constructor(config: RTCConfiguration) {
+        configs.push(config);
+        if (rejectFirst && configs.length === 1) throw new SyntaxError('Invalid ICE server URL');
+      }
+      addTransceiver() {}
+      createDataChannel() { return { close() {} }; }
+      async createOffer() { throw afterConstruction; }
+      close() {}
+    });
+    return configs;
+  }
+
+  it('uses the exact relay list with relay transport policy', async () => {
+    stubResponse({ relayOnly: true, iceServers: turnServers });
+    const configs = stubPeer();
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([{ iceServers: turnServers, iceTransportPolicy: 'relay' }]);
+    expect(RELAY_REQUIRED_MESSAGE).toBe(relayMessage);
+  });
+
+  it('never retries STUN when the relay configuration is rejected', async () => {
+    stubResponse({ relayOnly: true, iceServers: turnServers });
+    const configs = stubPeer(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = await createWebRTCSession(params, document.createElement('video')).catch((err: unknown) => err);
+    expect(configs).toHaveLength(1);
+    expect(error).toBeInstanceOf(RelayRequiredError);
+    expect(error).not.toBeInstanceOf(WebRTCUnsupportedError);
+    expect(error).toHaveProperty('message', `${relayMessage} (relay configuration rejected: Invalid ICE server URL)`);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('keeps the STUN fallback for a 409 that is not a relay refusal', async () => {
+    stubResponse({ code: 'consent_upgrade_required', error: 'upgrade' }, 409);
+    const configs = stubPeer();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([{ iceServers: stunServers }]);
+  });
+
+  it.each([
+    ['isolation_relay_unavailable', relayMessage],
+    ['isolation_relay_not_permitted', 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay'],
+    ['isolation_relay_unavailable', undefined],
+  ])('surfaces terminal 409 %s without constructing a peer', async (code, message) => {
+    stubResponse({ code, ...(message ? { error: message } : {}) }, 409);
+    const configs = stubPeer();
+    const error = await createWebRTCSession(params, document.createElement('video')).catch((err: unknown) => err);
+    expect(configs).toHaveLength(0);
+    expect(error).toBeInstanceOf(RelayRequiredError);
+    expect(error).toHaveProperty('message', message ?? relayMessage);
+  });
+
+  it.each([[], undefined])('rejects a missing or empty relay list without STUN', async (iceServers) => {
+    stubResponse({ relayOnly: true, iceServers });
+    const configs = stubPeer();
+    const error = await createWebRTCSession(params, document.createElement('video')).catch((err: unknown) => err);
+    expect(configs).toHaveLength(0);
+    expect(error).toHaveProperty('message', relayMessage);
+    expect(error).toBeInstanceOf(RelayRequiredError);
+  });
+
+  it('retains all transport policy and the server list outside isolation', async () => {
+    const iceServers = [...stunServers, ...turnServers];
+    stubResponse({ iceServers });
+    const configs = stubPeer();
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([{ iceServers }]);
+  });
+
+  it('still retries STUN after a non-relay constructor rejection', async () => {
+    stubResponse({ iceServers: turnServers });
+    const configs = stubPeer(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([
+      { iceServers: turnServers },
+      { iceServers: stunServers },
+    ]);
+  });
+
+  it.each(['fetch failure', 'other HTTP failure'])('keeps STUN fallback for %s', async (failure) => {
+    if (failure === 'fetch failure') vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    else stubResponse({ error: 'unavailable' }, 503);
+    const configs = stubPeer();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(createWebRTCSession(params, document.createElement('video'))).rejects.toBe(afterConstruction);
+    expect(configs).toEqual([{ iceServers: stunServers }]);
+  });
+
+  it.each(['isolation_relay_unavailable', 'isolation_relay_not_permitted'])(
+    'preserves %s if isolation changes before the offer', async (code) => {
+      vi.stubGlobal('RTCPeerConnection', class {
+        iceGatheringState = 'complete';
+        localDescription = { type: 'offer', sdp: 'v=0 offer' };
+        addTransceiver() {}
+        createDataChannel() { return { close() {} }; }
+        async createOffer() { return this.localDescription; }
+        async setLocalDescription() {}
+        close() {}
+      });
+      const errorMessage = code === 'isolation_relay_not_permitted'
+        ? 'Remote desktop over WebRTC is unavailable: this device was isolated without permitting the TURN relay'
+        : relayMessage;
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const offer = String(input).endsWith('/viewer/offer');
+        const body = offer ? { code, error: errorMessage } : { iceServers: turnServers };
+        return {
+          ok: !offer, status: offer ? 409 : 200, headers: new Headers(),
+          json: async () => body, text: async () => JSON.stringify(body),
+        };
+      }));
+      const error = await createWebRTCSession(params, document.createElement('video')).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(RelayRequiredError);
+      expect(error).toHaveProperty('message', errorMessage);
+    },
+  );
+
+  it('preserves the relay refusal through the transport caller instead of returning generic failure', async () => {
+    stubResponse({ code: 'isolation_relay_unavailable', error: relayMessage }, 409);
+    stubPeer();
+    const deps: WebRTCDeps = {
+      videoElement: document.createElement('video'),
+      cursorOverlayRef: { current: null },
+      showRemoteCursorRef: { current: false },
+      remoteCursorShapeRef: { current: 'default' },
+      onConnected: vi.fn(), onDisconnected: vi.fn(), onFailed: vi.fn(), onClosed: vi.fn(),
+      onAudioTrack: vi.fn(), onClipboardChannel: vi.fn(), onCursorChannelOpen: vi.fn(), onCursorChannelClose: vi.fn(),
+    };
+    await expect(connectWebRTC(params, deps)).rejects.toMatchObject({ message: relayMessage });
   });
 });

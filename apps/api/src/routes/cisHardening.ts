@@ -25,6 +25,7 @@ import {
   withoutCisBaselineAuthority,
 } from '../services/cisBaselineScheduleAuthority';
 import { extractFailedCheckIds, normalizeCisSchedule } from '../services/cisHardening';
+import { averageCisScore } from '../services/cisScore';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { resolveOrgId } from './networkShared';
@@ -140,6 +141,9 @@ async function resolveAuthorizedCisScanDeviceIds(
   permissions: UserPermissions | undefined,
   baseline: typeof cisBaselines.$inferSelect,
   requestedDeviceIds: string[] | undefined,
+  // When the caller selected one org, a partner-wide baseline scans only that
+  // org's devices (#9606). Absent → every org the caller can access.
+  requestedOrgId?: string,
 ): Promise<
   | { deviceIds: string[] }
   | { error: string; status: 400 | 403; deniedDeviceIds?: string[] }
@@ -165,6 +169,7 @@ async function resolveAuthorizedCisScanDeviceIds(
     ...(deviceOrgAccess ? [deviceOrgAccess] : []),
     eq(devices.osType, baseline.osType),
   ];
+  if (requestedOrgId) conditions.push(eq(devices.orgId, requestedOrgId));
 
   if (hasExplicitDeviceIds) {
     conditions.push(inArray(devices.id, requestedDeviceIds));
@@ -592,6 +597,7 @@ cisHardeningRoutes.post(
       permissions,
       baseline,
       body.deviceIds,
+      body.orgId,
     );
     if ('error' in resolved) {
       return c.json({
@@ -617,6 +623,7 @@ cisHardeningRoutes.post(
         jobId,
         deviceCount: resolvedDeviceIds.length,
         requestedDeviceCount: body.deviceIds?.length ?? null,
+        requestedOrgId: body.orgId ?? null,
       },
     });
 
@@ -706,6 +713,7 @@ cisHardeningRoutes.get(
         baselineCreatedAt: sql<Date>`${cisBaselines.createdAt}`.as('baseline_created_at'),
         baselineUpdatedAt: cisBaselines.updatedAt,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         deviceStatus: devices.status,
         deviceOsType: sql<string>`${devices.osType}`.as('device_os_type'),
         rn: sql<number>`row_number() over (partition by ${cisBaselineResults.deviceId}, ${cisBaselineResults.baselineId} order by ${cisBaselineResults.checkedAt} desc)`.as('rn'),
@@ -730,11 +738,17 @@ cisHardeningRoutes.get(
     const [summaryRow] = await db
       .select({
         total: sql<number>`count(*)`,
-        averageScore: sql<number>`coalesce(round(avg(${rankedResults.score})), 100)`,
         failingDevices: sql<number>`coalesce(sum(case when ${rankedResults.failedChecks} > 0 then 1 else 0 end), 0)`,
       })
       .from(rankedResults)
       .where(and(...latestConditions));
+
+    // Shared with the posture report (#9606): average the latest per-device scores.
+    const scoreRows = await db
+      .select({ score: rankedResults.score })
+      .from(rankedResults)
+      .where(and(...latestConditions));
+    const averageScore = averageCisScore(scoreRows.map((r) => r.score)) ?? 100;
 
     const rows = await db
       .select({
@@ -760,6 +774,7 @@ cisHardeningRoutes.get(
         baselineCreatedAt: rankedResults.baselineCreatedAt,
         baselineUpdatedAt: rankedResults.baselineUpdatedAt,
         deviceHostname: rankedResults.deviceHostname,
+        deviceDisplayName: rankedResults.deviceDisplayName,
         deviceStatus: rankedResults.deviceStatus,
         deviceOsType: rankedResults.deviceOsType,
       })
@@ -770,7 +785,6 @@ cisHardeningRoutes.get(
       .offset(offset);
 
     const total = Number(summaryRow?.total ?? 0);
-    const averageScore = Number(summaryRow?.averageScore ?? 100);
     const failingDevices = Number(summaryRow?.failingDevices ?? 0);
 
     const toISO = (v: unknown): string =>
@@ -808,6 +822,7 @@ cisHardeningRoutes.get(
         device: {
           id: row.deviceId,
           hostname: row.deviceHostname,
+          displayName: row.deviceDisplayName ?? null,
           osType: row.deviceOsType,
           status: row.deviceStatus,
         },
@@ -1314,6 +1329,7 @@ cisHardeningRoutes.get(
       .select({
         action: cisRemediationActions,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         baselineName: cisBaselines.name,
       })
       .from(cisRemediationActions)
@@ -1324,6 +1340,18 @@ cisHardeningRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    // Approver display names for the audit detail row (#9606). Skipped when no
+    // listed action has been decided, so the common pending view costs nothing.
+    const approverIds = [...new Set(rows.map((r) => r.action.approvedBy).filter((id): id is string => !!id))];
+    const approverNames = new Map<string, string>();
+    if (approverIds.length > 0) {
+      const approvers = await db
+        .select({ id: users.id, name: users.name })
+        .from(users)
+        .where(inArray(users.id, approverIds));
+      for (const a of approvers) approverNames.set(a.id, a.name);
+    }
+
     return c.json({
       data: rows.map((row) => ({
         ...row.action,
@@ -1331,6 +1359,8 @@ cisHardeningRoutes.get(
         executedAt: row.action.executedAt?.toISOString() ?? null,
         approvedAt: row.action.approvedAt?.toISOString() ?? null,
         deviceHostname: row.deviceHostname,
+        deviceDisplayName: row.deviceDisplayName ?? null,
+        approverName: row.action.approvedBy ? approverNames.get(row.action.approvedBy) ?? null : null,
         baselineName: row.baselineName,
       })),
       pagination: {

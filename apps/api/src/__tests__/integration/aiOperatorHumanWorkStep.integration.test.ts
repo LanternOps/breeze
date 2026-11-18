@@ -446,14 +446,19 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
   });
 
   // (6c) #6930 — a REAL interleaving, two connections. Transaction A applies a
-  // template with replace_unticked. Its pre-check runs and passes (nothing is
-  // waiting yet); then, before A's DELETE statement starts, a SECOND pooled
-  // connection opens a human-work step on the same ticket and COMMITS its item
-  // and waiting link. A must neither delete that item (the DELETE's own
-  // NOT EXISTS) nor half-replace (the post-delete re-check refuses, rolling A
-  // back). The other ordering, a commit after A's DELETE statement starts, is
-  // invisible to that statement by READ COMMITTED snapshot and is not staged.
-  runDb('replace_unticked never deletes, or half-replaces around, an Operator item committed by another connection after the pre-check', async () => {
+  // template with replace_unticked; after its pre-check passes, a SECOND pooled
+  // connection opens a human-work step on the same ticket. A must neither
+  // delete that item nor half-replace.
+  //
+  // #8972 W0: A now takes the TICKET row lock as its first statement, and
+  // opening a human-work step takes the same lock before it writes its item.
+  // So the second connection can no longer commit between A's pre-check and
+  // A's DELETE: it queues behind A and lands after A commits. That closes the
+  // #6930 window outright; the DELETE's NOT EXISTS and the post-delete re-check
+  // stay as defence in depth. The case now proves the queueing: A replaces
+  // fully, the Operator item arrives afterwards, and nothing is deleted or
+  // half-replaced around it.
+  runDb('replace_unticked never deletes, or half-replaces around, an Operator item opened by another connection after the pre-check', async () => {
     const org = await seedOrg();
     const taskId = await seedTask(org, { currentStepKey: 'confirm_identity' });
     // The task's ticket, created up front so A can target it before the
@@ -474,26 +479,42 @@ describe('AI Operator human-work + wait steps against real Postgres (E3, #6168)'
 
     const actual = await vi.importActual<typeof import('../../services/aiOperator/humanWorkService')>(
       '../../services/aiOperator/humanWorkService');
-    let concurrent: { itemId: string; stepId: string } | undefined;
+    let opening: Promise<{ itemId: string; stepId: string }> | undefined;
     vi.mocked(assertTicketUntickedChecklistItemsDeletable).mockImplementationOnce(async (id, dbh) => {
       await actual.assertTicketUntickedChecklistItemsDeletable(id, dbh); // passes: nothing waits yet
-      // Second connection, its own transaction, committed before we return.
-      const opened = await runOutsideDbContext(() => openHumanWork(org, taskId));
-      concurrent = { itemId: opened.itemId, stepId: opened.step.id };
+      // A's backend, which holds the ticket row lock by now.
+      const [self] = (await db.execute(sql`SELECT pg_backend_pid()::int AS pid`)) as unknown as Array<{ pid: number }>;
+      // Second connection, its own transaction, started but NOT awaited: it
+      // must block on A's ticket lock before it can write its item.
+      opening = runOutsideDbContext(() => openHumanWork(org, taskId))
+        .then((opened) => ({ itemId: opened.itemId, stepId: opened.step.id }));
+      opening.catch(() => undefined);
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const [row] = (await getTestDb().execute(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity WHERE ${self!.pid}::int = ANY(pg_blocking_pids(pid))
+        `)) as unknown as Array<{ n: number }>;
+        if ((row?.n ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error('the human-work step did not queue behind the ticket lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
     });
 
-    await expect(withDbAccessContext(org.ctx, () =>
-      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor)))
-      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_OPERATOR_STEP_WAITING' });
-    expect(concurrent).toBeDefined();
+    const applied = await withDbAccessContext(org.ctx, () =>
+      applyChecklistTemplateToTicket(ticket, { templateId: template.id, mode: 'replace_unticked' }, actor));
+    expect(opening).toBeDefined();
+    const concurrent = await opening!;
 
-    // A rolled back entirely: the manual step it had deleted is back, the
-    // concurrent Operator item was never removed, nothing was appended.
+    // A replaced in full (the manual step is gone, the template step is in)
+    // before the Operator item existed; the Operator item then landed intact.
+    expect(applied.items.map((i) => i.label)).toEqual(['From template']);
     const after = await withDbAccessContext(org.ctx, () => listChecklist(ticket.id));
-    expect(after.items.map((i) => i.id).sort()).toEqual([manual.id, concurrent!.itemId].sort());
+    expect(after.items.map((i) => i.id)).not.toContain(manual.id);
+    expect(after.items.map((i) => i.id)).toContain(concurrent.itemId);
+    expect(after.items.map((i) => i.label)).toContain('From template');
     const [link] = await withSystemDbAccessContext(() =>
-      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, concurrent!.stepId)));
-    expect(link?.checklistItemId).toBe(concurrent!.itemId);
+      db.select().from(aiOperatorTaskSteps).where(eq(aiOperatorTaskSteps.id, concurrent.stepId)));
+    expect(link?.checklistItemId).toBe(concurrent.itemId);
     expect(link?.state).toBe('waiting');
   });
 

@@ -64,12 +64,13 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
     ? entries.filter(
         (e) =>
           e.device.hostname.toLowerCase().includes(search.toLowerCase()) ||
+          (e.device.displayName ?? '').toLowerCase().includes(search.toLowerCase()) ||
           e.baseline.name.toLowerCase().includes(search.toLowerCase())
       )
     : entries;
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cis-compliance-tab">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}

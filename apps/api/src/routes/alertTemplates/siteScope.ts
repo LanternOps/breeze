@@ -60,7 +60,7 @@ export async function canAccessAlertRuleTargets(
 
   const ids = [...new Set(targetIds.filter(Boolean))];
   if (ids.length === 0) return false;
-  let rows: Array<{ id: string; orgId: string; siteId?: string | null }>;
+  let rows: Array<{ id: string; orgId: string | null; siteId?: string | null }>;
   if (targetType === 'site') {
     rows = await db.select({ id: sites.id, orgId: sites.orgId })
       .from(sites).where(and(inArray(sites.id, ids), eq(sites.orgId, orgId)));

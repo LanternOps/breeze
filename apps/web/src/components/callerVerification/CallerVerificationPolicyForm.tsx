@@ -4,29 +4,15 @@ import { handleActionError } from '@/lib/runAction';
 import { useAuthStore } from '@/stores/auth';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
 import { getPolicy, putPolicy, type Owner, type PolicyDraft, type PolicyResponse, type PolicyValues } from '@/lib/api/callerVerification';
+import {
+  BOOLEANS, NUMERIC, POLICY_KEYS, SETS, TIER_KEYS, draftFrom, inheritedDraft, policyBody, tierCap,
+  useCallerVerificationDraft, type CallerVerificationValue,
+} from '../settings/partnerSettings/units/callerVerificationUnit';
 
-/** [min, max, tightening direction] — mirrors the shared validator and the server resolver. */
-const NUMERIC = {
-  requiredTierResetPassword: [0, 3, 'max'], requiredTierDisableUser: [0, 3, 'max'],
-  verificationTtlMinutes: [5, 240, 'min'], workstationTimeoutSeconds: [30, 300, 'min'],
-  destinationMinAgeDays: [0, 90, 'max'], maxAttemptsPerHour: [1, 100, 'min'], coolingOffHours: [1, 720, 'max'],
-} as const;
-/** 'or' = an org can only turn it on; 'and' = an org can only turn it off. */
-const BOOLEANS = { requireAttestedDestination: 'or', requireTicket: 'or', allowCrossTechnicianUse: 'and', allowAdministrativeDisable: 'and' } as const;
-const SETS = {
-  allowedMethods: ['workstation', 'sms', 'email', 'callback_attestation'],
-  disableUserAuthorizerRoles: ['billing', 'technical', 'escalation', 'admin', 'site', 'after_hours', 'portal'],
-} as const;
-const KEYS = [...Object.keys(NUMERIC), ...Object.keys(BOOLEANS), ...Object.keys(SETS)] as (keyof PolicyValues)[];
-const TIER_KEYS = ['requiredTierResetPassword', 'requiredTierDisableUser'] as const;
-
-export function inheritedDraft(): PolicyDraft {
-  return Object.fromEntries(KEYS.map((k) => [k, null])) as PolicyDraft;
-}
-/** Picks only policy fields: the stored row carries server columns the strict PUT schema rejects. */
-function draftFrom(row: PolicyResponse['row']): PolicyDraft {
-  return Object.fromEntries(KEYS.map((k) => [k, row?.[k] ?? null])) as PolicyDraft;
-}
+// Policy model (field kinds, draft shape, tier caps) is shared with the partner
+// settings save unit, which owns the partner baseline's draft.
+const KEYS = POLICY_KEYS;
+export { inheritedDraft };
 
 type Props = { owner: Owner; readOnly?: boolean };
 
@@ -52,8 +38,35 @@ export function PartnerCallerVerificationPolicy() {
 }
 
 function PartnerPolicyGate() {
+  const { t } = useTranslation('callerVerificationTech');
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
-  return <LoadedPolicy key="partner" owner={{ ownerScope: 'partner' }} readOnly={!canManagePartnerWide} />;
+  const { slice, setDraft, retry } = useCallerVerificationDraft();
+  if (slice.status === 'error') return <LoadFailed onRetry={retry} />;
+  if (!slice.draft) return <p role="status" className="text-sm text-muted-foreground">{t('loading')}</p>;
+  // The partner settings header Save sends this draft (callerVerificationUnit),
+  // so there is no form element or Save button here: the page's form card wraps it.
+  return (
+    <div className="space-y-4 rounded-md border p-4 text-sm" data-testid="cv-policy-form">
+      <PolicyFields
+        org={false}
+        data={slice.draft.response}
+        draft={slice.draft.draft}
+        update={(key, next) => setDraft((v: CallerVerificationValue) => ({ ...v, draft: { ...v.draft, [key]: next } }))}
+        readOnly={!canManagePartnerWide}
+        disabled={!canManagePartnerWide}
+      />
+    </div>
+  );
+}
+
+function LoadFailed({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation('callerVerificationTech');
+  return (
+    <div role="alert" className="space-y-2 text-sm text-destructive">
+      <p>{t('policy.loadFailed')}</p>
+      <button type="button" className="underline" onClick={onRetry}>{t('retry')}</button>
+    </div>
+  );
 }
 
 function LoadedPolicy({ owner, readOnly = false }: Props) {
@@ -76,26 +89,10 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
     return () => c.abort();
   }, [org, orgId, revision]);
 
-  if (error) {
-    return (
-      <div role="alert" className="space-y-2 text-sm text-destructive">
-        <p>{t('policy.loadFailed')}</p>
-        <button type="button" className="underline" onClick={() => setRevision((n) => n + 1)}>{t('retry')}</button>
-      </div>
-    );
-  }
+  if (error) return <LoadFailed onRetry={() => setRevision((n) => n + 1)} />;
   if (!data) return <p role="status" className="text-sm text-muted-foreground">{t('loading')}</p>;
 
-  // The value an untouched (null) field resolves to: the partner baseline for
-  // an org override, the built-in default for the partner baseline itself.
-  const inherited = (key: keyof PolicyValues) => (org ? data.baseline[key] : data.defaults[key]);
-  const value = (key: keyof PolicyValues) => draft[key] ?? inherited(key);
   const update = (key: keyof PolicyValues, next: unknown) => setDraft((old) => ({ ...old, [key]: next }));
-  const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? t('policy.yes') : t('policy.no')) : String(v));
-  const fieldLabel = (key: string) => t(/* i18n-dynamic */ `policy.fields.${key}`);
-  // Tier 3 needs the workstation tier; the server refuses it while that is dark.
-  const tierCap = (key: (typeof TIER_KEYS)[number]): number =>
-    (key === 'requiredTierResetPassword' ? data.maxAchievableTierResetPassword : data.maxAchievableTierDisableUser) ?? data.maxAchievableTier ?? 3;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,10 +100,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
     busy.current = true;
     setSaving(true);
     try {
-      // A stored tier above what is achievable would be refused; send the achievable one.
-      const body = { ...draft };
-      for (const k of TIER_KEYS) if (body[k] !== null && body[k]! > tierCap(k)) body[k] = tierCap(k);
-      const result = await putPolicy(owner, body);
+      const result = await putPolicy(owner, policyBody(draft, data));
       setData(result);
       setDraft(draftFrom(result.row));
     } catch (err) {
@@ -119,6 +113,40 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
 
   return (
     <form className="space-y-4 rounded-md border p-4 text-sm" onSubmit={(e) => void save(e)} data-testid="cv-policy-form">
+      <PolicyFields org={org} data={data} draft={draft} update={update} readOnly={readOnly} disabled={readOnly || saving} />
+      {!readOnly && (
+        <div className="flex justify-end">
+          <button type="submit" data-testid="cv-policy-save" disabled={saving}
+            className="h-9 rounded-md bg-primary px-3 text-primary-foreground disabled:opacity-50">
+            {saving ? t('policy.saving') : t('policy.save')}
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+
+type FieldsProps = {
+  org: boolean;
+  data: PolicyResponse;
+  draft: PolicyDraft;
+  update: (key: keyof PolicyValues, next: unknown) => void;
+  readOnly: boolean;
+  disabled: boolean;
+};
+
+/** The policy fields, shared by the org form and the partner settings form card. */
+function PolicyFields({ org, data, draft, update, readOnly, disabled }: FieldsProps) {
+  const { t } = useTranslation('callerVerificationTech');
+  // The value an untouched (null) field resolves to: the partner baseline for
+  // an org override, the built-in default for the partner baseline itself.
+  const inherited = (key: keyof PolicyValues) => (org ? data.baseline[key] : data.defaults[key]);
+  const value = (key: keyof PolicyValues) => draft[key] ?? inherited(key);
+  const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? t('policy.yes') : t('policy.no')) : String(v));
+  const fieldLabel = (key: string) => t(/* i18n-dynamic */ `policy.fields.${key}`);
+  return (
+    <>
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-base font-semibold">{t('policy.title')}</h3>
         {!org && <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary">{t('policy.allOrgs')}</span>}
@@ -130,7 +158,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           {t('policy.ignored', { fields: data.effective.ignored.map(fieldLabel).join(', ') })}
         </p>
       )}
-      <fieldset disabled={readOnly || saving} className="space-y-3">
+      <fieldset disabled={disabled} className="space-y-3">
         {KEYS.map((key) => {
           const id = `cv-policy-${key}`;
           const num = NUMERIC[key as keyof typeof NUMERIC];
@@ -138,7 +166,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           const options = SETS[key as keyof typeof SETS];
           const base = data.baseline[key];
           const isTier = (TIER_KEYS as readonly string[]).includes(key);
-          const tierMax = isTier ? tierCap(key as (typeof TIER_KEYS)[number]) : 3;
+          const tierMax = isTier ? tierCap(data, key as (typeof TIER_KEYS)[number]) : 3;
           const cap = isTier ? Math.min(num?.[1] ?? tierMax, tierMax) : undefined;
           const min = num ? (org && num[2] === 'max' ? Math.max(num[0], base as number) : num[0]) : undefined;
           const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : (cap ?? num[1])) : undefined;
@@ -194,15 +222,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           );
         })}
       </fieldset>
-      {!readOnly && (
-        <div className="flex justify-end">
-          <button type="submit" data-testid="cv-policy-save" disabled={saving}
-            className="h-9 rounded-md bg-primary px-3 text-primary-foreground disabled:opacity-50">
-            {saving ? t('policy.saving') : t('policy.save')}
-          </button>
-        </div>
-      )}
-    </form>
+    </>
   );
 }
 

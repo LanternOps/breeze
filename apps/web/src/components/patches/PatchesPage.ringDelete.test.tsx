@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
 // #8909: deleting an update ring that config policies still link to must warn
-// first and list the policies; a ring with no links deletes without a prompt.
+// first and list the policies; a ring with no links still gets a named confirm,
+// since a ring carries its whole approval rule set and has no undo.
 const showToast = vi.fn();
 vi.mock('../../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
@@ -84,14 +85,31 @@ describe('PatchesPage — ring delete warns about linked policies (#8909)', () =
     expect(deleteCalls()).toHaveLength(0);
   });
 
-  it('deletes straight away when no policy links the ring', async () => {
+  it('still asks for a named confirm when no policy links the ring', async () => {
     setup([]);
     render(<PatchesPage />);
 
     fireEvent.click(await screen.findByLabelText('Delete Pilot'));
 
+    expect(await screen.findByTestId('confirm-delete-ring')).toBeInTheDocument();
+    expect(screen.getByText('Delete Pilot?')).toBeInTheDocument();
+    expect(screen.getByText(/no policies use this ring/i)).toBeInTheDocument();
+    expect(deleteCalls()).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId('confirm-delete-ring'));
     await waitFor(() => expect(deleteCalls()).toHaveLength(1));
-    expect(screen.queryByTestId('confirm-delete-ring')).not.toBeInTheDocument();
+  });
+
+  it('cancelling the no-linked-policies confirm does not delete', async () => {
+    setup([]);
+    render(<PatchesPage />);
+
+    fireEvent.click(await screen.findByLabelText('Delete Pilot'));
+    await screen.findByTestId('confirm-delete-ring');
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-delete-ring')).not.toBeInTheDocument());
+    expect(deleteCalls()).toHaveLength(0);
   });
 
   it('does not delete when the lookup response is malformed (fail closed)', async () => {

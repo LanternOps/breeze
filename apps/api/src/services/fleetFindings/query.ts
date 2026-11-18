@@ -821,7 +821,7 @@ export async function applyFleetFindingLifecycle(
   id: string,
   action: FleetFindingLifecycleAction,
   notes: string | undefined,
-  actorUserId: string
+  actorUserId: string | null
 ): Promise<FleetFindingLifecycleResult> {
   return db.transaction(async (tx) => {
     const conditions: SQL[] = [eq(fleetFindings.id, id)];

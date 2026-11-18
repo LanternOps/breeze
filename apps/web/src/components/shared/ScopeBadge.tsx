@@ -12,12 +12,15 @@ export function ScopeBadge({
   isSystem,
   orgName,
   className,
+  testId = 'scope-badge',
 }: {
   orgId: string | null;
   partnerId: string | null;
   isSystem: boolean;
   orgName?: string;
   className?: string;
+  /** Per-row id for lists where several badges render at once (#9935). */
+  testId?: string;
 }) {
   const { t } = useTranslation('common');
   let icon = <Building2 className="h-3 w-3" />;
@@ -45,7 +48,7 @@ export function ScopeBadge({
 
   return (
     <span
-      data-testid="scope-badge"
+      data-testid={testId}
       className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', tone, className)}
     >
       {icon}

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
-import { ORG_TAB_COLUMN_PRESET } from '@/components/devices/columnVisibility';
+import { ORG_TAB_COLUMN_PRESET, readColumnVisibility } from '@/components/devices/columnVisibility';
 import { navigateTo } from '@/lib/navigation';
+import { fetchAllPages } from '@/lib/fetchAllPages';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { usePermissions } from '@/lib/permissions';
 import { useOrgStore } from '@/stores/orgStore';
@@ -57,52 +58,96 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   // enrolment key, which the API gates on organizations:write (#7217).
   const canAddDevice = can('organizations', 'write');
   const [devices, setDevices] = useState<LoadState<Device>>(null);
+  const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility(ORG_TAB_COLUMN_PRESET).has('warranty'));
+  const [diskUsageRequested, setDiskUsageRequested] = useState(() => readColumnVisibility(ORG_TAB_COLUMN_PRESET).has('diskUsage'));
+  const [loadedDetails, setLoadedDetails] = useState<{ orgId: string; includeWarranty: boolean; includeDisks: boolean } | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [sites, setSites] = useState<SiteOption[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [siteFilter, setSiteFilter] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    setDevices(null);
-    setTruncated(false);
-    void (async () => {
-      try {
-        const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}`);
-        if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
-        const body = await res.json();
-        const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
-        // A 200 whose body isn't a parseable array tells us nothing about the
-        // real device count — treating it as `[]` would render "No devices
-        // found" (active guidance to adjust filters) for what is actually an
-        // API failure. Fail the same way a non-2xx response does.
-        if (rows === null) throw new Error('devices load: malformed response body');
-        if (cancelled) return;
-        setDevices(rows.map(toDeviceListRow));
-        // Cursor mode (no `page`) returns `nextCursor` when rows remain; a
-        // `total` (legacy/offset shape) says the same thing another way.
-        const pagination = body?.pagination;
-        const total = typeof pagination?.total === 'number' ? pagination.total : null;
-        setTruncated(Boolean(pagination?.nextCursor) || (total !== null && total > rows.length));
-      } catch (err) {
-        console.warn('[OrgDevicesTab] devices load failed', err);
-        if (!cancelled) setDevices('failed');
+  // Column toggles can request optional details without restarting the mount load.
+  const requestedDetails = useRef({ includeWarranty: warrantyRequested, includeDisks: diskUsageRequested });
+  requestedDetails.current = { includeWarranty: warrantyRequested, includeDisks: diskUsageRequested };
+  // Bumped by every load and by unmount / org change, so a stale response can
+  // never overwrite a newer one (the old per-effect `cancelled` flag).
+  const loadGenerationRef = useRef(0);
+
+  const loadDevices = useCallback(async ({ background }: { background: boolean }) => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => generation === loadGenerationRef.current;
+    const { includeWarranty, includeDisks } = requestedDetails.current;
+    if (!background) {
+      setDevices(null);
+      setTruncated(false);
+    }
+    try {
+      const params = new URLSearchParams({ limit: String(ORG_DEVICES_LIMIT) });
+      if (includeWarranty) params.set('includeWarranty', 'true');
+      if (includeDisks) params.set('includeDisks', 'true');
+      const res = await orgFetch(`/devices?${params}`);
+      if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
+      const body = await res.json();
+      const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+      // A 200 whose body isn't a parseable array tells us nothing about the
+      // real device count — treating it as `[]` would render "No devices
+      // found" (active guidance to adjust filters) for what is actually an
+      // API failure. Fail the same way a non-2xx response does.
+      if (rows === null) throw new Error('devices load: malformed response body');
+      if (!isCurrent()) return;
+      setDevices(rows.map(toDeviceListRow));
+      setLoadedDetails({ orgId, includeWarranty, includeDisks });
+      // Cursor mode (no `page`) returns `nextCursor` when rows remain; a
+      // `total` (legacy/offset shape) says the same thing another way.
+      const pagination = body?.pagination;
+      const total = typeof pagination?.total === 'number' ? pagination.total : null;
+      setTruncated(Boolean(pagination?.nextCursor) || (total !== null && total > rows.length));
+    } catch (err) {
+      if (background) {
+        // Keep the rows already on screen when optional details fail to load.
+        console.warn('[OrgDevicesTab] background devices load failed', err);
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+      console.warn('[OrgDevicesTab] devices load failed', err);
+      if (isCurrent()) setDevices('failed');
+    }
   }, [orgFetch, orgId]);
+
+  useEffect(() => {
+    setLoadedDetails(null);
+    void loadDevices({ background: false });
+    return () => {
+      loadGenerationRef.current += 1;
+    };
+  }, [orgFetch, orgId]); // loadDevices has the same deps
+
+  // Keep the table mounted while loading details for a newly visible column.
+  const rowsHaveWarranty = loadedDetails?.includeWarranty === true;
+  const rowsHaveDisks = loadedDetails?.includeDisks === true;
+  const rowsLoadedForOrg = loadedDetails?.orgId === orgId;
+  useEffect(() => {
+    if (!rowsLoadedForOrg) return;
+    if ((!warrantyRequested || rowsHaveWarranty) && (!diskUsageRequested || rowsHaveDisks)) return;
+    void loadDevices({ background: true });
+  }, [warrantyRequested, diskUsageRequested, rowsHaveWarranty, rowsHaveDisks, rowsLoadedForOrg, loadDevices]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await orgFetch(`/orgs/sites?organizationId=${orgId}&limit=100`);
-        if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
-        const body = await res.json();
-        const rows: SiteOption[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+        // Every page, not the first 100 (#9791): a device at a site past the
+        // page limit rendered "Unknown Site". `fetchAllPages` is the walk
+        // behind `fetchAllSites`; it is driven here through `orgFetch` so the
+        // org pin holds (fetchAllSites would use the ambient fetch).
+        const rows = await fetchAllPages<SiteOption>(
+          async (page, limit) => {
+            const res = await orgFetch(`/orgs/sites?organizationId=${orgId}&page=${page}&limit=${limit}`);
+            if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
+            return res.json();
+          },
+          { aliasKeys: ['sites'], strictShape: true },
+        );
         if (rows === null) throw new Error('sites load: malformed response body');
         if (!cancelled) setSites(rows.map((s) => ({ id: s.id, name: s.name })));
       } catch (err) {
@@ -264,6 +309,8 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
         </div>
       ) : (
         <DeviceList
+          onWarrantyRequiredChange={setWarrantyRequested}
+          onDiskUsageColumnVisibilityChange={setDiskUsageRequested}
           devices={filteredDevices}
           sites={sites}
           forceSingleOrg

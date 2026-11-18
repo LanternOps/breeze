@@ -21,13 +21,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 
 import './setup';
 import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
+import { REMOTE_SESSION_END_REASONS, type RemoteSessionEndReason } from '@breeze/shared';
 
 const { dispatchCommandToAgentMock, sendCommandToAgentMock } = vi.hoisted(() => ({
   dispatchCommandToAgentMock: vi.fn(async (_agentId: string, _command: unknown) => ({ status: 'sent' as const, via: 'local' as const })),
@@ -125,6 +126,7 @@ import {
 } from '../../routes/terminalWs';
 import { remoteRoutes } from '../../routes/remote';
 import { vncViewerRoutes } from '../../routes/tunnels';
+import { createDesktopWsRoutes } from '../../routes/desktopWs';
 import { devices, remoteSessions, tunnelSessions, users } from '../../db/schema';
 import { db, withSystemDbAccessContext } from '../../db';
 import { expireStaleSessions, expireStaleSessionsForUser } from '../../routes/remote/helpers';
@@ -133,6 +135,16 @@ import { markSessionRevoked } from '../../services/remoteRevocationLease';
 import { finalizeDesktopSessionOnce } from '../../services/desktopSessionFinalization';
 import { REAPER_DOMAINS } from '../../jobs/staleCommandReaper';
 import { commitDesktopStartIntent } from '../../services/remoteDesktopStartIntent';
+import {
+  __resetDesktopReconnectGraceForTest,
+  endDesktopSessionAfterReconnectGrace,
+  endHeldDesktopSessionNow,
+  enforceExpiredDesktopReconnectHold,
+  holdDesktopSessionForReconnect,
+  isDesktopSessionHeldForReconnect,
+  markDesktopViewerReconnectIntent,
+} from '../../services/desktopReconnectGrace';
+import { getRedis } from '../../services/redis';
 import {
   buildStopDesktopCommand,
   commitDesktopTerminalIntent,
@@ -206,7 +218,7 @@ async function insertSession(input: {
     desktopStartGeneration: SEED_GENERATION,
     permissionsEpochSnapshot: Number(live!.permissionsEpoch),
     iceCandidates: [],
-    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    ...(input.createdAt ? { createdAt: input.createdAt, lastStartAttemptAt: input.createdAt } : {}),
     ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
   }).returning({ id: remoteSessions.id });
   if (!row) throw new Error('insertSession: no row returned');
@@ -219,6 +231,7 @@ interface Fence {
   phase: string;
   status: string;
   endedAt: Date | null;
+  endReason: string | null;
 }
 
 async function readFence(sessionId: string): Promise<Fence> {
@@ -228,6 +241,7 @@ async function readFence(sessionId: string): Promise<Fence> {
     phase: remoteSessions.terminationPhase,
     status: remoteSessions.status,
     endedAt: remoteSessions.endedAt,
+    endReason: remoteSessions.endReason,
   }).from(remoteSessions).where(eq(remoteSessions.id, sessionId)).limit(1);
   if (!row) throw new Error('readFence: session not found');
   return {
@@ -236,6 +250,7 @@ async function readFence(sessionId: string): Promise<Fence> {
     phase: String(row.phase),
     status: String(row.status),
     endedAt: row.endedAt,
+    endReason: row.endReason ?? null,
   };
 }
 
@@ -293,6 +308,9 @@ const fakeWs = { send: () => {}, close: () => {} } as unknown as Parameters<
 /** Drive the real agent WS onMessage with a command_result from the session's own agent. */
 async function agentResult(fx: Fixture, message: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId,
+    siteId: fx.env.site.id,
+    installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.env.organization.id,
     partnerId: fx.env.partner.id,
@@ -306,6 +324,7 @@ async function agentResult(fx: Fixture, message: Record<string, unknown>): Promi
 type TerminalWsHandlers = {
   onOpen: (event: unknown, ws: unknown) => Promise<void>;
   onClose: (event: unknown, ws: unknown) => Promise<void> | void;
+  onError: (event: unknown, ws: unknown) => Promise<void> | void;
 };
 
 /**
@@ -350,6 +369,18 @@ function stopCommandsFor(sessionId: string): Array<{ id: string; payload: Record
     .map(({ id, payload }) => ({ id, payload }));
 }
 
+/** The #10190 CHECK, before 2027-01-24-220000 widened it. */
+const PRE_11839_END_REASON_CHECK = `end_reason IS NULL OR end_reason IN ('ended_by_user')`;
+const CURRENT_END_REASON_CHECK = `end_reason IS NULL OR end_reason IN (${REMOTE_SESSION_END_REASONS.map((r) => `'${r}'`).join(', ')})`;
+
+/** Swap remote_sessions_end_reason_check (as the owning role, outside any test transaction). */
+async function useEndReasonCheck(predicate: string): Promise<void> {
+  await getTestDb().execute(sql.raw(
+    `ALTER TABLE remote_sessions DROP CONSTRAINT IF EXISTS remote_sessions_end_reason_check, `
+      + `ADD CONSTRAINT remote_sessions_end_reason_check CHECK (${predicate})`,
+  ));
+}
+
 const TEN_MINUTES_AGO = () => new Date(Date.now() - 11 * 60 * 1000);
 const A_DAY_AGO = () => new Date(Date.now() - 25 * 60 * 60 * 1000);
 
@@ -360,6 +391,8 @@ interface WriterCase {
   seed?: { type?: 'desktop' | 'terminal'; createdAt?: Date; startedAt?: Date | null };
   run: (fx: Fixture) => Promise<void>;
   expectStatus: 'disconnected' | 'failed' | 'denied';
+  /** #11839: the end reason the writer records (remote_sessions.end_reason). */
+  expectEndReason: RemoteSessionEndReason;
   /** 'pending' = server decided, stop still to be acknowledged; 'confirmed' = endpoint was the source. */
   expectPhase: 'pending' | 'confirmed';
   /** Whether this writer sends `stop_desktop` — if so it must carry the terminal generation. */
@@ -380,6 +413,32 @@ const WRITERS: WriterCase[] = [
       expect(res.status).toBe(200);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'operator_ended',
+    expectPhase: 'pending',
+    sendsStop: true,
+  },
+  {
+    // #11931: the desktop viewer app's hang-up, on its viewer token.
+    writer: 'routes/desktopWs.ts:POST /:id/viewer/end',
+    seedStatus: 'active',
+    run: async (fx) => {
+      verifyViewerAccessTokenMock.mockResolvedValue({
+        sub: fx.env.user.id,
+        email: fx.env.user.email,
+        sessionId: fx.sessionId,
+        jti: `jti-${fx.sessionId}`,
+        mfaSatisfied: true,
+      });
+      const app = new Hono();
+      app.route('/desktop-ws', createDesktopWsRoutes((() => async () => {}) as never));
+      const res = await app.request(`/desktop-ws/${fx.sessionId}/viewer/end`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer viewer.token' },
+      });
+      expect(res.status).toBe(200);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'operator_ended',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -396,6 +455,7 @@ const WRITERS: WriterCase[] = [
       expect((await res.json()).ids).toContain(fx.sessionId);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'never_connected',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -407,6 +467,7 @@ const WRITERS: WriterCase[] = [
       expect(res.status).toBe(201);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'superseded',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -434,6 +495,7 @@ const WRITERS: WriterCase[] = [
       expect(res.status).toBe(200);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'superseded',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -445,6 +507,7 @@ const WRITERS: WriterCase[] = [
       await withSystemDbAccessContext(() => expireStaleSessions(fx.env.organization.id));
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'never_connected',
     expectPhase: 'pending',
     sendsStop: false,
   },
@@ -456,6 +519,7 @@ const WRITERS: WriterCase[] = [
       await withSystemDbAccessContext(() => expireStaleSessionsForUser(fx.env.user.id));
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'never_connected',
     expectPhase: 'pending',
     sendsStop: false,
   },
@@ -466,6 +530,7 @@ const WRITERS: WriterCase[] = [
       expect(await terminateUserRemoteSessions(fx.env.user.id)).toBeGreaterThanOrEqual(1);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'access_revoked',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -476,6 +541,7 @@ const WRITERS: WriterCase[] = [
       expect(await terminateDeviceRemoteSessions(fx.deviceId)).toBeGreaterThanOrEqual(1);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'device_removed',
     expectPhase: 'pending',
     sendsStop: true,
   },
@@ -487,8 +553,22 @@ const WRITERS: WriterCase[] = [
       expect(row).toMatchObject({ id: fx.sessionId, terminalGeneration: SEED_GENERATION + 1n });
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'access_revoked',
     // markSessionRevoked only writes the row; its caller (renewRevocationLease)
     // hands the returned row to teardownDisconnectedSessions for the stop.
+    expectPhase: 'pending',
+    sendsStop: false,
+  },
+  {
+    // #11839: the lease's hard deadline is a duration limit, not a revocation.
+    writer: 'services/remoteRevocationLease.ts:markSessionRevoked (hard_deadline)',
+    seedStatus: 'active',
+    run: async (fx) => {
+      const row = await markSessionRevoked(fx.sessionId, 'hard_deadline');
+      expect(row).toMatchObject({ id: fx.sessionId, terminalGeneration: SEED_GENERATION + 1n });
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'max_duration',
     expectPhase: 'pending',
     sendsStop: false,
   },
@@ -502,6 +582,7 @@ const WRITERS: WriterCase[] = [
       await withSystemDbAccessContext(() => domain[1]());
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'never_connected',
     expectPhase: 'pending',
     sendsStop: false,
   },
@@ -515,6 +596,7 @@ const WRITERS: WriterCase[] = [
       await withSystemDbAccessContext(() => domain[1]());
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'max_duration',
     expectPhase: 'pending',
     sendsStop: false,
   },
@@ -540,6 +622,7 @@ const WRITERS: WriterCase[] = [
       expect(outcome).toBe('finalized');
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'viewer_closed',
     // The stop proof is already in hand before the row is written.
     expectPhase: 'confirmed',
     sendsStop: false,
@@ -555,6 +638,39 @@ const WRITERS: WriterCase[] = [
       });
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'peer_disconnected',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    // #11839: only the agent's no-video watchdog sets a stopReason (#5300).
+    writer: 'routes/agentWs.ts:desk-disconnect peer_disconnected (with stopReason)',
+    seedStatus: 'active',
+    run: async (fx) => {
+      await agentResult(fx, {
+        commandId: `desk-disconnect-${fx.sessionId}`,
+        status: 'completed',
+        result: { event: 'peer_disconnected', sessionId: fx.sessionId, stopReason: 'no video frames for 30s' },
+      });
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'capture_failed',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    // #10542: the held end of a peer drop that followed a viewer reconnect.
+    writer: 'services/desktopReconnectGrace.ts:endDesktopSessionAfterReconnectGrace',
+    seedStatus: 'active',
+    run: async (fx) => {
+      expect(await endDesktopSessionAfterReconnectGrace({
+        sessionId: fx.sessionId,
+        deviceId: fx.deviceId,
+        startGeneration: SEED_GENERATION,
+      })).toBe('ended');
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'peer_disconnected',
     expectPhase: 'confirmed',
     sendsStop: false,
   },
@@ -569,6 +685,7 @@ const WRITERS: WriterCase[] = [
       });
     },
     expectStatus: 'denied',
+    expectEndReason: 'consent_denied',
     expectPhase: 'confirmed',
     sendsStop: false,
   },
@@ -583,6 +700,7 @@ const WRITERS: WriterCase[] = [
       });
     },
     expectStatus: 'failed',
+    expectEndReason: 'start_failed',
     expectPhase: 'confirmed',
     sendsStop: false,
   },
@@ -597,7 +715,36 @@ const WRITERS: WriterCase[] = [
       expect(await closeTerminalSession(fx.sessionId)).toBe(true);
     },
     expectStatus: 'disconnected',
+    expectEndReason: 'access_revoked',
     // A PTY row has no endpoint acknowledgement flow: confirmed on commit.
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    writer: 'routes/terminalWs.ts:onClose (viewer closed the socket)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      const { handlers, ws } = await openTerminalWs(fx);
+      expect((await readFence(fx.sessionId)).status).toBe('active');
+      await handlers.onClose({}, ws);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'viewer_closed',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    writer: 'routes/terminalWs.ts:onError (viewer socket failed)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      const { handlers, ws } = await openTerminalWs(fx);
+      expect((await readFence(fx.sessionId)).status).toBe('active');
+      await handlers.onError(new Error('injected socket error'), ws);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'connection_lost',
     expectPhase: 'confirmed',
     sendsStop: false,
   },
@@ -615,6 +762,7 @@ const WRITERS: WriterCase[] = [
       expect(getActiveTerminalSession(fx.sessionId)).toBeUndefined();
     },
     expectStatus: 'failed',
+    expectEndReason: 'start_failed',
     expectPhase: 'confirmed',
     sendsStop: false,
   },
@@ -645,6 +793,8 @@ describe('one terminal-intent contract for every terminal writer', () => {
       expect(after.generation).toBe(SEED_GENERATION + 1n);
       expect(after.terminalGeneration).toBe(SEED_GENERATION + 1n);
       expect(after.phase).toBe(writerCase.expectPhase);
+      // #11839: the row says WHY it ended, not just that it did.
+      expect(after.endReason).toBe(writerCase.expectEndReason);
 
       const stops = stopCommandsFor(fx.sessionId);
       if (writerCase.sendsStop) {
@@ -662,7 +812,7 @@ describe('one terminal-intent contract for every terminal writer', () => {
       // A first terminal decision wins the row.
       const first = await withSystemDbAccessContext(() => commitDesktopTerminalIntent({
         sessionId: fx.sessionId,
-        write: { status: 'failed', endedAt: new Date(Date.now() - 5_000), errorMessage: 'first' },
+        write: { status: 'failed', endedAt: new Date(Date.now() - 5_000), errorMessage: 'first', endReason: 'start_failed' },
         phase: 'confirmed',
       }));
       expect(first).toMatchObject({ ok: true, terminalGeneration: SEED_GENERATION + 1n });
@@ -674,6 +824,39 @@ describe('one terminal-intent contract for every terminal writer', () => {
 
       expect(await readFence(fx.sessionId)).toEqual(settled);
     });
+
+    it('#11839: still ends the session on a database without the widened end-reason CHECK (reason left NULL)', async () => {
+      // New API code against a database that has not run
+      // 2027-01-24-220000-remote-sessions-end-reason-widen.sql (a self-hoster
+      // with auto-migrate off): only 'ended_by_user' passes the old CHECK.
+      // Labelling must never stop the session from ending.
+      const fx = await seed(writerCase.seedStatus, writerCase.seed);
+      await useEndReasonCheck(PRE_11839_END_REASON_CHECK);
+      try {
+        await writerCase.run(fx);
+        const after = await readFence(fx.sessionId);
+        expect(after.status).toBe(writerCase.expectStatus);
+        expect(after.endedAt).not.toBeNull();
+        expect(after.terminalGeneration).toBe(SEED_GENERATION + 1n);
+        expect(after.endReason).toBeNull();
+      } finally {
+        await useEndReasonCheck(CURRENT_END_REASON_CHECK);
+      }
+    });
+  });
+
+  it('#11839: a terminal write keeps an end reason already on the row (ended_by_user is not overwritten)', async () => {
+    const fx = await seed('active');
+    // The agent reports desk-userend just before its normal stop, so the row
+    // carries 'ended_by_user' while still live; the peer drop that follows
+    // must not replace it with its own reason.
+    await getTestDb().update(remoteSessions).set({ endReason: 'ended_by_user' }).where(eq(remoteSessions.id, fx.sessionId));
+    await withSystemDbAccessContext(() => commitDesktopTerminalIntent({
+      sessionId: fx.sessionId,
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'peer_disconnected' },
+      phase: 'confirmed',
+    }));
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', endReason: 'ended_by_user' });
   });
 
   it('a session of a non-desktop type is confirmed the moment it commits (no endpoint to ask)', async () => {
@@ -801,5 +984,137 @@ describe('one terminal-intent contract for every terminal writer', () => {
       .set({ terminationPhase: 'confirmed' })
       .where(eq(remoteSessions.id, fx.sessionId)))
       .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+});
+
+// #10542: a peer drop that the viewer's own reconnect caused is held for a
+// short grace instead of ending the session and revoking the viewer token under
+// the reconnect. Real row, real Redis, real agentWs handler.
+describe('#10542 — peer drop during a viewer reconnect', () => {
+  const revokedKey = (sessionId: string) => `viewer-session-revoked:${sessionId}`;
+  const isRevoked = async (sessionId: string) => (await getRedis()!.get(revokedKey(sessionId))) === '1';
+  const peerDrop = (fx: Fixture) => agentResult(fx, {
+    commandId: `desk-disconnect-${fx.sessionId}`,
+    status: 'completed',
+    result: { event: 'peer_disconnected', sessionId: fx.sessionId },
+  });
+
+  afterEach(() => {
+    __resetDesktopReconnectGraceForTest();
+  });
+
+  it('holds the drop, then the reconnect offer is accepted and the expired hold leaves the session alone', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
+
+    await peerDrop(fx);
+
+    // Held: still live, token not revoked.
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'active', generation: SEED_GENERATION, phase: 'none' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+    // The durable record is in place, and a viewer-token check during the
+    // grace lets the reconnect through.
+    const record = JSON.parse((await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`))!);
+    expect(record).toMatchObject({ deviceId: fx.deviceId, startGeneration: String(SEED_GENERATION) });
+    expect(await enforceExpiredDesktopReconnectHold({
+      id: fx.sessionId,
+      deviceId: fx.deviceId,
+      desktopStartGeneration: SEED_GENERATION,
+    })).toBe('none');
+
+    // The viewer's reconnect offer commits a new start.
+    const start = await withSystemDbAccessContext(() => commitDesktopStartIntent({
+      sessionId: fx.sessionId,
+      startCommandId: `desk-start-${fx.sessionId}-${randomUUID()}`,
+      promptMode: 'off',
+      consentUnavailableBehavior: null,
+      offer: OFFER,
+    }));
+    expect(start).toMatchObject({ ok: true, generation: SEED_GENERATION + 1n });
+
+    // The grace runs out: the held end names the interrupted start and matches nothing.
+    expect(await endDesktopSessionAfterReconnectGrace({
+      sessionId: fx.sessionId,
+      deviceId: fx.deviceId,
+      startGeneration: SEED_GENERATION,
+    })).toBe('superseded');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'connecting', generation: SEED_GENERATION + 1n, phase: 'none' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+  });
+
+  it('Finding #5 unchanged: a drop with no reconnect in flight ends the session and revokes the token at once', async () => {
+    const fx = await seed('active');
+
+    await peerDrop(fx);
+
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(false);
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', phase: 'confirmed' });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
+  });
+
+  it('a late drop for the old peer, handled after the reconnect committed a newer start, is not held', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
+    await withSystemDbAccessContext(() => commitDesktopStartIntent({
+      sessionId: fx.sessionId,
+      startCommandId: `desk-start-${fx.sessionId}-${randomUUID()}`,
+      promptMode: 'off',
+      consentUnavailableBehavior: null,
+      offer: OFFER,
+    }));
+    // The agent answered the new start: the row is active again, on start N+1.
+    await getTestDb().update(remoteSessions).set({ status: 'active' }).where(eq(remoteSessions.id, fx.sessionId));
+
+    await peerDrop(fx);
+
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(false);
+    expect(await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`)).toBeNull();
+  });
+
+  it('a held drop with no reconnect ends and revokes when the end runs (timer or user end)', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId, SEED_GENERATION);
+    await peerDrop(fx);
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
+
+    // The same end the timer runs at expiry, invoked directly; the 20 s wait
+    // itself is covered with fake timers in desktopReconnectGrace.test.ts.
+    expect(await endHeldDesktopSessionNow(fx.sessionId, fx.deviceId)).toBe(true);
+
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', phase: 'confirmed', generation: SEED_GENERATION + 1n });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
+    expect(await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`)).toBeNull();
+  });
+
+  it('a hold whose timer was lost is ended by the next viewer-token check after its deadline', async () => {
+    const fx = await seed('active');
+    // A grace long enough that the holding instance's own timer cannot fire
+    // during the test. With a 1 ms grace the timer fired while the Redis write
+    // was still in flight, ended the session and cleared the record, and the
+    // check below then found nothing to enforce (flaky on slower runners).
+    const graceMs = 60_000;
+    const heldAt = Date.now();
+    expect(await holdDesktopSessionForReconnect({
+      sessionId: fx.sessionId,
+      deviceId: fx.deviceId,
+      startGeneration: SEED_GENERATION,
+      graceMs,
+    })).toBe('held');
+    // The holding instance goes away before its timer fires.
+    __resetDesktopReconnectGraceForTest();
+
+    const session = { id: fx.sessionId, deviceId: fx.deviceId, desktopStartGeneration: SEED_GENERATION };
+    // Control: before the deadline the record lets the request through and
+    // the session stays live.
+    expect(await enforceExpiredDesktopReconnectHold(session, heldAt)).toBe('none');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'active' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+
+    // The next check after the deadline ends it.
+    const afterDeadline = Date.now() + graceMs + 1;
+    expect(await enforceExpiredDesktopReconnectHold(session, afterDeadline)).toBe('ended');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected' });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
   });
 });

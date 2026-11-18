@@ -9,7 +9,7 @@ import {
   type BackupProviderAdapter,
   type ProviderTestResult,
   type VendorCustomer,
-  type VendorDevice,
+  type VendorDeviceList,
 } from '../types';
 
 export const COVE_PROVIDER_KEY = 'cove';
@@ -19,9 +19,10 @@ export const COVE_PROVIDER_LABEL = 'Cove Data Protection';
  * The credential blob stored (encrypted, row-bound) in
  * `backup_provider_connections.credentials_encrypted`.
  *
- * Cove has no static API key: this is a real console login. The UI tells the
- * MSP to create a dedicated user with a read-only role, a unique password and
- * NO 2FA, and the password is never returned by any route.
+ * The UI tells the MSP to create a Cove API user (it cannot sign in to the
+ * console, so 2FA does not apply): `username` is its login name and `password`
+ * its API token. A legacy console login still works the same way. The
+ * password is never returned by any route.
  *
  * Identity fields are trimmed (a pasted username reliably picks up a trailing
  * space); the password deliberately is NOT — a password may legitimately end
@@ -36,7 +37,7 @@ export const coveCredentialsSchema = z.object({
   // working credential into an unexplained auth failure. Blank/whitespace-only
   // is still rejected via `.refine`, which checks without mutating the value.
   password: z.string().max(5000).refine((v) => v.trim().length > 0, {
-    message: 'password is required',
+    message: 'API user token is required',
   }),
 }).strip();
 
@@ -68,7 +69,7 @@ function parseCredentials(creds: unknown): CoveCredentials {
     // schema is a credential problem the operator must fix by re-entering it,
     // not something a retry can resolve.
     throw new ProviderRequestError(
-      'Cove credentials are incomplete (partner name, username and password are all required)',
+      'Cove credentials are incomplete (partner name, API user login name and token are all required)',
       { code: 'invalid_credentials', reauth: true },
     );
   }
@@ -89,6 +90,8 @@ export const coveAdapter: BackupProviderAdapter = {
   key: COVE_PROVIDER_KEY,
   label: COVE_PROVIDER_LABEL,
   credentialsSchema: coveCredentialsSchema,
+  defaultBaseUrl: COVE_DEFAULT_BASE_URL,
+  defaultSyncIntervalMinutes: 30,
 
   /**
    * Never throws. The create/PATCH/test routes render this straight into a
@@ -128,8 +131,8 @@ export const coveAdapter: BackupProviderAdapter = {
    * vanished, so a truncated enumeration reported as success would delete a
    * customer's whole backup inventory.
    */
-  async listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDevice[]> {
+  async listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDeviceList> {
     const { client } = await connect(creds, baseUrl);
-    return client.enumerateAccountStatisticsAll(rootId);
+    return { devices: await client.enumerateAccountStatisticsAll(rootId), failedCustomerIds: [] };
   },
 };

@@ -85,7 +85,12 @@ const PRE_CHANGE_CONNECTED = {
     sourceStatus: 'ok', lastSyncAt: '2026-09-30T05:00:00.000Z', lastSyncStatus: 'ok',
     unattributableExcluded: 0, withheld: 0, carriedInIncluded: true, note: '',
   },
-  agentCoverage: { huntressAgents: 1, breezeDevices: 2, agentsOffline: 0, devicesWithoutAgent: 1 },
+  agentCoverage: {
+    huntressAgents: 1, breezeDevices: 2, agentsOffline: 0, devicesWithoutAgent: 1,
+    // #12046: the any-source pair (adds up to breezeDevices) and the unmatched count.
+    devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 1, detectionAgentSources: ['huntress'],
+    unmatchedAgents: 0,
+  },
   incidents: {
     opened: 1, resolved: 0, bySeverity: { high: 1 }, byStatus: { open: 1 },
     meanResolveHours: null, medianResolveHours: null, carriedIn: 0,
@@ -168,7 +173,26 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     const res = await generateThreatDetectionReport('o', {}, authority(), EV);
     expect(Object.keys((res.summary as { agentCoverage: object }).agentCoverage)).not.toContain('edrEndpoints');
     expect(Object.keys(res.summary ?? {})).not.toContain('edrDetections');
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+    // org, devices, integration, then the SentinelOne device query (#12046
+    // follow-up) — and no EDR query of either kind.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    expect(render(whereCalls[3]![0]).sql).toMatch(/"s1_agents"\."org_id" = /);
+  });
+
+  // #12046: device coverage counts EDR endpoints only when the run may use EDR
+  // evidence — a portal run without the flag must not be told about them.
+  it('does not count EDR endpoints as device coverage when the run may not use EDR evidence', async () => {
+    edrGate.edrReportEvidenceAllowed.mockResolvedValue(false);
+    queueSelects(
+      ORG, [{ id: 'd1' }], SYNCED, [], [], [], [], [{ earliest: null }],
+      /* s1 agent devices */ [],
+      /* would-be EDR endpoint devices — must never be read */ [{ deviceId: 'd1' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.agentCoverage?.devicesWithDetectionAgent).toBe(0);
+    expect(s.agentCoverage?.devicesWithoutDetectionAgent).toBe(1);
+    // org, devices, integration, agents, window, rows, carried, earliest, s1
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(9);
   });
 
   it('an EDR-only org whose Huntress never synced also gets the EDR fields', async () => {
@@ -211,6 +235,78 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     expect(detectionWhere.params).toEqual(expect.arrayContaining(['open', 'in_progress', 'unknown', 'o']));
     const endpointWhere = render(whereCalls[3]![0]);
     expect(endpointWhere.sql).toMatch(/"edr_endpoints"\."org_id" = /i);
+  });
+
+  // #12046 follow-up: SentinelOne connected, Huntress not. The device pair
+  // used to stay N/A here although SentinelOne had measured it.
+  it('counts SentinelOne device coverage when Huntress is not connected, and says which sources it used', async () => {
+    edrGate.edrReportEvidenceAllowed.mockResolvedValue(false);
+    queueSelects(
+      ORG, [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }], /* no Huntress */ [],
+      /* s1 agent devices */ [{ deviceId: 'd1' }, { deviceId: 'd1' }, { deviceId: 'd9' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.coverage?.sourceStatus).toBe('not_connected');
+    expect(s.agentCoverage).toMatchObject({
+      breezeDevices: 3,
+      // d1 has two SentinelOne agents and counts once; d9 is not managed.
+      devicesWithDetectionAgent: 1,
+      devicesWithoutDetectionAgent: 2,
+      detectionAgentSources: ['sentinelone'],
+      // Huntress was not measured, so its counts stay unmeasured.
+      huntressAgents: null,
+      agentsOffline: null,
+      devicesWithoutAgent: null,
+    });
+    expect(s.agentCoverage?.unmatchedAgents ?? null).toBeNull();
+    expect(s.incidents?.opened).toBeNull();
+  });
+
+  it('counts SentinelOne and EDR device coverage when Huntress has never synced', async () => {
+    queueSelects(
+      ORG, [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }], [{ id: 'g', lastSyncAt: null, lastSyncStatus: null }],
+      /* edr endpoints */ [{ total: 1 }], /* edr open detections */ [],
+      /* s1 agent devices */ [{ deviceId: 'd1' }],
+      /* edr endpoint devices */ [{ deviceId: 'd2' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.coverage?.sourceStatus).toBe('never_synced');
+    expect(s.agentCoverage).toMatchObject({
+      breezeDevices: 3,
+      devicesWithDetectionAgent: 2,
+      devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['sentinelone', 'edr'],
+      edrEndpoints: 1,
+    });
+  });
+
+  it('counts EDR-only device coverage when Huntress is not connected and the run may use EDR evidence', async () => {
+    queueSelects(
+      ORG, [{ id: 'd1' }, { id: 'd2' }], /* no Huntress */ [],
+      /* edr endpoints */ [{ total: 1 }], /* edr open detections */ [],
+      /* s1 agent devices */ [],
+      /* edr endpoint devices */ [{ deviceId: 'd2' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.coverage?.sourceStatus).toBe('not_connected');
+    expect(s.agentCoverage).toMatchObject({
+      devicesWithDetectionAgent: 1,
+      devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['edr'],
+    });
+    expect(render(whereCalls[6]![0]).sql).toMatch(/"edr_endpoints"\."org_id" = /);
+  });
+
+  it('keeps the gap-path device pair scoped to the org, the managed fleet and the site', async () => {
+    queueSelects(ORG, [{ id: 'd1' }], [], [], [], [], []);
+    await generateThreatDetectionReport('o', {}, authority('restricted', [SITE_A]), EV);
+    // #0 org, #1 devices, #2 integration, #3/#4 EDR coverage, #5 s1 devices, #6 EDR devices
+    const s1 = render(whereCalls[5]![0]);
+    expect(s1.sql).toMatch(/"s1_agents"\."org_id" = /);
+    expect(s1.params).toEqual(expect.arrayContaining(['o', SITE_A, 'decommissioned']));
+    const edr = render(whereCalls[6]![0]);
+    expect(edr.sql).toMatch(/"edr_endpoints"\."org_id" = /);
+    expect(edr.params).toEqual(expect.arrayContaining(['o', SITE_A, 'decommissioned']));
   });
 
   it('pushes the site predicate into both EDR queries under a restricted authority', async () => {

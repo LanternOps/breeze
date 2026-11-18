@@ -192,3 +192,113 @@ describe('plan revision is part of operation identity', () => {
     expect(ops.map((o) => o.planRevision).sort()).toEqual([PLAN_REVISION, r3]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 review round (Opus): the planner's DB-backed branches against real
+// rows. Appended; the cases above are unchanged.
+// ---------------------------------------------------------------------------
+import { randomUUID } from 'node:crypto';
+import { and as andR1a0 } from 'drizzle-orm';
+import { aiOperatorTaskEvents } from '../../db/schema';
+import { planEffectStep, planProbeStep } from '../../services/aiOperator/effectDispatch';
+import { effect as planEffect } from './planApprovalFixtures';
+
+const loadTask = async (t: PlanTenant) => {
+  const [task] = await system(() => db.select().from(aiOperatorTasks).where(eq(aiOperatorTasks.id, t.taskId)));
+  return { ...task!, currentStepKey: STEP_KEY };
+};
+
+describe('plan-build failure context against real rows (R1a-0)', () => {
+  // A recipe that plans from a snapshot step, and a checkpoint whose snapshot
+  // ref points at no step row: every wake is a `snapshot_missing` failure, so
+  // the outcome is decided purely by readPlanFailureContext's real queries.
+  const snapRecipe = {
+    key: 'fixture_snapshot_recipe', steps: { discover: {}, [STEP_KEY]: {}, other_step: {} },
+    planningSnapshotStepKey: 'discover', buildPlan: () => defaultEffects(),
+  } as never;
+  const badRef = () => ({ recipeInput: {}, planningSnapshot: { stepId: randomUUID(), digest: 'a'.repeat(64) } }) as never;
+
+  it('no approval at the task revision -> fail; an approval at the revision -> hand_off; one at another revision does not count', async () => {
+    const t = await seedPlanTenant();
+    const task = await loadTask(t);
+    await expect(planEffectStep({ task, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('snapshot_missing') });
+
+    await propose(t);
+    await expect(planEffectStep({ task, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved' });
+    await expect(planEffectStep({ task: { ...task, revision: PLAN_REVISION + 1 }, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail' });
+  });
+
+  it("an unsettled operation of THIS step -> unknown_effect; another step's -> unresolved for an effect step, unknown_effect for a probe step; 'unknown' counts", async () => {
+    const { t, effects } = await approvedTenant();
+    stubProbe('google_suspend_user', 'unsatisfied');
+    await expect(dispatch(t, effects[0]!)).resolves.toMatchObject({ kind: 'dispatching' });
+    const task = await loadTask(t);
+
+    await expect(planEffectStep({ task, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    const elsewhere = { ...task, currentStepKey: 'other_step' };
+    await expect(planEffectStep({ task: elsewhere, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved' });
+    await expect(planProbeStep({ task: elsewhere, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+
+    await system(() => db.update(aiOperatorOperations).set({ resultState: 'unknown' }).where(eq(aiOperatorOperations.taskId, t.taskId)));
+    await expect(planEffectStep({ task, recipe: snapRecipe, checkpoint: badRef(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+  });
+});
+
+describe('declared unobservable effect: the jsonb stamp round-trips and a replay never re-probes (R1a-0)', () => {
+  it('records the sign-out once as unobservable, walks on to the suspend, and a second wake neither re-probes nor re-records it', async () => {
+    const allow = ['google_signout', 'google_suspend_user'];
+    const t = await seedPlanTenant({ snapshotAllowlist: allow, liveAllowlist: allow });
+    const effects = [
+      planEffect(0, 'google_signout', { userEmail: 'dana@customer.example' }),
+      planEffect(1, 'google_suspend_user', { reason: 'offboarding', userEmail: 'dana@customer.example' }),
+    ];
+    const plan = await propose(t, effects);
+    await approveRealWay(t, plan.intentId);
+
+    let signoutProbes = 0;
+    registerEffectProbe('google_signout', async () => {
+      signoutProbes += 1;
+      return { state: 'unknown', observedAt: new Date(), detail: 'no session state to read' };
+    }, { alwaysUnknown: true });
+    stubProbe('google_suspend_user', 'unsatisfied');
+
+    // The sign-out is dispatched and its write reports success, as the
+    // release worker would record it.
+    await expect(dispatch(t, effects[0]!)).resolves.toMatchObject({ kind: 'dispatching' });
+    await system(() => db.update(aiOperatorOperations)
+      .set({ resultState: 'succeeded', resultAt: new Date(), dispatchedAt: new Date() })
+      .where(eq(aiOperatorOperations.taskId, t.taskId)));
+
+    const recipe = {
+      key: 'fixture_unobservable_recipe', steps: { [STEP_KEY]: {} },
+      unobservableEffects: { google_signout: 'google_suspend_user' }, buildPlan: () => effects,
+    } as never;
+    const task = await loadTask(t);
+
+    await expect(planEffectStep({ task, recipe, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution' });
+    const probesAfterFirst = signoutProbes;
+    const signoutKey = planEffectOperationKey({
+      stepKey: STEP_KEY, planRevision: PLAN_REVISION, toolName: 'google_signout', targetId: effects[0]!.targetId, ordinal: 0,
+    });
+    const [row] = (await operations(t.taskId)).filter((o) => o.operationKey === signoutKey);
+    expect((row!.result as { verified?: Record<string, unknown> }).verified)
+      .toMatchObject({ ok: false, unobservable: true, subsumedBy: 'google_suspend_user' });
+    expect((await childIntents(t.taskId)).map((i) => i.actionName)).toContain('google_suspend_user');
+
+    await expect(planEffectStep({ task, recipe, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution' });
+    expect(signoutProbes).toBe(probesAfterFirst);
+    const recorded = await system(() => db.select().from(aiOperatorTaskEvents).where(andR1a0(
+      eq(aiOperatorTaskEvents.taskId, t.taskId), eq(aiOperatorTaskEvents.eventType, 'verification_recorded'),
+    )));
+    expect(recorded).toHaveLength(1);
+  });
+});

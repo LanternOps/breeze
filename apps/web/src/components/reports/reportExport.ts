@@ -6,13 +6,17 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   TechnicianTimeSummary,
   AiUsageByClientSummary,
   ArAgingSummary,
+  MrrRenewalsSummary,
+  QuoteWinRateSummary,
+  ClientProfitabilitySummary,
+  TicketSlaPerformanceSummary,
 } from '@breeze/shared';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv, rowsToTsv } from '@/lib/csvExport';
+import { isTicketSlaPerformanceSummary, rowsToXlsx, sheetsToXlsx, ticketSlaPerformanceSheets, XLSX_MIME_TYPE } from '@breeze/shared';
+import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
+import { buildReportPdf, parseHexColor, partnerReportConventions, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV + download helpers so existing importers of these
 // names from './reportExport' keep working; the canonical definitions now live
@@ -29,7 +33,7 @@ export function getBrowserTimezone(): string {
 }
 
 /**
- * Export report rows as CSV, Excel (TSV with .xls extension), or PDF.
+ * Export report rows as CSV, Excel (.xlsx workbook), or PDF.
  *
  * Throws if rows is empty for CSV/Excel formats. When `summary` is supplied for
  * the security_compliance_posture report, the PDF leads with a posture scorecard
@@ -59,7 +63,8 @@ export async function exportReport(
     // SLA attainment, technician time & billability, AR aging) — see
     // reportExport.business.test.tsx.
     summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-      | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary;
+      | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary
+      | ClientProfitabilitySummary | TicketSlaPerformanceSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };
@@ -80,8 +85,20 @@ export async function exportReport(
 
   if (format === 'excel') {
     if (rows.length === 0) throw new Error('No data to export');
-    const tsvContent = rowsToTsv(rows);
-    downloadBlob(new Blob([tsvContent], { type: 'application/vnd.ms-excel' }), `${baseFilename}.xls`);
+    // #9956: a real workbook (was TSV text saved as .xls). Throws
+    // XlsxLimitError past Excel's worksheet limits; callers surface the message.
+    let workbook: Uint8Array<ArrayBuffer>;
+    if (reportType === 'ticket_sla_performance') {
+      // A priorities-only workbook would read as complete while every breach is missing.
+      if (!isTicketSlaPerformanceSummary(summary)) {
+        throw new Error('This SLA performance run has no readable summary, so its breaches cannot be exported.');
+      }
+      // Shared with the API's stored-run download (#11277) so the two cannot drift.
+      workbook = sheetsToXlsx(ticketSlaPerformanceSheets(rows, summary));
+    } else {
+      workbook = rowsToXlsx(rows);
+    }
+    downloadBlob(new Blob([workbook], { type: XLSX_MIME_TYPE }), `${baseFilename}.xlsx`);
     return;
   }
 
@@ -89,14 +106,10 @@ export async function exportReport(
     throw new Error(`Unsupported report format: ${format}`);
   }
 
-  // PDF — branded scorecard cover (posture) or branded generic table.
-  // Medium date + short time ("Jul 1, 2026, 4:15 PM"): an outward-facing
-  // document doesn't need seconds precision.
-  const generatedAt = formatDateTime(new Date(), {
-    timeZone: timezone,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  // PDF — branded scorecard cover (posture) or branded generic table. The
+  // renderer prints the generation instant in the partner's date format with
+  // its timezone, the same on every report path (#12048).
+  const generatedAt = new Date();
   const branding = opts.branding ?? (await loadPartnerBranding());
   const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
@@ -149,6 +162,7 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
     if (!res.ok) return empty;
     const data = (await res.json()) as {
       name?: string;
+      documentPageSize?: unknown;
       settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
     };
     const name = data.name ?? null;
@@ -157,6 +171,9 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
       accentColor: parseHexColor(data.settings?.branding?.secondaryColor) ? data.settings!.branding!.secondaryColor! : null,
       contactEmail: data.settings?.contact?.email?.trim() || null,
       contactName: data.settings?.contact?.name?.trim() || null,
+      // #12048: page size, date order and hour cycle, mapped exactly as the
+      // server-rendered paths map them.
+      ...partnerReportConventions({ documentPageSize: data.documentPageSize, settings: data.settings }),
     };
     const safeLogoUrl = sanitizeImageSrc(data.settings?.branding?.logoUrl ?? null);
     if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null, ...colors };

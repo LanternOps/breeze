@@ -6,6 +6,8 @@
  * Only the edges are faked: the outbound HTTP (`safeFetch`), Redis, the DB and
  * the materialising `cimdAllowClient` (a spy whose answer the test controls).
  */
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exportJWK, generateKeyPair } from 'jose';
 import { Provider } from 'oidc-provider';
@@ -126,5 +128,50 @@ describe('CIMD through a real oidc-provider', () => {
   it('a non-CIMD id is never fetched', async () => {
     await expect(provider.Client.find('https://127.0.0.1/oauth/x.json')).rejects.toThrow();
     expect(state.fetched).toEqual([]);
+  });
+});
+
+// #9938: the case the 2026-10-23 sweep hit. A refused CIMD client at
+// /oauth/auth must reach the branded error page, not oidc-provider's default
+// "oops! something went wrong" page, and must not be redirected anywhere the
+// request named.
+describe('a refused CIMD client at the authorization endpoint (#9938)', () => {
+  async function authorize(clientId: string) {
+    const server = createServer(provider.callback());
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const qs = new URLSearchParams({
+        client_id: clientId,
+        response_type: 'code',
+        redirect_uri: 'http://127.0.0.1:3000/cb',
+        scope: 'openid',
+        state: 'st',
+      });
+      const res = await fetch(`http://127.0.0.1:${port}/oauth/auth?${qs}`, {
+        redirect: 'manual',
+        headers: { accept: 'text/html' },
+      });
+      return { status: res.status, location: res.headers.get('location'), body: await res.text() };
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it.each([
+    ['its metadata document cannot be fetched', () => {}],
+    ['allowClient refuses it', (id: string) => {
+      state.documents.set(id, doc(id));
+      state.allowClient = false;
+    }],
+  ])('goes to the branded page when %s', async (_label, arrange) => {
+    const id = `https://client.example.com/oauth/refused-${state.fetched.length}-${Math.random().toString(36).slice(2)}.json`;
+    arrange(id);
+    const res = await authorize(id);
+    expect(res.status).toBe(303);
+    expect(res.location).toMatch(/\/oauth\/consent\/error\?reason=invalid_client$/);
+    expect(res.body).not.toContain('oops! something went wrong');
+    expect(res.location).not.toContain('client.example.com');
+    expect(res.location).not.toContain('127.0.0.1:3000');
   });
 });

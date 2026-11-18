@@ -1,0 +1,77 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Enterprise License Manager API licenseAssignments.listForProductAndSku / insert (LicenseAssignment resource)",
+  "_notes": "The probe pages listForProductAndSku (at most 10 pages); these lists fit one page. The refusal body for an exhausted licence pool is unconfirmed: lab-run row.",
+  "toolName": "google_assign_license",
+  "provider": "google",
+  "preSatisfied": {
+    "licensing.licenseAssignments.listForProductAndSku": {
+      "data": {
+        "kind": "licensing#licenseAssignmentList",
+        "items": [
+          {
+            "productId": "Google-Apps",
+            "skuId": "1010020027",
+            "userId": "priya@customer.example"
+          },
+          {
+            "productId": "Google-Apps",
+            "skuId": "1010020027",
+            "userId": "lee@customer.example"
+          }
+        ]
+      }
+    }
+  },
+  "preUnsatisfied": {
+    "licensing.licenseAssignments.listForProductAndSku": {
+      "data": {
+        "kind": "licensing#licenseAssignmentList",
+        "items": [
+          {
+            "productId": "Google-Apps",
+            "skuId": "1010020027",
+            "userId": "lee@customer.example"
+          }
+        ]
+      }
+    }
+  },
+  "writeOk": {
+    "licensing.licenseAssignments.insert": {
+      "data": {
+        "kind": "licensing#licenseAssignment",
+        "productId": "Google-Apps",
+        "skuId": "1010020027",
+        "userId": "priya@customer.example"
+      }
+    }
+  },
+  "postSatisfied": {
+    "licensing.licenseAssignments.listForProductAndSku": {
+      "data": {
+        "kind": "licensing#licenseAssignmentList",
+        "items": [
+          {
+            "productId": "Google-Apps",
+            "skuId": "1010020027",
+            "userId": "priya@customer.example"
+          },
+          {
+            "productId": "Google-Apps",
+            "skuId": "1010020027",
+            "userId": "lee@customer.example"
+          }
+        ]
+      }
+    }
+  },
+  "writeRefusal": {
+    "licensing.licenseAssignments.insert": {
+      "error": {
+        "code": 412,
+        "message": "Not enough licenses available for the specified product and SKU"
+      }
+    }
+  }
+}

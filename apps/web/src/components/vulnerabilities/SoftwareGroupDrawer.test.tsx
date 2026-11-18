@@ -68,6 +68,7 @@ const DETAIL: SoftwareGroupDetail = {
     maxEpss: 0.9,
     patchReadyFindingCount: 2,
     patchReadyDeviceCount: 1,
+    vendorFixAvailable: true,
     tickets: [],
     targetVersion: null,
   },
@@ -198,7 +199,7 @@ describe('SoftwareGroupDrawer (device rollup, #2262)', () => {
   });
 
   it('remediate sends exactly the selected devices\' open finding ids, after a confirmation', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 3, alreadyQueued: [], skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 3, installs: 3, alreadyQueued: [], skipped: [] });
     renderDrawer();
     fireEvent.click(await screen.findByTestId('vuln-action-remediate'));
     // Nothing fired yet — the confirmation stands between the button and the mutation.
@@ -210,7 +211,7 @@ describe('SoftwareGroupDrawer (device rollup, #2262)', () => {
   });
 
   it('deselecting a device removes its findings from the action', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, installs: 1, alreadyQueued: [], skipped: [] });
     renderDrawer();
     fireEvent.click(await screen.findByTestId('vuln-device-check-dev-1'));
     fireEvent.click(screen.getByTestId('vuln-action-remediate'));

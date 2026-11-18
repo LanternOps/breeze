@@ -10,6 +10,19 @@ function jsonResponse(body: unknown, init?: { ok?: boolean; status?: number }): 
 }
 
 describe('fetchAllDevices', () => {
+  describe.each(['includeWarranty', 'includeDisks'] as const)('%s', (flag) => {
+    it.each([undefined, false, true])('requests details only when opted in (%s), on every cursor page', async (enabled) => {
+      const fetcher = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'a' }], pagination: { nextCursor: 'next' } }))
+        .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'b' }], pagination: { nextCursor: null } }));
+      await fetchAllDevices({ fetcher, [flag]: enabled });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      for (const [url] of fetcher.mock.calls) {
+        expect(new URL(url, 'https://example.test').searchParams.get(flag)).toBe(enabled ? 'true' : null);
+      }
+    });
+  });
+
   it('legacy single-page API (no nextCursor) — walks one page and returns immediately', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(
       jsonResponse({

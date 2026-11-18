@@ -520,7 +520,7 @@ describe('aiToolsCatalog: lookup_distributor_product', () => {
  * bundles.ts:15, distributors.ts:51, enrich.ts:14). The catalog tools filtered
  * on `auth.partnerId` alone, and an ORG-scoped token carries the OWNING
  * partner's partnerId — so an org-scoped AI/MCP caller could read the whole
- * partner price book, and `manage_catalog` could WRITE it. Same reasoning the
+ * partner price book, and `manage_billing_catalog` could WRITE it. Same reasoning the
  * lookup_distributor_product gate already spelled out.
  */
 describe('catalog tools refuse organization scope (#6110 finding 1)', () => {
@@ -528,7 +528,7 @@ describe('catalog tools refuse organization scope (#6110 finding 1)', () => {
     return { user: { id: 'u1' }, partnerId: PARTNER_ID, scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
   }
 
-  it.each(['search_catalog', 'get_catalog_item', 'manage_catalog'] as const)(
+  it.each(['search_catalog', 'get_catalog_item', 'manage_billing_catalog'] as const)(
     '%s refuses an org-scoped caller carrying the owning partner id', async (name) => {
       const out = await tools().get(name)!.handler(
         { search: 'x', catalogId: ITEM_ID, action: 'archive_item' }, orgAuth(),

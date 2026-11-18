@@ -9,9 +9,12 @@ import { showToast } from '../shared/Toast';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
-// Stand-in for the filter panel: one button applies a known filter set.
+// Stand-in for the filter panel: one button applies a known filter set, and it
+// echoes the filters it was opened with (#9941).
 vi.mock('./AuditFilters', () => ({
-  default: ({ onApply }: { onApply: (f: unknown) => void }) => (
+  default: ({ onApply, initialFilters }: { onApply: (f: unknown) => void; initialFilters?: unknown }) => (
+    <>
+    <pre data-testid="mock-initial-filters">{JSON.stringify(initialFilters ?? null)}</pre>
     <button
       type="button"
       onClick={() =>
@@ -27,6 +30,7 @@ vi.mock('./AuditFilters', () => ({
     >
       apply-test-filters
     </button>
+    </>
   ),
 }));
 
@@ -107,12 +111,34 @@ describe('AuditLogViewer', () => {
     );
   });
 
+  it('reopens the filter panel seeded with the applied filters (#9941)', async () => {
+    render(<AuditLogViewer />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const filtersToggle = () => screen.getByRole('button', { name: /filters/i });
+
+    fireEvent.click(filtersToggle());
+    expect(JSON.parse(screen.getByTestId('mock-initial-filters').textContent!)).toBeNull();
+
+    fireEvent.click(screen.getByText('apply-test-filters'));
+    // Apply closes (unmounts) the panel; reopening must hand it what was applied.
+    await waitFor(() => expect(screen.queryByTestId('mock-initial-filters')).toBeNull());
+    fireEvent.click(filtersToggle());
+    expect(JSON.parse(screen.getByTestId('mock-initial-filters').textContent!)).toEqual({
+      datePreset: '7d',
+      userId: '11111111-1111-4111-8111-111111111111',
+      userEmail: 'dana@example.com',
+      actions: ['login'],
+      resources: ['device'],
+      search: 'abc',
+    });
+  });
+
   it('sends the viewer filters the export API accepts (userId) on the export request', async () => {
     render(<AuditLogViewer />);
     await screen.findByText(/audit log/i);
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     fireEvent.click(await screen.findByText('apply-test-filters'));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('user='))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('userId='))).toBe(true));
 
     fireEvent.click(screen.getByRole('button', { name: /export/i }));
 
@@ -121,6 +147,9 @@ describe('AuditLogViewer', () => {
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
       expect(qs.get('userId')).toBe('11111111-1111-4111-8111-111111111111');
+      // #9671: a picked user is matched by id; the email text match would AND
+      // away that user's rows that carry no actor email (agent.command.*).
+      expect(qs.has('user')).toBe(false);
     });
   });
 
@@ -139,7 +168,7 @@ describe('AuditLogViewer', () => {
       const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
-      for (const key of ['user', 'action', 'resource', 'q']) {
+      for (const key of ['userId', 'action', 'resource', 'q']) {
         expect(listQs.get(key), `list sends ${key}`).toBeTruthy();
         expect(qs.get(key), `export sends ${key}`).toBe(listQs.get(key));
       }
@@ -153,6 +182,85 @@ describe('AuditLogViewer', () => {
       expect(qs.has('page')).toBe(false);
       expect(qs.has('limit')).toBe(false);
       expect(qs.has('skipCount')).toBe(false);
+    });
+  });
+
+  describe('row presentation (#9672)', () => {
+    const row = (action: string, extra: Record<string, unknown> = {}) => ({
+      id: `log-${action}`,
+      timestamp: '2026-10-01T12:00:00.000Z',
+      user: { name: 'Dana Admin', email: 'dana@example.com', role: 'user' },
+      action,
+      resource: 'Disk cleanup',
+      resourceType: 'script',
+      details: JSON.stringify({ a: 1, b: 2, c: 3 }),
+      ipAddress: '10.0.0.1',
+      userAgent: 'test',
+      sessionId: '',
+      changes: { before: {}, after: {} },
+      ...extra,
+    });
+
+    it('colours badges by the first segment of the dotted code', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ entries: [row('user.login'), row('script.execute')], pagination: { total: 2, totalPages: 1 } }),
+      );
+      render(<AuditLogViewer />);
+      await screen.findAllByTestId('audit-action-badge');
+      const [login, script] = screen.getAllByTestId('audit-action-badge');
+      expect(login.className).not.toBe(script.className);
+      expect(script.className).not.toContain('slate');
+    });
+
+    it('labels the resource type and the UniFi action with the shared catalogs (#11605)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('unifi.controller.register', { resourceType: 'unifi_collector' })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      const badge = await screen.findByTestId('audit-action-badge');
+      expect(badge.textContent).toBe('Registered UniFi controller');
+      expect(screen.getByText('UniFi controller')).toBeTruthy();
+      expect(screen.queryByText('unifi_collector')).toBeNull();
+    });
+
+    it('humanizes an unknown resource type instead of printing the raw token', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('thing.do', { resourceType: 'brand_new_type' })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      await screen.findByTestId('audit-action-badge');
+      expect(screen.getByText('Brand new type')).toBeTruthy();
+      expect(screen.queryByText('brand_new_type')).toBeNull();
+    });
+
+    it('does not claim "N fields updated" when there is no before-state', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('script.execute', { changes: { before: {}, after: { a: 1, b: 2, c: 3 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.queryByText(/fields? updated/i)).toBeNull();
+    });
+
+    it('counts changed fields when a before-state exists', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('device.update', { changes: { before: { a: 0 }, after: { a: 1, b: 2 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.getByText(/2 fields updated/i)).toBeTruthy();
     });
   });
 });

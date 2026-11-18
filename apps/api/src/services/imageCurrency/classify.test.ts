@@ -10,6 +10,7 @@ const group = (over: Partial<DueImageGroup> = {}): DueImageGroup => ({
   imageDigest: D('a'),
   pinned: false,
   digestUnknown: false,
+  imageProvenance: null,
   ...over,
 });
 
@@ -44,6 +45,32 @@ describe('classifyGroup (no network decisions, spec §9.1)', () => {
       kind: 'status',
       status: 'unsupported_registry',
     });
+  });
+
+  // #9067: the agent could not tell where the image came from (Docker's
+  // containerd store before Engine API 1.54). Its name may be internal, so it
+  // is never sent to any registry, even an allowlisted public one.
+  it('unknown provenance is provenance_unknown with no lookup, even on an allowlisted registry', () => {
+    expect(classifyGroup(group({ imageProvenance: 'unknown' }))).toEqual({ kind: 'status', status: 'provenance_unknown' });
+    expect(classifyGroup(group({ imageProvenance: 'unknown', imageRepository: 'ghcr.io/acme/app' }))).toEqual({
+      kind: 'status',
+      status: 'provenance_unknown',
+    });
+  });
+
+  it('a digest-pinned reference is still pinned when provenance is unknown', () => {
+    expect(classifyGroup(group({ pinned: true, imageProvenance: 'unknown' }))).toEqual({ kind: 'status', status: 'pinned' });
+  });
+
+  it('local provenance is local even when a digest was reported (no lookup)', () => {
+    expect(classifyGroup(group({ imageProvenance: 'local' }))).toEqual({ kind: 'status', status: 'local' });
+  });
+
+  it('confirmed provenance and no provenance (an older agent) behave exactly as before', () => {
+    const lookup = { kind: 'lookup', key: { registry: 'docker.io', path: 'library/nginx', tag: '1.27' } };
+    expect(classifyGroup(group({ imageProvenance: 'confirmed' }))).toEqual(lookup);
+    expect(classifyGroup(group({ imageProvenance: null }))).toEqual(lookup);
+    expect(classifyGroup(group({ imageProvenance: 'confirmed', imageDigest: null }))).toEqual({ kind: 'status', status: 'local' });
   });
 
   it('an allowlisted registry needs a lookup keyed by canonical registry/path/tag', () => {

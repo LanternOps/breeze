@@ -109,6 +109,32 @@ describe('configuration_policy_compliance status — exact-device scope', () => 
   });
 });
 
+describe('configuration_policy_compliance status — stored registry details (#11976)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('never returns an observed registry value', async () => {
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([{
+            configPolicyId: 'link-1', configItemName: 'x', deviceId: 'dev-1', status: 'non_compliant', lastCheckedAt: null, remediationAttempts: 0,
+            details: {
+            passed: false,
+            ruleResults: [
+              { ruleType: 'registry_check', passed: false, message: 'Registry value mismatch.', data: { expectedValue: '1', actualValue: 'observed-0xBEEF', valueType: 'REG_SZ' } },
+            ],
+          },
+          }]),
+        }),
+      }),
+    }));
+    const out = await handlerFor('configuration_policy_compliance')({ action: 'status', policyId: 'pol-1' }, auth(undefined, undefined));
+    expect(out).not.toContain('observed-0xBEEF');
+    expect(out).not.toContain('REG_SZ');
+    expect(JSON.parse(out).devices[0].details.ruleResults[0].data).toEqual({ expectedValue: '1' });
+  });
+});
+
 /**
  * #6096 residual 1 — the write gate on these org-wide governance objects is
  * `canMutateOrgWideGovernance`, which used to read the SITE ceiling only. A

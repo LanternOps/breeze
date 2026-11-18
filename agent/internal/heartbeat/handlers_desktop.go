@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 const (
@@ -329,11 +329,17 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
-	// Linux is excluded: there is no IPC helper on Linux in Phase 1, so a booted-
-	// headless Linux box must take the direct path (the X11 capturer resolves the
-	// display itself). Never gate Linux on the latched-at-boot headless flag.
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
-		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
+	// Linux is excluded: an X11 session, and every start with
+	// desktop_wayland_helper off, takes the direct path (the X11 capturer
+	// resolves the display itself). Never gate Linux on the latched-at-boot
+	// headless flag. Only a Wayland seat session with the flag on and the
+	// helper manager running goes to its per-session desktop helper (#12117).
+	linuxRoute := linuxDesktopRouteDecision{kind: routeDirectX11}
+	if linuxDesktopRouteHostOS == "linux" {
+		linuxRoute = h.linuxDesktopRouteForStart()
+	}
+	if ((h.isService || h.isHeadless) && h.sessionBroker != nil && linuxDesktopRouteHostOS != "linux") || linuxRoute.kind == routeHelper {
+		result := h.startDesktopViaHelperFor(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload, linuxRoute.logindSessionID)
 		// A start is admitted long before it streams: consent, helper spawn
 		// and capture setup all happen after the fence decision, and a stop
 		// arriving inside that window finds nothing to stop. Re-check the
@@ -370,7 +376,11 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// broker (h.sessionBroker == nil) no helper can show the prompt, so the
 	// gate above proceeded only if nobody is signed in and the policy allows
 	// it — the console user is never skipped here.
-	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
+	directStart := h.desktopMgr.StartSession
+	if h.desktopDirectStart != nil {
+		directStart = h.desktopDirectStart
+	}
+	answer, err := directStart(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		// Direct start failed — same reasoning as the helper-start-failed case
 		// above: nothing will disconnect to release the target.
@@ -516,6 +526,9 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 	// decoder (ipc.DesktopStartRequest.ResolveSessionPolicy) can't drift on
 	// what "default" means (permissive clipboard, no lifetime limits).
 	policy := desktop.DefaultSessionPolicy()
+	if v, ok := payload["relayOnly"].(bool); ok {
+		policy.RelayOnly = v
+	}
 	if cb, ok := payload["clipboard"].(map[string]any); ok {
 		if v, ok := cb["hostToViewer"].(bool); ok {
 			policy.ClipboardHostToViewer = v
@@ -563,23 +576,31 @@ func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	if !ok {
 		return nil
 	}
-	var wire ipc.RevocationLease
+	var wireLease ipc.RevocationLease
 	if v, ok := raw["token"].(string); ok {
-		wire.Token = v
+		wireLease.Token = v
 	}
 	if v, ok := raw["expiresAt"].(float64); ok {
-		wire.ExpiresAtUnixMs = int64(v)
+		wireLease.ExpiresAtUnixMs = int64(v)
 	}
 	if v, ok := raw["hardDeadline"].(float64); ok {
-		wire.HardDeadlineUnixMs = int64(v)
+		wireLease.HardDeadlineUnixMs = int64(v)
+	}
+	// The clock-independent form (#11840); absent from an older API, which
+	// leaves the absolute fields above in charge.
+	if v, ok := raw["expiresInMs"].(float64); ok {
+		wireLease.ExpiresInMs = wire.JSONMillis(v)
+	}
+	if v, ok := raw["hardDeadlineInMs"].(float64); ok {
+		wireLease.HardDeadlineInMs = wire.JSONMillis(v)
 	}
 	if v, ok := raw["renewEverySec"].(float64); ok {
-		wire.RenewEverySec = int64(v)
+		wireLease.RenewEverySec = int64(v)
 	}
 	if v, ok := raw["graceSec"].(float64); ok {
-		wire.GraceSec = int64(v)
+		wireLease.GraceSec = int64(v)
 	}
-	lease, err := desktop.NormalizeRevocationLease(&wire)
+	lease, err := desktop.NormalizeRevocationLease(&wireLease)
 	if err != nil {
 		log.Warn("dropping unusable revocationLease block from start_desktop", "error", err.Error())
 		return nil
@@ -1006,7 +1027,7 @@ func requireValidatedDesktopSessionID(payload map[string]any) (string, *tools.Co
 }
 
 func validateDesktopSessionID(sessionID string) error {
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		return fmt.Errorf("invalid sessionId")
 	}
 	return nil

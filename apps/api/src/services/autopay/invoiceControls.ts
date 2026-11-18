@@ -15,6 +15,7 @@ import { loadAutopayBranding } from './customerBranding';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
+import { assertAutopayBillingEnabledForPartner } from './billingGate';
 import { collectionFenced, hasUnstoppableCollection, isControllableSchedule, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
 import type { Tx } from './types';
 import { coveredByAcceptedCap } from './authorizedCap';
@@ -145,6 +146,8 @@ export async function setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, exclu
   if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   requireInvoiceAccess(actor, invoice);
   if (excluded) return requestInvoiceControl(tx, { invoiceId, kind: 'exclude', actor });
+  // Turning exclusion off re-enables autopay for the invoice; only that direction is gated.
+  await assertAutopayBillingEnabledForPartner(invoice.partnerId);
   await assertControllable(tx, invoiceId);
   if (['void', 'paid'].includes(invoice.status)) throw new InvoiceServiceError('Invoice is closed', 409, 'INVALID_STATE');
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)

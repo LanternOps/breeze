@@ -21,7 +21,12 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
 
-const MIGRATION = '2026-12-31-210000-agreement-requests.sql';
+// W1b introduced the back-fill; #9075 W2a re-runs it verbatim (W1b's
+// rolling-deploy evidence gap). Both files must keep the same contract.
+const MIGRATIONS = [
+  '2026-12-31-210000-agreement-requests.sql',
+  '2027-01-05-110000-agreements-send-permission.sql',
+] as const;
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 type Row = Record<string, unknown>;
@@ -32,11 +37,35 @@ const sys = <T,>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 // wired, so the back-fill's RAISE WARNING row count can be asserted.
 const notices: string[] = [];
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: (n) => { notices.push(String(n.message)); } });
-afterAll(async () => { await adminSql.end({ timeout: 5 }); });
-async function runMigrationAsAdmin(): Promise<string[]> {
+afterAll(async () => {
+  // A crashed withEvidenceGuardOff() must not leave the guard off for the
+  // suites that run after this file in the same shard.
+  await adminSql`ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update`;
+  const [t] = await adminSql`
+    SELECT tgenabled FROM pg_trigger
+     WHERE tgrelid = 'contract_documents'::regclass AND tgname = 'contract_documents_block_update'`;
+  await adminSql.end({ timeout: 5 });
+  expect(t?.tgenabled).toBe('O');
+});
+/**
+ * Both back-fills sort (and so apply) BEFORE 2027-01-06-150000 made the
+ * evidence columns write-once; contract_documents_append_only now refuses
+ * exactly their UPDATE (55000). A replay simulates that history, so it runs with the update
+ * guard disabled. Integration files run one at a time (fileParallelism: false)
+ * and `finally` re-enables it.
+ */
+async function withEvidenceGuardOff<T>(fn: () => Promise<T>): Promise<T> {
+  await adminSql`ALTER TABLE contract_documents DISABLE TRIGGER contract_documents_block_update`;
+  try {
+    return await fn();
+  } finally {
+    await adminSql`ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update`;
+  }
+}
+async function runMigrationAsAdmin(MIGRATION: string): Promise<string[]> {
   const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
   notices.length = 0;
-  await adminSql.unsafe(migrationSql);
+  await withEvidenceGuardOff(() => adminSql.unsafe(migrationSql));
   return notices.filter((m) => m.startsWith('backfilled signer evidence'));
 }
 
@@ -80,14 +109,9 @@ async function seed() {
       RETURNING id`))[0]!.id as string;
     const rowA = await insertDoc(true);
     const rowB = await insertDoc(false);
-    // Pre-migration state: no evidence on either row.
-    await db.execute(sql`
-      UPDATE contract_documents
-         SET signer_name = NULL, signer_email = NULL, signed_at = NULL, signer_ip = NULL,
-             signer_user_agent = NULL, acceptance_origin = NULL, acceptance_method = NULL,
-             acceptance_reference = NULL, recorded_by_user_id = NULL, content_sha256 = NULL,
-             content_hash_version = NULL, acceptance_render_locale = NULL
-       WHERE id IN (${rowA}::uuid, ${rowB}::uuid)`);
+    // Pre-migration state: insertDoc sets no evidence column, so both rows
+    // start with NULL evidence. (No UPDATE to blank them: since 2027-01-06-150000
+    // the evidence columns are write-once and breeze_app holds no grant on them.)
     return { rowA, rowB, techId: tech.id };
   });
 }
@@ -95,10 +119,10 @@ async function seed() {
 const docRow = async (id: string) =>
   rows(await sys(() => db.execute(sql`SELECT * FROM contract_documents WHERE id = ${id}::uuid`)))[0]!;
 
-describe('contract_documents evidence back-fill (2026-12-31-210000)', () => {
+describe.each(MIGRATIONS)('contract_documents evidence back-fill (%s)', (MIGRATION) => {
   runDb('copies the acceptance evidence onto linked rows and leaves orphaned rows untouched', async () => {
     const { rowA, rowB, techId } = await seed();
-    const warnings = await runMigrationAsAdmin();
+    const warnings = await runMigrationAsAdmin(MIGRATION);
     expect(warnings).toEqual(['backfilled signer evidence onto 1 contract_documents rows']);
 
     const a = await docRow(rowA);
@@ -134,15 +158,65 @@ describe('contract_documents evidence back-fill (2026-12-31-210000)', () => {
 
   runDb('is idempotent: a second replay changes nothing and back-fills no row', async () => {
     const { rowA, rowB } = await seed();
-    await replayMigration(MIGRATION);
+    await withEvidenceGuardOff(() => replayMigration(MIGRATION));
     const firstA = await docRow(rowA);
     const firstB = await docRow(rowB);
     expect(firstA.signer_name).toBe('Jane Doe');
 
-    const warnings = await runMigrationAsAdmin();
+    const warnings = await runMigrationAsAdmin(MIGRATION);
     expect(warnings).toEqual([]); // the `signed_at IS NULL` guard: nothing left to back-fill
 
     expect(await docRow(rowA)).toEqual(firstA);
     expect(await docRow(rowB)).toEqual(firstB);
+  });
+});
+
+// #9079 review: the 2027 re-run is tenant-guarded (cd.org_id = qa.org_id). The
+// FK on quote_acceptance_id is org-blind, so a cross-org reference is
+// representable; it must never copy another tenant's signer evidence.
+describe('contract_documents evidence back-fill tenant guard (2027-01-05-110000)', () => {
+  runDb('does not copy evidence across orgs and reports the cross-org count', async () => {
+    const ids = await sys(async () => {
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+      const tv = rows(await db.execute(sql`
+        WITH t AS (
+          INSERT INTO contract_templates (org_id, name) VALUES (${orgA.id}::uuid, 'Cross MSA') RETURNING id
+        )
+        INSERT INTO contract_template_versions
+          (template_id, org_id, version_number, status, source_type, body_html, sha256, declared_variables, published_at)
+        SELECT t.id, ${orgA.id}::uuid, 1, 'published', 'authored', '<p>MSA</p>', ${'b'.repeat(64)}, '[]'::jsonb, now() FROM t
+        RETURNING template_id, id`))[0]!;
+      const quoteB = rows(await db.execute(sql`
+        INSERT INTO quotes (partner_id, org_id, currency_code, status)
+        VALUES (${partner.id}::uuid, ${orgB.id}::uuid, 'EUR', 'accepted') RETURNING id`))[0]!.id as string;
+      const accB = rows(await db.execute(sql`
+        INSERT INTO quote_acceptances
+          (quote_id, org_id, signer_name, signer_email, signed_at, quote_sha256, hash_version, origin, method, reference)
+        VALUES (${quoteB}::uuid, ${orgB.id}::uuid, 'Other Tenant', 'other@example.test', '2026-10-01 12:34:56',
+                ${QUOTE_SHA}, 2, 'on_behalf', 'email', 'PO 2')
+        RETURNING id`))[0]!.id as string;
+      // org A document pointing at org B's acceptance (cross-org reference).
+      const docId = rows(await db.execute(sql`
+        INSERT INTO contract_documents
+          (org_id, quote_acceptance_id, template_id, template_version_id, pdf_data, byte_size, sha256)
+        VALUES (${orgA.id}::uuid, ${accB}::uuid, ${tv.template_id}::uuid, ${tv.id}::uuid,
+                '\\x00'::bytea, 1, ${'c'.repeat(64)})
+        RETURNING id`))[0]!.id as string;
+      return { docId };
+    });
+
+    const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATIONS[1]), 'utf8');
+    notices.length = 0;
+    await adminSql.unsafe(migrationSql);
+
+    const d = await docRow(ids.docId);
+    expect(d.signer_name).toBeNull();
+    expect(d.signed_at).toBeNull();
+    expect(notices.filter((m) => m.startsWith('backfilled signer evidence'))).toEqual([]);
+    expect(notices).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^evidence back-fill skipping 1 contract_documents row\(s\) whose quote_acceptance crosses orgs/)]),
+    );
   });
 });

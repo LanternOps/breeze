@@ -1,0 +1,16 @@
+{
+  "name": "same-file-overlap",
+  "source": "synthetic: the same file is edited by the PR and by a merge since its green run",
+  "caught_by_job": "test-web",
+  "cause": "P and delta both edit apps/web/src/lib/runAction.ts, so O is non-empty and the file's area runs its full unit suite",
+  "P": [
+    "apps/web/src/lib/runAction.ts"
+  ],
+  "delta": [
+    "apps/api/src/routes/devices.ts",
+    "apps/web/src/lib/runAction.ts"
+  ],
+  "expect_overlap": [
+    "apps/web/src/lib/runAction.ts"
+  ]
+}

@@ -46,6 +46,10 @@ describe('navigateTo same-origin guard', () => {
       'javascript:alert(1)',
       'relative/no/leading/slash',
       '/with\u0000control',
+      // Identity-provider hand-offs are external too: passing one here lands
+      // the user on the dashboard instead (#11572). They go through
+      // navigateToMicrosoftLogin.
+      'https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=example',
     ];
 
     for (const path of unsafePaths) {

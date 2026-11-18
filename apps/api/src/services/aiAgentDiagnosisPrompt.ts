@@ -39,9 +39,9 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     anchors: [
       { file: 'installer/breeze.wxs', contains: ['Name="breeze-agent.exe"', 'Name="BreezeAgent"'] },
       { file: 'internal/agentapp/service_cmd_windows.go', contains: ['windowsServiceName = "BreezeAgent"'] },
-      { file: 'internal/collectors/command_limits.go', contains: ['cmd := exec.CommandContext(ctx, name, args...)'] },
+      { file: 'internal/collectors/command_limits.go', contains: ['cmd := procspawn.CommandContext(ctx, name, args...)'] },
       { file: 'internal/collectors/hardware.go', contains: ['cpuInfo, err := cpu.Info()'] },
-      { file: 'internal/collectors/classify_windows.go', contains: ['exec.Command("wmic", "systemenclosure"'] },
+      { file: 'internal/collectors/hostname_windows.go', contains: ['wmicGet([]string{"computersystem"}, "Name")'] },
     ],
   },
   {
@@ -49,31 +49,33 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     anchors: [
       { file: 'internal/config/config.go', contains: ['DefaultHeartbeatIntervalSeconds = 60'] },
       { file: 'internal/heartbeat/ip_tracking.go', contains: ['var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper', 'aliases, fallbackErr = readDHCPEnabledAliasesPowerShell()', 'commandOutput(2*time.Second, "powershell"', 'Get-NetIPInterface -AddressFamily IPv4', 'AssignmentType: determineAssignmentType('] },
-      { file: 'internal/heartbeat/ip_tracking_dhcp_windows.go', contains: ['windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, head, &size)', 'a.Flags&ipAdapterDHCPEnabled != 0'], absent: ['"os/exec"', 'commandOutput('] },
+      { file: 'internal/heartbeat/ip_tracking_dhcp_windows.go', contains: ['windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, head, &size)', 'a.Flags&ipAdapterDHCPEnabled != 0'], absent: ['"os/exec"', 'internal/procspawn"', 'commandOutput('] },
     ],
   },
   {
     text: 'Link speed: read in-process from the IP Helper interface table (one GetIfTable2Ex snapshot per metrics cycle, no PowerShell); per-interface results are cached 5 min, a failed table read yields 0.',
     anchors: [
       { file: 'internal/collectors/metrics.go', contains: ['speedCacheTTL = 5 * time.Minute', 'c.speedCache[ifaceName] = cachedSpeed{speed: speed, at: time.Now()}'] },
-      { file: 'internal/collectors/bandwidth_windows.go', contains: ['windows.GetIfTable2Ex(windows.MibIfTableNormal, &table)'], absent: ['"powershell"', 'exec.Command', 'commandOutput('] },
+      { file: 'internal/collectors/bandwidth_windows.go', contains: ['windows.GetIfTable2Ex(windows.MibIfTableNormal, &table)'], absent: ['"powershell"', 'exec.Command', 'procspawn.Command', 'commandOutput('] },
       { file: 'internal/collectors/linkspeed_table.go', contains: ['linkSpeedTableTTL = 30 * time.Second'] },
     ],
   },
   {
-    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, Win32_AccountPolicy) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
+    text: 'Every 5 min: security status, up to four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, skipped on Windows Server, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, secedit /export) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute', 'go h.sendRecoveryKeys()'] },
-      { file: 'internal/security/windows_security_center_windows.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct'] },
-      { file: 'internal/security/defender_windows.go', contains: ['Get-MpComputerStatus'] },
-      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember', 'Win32_AccountPolicy'] },
+      { file: 'internal/security/windows_security_center.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct', 'hostIsWindowsServer()'] },
+      { file: 'internal/security/defender_availability.go', contains: ['const defenderStatusPS = "Get-MpComputerStatus', 'defenderAvailabilityTTL = 24 * time.Hour', 'defenderServiceDisabledTTL = time.Hour'] },
+      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint'] },
+      { file: 'internal/security/local_admin_group_probe.go', contains: ['Get-LocalGroupMember -SID'] },
+      { file: 'internal/security/password_policy_windows.go', contains: ['"secedit.exe"', '"/export", "/areas", "SECURITYPOLICY"'] },
       { file: 'internal/security/slow_probe.go', contains: ['slowProbeTTL = 30 * time.Minute', 'slowProbeErrorTTL = 10 * time.Minute'] },
       { file: 'internal/heartbeat/handlers_encryption.go', contains: ['recoveryKeyCollectInterval = 30 * time.Minute'] },
       { file: 'internal/security/recoverykeys.go', contains: ['Get-BitLockerVolume'] },
     ],
   },
   {
-    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check), the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query) and wmic systemenclosure. Hardware upload: startup and every 24 h.',
+    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check) and the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query). Hardware upload: startup and every 24 h.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['now.Sub(h.lastInventoryUpdate) > 15*time.Minute', 'dueForRun(now, h.lastHardwareUpdate, 24*time.Hour)', 'h.sendNetworkInventory,'] },
       { file: 'internal/collectors/change_tracker.go', contains: ['hwCollector.CollectHardware()'] },
@@ -89,10 +91,12 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 15 min (server can set 1 to 60): event logs, up to four concurrent Get-WinEvent queries. Every 15 min: dsregcmd /status.',
+    text: 'Every 15 min (server can set 1 to 60): event logs, up to five concurrent Get-WinEvent queries, each resuming from a saved record-ID bookmark. Every 15 min: dsregcmd /status.',
     anchors: [
       { file: 'internal/collectors/eventlogs.go', contains: ['intervalMinutes: 15', 'intervalMinutes >= 1 && intervalMinutes <= 60'] },
-      { file: 'internal/collectors/eventlogs_windows.go', contains: ['Get-WinEvent', 'wg.Add(len(active))'] },
+      { file: 'internal/collectors/eventlogs_winquery.go', contains: ['Get-WinEvent', '-Oldest'] },
+      { file: 'internal/collectors/eventlogs_winstreams.go', contains: ['wg.Add(1)'] },
+      { file: 'internal/collectors/eventlogs_bookmarks.go', contains: ['NewPersistentEventLogCollector', 'readEventLogBookmarks'] },
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendPosture := now.Sub(h.lastPostureUpdate) > 15*time.Minute'] },
       { file: 'internal/mgmtdetect/deep_identity_windows.go', contains: ['"dsregcmd", "/status"'] },
     ],
@@ -105,12 +109,12 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Hardware health (server can change the defaults): RAID tier about 10 min, disk tier about 1 h (Get-PhysicalDisk, Get-StorageReliabilityCounter). Detection is cached 1 h; the Storage Spaces probe is itself a powershell Get-StoragePool, and no pools (ObjectNotFound) means zero pools, not a failure. A source failing 3 times in a row is skipped 6 h, and each later failure re-blocks it 6 h.',
+    text: 'Hardware health (server can change the defaults): RAID tier about 10 min, disk tier about 1 h (Get-PhysicalDisk, 60 s; Get-StorageReliabilityCounter run separately, 45 s; slow counters only add a warning). Detection is cached 1 h; the Storage Spaces probe is itself a powershell Get-StoragePool, and no pools (ObjectNotFound) means zero pools, not a failure. A source failing 3 times in a row is skipped 6 h, and each later failure re-blocks it 6 h.',
     anchors: [
       { file: 'internal/collectors/hwhealth/detect.go', contains: ['now.Sub(d.checked) >= time.Hour'] },
       { file: 'internal/heartbeat/heartbeat.go', contains: ['hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour}'] },
       { file: 'internal/heartbeat/hardware_health.go', contains: ['offset := int64(hash.Sum64()%20001) - 10000'] },
-      { file: 'internal/collectors/hwhealth/winpd_windows.go', contains: ['Get-PhysicalDisk', 'Get-StorageReliabilityCounter'] },
+      { file: 'internal/collectors/hwhealth/winpd.go', contains: ['winPDInventoryTimeout = 60 * time.Second', 'winPDCountersTimeout  = 45 * time.Second', 'foreach($d in @(Get-PhysicalDisk))', 'Get-StorageReliabilityCounter -ErrorAction Stop', 'fails the source only when Get-PhysicalDisk itself fails'] },
       { file: 'internal/collectors/hwhealth/storagespaces_windows.go', contains: ['Get-StoragePool -IsPrimordial $false', "-ne 'ObjectNotFound'"] },
       { file: 'internal/collectors/hwhealth/breaker.go', contains: ['if b.failures >= 3 {', 'b.retryAt = now.Add(6 * time.Hour)'] },
     ],

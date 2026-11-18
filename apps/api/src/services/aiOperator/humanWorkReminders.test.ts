@@ -74,6 +74,18 @@ vi.mock('./deviceCommandEvidence', () => ({ classifyDeviceCommandEvidence: vi.fn
 vi.mock('./operationService', () => ({ recordOperationResult: vi.fn() }));
 vi.mock('./taskService', () => ({ parseTaskCheckpoint: vi.fn() }));
 
+// #8972 W0: ticket-child writers lock the ticket row first; these select mocks have
+// no .for(), so the helper is stubbed and its call is asserted below.
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: 'org-1', partnerId: null, status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('../ticketRowLock', () => ({
+  lockTicketForWrite: lockTicketForWriteMock,
+  lockTicketsForWrite: vi.fn(async () => new Map()),
+}));
+
 import { sendHumanWorkReminders } from './humanWorkService';
 import { runReconcilerPass } from './taskReconciler';
 
@@ -102,6 +114,8 @@ describe('sendHumanWorkReminders (spec §6.5)', () => {
     expect(state.inserts).toHaveLength(1);
     expect(state.notifications).toHaveLength(1);
     expect(state.inserts[0]).toMatchObject({ ticketId: 'ticket-1' });
+    // #8972 W0: the reminder comment writer locked the ticket row first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 'ticket-1');
     expect(String(state.inserts[0]!.content)).toContain('Collect the laptop');
   });
 

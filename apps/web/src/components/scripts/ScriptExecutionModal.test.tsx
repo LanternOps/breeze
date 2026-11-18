@@ -313,7 +313,7 @@ describe('ScriptExecutionModal admission truth', () => {
     expect(screen.getByText('Some devices were admitted and queued. Review the remaining targets.')).toBeInTheDocument();
     expect(screen.getAllByText('ws-01').length).toBeGreaterThan(0);
     expect(screen.getAllByText('ws-02').length).toBeGreaterThan(0);
-    expect(screen.getByText(/maintenance_suppressed/)).toBeInTheDocument();
+    expect(screen.getByText(/Skipped: device is in a maintenance window/)).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -329,7 +329,7 @@ describe('ScriptExecutionModal admission truth', () => {
     await execute();
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByText('No devices were admitted. Review the reasons below.')).toBeInTheDocument();
-    expect(screen.getByText(/site_access_denied/)).toBeInTheDocument();
+    expect(screen.getByText(/You don't have access to this device's site/)).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
     expect(onClose).not.toHaveBeenCalled();
   });

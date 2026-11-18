@@ -101,14 +101,14 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
     window.location.hash = '';
   });
 
-  it('has five tabs in order: Defaults, Documents, Rates, Payments, Connections (Documents onward behind "More" under jsdom)', async () => {
+  it('has six tabs in order: Defaults, Documents, Agreements, Rates, Payments, Connections (Documents onward behind "More" under jsdom)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
     await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
     expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
-    const order = ['billing-settings-tab-defaults', ...['documents', 'rates'].map(id => `billing-settings-tab-${id}`), 'autopay-payments-tab', 'billing-settings-tab-connections'];
+    const order = ['billing-settings-tab-defaults', ...['documents', 'agreements', 'rates'].map(id => `billing-settings-tab-${id}`), 'autopay-payments-tab', 'billing-settings-tab-connections'];
     expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual([order[0]]);
     expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(order.slice(1));
   });
@@ -476,6 +476,71 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
       expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
         documentTheme: 'classic', documentPageSize: 'a4',
       });
+    });
+  });
+
+  // #12097: a partner that never chose a page size follows its region default;
+  // the form shows that default, where it comes from, and saving keeps it unset.
+  describe('page size region default (#12097)', () => {
+    const loaded = (over: Record<string, unknown>) => json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      invoiceFooter: null, documentTheme: 'classic', documentPageSize: 'a4',
+      documentPageSizeChoice: null, documentPageSizeFallback: 'letter',
+      billingAddressCountry: 'DE', ...over,
+    });
+    const patchBody = () => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      return patch ? JSON.parse((patch[1] as RequestInit).body as string) : null;
+    };
+
+    it('shows "Region default" with the resolved size and its source, and saves null', async () => {
+      fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => (opts?.method === 'PATCH' ? json({ data: {} }) : loaded({})));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.value).toBe('');
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (A4)');
+      expect(screen.getByTestId('partner-billing-document-page-size-source').textContent).toMatch(/billing address/i);
+
+      fireEvent.click(screen.getByTestId('partner-billing-save'));
+      await waitFor(() => expect(patchBody()).toBeTruthy());
+      expect(patchBody()).toHaveProperty('documentPageSize', null);
+    });
+
+    it('follows the billing country live as it is edited', async () => {
+      fetchMock.mockImplementation(async () => loaded({}));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('partner-billing-country'), { target: { value: 'CA' } });
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (Letter)');
+    });
+
+    it('with no country anywhere, shows the server default and says so', async () => {
+      fetchMock.mockImplementation(async () => loaded({ billingAddressCountry: null, documentPageSizeFallback: 'a4' }));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (A4)');
+      expect(screen.getByTestId('partner-billing-document-page-size-source').textContent).toMatch(/no country/i);
+    });
+
+    it('an explicit choice loads as that choice and still saves it', async () => {
+      fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => (
+        opts?.method === 'PATCH' ? json({ data: {} }) : loaded({ documentPageSize: 'letter', documentPageSizeChoice: 'letter' })));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+      expect((screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement).value).toBe('letter');
+      expect(screen.queryByTestId('partner-billing-document-page-size-source')).toBeNull();
+      fireEvent.click(screen.getByTestId('partner-billing-save'));
+      await waitFor(() => expect(patchBody()).toBeTruthy());
+      expect(patchBody()).toHaveProperty('documentPageSize', 'letter');
     });
   });
 

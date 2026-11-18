@@ -4,6 +4,7 @@ import {
   executionRowStatusConfig,
   executionDetailStatusConfig,
   resolveExecutionStatusLabel,
+  resolveExecutionStatusDescription,
 } from './executionStatus';
 
 describe('every execution status resolves in both status maps', () => {
@@ -56,12 +57,50 @@ describe('every execution status resolves in both status maps', () => {
     expect(resolveExecutionStatusLabel('completed', cancelState)).toBeTruthy();
   });
 
-  // #5128 W2 — the bare "Queued" label was ambiguous about WHY nothing has
-  // happened yet; both status maps now key `queued` on the offline-aware
-  // label so the row/detail views render "Queued — device offline".
-  it('queued resolves to the offline-aware label in both status maps', () => {
-    expect(executionRowStatusConfig.queued.label).toBe('status.queuedOffline');
-    expect(executionDetailStatusConfig.queued.label).toBe('status.queuedOffline');
-    expect(resolveExecutionStatusLabel('queued', null)).toBe('status.queuedOffline');
+  // #9563 — `queued` only means the command was not delivered (no live agent
+  // session). It does NOT prove the device is offline: a device can report
+  // Online with no agent session. So the default label is the neutral
+  // "awaiting pickup", and "Queued — device offline" (#5128 W2) is reserved for
+  // when the device's own status says offline.
+  it('queued defaults to the neutral awaiting-pickup label in both status maps', () => {
+    expect(executionRowStatusConfig.queued.label).toBe('status.queuedAwaitingPickup');
+    expect(executionDetailStatusConfig.queued.label).toBe('status.queuedAwaitingPickup');
+    expect(resolveExecutionStatusLabel('queued', null)).toBe('status.queuedAwaitingPickup');
+  });
+
+  it('queued on an online device is awaiting pickup, not offline', () => {
+    expect(resolveExecutionStatusLabel('queued', null, 'online')).toBe('status.queuedAwaitingPickup');
+  });
+
+  it('queued on an offline device keeps the device-offline label', () => {
+    expect(resolveExecutionStatusLabel('queued', null, 'offline')).toBe('status.queuedOffline');
+  });
+
+  it('device status never changes a non-queued label', () => {
+    expect(resolveExecutionStatusLabel('pending', null, 'offline')).toBe('status.pending');
+    expect(resolveExecutionStatusLabel('completed', 'unconfirmed', 'offline')).toBe('status.completedCancelTooLate');
+  });
+});
+
+describe('resolveExecutionStatusDescription (#9563)', () => {
+  it.each(EXECUTION_STATUSES)('resolves a description key for %s', (status) => {
+    expect(resolveExecutionStatusDescription(status)).toMatch(/^statusDescription\./);
+  });
+
+  it('queued with an online or unknown device describes awaiting agent pickup', () => {
+    expect(resolveExecutionStatusDescription('queued', 'online')).toBe('statusDescription.queuedAwaitingPickup');
+    expect(resolveExecutionStatusDescription('queued')).toBe('statusDescription.queuedAwaitingPickup');
+  });
+
+  it.each(['pending', 'queued'] as const)('%s on an offline device says the device is offline', (status) => {
+    expect(resolveExecutionStatusDescription(status, 'offline')).toBe('statusDescription.deviceOffline');
+  });
+
+  it('pending on an online device keeps its own description', () => {
+    expect(resolveExecutionStatusDescription('pending', 'online')).toBe('statusDescription.pending');
+  });
+
+  it('a terminal status ignores device status', () => {
+    expect(resolveExecutionStatusDescription('completed', 'offline')).toBe('statusDescription.completed');
   });
 });

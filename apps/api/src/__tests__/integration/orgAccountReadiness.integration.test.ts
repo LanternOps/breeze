@@ -250,8 +250,9 @@ describe('GET /orgs/account-readiness', () => {
         { orgId: orgA, email: `stale-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(10), lastLoginAt: null }, // counts
         { orgId: orgA, email: `fresh-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(2), lastLoginAt: null }, // too recent
         { orgId: orgA, email: `signed-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(10), lastLoginAt: daysAgo(1) }, // accepted
-        { orgId: orgA, email: `off-${suffix}@example.com`, status: 'disabled', invitedAt: daysAgo(10), lastLoginAt: null }, // disabled
-        { orgId: orgB, email: `off-b-${suffix}@example.com`, status: 'disabled', invitedAt: daysAgo(10), lastLoginAt: null },
+        // W8: disabled_by is set exactly when status = 'disabled' (CHECK).
+        { orgId: orgA, email: `off-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp', invitedAt: daysAgo(10), lastLoginAt: null }, // disabled
+        { orgId: orgB, email: `off-b-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp', invitedAt: daysAgo(10), lastLoginAt: null },
       ]);
 
       const ticket = (n: number, extra: Partial<typeof tickets.$inferInsert>) => ({
@@ -535,7 +536,7 @@ describe('GET /orgs/account-readiness', () => {
     expect(res.status).toBe(403);
   });
 
-  runDb('withholds tickets and invoices when the partner is not in native service-management mode', async () => {
+  runDb('withholds tickets, not invoices or contracts, when the partner is not in native service-management mode', async () => {
     const board = await seedBoard();
     const { client, partnerId, orgA } = board;
     // 'off' rather than 'external': partners_service_management_connection_chk
@@ -546,11 +547,23 @@ describe('GET /orgs/account-readiness', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.serviceManagementMode).toBe('off');
-    // W03: contracts is also native-only.
-    expect(body.capabilities).toEqual({ ...ALL_CAPABILITIES, invoices: false, tickets: false, contracts: false });
+    // #8807: invoices and contracts follow billing_enabled (still on); only tickets follows the mode.
+    expect(body.capabilities).toEqual({ ...ALL_CAPABILITIES, tickets: false });
     expect(body.orgs[0]).not.toHaveProperty('tickets');
-    expect(body.orgs[0].account).not.toHaveProperty('overdueInvoices');
+    expect(body.orgs[0].account).toHaveProperty('overdueInvoices');
     expect(body.orgs[0].account).toHaveProperty('pendingInvitations');
+  });
+
+  runDb('withholds invoices and contracts, not tickets, when the partner has billing off', async () => {
+    const board = await seedBoard();
+    const { client, partnerId, orgA } = board;
+    await getTestDb().update(partners).set({ billingEnabled: false }).where(eq(partners.id, partnerId));
+
+    const res = await client.get(readinessPath([orgA]));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.capabilities).toEqual({ ...ALL_CAPABILITIES, invoices: false, contracts: false });
+    expect(body.orgs[0].account).not.toHaveProperty('overdueInvoices');
   });
 
   runDb('a caller with only organizations:read gets policies and contacts, nothing else', async () => {

@@ -67,7 +67,7 @@ function logRow(i: number, overrides: Record<string, unknown> = {}) {
   };
 }
 
-const auth = () => ({ user: { id: 'u1' }, orgId: 'org-1', accessibleOrgIds: ['org-1'] }) as never;
+const auth = () => ({ user: { id: 'u1' }, scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'], canAccessOrg: (id: string) => id === 'org-1' }) as never;
 
 describe('search_agent_logs output shape (A-W05 keyset)', () => {
   const tool = aiTools.get('search_agent_logs')!;

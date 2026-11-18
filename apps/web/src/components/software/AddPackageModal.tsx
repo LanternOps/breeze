@@ -12,6 +12,8 @@ import {
   SOFTWARE_FILE_TYPES,
   deriveSoftwareFileTypeFromUrl,
   parseSuccessExitCodesText,
+  validateSoftwareVersionInstallSpec,
+  type InstallSpecIssue,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
@@ -30,6 +32,7 @@ import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import InstallScriptsFields from "./InstallScriptsFields";
 import PackageManagerPicker, {
   type SelectedPackageMethod,
 } from "./PackageManagerPicker";
@@ -68,6 +71,7 @@ const CATEGORIES = [
   "security",
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
+
 /**
  * Server-acknowledged bytes → a percentage safe to render as a CSS width.
  *
@@ -98,6 +102,8 @@ const blankForm = {
   supportedOs: [] as string[],
   silentInstallArgs: "",
   silentUninstallArgs: "",
+  preInstallScript: "",
+  postInstallScript: "",
   detectionRules: [] as DetectionRule[],
   // Raw free text (issue #7038); parsed with parseSuccessExitCodesText at
   // submit time. Codes here ADD to the agent's built-in success codes (0
@@ -126,8 +132,8 @@ export default function AddPackageModal({
   // /config → softwarePackages.uploadsEnabled).
   const { enabled: s3UploadsEnabled } = usePackageUploadsGate(open);
   // Ownership axis (#2135): partner admins can create the package once for all
-  // their orgs. Chunked upload sessions are org-tenanted, so partner-wide
-  // packages are URL-only for now — the file source is disabled in that mode.
+  // their orgs. Partner-owned upload sessions (#11412) make the file source
+  // available to both scopes.
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScopeState] = useState<OwnerScope>("organization");
   // Ownership is create-only server-side. Once step 1 created the catalog row
@@ -135,31 +141,13 @@ export default function AddPackageModal({
   // selector could no longer change anything — lock it so the UI never claims
   // a scope the package doesn't have.
   const [scopeLocked, setScopeLocked] = useState(false);
-  // Set when switching to partner-wide discarded an already-picked file, so
-  // the user is told rather than left wondering where their file went.
-  const [droppedFileName, setDroppedFileName] = useState("");
-  const uploadsEnabled = s3UploadsEnabled && ownerScope !== "partner";
+  const uploadsEnabled = s3UploadsEnabled;
   const uploadDisabledReason = !s3UploadsEnabled
     ? i18n.t("policies:software.addPackageModal.uploadsRequireS3Storage")
-    : ownerScope === "partner"
-      ? i18n.t("policies:software.addPackageModal.partnerWideUrlOnly")
-      : null;
+    : null;
   const setOwnerScope = (next: OwnerScope) => {
     if (scopeLocked) return;
     setOwnerScopeState(next);
-    // Partner-wide packages are URL-only (see above): drop a picked file and
-    // fall back to the URL source rather than submitting a doomed upload —
-    // and say so, via droppedFileName, rather than doing it silently.
-    if (next === "partner") {
-      setForm((prev) => {
-        if (prev.source !== "file" && !prev.file) return prev;
-        if (prev.fileName) setDroppedFileName(prev.fileName);
-        return { ...prev, source: "url", file: null, fileName: "" };
-      });
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } else {
-      setDroppedFileName("");
-    }
   };
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
@@ -189,7 +177,6 @@ export default function AddPackageModal({
     setForm(blankForm);
     setOwnerScopeState(defaultOwnerScope);
     setScopeLocked(false);
-    setDroppedFileName("");
     setAdvancedOpen(false);
     createdCatalogId.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -316,6 +303,26 @@ export default function AddPackageModal({
           "policies:software.addPackageModal.tooManySuccessExitCodes",
         );
   const isManager = form.source === "manager";
+  // The type the server will end up with: the file source derives it from the
+  // uploaded filename; the URL source honors the selector, else the URL.
+  const effectiveFileType: SoftwareFileType | null =
+    form.source === "file"
+      ? deriveSoftwareFileTypeFromUrl(form.fileName)
+      : form.fileType || inferredFileType;
+  const argsHidden =
+    effectiveFileType === "zip" ||
+    effectiveFileType === "pkg" ||
+    effectiveFileType === "dmg" ||
+    effectiveFileType === "deb";
+  const installSpecIssues: InstallSpecIssue[] = isManager
+    ? []
+    : validateSoftwareVersionInstallSpec({
+        fileType: effectiveFileType,
+        supportedOs: form.supportedOs,
+        silentInstallArgs: argsHidden ? null : form.silentInstallArgs,
+        preInstallScript: form.preInstallScript,
+        postInstallScript: form.postInstallScript,
+      });
   const hasSource =
     form.source === "url"
       ? form.downloadUrl.trim() !== ""
@@ -330,6 +337,7 @@ export default function AddPackageModal({
     hasSource &&
     tokenErrors.length === 0 &&
     successExitCodesResult.ok &&
+    installSpecIssues.length === 0 &&
     !saving;
   /** Prefill identity from the first pick, but never overwrite what the user
    *  typed. */
@@ -353,7 +361,10 @@ export default function AddPackageModal({
       version: form.version.trim(),
       architecture: form.architecture,
       releaseNotes: form.notes || undefined,
-      silentInstallArgs: form.silentInstallArgs || undefined,
+      silentInstallArgs:
+        argsHidden || !form.silentInstallArgs ? undefined : form.silentInstallArgs,
+      preInstallScript: form.preInstallScript.trim() ? form.preInstallScript : undefined,
+      postInstallScript: form.postInstallScript.trim() ? form.postInstallScript : undefined,
       silentUninstallArgs: form.silentUninstallArgs || undefined,
       supportedOs: form.supportedOs.length > 0 ? form.supportedOs : undefined,
       detectionRules:
@@ -888,17 +899,6 @@ export default function AddPackageModal({
                   {uploadDisabledReason}
                 </p>
               )}
-              {droppedFileName && ownerScope === "partner" && (
-                <p
-                  className="mt-1 text-xs text-amber-600 dark:text-amber-500"
-                  data-testid="pkg-file-dropped-notice"
-                >
-                  {i18n.t(
-                    "policies:software.addPackageModal.selectedFileRemoved",
-                  )}{" "}
-                  ({droppedFileName})
-                </p>
-              )}
 
               {form.source === "manager" ? (
                 <div className="mt-3">
@@ -929,8 +929,8 @@ export default function AddPackageModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {i18n.t(
                       "policies:software.addPackageModal.useVariablesLike",
-                    )}
-                    <code className="font-mono">{"{{org.name}}"}</code>
+                    )}{" "}
+                    <code className="font-mono">{"{{org.name}}"}</code>{" "}
                     {i18n.t(
                       "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
                     )}
@@ -987,7 +987,7 @@ export default function AddPackageModal({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".msi,.exe,.dmg,.deb,.pkg"
+                    accept=".msi,.exe,.dmg,.deb,.pkg,.zip"
                     onChange={handleFile}
                     className="hidden"
                   />
@@ -1047,7 +1047,13 @@ export default function AddPackageModal({
             </div>
             )}
 
-            {!isManager && (
+            {!isManager && argsHidden && (
+              <p className="text-xs text-muted-foreground">
+                {i18n.t("policies:software.addPackageModal.silentArgsNotUsedForType")}
+              </p>
+            )}
+
+            {!isManager && !argsHidden && (
             <div>
               <label className={labelCls} htmlFor="pkg-install">
                 {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
@@ -1065,6 +1071,17 @@ export default function AddPackageModal({
                 />
               </div>
             </div>
+            )}
+
+            {!isManager && (
+              <InstallScriptsFields
+                idPrefix="pkg"
+                preInstallScript={form.preInstallScript}
+                postInstallScript={form.postInstallScript}
+                onPreInstallScriptChange={(v) => update("preInstallScript", v)}
+                onPostInstallScriptChange={(v) => update("postInstallScript", v)}
+                issues={installSpecIssues}
+              />
             )}
           </section>
 

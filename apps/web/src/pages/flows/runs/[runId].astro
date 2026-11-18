@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import FlowRunPage from '../../../components/flows/FlowRunPage';
+
+const { runId } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.flowRun">
+  <FlowRunPage runId={runId as string} client:load />
+</DashboardLayout>

@@ -111,6 +111,13 @@ export function computeOperatorTaskNextAction(
 }
 
 export interface OperatorTaskRowInput {
+  /** W07 provenance columns (optional: rows built without the grant join read as no provenance). */
+  grantId?: string | null;
+  /** `wisp_grants.grantor_user_id` via LEFT JOIN; null when the grant row is invisible under RLS. */
+  grantorUserId?: string | null;
+  grantorName?: string | null;
+  depth?: number | null;
+  requestedByRunId?: string | null;
   id: string;
   orgId: string;
   agentId: string;
@@ -214,6 +221,17 @@ function mapOperatorTaskListItem_(row: OperatorTaskRowInput): AiOperatorTaskList
     schemaVersion: AI_OPERATOR_TASK_DTO_SCHEMA_VERSION,
     id: row.id,
     orgId: row.orgId,
+    // No grant, or a grant row the caller's RLS context cannot see (grantor
+    // unknown): no provenance. A partner-scope viewer sees the partner's grants.
+    wisp: row.grantId && row.grantorUserId
+      ? {
+          grantId: row.grantId,
+          grantorUserId: row.grantorUserId,
+          grantorName: row.grantorName ?? null,
+          depth: row.depth === 1 ? 1 : 0,
+          requestedByRunId: row.requestedByRunId ?? null,
+        }
+      : null,
     agent: { id: row.agentId, kind: row.agentKind, name: row.agentName },
     workflowKey: row.workflowKey,
     workflowVersion: row.workflowVersion,

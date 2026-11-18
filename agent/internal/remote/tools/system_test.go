@@ -155,3 +155,63 @@ func TestBuildShutdownCommand_MatchesShutdownArgsForHostOS(t *testing.T) {
 		t.Errorf("argv tail: got %v, want %v", cmd.Args[1:], wantArgs)
 	}
 }
+
+// Force reboot (#8729): `/f` is added on Windows only. Microsoft documents `/f`
+// as implied only when `/t` > 0, so an immediate reboot needs it explicitly to
+// close apps that would otherwise block at "this app is preventing shutdown".
+// linux/darwin `shutdown -r` does not wait on applications: force changes
+// nothing there.
+func TestShutdownArgv_ForceAddsFOnWindowsOnly(t *testing.T) {
+	tests := []struct {
+		goos     string
+		force    bool
+		wantArgs []string
+	}{
+		{"windows", true, []string{"/r", "/f", "/t", "0"}},
+		{"windows", false, []string{"/r", "/t", "0"}},
+		{"linux", true, []string{"-r", "+0"}},
+		{"darwin", true, []string{"-r", "+0"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos+"/force="+strconv.FormatBool(tt.force), func(t *testing.T) {
+			name, args, err := shutdownArgv(tt.goos, true, tt.force, 0)
+			if err != nil {
+				t.Fatalf("unexpected error %v", err)
+			}
+			if name != "shutdown" || !slices.Equal(args, tt.wantArgs) {
+				t.Errorf("got %s %v, want shutdown %v", name, args, tt.wantArgs)
+			}
+		})
+	}
+}
+
+// The plain reboot path must never pick up /f: shutdownArgs is the unforced
+// form of shutdownArgv for every platform and delay.
+func TestShutdownArgs_IsUnforcedShutdownArgv(t *testing.T) {
+	for _, goos := range []string{"windows", "linux", "darwin"} {
+		for _, isReboot := range []bool{true, false} {
+			for _, delay := range []int{0, 15} {
+				_, plain, _ := shutdownArgs(goos, isReboot, delay)
+				_, unforced, _ := shutdownArgv(goos, isReboot, false, delay)
+				if !slices.Equal(plain, unforced) || slices.Contains(plain, "/f") {
+					t.Errorf("%s reboot=%v delay=%d: shutdownArgs %v, unforced shutdownArgv %v", goos, isReboot, delay, plain, unforced)
+				}
+			}
+		}
+	}
+}
+
+// ForceRebootArgv is what the API shows the operator and audits; it must be
+// exactly the argv ForceReboot runs on that platform.
+func TestForceRebootArgv_MatchesShutdownArgv(t *testing.T) {
+	for _, goos := range []string{"windows", "linux", "darwin"} {
+		name, args, err := ForceRebootArgv(goos)
+		wantName, wantArgs, wantErr := shutdownArgv(goos, true, true, 0)
+		if err != nil || wantErr != nil || name != wantName || !slices.Equal(args, wantArgs) {
+			t.Errorf("%s: ForceRebootArgv = %s %v (%v), want %s %v", goos, name, args, err, wantName, wantArgs)
+		}
+	}
+	if _, _, err := ForceRebootArgv("plan9"); err == nil {
+		t.Error("unsupported OS must error")
+	}
+}

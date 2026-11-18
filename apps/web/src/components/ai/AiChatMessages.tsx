@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { shouldAutoScroll } from "./aiChatScroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, User } from "lucide-react";
+import { Bot, Loader2 } from "lucide-react";
 import AiToolCallCard from "./AiToolCallCard";
+import AiToolActivityGroup from "./AiToolActivityGroup";
 import FlowDraftCard, { parseFlowToolResult } from "../flows/FlowDraftCard";
 import { CallerVerificationRefusal } from "../callerVerification/CallerVerificationRefusal";
 import AiApprovalDialog from "./AiApprovalDialog";
@@ -20,24 +21,13 @@ import { useTranslation } from "react-i18next";
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
+import TranscriptPurgedNotice from "./TranscriptPurgedNotice";
+import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
 
-interface Message {
-  id: string;
-  role: "user" | "assistant" | "tool_use" | "tool_result";
-  content: string;
-  toolName?: string;
-  toolInput?: Record<string, unknown>;
-  toolOutput?: unknown;
-  toolUseId?: string;
-  isError?: boolean;
-  /**
-   * Server-asserted approval handoff (#5107) — set from the SSE event by
-   * processStreamEvent, never derived from `toolOutput`, which the tool
-   * controls. Absent on rows replayed from history.
-   */
-  handoff?: string;
-  isStreaming?: boolean;
-}
+/** A caller-rendered item placed in the thread by time (Wisp companion W02b: a thread post). */
+export type ChatExtra = { id: string; at: Date; render: () => ReactNode };
+
+export { pairToolResults } from "./aiChatGrouping";
 
 interface PendingPlan {
   planId: string;
@@ -52,7 +42,7 @@ interface ActivePlan {
 }
 
 interface AiChatMessagesProps {
-  messages: Message[];
+  messages: ChatRow[];
   pendingApproval: PendingApproval | null;
   pendingPlan?: PendingPlan | null;
   activePlan?: ActivePlan | null;
@@ -73,10 +63,56 @@ interface AiChatMessagesProps {
    * upgrade, so an empty map degrades to "poll only", never to a blank card.
    */
   chatRuns?: Record<string, ChatRunState>;
+  /**
+   * Wisp companion W01 (spec §4.2). `page` centers the thread at reading
+   * width (the Wisp home, /ai/chat); `panel` (default) is the 400 px docked
+   * panel's dense list.
+   */
+  layout?: "panel" | "page";
+  /** The name over the first reply of each run ("Wisp"); defaults to "Breeze AI". */
+  assistantLabel?: string;
+  /** Time dividers from each message's createdAt (off by default; the docked panel keeps them off). */
+  showTimeDividers?: boolean;
+  /** Rendered inside the scroll container before the first message (the Wisp thread page's summary, a history notice). */
+  leading?: ReactNode;
+  /** Replaces the built-in quick-actions empty state. */
+  emptyState?: ReactNode;
+  /**
+   * Wisp companion W02b (#10213): items rendered in the thread by time (Wisp's
+   * posts), merged with the messages by `at`. Absent = none.
+   */
+  extras?: ChatExtra[];
+  /**
+   * "Load earlier" at the top of the list, shown when `hasEarlier` and a
+   * handler are both given. Content it prepends keeps the reader's viewport
+   * where it was (never jumps to the bottom).
+   */
+  onLoadEarlier?: () => void;
+  hasEarlier?: boolean;
+  /** An earlier page is loading: the button is disabled and shows a spinner. */
+  loadingEarlier?: boolean;
+  /** #4342 W4: transcript retention emptied this session; shown in place of the empty state. */
+  transcriptPurgedAt?: string | null;
+}
+
+const NO_EXTRAS: ChatExtra[] = [];
+
+/** A unit's identity, to tell when content was prepended above it. */
+function unitKey(unit: ChatUnit | undefined): string | null {
+  if (!unit) return null;
+  switch (unit.kind) {
+    case "divider": return `divider-${unit.at.getTime()}`;
+    case "user":
+    case "assistant": return unit.msg.id;
+    case "card": return unit.call.key;
+    default: return unit.id;
+  }
 }
 
 const SCRIPT_PROPOSAL_TOOLS = new Set(["run_script", "propose_script", "get_script_proposal"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Results that render as their own card and never fold into a tool-activity group. */
+const CARD_TOOLS = new Set(["workspace_launch_analysis", "unattended_release"]);
 
 /**
  * #7918: the proposal page (`/approvals#proposal-<id>`) shows a script
@@ -103,6 +139,18 @@ export function scriptProposalHref(
   return typeof id === "string" && UUID_RE.test(id) ? `/approvals#proposal-${id.toLowerCase()}` : null;
 }
 
+/**
+ * Flow, run, unattended-release and script-proposal results never fold: each
+ * carries an affordance (a review link, a live run, a proposal link) that
+ * must stay visible without a click.
+ */
+function isCardCall(call: ToolCall): boolean {
+  if (CARD_TOOLS.has(call.toolName)) return true;
+  const output = call.result?.toolOutput ?? call.result?.content;
+  if (call.result && parseFlowToolResult(call.toolName, output)) return true;
+  return scriptProposalHref(call.toolName, call.input, output) !== null;
+}
+
 export default function AiChatMessages({
   messages,
   pendingApproval,
@@ -118,8 +166,18 @@ export default function AiChatMessages({
   onSendQuickAction,
   onIntentDecided,
   chatRuns = {},
+  layout = "panel",
+  assistantLabel,
+  showTimeDividers = false,
+  leading,
+  emptyState,
+  extras = NO_EXTRAS,
+  onLoadEarlier,
+  hasEarlier = false,
+  loadingEarlier = false,
+  transcriptPurgedAt = null,
 }: AiChatMessagesProps) {
-  const { t } = useTranslation("ai");
+  const { t, i18n } = useTranslation("ai");
   const quickActions = [
     {
       label: t("aiChatMessages.quickActions.serverHealth.label"),
@@ -152,6 +210,13 @@ export default function AiChatMessages({
       dotColor: "bg-primary",
     },
   ];
+  const units = useMemo(
+    () => groupChatUnits(messages, { dividers: showTimeDividers, isCard: isCardCall, extras }),
+    [messages, showTimeDividers, extras],
+  );
+  const extrasById = useMemo(() => new Map(extras.map((e) => [e.id, e])), [extras]);
+  const showLoadEarlier = hasEarlier && onLoadEarlier !== undefined;
+  const label = assistantLabel ?? t("aiChatMessages.title");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned near the bottom. Seeded `true` so
   // the first render (and a freshly opened panel) auto-scrolls. We only flip it
@@ -160,6 +225,45 @@ export default function AiChatMessages({
   // Holds the pending rAF id so a burst of streaming re-renders coalesces into a
   // single post-paint scroll instead of issuing a redundant scroll per delta.
   const scrollFrameRef = useRef<number | null>(null);
+  // W02b: the scroll geometry when an earlier page was asked for (the button,
+  // or `loadingEarlier` turning on for a load the host started, such as a
+  // Retry), until the older page lands or the load ends with nothing new; and a
+  // one-shot that keeps the bottom-pin effect from undoing the anchor in that
+  // same commit.
+  const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
+  const skipAutoScrollRef = useRef(false);
+  const firstKey = unitKey(units[0]);
+  const lastFirstKeyRef = useRef(firstKey);
+  const wasLoadingEarlierRef = useRef(loadingEarlier);
+
+  // Older content prepended above the reader: shift scrollTop by exactly the
+  // height it added, before paint, so what they were reading stays put (a rAF
+  // after paint would flash the new content first). When `onLoadEarlier` is
+  // given the container opts out of the browser's own scroll anchoring, so the
+  // shift is never applied twice.
+  useLayoutEffect(() => {
+    const prepended = firstKey !== lastFirstKeyRef.current;
+    const loadStarted = !wasLoadingEarlierRef.current && loadingEarlier;
+    const loadEnded = wasLoadingEarlierRef.current && !loadingEarlier;
+    lastFirstKeyRef.current = firstKey;
+    wasLoadingEarlierRef.current = loadingEarlier;
+    if (loadStarted && !prepended && prependAnchorRef.current === null) {
+      const el = scrollContainerRef.current;
+      if (el) prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    }
+    const anchor = prependAnchorRef.current;
+    if (!anchor) return;
+    if (prepended) {
+      prependAnchorRef.current = null;
+      skipAutoScrollRef.current = true;
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+    } else if (loadEnded) {
+      // The load failed or found nothing: forget the anchor so a later,
+      // unrelated change at the top (a rebind) is never shifted by it.
+      prependAnchorRef.current = null;
+    }
+  }, [firstKey, loadingEarlier]);
 
   // #1713: keep the conversation anchored to the bottom on submit + streaming.
   // The previous implementation called `scrollIntoView({ behavior: 'smooth' })`
@@ -174,6 +278,10 @@ export default function AiChatMessages({
   // pending-approval / pending-plan / active-plan cards — so the anchor tracks
   // every content growth, not just streamed text.
   useEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
     const container = scrollContainerRef.current;
     if (!container || !pinnedToBottomRef.current) return;
 
@@ -192,7 +300,13 @@ export default function AiChatMessages({
         scrollFrameRef.current = null;
       }
     };
-  }, [messages, pendingApproval, pendingPlan, activePlan]);
+  }, [messages, extras, pendingApproval, pendingPlan, activePlan]);
+
+  const handleLoadEarlier = () => {
+    const el = scrollContainerRef.current;
+    if (el) prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    onLoadEarlier?.();
+  };
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -200,7 +314,213 @@ export default function AiChatMessages({
     pinnedToBottomRef.current = shouldAutoScroll(distanceFromBottom);
   };
 
-  if (messages.length === 0) {
+  /**
+   * The card for a finished tool call. `key` is the tool_use row's id when the
+   * result renders in that row's place (#9534), so React reconciles it with
+   * the pending card; `input` is that row's toolInput (sweep E6: the label
+   * needs `input.action` to tell a read from a write, and the result row
+   * carries no input of its own).
+   */
+  const renderToolResult = (
+    msg: ChatRow,
+    key: string,
+    input: Record<string, unknown> | undefined,
+  ) => {
+    // Execution plane W05 (spec §5.5): the launch tool's result is a run
+    // id, not content, so it renders as a run card rather than a
+    // tool-output panel. `toolName` is present on a replayed history row
+    // and on the live event alike.
+    //
+    // `workspace_launch_analysis` is fully deregistered (#6086) — no
+    // tool declaration, no handler — so this branch is DEAD for any
+    // session started after that change: nothing can produce a
+    // `tool_result` with this name going forward. It is retained
+    // specifically to replay chat history from sessions recorded before
+    // #6086 shipped, which still contain rows with this toolName.
+    if (msg.toolName === "workspace_launch_analysis") {
+      const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
+      if (output?.runId) {
+        return (
+          <AiRunCard
+            key={key}
+            runId={output.runId}
+            initialStatus={(output.status as "queued" | "running") ?? "queued"}
+            run={chatRuns[output.runId]}
+          />
+        );
+      }
+    }
+    // #5612 W05: a script released by the unattended lane never had an
+    // approval card, so rendering it through AiToolCallCard's generic
+    // tool-output chrome would misdescribe it as an executed tool call.
+    // A small inline note instead — just enough to say what happened.
+    if (msg.toolName === "unattended_release") {
+      return (
+        <p
+          key={key}
+          className="text-xs italic text-muted-foreground"
+          data-testid="ai-unattended-release-note"
+        >
+          {t("aiChatMessages.unattendedRelease")}
+        </p>
+      );
+    }
+    const proposalHref = scriptProposalHref(msg.toolName, input, msg.toolOutput ?? msg.content);
+    // Tool Catalog W3 (#5218): a saved draft_flow / get_flow result gets a
+    // Flow card; failures and anything unparsable fall through to the
+    // default card below so errors stay visible.
+    const flowResult = parseFlowToolResult(msg.toolName, msg.toolOutput ?? msg.content);
+    if (flowResult) {
+      return (
+        <Fragment key={key}>
+          <FlowDraftCard flow={flowResult.flow} validation={flowResult.validation} />
+        </Fragment>
+      );
+    }
+    return (
+      <Fragment key={key}>
+        <AiToolCallCard
+          toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
+          input={input}
+          output={msg.toolOutput ?? msg.content}
+          isError={msg.isError}
+          handoff={msg.handoff}
+        />
+        {/* #6354: a tool refused for caller verification offers an
+            inline verification workflow (never a retry). Renders
+            nothing unless the error carries the structured payload
+            and the feature is enabled. */}
+        <CallerVerificationRefusal output={msg.toolOutput ?? msg.content} isError={msg.isError} />
+        {proposalHref && (
+          <a
+            href={proposalHref}
+            className="text-xs text-primary underline-offset-2 hover:underline"
+            data-testid="ai-script-proposal-link"
+          >
+            {t("aiChatMessages.openScriptProposal")}
+          </a>
+        )}
+      </Fragment>
+    );
+  };
+
+  /**
+   * One tool call: its finished card in the tool_use row's place (#9534), or
+   * the pending card. Both are wrapped in a Fragment under the call's key, so
+   * the card instance (and its expanded state) survives the swap.
+   */
+  const renderCall = (call: ToolCall) => {
+    if (call.result) return renderToolResult(call.result, call.key, call.input);
+    return (
+      <Fragment key={call.key}>
+        <AiToolCallCard
+          toolName={call.toolName || t("aiChatMessages.unknownTool")}
+          input={call.input}
+          isExecuting
+        />
+      </Fragment>
+    );
+  };
+
+  const renderUnit = (unit: ChatUnit, now: Date): ReactNode => {
+    switch (unit.kind) {
+      case "divider": {
+        const parts = dividerParts(unit.at, now, i18n.language);
+        const text =
+          parts.day === "today"
+            ? t("aiChatMessages.divider.today", { time: parts.time })
+            : parts.day === "yesterday"
+              ? t("aiChatMessages.divider.yesterday", { time: parts.time })
+              : parts.dateTime;
+        return (
+          <div
+            key={`divider-${unit.at.getTime()}`}
+            role="separator"
+            aria-label={text}
+            data-testid="ai-chat-divider"
+            className="py-1 text-center text-[11px] text-muted-foreground"
+          >
+            {text}
+          </div>
+        );
+      }
+      case "user":
+        return (
+          <div
+            key={unit.msg.id}
+            data-testid="ai-msg-user"
+            className="ml-auto w-fit max-w-[75%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary/10 px-4 py-2.5 text-sm text-foreground dark:bg-primary/20"
+          >
+            {unit.msg.content}
+          </div>
+        );
+      case "assistant":
+        return (
+          <div key={unit.msg.id} data-testid="ai-msg-assistant" className="min-w-0">
+            {unit.firstOfRun && (
+              <p data-testid="ai-msg-label" className="mb-1 text-xs font-medium text-muted-foreground">
+                {label}
+              </p>
+            )}
+            <AssistantMarkdown content={unit.msg.content} isStreaming={unit.msg.isStreaming} />
+            {unit.msg.stopped && (
+              <p data-testid="ai-msg-stopped" className="mt-1 text-xs text-muted-foreground">
+                {t("aiChatMessages.stopped")}
+              </p>
+            )}
+          </div>
+        );
+      case "tools":
+        return <AiToolActivityGroup key={unit.id} group={unit} renderCall={renderCall} />;
+      case "card":
+        return renderCall(unit.call);
+      case "extra": {
+        const extra = extrasById.get(unit.id);
+        return extra ? <Fragment key={`extra-${unit.id}`}>{extra.render()}</Fragment> : null;
+      }
+      case "specialists":
+        return (
+          <div key={unit.id} className="space-y-2" data-testid="ai-specialist-runs">
+            {unit.runs.length > 1 && (
+              <p className="text-xs font-medium text-muted-foreground">
+                {t("aiChatMessages.specialists.heading", { count: unit.runs.length })}
+              </p>
+            )}
+            {unit.runs.map((run) => (
+              <AiRunCard
+                key={run.key}
+                runId={run.runId}
+                initialStatus="queued"
+                run={chatRuns[run.runId]}
+                onContinue={onSendQuickAction
+                  ? (id) => onSendQuickAction(t("aiRunCard.continueMessage", { runId: id }))
+                  : undefined}
+              />
+            ))}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  if (messages.length === 0 && !leading && extras.length === 0 && !showLoadEarlier) {
+    if (transcriptPurgedAt) {
+      return (
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+          <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>
+            <TranscriptPurgedNotice purgedAt={transcriptPurgedAt} testId="ai-chat-transcript-purged" />
+          </div>
+        </div>
+      );
+    }
+    if (emptyState) {
+      return (
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-start overflow-y-auto p-3"}>
+          <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>{emptyState}</div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
         <Bot className="h-10 w-10 text-muted-foreground" />
@@ -234,204 +554,27 @@ export default function AiChatMessages({
     );
   }
 
-  return (
-    <div
-      ref={scrollContainerRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
-    >
-      {messages.map((msg) => {
-        if (msg.role === "user") {
-          return (
-            <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600">
-                <User className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-gray-900 whitespace-pre-wrap dark:text-gray-200">
-                  {msg.content}
-                </p>
-              </div>
-            </div>
-          );
-        }
-
-        if (msg.role === "assistant") {
-          return (
-            <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary">
-                <Bot className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="prose prose-sm max-w-none text-sm text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert dark:text-gray-200">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      a: ({ href, children }) => {
-                        // Origin check (not a string prefix): a docs-lookalike host
-                        // (e.g. docs.breezermm.com.evil.com) is NOT treated as a
-                        // trusted in-app docs link and instead falls through to the
-                        // safe external-link branch below.
-                        if (isDocsUrl(href)) {
-                          return (
-                            <a
-                              href={href}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                useHelpStore.getState().open(href);
-                              }}
-                              className="cursor-pointer"
-                            >
-                              {children}
-                            </a>
-                          );
-                        }
-                        return (
-                          <a
-                            href={
-                              href && /^https?:\/\//.test(href) ? href : "#"
-                            }
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            {children}
-                          </a>
-                        );
-                      },
-                      // AI-authored markdown images must never auto-load —
-                      // see safeMarkdownImage.tsx for why.
-                      img: ({ src, alt }) => (
-                        <SafeMarkdownImage src={src} alt={alt} />
-                      ),
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                  {msg.isStreaming && (
-                    <span className="inline-block h-4 w-1 animate-pulse bg-gray-500 dark:bg-gray-400" />
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        }
-
-        if (msg.role === "tool_use") {
-          // Find matching tool_result by toolUseId, or fall back to the immediately following tool_result
-          const idx = messages.indexOf(msg);
-          const nextMsg =
-            idx >= 0 && idx + 1 < messages.length
-              ? messages[idx + 1]
-              : undefined;
-          const hasResult =
-            messages.some(
-              (m) =>
-                m.role === "tool_result" &&
-                m.toolUseId &&
-                m.toolUseId === msg.toolUseId,
-            ) || nextMsg?.role === "tool_result";
-          return (
-            <AiToolCallCard
-              key={msg.id}
-              toolName={msg.toolName ?? t("aiChatMessages.unknownTool")}
-              input={msg.toolInput}
-              isExecuting={!hasResult}
-            />
-          );
-        }
-
-        if (msg.role === "tool_result") {
-          // Execution plane W05 (spec §5.5): the launch tool's result is a run
-          // id, not content, so it renders as a run card rather than a
-          // tool-output panel. `toolName` is present on a replayed history row
-          // and on the live event alike.
-          //
-          // `workspace_launch_analysis` is fully deregistered (#6086) — no
-          // tool declaration, no handler — so this branch is DEAD for any
-          // session started after that change: nothing can produce a
-          // `tool_result` with this name going forward. It is retained
-          // specifically to replay chat history from sessions recorded before
-          // #6086 shipped, which still contain rows with this toolName.
-          if (msg.toolName === "workspace_launch_analysis") {
-            const output = msg.toolOutput as { runId?: string; status?: string } | undefined;
-            if (output?.runId) {
-              return (
-                <AiRunCard
-                  key={msg.id}
-                  runId={output.runId}
-                  initialStatus={(output.status as "queued" | "running") ?? "queued"}
-                  run={chatRuns[output.runId]}
-                />
-              );
-            }
-          }
-          // #5612 W05: a script released by the unattended lane never had an
-          // approval card, so rendering it through AiToolCallCard's generic
-          // tool-output chrome would misdescribe it as an executed tool call.
-          // A small inline note instead — just enough to say what happened.
-          if (msg.toolName === "unattended_release") {
-            return (
-              <p
-                key={msg.id}
-                className="text-xs italic text-muted-foreground"
-                data-testid="ai-unattended-release-note"
-              >
-                {t("aiChatMessages.unattendedRelease")}
-              </p>
-            );
-          }
-          // sweep E6: the completed card renders through the SAME
-          // aiToolLabel() as its tool_use sibling and as history replay, but
-          // that needs `input` (specifically `input.action`) to tell a read
-          // from a write — pull it from the matching tool_use row rather
-          // than leaving it undefined, which always fell back to the tool
-          // name's own verb ("Updated alerts" for a read-only lookup).
-          const matchingToolUse = messages.find(
-            (m) => m.role === "tool_use" && m.toolUseId === msg.toolUseId,
-          );
-          const proposalHref = scriptProposalHref(
-            msg.toolName, matchingToolUse?.toolInput, msg.toolOutput ?? msg.content,
-          );
-          // Tool Catalog W3 (#5218): a saved draft_flow / get_flow result gets a
-          // Flow card; failures and anything unparsable fall through to the
-          // default card below so errors stay visible.
-          const flowResult = parseFlowToolResult(msg.toolName, msg.toolOutput ?? msg.content);
-          if (flowResult) {
-            return (
-              <Fragment key={msg.id}>
-                <FlowDraftCard flow={flowResult.flow} validation={flowResult.validation} />
-              </Fragment>
-            );
-          }
-          return (
-            <Fragment key={msg.id}>
-              <AiToolCallCard
-                toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
-                input={matchingToolUse?.toolInput}
-                output={msg.toolOutput ?? msg.content}
-                isError={msg.isError}
-                handoff={msg.handoff}
-              />
-              {/* #6354: a tool refused for caller verification offers an
-                  inline verification workflow (never a retry). Renders
-                  nothing unless the error carries the structured payload
-                  and the feature is enabled. */}
-              <CallerVerificationRefusal output={msg.toolOutput ?? msg.content} isError={msg.isError} />
-              {proposalHref && (
-                <a
-                  href={proposalHref}
-                  className="text-xs text-primary underline-offset-2 hover:underline"
-                  data-testid="ai-script-proposal-link"
-                >
-                  {t("aiChatMessages.openScriptProposal")}
-                </a>
-              )}
-            </Fragment>
-          );
-        }
-
-        return null;
-      })}
+  const now = new Date();
+  const body = (
+    <>
+      {showLoadEarlier && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            data-testid="ai-chat-load-earlier"
+            onClick={handleLoadEarlier}
+            disabled={loadingEarlier}
+            aria-busy={loadingEarlier}
+            className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
+          >
+            {loadingEarlier && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+            {t("aiChatMessages.loadEarlier")}
+          </button>
+        </div>
+      )}
+      {leading}
+      {units.map((unit) => renderUnit(unit, now))}
+      {messages.length === 0 && emptyState}
 
       {pendingApproval && (
         <AiApprovalDialog
@@ -445,6 +588,7 @@ export default function AiChatMessages({
           description={pendingApproval.description}
           input={pendingApproval.input}
           deviceContext={pendingApproval.deviceContext}
+          ticketContext={pendingApproval.ticketContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
@@ -454,6 +598,8 @@ export default function AiChatMessages({
           approvalWindowMs={pendingApproval.approvalWindowMs}
           approvalExpiresAt={pendingApproval.approvalExpiresAt}
           scriptRunContext={pendingApproval.scriptRunContext}
+          standingInstructionConflict={pendingApproval.standingInstructionConflict}
+          resolution={pendingApproval.resolution}
           onIntentDecided={onIntentDecided}
         />
       )}
@@ -484,6 +630,73 @@ export default function AiChatMessages({
             {t("aiChatMessages.pauseAi")}
           </button>
         </div>
+      )}
+    </>
+  );
+
+  if (layout === "page") {
+    return (
+      <div ref={scrollContainerRef} onScroll={handleScroll} className={`flex-1 overflow-y-auto px-4 py-6${onLoadEarlier ? " [overflow-anchor:none]" : ""}`}>
+        {/* Short threads sit just above the composer; long ones scroll. */}
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end space-y-5">{body}</div>
+      </div>
+    );
+  }
+  return (
+    <div ref={scrollContainerRef} onScroll={handleScroll} className={`flex-1 overflow-y-auto p-3 space-y-3${onLoadEarlier ? " [overflow-anchor:none]" : ""}`}>
+      {body}
+    </div>
+  );
+}
+
+/** An assistant reply: prose, no avatar, no bubble (spec D2). */
+function AssistantMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  return (
+    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children }) => {
+            // Origin check (not a string prefix): a docs-lookalike host
+            // (e.g. docs.breezermm.com.evil.com) is NOT treated as a
+            // trusted in-app docs link and instead falls through to the
+            // safe external-link branch below.
+            if (isDocsUrl(href)) {
+              return (
+                <a
+                  href={href}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    useHelpStore.getState().open(href);
+                  }}
+                  className="cursor-pointer"
+                >
+                  {children}
+                </a>
+              );
+            }
+            return (
+              <a
+                href={href && /^https?:\/\//.test(href) ? href : "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {children}
+              </a>
+            );
+          },
+          // AI-authored markdown images must never auto-load —
+          // see safeMarkdownImage.tsx for why.
+          img: ({ src, alt }) => <SafeMarkdownImage src={src} alt={alt} />,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+      {isStreaming && (
+        <span
+          data-testid="ai-msg-caret"
+          className="inline-block h-4 w-1 animate-pulse bg-muted-foreground"
+        />
       )}
     </div>
   );

@@ -234,10 +234,11 @@ Organization users can be restricted to specific sites:
   "email": "tech@contoso.com",
   "name": "Tech User",
   "roleId": "uuid-of-role",
-  "siteIds": ["uuid-of-site-1"],
-  "deviceGroupIds": ["uuid-of-group-1"]
+  "siteIds": ["uuid-of-site-1"]
 }
 ```
+
+`deviceGroupIds` restrictions are not supported yet and return `400`. Partner-level invites reject `siteIds` and `deviceGroupIds` with `400`; use `orgAccess`/`orgIds` instead.
 
 ### 2.3 Managing User Accounts
 
@@ -1405,7 +1406,7 @@ Incident status transitions follow:
 Operational notes:
 
 - Use **create** (`POST /api/v1/incidents`) when correlated alerts indicate a broader incident.
-- Use **contain** (`POST /api/v1/incidents/{id}/contain`) when executing control actions.
+- Use **contain** (`POST /api/v1/incidents/{id}/contain`) to record control actions already taken. This endpoint is record-keeping only and never executes or proves endpoint isolation.
 - Use **evidence** (`POST /api/v1/incidents/{id}/evidence`) for forensic artifacts and chain-of-custody metadata.
 - Use **close** (`POST /api/v1/incidents/{id}/close`) only after remediation and validation are complete.
 
@@ -1420,13 +1421,19 @@ When handling incidents, record:
 
 ### 10.3 High-Risk Containment Governance
 
-The following containment actions require an approval reference:
+The following AI containment actions and manual incident records require an approval reference:
 
 - `network_isolation`
 - `account_disable`
 - `usb_block`
 
-If these actions are submitted without `approvalRef`, the API rejects the request.
+If these actions are submitted without `approvalRef`, the API rejects the request. Human network isolation uses the device-scoped console controls instead and requires an interactive session, device execution permission, site access, and MFA when enabled.
+
+Network isolation is off by default behind `NETWORK_ISOLATION_ENABLED`. It is Windows-only until Linux and macOS support ship. Use **Isolate from network** in device actions, enter an existing incident ID or a new incident title, enter a reason, and confirm the TTL (default 72 hours, maximum 720 hours). Isolating a server can interrupt business services.
+
+Release remains available for active episodes even when start gates fail, the feature is disabled, or the device is offline; an offline release is queued until reconnect. Disabling the flag does not release devices. For a fleet emergency, script one console-authenticated release request per episode and verify the resulting states. If connectivity is lost, explicitly view the audited break-glass code, read it to the person at the device, and have an Administrator run `breeze-agent containment release --code <code>`. Local `--force` release raises an alert. Acknowledge `released_locally` or `self_released` after investigation.
+
+A self-host with 2FA disabled offers password-only assurance, and a self-host without TURN loses remote desktop while isolated. See the [network-isolation runbook](../../apps/docs/src/content/docs/features/network-isolation.mdx) for the allowlist, OS mechanisms, limitations, and recovery procedure.
 
 ### 10.4 Incident Reporting
 

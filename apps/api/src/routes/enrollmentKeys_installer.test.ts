@@ -514,6 +514,26 @@ describe('enrollment key routes — installer download', () => {
       );
     });
 
+    // #9615: Settings → Enrollment Keys now sends the admin's device count, so
+    // the legacy macOS child key must carry it as its own max_usage.
+    it('sizes the legacy macOS child key from the count query param (#9615)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey({ maxUsage: 55, usageCount: 3 })]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer x52)', maxUsage: 52 }),
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos?count=52`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const valuesFn = vi.mocked(db.insert).mock.results[0]!.value.values;
+      expect(valuesFn).toHaveBeenCalledWith(
+        expect.objectContaining({ maxUsage: 52, name: 'Test Key (installer x52)' }),
+      );
+    });
+
     it('#7974: macOS installer_download audit never stores the live short code', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
       mockInsertValuesReturning([
@@ -555,6 +575,23 @@ describe('enrollment key routes — installer download', () => {
       );
       // Windows bootstrap does NOT create a child key (no db.insert)
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // #9615: a caller that omits `count` still gets a single-device token. The
+    // default is deliberately unchanged — every console caller now sends a
+    // count, and an absent one must never widen the credential.
+    it('windows bootstrap defaults to a single device when count is omitted (#9615)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey({ maxUsage: 55 })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/windows`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ maxUsage: 1 }),
+      );
     });
 
     it('passes the ttlMinutes query param through to the bootstrap token (windows) (#2775)', async () => {

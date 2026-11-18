@@ -165,148 +165,86 @@ func TestParseRetryAfterHTTPDateAboveCap(t *testing.T) {
 
 // ---------- Do — Retry-After is honored on 429 ----------
 
-func TestDoHonorsRetryAfterOn429(t *testing.T) {
+// recordSleeps swaps the afterFn seam for one that records each requested wait
+// and fires immediately, so the tests below assert the delay Do asked for
+// without timing a real sleep (a wall-clock ceiling flaked under -race on
+// loaded CI runners, #10742). Must not be combined with t.Parallel().
+func recordSleeps(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var sleeps []time.Duration
+	orig := afterFn
+	afterFn = func(d time.Duration) <-chan time.Time {
+		sleeps = append(sleeps, d)
+		ch := make(chan time.Time, 1)
+		ch <- time.Time{}
+		return ch
+	}
+	t.Cleanup(func() { afterFn = orig })
+	return &sleeps
+}
+
+// doTwoAttempts serves firstStatus (with retryAfter when non-empty) then 200,
+// and returns the waits Do requested between attempts.
+func doTwoAttempts(t *testing.T, firstStatus int, retryAfter string, cfg RetryConfig) []time.Duration {
+	t.Helper()
+	sleeps := recordSleeps(t)
 	var attempts atomic.Int32
-	var attemptTimes []time.Time
-	mu := make(chan struct{}, 1)
-	mu <- struct{}{}
-
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-mu
-		attemptTimes = append(attemptTimes, time.Now())
-		mu <- struct{}{}
-
-		n := attempts.Add(1)
-		if n == 1 {
-			// First attempt: rate-limited, ask for 1s wait.
-			w.Header().Set("Retry-After", "1")
-			w.WriteHeader(http.StatusTooManyRequests)
+		if attempts.Add(1) == 1 {
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			w.WriteHeader(firstStatus)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
 
-	cfg := RetryConfig{
-		MaxRetries: 2,
-		// Internal exponential schedule would be 5ms; if Retry-After were
-		// ignored, the second attempt would happen ~5ms after the first.
-		// We want to confirm we instead wait ≥1s.
-		InitialDelay:  5 * time.Millisecond,
-		MaxDelay:      10 * time.Millisecond,
-		BackoffFactor: 2.0,
-		JitterFrac:    0,
-	}
-
 	resp, err := Do(t.Context(), ts.Client(), "GET", ts.URL, nil, nil, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	if attempts.Load() != 2 {
 		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
 	}
-	if len(attemptTimes) < 2 {
-		t.Fatalf("expected ≥2 recorded attempt times, got %d", len(attemptTimes))
-	}
+	return *sleeps
+}
 
-	gap := attemptTimes[1].Sub(attemptTimes[0])
-	if gap < 1*time.Second {
-		t.Fatalf("expected ≥1s gap honoring Retry-After, got %v", gap)
-	}
-	// Sanity ceiling — should not be much more than 1s + scheduling slop.
-	if gap > 3*time.Second {
-		t.Fatalf("gap %v unreasonably long; expected ~1s", gap)
+func TestDoHonorsRetryAfterOn429(t *testing.T) {
+	// Internal exponential schedule would be 5ms; if Retry-After were ignored
+	// the requested wait would be ~5ms. We assert it is >=1s.
+	sleeps := doTwoAttempts(t, http.StatusTooManyRequests, "1", RetryConfig{
+		MaxRetries: 2, InitialDelay: 5 * time.Millisecond, MaxDelay: 10 * time.Millisecond,
+		BackoffFactor: 2.0, JitterFrac: 0,
+	})
+	if len(sleeps) != 1 || sleeps[0] < 1*time.Second {
+		t.Fatalf("expected one wait >=1s honoring Retry-After, got %v", sleeps)
 	}
 }
 
 func TestDoHonorsRetryAfterOn503(t *testing.T) {
-	var attempts atomic.Int32
-	var attemptTimes []time.Time
-	mu := make(chan struct{}, 1)
-	mu <- struct{}{}
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-mu
-		attemptTimes = append(attemptTimes, time.Now())
-		mu <- struct{}{}
-
-		n := attempts.Add(1)
-		if n == 1 {
-			w.Header().Set("Retry-After", "1")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	cfg := RetryConfig{
-		MaxRetries:    2,
-		InitialDelay:  5 * time.Millisecond,
-		MaxDelay:      10 * time.Millisecond,
-		BackoffFactor: 2.0,
-		JitterFrac:    0,
-	}
-
-	resp, err := Do(t.Context(), ts.Client(), "GET", ts.URL, nil, nil, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if len(attemptTimes) < 2 {
-		t.Fatalf("expected ≥2 attempts, got %d", len(attemptTimes))
-	}
-	gap := attemptTimes[1].Sub(attemptTimes[0])
-	if gap < 1*time.Second {
-		t.Fatalf("expected ≥1s gap honoring Retry-After on 503, got %v", gap)
+	sleeps := doTwoAttempts(t, http.StatusServiceUnavailable, "1", RetryConfig{
+		MaxRetries: 2, InitialDelay: 5 * time.Millisecond, MaxDelay: 10 * time.Millisecond,
+		BackoffFactor: 2.0, JitterFrac: 0,
+	})
+	if len(sleeps) != 1 || sleeps[0] < 1*time.Second {
+		t.Fatalf("expected one wait >=1s honoring Retry-After on 503, got %v", sleeps)
 	}
 }
 
 // Verify that without Retry-After, exponential delay is still small (regression
 // guard: we shouldn't accidentally start sleeping forever when no header sent).
 func TestDoNoRetryAfterUsesExponentialDelay(t *testing.T) {
-	var attempts atomic.Int32
-	var attemptTimes []time.Time
-	mu := make(chan struct{}, 1)
-	mu <- struct{}{}
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-mu
-		attemptTimes = append(attemptTimes, time.Now())
-		mu <- struct{}{}
-
-		n := attempts.Add(1)
-		if n == 1 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	cfg := RetryConfig{
-		MaxRetries:    2,
-		InitialDelay:  10 * time.Millisecond,
-		MaxDelay:      50 * time.Millisecond,
-		BackoffFactor: 2.0,
-		JitterFrac:    0,
-	}
-
-	resp, err := Do(t.Context(), ts.Client(), "GET", ts.URL, nil, nil, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-
-	gap := attemptTimes[1].Sub(attemptTimes[0])
-	// Should be ~10ms, definitely <500ms (no Retry-After to trigger the long sleep).
-	if gap > 500*time.Millisecond {
-		t.Fatalf("expected ≪500ms gap without Retry-After, got %v", gap)
+	sleeps := doTwoAttempts(t, http.StatusTooManyRequests, "", RetryConfig{
+		MaxRetries: 2, InitialDelay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond,
+		BackoffFactor: 2.0, JitterFrac: 0,
+	})
+	if len(sleeps) != 1 || sleeps[0] != 10*time.Millisecond {
+		t.Fatalf("expected one 10ms exponential wait without Retry-After, got %v", sleeps)
 	}
 }

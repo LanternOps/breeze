@@ -160,7 +160,7 @@ func TestDesktopClipboardSummaryPayloadKeepsOrMintsSegment(t *testing.T) {
 	// The API rejects a malformed id, which would lose the whole summary.
 	for _, bad := range []string{"", "NOT-HEX!", strings.Repeat("a", 65)} {
 		clip := desktopClipboardSummaryPayload("s", ipc.ClipboardSummary{SegmentID: bad, Blocked: 1})["clipboard"].(ipc.ClipboardSummary)
-		if clip.SegmentID == bad || !clipboardSegmentIDPattern.MatchString(clip.SegmentID) {
+		if clip.SegmentID == bad || !clipboardSegmentIDPattern().MatchString(clip.SegmentID) {
 			t.Fatalf("segment %q became %q", bad, clip.SegmentID)
 		}
 	}

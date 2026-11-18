@@ -4,6 +4,7 @@ import {
   countDevicesByClass,
   readDeviceClassFromHash,
   writeDeviceClassToHash,
+  encodeDeviceClassToHash,
   readDeviceClassPreference,
   saveDeviceClassPreference,
   resolveDeviceClass,
@@ -147,6 +148,21 @@ describe('device class default + remembered preference (#5874)', () => {
     } finally {
       get.mockRestore();
       set.mockRestore();
+    }
+  });
+});
+
+describe('encodeDeviceClassToHash', () => {
+  it('is pure: returns the fragment without touching the URL', () => {
+    window.location.hash = '#keep=1';
+    expect(encodeDeviceClassToHash('agent')).toBe('deviceClass=agent');
+    expect(window.location.hash).toBe('#keep=1');
+    window.location.hash = '';
+  });
+
+  it('round-trips through readDeviceClassFromHash for every class', () => {
+    for (const cls of ['all', 'agent', 'network', 'manual'] as const) {
+      expect(readDeviceClassFromHash(`#${encodeDeviceClassToHash(cls)}`)).toBe(cls);
     }
   });
 });

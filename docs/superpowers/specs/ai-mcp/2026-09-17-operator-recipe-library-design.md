@@ -219,16 +219,26 @@ The model never proposes an effect that `buildPlan` did not produce, never edits
 
 ### 6.3 `identity_offboarding` spine
 
+*Amended 2026-10-23 (W06 R1a, decision D1 = A): eight step rows. Approval, the
+cutoff wait and the ordered walk are PHASES of the one `effects` step, because
+E4 binds a plan approval to the step that proposed it, one approval per plan
+revision. Device lock / log-off is human work until a probed device tool exists
+(D2). The behaviour and the order are the original diagram's; only the step
+rows differ.*
+
 ```
 intake (reason) → confirm_identity (human_work: technician confirms contact + accounts + inheritor)
-→ discover (probe reads, both providers) → review (reason: exceptions) → plan_approval (§6.4)
-→ wait_cutoff (wait, optional: scheduled last-day time)
-→ per provider, in this order, each = pre-probe → effect → post-probe:
+→ discover (probe reads, both providers; freezes the planning snapshot: facts + degraded tools)
+→ review (reason: exceptions; proposes nothing)
+→ effects (effect) — one step, in this order of phases:
+     propose the plan → four-eyes approval (§6.4) → re-seal against the snapshot
+     → not-before cutoff (optional scheduled last-day time) → ordered walk,
+     per provider, each effect = pre-probe → effect → post-probe:
      1 auto-reply            4 remove group memberships     7 retire/selective-wipe mobile
      2 mail forwarding       5 remove licenses*             8 revoke sessions / sign out
      3 mailbox delegate      6 revoke app tokens            9 disable (M365) / suspend (Google) — LAST
-→ device steps (Breeze agent: lock or log off, flag for collection)
-→ human_work: collect hardware, transfer file ownership, update documentation, anything rendered manual by readiness
+→ manual_work (human_work: collect hardware, sign the person out of / lock each selected device and
+  collect it, transfer file ownership, update documentation, anything rendered manual by readiness)
 → verify_outcome (probe: account cannot sign in; no licenses; no memberships) → document
 ```
 
@@ -236,7 +246,7 @@ Ordering is a recipe-owned, tested safety contract, lifted from the comment in `
 
 `google_offboard_user` is **not** called by the recipe. One tool call with seven effects has one operation key: a replay re-runs all seven and "3/7 OK" has no per-effect result row. The recipe dispatches the granular tools (`google_set_vacation`, `google_set_forwarding`, `google_add_mail_delegate`, `google_remove_from_group`, `google_remove_license`, `google_signout`, `google_suspend_user`), which are already registered, Tier 3, and headless-capable. **The mobile step is the exception: `google_wipe_mobile_device` is a full factory reset (`admin_remote_wipe`) and its own description says it is not for offboarding. The selective corporate-account wipe (`admin_account_wipe`) is reachable today only inside the composite, so R1 adds a granular `google_account_wipe_mobile_device` tool and the recipe never plans the factory-reset one.** The composite stays for chat use; deprecating it is a follow-up.
 
-`identity_onboarding` is the mirror with one inversion: account creation is first, and the temporary credential is secret-bearing (the `reset_password` sealing path). No Google create-user tool exists at this baseline, so Google account creation is an `always_manual` human-work step until one ships (follow-up). Adding a person to a role-assignable or admin group is never a planned effect. Seat availability is read from synced `m365_license_skus`; authority stays with the executor's live pre-read, so a stale sync fails closed into a checklist item. Its human-work steps are hardware assignment, credential handover, and MFA enrolment.
+`identity_onboarding` is the mirror with one inversion: account creation is first, and the temporary credential is secret-bearing (the `reset_password` sealing path). No Google create-user tool exists at this baseline, so Google account creation is an `always_manual` human-work step until one ships (follow-up). Adding a person to a role-assignable or admin group is never a planned effect. Seat availability is read live at discovery (`m365.org.skus.list`) and frozen per SKU; a SKU with no free seat, or one whose availability cannot be established, is not planned and becomes a checklist item. Authority stays with the executor's own pre-read at dispatch, so a seat lost after discovery fails closed (the task hands off with the remainder named; amended 2026-10-25, W07 plan Amendment B6). Its human-work steps are hardware assignment, credential handover, and MFA enrolment.
 
 ### 6.4 Plan approval
 

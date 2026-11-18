@@ -1,0 +1,15 @@
+---
+// PUBLIC agreement signing page — deliberately NO SSR fetch (like
+// invoice/[token].astro, unlike quote/[token].astro): the portal container's
+// server-side API calls carry no client IP, so every SSR load would share one
+// 'unknown'-keyed slot of the isolated /agreements/public rate bucket (60/min).
+// PublicAgreementView fetches client-side, where the signer's own IP keys it.
+import PublicDocumentLayout from '../../layouts/PublicDocumentLayout.astro';
+import PublicAgreementView from '../../components/portal/PublicAgreementView';
+
+const { token } = Astro.params;
+---
+
+<PublicDocumentLayout title="Agreement">
+  <PublicAgreementView token={token!} client:load />
+</PublicDocumentLayout>

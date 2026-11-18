@@ -52,6 +52,11 @@ describe('alert-template site-scope helpers', () => {
     await expect(canAccessAlertRuleTargets({ allowedSiteIds: undefined } as any, ORG_ID, 'org', [], true)).resolves.toBe(true);
   });
 
+  it('fails closed on a nullable partner-owned group target', async () => {
+    selectQueue.push([{ id: 'partner-group', orgId: null, siteId: null }]);
+    await expect(canAccessAlertRuleTargets({}, ORG_ID, 'group', ['partner-group'])).resolves.toBe(false);
+  });
+
   it('rejects a shared template when any dependent rule resolves outside the grant', async () => {
     selectQueue.push([
       { targetType: 'device', targetId: 'visible-device', overrideSettings: null },

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sendVerificationEmailMock = vi.fn(async () => undefined);
 const sendEmailChangedMock = vi.fn(async () => undefined);
@@ -68,7 +68,21 @@ vi.mock('../../services', () => ({
   mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  reserveAccountAttempt: vi.fn(async () => ({ allowed: true, count: 1, reachesLimit: false })),
+  clearAccountFailures: vi.fn(async () => undefined),
 }));
+
+vi.mock('./login', () => ({
+  notifyAccountLocked: vi.fn(async () => undefined),
+}));
+
+// Real attempt logic is opted into per test (see the signup password attempts
+// block); elsewhere the password is treated as confirmed so the rest of the
+// flow can be exercised with placeholder hashes.
+vi.mock('../../services/signupPasswordConfirmation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/signupPasswordConfirmation')>();
+  return { ...actual, checkSignupPassword: vi.fn(async () => ({ ok: true })) };
+});
 
 vi.mock('../../services/pendingRegistration', () => ({
   peekPendingRegistration: vi.fn(async () => null),
@@ -221,6 +235,8 @@ vi.mock('../../services/emailVerification', () => ({
   consumeVerificationToken: vi.fn(),
   generateVerificationToken: vi.fn(async () => 'fresh-token'),
   invalidateOpenTokens: vi.fn(async () => 0),
+  peekSignupPasswordConfirmation: vi.fn(async () => null),
+  retireVerificationToken: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -258,11 +274,15 @@ vi.mock('./helpers', async () => {
 
 import { verifyEmailRoutes } from './verifyEmail';
 import { db } from '../../db';
-import { rateLimiter, getRedis } from '../../services';
+import { rateLimiter, getRedis, reserveAccountAttempt } from '../../services';
+import { notifyAccountLocked } from './login';
+import { checkSignupPassword, SIGNUP_PASSWORD_MAX_ATTEMPTS } from '../../services/signupPasswordConfirmation';
 import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from '../../services/emailVerification';
 import { consumePendingRegistration, peekPendingRegistration } from '../../services/pendingRegistration';
 import { dispatchHook } from '../../services/partnerHooks';
@@ -346,7 +366,7 @@ async function postJson(path: string, body: unknown, headers: Record<string, str
   return verifyEmailRoutes.request(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body && typeof body === 'object' ? { password: 'signup-password', ...body } : body),
   });
 }
 
@@ -365,6 +385,31 @@ describe('POST /verify-email', () => {
     transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
     vi.mocked(partnerTrustMode).mockReturnValue('off');
+  });
+
+  it.each([undefined, 'wrong-password'])('creates no account until the signup password is confirmed (%s)', async (password) => {
+    const actualPassword = await vi.importActual<typeof import('../../services/password')>('../../services/password');
+    const actualCheck = await vi.importActual<typeof import('../../services/signupPasswordConfirmation')>(
+      '../../services/signupPasswordConfirmation',
+    );
+    const passwordHash = await actualPassword.hashPassword('signup-password');
+    vi.mocked(checkSignupPassword).mockImplementationOnce(actualCheck.checkSignupPassword);
+    vi.mocked(getRedis).mockReturnValue({ eval: vi.fn(async () => 1), del: vi.fn(async () => 0) } as any);
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'credential-test' });
+    // Everything account creation would read, so only the password decides.
+    primeFinalizeSelects([]);
+
+    const res = await postJson('/verify-email', { token: 'credential-test', password });
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(consumePendingRegistration).not.toHaveBeenCalled();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Enter the password you chose when signing up.',
+      status: 'password_required',
+    });
   });
 
   it('creates no account authority, family, cookie, or success audit when logout wins after binding admission', async () => {
@@ -556,6 +601,193 @@ describe('POST /verify-email', () => {
   });
 });
 
+describe('POST /verify-email — signup password attempts', () => {
+  let attemptStore: Map<string, string>;
+  let signupHash: string;
+
+  beforeAll(async () => {
+    const actualPassword = await vi.importActual<typeof import('../../services/password')>('../../services/password');
+    signupHash = await actualPassword.hashPassword('signup-password');
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    attemptStore = new Map();
+    vi.mocked(getRedis).mockReturnValue({
+      get: vi.fn(async (key: string) => attemptStore.get(key) ?? null),
+      incr: vi.fn(async (key: string) => {
+        const next = Number(attemptStore.get(key) ?? '0') + 1;
+        attemptStore.set(key, String(next));
+        return next;
+      }),
+      expire: vi.fn(async () => 1),
+      del: vi.fn(async (key: string) => (attemptStore.delete(key) ? 1 : 0)),
+      eval: vi.fn(async (script: string, _keys: number, key: string) => {
+        const next = Number(attemptStore.get(key) ?? '0') + (script.includes("redis.call('DECR'") ? -1 : 1);
+        if (next <= 0) attemptStore.delete(key); else attemptStore.set(key, String(next));
+        return next;
+      }),
+    } as any);
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
+    const actual = await vi.importActual<typeof import('../../services/signupPasswordConfirmation')>(
+      '../../services/signupPasswordConfirmation',
+    );
+    vi.mocked(checkSignupPassword).mockImplementation(actual.checkSignupPassword);
+  });
+
+  afterEach(() => {
+    vi.mocked(checkSignupPassword).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(peekPendingRegistration).mockReset().mockResolvedValue(null);
+    vi.mocked(peekSignupPasswordConfirmation).mockReset().mockResolvedValue(null);
+    vi.mocked(getRedis).mockReturnValue({} as any);
+  });
+
+  const PASSWORD_REQUIRED_BODY = {
+    error: 'Enter the password you chose when signing up.',
+    status: 'password_required',
+  };
+  const INVALID_LINK_BODY = { error: 'Invalid or expired verification link' };
+
+  function existingAccount() {
+    return { tokenHash: 'existing-token-hash', userId: 'u-9', email: 'owner@corp.com', name: 'Owner', passwordHash: signupHash };
+  }
+
+  it.each([
+    [undefined, 'password_required'],
+    ['wrong-password', 'password_mismatch'],
+  ])('records a refused signup confirmation (%s) in the audit log as %s', async (password, reason) => {
+    vi.mocked(peekPendingRegistration).mockResolvedValue({ ...PENDING_RECORD, passwordHash: signupHash, rawToken: 'p' });
+
+    const res = await postJson('/verify-email', { token: 'p', password });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', result: 'failure', reason, email: 'new@corp.com' }),
+    );
+  });
+
+  it(`retires a pending signup after ${SIGNUP_PASSWORD_MAX_ATTEMPTS} wrong passwords`, async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValue({ ...PENDING_RECORD, passwordHash: signupHash, rawToken: 'p' });
+
+    const bodies: unknown[] = [];
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS; i += 1) {
+      const res = await postJson('/verify-email', { token: 'p', password: `wrong-${i}` });
+      expect(res.status).toBe(400);
+      bodies.push(await res.json());
+    }
+
+    expect(bodies.slice(0, -1)).toEqual(Array(SIGNUP_PASSWORD_MAX_ATTEMPTS - 1).fill(PASSWORD_REQUIRED_BODY));
+    expect(bodies.at(-1)).toEqual(INVALID_LINK_BODY);
+    expect(consumePendingRegistration).toHaveBeenCalledOnce();
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'attempts_exhausted' }),
+    );
+  });
+
+  it('counts a wrong password on an existing account toward its sign-in lockout', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'wrong-password' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'owner@corp.com');
+    expect(notifyAccountLocked).not.toHaveBeenCalled();
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'password_mismatch', userId: 'u-9' }),
+    );
+  });
+
+  it('sends the lockout notice when a wrong password locks the existing account', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 5, reachesLimit: true });
+
+    await postJson('/verify-email', { token: 'existing', password: 'wrong-password' });
+
+    expect(notifyAccountLocked).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'u-9', email: 'owner@corp.com', name: 'Owner' },
+      5,
+    );
+  });
+
+  it('refuses a locked-out account even with the right password', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'account_locked', userId: 'u-9' }),
+    );
+  });
+
+  it('keeps the signup link usable while the existing account is locked out', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
+
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS + 1; i += 1) {
+      const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+      expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    }
+
+    expect(retireVerificationToken).not.toHaveBeenCalled();
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+  });
+
+  it(`retires an existing account's signup link after ${SIGNUP_PASSWORD_MAX_ATTEMPTS} wrong passwords`, async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+
+    let last: Response | undefined;
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS; i += 1) {
+      last = await postJson('/verify-email', { token: 'existing', password: `wrong-${i}` });
+    }
+
+    expect(await last!.json()).toEqual(INVALID_LINK_BODY);
+    expect(retireVerificationToken).toHaveBeenCalledWith('existing');
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 and keeps the link when the attempt counter is unreachable', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    const redis = vi.mocked(getRedis)() as any;
+    redis.eval.mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(503);
+    expect(retireVerificationToken).not.toHaveBeenCalled();
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'check_unavailable', userId: 'u-9' }),
+    );
+  });
+
+  it('claims an existing account link with the hash the password was verified against', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(consumeVerificationToken).mockResolvedValueOnce({
+      ok: true, purpose: 'signup', partnerId: 'p-1', userId: 'u-9', email: 'owner@corp.com', autoActivated: false,
+    });
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(200);
+    expect(consumeVerificationToken).toHaveBeenCalledWith('existing', { confirmedPasswordHash: signupHash });
+  });
+});
+
 describe('POST /verify-email — SR2-21 pending-registration finalization (step 2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -575,6 +807,87 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     transitionState.installedFamilyId = null;
     transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
+  });
+
+  it('resolves a record with neither intent nor selection to the cloud intent only when creating a new account, including its billing hook', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'old-pending' });
+    primeFinalizeSelects();
+    vi.mocked(dispatchHook).mockResolvedValueOnce(null);
+    const res = await postJson('/verify-email', { token: 'old-pending' });
+    const purchaseSelection = { intent: 'cloud' };
+    expect(res.status).toBe(200);
+    expect(createPartner).toHaveBeenCalledWith(expect.objectContaining({ purchaseSelection, status: 'pending' }), expect.objectContaining({ tx: expect.anything() }));
+    expect(dispatchHook).toHaveBeenCalledWith('registration', 'p-1', expect.objectContaining({ purchaseSelection }));
+    expect((await res.json()).redirectUrl).toBe('/billing/plans');
+  });
+
+  it('maps an old record carrying the launch tuple to the cloud intent', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'old-tuple', purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 500, billingPeriod: 'annual' } });
+    primeFinalizeSelects();
+    vi.mocked(dispatchHook).mockResolvedValueOnce(null);
+    const res = await postJson('/verify-email', { token: 'old-tuple' });
+    expect(res.status).toBe(200);
+    expect(createPartner).toHaveBeenCalledWith(expect.objectContaining({ purchaseSelection: { intent: 'cloud' } }), expect.anything());
+    expect(dispatchHook).toHaveBeenCalledWith('registration', 'p-1', expect.objectContaining({ purchaseSelection: { intent: 'cloud' } }));
+  });
+
+  it('does not infer launch intent for an old pending snapshot belonging to an existing user', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'existing-old-pending' });
+    primeFinalizeSelects([{ id: 'existing-user' }]);
+    const res = await postJson('/verify-email', { token: 'existing-old-pending' });
+    expect(await res.json()).toEqual({ verified: false, status: 'sign_in' });
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(dispatchHook).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('commits selected intent with account authority and recovers the billing redirect when the hook is unavailable', async () => {
+    const purchaseSelection = { intent: 'wisp' as const, offer: 'founding' };
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'other-device', signupIntent: purchaseSelection });
+    primeFinalizeSelects();
+    vi.mocked(dispatchHook).mockResolvedValueOnce(null);
+    const res = await postJson('/verify-email', { token: 'other-device' });
+    expect(res.status).toBe(200);
+    expect(createPartner).toHaveBeenCalledWith(expect.objectContaining({ purchaseSelection, status: 'pending' }), expect.objectContaining({ tx: expect.anything() }));
+    expect(dispatchHook).toHaveBeenCalledWith('registration', 'p-1', expect.objectContaining({ purchaseSelection }));
+    expect((await res.json()).redirectUrl).toBe('/billing/plans');
+  });
+
+  it('preserves an explicit pending review hold with no checkout action or redirect', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'review', signupIntent: { intent: 'cloud', offer: 'founding' } });
+    primeFinalizeSelects();
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status: 'pending', message: 'Your account is under review.' });
+    const res = await postJson('/verify-email', { token: 'review' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('redirectUrl');
+  });
+
+  it.each(['suspended', 'churned'])('does not bypass an explicit %s hook hold with a selected billing fallback', async (status) => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'hold', signupIntent: { intent: 'cloud' } });
+    primeFinalizeSelects();
+    vi.mocked(dispatchHook).mockResolvedValueOnce({ status });
+    const res = await postJson('/verify-email', { token: 'hold' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('redirectUrl');
+  });
+
+  it('returns the normalized signupIntent, never a purchaseSelection, for a legacy launch-tuple record on the sign_in path', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'existing-legacy', purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 1000, billingPeriod: 'annual' } });
+    primeFinalizeSelects([{ id: 'existing-user' }]);
+    const res = await postJson('/verify-email', { token: 'existing-legacy' });
+    const body = await res.json();
+    expect(body).toEqual({ verified: false, status: 'sign_in', signupIntent: { intent: 'cloud' } });
+    expect(Object.hasOwn(body, 'purchaseSelection')).toBe(false);
+  });
+
+  it('does not overwrite existing accounts with intent from a replay or concurrent signup', async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'existing', signupIntent: { intent: 'wisp', offer: 'founding' } });
+    primeFinalizeSelects([{ id: 'existing-user' }]);
+    const res = await postJson('/verify-email', { token: 'existing' });
+    expect(await res.json()).toEqual({ verified: false, status: 'sign_in', signupIntent: { intent: 'wisp', offer: 'founding' } });
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(dispatchHook).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('audits signup probation once under enforce and not under shadow', async () => {
@@ -724,6 +1037,35 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     expect(transitionState.issuedFamilies).toEqual(['guarded-family-1']);
     expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'browser', value: 'a'.repeat(64) });
     expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'browser', value: 'b'.repeat(64) });
+  });
+
+  it('echoes the recorded signupIntent when a cross-binding loser maps to sign_in', async () => {
+    vi.mocked(peekPendingRegistration)
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' })
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw', signupIntent: { intent: 'wisp', offer: 'founding' } });
+    primeFinalizeSelects([]);
+    const winnerResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'a'.repeat(64),
+    });
+    expect(winnerResponse.status).toBe(200);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as never)
+      .mockReturnValueOnce(selectChain([{ id: 'u-1' }]) as never);
+    vi.mocked(createPartner).mockRejectedValueOnce({
+      cause: {
+        code: '23505',
+        constraint_name: 'partners_slug_unique',
+      },
+    });
+    const loserResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'b'.repeat(64),
+    });
+
+    expect(loserResponse.status).toBe(200);
+    expect(await loserResponse.json()).toEqual({ verified: false, status: 'sign_in', signupIntent: { intent: 'wisp', offer: 'founding' } });
   });
 
   it('maps a 23505 with no durable email winner to a retryable conflict and leaves Redis untouched', async () => {

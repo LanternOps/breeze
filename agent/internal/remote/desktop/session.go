@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -35,17 +36,42 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id            string
-	peerConn      *webrtc.PeerConnection
-	videoTrack    *webrtc.TrackLocalStaticSample
-	dataChannel   *webrtc.DataChannel
-	inputHandler  InputHandler
-	capturer      ScreenCapturer
-	encoder       atomic.Pointer[VideoEncoder]
-	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync *clipboard.ClipboardSync
-	cursorDC      *webrtc.DataChannel
-	controlDC     *webrtc.DataChannel
+	id                string
+	peerConn          *webrtc.PeerConnection
+	videoTrack        *webrtc.TrackLocalStaticSample
+	dataChannel       *webrtc.DataChannel
+	inputHandler      InputHandler
+	capturer          ScreenCapturer
+	encoder           atomic.Pointer[VideoEncoder]
+	encoderPF         PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync     *clipboard.ClipboardSync
+	clipboardNotifier copyChordNotifier
+	cursorDC          *webrtc.DataChannel
+	controlDC         *webrtc.DataChannel
+
+	// backend is the session backend session that supplies capturer and
+	// inputHandler when the process registered a SessionBackend (#12117);
+	// nil otherwise. Closed by doCleanup after the capturer.
+	backend BackendSession
+
+	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
+	// then, after it found no usable software encoder (#11392).
+	softwareSwapRetryAt atomic.Int64
+
+	// captureW/captureH are the even-aligned size the session is streaming,
+	// and encoderResizeRetryAt the end of the backoff after a failed encoder
+	// resize (#11754, session_geometry.go). Capture goroutine only (set in
+	// StartSession before it starts).
+	captureW, captureH   int
+	encoderResizeRetryAt time.Time
+	// captureCap is the capturer captureW/captureH belong to. A frame from
+	// another one is the first after a monitor switch, whose own transition
+	// already ran (nil: unknown, sizes alone decide).
+	captureCap ScreenCapturer
+
+	// displayWake keeps the display on for the session (#10874). Set in
+	// StartSession before the capture loop starts; released in doCleanup.
+	displayWake *displayWakeHold
 
 	// viewerChannels maps each viewer data-channel label to the channel now
 	// serving it. A replaced channel's messages are ignored and its late close
@@ -130,6 +156,13 @@ type Session struct {
 	// transient stall doesn't pin a CPU core software-encoding 5K for the whole
 	// session. Driven from the ticker capture loop. See session_encoder_restore.go.
 	hwRestore hardwareRestorePolicy
+	// hwWarmupCh is non-nil while a hardware restore candidate is warming up
+	// off the live path (#10880). The warm-up goroutine hands its result back
+	// on it; only the capture loop receives, via maybeRestoreHardwareEncoder.
+	hwWarmupCh chan hardwareWarmupResult
+	// hwWarmupCancel is closed by abandonHardwareWarmup to tell the warm-up
+	// goroutine its result will not be collected. Set with hwWarmupCh.
+	hwWarmupCancel chan struct{}
 
 	// cursorOffsetX/Y store the active monitor's virtual desktop origin so
 	// cursorStreamLoop can convert absolute GetCursorInfo coords to
@@ -172,6 +205,13 @@ type Session struct {
 	// WriteSample (never bumped by the idle heartbeat). Drives sampleDuration so
 	// the RTP media clock reflects true inter-frame wall time across idle gaps.
 	lastSampleNanos atomic.Int64
+	// lastCaptureUnixNano is when the capturer last delivered a frame to the
+	// CPU encode path, and lastEncodeOutputUnixNano when the encoder last
+	// returned encoded data. Together with lastVideoWriteUnixNano they let the
+	// ticker no-video watchdog tell a dead capturer from a stalled encoder or
+	// sink, so an encoder stall no longer rebuilds the capture stream (#10880).
+	lastCaptureUnixNano      atomic.Int64
+	lastEncodeOutputUnixNano atomic.Int64
 
 	// lastInputUnixNano is the wall-clock nanos of the most recent INPUT event
 	// (mouse/keyboard) from the viewer. It drives the idle-session watchdog
@@ -214,6 +254,10 @@ type SessionManager struct {
 	// while a watchdog is running would be a data race.
 	clock *watchdogClock
 
+	// notifyEnding, when set, replaces the watchdog's session_ending send
+	// (#10421). Test-only, with the same set-before-start rule as clock.
+	notifyEnding func(session *Session, body map[string]any)
+
 	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
 	// revocation lease for a session. Set by the layer that owns the agent's
 	// command WebSocket (the heartbeat), because this package has no transport
@@ -237,6 +281,13 @@ type SessionManager struct {
 	// once, at teardown, when there was any clipboard activity. Copied onto
 	// each session at creation, like OnSASRequest.
 	OnClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
+
+	// ClipboardProvider, if set, supplies each new session's clipboard; nil
+	// (or a nil result) means the local system clipboard. The Windows system
+	// helper sets it so that what SYSTEM cannot read, such as an image the
+	// user copied, is read through the user helper (#8393). Set before
+	// sessions start, like OnSASRequest.
+	ClipboardProvider func(sessionID string) clipboard.Provider
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.
@@ -283,9 +334,13 @@ func (m *SessionManager) notifyActivity() {
 
 // NewSessionManager creates a new session manager.
 // Eagerly loads OpenH264 in the background so the DLL is ready before
-// the first desktop session (avoids download timeout during IPC).
+// the first desktop session (avoids download timeout during IPC). Skipped under
+// go test: the preload downloads and dlopens the real library into the test
+// process, and with cgo that crashes later threads once the YARA engine runs.
 func NewSessionManager() *SessionManager {
-	go PreloadOpenH264()
+	if !testing.Testing() {
+		go PreloadOpenH264()
+	}
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 		config:   DefaultConfig(),
@@ -325,6 +380,15 @@ func (m *SessionManager) HasActiveSessions() bool {
 		}
 	}
 	return false
+}
+
+// HasSession reports whether sessionID is still registered with this manager
+// (#10316: the agent's banner sweep asks before hiding a session's banner).
+func (m *SessionManager) HasSession(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.sessions[sessionID]
+	return ok
 }
 
 // SetAtLoginWindow updates the login-window input mode on all active sessions.
@@ -643,6 +707,16 @@ func (s *Session) doCleanup() {
 		if s.capturer != nil {
 			s.capturer.Close()
 		}
+		// The backend session owns the capturer and the input sink; it is
+		// released after both are done with.
+		if s.backend != nil {
+			if err := s.backend.Close(); err != nil {
+				slog.Warn("Failed to close the capture session", "session", s.id, "error", err.Error())
+			}
+		}
+		// After the capturer: the display may sleep again only once nothing
+		// captures it (#10874).
+		s.displayWake.release()
 		if s.peerConn != nil {
 			s.peerConn.Close()
 		}

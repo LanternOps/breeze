@@ -43,6 +43,7 @@ vi.mock('../db', () => ({
     update: dbUpdateMock,
     delete: dbDeleteMock,
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../db/schema', () => ({

@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from '../../services/patchManualDecisions';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
@@ -270,6 +271,7 @@ patchesRoutes.get(
 
     const conditions = [
       eq(deviceCommands.deviceId, deviceId),
+      await deviceCommandsInCurrentOrg(device),
       inArray(deviceCommands.type, commandTypes)
     ];
     if (status !== 'all') {
@@ -383,6 +385,7 @@ patchesRoutes.get(
       .where(
         and(
           eq(deviceCommands.deviceId, deviceId),
+          await deviceCommandsInCurrentOrg(device),
           eq(deviceCommands.type, 'patch_scan'),
           inArray(deviceCommands.status, ['completed', 'failed', 'timeout'])
         )
@@ -446,11 +449,13 @@ patchesRoutes.get(
     if (approvalViewParam !== '0' && devicePatchList.some((p) => p.status === 'pending')) {
       try {
         const evaluate = () => loadDevicePatchApprovalView(deviceId, device.orgId);
-        approvalView = partnerId
-          ? await readOwnPartnerAxisRows(partnerId, evaluate)
+        // Savepoint: the catch below survives a failed read, and the install
+        // state read after it runs on this same transaction (#11225).
+        approvalView = await withDbTransaction(() => (partnerId
+          ? readOwnPartnerAxisRows(partnerId, evaluate)
           // Partner-less org: the evaluator reads no partner-axis rows (it
           // stops at the org's missing partner), so the request context suffices.
-          : await evaluate();
+          : evaluate()));
         approvalEvaluation = approvalView.evaluation;
         // A pending row the evaluator did not classify (status changed between
         // the two reads, or an org with no partner) keeps the manual-only
@@ -626,7 +631,8 @@ patchesRoutes.post(
         externalId: patches.externalId,
         packageId: patches.packageId,
         title: patches.title,
-        category: patches.category
+        category: patches.category,
+        scope: devicePatches.scope
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -646,7 +652,8 @@ patchesRoutes.post(
     // KB-bearing. Omitting it is also safe for older agents: with no packageId
     // their existing fallback resolves the observed externalId through WUA,
     // which matches both a KB article and an exact UpdateID.
-    const patchRefs = observedPatchRefs.map((patch) =>
+    // `scope` gates the request below; it is not part of the command payload.
+    const patchRefs = observedPatchRefs.map(({ scope: _scope, ...patch }) =>
       patch.source === 'microsoft' ? { ...patch, packageId: null } : patch
     );
 
@@ -660,6 +667,21 @@ patchesRoutes.post(
         error: 'Some patches were not found',
         missingPatchIds
       }, 404);
+    }
+
+    // #10249: a per-user WinGet install (#2727) cannot be applied by the
+    // SYSTEM agent — it fails the command, or after an agent restart installs
+    // a second, machine-wide copy. The web UI already disables Install for
+    // these rows; refuse a direct request too, with the same 409 shape as an
+    // unapproved id so the whole batch is rejected rather than half-queued.
+    const userScopePatchIds = observedPatchRefs
+      .filter((patch) => patch.scope === 'user')
+      .map((patch) => patch.id);
+    if (userScopePatchIds.length > 0) {
+      return c.json({
+        error: 'Per-user (user scope) patches cannot be installed by the agent',
+        userScopePatchIds
+      }, 409);
     }
 
     // Derive the partner from the device's org. If null (no partner found), approved

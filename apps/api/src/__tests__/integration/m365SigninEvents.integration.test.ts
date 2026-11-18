@@ -268,9 +268,9 @@ describe('m365_signin_events — the delta window', () => {
     const fx = await withSystemDbAccessContext(() => seedOrg('window'));
     const now = new Date();
 
-    const cold = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now));
+    const cold = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, null));
     expect(cold.until).toBe(now.toISOString());
-    expect(Date.parse(cold.until) - Date.parse(cold.since)).toBe(7 * DAY_MS);
+    expect(Date.parse(cold.until) - Date.parse(cold.since)).toBe(1 * DAY_MS);
 
     const watermark = new Date(now.getTime() - 2 * 3600_000);
     await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values([
@@ -282,12 +282,81 @@ describe('m365_signin_events — the delta window', () => {
         signedInAt: new Date(now.getTime() - 5 * 3600_000),
       },
     ]));
+    // The walk that stored those rows has since completed.
+    const completedAt = new Date(Date.now() + 60_000);
 
-    const steady = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now));
+    const steady = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
     // MINUS the overlap, not the bare watermark: Graph surfaces records late.
     expect(steady.since)
       .toBe(new Date(watermark.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
     expect(Date.parse(steady.since)).toBeLessThan(watermark.getTime());
+  });
+
+  runDb('Case 4d: rows from a walk that never completed do not move the window (#9394)', async () => {
+    // The executor walks newest-first. A walk cut off after its first pages has
+    // stored the newest rows of its window and none of the oldest; if those
+    // rows set the watermark, the restart would skip the unread part for good.
+    const fx = await withSystemDbAccessContext(() => seedOrg('abandoned'));
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 3 * 3600_000);
+    const proven = new Date(now.getTime() - 26 * 3600_000);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values([
+      // Stored by the last COMPLETED walk.
+      {
+        orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+        signedInAt: proven, ingestedAt: new Date(completedAt.getTime() - 60_000),
+      },
+      // Stored afterwards by a walk that was cut off after its newest page.
+      {
+        orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+        signedInAt: new Date(now.getTime() - 10 * 60_000), ingestedAt: new Date(completedAt.getTime() + 3600_000),
+      },
+    ]));
+
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
+    expect(window.since)
+      .toBe(new Date(proven.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+  });
+
+  runDb('Case 4e: rows but no completed walk yet is a cold start, not a watermark (#9394)', async () => {
+    const fx = await withSystemDbAccessContext(() => seedOrg('never-completed'));
+    const now = new Date();
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+      signedInAt: new Date(now.getTime() - 5 * 60_000),
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, null));
+    expect(Date.parse(window.until) - Date.parse(window.since)).toBe(1 * DAY_MS);
+  });
+
+  runDb('Case 4f: after a first walk that finished in one run, the next walk starts at that completion (#9394)', async () => {
+    // Every row of a one-run walk lands after the run's own `now`, so none
+    // qualifies as a watermark. A fresh one-day cold start would leave a hole
+    // whenever the next run came more than a day later.
+    const fx = await withSystemDbAccessContext(() => seedOrg('first-walk'));
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 30 * 3600_000);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+      signedInAt: new Date(completedAt.getTime() - 3600_000), ingestedAt: new Date(completedAt.getTime() + 5_000),
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
+    expect(window.since)
+      .toBe(new Date(completedAt.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    expect(Date.parse(window.until) - Date.parse(window.since)).toBeGreaterThan(30 * 3600_000);
+  });
+
+  runDb('Case 4g: a row ingested exactly at the completion counts toward the watermark (#9394)', async () => {
+    const fx = await withSystemDbAccessContext(() => seedOrg('boundary'));
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 3 * 3600_000);
+    const atBoundary = new Date(now.getTime() - 4 * 3600_000);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(), signedInAt: atBoundary, ingestedAt: completedAt,
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
+    expect(window.since)
+      .toBe(new Date(atBoundary.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
   });
 
   runDb('Case 4c: an org behind by weeks gets a window covering the WHOLE gap', async () => {
@@ -300,7 +369,9 @@ describe('m365_signin_events — the delta window', () => {
     await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
       orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(), signedInAt: stale,
     }));
-    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now));
+    const window = await withSystemDbAccessContext(
+      () => signinEventsWindow(fx.org.id, now, new Date(Date.now() + 60_000)),
+    );
     expect(window.since)
       .toBe(new Date(stale.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
     expect(Date.parse(window.until) - Date.parse(window.since)).toBeGreaterThan(20 * DAY_MS);

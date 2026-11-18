@@ -231,13 +231,13 @@ done
 # comment gives Dependabot no tag to resolve against, so it tracks the default
 # branch and each weekly group PR carries the next branch head forward. Four of
 # the six call sites are release.yml jobs that build signed customer binaries,
-# so the restored cache feeds compiled output. Pin every site to the 2.9.2
+# so the restored cache feeds compiled output. Pin every site to the 2.9.3
 # release commit and require the precise `# vX.Y.Z` comment, so a re-drift fails
 # here rather than inside a signed release build.
-RUST_CACHE_PIN='Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2'
+RUST_CACHE_PIN='Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3'
 for workflow in .github/workflows/ci.yml .github/workflows/release.yml; do
   require_grep "uses: ${RUST_CACHE_PIN//./\\.}\$" "$workflow" \
-    "$workflow must pin Swatinem/rust-cache to the v2.9.2 release commit"
+    "$workflow must pin Swatinem/rust-cache to the v2.9.3 release commit"
 done
 # require_grep only proves one good line exists; this proves no site deviates.
 # Capture the scan's own status rather than letting a trailing `|| true` absorb
@@ -560,15 +560,32 @@ reject_grep 'continue-on-error:[[:space:]]*true' .github/workflows/security.yml 
 # must keep invoking the real gate, and the scanner binary must stay pinned and
 # checksum-verified before install.
 for audit_workflow in .github/workflows/ci.yml .github/workflows/security.yml; do
-  require_grep 'scripts/security/check-npm-audit\.sh' "$audit_workflow" \
-    "$audit_workflow must run the blocking dependency audit gate"
   require_grep 'scripts/security/install-osv-scanner\.sh' "$audit_workflow" \
     "$audit_workflow must install osv-scanner via the checksum-verified installer"
 done
-require_grep 'OSV_SCANNER_VERSION:-[0-9]+\.[0-9]+\.[0-9]+' scripts/security/install-osv-scanner.sh \
+require_grep 'scripts/security/check-npm-audit\.sh' .github/workflows/security.yml \
+  ".github/workflows/security.yml must run the blocking dependency audit gate"
+# ci.yml runs the gate through the base/head comparison (W1, #10744), which
+# must itself keep invoking the real gate on the head.
+require_grep '^[[:space:]]*run: bash \.github/scripts/security-audit-compare\.sh' .github/workflows/ci.yml \
+  ".github/workflows/ci.yml must run the blocking dependency audit gate (.github/scripts/security-audit-compare.sh)"
+require_grep '^gate=scripts/security/check-npm-audit\.sh$' .github/scripts/security-audit-compare.sh \
+  ".github/scripts/security-audit-compare.sh must run the blocking dependency audit gate"
+require_grep '^bash "\$gate" --findings-json "\$head_json"$' .github/scripts/security-audit-compare.sh \
+  ".github/scripts/security-audit-compare.sh must scan the head with the blocking dependency audit gate"
+# The digest is pinned in the repo and has no environment override, so a cached
+# copy is verified offline and a download is never trusted on its origin
+# alone (#11367). install-osv-scanner.test.mjs exercises the behaviour.
+require_grep '^OSV_SCANNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must pin an explicit version"
-require_grep 'sha256sum -c -' scripts/security/install-osv-scanner.sh \
-  "osv-scanner install must verify the downloaded binary checksum"
+require_grep '^OSV_SCANNER_SHA256=[0-9a-f]{64}$' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must pin the binary's SHA-256 in the repo"
+reject_grep 'OSV_SCANNER_SHA256:-' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must not let the environment override the pinned SHA-256"
+require_grep '"\$got" != "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify every downloaded binary against the pinned SHA-256"
+require_grep '"\$cached_sha" == "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify a cached binary against the pinned SHA-256"
 reject_grep 'curl .*\|[[:space:]]*(sudo )?(tar|sh|bash)' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must not pipe remote payloads into a shell or archiver"
 require_grep 'produced no parseable report' scripts/security/check-npm-audit.sh \
@@ -792,6 +809,12 @@ require_grep 'metrics_scrape_token:' docker-compose.monitoring.yml \
 require_grep 'environment: METRICS_SCRAPE_TOKEN' docker-compose.monitoring.yml \
   "monitoring compose must source metrics scrape token from the environment"
 
+# Every monitoring image must be digest-pinned (default inside *_IMAGE_REF), #7812.
+for monitoring_ref_var in PROMETHEUS_IMAGE_REF GRAFANA_IMAGE_REF ALERTMANAGER_IMAGE_REF LOKI_IMAGE_REF PROMTAIL_IMAGE_REF REDIS_EXPORTER_IMAGE_REF POSTGRES_EXPORTER_IMAGE_REF; do
+  require_grep "image: \\$\\{${monitoring_ref_var}:-[^}]*@sha256:[0-9a-f]{64}\\}" docker-compose.monitoring.yml \
+    "monitoring compose must digest-pin ${monitoring_ref_var}"
+done
+
 # docker-compose.monitoring.yml must compose cleanly on top of BOTH base
 # stacks: the self-host root docker-compose.yml (which runs a local `postgres`
 # service) and deploy/docker-compose.prod.yml (which has no local Postgres —
@@ -847,5 +870,11 @@ node scripts/security/check-override-floors.mjs ||
   fail "pnpm.overrides contains stale or dead pins (detail: node scripts/security/check-override-floors.mjs --report)"
 node --test scripts/security/check-override-floors.test.mjs >/dev/null ||
   fail "pnpm.overrides floor guard has failing unit tests (run: pnpm test:override-floors)"
+
+# e2e-tests installs must use the committed package-lock.json (#11197).
+bash scripts/security/check-e2e-install-pinned.sh >/dev/null ||
+  fail "e2e-tests install steps must use 'npm ci' (detail: bash scripts/security/check-e2e-install-pinned.sh)"
+node --test scripts/security/check-e2e-install-pinned.test.mjs >/dev/null ||
+  fail "e2e install guard has failing unit tests (run: node --test scripts/security/check-e2e-install-pinned.test.mjs)"
 
 echo "Supply-chain hardening checks passed."

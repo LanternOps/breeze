@@ -15,7 +15,13 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@prompt-catalog/catalog/*": ["../../packages/shared/src/promptCatalog/catalog/*"],
+      "@prompt-catalog/negotiate": ["../../packages/shared/src/promptCatalog/negotiate.ts"],
+      "@prompt-catalog/sanitize": ["../../packages/shared/src/promptCatalog/sanitize.ts"],
+      "@breeze-brand-contrast": ["../../packages/shared/src/utils/brandContrast.ts"]
+    }
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

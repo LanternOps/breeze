@@ -3,9 +3,10 @@ package heartbeat
 import (
 	"context"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // watchdogStatusVersionPrefix is the line prefix `breeze-watchdog status` prints
@@ -100,7 +101,7 @@ func readInstalledWatchdogVersion() (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), watchdogVersionReadTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, path, "status").Output()
+	out, err := procspawn.CommandContext(ctx, path, "status").Output()
 	if err != nil {
 		// Installed but unreadable. Per-tick detail at Debug (local-only); the
 		// caller emits the throttled WARN that actually ships. Don't cache so a

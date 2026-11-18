@@ -64,6 +64,19 @@ export const reportTypeEnum = pgEnum('report_type', [
   // AI chargeback W10 (#7608): per-client AI usage by org / model with
   // chargeable amounts; see services/businessReports/aiUsageByClientReport.ts.
   'ai_usage_by_client',
+  // Business reports phase 2 W1 (#9828): contract MRR & renewals as of run
+  // time; see services/businessReports/mrrRenewalsReport.ts.
+  'mrr_renewals',
+  // Business reports phase 2 W2 (#9828): quote win rate over revision
+  // lineages; see services/businessReports/quoteWinRateReport.ts.
+  'quote_win_rate',
+  // Business reports phase 2 W3 (#9828): per-client billed revenue, cost
+  // snapshot coverage, hours and an optional labor estimate; see
+  // services/businessReports/clientProfitabilityReport.ts.
+  'client_profitability',
+  // Customer SLA performance (#11018): org-only, audience any; see
+  // services/businessReports/ticketSlaPerformanceReport.ts.
+  'ticket_sla_performance',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
@@ -357,6 +370,11 @@ export const reportRuns = pgTable('report_runs', {
   ),
   orgIdIdx: index('report_runs_org_id_idx').on(table.orgId),
   partnerIdIdx: index('report_runs_partner_id_idx').on(table.partnerId),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): finished-run
+  // age scan (jobs/historyRetention/runHistory.ts).
+  terminalAgeIdx: index('report_runs_terminal_age_idx')
+    .on(sql`(COALESCE(${table.completedAt}, ${table.createdAt}))`)
+    .where(sql`${table.status} IN ('completed', 'failed')`),
 }));
 
 export const REPORT_RUN_DELIVERY_STATES = ['pending', 'claimed', 'sent', 'failed', 'unknown'] as const;

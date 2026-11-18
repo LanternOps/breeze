@@ -1,11 +1,14 @@
 ---
-status: draft-for-approval
+status: approved
+approved: 2026-10-22
 issue: LanternOps/breeze#8714
 related: [8713, 8767]
 builds_on: docs/superpowers/specs/security-auth/2026-09-02-partner-trust-probation-design.md
 ---
 
 # Trust follows billing: demote trusted partners when the subscription lapses
+
+**Approval:** approved 2026-10-22 by Todd (Gate A). All eleven Open Decisions in §6 are decided as recommended. Prerequisite: the billing service's `GET /internal/partners/:id/subscription-entitlement` endpoint, tracked in the private billing repository. W1 stays inert until it exists.
 
 Verified against `origin/main` at `9f9e6c8b18`. Paths are relative to `apps/api/src/` unless they say otherwise. Anything not confirmed in code is marked **(assumption)**. The billing service is a separate, private repository. Nothing here reads its code. Every statement about how it behaves is either a stated assumption or a contract this design asks it to meet (§3.8).
 
@@ -394,30 +397,40 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
    - (c) The full veto set, including `incomplete`.
 
    **Recommend (a).** The overwrite leaves the mirror wrong for a whole billing period, so a longer grace (b) does not make it trustworthy. `incomplete` (c) is a transient state during plan changes. Unknown verification and a NULL mirror both mean no demotion.
+
+   **Decided 2026-10-22:** (a).
 2. **Grace and clock.**
    - (a) Uniform 72 h, starting at the warning that was sent (`warned_at`), on the API's clock.
    - (b) Per-status windows.
    - (c) No grace; rely on the live check alone.
 
    **Recommend (a).** The live check handles the overwrite case. The grace gives a real customer time to fix a card after a warning they really received. Report-mode observations never use up the grace (§3.2).
+
+   **Decided 2026-10-22:** (a). Uniform 72 h from `warned_at`, on the API's clock.
 3. **What demotion moves the partner to.**
    - (a) `probation`.
    - (b) `restricted`.
    - (c) A new `lapsed` state with narrower gates, for example one that keeps patch installs.
 
    **Recommend (a).** Patch installs pausing is the strongest argument for (c). But a lapsed non-payer keeping remote execution on customer endpoints is exactly the gap the issue describes, and a new state multiplies the gate surface. The mitigations are the warning, the fast restore and the explicit consequence list (§3.3, including cancelled queued work).
+
+   **Decided 2026-10-22:** (a). Demotion moves the partner to `probation`.
 4. **How restore works.**
    - (a) A distinct `tryBillingRestore`: fresh live `entitled: true` overrides the mirror, no current hold, no unresolved alert, no onboarding facts. Hard denies run except the signup-time `auto:tor_signup` axis.
    - (b) Reuse `promotionDecision` with a mirror blocker.
    - (c) Human review.
 
    **Recommend (a).** (b) locks out paid customers whose mirror is still wrong, plus every grandfathered or admin-approved partner that never met the onboarding facts, and it re-applies the signup-time Tor axis to history that was already reviewed. (c) turns a billing event into an operator ticket. This was the main disagreement in the quorum. It was resolved in favour of (a) (§8).
+
+   **Decided 2026-10-22:** (a). Restore runs through `tryBillingRestore`, with no onboarding facts.
 5. **Exemption shape.**
    - (a) Explicit nullable columns with a reason enum and an expiry.
    - (b) Derive it from `type`, `plan` or `trust_reason`.
    - (c) A separate exemptions table.
 
    **Recommend (a).** Derivation is fragile (§3.5), and a table is overbuilt for one row per partner. `admin:*` promotions do not survive a lapse without an exemption. Both approval writers return 409 to make that visible.
+
+   **Decided 2026-10-22:** (a).
 6. **Notifications.**
    - (a) Three new `account.trust_billing_*` purposes, with the warning made durable by the `warned_at` gate.
    - (b) Reuse the existing trust purposes.
@@ -425,12 +438,16 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
    - (d) Banner only.
 
    **Recommend (a).** The existing copy is false for a lapse or a restore. Gating demotion on `warned_at` gives the one guarantee that matters, "never demoted unwarned", without new outbox infrastructure. The paused and restored notices stay best-effort, like today's approval email. A partner with zero deliverable admin addresses is held in "Lapse watch" and never auto-demoted. The alternative is to demote it with only the banner as notice. That is rejected, because it breaks "never demoted unwarned".
+
+   **Decided 2026-10-22:** (a).
 7. **Operator surface.**
    - (a) Audit rows only.
    - (b) Audit rows plus a queue badge, a filter, the "Lapse watch" section and evidence-card fields.
    - (c) A separate admin page.
 
    **Recommend (b).** Operators already work the trust queue. A separate page splits one concept across two homes.
+
+   **Decided 2026-10-22:** (b).
 8. **Trigger.**
    - (a) An hourly reconcile job only.
    - (b) A Postgres trigger on the mirror write.
@@ -438,16 +455,22 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
    - (d) The job plus a callback.
 
    **Recommend (a),** with per-call deadlines, a run budget and two-phase batch limits. The writer is out of tree, the grace makes latency irrelevant, and the job covers existing rows and missed webhooks.
+
+   **Decided 2026-10-22:** (a).
 9. **Dry-run and self-hosted.**
    - (a) A separate `PARTNER_TRUST_LAPSE_MODE` (`off | report | enforce`, default `off`), capped by the parent mode: off → off, shadow → at most report.
    - (b) Reuse the parent shadow.
 
    **Recommend (a).** The parent shadow changes trust state and Trust Center serving. Report must also shadow the new promotion blocker, so W1 changes no access outcome. Rollback includes a reviewed re-promotion batch.
+
+   **Decided 2026-10-22:** (a).
 10. **Abuse interaction.**
     - (a) Act only on active partners, demote only from trusted, re-check at write time, never touch status.
     - (b) Also move suspended partners to probation.
 
     **Recommend (a).** Suspension already cancels billing, and unsuspend already applies the veto. Acting on suspended rows is a double action. The unsuspend mirror gap is a separate follow-up.
+
+    **Decided 2026-10-22:** (a).
 11. **Waves.**
     - (a) Observe, then act, then polish.
     - (b) A single wave.
@@ -457,6 +480,8 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
     - **W1 — observe (no partner-visible change).** Prerequisite outside this repo: the billing service ships the entitlement endpoint. In this repo: `getSubscriptionEntitlement` with deadlines; the migration; `billingStatusIndicatesLapse`; the effective-mode resolver; the reconcile job and state machine with batch limits in `report`; the report-only promotion-blocker audit; all audit rows.
     - **W2 — act (the full cycle and every guard, before `enforce`).** The guarded demotion update and shared transition effects; the warning, `warned_at` and grace; `tryBillingRestore` with its throttle; the `billing_lapsed` blocker for new signups; the three mail purposes and the template switch in `setTrustState`; the exemption admin routes; the 409s on both approval writers and on request-review; `GET /partner/trust` `pausedFor` and `lapseGraceEndsAt`; the banner variants in all locales. Gate: the precondition audit is classified and its exemptions are set, and 7 days of `report` show no would-demote on a partner that the live check or an operator considers paid.
     - **W3 — operate.** The TrustQueue badge, filter, "Lapse watch" section and evidence-card billing section. This can land after `enforce`. Until then, operators read the audit rows.
+
+    **Decided 2026-10-22:** (a). W1 stays inert until the billing service's `GET /internal/partners/:id/subscription-entitlement` endpoint exists (tracked in the private billing repository).
 
 ## 7. Test & rollout notes
 

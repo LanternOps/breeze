@@ -18,6 +18,7 @@ vi.mock('../../lib/navigation', () => ({
 }));
 
 import VerifyEmailPage from './VerifyEmailPage';
+import { navigateTo } from '../../lib/navigation';
 
 describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
   beforeEach(() => {
@@ -51,6 +52,31 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     });
   });
 
+  // The same answer covers a wrong password and an account that is locked out
+  // after failed sign-ins (the API does not tell them apart, like sign-in).
+  it('says the password was not accepted and to wait after repeated failures', async () => {
+    authMocks.apiVerifyEmail
+      .mockResolvedValueOnce({ success: false, status: 'password_required' })
+      .mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'not-it' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'That password was not accepted. Check it and try again. After several failed attempts, wait a few minutes before trying again.',
+    );
+  });
+
+  it('asks for the signup password before completing a pending account', async () => {
+    authMocks.apiVerifyEmail.mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'signup-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    await waitFor(() => expect(authMocks.apiVerifyEmail).toHaveBeenLastCalledWith('verify-token', 'signup-password'));
+  });
+
   it('does not double-consume the token on a double click', async () => {
     render(<VerifyEmailPage />);
     const button = await screen.findByRole('button', { name: 'Confirm my email' });
@@ -60,6 +86,32 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     await waitFor(() => {
       expect(authMocks.apiVerifyEmail).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('restores the server-held signup intent in sign-in recovery on a clean device', async () => {
+    localStorage.clear();
+    authMocks.apiVerifyEmail.mockResolvedValue({ success: false, status: 'sign_in', signupIntent: { intent: 'wisp' } });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login?next=' + encodeURIComponent('/billing/plans?intent=wisp'));
+    expect(authMocks.login).not.toHaveBeenCalled();
+  });
+
+  it.each([[undefined], [{ intent: 'x' }]])('links plain /login when sign-in recovery carries no valid signup intent: %j', async (signupIntent) => {
+    localStorage.clear();
+    authMocks.apiVerifyEmail.mockResolvedValue({ success: false, status: 'sign_in', ...(signupIntent ? { signupIntent } : {}) });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+  });
+
+  it('logs in a verified signup and follows the server billing redirect without browser-held selection', async () => {
+    localStorage.clear();
+    authMocks.apiVerifyEmail.mockResolvedValue({ success: true, user: { id: 'new-user' }, tokens: { accessToken: 'new-token' }, redirectUrl: '/billing/plans' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    await waitFor(() => expect(authMocks.login).toHaveBeenCalledWith({ id: 'new-user' }, { accessToken: 'new-token' }));
+    expect(navigateTo).toHaveBeenCalledWith('/billing/plans');
   });
 
   it('shows the no-token state and never calls the API when the URL has no token', async () => {

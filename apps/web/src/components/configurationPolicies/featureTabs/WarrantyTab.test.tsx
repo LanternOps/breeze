@@ -95,6 +95,23 @@ describe('WarrantyTab', () => {
     expect(JSON.stringify(savedSettings())).not.toContain('consent');
   });
 
+  // #10371 — warranty expiry alerts are lifecycle notices graded info/low/medium.
+  // The threshold copy must describe that ladder, not promise a `critical` alert.
+  it('describes the info/low/medium severity ladder, never a critical alert', () => {
+    render(
+      <WarrantyTab
+        {...baseProps}
+        existingLink={link('link-1', { enabled: true, warnDays: 90, criticalDays: 30 })}
+      />,
+    );
+
+    expect(screen.getByText(/info severity when warranty expires within this many days/i)).toBeTruthy();
+    expect(screen.getByText(/low severity when warranty expires within this many days/i)).toBeTruthy();
+    expect(screen.getByText(/expired warranty alerts at medium/i)).toBeTruthy();
+    expect(screen.getByText(/^urgent threshold \(days\)$/i)).toBeTruthy();
+    expect(screen.queryByText(/critical/i)).toBeNull();
+  });
+
   it('renders the consent explainer and, once recorded, who accepted', () => {
     render(
       <WarrantyTab

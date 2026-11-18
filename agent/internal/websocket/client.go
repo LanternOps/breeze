@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -58,6 +59,15 @@ type Config struct {
 	AgentID   string
 	AuthToken *secmem.SecureString
 	TLSConfig *tls.Config
+	// FirstReconnectWindow bounds the spread of the redial after a stable
+	// socket the server closed (W09, #8148). nil means
+	// defaultFirstReconnectWindow (30 s); a value is clamped to [0, 300 s],
+	// and any value at or below 5 s gives #9145's 1–5 s spread.
+	FirstReconnectWindow *time.Duration
+	// StartDialWindow bounds the uniform wait before the process's first
+	// dial. nil means defaultStartDialWindow (10 s); a value is clamped to
+	// [0, 10 s]. Tests that start a client set it to 0.
+	StartDialWindow *time.Duration
 }
 
 // Command represents a command received via WebSocket
@@ -211,6 +221,15 @@ type Client struct {
 	// lock.
 	OnResultHandedOff func(CommandResult)
 
+	// PersistResultWhileDisconnected, if set, reports whether a command's
+	// result must go to the outbox (OnResultWriteFailed) when it is produced
+	// while no socket is held (W09, #8148). The heartbeat answers true only
+	// for journaled, server-tracked commands; terminal, tunnel, desktop and
+	// monitor results keep buffering in memory, so a long reconnect window
+	// does not cost them a disk write each. nil keeps today's buffering.
+	// Set once before Start().
+	PersistResultWhileDisconnected func(Command) bool
+
 	// OnRevocationLease, if set, is invoked from the read pump when the server
 	// answers a revocation-lease renewal. `Revoked` is true for a
 	// `revocation_lease_revoked` frame (stop the session NOW).
@@ -236,6 +255,33 @@ type Client struct {
 	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
 	// result_resend.go.
 	resends *sentResultTracker
+
+	// firstWindow and startWindow pace the reconnect loop (W09, #8148): the
+	// spread after a stable socket the server closed, and the wait before the
+	// first dial. Set in New; never mutated after Start.
+	firstWindow time.Duration
+	startWindow time.Duration
+
+	// connStartedAt is when connect() installed the current socket (wsClock).
+	// Written and read only on the reconnect-loop goroutine.
+	connStartedAt time.Time
+
+	// drain is the server's drain hint for the current socket (drain.go).
+	// Loop-goroutine owned, like connStartedAt.
+	drain drainHint
+
+	// testHooks are nil in production; tests set them before Start.
+	testHooks clientTestHooks
+}
+
+// clientTestHooks are synchronisation points for the fake-clock tests.
+type clientTestHooks struct {
+	// connected receives (non-blocking) after connect installed a socket.
+	connected chan<- struct{}
+	// beforeInstall runs between a successful dial and the install.
+	beforeInstall func()
+	// drainStored receives (non-blocking) after readPump stored a drain hint.
+	drainStored chan<- struct{}
 }
 
 // RevocationLeaseMessage is the server's answer to a revocation-lease renewal.
@@ -246,6 +292,18 @@ type RevocationLeaseMessage struct {
 	Reason             string
 	ExpiresAtUnixMs    int64
 	HardDeadlineUnixMs int64
+	// ExpiresInMs and HardDeadlineInMs are the same deadlines as the time
+	// remaining at the moment the server decided to renew; zero from an older
+	// API (#11840). Resolve them with desktop.LeaseExpiry / LeaseHardDeadline
+	// against LeaseClockAnchor(), never against the device's wall clock.
+	ExpiresInMs      int64
+	HardDeadlineInMs int64
+	// ReceivedAt is the time.Now() reading taken when the frame was read.
+	ReceivedAt time.Time
+	// RequestedAt is when this agent queued the renewal request this answer
+	// is for, recovered from the renewAnchor the server echoed. Zero when the
+	// server echoed none (an older API) or the echo was unusable.
+	RequestedAt time.Time
 	// StartGeneration is the session's current desktop_start_generation as a
 	// canonical decimal string, empty from a pre-W05 API. The
 	// agent's durable start fence resyncs from it.
@@ -262,9 +320,84 @@ type RevocationLeaseMessage struct {
 	SyncNonce string
 }
 
+// LeaseClockAnchor is the instant the remaining durations are measured from.
+//
+// Preferably the moment this agent queued the request the answer is for: the
+// server decided after it saw that request, so a lease measured from it can
+// never end later than the server intended, however long the request, the
+// server's checks or the answer took (#11840). It can only end early, by the
+// round trip. Without an echo it falls back to the moment the frame was read.
+func (m RevocationLeaseMessage) LeaseClockAnchor() time.Time {
+	if !m.RequestedAt.IsZero() {
+		return m.RequestedAt
+	}
+	return m.ReceivedAt
+}
+
+// leaseAnchorBase is the origin of renewAnchor values: renewal requests carry
+// milliseconds elapsed since it, measured on the monotonic clock. The server
+// treats the value as opaque and echoes it on its answer. Only elapsed time
+// is ever taken from it, never its wall reading (see leaseRequestedAt).
+var leaseAnchorBase = time.Now()
+
+// leaseAnchorElapsed is the monotonic time from leaseAnchorBase to t. A
+// variable only so tests can simulate a wall-clock step, or a sleep the
+// monotonic clock did not count, since the agent started.
+var leaseAnchorElapsed = func(t time.Time) time.Duration { return t.Sub(leaseAnchorBase) }
+
+// leaseAnchorNow is the renewAnchor for a request queued now.
+func leaseAnchorNow() int64 {
+	return leaseAnchorElapsed(time.Now()).Milliseconds()
+}
+
+// leaseRequestedAt recovers the request time from an echoed renewAnchor. An
+// absent, negative or non-finite echo, or one later than the frame's own
+// receipt, is unusable: the caller then measures from receipt instead.
+//
+// The result is receivedAt moved back by the request's age, where the age is
+// the monotonic time between the request and the receipt. It is NOT
+// leaseAnchorBase plus the echo: that value's wall reading is "process start
+// plus elapsed monotonic time", which drifts from the real wall clock by every
+// clock step since the agent started (and, where the monotonic clock pauses,
+// by every sleep). The deadline forwarded to a helper is that wall reading,
+// read against the helper's current clock, so the drift would end sessions
+// early or stretch the lease (#11840 review). Anchored to receivedAt, the wall
+// reading is the clock as of receipt.
+//
+// The echo is whole milliseconds, rounded down from the request's elapsed
+// time, so rounding never makes the recovered age shorter than the real one.
+// The age is monotonic time, though: where the monotonic clock pauses in
+// sleep (macOS), a sleep while the renewal was in flight counts as no time,
+// and the request instant lands later by that sleep.
+func leaseRequestedAt(echo *float64, receivedAt time.Time) time.Time {
+	if echo == nil || math.IsNaN(*echo) || *echo < 0 {
+		return time.Time{}
+	}
+	elapsedAtReceipt := leaseAnchorElapsed(receivedAt)
+	if *echo > float64(elapsedAtReceipt.Milliseconds()) {
+		return time.Time{}
+	}
+	age := elapsedAtReceipt - time.Duration(int64(*echo))*time.Millisecond
+	return receivedAt.Add(-age)
+}
+
 // New creates a new WebSocket client
 func New(cfg *Config, handler CommandHandler) *Client {
+	firstWindow := defaultFirstReconnectWindow
+	if cfg.FirstReconnectWindow != nil {
+		firstWindow = clampFirstReconnectWindow(*cfg.FirstReconnectWindow)
+		if firstWindow != *cfg.FirstReconnectWindow {
+			log.Warn("first reconnect window out of range; clamped",
+				"configured", *cfg.FirstReconnectWindow, "using", firstWindow)
+		}
+	}
+	startWindow := defaultStartDialWindow
+	if cfg.StartDialWindow != nil {
+		startWindow = min(max(*cfg.StartDialWindow, 0), defaultStartDialWindow)
+	}
 	return &Client{
+		firstWindow:     firstWindow,
+		startWindow:     startWindow,
 		config:          cfg,
 		cmdHandler:      handler,
 		done:            make(chan struct{}),
@@ -437,12 +570,31 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	if c.testHooks.beforeInstall != nil {
+		c.testHooks.beforeInstall()
+	}
+	// Install only if Stop has not run, checked in the same critical section
+	// Stop's closeCurrentConn takes: either Stop sees this socket and closes
+	// it, or this sees Stop and discards it. The loop's stopped() check after
+	// connect (#9245) stays as the second line of defence.
 	c.connMu.Lock()
+	if c.stopped() {
+		c.connMu.Unlock()
+		_ = conn.Close()
+		return context.Canceled
+	}
 	c.conn = conn
+	c.connStartedAt = wsClock.Now()
 	c.connMu.Unlock()
 
 	conn.SetReadLimit(maxMessageSize)
 	log.Info("connected", "server", c.serverURL())
+	if c.testHooks.connected != nil {
+		select {
+		case c.testHooks.connected <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -471,7 +623,19 @@ func (c *Client) buildWSURL() (string, error) {
 // reconnectBackoff. The step resets only after a connection that lasted past
 // stableConnectionThreshold.
 func (c *Client) reconnectLoop() {
-	backoff := newReconnectBackoff(nil)
+	backoff := newReconnectBackoff(wsRand)
+	backoff.firstWindow = c.firstWindow
+
+	// Spread the first dial of the process (W09, #8148): a fleet restarted
+	// together must not upgrade in the same second.
+	if d := backoff.atStart(c.startWindow); d > 0 {
+		log.Info("initial connect delayed", "delay", d)
+		select {
+		case <-c.done:
+			return
+		case <-wsClock.After(d):
+		}
+	}
 
 	for {
 		if c.stopped() {
@@ -479,7 +643,11 @@ func (c *Client) reconnectLoop() {
 		}
 
 		var sleep time.Duration
+		c.drain = drainHint{} // a hint belongs to one socket
 		if err := c.connect(); err != nil {
+			if c.stopped() {
+				return // a dial cancelled or discarded by Stop is not a failure
+			}
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
 		} else {
@@ -493,7 +661,7 @@ func (c *Client) reconnectLoop() {
 			}
 
 			// Run read/write pumps — track how long the connection lasted
-			connStart := time.Now()
+			connStart := c.connStartedAt
 			pumpDone := make(chan struct{})
 			writerDone := make(chan struct{})
 			go c.writePump(pumpDone, writerDone)
@@ -501,24 +669,29 @@ func (c *Client) reconnectLoop() {
 			close(pumpDone)
 			<-writerDone
 			c.closeCurrentConn(false)
-			lasted := time.Since(connStart)
+			lasted := wsClock.Now().Sub(connStart)
 
 			if c.stopped() {
 				return
 			}
 
 			kind, code := classifyDisconnect(readErr, c.localClose.Swap(false))
-			sleep = backoff.afterDisconnect(kind, lasted)
-			log.Info("disconnected", "kind", kind.String(), "closeCode", code,
-				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			if within, ok := c.takeDrainHint(); ok {
+				sleep = backoff.afterDrainedDisconnect(kind, lasted, within)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep,
+					"drainWithin", within)
+			} else {
+				sleep = backoff.afterDisconnect(kind, lasted)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			}
 		}
 
-		timer := time.NewTimer(sleep)
 		select {
 		case <-c.done:
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-wsClock.After(sleep):
 		}
 	}
 }
@@ -616,6 +789,14 @@ func (c *Client) readPump() error {
 		// agents fall through to the id-less skip below and ignore them.
 		if msg.Type == "desktop_ice_candidate" {
 			c.handleDesktopICECandidateMessage(message)
+			continue
+		}
+
+		// A draining server's reconnect window (W09, #8148). Handled before
+		// the id-less skip (the #3001 trap), and before command dispatch so
+		// a drain frame is never run as a command. Agents before W09 skip it.
+		if msg.Type == "drain" {
+			c.handleDrainMessage(message)
 			continue
 		}
 
@@ -902,6 +1083,33 @@ func (c *Client) processCommand(cmd Command) {
 	result := c.cmdHandler(cmd)
 	result.Type = "command_result"
 	result.CommandID = cmd.ID
+
+	// W09 (#8148, D11): with no socket held, a result queued in memory would
+	// wait out the reconnect window (30 s by default, up to 300 s) or a drain
+	// window (up to 600 s) AFTER OnResultHandedOff cleared its journal entry,
+	// so a hard kill in between lost it. Persist it to the outbox first; the
+	// next OnConnected flush delivers it. If a socket came up while the outbox
+	// write ran, its flush may already have passed, so send directly too: the
+	// server tolerates a duplicate terminal result. Only commands the owner
+	// marks durable take this path (PersistResultWhileDisconnected); direct
+	// SendResult callers (tunnel, clipboard and desktop notices) keep
+	// buffering.
+	if result.Status != "duplicate" && c.OnResultWriteFailed != nil &&
+		c.PersistResultWhileDisconnected != nil && c.PersistResultWhileDisconnected(cmd) &&
+		!c.IsConnected() && !c.stopped() {
+		log.Info("command result held for reconnect; persisting to the outbox", "commandId", cmd.ID)
+		c.handleResultWriteFailure(result)
+		if c.IsConnected() {
+			if err := c.SendResult(result); err != nil {
+				log.Warn("direct send after outbox persist failed; the outbox keeps it",
+					"commandId", cmd.ID, "error", err.Error())
+			}
+		}
+		if c.OnResultHandedOff != nil {
+			c.OnResultHandedOff(result)
+		}
+		return
+	}
 
 	if err := c.SendResult(result); err != nil {
 		// Most often "client is stopped": a long command (install_patches
@@ -1336,16 +1544,51 @@ func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 	}
 }
 
+// optionalNumber is an optional JSON number that never fails a decode: null,
+// a missing key or a non-number (a string, object, array or bool) all read as
+// absent. Use it only for fields whose absence has a safe fallback.
+type optionalNumber struct {
+	value float64
+	set   bool
+}
+
+func (n *optionalNumber) UnmarshalJSON(b []byte) error {
+	var v float64
+	if string(b) != "null" && json.Unmarshal(b, &v) == nil {
+		n.value, n.set = v, true
+	} else {
+		*n = optionalNumber{}
+	}
+	return nil
+}
+
+// ptr is the value, or nil when absent.
+func (n optionalNumber) ptr() *float64 {
+	if !n.set {
+		return nil
+	}
+	return &n.value
+}
+
 // handleRevocationLeaseMessage decodes a revocation-lease answer and hands it to
 // the registered hook. A malformed frame is dropped with a log rather than
 // treated as a revocation: only an explicit `revocation_lease_revoked` stops a
 // session, so a decode bug can never disconnect the fleet.
 func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
+	receivedAt := time.Now()
 	var frame struct {
 		SessionID    string  `json:"sessionId"`
 		Reason       string  `json:"reason"`
 		ExpiresAt    float64 `json:"expiresAt"`
 		HardDeadline float64 `json:"hardDeadline"`
+		// The #11840 additions are optional and lenient: a malformed value
+		// reads as absent (the absolute fields above then govern) instead of
+		// failing the decode and dropping a renewal.
+		ExpiresInMs      optionalNumber `json:"expiresInMs"`
+		HardDeadlineInMs optionalNumber `json:"hardDeadlineInMs"`
+		// RenewAnchor is the server's echo of the value this agent sent on
+		// the request. 0 is a valid anchor, so absence is tracked apart.
+		RenewAnchor optionalNumber `json:"renewAnchor"`
 		// Fence fields. Generations are STRINGS on the wire: they are
 		// bigint on the server and would round above 2^53 through a float.
 		StartGeneration    string `json:"startGeneration"`
@@ -1367,6 +1610,10 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason:             frame.Reason,
 		ExpiresAtUnixMs:    int64(frame.ExpiresAt),
 		HardDeadlineUnixMs: int64(frame.HardDeadline),
+		ExpiresInMs:        wire.JSONMillis(frame.ExpiresInMs.value),
+		HardDeadlineInMs:   wire.JSONMillis(frame.HardDeadlineInMs.value),
+		ReceivedAt:         receivedAt,
+		RequestedAt:        leaseRequestedAt(frame.RenewAnchor.ptr(), receivedAt),
 		StartGeneration:    frame.StartGeneration,
 		TerminationPhase:   frame.TerminationPhase,
 		TerminalGeneration: frame.TerminalGeneration,
@@ -1389,6 +1636,11 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 	payload := map[string]any{
 		"type":      "revocation_lease_renew",
 		"sessionId": sessionID,
+		// Echoed on the answer, so the agent can measure the renewed lease
+		// from when it asked rather than from when the answer arrived
+		// (#11840). Stamped before queueing: an earlier anchor only makes the
+		// lease shorter. An older API strips the unknown key.
+		"renewAnchor": leaseAnchorNow(),
 	}
 	if nonce != "" {
 		payload["syncNonce"] = nonce

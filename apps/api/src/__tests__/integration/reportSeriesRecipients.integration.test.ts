@@ -15,6 +15,7 @@ import {
   materializeDetachedRecipients,
   resolveSeriesRecipientsForOrgs,
   resolveSeriesChildRecipients,
+  resolveSeriesRuleContactIds,
 } from '../../services/reportSeries/recipients';
 
 const system = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
@@ -107,6 +108,29 @@ describe('resolveSeriesChildRecipients', () => {
       });
       expect([...out.customer].sort()).toEqual(['billing-kept@acme.test', 'extra@acme.test', 'primary@acme.test']);
       expect(out.cc).toEqual(['noc@msp.test']);
+    });
+  });
+});
+
+describe('resolveSeriesRuleContactIds', () => {
+  it('a Site-pinned role is in neither the preview ids nor the recipients; the same role at Organization scope is in both', async () => {
+    await system(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const [series] = await db.insert(reportSeries).values({
+        partnerId: partner.id, name: 'S', type: 'executive_summary', schedule: 'monthly',
+      }).returning();
+      const report = await childReport(org.id, series!.id);
+      const orgWide = await contact(org.id, 'tech-org@acme.test', { roles: ['technical'] });
+      const sitePinned = await contact(org.id, 'tech-site@acme.test', { roles: ['technical'], siteLevel: true });
+
+      const rule = { primaryContact: false, roles: ['technical'] };
+      const ids = await resolveSeriesRuleContactIds({ orgId: org.id, rule });
+      expect(ids).toContain(orgWide);
+      expect(ids).not.toContain(sitePinned);
+
+      const out = await resolveSeriesChildRecipients({ reportId: report, orgId: org.id, rule, internalCc: [] });
+      expect(out.customer).toEqual(['tech-org@acme.test']);
     });
   });
 });

@@ -1,6 +1,6 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { ImpactWeightOverrides } from '@breeze/shared';
+import type { ImpactWeightOverrides, PartnerPurchaseSelection, RearmMode } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -37,6 +37,10 @@ export const partners = pgTable('partners', {
   status: partnerStatusEnum('status').notNull().default('active'),
   maxOrganizations: integer('max_organizations'),
   maxDevices: integer('max_devices'),
+  // Billing-controlled, finite temporary enrollment allowance. It is not paid
+  // capacity and never comes from signup intent or partner-editable settings.
+  billingAdmissionLimit: integer('billing_admission_limit'),
+  billingAdmissionExpiresAt: timestamp('billing_admission_expires_at', { withTimezone: true }),
   // First-class partner timezone (issue #1318). The canonical default that a tz
   // field resolves to when no more-specific scope (explicit/site/org) is set.
   // Kept in sync with the legacy `settings.timezone` JSONB key, which remains
@@ -45,6 +49,8 @@ export const partners = pgTable('partners', {
   settings: jsonb('settings').default({}),
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),
+  // Durable signup preference. It never grants plan, capacity or subscription authority.
+  purchaseSelection: jsonb('purchase_selection').$type<PartnerPurchaseSelection | null>(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: text('email_signature'),
   // Auto-email the issued invoice (with its public pay link) when a quote is
@@ -93,6 +99,11 @@ export const partners = pgTable('partners', {
   signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
   signupIpAsn: integer('signup_ip_asn'),
   signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
+  // Which classifier produced signupIpClass (#11698): a keyed provider name,
+  // 'offline' (Tor list + hosting ASNs checked), 'offline-partial' (Tor list
+  // only) or 'none' (private address). NULL = classified before this column
+  // existed; the promotion gate reads that as never classified.
+  signupIpClassSource: varchar('signup_ip_class_source', { length: 32 }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   autopayEnabled: boolean('autopay_enabled').notNull().default(false),
@@ -125,7 +136,9 @@ export const partners = pgTable('partners', {
   // quote PDFs/HTML. Partner-owned deliberately (MSP identity, not per-org
   // config) — see the spec's carve-out justification.
   documentTheme: varchar('document_theme', { length: 32 }).notNull().default('classic'),
-  documentPageSize: varchar('document_page_size', { length: 8 }).notNull().default('letter'),
+  // #12097: NULL = never chosen → the partner's region default (Letter for
+  // US/CA, A4 elsewhere). Read through resolvePartnerPageSize, never raw.
+  documentPageSize: varchar('document_page_size', { length: 8 }),
   billingCompanyName: varchar('billing_company_name', { length: 255 }),
   billingPhone: varchar('billing_phone', { length: 40 }),
   billingWebsite: varchar('billing_website', { length: 255 }),
@@ -184,6 +197,20 @@ export const partners = pgTable('partners', {
   // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
   // which is a platform-granted entitlement).
   serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // Partner billing toggle (spec 2026-10-16-partner-billing-enabled-design.md §5.6):
+  // a dedicated column, not partners.settings, because gates and job predicates query it.
+  // Migration 2027-01-05-120000 backfills existing partners, then sets DEFAULT true + NOT NULL.
+  billingEnabled: boolean('billing_enabled').notNull().default(true),
+  // #9075 W4a (OD8 B): agreement-request defaults (Settings → Billing →
+  // Agreements). Partner level only — no org override. Dedicated columns for
+  // the billingEnabled reason: the reminder job's selector queries them.
+  // Never read directly — always through services/agreementRequestDefaults.ts.
+  // Expiry: days a new request lives when the sender sets none.
+  agreementDefaultExpiryDays: integer('agreement_default_expiry_days').notNull().default(30),
+  // Automatic reminders every N days since the last email; NULL = off (default).
+  agreementReminderIntervalDays: integer('agreement_reminder_interval_days'),
+  // Automatic reminders stop once reminder_count reaches this (manual ones count).
+  agreementMaxReminders: integer('agreement_max_reminders').notNull().default(3),
   // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
   // only: integrations.ts already imports orgs.ts, so a `.references()` here
   // would close an import cycle. Paired with the mode by
@@ -192,7 +219,48 @@ export const partners = pgTable('partners', {
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
-});
+  // Alert re-arm lifecycle W2 (#10765): the partner DEFAULT every org and
+  // monitor inherits (org override → monitor override beat it). Read ONLY via
+  // services/alertLifecycle/resolve.ts (contract test). The rearm delay is set
+  // iff the mode is 'after_delay' (partners_alert_rearm_delay_chk).
+  alertAutoResolve: boolean('alert_auto_resolve').notNull().default(false),
+  alertRearmMode: text('alert_rearm_mode').$type<RearmMode>().notNull().default('new_evidence'),
+  alertRearmDelayMinutes: integer('alert_rearm_delay_minutes'),
+  alertCooldownMinutes: integer('alert_cooldown_minutes').notNull().default(5),
+}, (table) => [
+  check('partners_agreement_default_expiry_days_check', sql`${table.agreementDefaultExpiryDays} BETWEEN 1 AND 365`),
+  check('partners_agreement_reminder_interval_days_check',
+    sql`${table.agreementReminderIntervalDays} IS NULL OR ${table.agreementReminderIntervalDays} BETWEEN 1 AND 30`),
+  check('partners_agreement_max_reminders_check', sql`${table.agreementMaxReminders} BETWEEN 1 AND 10`),
+  check('partners_alert_rearm_mode_chk', sql`${table.alertRearmMode} IN ('new_evidence', 'after_delay')`),
+  check('partners_alert_rearm_delay_chk', sql`(${table.alertRearmMode} = 'after_delay') = (${table.alertRearmDelayMinutes} IS NOT NULL)
+    AND (${table.alertRearmDelayMinutes} IS NULL OR ${table.alertRearmDelayMinutes} BETWEEN 1 AND 1440)`),
+  check('partners_alert_cooldown_chk', sql`${table.alertCooldownMinutes} BETWEEN 0 AND 1440`),
+  check('partners_purchase_selection_valid', sql`${table.purchaseSelection} IS NULL OR COALESCE((
+  (
+    jsonb_typeof(${table.purchaseSelection}) = 'object'
+    AND ${table.purchaseSelection} ?& ARRAY['catalogVersion', 'capacity', 'billingPeriod']
+    AND ${table.purchaseSelection} - ARRAY['catalogVersion', 'capacity', 'billingPeriod'] = '{}'::jsonb
+    AND ${table.purchaseSelection}->'catalogVersion' = '"launch-2026-10"'::jsonb
+    AND (
+      (${table.purchaseSelection}->'billingPeriod' = '"monthly"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '150'::jsonb, '200'::jsonb, '250'::jsonb, '300'::jsonb, '350'::jsonb, '400'::jsonb, '450'::jsonb, '500'::jsonb, '750'::jsonb, '1000'::jsonb))
+      OR (${table.purchaseSelection}->'billingPeriod' = '"annual"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '250'::jsonb, '500'::jsonb, '1000'::jsonb))
+    )
+  )
+  OR (
+    jsonb_typeof(${table.purchaseSelection}) = 'object'
+    AND ${table.purchaseSelection} ? 'intent'
+    AND ${table.purchaseSelection} - ARRAY['intent', 'offer'] = '{}'::jsonb
+    AND ${table.purchaseSelection}->'intent' IN ('"cloud"'::jsonb, '"wisp"'::jsonb)
+    AND (
+      NOT ${table.purchaseSelection} ? 'offer'
+      OR (
+        jsonb_typeof(${table.purchaseSelection}->'offer') = 'string'
+        AND ${table.purchaseSelection}->>'offer' ~ '^[a-z][a-z0-9_-]{0,31}$'
+      )
+    )
+  )), false)`),
+]);
 
 /**
  * Name of the per-partner, case-insensitive, lifetime slug uniqueness index
@@ -256,6 +324,15 @@ export const organizations = pgTable('organizations', {
   // code to execute on a vendor sandbox. Default false until the DPA review;
   // enforced at analysis-run ADMISSION (runService.ts), never in the catalog.
   aiExternalProcessing: boolean('ai_external_processing').notNull().default(false),
+  // Alert re-arm lifecycle W2 (#10765): org OVERRIDE of the partner's alert
+  // lifecycle default. Each NULL = inherit `partners.alert_*`; no defaults, no
+  // backfill. CHECKs (migration 2027-01-20-130000): mode in
+  // ('new_evidence','after_delay'), delay 1–1440 set iff mode = 'after_delay',
+  // cooldown 0–1440. Read ONLY via services/alertLifecycle/resolve.ts.
+  alertAutoResolve: boolean('alert_auto_resolve'),
+  alertRearmMode: text('alert_rearm_mode').$type<RearmMode>(),
+  alertRearmDelayMinutes: integer('alert_rearm_delay_minutes'),
+  alertCooldownMinutes: integer('alert_cooldown_minutes'),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),

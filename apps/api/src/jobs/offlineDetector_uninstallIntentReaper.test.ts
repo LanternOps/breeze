@@ -18,7 +18,8 @@ interface FleetDevice {
   status?: string;
 }
 
-const { createAuditLogAsyncMock, updateSetMock, updateWhereMock, selectFleetState, warnSpy } = vi.hoisted(() => ({
+const { createAuditLogAsyncMock, updateSetMock, updateWhereMock, selectFleetState, warnSpy, requestReevaluationMock } = vi.hoisted(() => ({
+  requestReevaluationMock: vi.fn(async () => null),
   createAuditLogAsyncMock: vi.fn(),
   updateSetMock: vi.fn(),
   updateWhereMock: vi.fn(),
@@ -80,6 +81,7 @@ function findNotInArrayVals(condition: unknown, col: string): string[] | null {
   return null;
 }
 
+const runAfterDbContextCommitMock = vi.hoisted(() => vi.fn());
 vi.mock('../db', () => ({
   db: {
     select: () => ({
@@ -123,6 +125,7 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: undefined,
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runAfterDbContextCommit: runAfterDbContextCommitMock,
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -174,9 +177,12 @@ vi.mock('../services/alertConditions', () => ({ interpolateTemplate: vi.fn() }))
 
 vi.mock('../services/bullmqUtils', () => ({ isReusableState: vi.fn(() => false) }));
 
+vi.mock('./deviceGroupJobs', () => ({ requestDeviceGroupReevaluation: requestReevaluationMock }));
+
 import { processReapUninstallIntent } from './offlineDetector';
 
 beforeEach(() => {
+  requestReevaluationMock.mockClear();
   createAuditLogAsyncMock.mockClear();
   updateSetMock.mockClear();
   updateWhereMock.mockClear();
@@ -196,6 +202,26 @@ afterEach(() => {
 });
 
 describe('processReapUninstallIntent — predicate + decommission (#2764)', () => {
+  // #9933: a reaped device is a removed device, and dynamic groups leave those
+  // out — re-evaluate its org's groups so the stale rows drop now.
+  it('re-evaluates dynamic groups for a reaped device, and not for a skipped one', async () => {
+    selectFleetState.fleet = [
+      { id: 'dev-stale', orgId: 'org-1', hostname: 'host-stale', displayName: null },
+      { id: 'dev-raced', orgId: 'org-1', hostname: 'host-raced', displayName: null },
+    ];
+    updateReturns.set('dev-raced', []);
+
+    await processReapUninstallIntent();
+
+    expect(requestReevaluationMock).toHaveBeenCalledTimes(1);
+    expect(requestReevaluationMock).toHaveBeenCalledWith({
+      deviceId: 'dev-stale',
+      orgId: 'org-1',
+      eventType: 'device.created',
+      reason: 'device_decommissioned',
+    });
+  });
+
   it('decommissions a device whose intent is older than the default 24h window with no heartbeat since', async () => {
     selectFleetState.fleet = [{ id: 'dev-stale', orgId: 'org-1', hostname: 'host-stale', displayName: null }];
 
@@ -418,16 +444,20 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
       });
       // Same org scoping as the surrounding per-candidate writes.
       expect(whereArg.args).toContainEqual({ op: 'eq', col: 'devices.orgId', val: 'org-42' });
+      // #8318 §7.3: links from the partner's other orgs are cleared after commit.
+      expect(runAfterDbContextCommitMock).toHaveBeenCalledWith('reinstall-link-clear', expect.any(Function));
     });
 
     it('does not clear linkage for a row the TOCTOU guard skipped', async () => {
       selectFleetState.fleet = [{ id: 'dev-recovered', orgId: 'org-1', hostname: 'host-recovered', displayName: null }];
       updateReturns.set('dev-recovered', []);
+      runAfterDbContextCommitMock.mockClear();
 
       await processReapUninstallIntent();
 
       // Only the (0-row) status-flip attempt ran; no linkage write followed.
       expect(updateSetMock).toHaveBeenCalledTimes(1);
+      expect(runAfterDbContextCommitMock).not.toHaveBeenCalled();
       expect(updateSetMock).not.toHaveBeenCalledWith(
         expect.objectContaining({ possibleReplacementOfDeviceId: null })
       );

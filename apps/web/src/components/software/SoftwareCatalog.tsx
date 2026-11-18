@@ -9,7 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
 import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
@@ -28,6 +28,8 @@ import {
 import { asList } from '@/lib/asList';
 import { useEdrReadiness, type EdrReadiness } from "./useEdrReadiness";
 import BuiltinPackageDetail from "./BuiltinPackageDetail";
+import BuiltinPackagesPanel, { type BuiltinPackageRow } from "./BuiltinPackagesPanel";
+import { useDefaultOwnerScope } from "../../hooks/useDefaultOwnerScope";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { replaceUrl } from '../../lib/replaceUrl';
@@ -42,6 +44,8 @@ type SoftwareItem = {
   createdAt: string;
   /** Set for built-in integration packages (e.g. Huntress, SentinelOne). */
   integrationProvider?: IntegrationProvider;
+  /** #6958: set for Breeze-pinned built-ins (e.g. 'controld_windows'); immutable outside system scope. */
+  builtinPackageKey?: string;
   partnerId?: string;
   /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
   versionCount?: number;
@@ -84,10 +88,47 @@ const needsInstallerUpload = (item: SoftwareItem): boolean =>
  *                            link), then the hash is cleared the same way.
  */
 type CatalogView =
-  | { tab: "catalog" }
+  | { tab: "catalog"; source?: SourceFilter }
   | { tab: "deployments"; deploymentId?: string };
+
+/**
+ * Where a library entry's install comes from, derived from fields the catalog
+ * list already returns: winget / Homebrew from `methodKinds`, an uploaded or
+ * URL-hosted installer from `versionCount`. An entry can have several.
+ * Hash form: `#catalog&source=winget` (also accepted bare: `#source=winget`).
+ */
+const SOURCE_FILTERS = ["winget", "brew", "installer"] as const;
+type SourceFilter = (typeof SOURCE_FILTERS)[number];
+
+const isSourceFilter = (v: string): v is SourceFilter =>
+  (SOURCE_FILTERS as readonly string[]).includes(v);
+
+function itemSources(item: SoftwareItem): Set<SourceFilter> {
+  const sources = new Set<SourceFilter>();
+  for (const kind of item.methodKinds ?? []) {
+    if (kind === "winget") sources.add("winget");
+    else if (kind.startsWith("homebrew")) sources.add("brew");
+  }
+  if ((item.versionCount ?? 0) > 0) sources.add("installer");
+  return sources;
+}
+
+const SOURCE_LABEL_KEYS: Record<SourceFilter, string> = {
+  winget: "policies:software.softwareCatalog.sourceWinget",
+  brew: "policies:software.softwareCatalog.sourceBrew",
+  installer: "policies:software.softwareCatalog.sourceInstaller",
+};
+
 function parseCatalogView(hash: string): CatalogView | undefined {
-  if (hash === "catalog") return { tab: "catalog" };
+  const tokens = hash.split("&");
+  if (tokens[0] === "catalog" || tokens[0]?.startsWith("source=")) {
+    const source = tokens
+      .find((t) => t.startsWith("source="))
+      ?.slice("source=".length);
+    return source && isSourceFilter(source)
+      ? { tab: "catalog", source }
+      : { tab: "catalog" };
+  }
   if (hash === "deployments") return { tab: "deployments" };
   if (hash.startsWith("deployment=")) {
     const id = hash.slice("deployment=".length);
@@ -135,6 +176,65 @@ function ReadinessPill({ status }: { status: EdrReadiness["status"] }) {
     );
   return null;
 }
+/**
+ * Detail body for a Breeze-pinned built-in (#6958). Edit/delete/new-version are
+ * not offered (the API answers 403 outside system scope); the row's required
+ * tenant variables and the documented uninstall command come from
+ * GET /software/builtin-packages (partner scope only).
+ */
+function KeyedBuiltinDetail({
+  row,
+  onDeploy,
+}: {
+  row: BuiltinPackageRow | undefined;
+  onDeploy: () => void;
+}) {
+  return (
+    <div data-testid="builtin-catalog-detail" className="space-y-4">
+      <p className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+        {i18n.t("policies:software.softwareCatalog.managedByBreezeHint")}
+      </p>
+      {row && (
+        <dl className="grid gap-3 text-sm sm:grid-cols-[max-content_1fr]">
+          <dt className="font-medium">
+            {i18n.t("policies:software.softwareCatalog.requiredVariables")}
+          </dt>
+          <dd className="flex flex-wrap items-center gap-1">
+            {row.requiredVars.map((name) => (
+              <code key={name} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                {name}
+              </code>
+            ))}
+            <a href="/settings/variables" className="text-xs text-primary hover:underline">
+              {i18n.t("policies:software.builtinPackagesPanel.setVariablesPerOrganization")}
+            </a>
+          </dd>
+          <dt className="font-medium">
+            {i18n.t("policies:software.softwareCatalog.uninstallCommand")}
+          </dt>
+          <dd>
+            <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs select-all">
+              {row.uninstallCommand}
+            </code>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {i18n.t("policies:software.builtinPackagesPanel.breezeDoesNotUninstall")}
+            </p>
+          </dd>
+        </dl>
+      )}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={onDeploy}
+          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          {i18n.t("policies:software.softwareCatalog.deploy2")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
   return {
     id: String(item.id),
@@ -148,6 +248,10 @@ function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
       item.integrationProvider === "huntress" ||
       item.integrationProvider === "sentinelone"
         ? item.integrationProvider
+        : undefined,
+    builtinPackageKey:
+      typeof item.builtinPackageKey === "string" && item.builtinPackageKey
+        ? item.builtinPackageKey
         : undefined,
     partnerId: item.partnerId ? String(item.partnerId) : undefined,
     versionCount:
@@ -163,11 +267,16 @@ function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
 export default function SoftwareCatalog() {
   useTranslation("policies");
   useTranslation("policies");
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(
     null,
   );
+  // #6958: Breeze-pinned built-ins panel (partner scope only) and its rows,
+  // which the keyed-card detail reads for required variables / uninstall.
+  const { isPartnerScope } = useDefaultOwnerScope();
+  const [builtinRows, setBuiltinRows] = useState<BuiltinPackageRow[]>([]);
   const [showDeployWizard, setShowDeployWizard] = useState(false);
   const [deployCatalogId, setDeployCatalogId] = useState<string | undefined>();
   // Devices carried over from a device-list bulk selection (#2866); seeds the
@@ -340,6 +449,23 @@ export default function SoftwareCatalog() {
     const unique = new Set(catalogItems.map((item) => item.category));
     return Array.from(unique);
   }, [catalogItems]);
+  // Offer only sources that exist in the library; a hash-selected source with
+  // no entries stays selectable so the user can see why the list is empty.
+  const sourceFilter = view.tab === "catalog" ? view.source : undefined;
+  const availableSources = useMemo(() => {
+    const present = new Set<SourceFilter>();
+    for (const item of catalogItems)
+      for (const s of itemSources(item)) present.add(s);
+    if (sourceFilter) present.add(sourceFilter);
+    return SOURCE_FILTERS.filter((s) => present.has(s));
+  }, [catalogItems, sourceFilter]);
+  const selectSource = (next: string) => {
+    const source = isSourceFilter(next) ? next : undefined;
+    if (typeof window !== "undefined")
+      window.location.hash = source ? `catalog&source=${source}` : "catalog";
+    setView({ tab: "catalog", source });
+  };
+
   const filteredSoftware = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return catalogItems.filter((item) => {
@@ -349,9 +475,10 @@ export default function SoftwareCatalog() {
         item.vendor.toLowerCase().includes(normalizedQuery);
       const matchesCategory =
         category === "all" ? true : item.category === category;
-      return matchesQuery && matchesCategory;
+      const matchesSource = !sourceFilter || itemSources(item).has(sourceFilter);
+      return matchesQuery && matchesCategory && matchesSource;
     });
-  }, [query, category, catalogItems]);
+  }, [query, category, sourceFilter, catalogItems]);
   // Built-in EDR readiness: one fetch per present provider (there's one
   // integration per partner), shared by the cards and the detail panel.
   const builtinProviders = useMemo(
@@ -482,6 +609,12 @@ export default function SoftwareCatalog() {
               "policies:software.softwareCatalog.browseAndDeployApprovedSoftwarePackages",
             )}
           </p>
+          <p
+            data-testid="software-library-scope-note"
+            className="mt-1 max-w-3xl text-xs text-muted-foreground"
+          >
+            {i18n.t("policies:software.softwareCatalog.libraryScopeNote")}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -598,7 +731,37 @@ export default function SoftwareCatalog() {
             </option>
           ))}
         </FilterSelect>
+        <FilterSelect
+          label={i18n.t("policies:software.softwareCatalog.sourceFilterLabel")}
+          value={sourceFilter ?? "all"}
+          onChange={(event) => selectSource(event.target.value)}
+          className="w-full sm:w-56"
+        >
+          <option value="all">
+            {i18n.t("policies:software.softwareCatalog.allSources")}
+          </option>
+          {availableSources.map((s) => (
+            <option key={s} value={s}>
+              {i18n.t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[s])}
+            </option>
+          ))}
+        </FilterSelect>
       </div>
+
+      {isPartnerScope && (
+        <BuiltinPackagesPanel
+          onPackagesLoaded={setBuiltinRows}
+          onProvisioned={() => {
+            void fetchCatalog();
+          }}
+          onOpenCatalogItem={(catalogId) => {
+            const item = catalogItems.find((candidate) => candidate.id === catalogId);
+            if (!item) return;
+            setDetailTab("details");
+            setSelectedSoftware(item);
+          }}
+        />
+      )}
 
       {filteredSoftware.length === 0 && !loading ? (
         <div className="rounded-lg border bg-card p-12 text-center">
@@ -618,6 +781,7 @@ export default function SoftwareCatalog() {
           {filteredSoftware.map((item) => (
             <div
               key={item.id}
+              data-testid={`catalog-card-${item.id}`}
               className="group rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
               role="button"
               tabIndex={0}
@@ -671,13 +835,22 @@ export default function SoftwareCatalog() {
                       ownership badge; built-ins keep their own pill below. */}
                   {!item.orgId &&
                     item.partnerId &&
-                    !isIntegrationProvider(item.integrationProvider) && (
+                    !isIntegrationProvider(item.integrationProvider) &&
+                    !item.builtinPackageKey && (
                       <ScopeBadge
                         orgId={null}
                         partnerId={item.partnerId}
                         isSystem={false}
                       />
                     )}
+                  {item.builtinPackageKey && (
+                    <span
+                      data-testid="builtin-pill"
+                      className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                    >
+                      {i18n.t("policies:software.softwareCatalog.builtIn")}
+                    </span>
+                  )}
                   {isIntegrationProvider(item.integrationProvider) && (
                     <div className="flex items-center gap-1.5">
                       <ReadinessPill
@@ -814,6 +987,7 @@ export default function SoftwareCatalog() {
                 )}
                 {!selectedSoftware.orgId &&
                   selectedSoftware.partnerId &&
+                  !selectedSoftware.builtinPackageKey &&
                   !isIntegrationProvider(
                     selectedSoftware.integrationProvider,
                   ) && (
@@ -876,6 +1050,17 @@ export default function SoftwareCatalog() {
                     openDeploy(id);
                   }}
                 />
+              ) : selectedSoftware.builtinPackageKey ? (
+                <KeyedBuiltinDetail
+                  row={builtinRows.find(
+                    (row) => row.key === selectedSoftware.builtinPackageKey,
+                  )}
+                  onDeploy={() => {
+                    const id = selectedSoftware.id;
+                    setSelectedSoftware(null);
+                    openDeploy(id);
+                  }}
+                />
               ) : (
                 <div>
                   {selectedSoftware.description && (
@@ -911,6 +1096,10 @@ export default function SoftwareCatalog() {
               <SoftwareVersionManager
                 catalogId={selectedSoftware.id}
                 embedded
+                builtinReadOnly={Boolean(selectedSoftware.builtinPackageKey)}
+                ownerScope={selectedSoftware.orgId ? "organization" : "partner"}
+                canManagePartnerWide={canManagePartnerWide}
+                integrationProvider={selectedSoftware.integrationProvider}
               />
             )}
           </div>

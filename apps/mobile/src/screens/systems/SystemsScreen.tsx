@@ -655,7 +655,9 @@ export function SystemsScreen() {
         const messages = historyToMessages(rows);
         dispatch(loadHistory({ sessionId: result.id, messages }));
         const parent = navigation.getParent<NativeStackNavigationProp<MainTabParamList>>();
-        if (parent) parent.navigate('HomeTab');
+        // Name the screen: HomeTab is a stack since Wisp W06, and a bare
+        // navigate would land on a Wisp thread left open on top of the chat.
+        if (parent) parent.navigate('HomeTab', { screen: 'Home' });
       } catch (err) {
         // The raw message is internal (function name + HTTP status) — report it
         // to Sentry and show the user a static string instead (issue #3141).

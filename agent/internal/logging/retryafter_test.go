@@ -220,3 +220,36 @@ func TestShipBatchHonorsRetryAfterOn503(t *testing.T) {
 		t.Fatalf("expected ≥1s gap honoring Retry-After on 503, got %v", gap)
 	}
 }
+
+// TestParseRetryAfterParityTable: keep in step with the table in
+// internal/httputil/retryafter_logging_parity_test.go. The two parsers are
+// separate copies (import cycle) and must agree on every row.
+func TestParseRetryAfterParityTable(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty", "", 0},
+		{"zero", "0", 0},
+		{"negative", "-5", 0},
+		{"garbage", "abc", 0},
+		{"thirty", "30", 30 * time.Second},
+		{"at cap", "300", 300 * time.Second},
+		{"over cap", "99999", 300 * time.Second},
+		{"http-date 90s ahead", now.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
+		{"http-date in the past", now.Add(-time.Hour).Format(http.TimeFormat), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			if tc.header != "" {
+				h.Set("Retry-After", tc.header)
+			}
+			if got := parseRetryAfter(h, now); got != tc.want {
+				t.Fatalf("parseRetryAfter(%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
+}

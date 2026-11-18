@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -12,11 +13,17 @@ import (
 const pamHelperLeaseTTL = 5 * time.Minute
 
 // pamHelperSpawnWait bounds how long RunPamFlow waits for an on-demand SYSTEM
-// helper to come up. It eats into the dialog's share of consent.exe's ~120 s
-// lifetime, so it is far below the lifecycle's 90 s startup timeout: a helper
-// that is not up by then is unlikely to finish in time to matter. A var so
-// tests can shrink it; production never writes it after init.
-var pamHelperSpawnWait = 30 * time.Second
+// helper to come up, and is the point at which the agent gives up on the
+// request and reports it unable (helper_start_failed). Why 30 s:
+//   - the user is sitting at a UAC prompt PAM is not handling while the agent
+//     waits, so the wait stays well below the lifecycle's 90 s helper startup
+//     timeout rather than matching it;
+//   - once it expires RunPamFlow returns and the user never sees the PAM
+//     dialog for this prompt, so a request left pending could only be approved
+//     for something the user never confirmed;
+//   - a helper that comes up later serves the next UAC prompt, which creates a
+//     fresh request.
+const pamHelperSpawnWait = 30 * time.Second
 
 // syncPAMHelperHold points the lifecycle's PAM hold (#8996) at the effective
 // interception state. Called whenever the PAM policy is applied and when the
@@ -50,16 +57,24 @@ func (h *Heartbeat) installHelperLifecycle(lc helperLifecycleController, cancel 
 // The returned release func MUST be called when the flow ends — the lease has
 // to outlive the dialog round-trip, or the reconciler could reap the helper
 // that is showing it. release is non-nil even when session is nil.
+//
+// When session is nil, unable says why the device cannot act on the request
+// (#9517) so the caller can report it; unable is nil when the flow itself was
+// cancelled (agent shutdown), which is not the device's verdict on the request.
 func (h *Heartbeat) spawnPamHelperOnDemand(
 	ctx context.Context,
 	find func(capability, targetWinSession string) *sessionbroker.Session,
 	requestID, targetWinSession string,
-) (session *sessionbroker.Session, release func()) {
+) (session *sessionbroker.Session, release func(), unable *pamUnable) {
 	release = func() {}
 	lc := h.lifecycleController()
 	if lc == nil {
-		logPamHelperUnavailable(requestID, targetWinSession, "no helper lifecycle manager to spawn one")
-		return nil, release
+		// Not proof either: hb.Start installs the lifecycle manager on its own
+		// goroutine, so an early UAC event can arrive before it. Leave the
+		// request pending for the server's stale-request expiry.
+		log.Error("pam: no helper lifecycle manager to spawn a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession)
+		return nil, release, nil
 	}
 
 	leaseTarget := targetWinSession
@@ -72,12 +87,16 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	}
 	winID, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(leaseTarget)
 	if err != nil || winID == 0 {
+		// Not proof either: GetConsoleSessionID answers "0" when the console
+		// lookup fails, which can happen during a session switch. Stop, leave
+		// the request pending (#9517).
 		reason := fmt.Sprintf("target Windows session %q could not be resolved", leaseTarget)
 		if err != nil {
 			reason += ": " + err.Error()
 		}
-		logPamHelperUnavailable(requestID, targetWinSession, reason)
-		return nil, release
+		log.Error("pam: could not resolve the Windows session for a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "detail", reason)
+		return nil, release, nil
 	}
 
 	// Fail fast on a session the reconciler will never give a SYSTEM helper
@@ -86,18 +105,30 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 	key := sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem}
 	available, err := lc.HelperRoleAvailable(key)
 	if err != nil {
-		logPamHelperUnavailable(requestID, targetWinSession, fmt.Sprintf("session %d availability check failed: %v", winID, err))
-		return nil, release
+		// Not proof the session cannot host a helper: the check failed
+		// (transient WTS enumeration error), or the session was not in the
+		// snapshot, which the detector can also produce by skipping a row it
+		// could not read or truncating a very long list (ListSessions, not
+		// ListSessionsComplete). Stop this flow but do not report the request
+		// unable, which would close it for good; the server's stale-request
+		// expiry still closes it if nothing else happens (#9517).
+		log.Error("pam: could not confirm the requester session can host a SYSTEM helper; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "error", err.Error())
+		return nil, release, nil
 	}
 	if !available {
-		logPamHelperUnavailable(requestID, targetWinSession, fmt.Sprintf("session %d cannot host a SYSTEM helper (not active or connected)", winID))
-		return nil, release
+		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableSessionUnavailable,
+			fmt.Sprintf("session %d cannot host a SYSTEM helper (not active or connected)", winID))
 	}
 
 	opID := "pam-" + requestID
 	if err := lc.AcquireLease(winID, ipc.HelperRoleSystem, opID, pamHelperLeaseTTL); err != nil {
-		logPamHelperUnavailable(requestID, targetWinSession, "helper lease refused: "+err.Error())
-		return nil, release
+		// AcquireLease re-enumerates sessions and returns those errors
+		// unchanged, so a refusal here is not known to be permanent either:
+		// stop the flow, leave the request pending.
+		log.Error("pam: helper lease refused; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "error", err.Error())
+		return nil, release, nil
 	}
 	release = func() { lc.ReleaseLease(winID, ipc.HelperRoleSystem, opID) }
 
@@ -111,26 +142,45 @@ func (h *Heartbeat) spawnPamHelperOnDemand(
 			// The flow itself was cancelled (agent shutdown), not the helper.
 			log.Warn("pam: elevation flow cancelled while waiting for an on-demand SYSTEM helper",
 				"elevationRequestId", requestID, "targetWinSession", targetWinSession, "error", ctx.Err().Error())
-			return nil, release
+			return nil, release, nil
 		}
-		logPamHelperUnavailable(requestID, targetWinSession, helperWaitFailureMessage(res))
-		return nil, release
+		if res.Status == sessionbroker.HelperWaitSessionGone {
+			// The lifecycle drops a lease when its session is missing from a
+			// plain ListSessions snapshot, which a skipped row or a truncated
+			// list can also produce, so this is not proof the session ended.
+			// Same rule as the availability check above: stop, leave pending.
+			log.Error("pam: requester session dropped out of the session list while waiting for a SYSTEM helper; elevation flow stopped, request left pending",
+				"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID, "detail", helperWaitFailureMessage(res))
+			return nil, release, nil
+		}
+		return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperStartFailed, helperWaitFailureMessage(res))
 	}
 
 	// Ready means authenticated with capabilities; PAM additionally needs the
-	// pam scope, which FindCapableSession checks.
-	session = find(ipc.ScopePam, targetWinSession)
+	// pam scope, which FindCapableSession checks. Look up the session the
+	// helper was spawned in, not targetWinSession: an empty target re-reads
+	// the console session, which may have moved since the lease (#9517).
+	session = find(ipc.ScopePam, strconv.FormatUint(uint64(winID), 10))
 	if session == nil {
-		logPamHelperUnavailable(requestID, targetWinSession, "spawned helper does not hold the PAM scope")
+		if res.Session != nil && (res.Session.HelperRole != ipc.HelperRoleSystem || !res.Session.HasScope(ipc.ScopePam)) {
+			return nil, release, pamHelperUnavailable(requestID, targetWinSession, pamUnableHelperUnavailable, "spawned helper does not hold the PAM scope")
+		}
+		// The ready helper holds the scope (or the wait did not say which
+		// helper came up), yet the lookup missed it: a race with the session
+		// list, not proof. Stop, leave the request pending.
+		log.Error("pam: on-demand SYSTEM helper was ready but not found for the PAM flow; elevation flow stopped, request left pending",
+			"elevationRequestId", requestID, "targetWinSession", targetWinSession, "session", winID)
+		return nil, release, nil
 	}
-	return session, release
+	return session, release, nil
 }
 
-// logPamHelperUnavailable is the terminal "this elevation cannot be handled"
-// log. Error, not Warn: the server still lists the request as pending and a
-// technician can approve it, but the device will never act on it — the
-// elevation protocol has no agent-reported "unable" status to say so (#8996).
-func logPamHelperUnavailable(requestID, targetWinSession, reason string) {
-	log.Error("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out — the server still shows this request as pending",
-		"elevationRequestId", requestID, "targetWinSession", targetWinSession, "reason", reason)
+// pamHelperUnavailable logs the terminal "this elevation cannot be handled"
+// line and returns the report for the server (#9517). Error, not Warn: the
+// device will never act on this request; the report is what tells the server
+// to close it instead of offering it to a technician (#8996).
+func pamHelperUnavailable(requestID, targetWinSession, reason, detail string) *pamUnable {
+	log.Error("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out — reporting the request as unable to the server",
+		"elevationRequestId", requestID, "targetWinSession", targetWinSession, "reason", reason, "detail", detail)
+	return &pamUnable{Reason: reason, Detail: detail}
 }

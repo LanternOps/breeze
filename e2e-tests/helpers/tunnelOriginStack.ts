@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setStackEnvValues } from '../../scripts/dev/wt-stack/env';
+import { setStackEnvValues, restoreLocalPublicUrls } from '../../scripts/dev/wt-stack/env';
 import { composeArgs } from './topologyPhysicalSeed';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -100,8 +100,9 @@ export function disableTunnelOriginOnStack(): void {
     TUNNEL_FRAME_ANCESTOR: '',
     TUNNEL_SITE_ADDRESS: '',
     TUNNEL_HOST_SUFFIX: '',
-    PUBLIC_PORTAL_URL: '',
   });
+  // #9777 — blanking PUBLIC_PORTAL_URL would fall back to compose's `https:///portal`.
+  restoreLocalPublicUrls(repoRoot, `http://localhost:${port}`);
   recreateApiAndCaddy(port);
 }
 

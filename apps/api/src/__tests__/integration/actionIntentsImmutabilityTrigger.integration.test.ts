@@ -193,9 +193,17 @@ describe('action_intents immutability trigger (live DB)', () => {
     requested_by_user_id: { requestedByUserId: randomUUID() },
     requesting_api_key_id: { requestingApiKeyId: randomUUID() },
     requesting_agent_run_id: { requestingAgentRunId: randomUUID() },
+    // 2027-01-06-130000 (tool catalog W04, #5219): unconditional guard. The
+    // seeded intent starts with it NULL, so setting it is the blocked
+    // direction; the trigger raises before the one-actor / flow-origin CHECKs
+    // and the composite flow_runs FK get to complain.
+    requesting_flow_run_id: { requestingFlowRunId: randomUUID() },
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
+    // 2027-01-19-110200 (#9758): the seeded intent starts NULL; the BEFORE
+    // UPDATE trigger raises before action_intents_origin_auth_epoch_chk.
+    origin_auth_epoch: { originAuthEpoch: 7 },
     action_name: { actionName: 'm365.mailbox.enable' },
     action_version: { actionVersion: 2 },
     arguments: { arguments: { mailbox: 'someone-else@example.com' } },
@@ -252,6 +260,9 @@ describe('action_intents immutability trigger (live DB)', () => {
     // `action_intents_external_tool_chk` gets to complain about the pairing.
     tool_source_tool_id: { toolSourceToolId: randomUUID() },
     tool_revision: { toolRevision: 'rev-2' },
+    // 2027-01-06-160000 (tool catalog W05 PR A, #5220): the invoked-flow
+    // binding. Same single-column probe reasoning as tool_source_tool_id.
+    invoked_flow_id: { invokedFlowId: randomUUID() },
     script_reviewer_evidence: {
       scriptReviewerEvidence: {
         proposalId: randomUUID(), reviewId: randomUUID(), contentDigest: 'a'.repeat(64), scannerVersion: '2026-09-11.1',
@@ -423,5 +434,59 @@ describe('action_intents external tool binding CHECK (live DB)', () => {
     // A random uuid names no tool_source_tools row: the column is deliberately
     // FK-less (schema/actionIntents.ts), so this must insert cleanly.
     await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: 'rev-1' })).resolves.toBeUndefined();
+  });
+});
+
+// #9758 (2027-01-19-110200): origin_auth_epoch is recorded only for an
+// MCP-origin OAuth intent; action_intents_origin_auth_epoch_chk refuses it on
+// every other origin.
+describe('action_intents origin_auth_epoch CHECK (live DB)', () => {
+  let intentId: string;
+  beforeEach(async () => {
+    intentId = (await seedPendingIntent()).id;
+  });
+
+  async function cloneIntentWith(overrides: Partial<NewActionIntent>): Promise<void> {
+    await withSystemDbAccessContext(async () => {
+      const [row] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+      const { id: _id, createdAt: _c, ...rest } = row!;
+      await db.insert(actionIntents).values({
+        ...(rest as NewActionIntent),
+        idempotencyKey: `idem-epoch-${randomUUID().slice(0, 8)}`,
+        correlationId: randomUUID(),
+        ...overrides,
+      });
+    });
+  }
+
+  /** The seeded org's user, so an mcp_api clone has a requester (one-actor CHECK). */
+  async function seededUserId(): Promise<string> {
+    return withSystemDbAccessContext(async () => {
+      const [row] = await db.select({ orgId: actionIntents.orgId }).from(actionIntents)
+        .where(eq(actionIntents.id, intentId)).limit(1);
+      const [user] = await db.select({ id: users.id }).from(users).where(eq(users.orgId, row!.orgId)).limit(1);
+      return user!.id;
+    });
+  }
+
+  it('rejects an epoch on a non-OAuth (ai_agent) intent with 23514', async () => {
+    await expect(cloneIntentWith({ originAuthEpoch: 3 }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_origin_auth_epoch_chk' } });
+  });
+
+  it('rejects an epoch on an mcp_api api_key intent with 23514', async () => {
+    const userId = await seededUserId();
+    await expect(cloneIntentWith({
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: randomUUID(),
+      requestingAgentRunId: null, requestedByUserId: userId, originAuthEpoch: 3,
+    })).rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_origin_auth_epoch_chk' } });
+  });
+
+  it('accepts an epoch on an mcp_api oauth_grant intent', async () => {
+    const userId = await seededUserId();
+    await expect(cloneIntentWith({
+      source: 'mcp_api', originPrincipalKind: 'oauth_grant', originPrincipalId: 'grant-epoch',
+      requestingAgentRunId: null, requestedByUserId: userId, originAuthEpoch: 3,
+    })).resolves.toBeUndefined();
   });
 });

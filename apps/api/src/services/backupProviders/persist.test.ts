@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 // Package ROOT, never '@breeze/shared/utils/backupHealth' — see the Step 1
 // trap note: deep subpaths are absent from packages/shared's `exports` map and
 // a VALUE import through one dies at module load under the integration config.
@@ -131,7 +133,7 @@ describe('LEDGER_STATUS_SEVERITY', () => {
     const ordered = [...EXTERNAL_BACKUP_STATUSES].sort((a, b) => sev[b] - sev[a]);
     expect(ordered).toEqual([
       'failed', 'over_quota', 'no_selection', 'no_backups', 'interrupted',
-      'completed_with_errors', 'not_started', 'unknown', 'in_progress', 'completed',
+      'completed_with_errors', 'not_started', 'paused', 'unknown', 'in_progress', 'completed',
     ]);
   });
 });
@@ -181,7 +183,9 @@ describe('persistVendorSnapshot', () => {
     );
     const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
       customers: [vendorCustomer()],
-      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' })],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' }),
+        vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
     });
     expect(counters.devices).toBe(0);
     expect(counters.unmappedDevices).toBe(2);
@@ -202,6 +206,26 @@ describe('persistVendorSnapshot', () => {
       devices: [vendorDevice()],
     });
     expect(calls.some((c) => c.kind === 'delete')).toBe(true);
+  });
+
+  it('keeps a failed customer’s rows untouched while updating another customer', async () => {
+    const { tx, calls } = makeTx(
+      [
+        [{ id: 'c1', vendorCustomerId: 'vc1' }, { id: 'c2', vendorCustomerId: 'vc2' }],
+        [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }, { id: 'c2', vendorCustomerId: 'vc2', orgId: ORG }],
+        [{ id: 'p-old', vendorDeviceId: 'v-old', customerId: 'c1' }, { id: 'p2', vendorDeviceId: 'v2', customerId: 'c2' }],
+      ],
+      [[{ id: 'c2', vendorCustomerId: 'vc2' }], [{ id: 'p2', orgId: ORG }]],
+    );
+    await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer(), vendorCustomer({ vendorCustomerId: 'vc2' })],
+      devices: [vendorDevice({ vendorCustomerId: 'vc2', vendorDeviceId: 'v2' })],
+      failedCustomerIds: ['vc1'],
+    });
+    expect(calls.filter((c) => c.kind === 'delete')).toEqual([]);
+    const inserted = calls.filter((c) => c.kind === 'insert').flatMap((c) => c.payload as Array<Record<string, unknown>>);
+    expect(inserted.filter((row) => 'vendorCustomerId' in row)).toHaveLength(1);
+    expect(inserted.filter((row) => 'vendorDeviceId' in row)).toMatchObject([{ vendorDeviceId: 'v2', customerId: 'c2' }]);
   });
 
   it('deletes a device row whose vendor device vanished from a complete snapshot', async () => {
@@ -285,6 +309,61 @@ describe('persistVendorSnapshot', () => {
     expect(deviceRows![0]).toMatchObject({ orgId: NEW_ORG, provider: 'cove', portalShowProviderName: false });
   });
 
+  describe('verified-bootable evidence', () => {
+    const mappedTx = () => makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }], [{ id: 'p1', orgId: ORG }]],
+    );
+    const deviceInsert = (tx: ReturnType<typeof makeTx>['tx'], calls: Recorded[]) => {
+      const rows = calls
+        .filter((c) => c.kind === 'insert')
+        .map((c) => c.payload as Array<Record<string, unknown>>)
+        .find((r) => Array.isArray(r) && r[0] && 'vendorDeviceId' in r[0])!;
+      const chain = tx.insert.mock.results
+        .map((r) => r.value as { values: { mock: { calls: unknown[][] } }; onConflictDoUpdate: { mock: { calls: Array<[{ set: Record<string, unknown> }]> } } })
+        .find((c) => c.values.mock.calls.some(([payload]) => payload === rows))!;
+      return { row: rows[0]!, set: chain.onConflictDoUpdate.mock.calls[0]![0].set };
+    };
+
+    it('writes verified-bootable evidence onto the device row', async () => {
+      const at = new Date('2026-11-05T03:12:00Z');
+      const { tx, calls } = mappedTx();
+      await persistVendorSnapshot(tx as never, CONNECTION, {
+        customers: [vendorCustomer()],
+        devices: [vendorDevice({ verifiedBootable: { at, healthy: false, failedChecks: ['system_boot'] } }) as never],
+      });
+      expect(deviceInsert(tx, calls).row).toMatchObject({
+        verifiedBootableAt: at, verifiedBootable: false, verifiedBootableFailedChecks: ['system_boot'],
+      });
+    });
+
+    it('writes NULLs when the adapter supplies no evidence', async () => {
+      for (const evidence of [{}, { verifiedBootable: null }]) {
+        const { tx, calls } = mappedTx();
+        await persistVendorSnapshot(tx as never, CONNECTION, {
+          customers: [vendorCustomer()],
+          devices: [vendorDevice(evidence) as never],
+        });
+        expect(deviceInsert(tx, calls).row).toMatchObject({
+          verifiedBootableAt: null, verifiedBootable: null, verifiedBootableFailedChecks: null,
+        });
+      }
+    });
+
+    it('upsert set clause overwrites all three verified_bootable columns from excluded', async () => {
+      // A result that expires (or a device moved to D2C) must clear the columns
+      // on the next sync, not keep showing a stale "passed".
+      const { tx, calls } = mappedTx();
+      await persistVendorSnapshot(tx as never, CONNECTION, { customers: [vendorCustomer()], devices: [vendorDevice()] });
+      const { set } = deviceInsert(tx, calls);
+      const dialect = new PgDialect();
+      const rendered = (key: string) => dialect.sqlToQuery(set[key] as SQL).sql;
+      expect(rendered('verifiedBootableAt')).toBe('excluded.verified_bootable_at');
+      expect(rendered('verifiedBootable')).toBe('excluded.verified_bootable');
+      expect(rendered('verifiedBootableFailedChecks')).toBe('excluded.verified_bootable_failed_checks');
+    });
+  });
+
   it('re-stamps history rows left behind by a device that changed org, scoped to this connection', async () => {
     const { tx, executed } = makeTx(
       [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
@@ -305,6 +384,52 @@ describe('persistVendorSnapshot', () => {
     expect(restamp).toContain('backup_provider_devices');
     expect(restamp).toContain(CONNECTION.id);
     expect(restamp).toContain('org_id');
+  });
+
+  it('persists SaaS workloads without counting them as customer or connection devices', async () => {
+    const { tx, calls } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }],
+        [{ id: 'p1', orgId: ORG }, { id: 'p2', orgId: ORG }, { id: 'p3', orgId: ORG }]],
+    );
+    const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer()],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
+    });
+    expect(counters.devices).toBe(1);
+    const inserts = calls.filter((call) => call.kind === 'insert');
+    expect(inserts[0]!.payload).toMatchObject([{ deviceCount: 1 }]);
+    expect(inserts[1]!.payload).toHaveLength(3);
+    expect(inserts[2]!.payload).toHaveLength(3); // SaaS history remains evidence.
+  });
+
+  it.each([true, false])('counts three SaaS workloads for a Dropsuite customer (mapped=%s)', async (mapped) => {
+    vi.mocked(matchProviderDevices).mockResolvedValue({ linked: 2, ambiguous: 1 });
+    const { tx, calls } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: mapped ? ORG : null }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }], []],
+    );
+    const counters = await persistVendorSnapshot(tx as never, {
+      ...CONNECTION, provider: 'dropsuite', inventoryKind: 'saas',
+    }, {
+      customers: [vendorCustomer()],
+      devices: ['m365', 'm365', 'gws'].map((accountType, i) => vendorDevice({ accountType, vendorDeviceId: `w${i}` })),
+    });
+    expect(counters).toMatchObject({ devices: mapped ? 3 : 0, unmappedDevices: mapped ? 0 : 3, linked: 0, ambiguous: 0 });
+    expect(calls.find(call => call.kind === 'insert')?.payload).toMatchObject([{ deviceCount: 3 }]);
+  });
+
+  it('retains failed-customer SaaS workload counts for a SaaS connection', async () => {
+    const { tx } = makeTx([
+      [{ id: 'c1', vendorCustomerId: 'vc1' }],
+      [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }],
+      [{ id: 'p1', vendorDeviceId: 'mail', customerId: 'c1', accountType: 'm365' }],
+    ], []);
+    const counters = await persistVendorSnapshot(tx as never, {
+      ...CONNECTION, provider: 'dropsuite', inventoryKind: 'saas',
+    }, { customers: [vendorCustomer()], devices: [], failedCustomerIds: ['vc1'] });
+    expect(counters.devices).toBe(1);
   });
 
   it('returns the counters the connection card shows', async () => {

@@ -7,7 +7,7 @@
  * run is created, and must reach the handoff with the limit named.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { taskCheckpointSchema, TASK_CHECKPOINT_VERSION } from '@breeze/shared';
+import { serviceRecoveryCheckpointSchema as taskCheckpointSchema, TASK_CHECKPOINT_VERSION } from '@breeze/shared';
 
 const dbState = vi.hoisted(() => ({
   casRows: [{ id: 'task-1' }] as Array<{ id: string }>,
@@ -218,5 +218,26 @@ describe('advanceVerify enforces taskMaxMutationAttemptsPerTarget on a failed cr
     limitsMock.mockResolvedValue({ policyLimits: { taskMaxMutationAttemptsPerTarget: 1 }, spentCents: 0 });
     expect(await verify(2)).toBe('handed off: mutation attempts exhausted');
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W02 (Wisp design §4.3): runs the coordinator creates for a grant-bearing
+// task inherit the task's pinned ceiling. Appended.
+describe('admitReasoningRun forwards the task\'s delegation grant pin', () => {
+  const admitFor = (overrides: Record<string, unknown>) => __testOnly.admitReasoningRun({
+    task: task({ attemptOrdinal: 0, currentStepKey: 'investigate', ...overrides }), leaseEpoch: 4,
+    checkpoint: checkpoint(0), stepKey: 'investigate', bumpPlanRevision: false, recipe,
+  });
+
+  it('a grant-bearing task admits its run with the same grant + revision (no requestedByRunId)', async () => {
+    await admitFor({ grantId: 'g1', grantRevisionId: 'r1' });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      grant: { grantId: 'g1', grantRevisionId: 'r1' },
+    }));
+  });
+
+  it('a task without a grant admits a run without one', async () => {
+    await admitFor({ grantId: null, grantRevisionId: null });
+    expect(vi.mocked(createAndEnqueueAgentRun).mock.calls[0]![0]).not.toHaveProperty('grant');
   });
 });

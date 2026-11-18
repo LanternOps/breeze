@@ -139,6 +139,23 @@ describe('QuoteEditor — add contract block', () => {
     expect(screen.getByTestId('quote-block-contract-var-initial_term')).toBeInTheDocument();
   });
 
+  it('shows each auto variable\'s resolved value, not its token (#9867)', async () => {
+    render(<QuoteEditor detail={{ ...detail, contractAutoValues: { 'client.name': 'Acme Co' } }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-add-block-type-contract'));
+    await waitFor(() => expect(screen.getByTestId('quote-block-contract-template')).toBeInTheDocument());
+    await selectTemplate();
+    const row = screen.getByTestId('quote-block-contract-auto-client.name');
+    expect(row).toHaveTextContent('Acme Co');
+    expect(row).not.toHaveTextContent('{{client.name}}');
+  });
+
+  it('falls back to the token when no resolved values came back', async () => {
+    await openContractForm();
+    await selectTemplate();
+    expect(screen.getByTestId('quote-block-contract-auto-client.name')).toHaveTextContent('{{client.name}}');
+  });
+
   it('posts content with templateId, pinned templateVersionId, and manual variableValues', async () => {
     addBlockMock.mockResolvedValue(okRes({}));
     await openContractForm();
@@ -259,6 +276,18 @@ describe('QuoteEditor — edit persisted contract block', () => {
       blockType: 'contract',
       content: { templateId: 'tpl-1', templateVersionId: 'ver-1', variableValues: { initial_term: '24 months' }, label: 'Master Agreement' },
     }));
+  });
+
+  it('shows resolved auto-variable values on a persisted block, and marks a blank one (#9867)', async () => {
+    const block = persistedContractBlock({
+      declaredVariables: [{ name: 'client.name', kind: 'auto' }, { name: 'client.address', kind: 'auto' }, { name: 'initial_term', kind: 'manual' }],
+    });
+    render(<QuoteEditor detail={{ ...detail, blocks: [block], contractAutoValues: { 'client.name': 'Acme Co', 'client.address': '' } }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    const name = screen.getByTestId('quote-block-contract-auto-blk-c-client.name');
+    expect(name).toHaveTextContent('Acme Co');
+    expect(name).not.toHaveTextContent('{{client.name}}');
+    expect(screen.getByTestId('quote-block-contract-auto-blk-c-client.address')).toHaveTextContent('Blank');
   });
 
   it('shows an "Update to vN" button when the pinned version is behind latest, and re-pins preserving values', async () => {

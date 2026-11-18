@@ -220,7 +220,9 @@ export async function resolveSecurityScanQuarantineAuthority(
   if (!link) return { allowed: false, reason: 'reapproval_required' };
 
   // Persist the check outcome, only when it changed, so the API/UI can say why
-  // quarantine stopped. Revoking a grandfathered link is one-way.
+  // quarantine stopped. Revoking a grandfathered link is one-way. Deliberately no
+  // savepoint (#11225): a failed write fails the commit, so the gate cannot allow
+  // a scan past a status or a one-way revocation it could not record.
   const record = async (status: 'ok' | 'approver_invalid' | 'lookup_failed', revokeLegacy = false) => {
     const statusChanged = status !== link.executionAuthorityStatus;
     if (!statusChanged && !revokeLegacy) return;

@@ -267,6 +267,61 @@ describe('assertQuoteSendGates requires an explicit action', () => {
 });
 
 /**
+ * Empty-quote gate (#9963): a quote with no customer-visible line items must
+ * never be sent — accepting it would convert to a $0 draft invoice. The gate
+ * lives in assertQuoteSendGates so /send, the scheduled-send fire path, the AI
+ * send tool and the on-behalf accept of a draft all refuse it, not only the UI.
+ */
+describe('assertQuoteSendGates empty-quote gate (#9963)', () => {
+  const draft = { id: 'q1', status: 'draft', depositType: 'none', depositPercent: null, taxRate: null, currencyCode: 'USD' } as never;
+  const visible = { quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false };
+
+  it('refuses a send with no lines at all (422 QUOTE_EMPTY, actionable copy)', () => {
+    expect(() => assertQuoteSendGates(draft, [], [], [], 'send')).toThrow(
+      expect.objectContaining({ status: 422, code: 'QUOTE_EMPTY', message: 'Add at least one item before sending' }),
+    );
+  });
+
+  it('refuses when every line is internal-only (customerVisible false)', () => {
+    expect(() => assertQuoteSendGates(draft, [], [{ ...visible, customerVisible: false }] as never, [], 'send')).toThrow(
+      expect.objectContaining({ status: 422, code: 'QUOTE_EMPTY' }),
+    );
+  });
+
+  it('names the accept verb on the accept path', () => {
+    expect(() => assertQuoteSendGates(draft, [], [], [], 'accept')).toThrow(
+      expect.objectContaining({ status: 422, code: 'QUOTE_EMPTY', message: 'Add at least one item before accepting' }),
+    );
+  });
+
+  it('passes a quote with one customer-visible line', () => {
+    expect(() => assertQuoteSendGates(draft, [], [visible] as never, [], 'send')).not.toThrow();
+  });
+});
+
+describe('sendQuote empty-quote gate (#9963)', () => {
+  beforeEach(() => { results.length = 0; setCalls.length = 0; vi.clearAllMocks(); });
+
+  it('refuses to send a draft with no lines and claims nothing', async () => {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+      taxRate: null, depositType: 'none', depositPercent: null,
+    }]);
+    queueResult([]); // blocks
+    queueResult([]); // lines — none
+    queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    // No draft→sent claim was written.
+    expect(setCalls.some((c) => c.status === 'sent')).toBe(false);
+  });
+});
+
+/**
  * Send-time deposit gate (Task 7): a deposit config can silently become
  * unsatisfiable while drafting (recomputeAndPersist stores NULL deposit_amount
  * in that case, per quoteService). sendQuote is the hard stop that keeps a
@@ -283,7 +338,9 @@ describe('sendQuote deposit validation', () => {
       taxRate: null, depositType: 'percent', depositPercent: '30.00',
     }]);
     queueResult([]); // blocks
-    queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
+    // One RECURRING visible line (the empty-quote gate, #9963, needs an item)
+    // and no one-time lines, so dueOnAcceptanceTotal is $0.
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'monthly', depositEligible: false }, deviceGroup: null, site: null }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1430,11 +1487,15 @@ describe('sendQuote contract-variable gate', () => {
     billingAddressPostalCode: '89501', billingAddressCountry: 'US',
   };
 
+  // The empty-quote gate (#9963) runs before the contract-variable gate, so the
+  // variable-gate cases carry one customer-visible item.
+  const visibleLineRow = { line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null };
+
   it('blocks send with the unresolved (manual) variable name when a contract block variable is unfilled', async () => {
     queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([baseQuote]);              // getQuote: quote
     queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
-    queueResult([]);                        // getQuote: lines
+    queueResult([visibleLineRow]);          // getQuote: lines — one item, so the empty-quote gate passes
     queueResult([]);                        // getQuote: no staged Pax8 order
     queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1456,7 +1517,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([baseQuote]);
     queueResult([contractBlock({})]);
-    queueResult([]);
+    queueResult([visibleLineRow]);
     queueResult([]); // getQuote: no staged Pax8 order
     queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers

@@ -38,7 +38,7 @@ import type { VendorKey } from './securityAgentVendors';
 
 /** What a vendor console reports about one agent, normalised across vendors. */
 export interface VendorEndpointView {
-  /** Breeze-side id of the vendor endpoint row (huntress_agents.id today). */
+  /** Breeze-side id of the vendor endpoint row, in its source's table. */
   endpointId: string;
   /** The Breeze org the vendor reports this agent under (through the vendor's org mapping). */
   orgId: string;
@@ -50,8 +50,9 @@ export interface VendorEndpointView {
 }
 
 /**
- * The vendor view, provider-neutral. Backed by `huntress_agents` in W03;
- * `s1_agents` (W04) and `edr_endpoints` (framework) implement it later.
+ * The vendor view, provider-neutral. Backed by `huntress_agents` (W03),
+ * `s1_agents` (W04) and `edr_endpoints` (framework vendors, #8170); see
+ * `vendorEndpointSources.ts`.
  */
 export interface VendorEndpointSource {
   vendor: VendorKey;
@@ -77,12 +78,45 @@ export interface VendorEndpointSource {
 
 export type DeviceInstallView = 'installed' | 'missing' | 'unknown';
 
+/**
+ * What a managed policy's compliance row proves about one vendor's install on
+ * one device, from that vendor's own rules' violations (`catalogIds`):
+ *
+ *  - no compliance row yet                 → unknown (not evaluated)
+ *  - its own `missing`                     → missing
+ *  - its own `not_running`                 → installed (the service exists)
+ *  - its own `service_unverified` only     → unknown (a telemetry gap proves
+ *    nothing either way, #6958 D4; never read as installed)
+ *  - none of the above                     → installed
+ *
+ * `missing` outranks the service outcomes across the vendor's rows; another
+ * vendor's violations never count.
+ */
+export function installViewFromComplianceRow(
+  row: { violations: unknown } | undefined,
+  catalogIds: readonly string[],
+): DeviceInstallView {
+  if (!row) return 'unknown';
+  const own = new Set(catalogIds);
+  const types = new Set<string>();
+  if (Array.isArray(row.violations)) {
+    for (const violation of row.violations as Array<{ type?: unknown; rule?: { catalogId?: unknown } } | null>) {
+      const catalogId = violation?.rule?.catalogId;
+      if (typeof catalogId === 'string' && own.has(catalogId) && typeof violation?.type === 'string') types.add(violation.type);
+    }
+  }
+  if (types.has('missing')) return 'missing';
+  if (types.has('not_running')) return 'installed';
+  if (types.has('service_unverified')) return 'unknown';
+  return 'installed';
+}
+
 export interface DeviceCoverageInput {
   deviceId: string;
   orgId: string;
   /** Normalised hostname and display name. */
   hostnames: readonly string[];
-  /** From the managed policy's compliance row: is the vendor's rule a `missing` violation? */
+  /** From the managed policy's compliance row (`installViewFromComplianceRow`). */
   install: DeviceInstallView;
   /** `software_compliance_status.install_remediation_status`. */
   installRemediationStatus: string | null;

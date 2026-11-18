@@ -147,7 +147,7 @@ About 1 s per advisory. Do the whole list every round; never only the triage one
 
 **Privacy — this file is public.** Advisory content never goes in a PR, issue, discussion, commit, or this skill. In `queue.md` (gitignored) record only the GHSA id, state, and last-comment author + date. Triage notes, draft replies, and verdicts live in the private intake record `~/breeze-security/remediation/<YYYY-MM-DD>-<GHSA-id>-triage.md`; read it before replying. Advisory comments can only be posted in the GitHub UI (no API), so draft the reply there and hand it to me to paste.
 
-**Drafts — `isDraft=true` ≠ "not on me."** A draft whose *body* asks for early design/approach feedback ("opening for early feedback," "thoughts before I build the rest") is genuinely waiting on me. Read the body of every incoming draft before bucketing it author-blocked (missed once on #976). Respond with a design-level COMMENT review, not an approve/merge gate. **The draft flag also never auto-flips on a comment-thread handoff** — #859 sat 18 days bucketed "author-blocked draft" after the author had addressed every blocker and a reviewer posted "leaving the merge decision to @ToddHebebrand," because the staleness check stopped at `isDraft=true`. The last-activity-author rule OUTRANKS the draft flag: apply it to drafts too, every round — if the last substantive comment hands me the ball (LGTM-pending-maintainer, "no rush" posted *after* fixes landed), the item is 🔴 waiting-on-me regardless of draft status.
+**Drafts — not reviewed (Todd, 2026-10-29).** A PR with `isDraft=true` gets no review of any kind: no code review, no design-level COMMENT review, no step-0 screen, no subagents, even when its body asks for early feedback. It enters the queue when the author marks it ready for review. In the report, list open drafts on one line ("Drafts, not reviewed: #A, #B") and do not bucket them. One exception to watch for: if a draft's last comment hands the merge or review decision to me (as on #859, which sat 18 days as a draft after the author had addressed every blocker), flag that draft on the same line so I can decide whether to ask the author to mark it ready. Do not review it.
 
 **Dependabot — "will auto-rebase" is a recurring queue.md lie.** Dependabot only auto-rebases trivial conflicts, NOT lockfile conflicts. For any "auto-rebase pending" PR, check `commits.last.committedDate` vs the note date; if stale, post `@dependabot rebase` explicitly, then merge **sequentially** (10-15s between admin-merges) so GH's mergeability recompute keeps up.
 
@@ -280,7 +280,7 @@ When an item arrives from someone not in `contributors.md`: skim their first few
 ## Common gh commands
 
 ```bash
-# PRs waiting on me / drafts / single PR
+# PRs waiting on me / drafts (list only, never reviewed — see §1) / single PR
 gh pr list --repo LanternOps/breeze --state open --search "review-requested:@me" --limit 20
 gh pr list --repo LanternOps/breeze --state open --draft --limit 20
 gh pr view <N> --repo LanternOps/breeze --comments

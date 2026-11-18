@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import v8 from 'node:v8';
 import { createHash } from 'node:crypto';
 import vm from 'node:vm';
+import { Readable } from 'node:stream';
 import { backupSnapshots } from '../db/schema';
 
 // ── Chainable Drizzle mock ────────────────────────────────────────────────
@@ -107,10 +108,20 @@ function notFoundError(): Error {
 // DO care about system-state behavior override this per-call via
 // `mockImplementation`/explicit `.Once` queuing, same as any other vi.fn().
 const fetchBackupObjectTextMock = vi.fn<
-  (input: { provider: string | null | undefined; providerConfig: unknown; key: string }) => Promise<string>
+  (input: { provider: string | null | undefined; providerConfig: unknown; key: string; maxBytes?: number }) => Promise<string>
 >(async () => {
   throw notFoundError();
 });
+// #11232: GC reads a snapshot manifest as a stream. By default the stream
+// carries whatever fetchBackupObjectTextMock answers for the key, so the
+// queued `.mockResolvedValueOnce(manifestJson(...))` convention above keeps
+// working, consumed in the same call order (the manifest, then its system
+// state manifest, which is still fetched whole).
+type ObjectStreamInput = { provider: string | null | undefined; providerConfig: unknown; key: string; maxBytes: number };
+async function defaultOpenBackupObjectStream(input: ObjectStreamInput): Promise<NodeJS.ReadableStream> {
+  return Readable.from([Buffer.from(await fetchBackupObjectTextMock(input))]);
+}
+const openBackupObjectStreamMock = vi.fn(defaultOpenBackupObjectStream);
 // #6834: GC now STREAMS listings via iterateBackupObjectsUnderPrefix — one
 // pass over the whole `snapshots` root, then one re-list per snapshot-id
 // prefix it acts on. `rootListingMock` stays the per-test data source (one
@@ -145,6 +156,7 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
   return {
     ...actual,
     fetchBackupObjectText: fetchBackupObjectTextMock,
+    openBackupObjectStream: openBackupObjectStreamMock,
     listBackupObjectsUnderPrefix: rootListingMock,
     iterateBackupObjectsUnderPrefix: iterateBackupObjectsMock,
     deleteBackupObjectKeys: deleteBackupObjectKeysMock,
@@ -193,11 +205,13 @@ vi.mock('../services/backupErasureFence', () => ({
 // implementation runs (the symlink-alias tests below rely on the real one).
 // Everything else on node:fs/promises passes straight through.
 let realpathFailWith: { code: string; onlyPath?: string } | null = null;
+const realpathCalls: string[] = [];
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
     realpath: async (p: string) => {
+      realpathCalls.push(p);
       if (realpathFailWith && (!realpathFailWith.onlyPath || realpathFailWith.onlyPath === p)) {
         throw Object.assign(new Error(`${realpathFailWith.code}: injected realpath failure, realpath '${p}'`), {
           code: realpathFailWith.code,
@@ -221,10 +235,12 @@ const {
   resolveBackupManifestlessPrefixMaxAgeMs,
   normalizeStorageIdentity,
   orphanManifestSnapshotIds,
+  backupGcResumeCursorFor,
   BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP,
   fingerprintLiveKeysBySnapshotId,
   listedKeysProvablyAllLive,
 } = await import('./backupRetention');
+const { BackupObjectTooLargeError, MANIFEST_FETCH_MAX_BYTES, MANIFEST_STREAM_MAX_BYTES } = await import('../services/backupSnapshotStorage');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AGENT_JOURNAL_MAX_AGE_MS = 7 * DAY_MS;
@@ -767,6 +783,8 @@ describe('sweepUnreferencedBackupObjects', () => {
     fetchBackupObjectTextMock.mockImplementation(async () => {
       throw notFoundError();
     });
+    openBackupObjectStreamMock.mockReset();
+    openBackupObjectStreamMock.mockImplementation(defaultOpenBackupObjectStream);
     rootListingMock.mockReset();
     iterateBackupObjectsMock.mockReset();
     iterateBackupObjectsMock.mockImplementation(defaultIterateBackupObjects);
@@ -817,6 +835,95 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push(opts.retirements ?? []);
     selectQueue.push(opts.capability ?? []);
   }
+
+  // #12061: a sweep over large manifests ran past the next scheduled tick.
+  // A run now stops between storage identities once its time budget is spent,
+  // and the next run resumes at the identity it stopped at instead of starting
+  // over at the first one (which would starve every identity after it).
+  describe('time budget and resume cursor (#12061)', () => {
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+    const listedBuckets = () =>
+      iterateBackupObjectsMock.mock.calls
+        .filter(([input]) => (input as { prefix: string }).prefix === 'snapshots')
+        .map(([input]) => ((input as { providerConfig: { bucket: string } }).providerConfig).bucket);
+
+    it('sweeps every identity and reports no resume cursor when the budget is not spent', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() + 60_000 });
+
+      expect(listedBuckets()).toEqual(['backups', 'other-backups']);
+      expect(result.resumeCursor).toBeUndefined();
+    });
+
+    it('stops after the first identity once the deadline has passed, and names the next one to resume at', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1 });
+
+      // At least one identity always runs, so a run makes progress however small the budget.
+      expect(listedBuckets()).toEqual(['backups']);
+      expect(result.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+    });
+
+    it('resumes at the cursor identity, then wraps around to the ones before it', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({
+        resumeCursor: backupGcResumeCursorFor(identityKeyFor(second)),
+      });
+
+      expect(listedBuckets()).toEqual(['other-backups', 'backups']);
+      expect(result.resumeCursor).toBeUndefined();
+    });
+
+    it('advances across runs: each budget-stopped run picks up where the previous one stopped', async () => {
+      const third = { id: 'cfg-3', provider: 's3', providerConfig: { bucket: 'third-backups', region: 'us-east-1' } };
+
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      const first = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1 });
+      expect(listedBuckets()).toEqual(['backups']);
+      expect(first.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+
+      iterateBackupObjectsMock.mockClear();
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      const next = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1, resumeCursor: first.resumeCursor });
+      expect(listedBuckets()).toEqual(['other-backups']);
+      expect(next.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(third)));
+
+      iterateBackupObjectsMock.mockClear();
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      pushIdentity();
+      pushIdentity();
+      const last = await sweepUnreferencedBackupObjects({ resumeCursor: next.resumeCursor });
+      expect(listedBuckets()).toEqual(['third-backups', 'backups', 'other-backups']);
+      expect(last.resumeCursor).toBeUndefined();
+    });
+
+    it('starts from the first identity when the cursor names one that no longer exists', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      await sweepUnreferencedBackupObjects({ resumeCursor: backupGcResumeCursorFor('s3::gone::bucket') });
+
+      expect(listedBuckets()).toEqual(['backups', 'other-backups']);
+    });
+
+    it('does not put the storage identity itself in the cursor', () => {
+      const cursor = backupGcResumeCursorFor(identityKeyFor(second));
+      expect(cursor).not.toContain('other-backups');
+      expect(cursor).toMatch(/^[0-9a-f]{32}$/);
+    });
+  });
 
   describe('snapshot key layout barrier', () => {
     const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
@@ -1056,6 +1163,64 @@ describe('sweepUnreferencedBackupObjects', () => {
         expect(captureExceptionMock.mock.calls.some(([e]) => String((e as Error).message).includes('cross_root_reference'))).toBe(true);
         // The legacy root was never listed after the reference was found.
         expect(listedPrefixes()).not.toContain('snapshots');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('(f, streamed) the cross-root stop still applies when more entries follow the crossing one (#11232)', async () => {
+      rootsAre([LEGACY, P], { b1: ['prefixed:orgB'], a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'b1' }] });
+      bucket([
+        { key: 'orgB/snapshots/b1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b1/files/stale.dat', lastModified: old() },
+        { key: 'snapshots/a1/files/f.dat', lastModified: old() },
+      ]);
+      manifests({
+        'orgB/snapshots/b1/manifest.json': manifestJson([
+          { backupPath: 'snapshots/a1/files/f.dat' },
+          { backupPath: 'snapshots/b1/files/x.dat' },
+          { backupPath: 'snapshots/b1/files/y.dat' },
+        ]),
+      });
+      deletesSucceed();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deleted).toBe(0);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(true);
+        expect(listedPrefixes()).not.toContain('snapshots');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('(f, streamed) a manifest that fails after a crossing entry is a read failure, not a cross-root stop (#11232)', async () => {
+      rootsAre([LEGACY, P], { b1: ['prefixed:orgB'], a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'b1' }] });
+      bucket([
+        { key: 'orgB/snapshots/b1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b1/files/stale.dat', lastModified: old() },
+      ]);
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== 'orgB/snapshots/b1/manifest.json') return defaultOpenBackupObjectStream(input);
+        return Readable.from((function* () {
+          yield Buffer.from('{"id":"b1","files":[{"backupPath":"snapshots/a1/files/f.dat"},{"backupPath":"snapshots/b1/files/x.dat"}');
+          throw new Error('connection reset');
+        })());
+      });
+      deletesSucceed();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        await sweepUnreferencedBackupObjects();
+        expect(deletedKeys().filter((key) => key.startsWith('orgB/'))).toEqual([]);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('could not be read or marked'))).toBe(true);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(false);
       } finally {
         error.mockRestore();
       }
@@ -1776,7 +1941,9 @@ describe('sweepUnreferencedBackupObjects', () => {
     it('local: a bare FILE under snapshots/ is reclaimed like before and never stalls later groups (no ENOTDIR re-list)', async () => {
       const actualStorage = await vi.importActual<typeof import('../services/backupSnapshotStorage')>('../services/backupSnapshotStorage');
       iterateBackupObjectsMock.mockImplementation(actualStorage.iterateBackupObjectsUnderPrefix);
-      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-bare-'));
+      const operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-gc-bare-'));
+      const realDir = join(operatorRoot, 'org-local', 'cfg-bare');
+      vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
       await mkdir(join(realDir, 'snapshots', 'zpart', 'files'), { recursive: true });
       const bareFile = join(realDir, 'snapshots', 'README');
       const partFile = join(realDir, 'snapshots', 'zpart', 'files', 'a.dat');
@@ -1786,7 +1953,7 @@ describe('sweepUnreferencedBackupObjects', () => {
       await utimes(bareFile, old, old);
       await utimes(partFile, old, old);
 
-      pushRunLevel([{ id: 'cfg-bare', provider: 'local', providerConfig: { path: realDir } }]);
+      pushRunLevel([{ id: 'cfg-bare', orgId: 'org-local', provider: 'local', providerConfig: { path: realDir } }]);
       pushIdentity();
       deleteBackupObjectKeysMock.mockImplementation(async ({ keys }: { keys: string[] }) => ({ deletedKeys: keys, failedKeys: [] }));
 
@@ -1796,6 +1963,7 @@ describe('sweepUnreferencedBackupObjects', () => {
         result = await sweepUnreferencedBackupObjects();
       } finally {
         error.mockRestore();
+        vi.unstubAllEnvs();
       }
 
       const deletedKeys = deleteBackupObjectKeysMock.mock.calls.flatMap((c) => (c[0] as { keys: string[] }).keys).sort();
@@ -2484,6 +2652,29 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(result.deleted).toBe(1);
   });
 
+  it('#12061: a run stopped by the deletion cap names the next identity, so the next run resumes there', async () => {
+    process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+
+    pushRunLevel([destination, second]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+    rootListingMock.mockResolvedValueOnce([
+      { key: 'snapshots/B/manifest.json', lastModified: old },
+      { key: 'snapshots/A/files/orphan-1.dat', lastModified: old },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan-1.dat'], failedKeys: [] });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    expect(result.deleted).toBe(1);
+    // The second identity was not listed this run; it is where the next run starts.
+    expect(rootListingMock).toHaveBeenCalledTimes(1);
+    expect(result.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+  });
+
   it('grace window matches the default 48h', () => {
     expect(resolveBackupGcGraceMs()).toBe(48 * 60 * 60 * 1000);
   });
@@ -2640,6 +2831,16 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.deleted).toBe(0);
       expect(result.skippedIdentities).toBe(1);
       expect(result.blockedIdentities).toBe(0);
+    });
+
+    it('#12061: a run blocked by an unattributed row keeps the caller\'s resume cursor (nothing was visited)', async () => {
+      pushRunLevel([destination], [{ id: 'orphan-snap-1' }]);
+      const kept = await sweepUnreferencedBackupObjects({ resumeCursor: 'cursor-from-last-run' });
+      expect(kept.resumeCursor).toBe('cursor-from-last-run');
+
+      pushRunLevel([destination], [{ id: 'orphan-snap-1' }]);
+      const none = await sweepUnreferencedBackupObjects();
+      expect(none.resumeCursor).toBeUndefined();
     });
 
     it('belt-and-braces: fail-closed-skips every identity that coarsely collides on bucket+host despite normalizeStorageIdentity keeping them apart', async () => {
@@ -2807,6 +3008,256 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.skippedIdentities).toBe(1);
       expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('manifest larger than the whole-object fetch cap (#11232)', () => {
+    const MiB = 1024 * 1024;
+    const MANIFEST_KEY = 'snapshots/B/manifest.json';
+
+    // Serves MANIFEST_KEY as an object of `size` bytes with each storage entry
+    // point's real size check: the whole-object text fetch refuses it over
+    // its maxBytes (it never materializes the body here), the stream refuses
+    // it over its own cap and otherwise yields `chunks`, lazily, so the test
+    // never holds the manifest either.
+    function serveManifest(size: number, chunks: () => Iterable<Buffer>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input) => {
+        if (input.key === MANIFEST_KEY) throw new BackupObjectTooLargeError(input.key, size, input.maxBytes ?? 0);
+        throw notFoundError();
+      });
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== MANIFEST_KEY) return defaultOpenBackupObjectStream(input);
+        if (size > input.maxBytes) throw new BackupObjectTooLargeError(input.key, size, input.maxBytes);
+        return Readable.from(chunks());
+      });
+    }
+
+    // A manifest of exactly `size` bytes: `head`, then whitespace, then `tail`.
+    function* padded(size: number, head: string, tail: string): Generator<Buffer> {
+      let left = size - Buffer.byteLength(head) - Buffer.byteLength(tail);
+      yield Buffer.from(head);
+      const block = Buffer.alloc(MiB, ' ');
+      while (left > 0) {
+        const piece = left >= MiB ? block : block.subarray(0, left);
+        left -= piece.length;
+        yield piece;
+      }
+      yield Buffer.from(tail);
+    }
+
+    function listing() {
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/A/files/first.dat', lastModified: old },
+        { key: 'snapshots/A/files/last.dat', lastModified: old },
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+    }
+
+    it('marks every file of a retained manifest over 200 MiB, the last one listed past the old cap, and sweeps the rest', async () => {
+      const size = MANIFEST_FETCH_MAX_BYTES + MiB;
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(size, () => padded(
+        size,
+        '{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}',
+        ',{"sourcePath":"/last","backupPath":"snapshots/A/files/last.dat"}]}',
+      ));
+      listing();
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.skippedIdentities).toBe(0);
+      expect(result.blockedIdentities).toBe(0);
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/A/files/orphan.dat']);
+      expect(result.deleted).toBe(1);
+      expect(openBackupObjectStreamMock).toHaveBeenCalledWith(expect.objectContaining({ key: MANIFEST_KEY, maxBytes: MANIFEST_STREAM_MAX_BYTES }));
+    }, 60_000);
+
+    it('deletes nothing when the manifest stream drops partway, after some entries were read', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+        throw new Error('connection reset');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when the manifest ends before its document does', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when one entry is over the per-entry limit', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      const huge = 'x'.repeat(MiB + 1);
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"},');
+        yield Buffer.from(JSON.stringify({ sourcePath: huge, backupPath: 'snapshots/A/files/last.dat' }));
+        yield Buffer.from(']}');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when a second retained manifest fails after the first one read cleanly', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'A' }, { snapshotId: 'B' }] });
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key === 'snapshots/A/manifest.json') {
+          return Readable.from([Buffer.from('{"id":"A","files":[{"backupPath":"snapshots/A/files/kept.dat"}]}')]);
+        }
+        if (input.key === MANIFEST_KEY) {
+          return Readable.from((function* () {
+            yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+            throw new Error('connection reset');
+          })());
+        }
+        return defaultOpenBackupObjectStream(input);
+      });
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/A/manifest.json', lastModified: old },
+        { key: 'snapshots/A/files/kept.dat', lastModified: old },
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/A/files/first.dat', lastModified: old },
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('keeps escaped and non-ASCII keys exactly, read one byte at a time', async () => {
+      const keys = [
+        'snapshots/A/files/zo\u00eb/\u65e5\u672c\u8a9e/\ud83d\ude00.dat',
+        'snapshots/A/files/quote"and\\back.dat',
+        'snapshots/A/files/caf\u00e9.dat',
+      ];
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      const body = Buffer.from(JSON.stringify({ id: 'B', files: keys.map((backupPath) => ({ backupPath })) }));
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== MANIFEST_KEY) return defaultOpenBackupObjectStream(input);
+        return Readable.from(Array.from(body, (byte) => Buffer.from([byte])));
+      });
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        ...keys.map((key) => ({ key, lastModified: old })),
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.blockedIdentities).toBe(0);
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/A/files/orphan.dat']);
+    });
+
+    it('reads a null files key, which the agent writes for a snapshot with no files, as no references', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(JSON.stringify({ id: 'B', files: null }));
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/B/files/stale.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/B/files/stale.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.blockedIdentities).toBe(0);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/B/files/stale.dat']);
+    });
+
+    it.each([
+      ['an entry that is not an object', JSON.stringify({ id: 'B', files: [{ backupPath: 'snapshots/A/files/first.dat' }, 7] })],
+      ['a null entry', JSON.stringify({ id: 'B', files: [{ backupPath: 'snapshots/A/files/first.dat' }, null] })],
+      ['no files key at all', JSON.stringify({ id: 'B' })],
+      ['an id naming another snapshot', JSON.stringify({ id: 'C', files: [{ backupPath: 'snapshots/A/files/first.dat' }] })],
+    ])('deletes nothing for a manifest with %s', async (_label, body) => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(body);
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when the live keys pass BACKUP_GC_LIVE_SET_MAX_BYTES, and sweeps once they fit', async () => {
+      const files = Array.from({ length: 50 }, (_, i) => ({ backupPath: `snapshots/A/files/${'k'.repeat(100)}-${i}.dat` }));
+      const run = async () => {
+        pushRunLevel([destination]);
+        pushIdentity({ retained: [{ snapshotId: 'B' }] });
+        fetchBackupObjectTextMock.mockResolvedValueOnce(JSON.stringify({ id: 'B', files }));
+        listing();
+        return sweepUnreferencedBackupObjects();
+      };
+      try {
+        // 50 keys of about 120 characters plus the per-key charge: well past 4,000 bytes.
+        process.env.BACKUP_GC_LIVE_SET_MAX_BYTES = '4000';
+        const over = await run();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(over.blockedIdentities).toBe(1);
+
+        process.env.BACKUP_GC_LIVE_SET_MAX_BYTES = String(1024 * 1024);
+        deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: [], failedKeys: [] });
+        const fits = await run();
+        expect(fits.blockedIdentities).toBe(0);
+        expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      } finally {
+        delete process.env.BACKUP_GC_LIVE_SET_MAX_BYTES;
+      }
+    });
+
+    it('deletes nothing when the manifest is over the stream cap too', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_STREAM_MAX_BYTES + 1, () => []);
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
     });
   });
 
@@ -3423,14 +3874,14 @@ describe('sweepUnreferencedBackupObjects', () => {
       }
     });
 
-    it('defers a local identity whose config path is a symlink alias of a stale/unreachable identity\'s real directory', async () => {
+    it('does not defer a local destination because a stale identity\'s stored path resolves to the same directory (local destinations are swept per configuration)', async () => {
       const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real-'));
       const linkPath = join(tmpdir(), `breeze-gc-link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
       await symlink(realDir, linkPath, 'dir');
 
       const destinationViaSymlink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
-      const newKey = normalizeStorageIdentity('local', destinationViaSymlink.providerConfig); // local::<linkPath> — path.resolve is lexical, does NOT follow the symlink
-      const staleKey = `local::${realDir}`; // a stale identity recorded directly against the REAL directory
+      const newKey = normalizeStorageIdentity('local', destinationViaSymlink.providerConfig);
+      const staleKey = `local::${realDir}`;
 
       selectQueue.push([]); // unattributedRows
       selectQueue.push([destinationViaSymlink]); // destinations
@@ -3439,26 +3890,13 @@ describe('sweepUnreferencedBackupObjects', () => {
         { storageIdentity: newKey, count: 1 },
       ]); // identityUsage
       pushIdentity();
+      rootListingMock.mockResolvedValueOnce([]);
+      realpathCalls.length = 0;
 
-      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
-      const old = new Date(Date.now() - 30 * DAY_MS);
-      rootListingMock.mockResolvedValueOnce([
-        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old },
-      ]);
-
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const result = await sweepUnreferencedBackupObjects();
-        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-        expect(result.deferredIdentities).toBe(1);
-        expect(
-          warn.mock.calls.some(([msg]) =>
-            String(msg).includes(newKey) && String(msg).includes('aliases a stale/unreachable identity'),
-          ),
-        ).toBe(true);
-      } finally {
-        warn.mockRestore();
-      }
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deferredIdentities).toBe(0);
+      expect(realpathCalls).not.toContain(linkPath);
+      expect(realpathCalls).not.toContain(realDir);
     });
 
     it('does NOT defer an identity whose coarse signature does not match any unreachable identity', async () => {
@@ -3509,22 +3947,13 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
   });
 
-  // Review round 2 (HOLD): coarseStorageSignatureFromKey used to swallow EVERY
-  // fs.realpath error and silently fall back to the lexical key — which is the
-  // same non-symlink-following comparison normalizeStorageIdentity already
-  // does, i.e. the local alias guard added in round 1 silently contributed
-  // nothing in exactly the failure mode it exists for (EACCES / ELOOP / EMFILE
-  // / an NFS hiccup on that run). It now fails closed: an unresolvable local
-  // root defers the identity for the run, logs key + errno, and escalates.
-  describe('review round 2: fs.realpath failure on a local root fails closed (defers, logs, escalates)', () => {
-    // Arrange a local identity with a 30-day-old, row-less, manifest-only
-    // prefix — under the NON-deferred algorithm this is abandoned orphan
-    // garbage and gets reclaimed; under the deferred algorithm every listed
-    // manifest is a root and nothing is deleted. So "was anything deleted?"
-    // is the discriminating observable.
-    async function arrangeLocalIdentityWithReclaimableOrphan() {
-      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-realpath-'));
-      const localDestination = { id: 'cfg-local', provider: 'local', providerConfig: { path: realDir } };
+  // A local destination's stored path is the agent's path on the device. The
+  // sweep reads a local destination only from its own operator directory and
+  // never resolves the stored path on the server, so that path can neither
+  // defer nor block the sweep.
+  describe('local destinations: the stored path is never resolved on the API server', () => {
+    async function arrangeLocalIdentityWithReclaimableOrphan(storedPath: string) {
+      const localDestination = { id: 'cfg-local', provider: 'local', providerConfig: { path: storedPath } };
       const key = normalizeStorageIdentity('local', localDestination.providerConfig);
       pushRunLevel([localDestination]);
       pushIdentity();
@@ -3532,40 +3961,28 @@ describe('sweepUnreferencedBackupObjects', () => {
       rootListingMock.mockResolvedValueOnce([
         { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
       ]);
-      return { key, realDir };
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+      return key;
     }
 
-    it.each(['EACCES', 'ELOOP', 'EMFILE'])('%s from realpath on a CURRENT local root defers the identity, deletes nothing, logs key+code, and escalates', async (code) => {
-      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
-      realpathFailWith = { code };
+    it('a realpath that fails for every path neither defers nor blocks a local destination', async () => {
+      const storedPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-'));
+      await arrangeLocalIdentityWithReclaimableOrphan(storedPath);
+      realpathFailWith = { code: 'EACCES' };
+      realpathCalls.length = 0;
 
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      let errorMessages: string[];
-      try {
-        result = await sweepUnreferencedBackupObjects();
-        errorMessages = error.mock.calls.map(([msg]) => String(msg));
-      } finally {
-        error.mockRestore();
-        warn.mockRestore();
-      }
+      const result = await sweepUnreferencedBackupObjects();
 
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.deferredIdentities).toBe(1);
-      expect(result.skippedIdentities).toBe(0);
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalled();
+      expect(result.deferredIdentities).toBe(0);
       expect(result.blockedIdentities).toBe(0);
-      expect(errorMessages.some((msg) => msg.includes(key) && msg.includes(code))).toBe(true);
-      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-      const [err] = captureExceptionMock.mock.calls[0]!;
-      expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toContain(key);
-      expect((err as Error).message).toContain(code);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(realpathCalls).not.toContain(storedPath);
     });
 
-    it('control: with realpath healthy the same arrangement reclaims the orphan (proves the deferral above is the realpath guard, not the fixture)', async () => {
-      await arrangeLocalIdentityWithReclaimableOrphan();
-      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+    it('a destination whose stored path does not exist on the API server is swept normally', async () => {
+      const devicePath = join(tmpdir(), `breeze-gc-device-only-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await arrangeLocalIdentityWithReclaimableOrphan(devicePath);
 
       const result = await sweepUnreferencedBackupObjects();
 
@@ -3574,165 +3991,12 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(captureExceptionMock).not.toHaveBeenCalled();
     });
 
-    it('ENOENT on a CURRENT local root also defers (nothing to reclaim if fresh; exactly right if the mount is missing) but does NOT page Sentry', async () => {
-      const missingDir = join(tmpdir(), `breeze-gc-missing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-      const localDestination = { id: 'cfg-local', provider: 'local', providerConfig: { path: missingDir } };
-      pushRunLevel([localDestination]);
-      pushIdentity();
-      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
-      rootListingMock.mockResolvedValueOnce([
-        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
-      ]);
-
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      let warnMessages: string[];
-      try {
-        result = await sweepUnreferencedBackupObjects(); // real realpath -> real ENOENT
-        warnMessages = warn.mock.calls.map(([msg]) => String(msg));
-      } finally {
-        warn.mockRestore();
-      }
-
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.deferredIdentities).toBe(1);
-      expect(warnMessages.some((msg) => msg.includes(missingDir) && msg.includes('ENOENT'))).toBe(true);
-      expect(captureExceptionMock).not.toHaveBeenCalled();
-    });
-
-    it('a non-ENOENT realpath failure on a STALE local key defers every local identity this run (the alias cannot be ruled out) and escalates', async () => {
-      const { key, realDir } = await arrangeLocalIdentityWithReclaimableOrphan();
-      // Re-push the identityUsage read with an extra stale local key whose
-      // realpath will fail — pushRunLevel queued a usage row for the current
-      // config only, so replace that third queued read.
-      const staleDir = await mkdtemp(join(tmpdir(), 'breeze-gc-stale-'));
-      const staleKey = `local::${staleDir}`;
-      selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: staleKey, count: 4 }];
-      realpathFailWith = { code: 'EACCES', onlyPath: staleDir }; // the CURRENT root resolves fine
-      void realDir;
-
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      let errorMessages: string[];
-      try {
-        result = await sweepUnreferencedBackupObjects();
-        errorMessages = error.mock.calls.map(([msg]) => String(msg));
-      } finally {
-        error.mockRestore();
-        warn.mockRestore();
-      }
-
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.deferredIdentities).toBe(1);
-      expect(result.unreachableIdentities).toBe(1);
-      expect(errorMessages.some((msg) => msg.includes(staleKey) && msg.includes('EACCES'))).toBe(true);
-      expect(captureExceptionMock).toHaveBeenCalled();
-      expect(captureExceptionMock.mock.calls.some(([err]) => String((err as Error).message).includes(staleKey) && String((err as Error).message).includes('EACCES'))).toBe(true);
-    });
-
-    // Review round 2 code-reviewer finding: two CURRENT local configs that
-    // alias via a symlink, where realpath fails on only ONE of them. The
-    // failing one falls back to its lexical path, the healthy one resolves
-    // to the real directory, the signatures no longer match, and the
-    // current-vs-current collision check sees nothing — so the healthy one
-    // would run the full non-deferred algorithm over the SAME physical
-    // directory. A non-ENOENT realpath failure on any current local root
-    // therefore defers EVERY local identity this run, not just its own.
-    it('a non-ENOENT realpath failure on ONE of two symlink-aliased CURRENT local roots defers BOTH (the healthy one must not reclaim over the shared directory)', async () => {
-      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real3-'));
-      const linkPath = join(tmpdir(), `breeze-gc-link3-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-      await symlink(realDir, linkPath, 'dir');
-      const configReal = { id: 'cfg-real', provider: 'local', providerConfig: { path: realDir } };
-      const configLink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
-      const keyLink = normalizeStorageIdentity('local', configLink.providerConfig);
-
-      pushRunLevel([configReal, configLink]);
-      pushIdentity(); // cfg-real
-      pushIdentity(); // cfg-link
-      // Both identities list the same physical contents: one reclaimable orphan.
-      const old = new Date(Date.now() - 30 * DAY_MS);
-      fetchBackupObjectTextMock.mockResolvedValue(manifestJson([]));
-      rootListingMock.mockResolvedValue([{ key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old }]);
-      realpathFailWith = { code: 'EACCES', onlyPath: linkPath }; // realDir resolves fine
-
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      let errorMessages: string[];
-      try {
-        result = await sweepUnreferencedBackupObjects();
-        errorMessages = error.mock.calls.map(([msg]) => String(msg));
-      } finally {
-        error.mockRestore();
-        warn.mockRestore();
-      }
-
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.deferredIdentities).toBe(2);
-      expect(result.skippedIdentities).toBe(0);
-      expect(errorMessages.some((msg) => msg.includes(keyLink) && msg.includes('EACCES'))).toBe(true);
-      expect(captureExceptionMock).toHaveBeenCalled();
-    });
-
-    it('a stale non-ENOENT realpath failure defers local identities only — a sibling s3 identity in the same run still reclaims normally', async () => {
-      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
-      const s3Destination = { id: 'cfg-s3', provider: 's3', providerConfig: { bucket: 'backups', region: 'us-east-1' } };
-      const s3Key = normalizeStorageIdentity('s3', s3Destination.providerConfig);
-      const staleDir = await mkdtemp(join(tmpdir(), 'breeze-gc-stale2-'));
-      const staleKey = `local::${staleDir}`;
-      // Rewrite run-level reads: two destinations, usage rows for both + the stale key.
-      selectQueue[1] = [...(selectQueue[1] as unknown[]), s3Destination];
-      selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: s3Key, count: 1 }, { storageIdentity: staleKey, count: 4 }];
-      pushIdentity(); // s3 identity's per-identity reads
-      fetchBackupObjectTextMock.mockResolvedValue(manifestJson([]));
-      rootListingMock.mockResolvedValue([
-        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: new Date(Date.now() - 30 * DAY_MS) },
-      ]);
-      deleteBackupObjectKeysMock.mockResolvedValue({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
-      realpathFailWith = { code: 'EACCES', onlyPath: staleDir };
-
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      try {
-        result = await sweepUnreferencedBackupObjects();
-      } finally {
-        error.mockRestore();
-        warn.mockRestore();
-      }
-
-      expect(result.deferredIdentities).toBe(1); // the local one only
-      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1); // the s3 identity's orphan
-      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { provider: string }).provider).toBe('s3');
-    });
-
-    it('an identity deferred for BOTH a legacy helper and an unresolvable root is counted once', async () => {
-      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
-      void key;
-      // Replace the capability read (4th per-identity read) with a legacy helper.
-      selectQueue[selectQueue.length - 1] = [{ deviceId: 'dev-legacy', backupVersion: '0.100.0' }];
-      realpathFailWith = { code: 'ELOOP' };
-
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      let result;
-      try {
-        result = await sweepUnreferencedBackupObjects();
-      } finally {
-        error.mockRestore();
-        warn.mockRestore();
-      }
-
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.deferredIdentities).toBe(1);
-    });
-
-    it('ENOENT on a STALE local key is the expected "old directory is gone" case: lexical fallback, no deferral', async () => {
-      const { key } = await arrangeLocalIdentityWithReclaimableOrphan();
+    it('a stale local identity string does not defer a current local destination', async () => {
+      const storedPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-'));
+      const key = await arrangeLocalIdentityWithReclaimableOrphan(storedPath);
       const goneStaleKey = `local::${join(tmpdir(), `breeze-gc-gone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)}`;
       selectQueue[2] = [{ storageIdentity: key, count: 1 }, { storageIdentity: goneStaleKey, count: 4 }];
-      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/OLDORPHAN/manifest.json'], failedKeys: [] });
+      realpathFailWith = { code: 'ELOOP' };
 
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       let result;
@@ -3756,7 +4020,7 @@ describe('sweepUnreferencedBackupObjects', () => {
   // each would see only its own retained snapshots and could delete the
   // other's live objects.
   describe('review round 1: local provider is now covered by the current-vs-current coarse collision check', () => {
-    it('fail-closed-skips two CURRENT local configs whose paths are a symlink alias of the same physical directory', async () => {
+    it('sweeps two current local configurations whose stored paths alias one directory each as its own destination', async () => {
       const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real2-'));
       const linkPath = join(tmpdir(), `breeze-gc-link2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
       await symlink(realDir, linkPath, 'dir');
@@ -3767,14 +4031,16 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(normalizeStorageIdentity('local', configReal.providerConfig))
         .not.toBe(normalizeStorageIdentity('local', configLink.providerConfig));
 
-      pushRunLevel([configReal, configLink]); // 2 identities, symlink-aliased
+      pushRunLevel([configReal, configLink]);
+      rootListingMock.mockResolvedValue([]);
+      realpathCalls.length = 0;
 
       const result = await sweepUnreferencedBackupObjects();
 
-      expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
-      expect(rootListingMock).not.toHaveBeenCalled();
-      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result.skippedIdentities).toBe(2);
+      // Each destination lists its own directory; neither stored path is resolved.
+      expect(rootListingMock).toHaveBeenCalledTimes(2);
+      expect(result.skippedIdentities).toBe(0);
+      expect(realpathCalls).toEqual([]);
     });
   });
 });

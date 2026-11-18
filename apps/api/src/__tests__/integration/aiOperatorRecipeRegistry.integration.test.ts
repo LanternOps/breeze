@@ -183,7 +183,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 describe('coordinator: unresolvable recipe (E1)', () => {
   runDb('hands off a task whose workflow key this build does not ship', async () => {
     const t = await seedTenant();
-    const taskId = await seedTask(t, { workflowKey: 'identity_offboarding', workflowVersion: 1 });
+    const taskId = await seedTask(t, { workflowKey: 'no_such_recipe', workflowVersion: 1 });
 
     const claim = await claimTaskLease({ orgId: t.orgId, taskId, requireWakeDue: false });
     expect(claim.won).toBe(true);
@@ -195,7 +195,7 @@ describe('coordinator: unresolvable recipe (E1)', () => {
     const row = await readTaskRow(taskId);
     expect(row?.state).toBe('handed_off');
     expect(row?.outcome).toBe('unresolved');
-    expect(row?.outcomeDetail).toContain('identity_offboarding');
+    expect(row?.outcomeDetail).toContain('no_such_recipe');
     expect(row?.handoffSummary).toContain('Nothing was changed');
     // Released, not held: a task that can never advance must not pin a lease.
     expect(row?.leaseOwner).toBeNull();

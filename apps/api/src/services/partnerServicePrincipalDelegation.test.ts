@@ -27,6 +27,7 @@ describe('partner service principal scope delegation', () => {
     ['tickets:read', 'tickets', 'read'],
     ['tickets:write', 'tickets', 'write'],
     ['alerts:read', 'alerts', 'read'],
+    ['alerts:write', 'alerts', 'write'],
     ['contracts:write', 'contracts', 'write'],
     ['device-status:read', 'devices', 'read'],
     ['backup-configuration:read', 'backup', 'read'],
@@ -49,6 +50,15 @@ describe('partner service principal scope delegation', () => {
       perms(['tickets', 'read'], ['tickets', 'write'], ['organizations', 'read']),
     );
     expect(result).toEqual({ ok: true });
+  });
+
+  it('requires alerts.write even when the granter can acknowledge alerts', () => {
+    expect(validatePartnerServicePrincipalScopeDelegation(
+      ['alerts:write'], perms(['alerts', 'read'], ['alerts', 'acknowledge']),
+    ).ok).toBe(false);
+    expect(validatePartnerServicePrincipalScopeDelegation(
+      ['alerts:write'], perms(['alerts', 'write']),
+    )).toEqual({ ok: true });
   });
 
   it('keeps the MCP scope baselines an org API key uses', () => {

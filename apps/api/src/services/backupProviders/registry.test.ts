@@ -3,7 +3,17 @@ import { BACKUP_PROVIDER_KEYS, getBackupProvider, isBackupProviderKey, listBacku
 
 describe('backup provider registry', () => {
   it('exposes exactly the shipped provider keys', () => {
-    expect(BACKUP_PROVIDER_KEYS).toEqual(['cove']);
+    expect(BACKUP_PROVIDER_KEYS).toEqual(['cove', 'dropsuite', 'axcient']);
+  });
+
+  it('registers Axcient with its default URL and 30-minute sync', () => {
+    const adapter = getBackupProvider('axcient');
+    expect(adapter.label).toBe('Axcient x360Recover');
+    expect(adapter.defaultBaseUrl).toBe('https://axapi.axcient.com/x360recover');
+    expect(adapter.defaultSyncIntervalMinutes).toBe(30);
+    expect(adapter.inventoryKind).toBeUndefined();
+    expect(adapter.rootContinuity).toBe('root_id');
+    expect(isBackupProviderKey('axcient')).toBe(true);
   });
 
   it('returns a fully-formed adapter for a known key', () => {
@@ -16,6 +26,15 @@ describe('backup provider registry', () => {
     // The schema must actually validate — a bare z.any() here would let a
     // malformed blob reach the vendor client.
     expect(adapter.credentialsSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('registers Dropsuite with its regional URL requirement and hourly sync default', () => {
+    const adapter = getBackupProvider('dropsuite');
+    expect(adapter.label).toBe('NinjaOne SaaS Backup (Dropsuite)');
+    expect(adapter.defaultBaseUrl).toBeUndefined();
+    expect(adapter.defaultSyncIntervalMinutes).toBe(60);
+    expect(typeof adapter.validateBaseUrl).toBe('function');
+    expect(isBackupProviderKey('dropsuite')).toBe(true);
   });
 
   it('throws, naming the known keys, for an unknown provider', () => {

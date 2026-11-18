@@ -231,7 +231,13 @@
       "submit": "Appliquer",
       "created_one": "{{count}} livrable créé",
       "created_other": "{{count}} livrables créés",
-      "skipped": "Ignorés (déjà présents) : {{names}}"
+      "skipped": "Ignorés (déjà présents) : {{names}}",
+      "items": "Livrables de cet ensemble",
+      "noItems": "Cet ensemble ne contient encore aucun livrable."
+    },
+    "portal": {
+      "shown": "Visible dans le portail",
+      "hidden": "Masqué dans le portail"
     },
     "errors": {
       "collision": "Ces livrables existent déjà sur la cible : {{names}}",

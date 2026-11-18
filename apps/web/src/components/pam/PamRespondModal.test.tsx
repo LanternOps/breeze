@@ -666,3 +666,105 @@ describe('PamRespondModal non-success outcomes on a 200', () => {
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+// #8971: the device user declined (or the prompt timed out) and the agent
+// withdrew the request before the technician answered. The respond route 409s
+// with `currentStatus: 'withdrawn'`; the modal says so instead of silently
+// closing, and a resubmit could only 409 again, so submit stays disabled.
+describe('PamRespondModal withdrawn conflict (#8971)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the withdrew copy on a 409 with currentStatus withdrawn and keeps submit disabled', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        { success: false, error: 'Request is not pending', currentStatus: 'withdrawn' },
+        false,
+        409,
+      ),
+    );
+    const onActioned = vi.fn();
+    const onClose = vi.fn();
+    render(<PamRespondModal request={requestFixture()} onClose={onClose} onActioned={onActioned} />);
+    submit();
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The user withdrew this request on the device.',
+      ),
+    );
+    expect(screen.getByTestId('pam-respond-submit')).toBeDisabled();
+    // One message for one event: the inline alert, not also the server's
+    // generic "not pending" error toast.
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // Dismissing refreshes the list so the row shows its real status.
+    expect(onActioned).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('pam-respond-cancel'));
+    expect(onActioned).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the close-and-refresh behaviour for a 409 with any other status', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        { success: false, error: 'Request is not pending', currentStatus: 'denied' },
+        false,
+        409,
+      ),
+    );
+    const onActioned = vi.fn();
+    render(<PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={onActioned} />);
+    submit();
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('PamRespondModal deny reason disclosure (#8928)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    respondRecordsRequestedDecision();
+  });
+
+  it('tells the technician the deny reason is shown to the end user, linked by aria-describedby', () => {
+    render(
+      <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+
+    const textarea = screen.getByTestId('pam-respond-reason');
+    expect(screen.getByLabelText('Reason (shown to the user)')).toBe(textarea);
+    const hint = screen.getByTestId('pam-respond-reason-hint');
+    expect(hint).toHaveTextContent(
+      'The end user sees this in their notification (first 500 characters).',
+    );
+    expect(textarea.getAttribute('aria-describedby')).toBe(hint.id);
+    expect(textarea).toHaveAttribute('maxlength', '2000');
+  });
+
+  // The server sends the end-user notice only for uac_intercept (pam.ts), so
+  // for the other flows the reason is audit-only and must not claim otherwise.
+  it.each(['tech_jit_admin', 'ai_tool_action'] as const)(
+    'keeps the optional label and no end-user hint when denying a %s request',
+    (flowType) => {
+      render(
+        <PamRespondModal request={requestFixture({ flowType })} onClose={() => {}} onActioned={() => {}} />,
+      );
+      fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+
+      expect(screen.getByLabelText('Reason (optional)')).toBe(screen.getByTestId('pam-respond-reason'));
+      expect(screen.queryByText('Reason (shown to the user)')).toBeNull();
+      expect(screen.queryByTestId('pam-respond-reason-hint')).toBeNull();
+      expect(screen.getByTestId('pam-respond-reason')).not.toHaveAttribute('aria-describedby');
+    },
+  );
+
+  it('keeps the optional label and no end-user hint on approve', () => {
+    render(
+      <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />,
+    );
+
+    expect(screen.getByLabelText('Reason (optional)')).toBe(screen.getByTestId('pam-respond-reason'));
+    expect(screen.queryByTestId('pam-respond-reason-hint')).toBeNull();
+    expect(screen.getByTestId('pam-respond-reason')).not.toHaveAttribute('aria-describedby');
+  });
+});

@@ -45,6 +45,7 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import { LlmUnavailableError, llmUnavailableBody } from '../services/llm/llmUnavailableError';
+import { toolExposureRefusal } from '../services/aiModels/sessionToolExposure';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
 import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
@@ -209,8 +210,10 @@ scriptAiRoutes.post(
     // between them with no connection checked out.
     const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
 
-    // Run pre-flight checks (rate limits, budget, session status)
-    const preflight = await inRequestDb(() => runPreFlightChecks(sessionId, content, auth, undefined, c));
+    // Run pre-flight checks (rate limits, budget, session status). #10415: not
+    // wrapped in inRequestDb — the pre-flight opens its own DB phases with it
+    // and runs the Redis rate limit between them.
+    const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c, undefined, inRequestDb);
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
@@ -218,6 +221,8 @@ scriptAiRoutes.post(
       // W03: a stored model that went ineligible is recoverable (choose another).
       if (preflight.code) return c.json({ error: err, code: preflight.code, recoverable: true }, preflight.status === 503 ? 503 : 409);
       if (preflight.status === 503) return c.json({ error: err }, 503);
+      // The credit / plan gate (and spend caps): 402, with a code the client can act on.
+      if (preflight.status === 402) return c.json(preflight.billingCode ? { error: err, code: preflight.billingCode } : { error: err }, 402);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -317,8 +322,9 @@ scriptAiRoutes.post(
           model,
           SCRIPT_BUILDER_MCP_TOOL_NAMES,
           // Custom MCP server factory for script builder tools
-          (getAuth, onPreToolUse, onPostToolUse) => ({
-            server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
+          // #11395: getSession lets the server advertise only the session's tool exposure.
+          (getAuth, onPreToolUse, onPostToolUse, getSession) => ({
+            server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse, getSession),
             name: SCRIPT_BUILDER_MCP_SERVER_NAME,
           }),
           { budgetReservationId, ledgerUserId: auth.user.id },
@@ -327,6 +333,10 @@ scriptAiRoutes.post(
         if (err instanceof LlmUnavailableError) {
           return { kind: 'refused', response: c.json(llmUnavailableBody(err), 503) };
         }
+        // #11393: the model's tool profile drops a tool the builder needs, or
+        // (#11396) its known window is too small for any profile.
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 

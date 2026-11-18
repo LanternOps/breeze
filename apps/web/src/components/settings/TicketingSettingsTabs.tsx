@@ -10,13 +10,14 @@ import GmailMailboxCard from './GmailMailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
 import TicketFormsCard from './TicketFormsCard';
 import TicketChecklistTemplatesPage from './TicketChecklistTemplatesPage';
+import TicketRoutingTab from './TicketRoutingTab';
 import TimeTrackingSettingsCard from './TimeTrackingSettingsCard';
 import { useJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
-import { useHashTab } from '../../lib/useHashState';
+import { useHashState } from '../../lib/useHashState';
 
 export const TICKETING_HUB_TABS = [
-  'statuses', 'priorities', 'categories', 'forms', 'email', 'templates', 'timeTracking',
+  'statuses', 'priorities', 'categories', 'routing', 'forms', 'email', 'templates', 'timeTracking',
 ] as const;
 export type TicketingHubTab = (typeof TICKETING_HUB_TABS)[number];
 
@@ -30,6 +31,11 @@ export type TicketingHubTab = (typeof TICKETING_HUB_TABS)[number];
 // owner selector. Gating the whole tab on partner scope regressed that (an
 // org-scoped user lost checklist-template management entirely). Only the
 // CannedResponsesCard half of this tab's panel is partner-only.
+//
+// `routing` is NOT here either, for the same reason: ticket routing rules are
+// dual-ownership (an org owns its rules, the partner owns partner-wide ones).
+// TicketRoutingTab gates internally — the owner selector, the org-links picker
+// and the inbound fallback-assignee editor render only for partner scope.
 const PARTNER_ONLY_TABS: Array<{ id: TicketingHubTab; labelKey: string }> = [
   { id: 'forms', labelKey: 'ticketingSettingsTabs.intakeForms' },
   { id: 'email', labelKey: 'ticketingSettingsTabs.email' },
@@ -41,6 +47,7 @@ const BASE_TABS: Array<{ id: TicketingHubTab; labelKey: string }> = [
   { id: 'statuses', labelKey: 'ticketingSettingsTabs.statuses' },
   { id: 'priorities', labelKey: 'ticketingSettingsTabs.prioritiesSLAs' },
   { id: 'categories', labelKey: 'ticketingSettingsTabs.categories' },
+  { id: 'routing', labelKey: 'ticketingSettingsTabs.routing' },
   { id: 'templates', labelKey: 'ticketingSettingsTabs.templates' },
 ];
 
@@ -75,7 +82,15 @@ export default function TicketingSettingsTabs() {
   const [deepLinkMailbox] = useState(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
   );
-  const [activeTab, setActiveTab] = useHashTab<TicketingHubTab>(TICKETING_HUB_TABS, deepLinkMailbox ? 'email' : 'statuses');
+  // The hash is `<tab>` or `<tab>/<detail>` (e.g. `priorities/<calendarId>`, the selected
+  // business-hours calendar) — only the head segment picks the tab.
+  const [activeTab, setActiveTab] = useHashState<TicketingHubTab>(
+    deepLinkMailbox ? 'email' : 'statuses',
+    (hash) => {
+      const head = hash.split('/')[0] as TicketingHubTab;
+      return (TICKETING_HUB_TABS as readonly string[]).includes(head) ? head : undefined;
+    },
+  );
 
   const TABS = [...BASE_TABS, ...(canManagePartnerTicketing ? PARTNER_ONLY_TABS : [])].map((tab) => ({
     ...tab,
@@ -121,6 +136,9 @@ export default function TicketingSettingsTabs() {
         <div data-testid="ticketing-tab-panel-priorities"><TicketPrioritiesTab /></div>
       )}
       {activeTab === 'categories' && <TicketCategoriesPage />}
+      {activeTab === 'routing' && (
+        <div data-testid="ticketing-tab-panel-routing"><TicketRoutingTab /></div>
+      )}
       {activeTab === 'forms' && canManagePartnerTicketing && (
         <div data-testid="ticketing-tab-panel-forms"><TicketFormsCard /></div>
       )}

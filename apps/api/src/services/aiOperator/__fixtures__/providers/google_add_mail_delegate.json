@@ -1,0 +1,21 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Gmail API v1 users.settings.delegates.list / create (Delegate resource)",
+  "toolName": "google_add_mail_delegate",
+  "provider": "google",
+  "preSatisfied": {
+    "gmail.settings.delegates.list": { "data": { "delegates": [ { "delegateEmail": "manager@customer.example", "verificationStatus": "accepted" } ] } }
+  },
+  "preUnsatisfied": {
+    "gmail.settings.delegates.list": { "data": {} }
+  },
+  "writeOk": {
+    "gmail.settings.delegates.create": { "data": { "delegateEmail": "manager@customer.example", "verificationStatus": "accepted" } }
+  },
+  "postSatisfied": {
+    "gmail.settings.delegates.list": { "data": { "delegates": [ { "delegateEmail": "manager@customer.example", "verificationStatus": "accepted" } ] } }
+  },
+  "writeRefusal": {
+    "gmail.settings.delegates.create": { "error": { "code": 403, "message": "Delegation denied for dana@customer.example" } }
+  }
+}

@@ -368,6 +368,28 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     ]);
   });
 
+  it('takes daily page-count deltas from max, not avg, even when the template types the OID "table"', async () => {
+    // Every built-in printer template types prtMarkerLifeCount as "table" (its
+    // acquisition shape, not a value type). Averaging a lifetime counter per
+    // day and differencing the averages rendered "49.88780487804797 since
+    // yesterday" on the printer health card.
+    vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow({ templateId: TEMPLATE_ID })]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(limitChain([{
+      oids: [{ oid: '1.3.6.1.2.1.43.10.2.1.4', name: 'prtMarkerLifeCount', type: 'table' }],
+    }]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(metricsChain([
+      metricRow({ oid: '1.3.6.1.2.1.43.10.2.1.4', bucket: '2026-09-14T00:00:00.000Z', avgValue: '15700.12195', maxValue: '15720' }),
+      metricRow({ oid: '1.3.6.1.2.1.43.10.2.1.4', bucket: '2026-09-15T00:00:00.000Z', avgValue: '15750.00975', maxValue: '15811' }),
+    ]) as any);
+
+    const res = await get('?oid=1.3.6.1.2.1.43.10.2.1.4&bucket=1d&delta=1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.series[0].points).toEqual([['2026-09-15T00:00:00.000Z', 91]]);
+  });
+
   it.each([0, MAX_INSTANCES_PER_OID, MAX_INSTANCES_PER_OID + 10])(
     'bounds the points query for %i instances and reports truncation', async (count) => {
     vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);

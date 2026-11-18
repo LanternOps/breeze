@@ -142,6 +142,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'eligibility',
     reason: 'The dispatch read joins the device org type; a parked device fails the actuation before the raw insert',
   },
+  'services/pamRequestNotify.ts': {
+    kind: 'chokepoint',
+    reason: 'insertQueuedCommandInTransaction checks parked-device delivery on a savepoint of the deciding transaction; a refusal is swallowed so the deny/expiry still commits with no command (#8928)',
+  },
   'routes/devices/pamReconciliation.ts': {
     kind: 'chokepoint',
     reason: 'insertQueuedCommandInTransaction checks parked-device delivery on the held transaction and the route returns its typed 409 refusal',
@@ -236,12 +240,19 @@ const CLASSIFICATION: Record<string, Classification> = {
   'routes/tunnels.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/tunnelHttpCore.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/remote/sessions.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
+  // #11931: the operator End shared by POST /remote/sessions/:id/end and the
+  // viewer-token POST /desktop-ws/:id/viewer/end. The remote-access gate lives
+  // in those two callers; this file only pushes the rowless stop_desktop.
+  'services/remoteSessionOperatorEnd.ts': {
+    kind: 'socket_only',
+    reason: 'Rowless stop_desktop push (agent socket or relay) for a session its remote-access-gated caller already ended',
+  },
 
   // --- socket_only: rowless probes over the live socket ---------------------
   'jobs/discoveryWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/monitorWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/snmpWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
-  'routes/discoveryAssetProbe.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
+  'services/assetProbeRun.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'routes/monitors.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'routes/devices/sessions.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
 

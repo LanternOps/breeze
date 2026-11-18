@@ -58,6 +58,10 @@ for (const tier of TIER_DEFINITIONS) {
 }
 
 describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['submit', 'reconcile'])('W15: documents manage_pax8_orders:%s at Tier 3', (action) => {
+    expect(parsed.filter((entry) => entry.tool === 'manage_pax8_orders' && entry.actions.includes(action))
+      .map((entry) => entry.claimedTier)).toEqual([3]);
+  });
   it.each(['get', 'create', 'update', 'delete'])('lists manage_monitors:%s at Tier 1 with read permission only', (action) => {
     const entries = parsed.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
     expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);
@@ -88,7 +92,7 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
     expect(list.map((entry) => entry.claimedTier)).toEqual([2]);
     const status = parsed.filter((entry) => entry.tool === 'system_cleanup' && entry.actions.includes('status'));
     expect(status.map((entry) => entry.claimedTier)).toEqual([1]);
-    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', status: 'devices.read' });
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' });
   });
 
   // A fresh disk scan / boot-metrics collection is claimed under its input

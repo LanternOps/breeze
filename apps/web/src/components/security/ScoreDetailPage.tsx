@@ -144,7 +144,7 @@ export default function ScoreDetailPage() {
     );
   }
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="security-score-page">
       <SecurityPageHeader
         title={t("securityScoreDetailPage.securityScore")}
         subtitle={t("securityScoreDetailPage.scoreBreakdownByCategory")}
@@ -163,6 +163,7 @@ export default function ScoreDetailPage() {
       <div className="grid gap-4 sm:grid-cols-3">
         <SecurityStatCard
           icon={ShieldCheck}
+          testId="security-score-overall"
           label={t("securityScoreDetailPage.overallScore")}
           value={`${data.overallScore}/100`}
           variant={
@@ -175,6 +176,7 @@ export default function ScoreDetailPage() {
         />
         <SecurityStatCard
           icon={Target}
+          testId="security-score-grade"
           label={t("securityScoreDetailPage.grade")}
           value={data.grade}
           variant={
@@ -198,6 +200,7 @@ export default function ScoreDetailPage() {
         />
         <SecurityStatCard
           icon={Users}
+          testId="security-score-devices-audited"
           label={t("securityScoreDetailPage.devicesAudited")}
           value={formatNumber(data.devicesAudited)}
         />

@@ -63,25 +63,29 @@ describe('classifyExpireError', () => {
 });
 
 describe('checkoutSessionExpiry', () => {
-  it('stays inside Stripe\'s [30 min, 24 h] window at both ends of the hour', () => {
-    const topOfHour = new Date('2026-09-10T12:00:00.000Z');
-    const endOfHour = new Date('2026-09-10T12:59:59.000Z');
-    for (const now of [topOfHour, endOfHour]) {
-      const aheadSeconds = checkoutSessionExpiry(now).expiresAt - Math.floor(now.getTime() / 1000);
+  // Buckets open 5 min before the invoice's created_at phase (#10736): an
+  // invoice created at 12:05:00 has buckets [12:00:00, 13:00:00), [13:00:00, …).
+  const invoiceCreatedAt = new Date('2026-09-10T12:05:00.000Z');
+
+  it('stays inside Stripe\'s [30 min, 24 h] window at both ends of a bucket', () => {
+    const bucketStart = new Date('2026-09-10T12:00:00.000Z');
+    const bucketEnd = new Date('2026-09-10T12:59:59.000Z');
+    for (const now of [bucketStart, bucketEnd]) {
+      const aheadSeconds = checkoutSessionExpiry(invoiceCreatedAt, now).expiresAt - Math.floor(now.getTime() / 1000);
       expect(aheadSeconds).toBeGreaterThan(30 * 60);
       expect(aheadSeconds).toBeLessThan(24 * 3600);
     }
   });
 
-  it('is stable within an hour so an idempotent replay keeps identical parameters', () => {
-    const a = checkoutSessionExpiry(new Date('2026-09-10T12:00:00.000Z'));
-    const b = checkoutSessionExpiry(new Date('2026-09-10T12:59:59.000Z'));
+  it('is stable within a bucket so an idempotent replay keeps identical parameters', () => {
+    const a = checkoutSessionExpiry(invoiceCreatedAt, new Date('2026-09-10T12:00:00.000Z'));
+    const b = checkoutSessionExpiry(invoiceCreatedAt, new Date('2026-09-10T12:59:59.000Z'));
     expect(b).toEqual(a);
   });
 
-  it('moves to a new quantum across the hour boundary so the key family changes with the params', () => {
-    const a = checkoutSessionExpiry(new Date('2026-09-10T12:59:59.000Z'));
-    const b = checkoutSessionExpiry(new Date('2026-09-10T13:00:00.000Z'));
+  it('moves to a new quantum across the bucket boundary so the key family changes with the params', () => {
+    const a = checkoutSessionExpiry(invoiceCreatedAt, new Date('2026-09-10T12:59:59.000Z'));
+    const b = checkoutSessionExpiry(invoiceCreatedAt, new Date('2026-09-10T13:00:00.000Z'));
     expect(b.quantum).toBe(a.quantum + 3600);
     expect(b.expiresAt).not.toBe(a.expiresAt);
   });

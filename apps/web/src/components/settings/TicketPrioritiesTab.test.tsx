@@ -23,6 +23,8 @@ vi.mock('../../lib/ticketConfigApi', () => ({
   invalidateTicketConfig: () => invalidateTicketConfig()
 }));
 
+vi.mock('./BusinessHoursCard', () => ({ default: () => <div data-testid="stub-business-hours-card" /> }));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

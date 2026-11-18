@@ -29,6 +29,7 @@ describe('tierConfig lists system_cleanup', () => {
     expect(toolEntries(1)).not.toContain('system_cleanup (list)');
     expect(toolEntries(1)).toContain('system_cleanup (status)');
     expect(toolEntries(3)).toContain('system_cleanup (run)');
+    expect(toolEntries(3)).toContain('system_cleanup (cancel)');
   });
 
   it('advertises the per-tool rate limit row and permission', () => {
@@ -44,12 +45,12 @@ describe('tierConfig lists system_cleanup', () => {
   });
 
   it('maps RBAC per action', () => {
-    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', status: 'devices.read' });
+    expect(RBAC_MAPPINGS.system_cleanup).toEqual({ list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' });
   });
 });
 
 describe('system_cleanup catalog labels exist in all 8 locales', () => {
-  it.each(LOCALES)('%s carries the tool label and all three action labels', (locale) => {
+  it.each(LOCALES)('%s carries the tool label and all four action labels', (locale) => {
     const catalog = JSON.parse(readFileSync(join(localesDir, locale, 'settings.json'), 'utf8'));
     const tools = catalog.aiAgentsPage.catalog.tools;
     const actions = catalog.aiAgentsPage.catalog.actions;
@@ -59,6 +60,7 @@ describe('system_cleanup catalog labels exist in all 8 locales', () => {
     expect(typeof actions.system_cleanup?.list).toBe('string');
     expect(typeof actions.system_cleanup?.run).toBe('string');
     expect(typeof actions.system_cleanup?.status).toBe('string');
+    expect(typeof actions.system_cleanup?.cancel).toBe('string');
 
     if (locale !== 'en') {
       // translationCoverage.test.ts caps exact-English duplicates per namespace
@@ -69,6 +71,7 @@ describe('system_cleanup catalog labels exist in all 8 locales', () => {
       expect(actions.system_cleanup.list).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.list);
       expect(actions.system_cleanup.run).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.run);
       expect(actions.system_cleanup.status).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.status);
+      expect(actions.system_cleanup.cancel).not.toBe(en.aiAgentsPage.catalog.actions.system_cleanup.cancel);
     }
   });
 });

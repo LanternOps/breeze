@@ -28,6 +28,14 @@ const { queryMock, insertedRows, updateCalls } = vi.hoisted(() => ({
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
+// Wisp W04 Task 4: getOrCreate resolves the session's delegation grant itself
+// (lookupWispGrant); every session in this suite is an ordinary one.
+vi.mock('./wisp/chatCeiling', () => ({
+  lookupWispGrant: vi.fn(async () => null),
+  unreachableWispAuth: (auth: unknown) => auth,
+  WispSessionUnavailableError: class WispSessionUnavailableError extends Error {},
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -96,6 +104,8 @@ vi.mock('./aiGuardrails', () => ({
 vi.mock('./scriptProposals', () => ({
   attachProposalToSession: vi.fn(async () => undefined),
   loadProposalGuardrailContext: vi.fn(async () => undefined),
+  loadProposalGuardrailContextInReach: vi.fn(async () => ({ context: undefined, proposalOrgId: null })),
+  resolveProposalOrgInReach: vi.fn(async () => null),
 }));
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: vi.fn(),
@@ -105,6 +115,9 @@ vi.mock('./clientIp', async (orig) => ({
   ...(await orig<typeof import('./clientIp')>()),
   getTrustedClientIpOrUndefined: () => undefined,
 }));
+
+// Not reached here (the custom mcpServerFactory skips flow resolution); mocked for the flowToolsMock contract (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager, type ActiveSession } from './streamingSessionManager';
 import type { createSessionPostToolUse } from './aiAgentSdk';

@@ -16,7 +16,8 @@ export interface OfflineRulePlan {
   name: string;
   severity: AlertSeverity;
   conditions: unknown;
-  cooldownMinutes: number;
+  /** Null when the rule's stored cooldown is malformed: admission rejects this task alone. */
+  cooldownMinutes: number | null;
   titleTemplate: string;
   messageTemplate: string;
   templateId?: string;

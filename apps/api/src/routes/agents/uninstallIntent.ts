@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 
 export const uninstallIntentRoutes = new Hono();
 
@@ -44,10 +44,24 @@ uninstallIntentRoutes.post('/:id/uninstall-intent', async (c) => {
     return c.json({ error: 'This endpoint requires the agent credential' }, 403);
   }
 
-  await db
-    .update(devices)
-    .set({ uninstallIntentAt: new Date() })
-    .where(eq(devices.id, agent.deviceId));
+  // #8318 §6.4: bound to the authenticated id + agent_id; an uninstaller of a
+  // superseded install cannot stamp the row a reattach handed to a new one.
+  const stamped = await updateOwnDeviceRow(db, agent, { uninstallIntentAt: new Date() });
+
+  // Nothing was stamped, so nothing is acknowledged: a row that changed hands
+  // after auth gets the stale-credential 401 the beats give; a row that is
+  // gone (the write has no other predicate) gets 404. The uninstaller ignores
+  // the answer either way.
+  if (stamped.length === 0) {
+    if (await ownDeviceRowChangedHands(db, agent)) {
+      console.warn('[agents] stale uninstall-intent: the device row changed hands after auth; refusing it', {
+        deviceId: agent.deviceId,
+        agentId: agent.agentId,
+      });
+      throw staleAgentCredentialRejection();
+    }
+    return c.json({ error: 'Device not found' }, 404);
+  }
 
   return c.json({ acknowledged: true });
 });

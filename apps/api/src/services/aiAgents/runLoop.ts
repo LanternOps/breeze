@@ -40,6 +40,8 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { unknownToolArgsHooks } from '../aiSdkToolArgGuard';
+import { SDK_PERMISSION_MODE } from '../llm/sdkChildEnvGuards';
 import type {
   AgentRunVerdict,
   AiAgentKind,
@@ -67,7 +69,9 @@ import { createActionIntent } from '../actionIntents/intentService';
 import { captureException } from '../sentry';
 import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
-import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
+import { TOOL_TIERS, chatToolDomain, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
+import { DEFAULT_TOOL_PROFILE_FACTS } from '../aiModels/toolProfileFacts';
+import { applyRunToolProfile } from './runToolProfile';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { reportMissingSdkToolUseId } from '../aiToolUseCorrelation';
 import { checkBudgetDetailed, type AiBillingSource } from '../aiCostTracker';
@@ -81,9 +85,29 @@ import {
   isNeverAgentTool,
   checkGuardrails,
   isReadOnlyResolution,
+  requiredPermissionsForTool,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+// W5 PR C (#5220): the leaf name rule; the agent flow gate is loaded on first use.
+import { isFlowToolName } from '../flows/toolNames';
+import {
+  assertToolCallWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
+
+import { classifyWispUnattendedRead } from '../wisp/unattendedReads';
+import {
+  STANDING_CHECK_UNAVAILABLE_MESSAGE,
+  evaluateStandingInstructions,
+  standingConflictDescription,
+} from '../wisp/standingInstructionGate';
+
+/** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
+const GRANT_CEILING_MEMO_MS = 15_000;
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
@@ -116,6 +140,7 @@ import { safeErrorMessage } from '../aiModels/safeDbError';
 import { turnBindingFrom, type TurnBinding } from '../aiModels/turnBinding';
 import {
   agentRunReservationBaseKey,
+  hopReservationSessionId,
   markStaleHopReservations,
   nextAgentHop,
   probeAgentHop,
@@ -147,6 +172,8 @@ import {
   completeToolExecution,
   createAgentRunSession,
   reconcileHungExecutions,
+  recordRunAssistantTurn,
+  recordRunTaskPrompt,
   startToolExecution,
 } from './executionLedger';
 import { deliverRunFinishedNotifications } from './runFinishedNotify';
@@ -192,7 +219,17 @@ import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowli
 import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
 import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
-import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { analysisContinuationFromTriggerRef, analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { loadHandleManifest } from './analysisContinuation';
+import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
+import {
+  isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
+  troubleshootPromptContextFromTriggerRef, type TroubleshootPromptContext,
+} from './troubleshootProfile';
+import { emitRunProgress, progressLabelFor } from './runProgress';
+import { loadAssessmentContext } from '../wisp/assessment';
+import { watchPromptLines } from '../wisp/watches';
+import type { AgentRunAssessmentPromptContext } from './assessmentPrompt';
 import { isToolAllowlisted } from './toolAllowlist';
 import { aiTools } from '../aiToolNames';
 import { toolActionEnum } from '../aiToolActions';
@@ -201,9 +238,10 @@ import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
 import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
 import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
-import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+import type { AiAgentRunStagedInputs, AiRunExportGrants } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
+  finalizeAssessment,
   finalizeFleetDesign,
   finalizePatchPlan,
   finalizeResearch,
@@ -236,9 +274,15 @@ export type {
 import { loadSweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext } from './narrativeContext';
 import { designBaselineNumbers, loadDesignEvidence } from './designEvidence';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
-const RUN_SUMMARY_MAX_CHARS = 2000;
+export const RUN_SUMMARY_MAX_CHARS = 2000;
+
+/** Cut at a paragraph/sentence/word boundary with a visible "…" marker (#11977). */
+export function capRunSummary(summary: string): string {
+  return capAtBoundary(summary, RUN_SUMMARY_MAX_CHARS);
+}
 
 /**
  * What the model gets back when a mutation is intercepted. Worded as SUCCESS on
@@ -319,7 +363,7 @@ async function safePublish(
 }
 
 async function loadRunContext(runId: string): Promise<RunContext | null> {
-  return inSystemDbContext(async () => {
+  const ctx = await inSystemDbContext(async (): Promise<RunContext | null> => {
     const [run] = await db
       .select({
         id: aiAgentRuns.id,
@@ -344,6 +388,10 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         taskId: aiAgentRuns.taskId,
         taskStepKey: aiAgentRuns.taskStepKey,
         taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
+        // Wisp W02 — the pinned delegation grant; the pre-tool hook checks the
+        // ceiling on every call when set.
+        grantId: aiAgentRuns.grantId,
+        grantRevisionId: aiAgentRuns.grantRevisionId,
         // Execution plane W04 — the frozen inputs and the compute reservation.
         stagedInputs: aiAgentRuns.stagedInputs,
         computeReservedCents: aiAgentRuns.computeReservedCents,
@@ -357,6 +405,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         servedFailoverCause: aiAgentRuns.servedFailoverCause,
         // #7787 — the failover source admission (or a hop) recorded.
         servedFailoverFromOfferingId: aiAgentRuns.servedFailoverFromOfferingId,
+        // W03: a continuation run (lineage stamped by admission).
+        continuedFromRunId: aiAgentRuns.continuedFromRunId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -378,7 +428,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     if (!agent) return null;
 
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
       .from(organizations)
       .where(eq(organizations.id, run.orgId))
       .limit(1);
@@ -660,10 +710,33 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Wisp analysis sessions W03. Runs INSIDE this same system context;
+    // `loadHandleManifest` opens none of its own and pins every read to the
+    // run's org. The handles are the admission-frozen ones, read defensively
+    // (staged_inputs is jsonb): a malformed value reads as no handles.
+    let analysisManifest: RunContext['analysisManifest'] = null;
+    if (run.profile === 'analysis') {
+      const frozen = (run.stagedInputs as { handles?: unknown } | null)?.handles;
+      const handles = Array.isArray(frozen)
+        ? frozen.filter((h): h is string => typeof h === 'string')
+        : [];
+      analysisManifest = await loadHandleManifest({ orgId: run.orgId, handles });
+      // A continuation (lineage stamped by admission) whose stored seed fails
+      // re-validation runs without it; say so rather than let it pass as a
+      // fresh run.
+      if (run.continuedFromRunId && !analysisContinuationFromTriggerRef(run.triggerRef)) {
+        console.warn('[runLoop] analysis continuation seed unreadable; running without it', {
+          runId: run.id, continuedFromRunId: run.continuedFromRunId,
+        });
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
+      orgName: org.name ?? null,
+      analysisManifest,
       device,
       alert,
       ticket,
@@ -675,10 +748,28 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       patch,
       research,
       provenFixes,
+      // Wisp W05b — loaded below, AFTER this system context is released.
+      assessment: null,
       sessionId: null,
       workspace: null,
     };
   });
+
+  // Wisp W05b — an assessment run's grant-scoped context. Loaded OUTSIDE the
+  // system block above (its loader opens its own contexts — ceiling, thread,
+  // concerns, digest — and must not nest inside this one's connection). A
+  // null result means the grant is no longer active: `executeAgentRun` then
+  // skips the run with `grant_inactive` before any model call.
+  if (ctx && isAssessmentProfile(ctx.run)) {
+    ctx.assessment = await loadAssessmentContext({
+      id: ctx.run.id,
+      orgId: ctx.run.orgId,
+      grantId: ctx.run.grantId ?? null,
+      grantRevisionId: ctx.run.grantRevisionId ?? null,
+      triggerRef: ctx.run.triggerRef ?? {},
+    });
+  }
+  return ctx;
 }
 
 function readToolAction(toolName: string, input: Record<string, unknown>): string | undefined {
@@ -792,12 +883,24 @@ function takeAllowedCall(
  * Exported so the red-team contract suite can drive it directly and assert that
  * no RBAC helper is ever reached from an agent run.
  */
+const GRANT_INACTIVE_DENIAL = 'delegation grant is no longer active';
+
+/**
+ * #11084 Review Focus 2 — a device_troubleshooting run whose grant was paused
+ * or revoked mid-run was stopped, not finished: `failed` with `grant_inactive`,
+ * so its card and W2's post never read as a completed investigation. Any
+ * intents it already raised cannot execute (release re-checks the grant).
+ */
+export function troubleshootStoppedByGrant(outcome: Pick<AgentRunOutcome, 'deniedActions'>): boolean {
+  return outcome.deniedActions.some((denied) => denied.reason === GRANT_INACTIVE_DENIAL);
+}
+
 export function createAgentRunPreToolUse(args: {
   // #5205 W06 adds the three task-linkage columns: `taskId` selects
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
   // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
   // Tier-3 proposal reserves under.
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId' | 'grantId' | 'grantRevisionId'>>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -852,11 +955,15 @@ export function createAgentRunPreToolUse(args: {
   patch?: PatchPlanToolRefs;
   /** AI Suggested Fixes W2 — the SAME refs the SDK handler and post-hook receive. */
   research?: ResearchToolRefs;
+  /** Wisp analysis sessions W02 — the export grants frozen at admission
+   *  (`staged_inputs.exportGrants`); undefined for a pre-W02 or non-analysis
+   *  run. See `ToolExecutionContext.exportGrants`. */
+  exportGrants?: AiRunExportGrants;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds,
     sessionId, pairing, actReservation, deadlineMs, design, patch, research,
-    runTargets, stagedBytesRemaining,
+    runTargets, stagedBytesRemaining, exportGrants,
   } = args;
 
   /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
@@ -865,6 +972,7 @@ export function createAgentRunPreToolUse(args: {
   const runFrame: ToolExecutionContext = {
     runTargets,
     stagedBytesRemaining,
+    ...(exportGrants !== undefined ? { exportGrants } : {}),
   };
 
   /**
@@ -877,6 +985,67 @@ export function createAgentRunPreToolUse(args: {
    */
   let taskFence: TaskFence | null = null;
 
+  /** #11084 — approval requests this device_troubleshooting run holds; see `recordProposal`. */
+  let troubleshootApprovalSlots = 0;
+
+  /**
+   * Wisp W02 — the live delegation ceiling of the run's PINNED grant revision,
+   * memoised for GRANT_CEILING_MEMO_MS inside this run frame so a burst of
+   * tool calls costs one evaluation. Only a successful resolve is memoised: an
+   * inactive grant is re-read on every call. Tightening therefore reaches a
+   * live run within the memo window; release re-checks independently.
+   */
+  let grantCeilingMemo: { ceiling: GrantCeiling; at: number } | null = null;
+  async function resolvePinnedCeiling(opts: { fresh?: boolean } = {}): Promise<
+    { ok: true; ceiling: GrantCeiling } | { ok: false; reason: string; error: string }
+  > {
+    if (!run.grantId || !run.grantRevisionId) {
+      const reason = 'delegation ceiling could not be verified';
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+    if (!opts.fresh && grantCeilingMemo && Date.now() - grantCeilingMemo.at < GRANT_CEILING_MEMO_MS) {
+      return { ok: true, ceiling: grantCeilingMemo.ceiling };
+    }
+    try {
+      const ceiling = await resolveGrantCeiling(run.grantId, run.grantRevisionId);
+      grantCeilingMemo = { ceiling, at: Date.now() };
+      return { ok: true, ceiling };
+    } catch (error) {
+      grantCeilingMemo = null;
+      // Same deny shape as the task fence: there is no run-level stop flag, so
+      // the model is told to stop and release makes any further effect impossible.
+      const reason = error instanceof GrantInactiveError
+        ? GRANT_INACTIVE_DENIAL
+        : 'delegation ceiling could not be verified';
+      if (!(error instanceof GrantInactiveError) || error.kind === 'corrupt') {
+        console.error('[aiAgentRunLoop] delegation ceiling read failed; denying', { runId: run.id, grantId: run.grantId, error });
+        captureException(error, undefined, { grantId: run.grantId ?? '', runId: run.id, stage: 'run_loop' });
+      }
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+  }
+
+  /**
+   * Every ceiling term for this tool call; the first violation's reason, or
+   * null. A tool with no resolvable human permission (no TOOL_PERMISSIONS
+   * mapping, unknown action) cannot be shown to sit inside the grantor's
+   * authority, so it FAILS CLOSED as a permission violation. Outcome tools
+   * never reach here (their branch returns earlier).
+   */
+  function delegationCeilingDenial(ceiling: GrantCeiling, toolName: string, input: Record<string, unknown>): string | null {
+    try {
+      assertToolCallWithinCeiling(
+        ceiling,
+        { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null },
+        requiredPermissionsForTool(toolName, input),
+      );
+      return null;
+    } catch (error) {
+      if (error instanceof CeilingViolationError) return `outside the delegation ceiling (${error.code})`;
+      throw error;
+    }
+  }
+
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
    *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
    *  call, submit the SAME action-intent approval. */
@@ -885,6 +1054,8 @@ export function createAgentRunPreToolUse(args: {
     toolName: string,
     input: Record<string, unknown>,
     downgradeReason?: string,
+    /** #10428 W06: a standing instruction this call conflicts with (warn, not refuse). */
+    standingConflictText?: string | null,
   ): Promise<{ allowed: false; error: string }> {
     const action = readToolAction(toolName, input);
     const entry: OutcomeProposedAction = {
@@ -894,20 +1065,40 @@ export function createAgentRunPreToolUse(args: {
       ...(downgradeReason ? { downgradeReason } : {}),
     };
 
-    // Tier gate, not a shortcut: createActionIntent throws
-    // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
-    // runner that funnelled every mutation through it would turn ordinary
-    // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
-    // there — there is no approval object for them.
+    // Tier gate, not a shortcut: createActionIntent admits an ai_agent
+    // principal's Tier-2 call as a supervised intent (P2-1) but throws
+    // ActionIntentTierError('tool_not_tier3') for tier <= 1. On every profile
+    // except device_troubleshooting a Tier-2 proposal is recorded and stops
+    // there (no approval object); a troubleshooting run mints one (below).
     let intentError: string | undefined;
-    if (check.tier === 3) {
+    // #11084 — a device-troubleshooting run is forced shadow, so EVERY change
+    // it wants is an approval request: Tier 2 too (intentService admits an
+    // ai_agent principal's Tier-2 intent as supervised, never
+    // policy-decidable). Capped per run so device output cannot flood the
+    // approvals queue; the refusal tells the model to stop and summarize.
+    const troubleshoot = isTroubleshootProfile(run);
+    if (troubleshoot && (check.tier === 2 || check.tier === 3)) {
+      if (troubleshootApprovalSlots >= TROUBLESHOOT_MAX_ACTIONS_PER_RUN) {
+        const reason = `This run already raised ${TROUBLESHOOT_MAX_ACTIONS_PER_RUN} approval requests, the most per run`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: `${reason}. Do not propose more; finish with your summary.` };
+      }
+      // Reserved BEFORE the await: the SDK runs tool calls in parallel, so a
+      // count taken after the mint would let one turn overshoot the cap. Given
+      // back below when no pending intent came of it.
+      troubleshootApprovalSlots += 1;
+    }
+    let leftPending = false;
+    if (check.tier === 3 || (troubleshoot && check.tier === 2)) {
       try {
         const intent = await createActionIntent(agentAuth, {
           toolName,
           input,
           source: 'ai_agent',
           orgId: run.orgId,
-          reason: `Proposed by ${agentName} for run ${run.id}`,
+          reason: standingConflictText
+            ? standingConflictDescription(standingConflictText, `Proposed by ${agentName} for run ${run.id}`)
+            : `Proposed by ${agentName} for run ${run.id}`,
           // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
           // run must enter the operation reservation path, even if the model
           // calls an existing tool directly." This IS that path — passing the
@@ -953,6 +1144,7 @@ export function createAgentRunPreToolUse(args: {
         // pending intent is something a human still owns.
         if (intent.status === 'pending_approval') {
           intentIds.push(intent.id);
+          leftPending = true;
         } else {
           intentError = intent.errorCode ?? `intent ${intent.status}`;
           entry.intentError = intentError;
@@ -973,7 +1165,15 @@ export function createAgentRunPreToolUse(args: {
       }
     }
 
+    if (troubleshoot && (check.tier === 2 || check.tier === 3) && !leftPending) troubleshootApprovalSlots -= 1;
     outcome.proposedActions.push(entry);
+    if (troubleshoot && leftPending) {
+      await emitRunProgress(
+        { orgId: run.orgId, runId: run.id },
+        'approval',
+        `Waiting for approval: ${progressLabelFor(toolName, action ?? null)}`,
+      );
+    }
     return {
       allowed: false,
       error: intentError
@@ -1014,6 +1214,17 @@ export function createAgentRunPreToolUse(args: {
       : { allowed: true, context: runFrame };
   }
 
+  /** #10973: the ledger row for an unattended read, or null when there is none to rely on. */
+  async function startUnattendedReadExecution(toolName: string, input: Record<string, unknown>): Promise<string | null> {
+    if (!sessionId) return null;
+    try {
+      return await startToolExecution({ sessionId, toolName, toolInput: input });
+    } catch (error) {
+      console.error('[aiAgentRunLoop] unattended read has no ledger row — asking instead', { runId: run.id, toolName, error });
+      return null;
+    }
+  }
+
   return async (toolName, input, _mcpToolName, toolUseId) => {
     // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
     if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
@@ -1051,6 +1262,38 @@ export function createAgentRunPreToolUse(args: {
         return { allowed: false, error: `${reason}. Stop and do not retry.` };
       }
       taskFence = fence;
+    }
+
+    // W5 PR C (#5220, Decision 9): a FLOW tool (`flow__<slug>`) has no
+    // `TOOL_TIERS` entry, so it is gated here, before the delegation ceiling
+    // and the generic guardrail: only an allowlisted Tier-1 flow, only from a
+    // run with no device, site or delegation ceiling, never a proposal
+    // (services/flows/agentFlowTools.ts). The handler starts the run on the
+    // descriptor resolved here (the call's gate context).
+    if (isFlowToolName(toolName)) {
+      const { gateAgentFlowToolCall } = await import('../flows/agentFlowTools');
+      const gate = await gateAgentFlowToolCall({ run, agentAuth, toolName, input, guardrailPolicy });
+      if (!gate.ok) {
+        outcome.deniedActions.push({ tool: toolName, reason: gate.reason });
+        return { allowed: false, error: gate.reason };
+      }
+      const allowed = await recordAllowedExecution(toolName, input, null, toolUseId);
+      return { ...allowed, context: { ...allowed.context, flowToolGate: { descriptor: gate.descriptor, call: gate.call } } };
+    }
+
+    // Wisp W02 (Wisp design §4.3) — a run admitted under a delegation grant.
+    // The grant must still be usable on EVERY call, outcome tools included:
+    // nothing is recorded under a paused, revoked or expired grant. The
+    // per-term ceiling check runs below, just ahead of the guardrail, so it
+    // covers Tier-1 reads (which bypass agent allowlists).
+    let grantCeiling: GrantCeiling | null = null;
+    if (run.grantId) {
+      const pinned = await resolvePinnedCeiling();
+      if (!pinned.ok) {
+        outcome.deniedActions.push({ tool: toolName, reason: pinned.reason });
+        return { allowed: false, error: pinned.error };
+      }
+      grantCeiling = pinned.ceiling;
     }
 
     // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
@@ -1123,6 +1366,51 @@ export function createAgentRunPreToolUse(args: {
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
+    // Wisp delegation W1 (#11084) — same authority backstop for the
+    // troubleshooting floor: a read-classified tool outside it (which the
+    // guardrail alone would allow) is refused, so the run's reach is exactly
+    // its reads plus the proposable set. Exposure already hides the rest.
+    if (isTroubleshootProfile(run) && !troubleshootToolAllowlist([]).includes(toolName)) {
+      const reason = `${toolName} is not available to device_troubleshooting runs`;
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
+    // #11084 Review Focus 1 — the device pin, BEFORE anything is read or
+    // proposed: device output may tell the model to act on another device.
+    // The agent principal's `allowedDeviceIds` already refuses an execution,
+    // but a mutation would otherwise reach recordProposal and become an
+    // approval request for the other device. Refuse it here instead.
+    if (isTroubleshootProfile(run) && namesAnotherDevice(toolName, input, guardrailPolicy.deviceId ?? null)) {
+      const reason = 'a device_troubleshooting run is pinned to its device; a call naming any other device is refused';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: `${reason}. Stay on the target device.` };
+    }
+
+    // #10428 W06: the grantor's standing instructions, under the same ceiling.
+    // A confirmed exact deny refuses; any other match is carried onto the
+    // proposal's card. A check that cannot run refuses (fails closed).
+    let standingConflictText: string | null = null;
+    if (grantCeiling) {
+      const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
+      if (ceilingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: ceilingDenial });
+        return { allowed: false, error: ceilingDenial };
+      }
+      let standingDenial: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({ ceiling: grantCeiling, toolName, input, auth: agentAuth });
+        if (standing.action === 'refuse') standingDenial = standing.error;
+        if (standing.action === 'warn') standingConflictText = standing.text;
+      } catch (error) {
+        console.error('[aiAgentRunLoop] standing-instruction check failed; denying', { runId: run.id, toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        standingDenial = STANDING_CHECK_UNAVAILABLE_MESSAGE;
+      }
+      if (standingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: standingDenial });
+        return { allowed: false, error: standingDenial };
+      }
+    }
 
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
@@ -1181,7 +1469,9 @@ export function createAgentRunPreToolUse(args: {
     // output channel is `submit_fleet_design`, handled above this branch.
     if (
       (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
-        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run))
+        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run)
+        // Wisp W05b: an assessment's only effect channel is its outcome tools.
+        || isAssessmentProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -1190,10 +1480,58 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'propose') {
-      return recordProposal(check, toolName, input);
+      // #10973 (plan Decision 9): the grant-level unattended-reads switch reaches
+      // a troubleshooting run here, and only as propose → allow; every structural
+      // refusal above has already returned. Nothing re-checks this read at
+      // release, so as in act mode the ceiling is re-resolved FRESH: a switch
+      // turned off inside the memo window applies to this very call. The memo
+      // only spares that read when the switch is already off.
+      const unattendedRead = isTroubleshootProfile(run) && grantCeiling?.unattendedReads === true
+        ? classifyWispUnattendedRead(toolName, input)
+        : null;
+      if (unattendedRead) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        if (!fresh.ok) {
+          outcome.deniedActions.push({ tool: toolName, reason: fresh.reason });
+          return { allowed: false, error: fresh.error };
+        }
+        const denial = delegationCeilingDenial(fresh.ceiling, toolName, input);
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: denial };
+        }
+        if (fresh.ceiling.unattendedReads) {
+          // Unlike an ordinary allowed call, this one needs its ledger row: with
+          // no card, the row is the only record that it ran. Under the forced
+          // shadow mode, any such row in this profile is one of these reads.
+          // No row: ask instead, as the chat gate refuses on a failed audit write.
+          const executionId = await startUnattendedReadExecution(toolName, input);
+          if (executionId) {
+            recordAllowedCall(pairing, toolName, toolUseId, { executionId, actPin: null });
+            return { allowed: true, context: { ...runFrame, pinnedWispUnattendedRead: unattendedRead } };
+          }
+        }
+      }
+      return recordProposal(check, toolName, input, undefined, standingConflictText);
     }
 
     if (check.disposition === 'act') {
+      // Wisp W02: an act-mode effect runs straight from this hook and never
+      // reaches release, so it re-resolves the ceiling FRESH (no memo): a
+      // grant revoked a second ago must not execute an effect.
+      if (run.grantId) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        const denial = fresh.ok ? delegationCeilingDenial(fresh.ceiling, toolName, input) : fresh.reason;
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: fresh.ok ? denial : fresh.error };
+        }
+      }
+      // #10428 W06: an effect that matches a standing instruction never runs
+      // unattended; a human decides it, with the conflict on the card.
+      if (standingConflictText) {
+        return recordProposal(check, toolName, input, 'matches a standing instruction', standingConflictText);
+      }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
       // only be non-null. The null branch below is defense in depth, never
@@ -1250,7 +1588,7 @@ export function createAgentRunPreToolUse(args: {
         // cheap nonblocking fix) is set only for a missing/malformed-identity
         // normalizeTarget downgrade — threaded through so the proposal a
         // human reviews carries WHY it wasn't auto-executed.
-        return recordProposal(check, toolName, input, revalidated.reason);
+        return recordProposal(check, toolName, input, revalidated.reason, standingConflictText);
       }
 
       if (op.key === 'execute_playbook') {
@@ -1326,8 +1664,39 @@ export function createAgentRunPreToolUse(args: {
       return recordAllowedExecution(toolName, input, revalidated.pin, toolUseId);
     }
 
+    // #11084 — the run card's step feed: one beat per allowed call, labelled
+    // from the fixed map only (never tool input or output). emitRunProgress
+    // never throws.
+    if (isTroubleshootProfile(run)) {
+      await emitRunProgress({ orgId: run.orgId, runId: run.id }, 'tool', progressLabelFor(toolName, readToolAction(toolName, input) ?? null));
+    }
     return recordAllowedExecution(toolName, input, null, toolUseId);
   };
+}
+
+/**
+ * #11084 — true when the call names any device other than the run's own, via
+ * the tool's declared `deviceArgs` or the conventional `deviceId`/`deviceIds`
+ * keys. A malformed id (non-string) counts as another device: fail closed.
+ */
+function namesAnotherDevice(toolName: string, input: Record<string, unknown>, runDeviceId: string | null): boolean {
+  const keys = new Set<string>(['deviceId', 'deviceIds', ...(aiTools.get(toolName)?.deviceArgs ?? [])]);
+  for (const key of keys) {
+    const raw = input[key];
+    if (raw == null) continue;
+    for (const id of Array.isArray(raw) ? raw : [raw]) {
+      if (typeof id !== 'string' || id !== runDeviceId) return true;
+    }
+  }
+  return false;
+}
+
+/** Wisp W05b — the run's assessment call lists, created on the first captured call. */
+function assessmentOutcome(outcome: AgentRunOutcome): NonNullable<AgentRunOutcome['assessment']> {
+  outcome.assessment ??= {
+    concernsRaised: [], concernsUpdated: [], nudges: [], proposedActions: [], specialistRequests: [],
+  };
+  return outcome.assessment;
 }
 
 /**
@@ -1443,6 +1812,25 @@ export function createAgentRunPostToolUse(args: {
             if (!research) throw new Error('[aiAgentRunLoop] submit_suggestions captured with no research refs');
             outcome.research = validateOutcomeToolInput(toolName, input, research);
             break;
+          // Wisp W05b — the assessment tools may be called many times per
+          // run, so each call APPENDS (never replaces). `finalizeAssessment`
+          // applies them after the run; nothing here touches the DB.
+          case 'record_concern':
+            assessmentOutcome(outcome).concernsRaised.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'update_concern':
+            assessmentOutcome(outcome).concernsUpdated.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'nudge':
+            assessmentOutcome(outcome).nudges.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'propose_action':
+            assessmentOutcome(outcome).proposedActions.push(validateOutcomeToolInput(toolName, input));
+            break;
+          // Recorded even though the tool refuses (W07 audits these).
+          case 'request_specialist':
+            assessmentOutcome(outcome).specialistRequests.push(validateOutcomeToolInput(toolName, input));
+            break;
           default: {
             const exhaustive: never = toolName;
             throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
@@ -1469,7 +1857,9 @@ export function createAgentRunPostToolUse(args: {
 
     if (executionId) {
       try {
-        await completeToolExecution({ executionId, isError, durationMs });
+        // A failed call's result rides along so the row keeps WHY it failed
+        // (#10411); the ledger reads only its `error` string, never stores it.
+        await completeToolExecution({ executionId, isError, durationMs, ...(isError ? { output } : {}) });
       } catch (error) {
         console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
           toolName, executionId, error,
@@ -1627,6 +2017,21 @@ export function classifyIntentAwaitingApproval(
   return intentIds.some((id) => !decided.has(id));
 }
 
+/**
+ * A transcript write is best-effort (#11971): it never changes the run, but it
+ * is reported, so a systematic failure does not pass as runs with empty
+ * transcripts. DB errors are scrubbed before any log or report (S2).
+ */
+function transcriptWriteFailed(run: { id: string; orgId: string }, what: string): (error: unknown) => void {
+  return (error) => {
+    const message = safeErrorMessage(error);
+    console.error(`[aiAgentRunLoop] failed to record the run's ${what} on its session`, { runId: run.id, error: message });
+    captureException(new Error(`agent run transcript write failed (${what}): ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id,
+    });
+  };
+}
+
 function extractAssistantText(message: unknown): string {
   const content = (message as { message?: { content?: unknown } } | undefined)?.message?.content;
   if (!Array.isArray(content)) return '';
@@ -1756,10 +2161,47 @@ function researchOutcomeRefs(ctx: RunContext): ResearchToolRefs | undefined {
   return ctx.research?.refs;
 }
 
+/**
+ * Wisp W05b — the `AuthContext.wispGrant` of a run admitted under a grant
+ * (both ids pinned, `ai_agent_runs_grant_link_chk`), else undefined.
+ * `sessionId` is null: `ai_agent_runs.session_id` is the run's own
+ * execution-ledger session, not a conversation, so there is no chat session
+ * for W03's `remember` to stamp as `source_session_id` (w00 A27).
+ */
+export function agentRunWispGrant(
+  run: Pick<RunRow, 'grantId' | 'grantRevisionId'>,
+): NonNullable<AuthContext['wispGrant']> | undefined {
+  if (!run.grantId || !run.grantRevisionId) return undefined;
+  return { grantId: run.grantId, grantRevisionId: run.grantRevisionId, sessionId: null };
+}
+
+/**
+ * Wisp W05b — named-field projection of `RunContext.assessment`, like
+ * `narrativePromptContext`. The watch is rendered HERE (`watchPromptLines`),
+ * so the prompt module never imports the DB-bound watches service.
+ */
+function assessmentPromptContext(
+  a: NonNullable<RunContext['assessment']>,
+  org: AgentRunAssessmentPromptContext['org'],
+): AgentRunAssessmentPromptContext {
+  return {
+    org,
+    reason: a.reason,
+    threadSummary: a.threadSummary,
+    openConcerns: a.openConcerns,
+    changedSince: a.changedSince,
+    digest: a.digest,
+    watchLines: a.watch ? watchPromptLines(a.watch) : null,
+    readiness: a.readiness,
+    nudgeFeedback: a.nudgeFeedback,
+    firstLook: a.firstLook,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
-      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs)
+      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs, ctx.analysisManifest ?? [])
       : null,
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
     run: { id: ctx.run.id, mode: ctx.run.modeAtStart, triggerKind: ctx.run.triggerKind },
@@ -1786,7 +2228,17 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     research: ctx.research ?? null,
     provenFixes: ctx.provenFixes ?? null,
+    assessment: ctx.assessment
+      ? assessmentPromptContext(ctx.assessment, { id: ctx.run.orgId, name: ctx.orgName ?? null })
+      : null,
+    troubleshoot: ctx.run.profile === 'device_troubleshooting' ? troubleshootPromptContext(ctx.run.triggerRef) : null,
   };
+}
+
+/** #11084: the launcher writes `goal` into triggerRef (specialistLaunchers.ts); anything else reads as no goal. */
+function troubleshootPromptContext(triggerRef: unknown): TroubleshootPromptContext | null {
+  // W2 (#11085): goal + the optional continuation seed, validated in one place.
+  return troubleshootPromptContextFromTriggerRef(triggerRef);
 }
 
 /**
@@ -1903,6 +2355,8 @@ export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimit
   if (isPatchProfile(run)) return patchLimits(limits);
   if (isResearchProfile(run)) return researchLimits(limits, researchDepthOf(run.triggerRef));
   if (isAnalysisProfile(run)) return analysisLimits(limits);
+  if (isAssessmentProfile(run)) return assessmentLimits(limits);
+  if (isTroubleshootProfile(run)) return troubleshootLimits(limits);
   return limits;
 }
 
@@ -1920,6 +2374,9 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
   if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
+  // #11978: a check-in assessment also reads the subject its trigger waits on.
+  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist, run.triggerRef);
+  if (isTroubleshootProfile(run)) return troubleshootToolAllowlist(agentAllowlist);
   return null;
 }
 
@@ -1961,9 +2418,10 @@ export function resolveRunToolExposure(
   // `profileAllowlist` itself is untouched — still `null` for `full` — so
   // authority for a full run is exactly what it was before this task.
   //
-  // #7427 — the floor walks the `aiTools` registry, which still carries tools
-  // the SDK server has no `tool()` declaration for (the
-  // KNOWN_MISSING_TOOL_TIERS set: manage_tags, manage_tickets, …). Handed to
+  // #7427 — the floor walks the `aiTools` registry, which can carry tools the
+  // SDK server has no `tool()` declaration for (historically the #3300
+  // KNOWN_MISSING_TOOL_TIERS set, emptied in full-control W04 #6758; a
+  // flag-gated or human-only registry tool still qualifies). Handed to
   // `createBreezeMcpServer` as `onlyTools`, those names throw outside
   // production and log an error on every full run in production. Intersect
   // with the names the server actually declares under the current env, ONCE,
@@ -2236,6 +2694,10 @@ async function driveSdkLoop(
     },
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
+  // Wisp W05b (w00 A2/A23/A27) — a grant-bearing run tells grant-aware tools
+  // (W03's `recall`/`remember`) which grant it runs under. Plain runs get none.
+  const wispGrant = agentRunWispGrant(run);
+  if (wispGrant) agentAuth.wispGrant = wispGrant;
 
   // Execution plane W04 — the workspace is constructed eagerly and the
   // SANDBOX lazily: `new WorkspaceService(...)` costs nothing, and `ensure()`
@@ -2327,6 +2789,13 @@ async function driveSdkLoop(
     stagedBytesRemaining: analysis
       ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
       : EXPORT_DEFAULT_MAX_BYTES,
+    // W02: the export authority frozen at admission. Absent on a pre-W02 run,
+    // which the handler reads as the legacy set, never as "everything". An
+    // analysis run with no staged_inputs at all (admission always writes
+    // them, so this is a corrupt row) gets NO export grants, not the legacy set.
+    exportGrants: analysis
+      ? (stagedInputs ? stagedInputs.exportGrants : { datasets: [], sensitiveGates: [] })
+      : undefined,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, pairing,
@@ -2344,7 +2813,43 @@ async function driveSdkLoop(
   // Exposure (`allowedTools`) and registration (`onlyTools`) — see
   // `resolveRunToolExposure` for the full-profile floor, the F2 `onlyTools`
   // fix and the outcome-tool exclusion.
-  const { exposedNames, onlyTools } = resolveRunToolExposure(run, effective.toolAllowlist);
+  const { exposedNames: registryExposedNames, onlyTools } = resolveRunToolExposure(run, effective.toolAllowlist);
+
+  // W5 PR C (#5220, Decision 9): the run's allowlisted Tier-1 flow tools, for
+  // a run with no device, site or delegation ceiling only. Exposure only —
+  // every call is gated again in the pre-tool hook. A resolution failure
+  // degrades to no flow tools; it never fails the run.
+  let flowDescriptors: Awaited<ReturnType<typeof import('../flows/agentFlowTools').resolveAgentFlowTools>> = [];
+  let flowSdkTools: ReturnType<typeof import('../flows/sdkFlowTools').buildFlowSdkTools> = [];
+  if (guardrailPolicy.toolAllowlist.some(isFlowToolName)) {
+    try {
+      const { agentFlowToolRunStarter, resolveAgentFlowTools } = await import('../flows/agentFlowTools');
+      const { buildFlowSdkTools } = await import('../flows/sdkFlowTools');
+      flowDescriptors = await resolveAgentFlowTools(run, agentAuth, guardrailPolicy);
+      flowSdkTools = buildFlowSdkTools(flowDescriptors, agentFlowToolRunStarter(run));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] flow tools could not be resolved; the run gets none', { runId: run.id, error });
+      captureException(error, undefined, { flow_site: 'agent.flow_tool_exposure', org_id: run.orgId }, { fingerprint: ['flow', 'agent.flow_tool_exposure'] });
+      flowDescriptors = [];
+      flowSdkTools = [];
+    }
+  }
+  // #11393: the model's tool profile narrows the run profile's exposure
+  // (never authority). The identity exposure returns both lists unchanged; a
+  // profile missing a tool this run needs blocks here, before any provider call.
+  const toolProfile = applyRunToolProfile({
+    run,
+    facts: agentModel.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS,
+    exposedNames: [...registryExposedNames, ...flowDescriptors.map((d) => `mcp__breeze__${d.name}`)],
+    onlyTools,
+    flowToolNames: flowDescriptors.map((d) => d.name),
+    offeringId: agentModel.offering.id,
+    domainOf: (name) => chatToolDomain(name),
+  });
+  const exposedNames = toolProfile.exposedNames;
+  const registeredOnlyTools = toolProfile.onlyTools;
+  // #11395: ledger provenance for every hop's settlement.
+  const runToolExposure = { profile: toolProfile.exposure.profile, fingerprint: toolProfile.exposure.fingerprint };
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2354,11 +2859,22 @@ async function driveSdkLoop(
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(
-      outcomeToolsForRun(run),
-      designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
-    ),
-    onlyTools ? { onlyTools } : undefined);
+    [
+      ...buildOutcomeSdkTools(
+        outcomeToolsForRun(run),
+        // `assessment` is consumed only by record_concern (#10387), which only
+        // an assessment run is given.
+        { design: designRefs, patch: patchRefs, research: researchRefs, assessment: { orgId: run.orgId } },
+      ),
+      ...flowSdkTools.filter((t) => toolProfile.exposure.names === null || toolProfile.keepsFlowTool(t.name)),
+    ],
+    registeredOnlyTools || toolProfile.exposure.names !== null
+      ? {
+          ...(registeredOnlyTools ? { onlyTools: registeredOnlyTools } : {}),
+          // #11395: a constrained profile advertises compact descriptions (no session to read it from).
+          ...(toolProfile.exposure.names !== null ? { toolExposure: toolProfile.exposure } : {}),
+        }
+      : undefined);
 
   const prompt = promptContext(ctx, effective);
   // S8: the ONE surface with a genuinely stable request identity — the agent
@@ -2393,9 +2909,10 @@ async function driveSdkLoop(
   let receivedResult = false;
   // W03 billing (W05 spike rules): every result is billed by the registry from
   // its per-model `modelUsage`. A hop is ONE fresh, non-persisted query, so
-  // the snapshot the deltas are taken against lives only for this hop: the
-  // first result bills its own `result.usage` (capped by modelUsage), any
-  // later one the per-key delta. Never `total_cost_usd`.
+  // its modelUsage starts at zero and the snapshot the deltas are taken
+  // against lives only for this hop: every result bills the per-key delta
+  // (#10413: the first one from zero, so a second key such as the CLI's
+  // background call is billed at its own rate). Never `total_cost_usd`.
   let observation = newSdkTurnObservation();
   let usageSnapshot: SdkUsageSnapshot | null = null;
   let billed: BilledUsage[] = [];
@@ -2404,6 +2921,9 @@ async function driveSdkLoop(
   let usageConfirmed = true;
   // The CURRENT hop's reservation ('' once a failed-over last hop is settled).
   let reservationId = '';
+  // #11971: the session the CURRENT hop's reservation is bound to; its
+  // settlement must name the same one (null = a sessionless claim).
+  let reservationSessionId: string | null = null;
   // W11: one prompt per run; the canary is sticky per run id. Recomputed per
   // hop (a backup model may have another prompt profile) and recorded on that
   // hop's settlement.
@@ -2467,9 +2987,20 @@ async function driveSdkLoop(
       const hopPromptProvenance = promptProvenance;
       const hopBinding = binding;
 
+      // #11971: the hop is reserved and settled on the run's session, so the
+      // session carries the run's tokens, cost and turns — the same numbers
+      // the run row records. A hop already claimed (a re-drive) keeps the
+      // binding it was claimed with: a reservation's session is fixed at claim.
+      // A failed read fails the hop like a failed reserve would: guessing the
+      // binding instead turns a read blip into a misleading claim conflict.
+      const hopKey = hopIdempotencyKey(baseReservationKey, hopIndex);
+      const claimedSessionId = await hopReservationSessionId({ orgId: run.orgId, idempotencyKey: hopKey });
+      const hopSessionId = claimedSessionId !== undefined ? claimedSessionId : (ctx.sessionId ?? null);
+
       const reservation = await reserveAiBudget({
         orgId: run.orgId,
-        idempotencyKey: hopIdempotencyKey(baseReservationKey, hopIndex),
+        idempotencyKey: hopKey,
+        sessionId: hopSessionId,
         billingSource: hopModelNow.funding,
         // JD L-2: bound the hold to this run's own ceiling instead of the whole
         // remaining cap, so one agent run does not serialize technician chat,
@@ -2485,6 +3016,7 @@ async function driveSdkLoop(
         throw new AgentRunError('org_budget_exceeded', reservation.message);
       }
       reservationId = reservation.reservationId;
+      reservationSessionId = hopSessionId;
       const hopReservationId = reservationId;
       // This hop's SDK child env and grants, for THIS hop's model (a failover
       // may cross to or from a gateway connection), from the one seam shared
@@ -2501,6 +3033,8 @@ async function driveSdkLoop(
           key: hopIndex === 0 ? `agent-run:${run.id}` : `agent-run:${run.id}:${hopIndex}`,
           orgId: run.orgId,
           aiSessionId: ctx.sessionId ?? null,
+          // #11395: the run's tool profile compacts advertised schemas on a gateway hop.
+          ...(toolProfile.exposure.compactSchemas ? { compactSchemas: true } : {}),
         });
       } catch (error) {
         await releaseUnusedAiBudgetReservation({ orgId: run.orgId, reservationId: hopReservationId })
@@ -2515,10 +3049,14 @@ async function driveSdkLoop(
         ? Math.min(runBudgetLeftCents, reservation.reservedCostCents)
         : runBudgetLeftCents;
 
+      const taskPrompt = buildAgentRunTaskPrompt(prompt);
+      const transcriptSessionId = ctx.sessionId ?? null;
       try {
         await runOutsideDbContext(async () => {
+          // #11971: what the run was told, on its session (each hop is sent it afresh; the ledger stores it once).
+          if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run, 'task prompt'));
           const sdkQuery = query({
-            prompt: buildAgentRunTaskPrompt(prompt),
+            prompt: taskPrompt,
             options: {
               // model (the resolver's wire id — a catalog endpoint's own id),
               // fallbackModel (the refusal fallback) and thinking/effort.
@@ -2531,6 +3069,8 @@ async function driveSdkLoop(
               tools: [],
               allowedTools: [...new Set(exposedNames)],
               mcpServers: { breeze: mcpServer },
+              // #11861: refuse an argument the tool does not define (the SDK would strip it).
+              hooks: unknownToolArgsHooks({ breeze: mcpServer }),
               abortController,
               env: child.env,
               // Gateway connections only: an empty temp working directory, so
@@ -2540,10 +3080,14 @@ async function driveSdkLoop(
               // of the bound models, so the SDK's budget cap is not a guess (or
               // no SDK cap at all when a price cannot be expressed to the CLI).
               ...(child.queryOptions ?? {}),
-              // No transcript persistence in wave 3 — `run.session_id` stays NULL
-              // and `summary`/`outcome` carry what a reviewer needs (wave 6).
+              // The SDK keeps no transcript of its own: the loop writes the
+              // run's turns to its session (#11971), and `summary`/`outcome`
+              // carry the verdict (wave 6).
               persistSession: false,
               settingSources: [],
+              // #11817: never the SDK's provider-dependent default; after the
+              // queryOptions spread so nothing spread in can override it.
+              permissionMode: SDK_PERMISSION_MODE,
             },
           });
 
@@ -2569,6 +3113,7 @@ async function driveSdkLoop(
               if (message.type === 'assistant') {
                 const text = extractAssistantText(message);
                 if (text) summary = text;
+                if (transcriptSessionId) await recordRunAssistantTurn(transcriptSessionId, message).catch(transcriptWriteFailed(run, 'assistant message'));
                 continue;
               }
               if (message.type !== 'result') continue;
@@ -2578,6 +3123,8 @@ async function driveSdkLoop(
               lastResult = message as unknown as SdkResultLike;
               const turn = sdkTurnUsage({
                 binding: hopBinding, observation, result: lastResult, previousSnapshot: usageSnapshot,
+                // `persistSession: false` and no `resume`: this query's counters start at zero.
+                queryStartedAtZero: true,
               });
               usageSnapshot = turn.nextSnapshot ?? usageSnapshot;
               billed.push(...turn.usage);
@@ -2715,10 +3262,11 @@ async function driveSdkLoop(
           binding: hopBinding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: hopSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: hopTurns,
           outcome: turnOutcome ?? {
             stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false,
             servedModel: hopBinding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
@@ -2727,6 +3275,7 @@ async function driveSdkLoop(
           messageCount: hopTurns,
           toolExecutionCount: 0,
           prompt: hopPromptProvenance,
+          toolExposure: runToolExposure,
         });
         priorHopsCostCents += settledHop.costCents;
         // Review S1: deferred but NOT persisted — keep the reservation held.
@@ -2819,15 +3368,17 @@ async function driveSdkLoop(
           binding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: reservationSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: turnCount - hopTurnsAtStart,
           outcome: turnOutcome,
           reservationId,
           messageCount: Math.max(1, turnCount - hopTurnsAtStart),
           toolExecutionCount: outcome.toolExecutionCount,
           prompt: promptProvenance,
+          toolExposure: runToolExposure,
         });
         // The run row carries the billed number (which also prices any model
         // the CLI switched to on its own at its platform rate), plus what the
@@ -2877,7 +3428,7 @@ async function driveSdkLoop(
   }
 
   return {
-    summary: summary.slice(0, RUN_SUMMARY_MAX_CHARS),
+    summary: capRunSummary(summary),
     costCents: Math.round(costCents),
     turnCount,
     outcome,
@@ -2997,6 +3548,21 @@ export async function executeAgentRun(runId: string): Promise<void> {
     return;
   }
 
+  // Wisp W05b — an assessment whose grant is no longer active (paused,
+  // revoked, expired, grantor lost standing) never reaches the model:
+  // `loadAssessmentContext` returned null. Same `skipped` terminal as the
+  // stop-gate above; no spend, and the watermark (last COMPLETED assessment)
+  // does not move.
+  if (isAssessmentProfile(run) && !ctx.assessment) {
+    await transitionRunStatus(runId, 'running', 'skipped', {
+      errorCode: 'grant_inactive',
+      summary: 'grant_inactive',
+      finishedAt: new Date(),
+    });
+    await safePublish('ai.agent.run.skipped', run.orgId, { runId, agentId: run.agentId, reason: 'grant_inactive' });
+    return;
+  }
+
   const effective = run.policySnapshot.effective;
 
   // Tracks what to log the ledger session as closing under (see
@@ -3083,6 +3649,23 @@ export async function executeAgentRun(runId: string): Promise<void> {
     const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
     // AI Suggested Fixes W2 — seventh: persist the accepted research items.
     const researchErrorCode = await finalizeResearch(ctx, result);
+    // Wisp W05b — eighth: apply the assessment's concerns, nudges and
+    // proposals. Before the awaiting_approval decision for the same reason as
+    // triage: a proposal it turns into a pending intent must be counted.
+    const assessmentErrorCode = await finalizeAssessment(ctx, result);
+    // Wisp W07 — hand the recorded `request_specialist` calls to the
+    // coordinator, before `finishRun` serializes the outcome it writes
+    // `specialistResults` into. Lazy so non-assessment runs never load the
+    // coordinator graph; a dispatch failure never fails the assessment run.
+    if (ctx.run.profile === 'assessment') {
+      try {
+        const { dispatchSpecialistRequests } = await import('../wisp/specialistDispatch');
+        await dispatchSpecialistRequests(ctx, result);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] specialist dispatch failed (non-fatal)', { runId: ctx.run.id, error });
+        captureException(error, undefined, { service: 'aiAgents', operation: 'dispatchSpecialistRequests', runId: ctx.run.id });
+      }
+    }
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -3146,6 +3729,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       || outcome.analysis !== undefined
       // AI Suggested Fixes W2 — same rule for a research run's ONE job.
       || outcome.research !== undefined
+      // Wisp W05b — an assessment that recorded any outcome-tool call.
+      || outcome.assessment !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -3173,14 +3758,25 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `decidedIntentIds` stays empty and this is behaviorally IDENTICAL to
     // the old check for verdict/sweep/narrative/full runs.
     ledgerOutcome = 'completed';
+    if (isTroubleshootProfile(run) && troubleshootStoppedByGrant(result.outcome)) {
+      await finishRun(ctx, 'failed', 'grant_inactive', result);
+      return;
+    }
     await finishRun(
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
       verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
-        ?? patchPlanErrorCode ?? researchErrorCode,
+        ?? patchPlanErrorCode ?? researchErrorCode ?? assessmentErrorCode,
       result,
     );
   } catch (error) {
+    // #9451 — settle the sandbox's MEASURED compute before any terminal
+    // transition below: that transition releases an outstanding reservation
+    // by settling it at the worst case, and a run attempt settles only once,
+    // so finalizing after it would bill the reservation instead of what the
+    // sandbox used. Idempotent: the `finally` call is then a no-op, because
+    // this nulls `ctx.workspace`.
+    await finalizeWorkspaceForRun(ctx, loopOutcome ?? orphanWorkspaceOutcome);
     if (error instanceof AgentRunBlockedError) {
       await terminalizeBlockedRun(ctx, error);
       return;
@@ -3420,6 +4016,12 @@ async function recordActExecutionEvidence(
   }
 }
 
+/** W07: `trigger_ref.wisp.reason.kind === 'check_in'` (a run check-in's assessment). */
+function isCheckInRunRef(triggerRef: unknown): boolean {
+  const wisp = (triggerRef as { wisp?: { reason?: { kind?: unknown } } } | null | undefined)?.wisp;
+  return wisp?.reason?.kind === 'check_in';
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
@@ -3452,6 +4054,64 @@ async function finishRun(
     costCents: result.costCents,
     ...(errorCode ? { errorCode } : {}),
   });
+
+  // Wisp delegation W2 (#11085): a device_troubleshooting run reports back
+  // into the Wisp thread it was handed off from — after the final status is
+  // committed (the post reads it), and never allowed to change it. A failure
+  // is reported here; the grant reconciler re-sweeps any run left without its
+  // post, and the post's dedupe key keeps that to exactly one. Lazy: the
+  // notify graph stays off every other profile's import path.
+  if (isTroubleshootProfile(ctx.run)) {
+    try {
+      const { postSpecialistResult } = await import('../wisp/specialistResult');
+      await runOutsideDbContext(() => postSpecialistResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] specialist post-back failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // W07 (#11496): a run check-in's assessment posts its result to the
+  // thread — after the final status is committed (the post reads it), and
+  // never allowed to change it. The tick's reconcile re-sweeps a missed post;
+  // the check-in's dedupe key keeps that to one. Lazy, like the posts above,
+  // and gated on the reason so no other assessment pays a lookup.
+  if (ctx.run.profile === 'assessment' && isCheckInRunRef(ctx.run.triggerRef)) {
+    try {
+      const { postCheckInRunResult } = await import('../wisp/checkInRuns');
+      await runOutsideDbContext(() => postCheckInRunResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] check-in result post failed — the wake tick re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.checkInRuns.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // #10402: this assessment may be the one that settles its grant's onboarding
+  // batch — after the final status is committed (the post counts it), and never
+  // allowed to change it. The grant reconciler re-sweeps a missed post; the
+  // dedupe key keeps that to exactly one. Lazy, like the specialist post above.
+  if (ctx.run.profile === 'assessment' && ctx.run.grantId) {
+    try {
+      const { postFirstLookIfDone } = await import('../wisp/firstLook');
+      const grantId = ctx.run.grantId;
+      await runOutsideDbContext(() => postFirstLookIfDone(grantId));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] first-look post failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.firstLook.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
 
   // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
   // function is skipped entirely on the `!moved` branch above (another
@@ -3498,7 +4158,12 @@ async function finishRun(
   // AI Suggested Fixes W2: a research run has no recipients (its agent is
   // system-provisioned) and its result is the suggestion rows, so it neither
   // notifies nor watches.
-  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run);
+  // Wisp W05b: an assessment runs on every wake-up and talks to its person
+  // only through nudges (spec §7.4 discipline) — never a run-finished notice.
+  // #11084: the built-in troubleshoot agent has no recipients; the run card (and
+  // W2's thread post) is how a device_troubleshooting run reports.
+  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run) && !isAssessmentProfile(ctx.run)
+    && !isTroubleshootProfile(ctx.run);
   // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
   // reasoning as sweep/narrative/triage — a design run executes nothing (its
   // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
@@ -3510,7 +4175,9 @@ async function finishRun(
     // AI patch agent W01: a patch run executes nothing, so there is no fix
     // whose regression a fix-watch could watch for.
     && !isPatchProfile(ctx.run)
-    && !isResearchProfile(ctx.run);
+    && !isResearchProfile(ctx.run)
+    // Wisp W05b: an assessment executes nothing either.
+    && !isAssessmentProfile(ctx.run);
 
   if (notifies) {
     try {

@@ -86,6 +86,17 @@ const (
 	// InstallIssueInstallAbandoned: the offered version failed to install
 	// maxHelperInstallFailures times and is in its abandon cooldown (#6927).
 	InstallIssueInstallAbandoned = "install_abandoned"
+	// InstallIssueWebView2Outdated: Assist is installed but the agent refused
+	// to launch it because the WebView2 runtime is older than the installed
+	// build requires (#10183). The version found is in the agent WARN log.
+	InstallIssueWebView2Outdated = "webview2_outdated"
+	// InstallIssueCrashLoop: Assist kept exiting and the session watcher gave
+	// up; it retries after watcherGiveUpRetry or on a new Assist version
+	// (#10183). Exit codes are in the agent log.
+	InstallIssueCrashLoop = "crash_loop"
+	// InstallIssueUnmanagedInstall: deploy is off and the installed Assist was
+	// not installed by the agent, so the agent leaves it alone (#10185).
+	InstallIssueUnmanagedInstall = "unmanaged_install"
 )
 
 // notInstalledIssueLocked is the heartbeat code for the waiting branch of
@@ -97,13 +108,36 @@ func (m *Manager) notInstalledIssueLocked() string {
 	return InstallIssueAwaitingServerOffer
 }
 
-// InstallIssue returns the install-issue code the last Apply observed, or ""
-// when there is none (installed, disabled, installing an offered version, or
-// Apply not run yet). Read by the heartbeat to build helperInstallIssue.
+// InstallIssue returns the install-issue code for the heartbeat
+// (helperInstallIssue), or "" when there is none (healthy, disabled with
+// nothing installed, installing an offered version, or Apply not run yet).
+//
+// Machine-level codes the last Apply set win. Otherwise, while Assist is
+// enabled, a per-session launch refusal (webview2_outdated) outranks a session
+// whose watcher gave up (crash_loop). The order is fixed so the code does not
+// flap between heartbeats.
 func (m *Manager) InstallIssue() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.installIssue
+	if m.installIssue != "" {
+		return m.installIssue
+	}
+	if !m.lastApplyEnabled {
+		return ""
+	}
+	crashLoop := false
+	for _, state := range m.sessions {
+		if state.launchIssue != "" {
+			return state.launchIssue
+		}
+		if state.watcherGaveUp {
+			crashLoop = true
+		}
+	}
+	if crashLoop {
+		return InstallIssueCrashLoop
+	}
+	return ""
 }
 
 // notInstalledReasonLocked is the one-per-episode warning Apply logs when

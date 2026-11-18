@@ -7,6 +7,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
+    agentId: 'agentId',
     agentTokenHash: 'agentTokenHash',
     tokenIssuedAt: 'tokenIssuedAt',
     previousTokenHash: 'previousTokenHash',
@@ -46,7 +47,7 @@ function mockUpdate(returning: Array<{ id: string }>) {
 }
 
 const BASE = {
-  deviceId: 'device-1',
+  agent: { deviceId: 'device-1', agentId: 'agent-1' },
   pendingTokenHash: 'pending-hash',
   expectedAgentTokenHash: 'current-hash',
   pendingWatchdogTokenHash: 'pending-watchdog-hash',
@@ -99,6 +100,11 @@ describe('promotePendingAgentCredentials', () => {
 
     expect(eq).toHaveBeenCalledWith('pendingTokenHash', 'pending-hash');
     expect(eq).toHaveBeenCalledWith('agentTokenHash', 'current-hash');
+    // #8318 §6.4: and to the identity the caller authenticated as
+    // (updateOwnDeviceRow), so a reattached row is never promoted by its
+    // previous install.
+    expect(eq).toHaveBeenCalledWith('id', 'device-1');
+    expect(eq).toHaveBeenCalledWith('agentId', 'agent-1');
   });
 
   // Zero rows means the row moved underneath us — a concurrent re-stage, or the

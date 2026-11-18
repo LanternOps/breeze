@@ -40,3 +40,15 @@ CVE-2025-47273
 # Remove when a pip release vendors urllib3 >= 2.8.0 and the base is bumped.
 CVE-2026-97687
 CVE-2026-97689
+
+# msgpack: CVE-2026-114613 (HIGH) — fixed upstream in msgpack 1.2.3, pip's
+# vendored copy (pip/_vendor/msgpack) is 1.1.2. Same shape as the msgpack
+# entry above: reported from pip's bundled vendor SBOM, not from
+# requirements.lock (msgpack is not in it), and not reachable by workspace
+# code — pip uses it only for its internal HTTP cache serialization at image
+# build time against hash-pinned wheels; analysis runs install nothing and the
+# sandbox is created with `networkPolicy: 'deny-all'`. Upstream pip still pins
+# msgpack 1.1.2 in its vendor tree and we deliberately do not patch it.
+# Added 2026-10-28. Remove when a pip release vendors msgpack >= 1.2.3 and the
+# base image is bumped.
+CVE-2026-114613

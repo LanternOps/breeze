@@ -13,6 +13,13 @@
  */
 export class SortedSetRedisFake {
   private sets = new Map<string, Map<string, number>>();
+  /**
+   * Lower bound on each set's smallest score (never above the true minimum), so
+   * a prune that cannot match returns without scanning the set. A limiter
+   * prunes on every call; without this, filling a 20k-entry window is quadratic
+   * and blew the 5 s test timeout on loaded CI hosts (#9817).
+   */
+  private minScore = new Map<string, number>();
 
   /** Members of `key` in Redis order (score asc, then member lexicographic). */
   private ordered(key: string): Array<[string, number]> {
@@ -24,13 +31,18 @@ export class SortedSetRedisFake {
   private zremrangebyscoreNow(key: string, max: number): number {
     const set = this.sets.get(key);
     if (!set) return 0;
+    if (max < (this.minScore.get(key) ?? Infinity)) return 0;
     let removed = 0;
+    let min = Infinity;
     for (const [member, score] of set) {
       if (score <= max) {
         set.delete(member);
         removed += 1;
+      } else if (score < min) {
+        min = score;
       }
     }
+    this.minScore.set(key, min);
     return removed;
   }
 
@@ -44,7 +56,9 @@ export class SortedSetRedisFake {
     for (let i = 0; i < args.length; i += 2) {
       const member = String(args[i + 1]);
       if (!set.has(member)) added += 1;
-      set.set(member, Number(args[i]));
+      const score = Number(args[i]);
+      set.set(member, score);
+      if (score < (this.minScore.get(key) ?? Infinity)) this.minScore.set(key, score);
     }
     return added;
   }
@@ -126,5 +140,6 @@ export class SortedSetRedisFake {
 
   reset(): void {
     this.sets.clear();
+    this.minScore.clear();
   }
 }

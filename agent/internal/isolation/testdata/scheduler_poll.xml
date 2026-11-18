@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <TimeTrigger>
+      <Repetition>
+        <Interval>PT15M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-10-26T02:30:00Z</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="System">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="System">
+    <Exec>
+      <Command>C:\Program Files\Breeze &amp; Co\recovery.exe</Command>
+      <Arguments>expire-check --data-dir &#34;C:\Program Data\Breeze &amp; \&#34;quoted\&#34;\\&#34;</Arguments>
+    </Exec>
+  </Actions>
+</Task>

@@ -230,6 +230,10 @@ export const PATCH_INELIGIBLE_REASONS = [
   'held_by_deferral',
   'blocked_by_category',
   'blocked_by_app_rule',
+  /** The ring's Windows feature-update policy (block, or a pin on another release) excludes this feature release. */
+  'blocked_by_feature_update_policy',
+  /** A vendor lane is really delivering this driver or firmware on this device, so Breeze patch jobs leave it to the lane (spec 4.6). */
+  'managed_by_vendor_updates',
   /** No manual approval and no auto-approve rule admits it. */
   'awaiting_manual_approval',
   /** An operator explicitly declined this patch (`patch_approvals.status='rejected'`) — terminal, beats auto-approve (#9369). */
@@ -244,6 +248,13 @@ export const PATCH_INELIGIBLE_REASONS = [
    * treating it as "no ring" could install a blocked app (#8186).
    */
   'ring_reference_invalid',
+  /**
+   * The device row is a per-user WinGet install (`device_patches.scope='user'`,
+   * #2727). The agent runs as SYSTEM and cannot install into a user's profile,
+   * so it is detection-only until per-user remediation exists (#10249). Denied
+   * before any approval rule, so no ring or manual approval can admit it.
+   */
+  'unsupported_user_scope',
 ] as const;
 export type PatchIneligibleReason = (typeof PATCH_INELIGIBLE_REASONS)[number];
 

@@ -2,6 +2,7 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
+import { endOfLocalDayIso, localDateInputValue } from '@/lib/localDate';
 import type { McpGrantableDomain } from '@breeze/shared';
 import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
 
@@ -224,8 +225,18 @@ export default function ApiKeyForm({
       newErrors.name = 'Name must be 100 characters or less';
     }
 
-    if (!neverExpires && !expiresAt) {
-      newErrors.expiresAt = 'Expiration date is required when not set to never expire';
+    if (!neverExpires) {
+      if (!expiresAt) {
+        newErrors.expiresAt = 'Expiration date is required when not set to never expire';
+      } else {
+        // Sent as the end of the picked day in the user's timezone (#9654).
+        const iso = endOfLocalDayIso(expiresAt);
+        if (!iso) {
+          newErrors.expiresAt = 'Enter a valid expiration date';
+        } else if (new Date(iso).getTime() <= Date.now()) {
+          newErrors.expiresAt = 'Expiration date must be today or later';
+        }
+      }
     }
 
     if (rateLimit && (isNaN(Number(rateLimit)) || Number(rateLimit) < 1)) {
@@ -251,7 +262,8 @@ export default function ApiKeyForm({
 
     await onSubmit({
       name: name.trim(),
-      expiresAt: neverExpires ? null : expiresAt || null,
+      // validate() guarantees a parseable date here when a date is required.
+      expiresAt: neverExpires ? null : endOfLocalDayIso(expiresAt),
       rateLimit: rateLimit ? Number(rateLimit) : null,
       scopes,
       mcpDomains: hasAiScope ? mcpDomains : null,
@@ -318,7 +330,7 @@ export default function ApiKeyForm({
 
           {/* Expiration */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('apiKeyForm.expiration')}</label>
+            <label htmlFor="api-key-expires-at" className="text-sm font-medium">{t('apiKeyForm.expiration')}</label>
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -331,10 +343,12 @@ export default function ApiKeyForm({
             </div>
             {!neverExpires && (
               <input
+                id="api-key-expires-at"
+                data-testid="api-key-expires-at"
                 type="date"
                 value={expiresAt}
                 onChange={e => setExpiresAt(e.target.value)}
-                min="2024-01-15"
+                min={localDateInputValue()}
                 className={cn(
                   'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                   errors.expiresAt && 'border-destructive focus:ring-destructive'

@@ -161,12 +161,16 @@ describe('Tenant cascade list contract', () => {
 
   it('every CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry exists, is ON DELETE SET NULL, and is on nullable columns', async () => {
     const names = [...CASCADE_ORDER_SET_NULL_EDGE_BREAKS];
+    // The columns the action actually nulls: the PG15+ column-list form
+    // `ON DELETE SET NULL (col)` records them in confdelsetcols (e.g.
+    // wisp_grants_current_revision_fk nulls current_revision_id, never its
+    // NOT NULL `id` half); otherwise every FK column is nulled.
     const rows = (await db.execute(sql`
       SELECT c.conname,
              c.confdeltype::text AS confdeltype,
              bool_and(NOT a.attnotnull) AS all_nullable
         FROM pg_constraint c
-        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (COALESCE(c.confdelsetcols, c.conkey))
        WHERE c.contype = 'f'
          AND c.conname IN (${sql.join(names.map((n) => sql`${n}`), sql`, `)})
        GROUP BY c.conname, c.confdeltype

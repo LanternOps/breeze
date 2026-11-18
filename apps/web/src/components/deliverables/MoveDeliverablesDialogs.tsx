@@ -56,10 +56,20 @@ function useMove({ fetcher, orgId, onMoved }: Pick<BaseProps, 'fetcher' | 'orgId
 /** Move the already-selected deliverables to a contract chosen here (or to "no contract"). */
 export function MoveToContractDialog({
   deliverableIds,
+  sourceContractIds = [],
   ...props
-}: BaseProps & { deliverableIds: string[] }) {
+}: BaseProps & {
+  deliverableIds: string[];
+  /** The current contract of each selected deliverable (null = none). When they
+   *  all share one contract, that contract is not offered as a target. */
+  sourceContractIds?: Array<string | null>;
+}) {
   const { t } = useTranslation('deliverables');
-  const { options, state } = useContractOptions(props.fetcher, props.orgId);
+  const { options: allOptions, state } = useContractOptions(props.fetcher, props.orgId);
+  const sharedSource = sourceContractIds.length > 0 && sourceContractIds.every((id) => id === sourceContractIds[0])
+    ? sourceContractIds[0]
+    : null;
+  const options = sharedSource ? allOptions.filter((c) => c.id !== sharedSource) : allOptions;
   const [target, setTarget] = useState('');
   const { busy, error, run } = useMove(props);
 

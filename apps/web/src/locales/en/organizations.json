@@ -392,7 +392,10 @@
           "saved": "Trust Center defaults saved",
           "saveFailed": "Couldn't save the Trust Center defaults",
           "mfaRequired": "Changing these defaults requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
-          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes."
+          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes.",
+          "conflictNotice": "Someone else saved these defaults while you were editing. Reload theirs to start from their version, or keep editing: saving again will keep failing until you reload.",
+          "reloadTheirs": "Reload theirs",
+          "keepEditing": "Keep editing"
         },
         "title": "Inherited settings"
       },
@@ -433,6 +436,7 @@
         "publishing": "Publishing…",
         "cancel": "Cancel",
         "success": "Trust Center page published.",
+        "successPending": "Published. The public page will update within a minute.",
         "failed": "Could not publish the Trust Center page.",
         "disabledNoWrite": "You need permission to edit organizations to publish.",
         "disabledSlug": "Fix the page address before publishing."
@@ -469,6 +473,7 @@
       },
       "errors": {
         "revisionMismatch": "This page changed since you loaded it. Reload and try again.",
+        "templateChanged": "Your partner's Trust Center template changed since you loaded this page. Reload and publish again.",
         "authorizationRequired": "Record who authorized publication.",
         "mfaRequired": "Publishing requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
         "trustProbation": "Publishing opens once your account is trusted.",
@@ -589,6 +594,7 @@
       "title": "Documents",
       "subtitle": "Runbooks, baselines, policies and delivery evidence for this organization.",
       "empty": "No documents yet. Upload a runbook, a baseline or a signed policy to start the library.",
+      "emptyPortalHint": "Your customer sees documents marked Visible in portal. A signed proposal or agreement and a security baseline are good first documents.",
       "emptyFiltered": "No documents in this category.",
       "loadFailed": "Could not load documents.",
       "upload": "Upload document",

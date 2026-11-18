@@ -8,7 +8,9 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from '../../services/vaultDeviceCommands';
+import { buildVaultConfigurePayload, resolveVaultSyncSource } from '../../services/vaultDeviceCommands';
+import { createLocalVault, updateVaultWithinCurrentSite } from '../../services/localVaultUpdate';
+import { UnsupportedLocalStoreTargetError } from '../../services/localStoreTargets';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -75,60 +77,6 @@ async function pushDeviceVaultConfig(
   }
 }
 
-async function updateVaultWithinCurrentSite(
-  orgId: string,
-  vaultId: string,
-  updateData: Record<string, unknown>,
-  permissions: UserPermissions | undefined,
-) {
-  const allowedSiteIds = permissions?.allowedSiteIds;
-  if (allowedSiteIds === undefined) {
-    const [row] = await db
-      .update(localVaults)
-      .set(updateData)
-      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
-      .returning();
-    return row;
-  }
-  if (!Array.isArray(allowedSiteIds) || allowedSiteIds.length === 0) return undefined;
-
-  // Device-first locking is shared with device-move paths. If the move wins,
-  // this re-read observes the new site and denies; if this lock wins, the move
-  // waits until the authorized vault mutation commits. The deviceId equality
-  // on the UPDATE is a final CAS against unsupported direct reassignment.
-  return db.transaction(async (tx) => {
-    const [vault] = await tx
-      .select({ deviceId: localVaults.deviceId })
-      .from(localVaults)
-      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
-      .limit(1);
-    if (!vault) return undefined;
-
-    const [device] = await tx
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(
-        eq(devices.id, vault.deviceId),
-        eq(devices.orgId, orgId),
-        inArray(devices.siteId, allowedSiteIds),
-      ))
-      .limit(1)
-      .for('update');
-    if (!device) return undefined;
-
-    const [row] = await tx
-      .update(localVaults)
-      .set(updateData)
-      .where(and(
-        eq(localVaults.id, vaultId),
-        eq(localVaults.orgId, orgId),
-        eq(localVaults.deviceId, vault.deviceId),
-      ))
-      .returning();
-    return row;
-  });
-}
-
 // GET /vault — list vaults for org (optional ?deviceId filter)
 vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
   const auth = c.get('auth');
@@ -191,9 +139,9 @@ vaultRoutes.post(
   }
   const now = new Date();
 
-  const [row] = await db
-    .insert(localVaults)
-    .values({
+  let row: typeof localVaults.$inferSelect | undefined;
+  try {
+    row = await createLocalVault({
       orgId,
       deviceId: payload.deviceId,
       vaultPath: payload.vaultPath,
@@ -201,8 +149,11 @@ vaultRoutes.post(
       retentionCount: payload.retentionCount,
       createdAt: now,
       updatedAt: now,
-    })
-    .returning();
+    });
+  } catch (err) {
+    if (err instanceof UnsupportedLocalStoreTargetError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
 
   if (!row) {
     return c.json({ error: 'Failed to create vault' }, 500);
@@ -252,7 +203,13 @@ vaultRoutes.patch(
     if (payload.retentionCount !== undefined) updateData.retentionCount = payload.retentionCount;
     if (payload.isActive !== undefined) updateData.isActive = payload.isActive;
 
-    const row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions);
+    let row: Awaited<ReturnType<typeof updateVaultWithinCurrentSite>>;
+    try {
+      row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions?.allowedSiteIds);
+    } catch (err) {
+      if (err instanceof UnsupportedLocalStoreTargetError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
 
     if (!row) {
       return c.json({ error: 'Vault not found' }, 404);
@@ -295,7 +252,7 @@ vaultRoutes.delete(
     orgId,
     id,
     { isActive: false, updatedAt: new Date() },
-    permissions,
+    permissions?.allowedSiteIds,
   );
 
   if (!row) {
@@ -359,11 +316,14 @@ vaultRoutes.post(
     }
 
     // The helper requires a snapshot id. The UI's Sync button names none, so
-    // default to the device's newest file-backup snapshot (#8385).
-    const snapshotId = payload.snapshotId ?? await resolveLatestVaultSyncSnapshotId(vault.deviceId, orgId);
-    if (!snapshotId) {
-      return c.json({ error: 'No backup snapshot to sync yet: run a file backup on this device first' }, 400);
+    // default to the device's newest file-backup snapshot (#8385). The
+    // command also names the destination that snapshot was written to, so
+    // the helper does not read its own default store instead (#11858).
+    const source = await resolveVaultSyncSource(vault.deviceId, orgId, payload.snapshotId);
+    if (!source.ok) {
+      return c.json({ error: source.error }, source.status);
     }
+    const { snapshotId, destination } = source;
 
     // Update sync status to pending. The predicate repeats org_id and the
     // device_id we just authorized: the vault was read in a separate statement
@@ -388,7 +348,7 @@ vaultRoutes.post(
         CommandTypes.VAULT_SYNC,
         // vaultPath lets the helper refuse a sync aimed at a vault other
         // than the one it is configured for.
-        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId },
+        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId, ...destination },
         { userId: auth.user?.id, expectedOrgId: orgId }
       );
       if ('error' in result) {

@@ -16,7 +16,8 @@
 // `afterMarker` is carried on each upload entry for that future interleaving
 // pass; v1 doesn't use it for placement, only pdf-lib page order does.
 
-import { PDFDocument } from 'pdf-lib';
+import type { PDFDocument } from 'pdf-lib';
+import { PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
 
 /** A merge input that pdf-lib can't load (encrypted, truncated, or otherwise
  *  corrupt), or an aggregate page count over MAX_MERGED_PAGES. Uploads are
@@ -38,6 +39,11 @@ export class PdfMergeError extends Error {
   }
 }
 
+/** The PdfMergeError for a PDF loadPdfDocument refused for how far it inflates. */
+export function pdfTooLargeError(what: string, err: PdfLoadLimitError): PdfMergeError {
+  return new PdfMergeError(`${what} is too large to read: ${err.message}`, 422, 'CONTRACT_PDF_TOO_LARGE');
+}
+
 /** Generous aggregate cap (main document + every uploaded contract's pages) on
  *  a single merged quote PDF. Not a realistic proposal/contract size — a guard
  *  against a runaway/hostile upload turning one merge into a multi-minute
@@ -52,6 +58,17 @@ export interface UploadedContractPdf {
   data: Buffer;
 }
 
+export interface MergeUploadedContractPdfsOptions {
+  /** Deterministic output (#9075 W2c certified copy): CreationDate and ModDate
+   *  are pinned to this instant and Producer/Creator to a constant, instead of
+   *  pdf-lib stamping the wall clock — so the same inputs always yield the same
+   *  bytes. Omitted (every quote caller) → pdf-lib's default metadata, as before. */
+  pinDates?: Date;
+}
+
+/** Producer/Creator written on a pinned merge. A constant, never a version. */
+const PINNED_PRODUCER = 'Breeze';
+
 /** Append every upload's pages after `mainPdf`'s own pages, in array order.
  *  A no-op (returns `mainPdf` unchanged) when `uploads` is empty — the common
  *  case (no uploaded contract blocks on the quote) never pays the pdf-lib
@@ -59,16 +76,27 @@ export interface UploadedContractPdf {
 export async function mergeUploadedContractPdfs(
   mainPdf: Buffer,
   uploads: UploadedContractPdf[],
+  options: MergeUploadedContractPdfsOptions = {},
 ): Promise<Buffer> {
   if (uploads.length === 0) return mainPdf;
 
-  const mainDoc = await PDFDocument.load(mainPdf);
+  const pin = options.pinDates;
+  // Every document is read with loadPdfDocument, which refuses one whose
+  // compressed object data inflates past MAX_PDF_LOAD_DECODED_BYTES.
+  let mainDoc: PDFDocument;
+  try {
+    mainDoc = await loadPdfDocument(mainPdf, pin ? { updateMetadata: false } : undefined);
+  } catch (err) {
+    if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('The contract PDF', err);
+    throw err;
+  }
   let pageCount = mainDoc.getPageCount();
   for (const upload of uploads) {
     let uploadDoc: PDFDocument;
     try {
-      uploadDoc = await PDFDocument.load(upload.data);
+      uploadDoc = await loadPdfDocument(upload.data);
     } catch (err) {
+      if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('An attached contract PDF', err);
       // Uploads are pre-validated at write time, so reaching here means a stored
       // version's bytes are unreadable (encrypted/corrupt). Raise a typed error a
       // route can map to a 4xx rather than letting the raw pdf-lib throw 500.
@@ -86,6 +114,12 @@ export async function mergeUploadedContractPdfs(
     }
     const copiedPages = await mainDoc.copyPages(uploadDoc, uploadDoc.getPageIndices());
     for (const page of copiedPages) mainDoc.addPage(page);
+  }
+  if (pin) {
+    mainDoc.setCreationDate(pin);
+    mainDoc.setModificationDate(pin);
+    mainDoc.setProducer(PINNED_PRODUCER);
+    mainDoc.setCreator(PINNED_PRODUCER);
   }
   return Buffer.from(await mainDoc.save());
 }

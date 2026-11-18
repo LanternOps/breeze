@@ -39,6 +39,9 @@ vi.mock('../../stores/orgStore', () => ({
 const showToast = vi.hoisted(() => vi.fn());
 vi.mock('../shared/Toast', () => ({ showToast: (...args: unknown[]) => showToast(...args) }));
 
+// W08 (#9921): the partner "Wisp enabled" card has its own suite; stubbed here so its reads stay out of these fetch assertions.
+vi.mock('./WispPartnerSettingsCard', () => ({ default: () => <div data-testid="wisp-partner-switch-card-mock" /> }));
+
 import AiAgentsPage from './AiAgentsPage';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -1847,5 +1850,49 @@ describe('AiAgentsPage — subsystem disabled (#5380)', () => {
     await screen.findByTestId('ai-agents-list');
     expect(screen.queryByTestId('ai-agents-subsystem-disabled')).toBeNull();
     expect(screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`).textContent).toBe('Running');
+  });
+});
+
+describe('AiAgentsPage — Wisp card (W08 #9921)', () => {
+  it('hosts the partner "Wisp enabled" switch (settings rule 9: its one home)', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+    expect(await screen.findByTestId('wisp-partner-switch-card-mock')).toBeInTheDocument();
+  });
+});
+
+describe('AiAgentsPage report links (#10135)', () => {
+  it('links research to fix memory and designer to fleet design in the kind glossary only', async () => {
+    mockEndpoints([]);
+    render(<AiAgentsPage />);
+    const glossary = await screen.findByTestId('ai-agents-kind-glossary');
+
+    const research = within(glossary).getByTestId('ai-agents-kind-link-research');
+    expect(research).toHaveAttribute('href', '/ai-agents/fix-memory');
+    expect(research).toHaveTextContent('Open fix memory');
+    const designer = within(glossary).getByTestId('ai-agents-kind-link-designer');
+    expect(designer).toHaveAttribute('href', '/ai-agents/fleet-design');
+    expect(designer).toHaveTextContent('Open fleet design');
+
+    // triage / patch / helpdesk rows carry no report link
+    expect(within(glossary).getAllByRole('link')).toHaveLength(2);
+  });
+
+  it('shows the same links beside research and designer agent rows, none on other kinds', async () => {
+    mockEndpoints([
+      PARTNER_AGENT,
+      { ...PARTNER_AGENT, id: 'r1', kind: 'research', name: 'Researcher' },
+      { ...PARTNER_AGENT, id: 'd1', kind: 'designer', name: 'Designer' },
+    ]);
+    render(<AiAgentsPage />);
+    const researchRow = await screen.findByTestId('ai-agent-row-r1');
+    expect(within(researchRow).getByTestId('ai-agents-kind-link-research')).toHaveAttribute('href', '/ai-agents/fix-memory');
+    expect(within(screen.getByTestId('ai-agent-row-d1')).getByTestId('ai-agents-kind-link-designer')).toHaveAttribute(
+      'href',
+      '/ai-agents/fleet-design',
+    );
+    const triageRow = within(screen.getByTestId('ai-agent-row-a1'));
+    expect(triageRow.queryByTestId('ai-agents-kind-link-research')).toBeNull();
+    expect(triageRow.queryByTestId('ai-agents-kind-link-designer')).toBeNull();
   });
 });

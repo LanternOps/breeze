@@ -52,7 +52,9 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     osType: 'devices.osType',
     hostname: 'devices.hostname',
+    displayName: 'devices.displayName',
   },
+  users: { id: 'users.id', name: 'users.name' },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -173,6 +175,7 @@ describe('CIS hardening routes', () => {
                         approvedAt: null,
                       },
                       deviceHostname: 'SRV-01',
+                      deviceDisplayName: 'Front Desk Server',
                       baselineName: 'Windows L1',
                     }]),
                   }),
@@ -192,7 +195,57 @@ describe('CIS hardening routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.data[0].deviceHostname).toBe('SRV-01');
+      expect(body.data[0].deviceDisplayName).toBe('Front Desk Server'); // #9606
       expect(body.pagination.total).toBe(1);
+    });
+
+    it('#9606: resolves approver names for the audit detail row', async () => {
+      const APPROVER_ID = '99999999-9999-9999-9999-999999999999';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([{
+                      action: {
+                        id: ACTION_ID,
+                        orgId: ORG_ID,
+                        status: 'completed',
+                        approvalStatus: 'approved',
+                        approvedBy: APPROVER_ID,
+                        createdAt: new Date(),
+                        executedAt: null,
+                        approvedAt: new Date(),
+                      },
+                      deviceHostname: 'SRV-01',
+                      deviceDisplayName: null,
+                      baselineName: 'Windows L1',
+                    }]),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      // approver lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: APPROVER_ID, name: 'Dana Approver' }]),
+        }),
+      } as any);
+
+      const res = await app.request('/cis/remediations', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].approverName).toBe('Dana Approver');
     });
 
     it('filters by status', async () => {

@@ -4,10 +4,10 @@ package userhelper
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showNotifyPromptOS renders the interactive notification with osascript, the
@@ -51,7 +51,7 @@ func showNotifyPromptOS(req ipc.NotifyRequest) (clicked string, shown bool) {
 
 	// CombinedOutput, as in consent_dialog_darwin.go: stderr carries the -128
 	// cancel marker that distinguishes a user dismissal from an infra failure.
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := procspawn.Command("osascript", "-e", script).CombinedOutput()
 	result := string(out)
 	if err != nil {
 		if strings.Contains(result, "-128") {
@@ -86,7 +86,7 @@ func showNoticeDialogOS(req ipc.NotifyRequest) bool {
 		escapeAppleScript(title),
 		(noticeDialogTimeoutMs+999)/1000,
 	)
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := procspawn.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "-128") {
 			return true

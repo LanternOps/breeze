@@ -29,7 +29,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatUptime } from "../../lib/utils";
 import { runAction, ActionError } from "../../lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { isAgentUpdateStuck } from "@breeze/shared";
+import { DOCS_BASE_URL, isAgentUpdateStuck } from "@breeze/shared";
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -40,10 +40,13 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import { formatOsBuild } from "./formatOsLabel";
 import DeviceTimeSection from "./time/DeviceTimeSection";
+import { derivePromptRenderer, helperInstallIssueKey } from "./promptRenderer";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -93,6 +96,27 @@ type DeviceInfo = {
     errorClass: string;
     since: string | null;
   } | null;
+  /**
+   * Control-plane block notice (#8868): a network filter, captive portal or
+   * untrusted TLS interceptor answered in place of the server. Derived by the
+   * API; null when there is nothing to show. `locationHost` / `certIssuer`
+   * come from the device's network: render as plain text only.
+   */
+  controlPlaneBlock?: {
+    /** last_known: active when last reported; the device has not reported since. */
+    state: "active" | "last_known" | "cleared";
+    kind: string;
+    host: string;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    clearedAt?: string;
+    httpStatus?: number;
+    locationHost?: string;
+    certIssuer?: string;
+    reachableViaEch: boolean;
+    /** Server time of the last report; only on last_known. */
+    lastReportedAt?: string;
+  } | null;
   /** Derived read view from the API (#8608); absent until an agent reports. */
   logShipping?: {
     state: "healthy" | "quiet" | "failing" | "unknown";
@@ -122,6 +146,7 @@ type DeviceInfo = {
   activeVpns?: VpnPresence[] | null;
   hardware?: {
     serialNumber?: string | null;
+    productSku?: string | null;
     manufacturer?: string | null;
     model?: string | null;
     biosVersion?: string | null;
@@ -240,12 +265,142 @@ function formatDesktopAccessReason(
   }
 }
 
+function AssistStatusRow({
+  helperVersion,
+  helperInstallIssue,
+}: {
+  helperVersion?: string | null;
+  helperInstallIssue?: string | null;
+}) {
+  const { t } = useTranslation("devices");
+  const renderer = derivePromptRenderer({ helperVersion, helperInstallIssue });
+  let value: string;
+  if (renderer.status === "installed") {
+    value = t("deviceInfoTab.assistStatus.installed");
+  } else if (renderer.status === "notDeployed") {
+    value = t("deviceInfoTab.assistStatus.notDeployed");
+  } else {
+    let reason: string;
+    switch (helperInstallIssueKey(renderer.issue ?? "")) {
+      case "webview2Outdated":
+        reason = t("deviceInfoTab.assistStatus.reason.webview2Outdated");
+        break;
+      case "crashLoop":
+        reason = t("deviceInfoTab.assistStatus.reason.crashLoop");
+        break;
+      case "unmanagedInstall":
+        reason = t("deviceInfoTab.assistStatus.reason.unmanagedInstall");
+        break;
+      case "awaitingServerOffer":
+        reason = t("deviceInfoTab.assistStatus.reason.awaitingServerOffer");
+        break;
+      case "installAbandoned":
+        reason = t("deviceInfoTab.assistStatus.reason.installAbandoned");
+        break;
+      default:
+        reason = t("deviceInfoTab.assistStatus.reason.unknown");
+    }
+    value = t("deviceInfoTab.assistStatus.unavailable", { reason });
+  }
+  return (
+    <div className="flex justify-between py-2" data-testid="assist-status">
+      <dt className="text-sm text-muted-foreground">{t("deviceInfoTab.assistStatus.label")}</dt>
+      <dd className="text-sm font-medium text-right">{value}</dd>
+    </div>
+  );
+}
+
 function InfoRow({ label, value }: { label: string; value: string }) {
   const { t } = useTranslation("devices");
   return (
     <div className="flex justify-between py-2">
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium text-right">{value || "—"}</dd>
+    </div>
+  );
+}
+
+const CONTROL_PLANE_BLOCK_DOCS_URL = `${DOCS_BASE_URL}/agents/advanced-install/#blocked-by-a-network-filter`;
+
+/**
+ * Control-plane block notice (#8868). `locationHost` and `certIssuer` come
+ * from whatever answered on the device's network, so an attacker on the path
+ * controls them: they are only ever interpolated as plain text (React escapes
+ * it; never a link, never `Trans`). An unknown kind renders nothing.
+ */
+function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlock"] }) {
+  const { t } = useTranslation("devices");
+  if (!block) return null;
+  if (block.state !== "active" && block.state !== "last_known" && block.state !== "cleared") return null;
+
+  const noDetail = t("deviceInfoTab.controlPlaneBlock.noDetail");
+  let title: string;
+  let message: string;
+  switch (block.kind) {
+    case "web_filter":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.webFilter", { locationHost: block.locationHost || noDetail });
+      break;
+    case "captive_portal":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.captivePortal");
+      break;
+    case "plaintext_unknown":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.plaintextUnknown");
+      break;
+    case "untrusted_certificate":
+      title = t("deviceInfoTab.controlPlaneBlock.titleUntrustedCertificate");
+      message = t("deviceInfoTab.controlPlaneBlock.untrustedCertificate", { certIssuer: block.certIssuer || noDetail });
+      break;
+    default:
+      return null;
+  }
+
+  const cleared = block.state === "cleared";
+  const lastKnown = block.state === "last_known";
+  return (
+    <div
+      data-testid="control-plane-block-notice"
+      data-state={block.state}
+      role="status"
+      className={
+        cleared || lastKnown
+          ? "rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+          : "rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+      }
+    >
+      <p className="font-medium">{title}</p>
+      {cleared ? (
+        <p>
+          {t("deviceInfoTab.controlPlaneBlock.cleared", {
+            from: formatDate(block.firstSeenAt),
+            to: formatDate(block.clearedAt ?? block.lastSeenAt),
+          })}
+        </p>
+      ) : lastKnown ? (
+        <>
+          <p>{message}</p>
+          <p>
+            {t("deviceInfoTab.controlPlaneBlock.lastKnown", {
+              time: formatDate(block.lastReportedAt ?? block.lastSeenAt),
+            })}
+          </p>
+        </>
+      ) : (
+        <>
+          <p>{message}</p>
+          {block.reachableViaEch ? <p>{t("deviceInfoTab.controlPlaneBlock.viaEch")}</p> : null}
+        </>
+      )}
+      <a
+        href={CONTROL_PLANE_BLOCK_DOCS_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary underline"
+      >
+        {t("deviceInfoTab.controlPlaneBlock.howToFix")}
+      </a>
     </div>
   );
 }
@@ -728,10 +883,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
     if (value === null || value === undefined || value === "") return "—";
     if (def.type === "boolean")
       return value ? t("deviceInfoTab.yes") : t("deviceInfoTab.no");
-    if (def.type === "dropdown" && def.options?.choices) {
-      const choice = def.options.choices.find((c) => c.value === value);
-      return choice?.label ?? String(value);
-    }
+    if (def.type === "dropdown") return dropdownChoiceLabel(def, value) ?? String(value);
     if (def.type === "date" && typeof value === "string")
       return formatDate(value);
     return String(value);
@@ -844,6 +996,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
   }
 
   const hw = info?.hardware;
+  const productNumber = formatHardwareIdentityValue(hw?.productSku);
   const status = info?.status ?? "offline";
   const tags = info?.tags ?? [];
 
@@ -935,6 +1088,9 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.serialNumber")}
           value={formatHardwareIdentityValue(hw?.serialNumber)}
         />
+        {productNumber !== "—" && (
+          <InfoRow label={t("deviceInfoTab.productSku")} value={productNumber} />
+        )}
         <InfoRow
           label={t("deviceInfoTab.manufacturer")}
           value={formatHardwareIdentityValue(hw?.manufacturer)}
@@ -1075,7 +1231,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
         <InfoRow
           label={t("deviceInfoTab.osBuild")}
-          value={info?.osBuild ?? "—"}
+          value={formatOsBuild(info?.osType, info?.osVersion, info?.osBuild) ?? "—"}
         />
         <InfoRow
           label={t("deviceInfoTab.architecture")}
@@ -1310,7 +1466,14 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.helperVersion")}
           value={info?.helperVersion?.trim() || "—"}
         />
-        {/* #6925: Assist enabled but not installed — the agent reports why. */}
+        {/* #10190 W01: whether Breeze Assist can draw prompts here, from the
+            last-reported helper state (not the live per-session renderer). */}
+        <AssistStatusRow
+          helperVersion={info?.helperVersion}
+          helperInstallIssue={info?.helperInstallIssue}
+        />
+        {/* #6925, #10183, #10185: the agent reports why Assist is not
+            installed or not running. */}
         {info?.helperInstallIssue ? (
           <div
             data-testid="helper-install-issue"
@@ -1321,11 +1484,17 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
               const since = info.helperInstallIssueSince
                 ? new Date(info.helperInstallIssueSince).toLocaleDateString()
                 : "—";
-              switch (info.helperInstallIssue) {
-                case "awaiting_server_offer":
+              switch (helperInstallIssueKey(info.helperInstallIssue)) {
+                case "awaitingServerOffer":
                   return t("deviceInfoTab.helperInstallIssue.awaitingServerOffer", { since });
-                case "install_abandoned":
+                case "installAbandoned":
                   return t("deviceInfoTab.helperInstallIssue.installAbandoned", { since });
+                case "webview2Outdated":
+                  return t("deviceInfoTab.helperInstallIssue.webview2Outdated", { since });
+                case "crashLoop":
+                  return t("deviceInfoTab.helperInstallIssue.crashLoop", { since });
+                case "unmanagedInstall":
+                  return t("deviceInfoTab.helperInstallIssue.unmanagedInstall", { since });
                 default:
                   return t("deviceInfoTab.helperInstallIssue.unknown", { since });
               }
@@ -1333,6 +1502,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           </div>
         ) : null}
         <WatchdogInstallNotice watchdogInstall={info?.watchdogInstall} />
+        <ControlPlaneBlockNotice block={info?.controlPlaneBlock} />
         <LogShippingRow logShipping={info?.logShipping} />
         {info?.logsNotArriving ? (
           <div className="flex justify-between py-2">

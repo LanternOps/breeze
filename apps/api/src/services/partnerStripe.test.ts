@@ -122,6 +122,7 @@ import {
   STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS,
   getPartnerStripeStatus,
   isPartnerOnlinePaymentAvailable,
+  isPartnerOnlinePaymentAvailableOnCallerConnection,
   getPartnerStripeAccountSnapshot,
   PartnerStripeError,
   listPartnersNeedingStripeAccountBootstrap,
@@ -888,6 +889,28 @@ describe('isPartnerOnlinePaymentAvailable (#7509)', () => {
   ])('is false for %s', async (_label, rows) => {
     dbMocks.selectResults.push(rows as unknown[]);
     expect(await isPartnerOnlinePaymentAvailable(PARTNER_A)).toBe(false);
+  });
+});
+
+// #9454: the same answer on the caller's connection, for a caller inside an open transaction.
+describe('isPartnerOnlinePaymentAvailableOnCallerConnection (#9454)', () => {
+  beforeEach(() => { dbMocks.selectResults.length = 0; });
+
+  it('opens no system context of its own (no second connection)', async () => {
+    const before = systemContextCalls.count;
+    dbMocks.selectResults.push([{ status: 'connected', apiKey: 'enc(sk_live_x)' }]);
+    expect(await isPartnerOnlinePaymentAvailableOnCallerConnection(PARTNER_A)).toBe(true);
+    expect(systemContextCalls.count).toBe(before);
+  });
+
+  it.each([
+    ['no row at all', []],
+    ['a disconnected row', [{ status: 'disconnected', apiKey: null }]],
+    ['a connected row with a wiped key', [{ status: 'connected', apiKey: null }]],
+    ['a key on a non-connected row', [{ status: 'disconnected', apiKey: 'enc(sk_live_x)' }]],
+  ])('is false for %s, like the system-context read', async (_label, rows) => {
+    dbMocks.selectResults.push(rows as unknown[]);
+    expect(await isPartnerOnlinePaymentAvailableOnCallerConnection(PARTNER_A)).toBe(false);
   });
 });
 

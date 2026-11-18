@@ -536,7 +536,7 @@ describe('managed AI-triage event binding against real Postgres', () => {
       message: 'There is no device to triage',
     });
 
-    expect(result).toEqual({ skipped: 'managed_automation_event_has_no_device' });
+    expect(result).toEqual({ skipped: 'alert_has_no_device' });
     expect(await allAutomationRuns()).toEqual([]);
     expect(await allAgentRuns()).toEqual([]);
   });

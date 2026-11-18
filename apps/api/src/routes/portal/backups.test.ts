@@ -3,12 +3,14 @@ import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
   overview: vi.fn(),
+  saasWorkloads: vi.fn(),
   devices: vi.fn(),
   dbSelect: vi.fn(),
 }));
 
 vi.mock('../../services/portal/backupReadModel', () => ({
   backupOverview: mocks.overview,
+  backupSaasWorkloads: mocks.saasWorkloads,
   backupDevicesPage: mocks.devices,
 }));
 
@@ -66,7 +68,7 @@ function app() {
   return hono;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); mocks.saasWorkloads.mockResolvedValue([]); });
 
 it('uses the session org for overview', async () => {
   mocks.overview.mockResolvedValue({
@@ -180,4 +182,14 @@ describe('index.ts backup mount wiring and strict gate', () => {
     });
     expect(mocks.overview).not.toHaveBeenCalled();
   });
+});
+
+
+it('includes SaaS workloads separately while preserving device counts and session org scope', async () => {
+  const workloads = [{ providerLabel: null, workload: 'gws_mail', accountType: 'gws', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 12 }];
+  mocks.overview.mockResolvedValue({ protected: 2, total: 3 });
+  mocks.saasWorkloads.mockResolvedValue(workloads);
+  const response = await app().request('/backups/overview');
+  expect(await response.json()).toEqual({ protected: 2, total: 3, saasWorkloads: workloads });
+  expect(mocks.saasWorkloads).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', expect.objectContaining({ now: expect.any(Date) }));
 });

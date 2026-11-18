@@ -320,6 +320,7 @@ describe('quotesPublic Redis-revoked token ordering', () => {
     { name: 'GET /:token/images/:imageId', path: `/quotes/public/${TOKEN}/images/${IMAGE_ID}` },
     { name: 'GET /:token/line-image/:lineId', path: `/quotes/public/${TOKEN}/line-image/${LINE_ID}` },
     { name: 'GET /:token/contract-file/:blockId', path: `/quotes/public/${TOKEN}/contract-file/${BLOCK_ID}` },
+    { name: 'GET /:token/pdf', path: `/quotes/public/${TOKEN}/pdf` },
   ];
 
   it.each(tokenGateCases)('$name returns 401 before any quote liveness read', async ({ path }) => {
@@ -382,6 +383,13 @@ describe('quotesPublic token-route liveness enumeration', () => {
         path: '/:token/contract-file/:blockId',
         queuedReads: [[revokedQuote], [contractBlock], [contractVersion], [contractTemplate]],
       },
+      // #9860: the proposal PDF must die with the link like the page does.
+      {
+        name: 'proposal pdf',
+        method: 'GET',
+        path: '/:token/pdf',
+        queuedReads: [[revokedQuote]],
+      },
       {
         name: 'accept quote',
         method: 'POST',
@@ -393,6 +401,19 @@ describe('quotesPublic token-route liveness enumeration', () => {
         method: 'POST',
         path: '/:token/decline',
         queuedReads: [[revokedQuote], [{ id: QUOTE_ID }]],
+      },
+      // #3740 payment routes: even a converted quote's payment dies with its link.
+      {
+        name: 'payment summary',
+        method: 'GET',
+        path: '/:token/payment',
+        queuedReads: [[{ ...revokedQuote, status: 'converted', convertedInvoiceId: QUOTE_ID }], [partnerRow]],
+      },
+      {
+        name: 'pay',
+        method: 'POST',
+        path: '/:token/pay',
+        queuedReads: [[{ ...revokedQuote, status: 'converted', convertedInvoiceId: QUOTE_ID }]],
       },
     ];
 

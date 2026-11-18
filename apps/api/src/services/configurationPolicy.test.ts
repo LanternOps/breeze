@@ -1000,6 +1000,7 @@ describe('remote_access feature link — legacy capability JSONB (#2320)', () =>
             notifyOnSessionEnd: true,
             showActiveIndicator: true,
             technicianIdentityLevel: 'name',
+            allowUserEndSession: false,
           },
         ]) as any
       );
@@ -1015,6 +1016,8 @@ describe('remote_access feature link — legacy capability JSONB (#2320)', () =>
     expect(settings.sessionPromptMode).toBe('consent');
     expect(settings.consentUnavailableBehavior).toBe('block');
     expect(settings.technicianIdentityLevel).toBe('name');
+    // #10190 W06: round-trips from the normalized row.
+    expect(settings.allowUserEndSession).toBe(false);
   });
 
   it('addFeatureLink stores the full blob in JSONB and only consent fields in the normalized row', async () => {
@@ -1113,6 +1116,7 @@ describe('remote_access updateFeatureLink — merge semantics (partial updates c
     notifyOnSessionEnd: true,
     showActiveIndicator: true,
     technicianIdentityLevel: 'generic',
+    allowUserEndSession: false,
   };
 
   function buildUpdateTx(existingInlineSettings: unknown) {
@@ -1177,6 +1181,8 @@ describe('remote_access updateFeatureLink — merge semantics (partial updates c
     expect(captured.normalizedRowValues.sessionPromptMode).toBe('consent');
     expect(captured.normalizedRowValues.consentUnavailableBehavior).toBe('block');
     expect(captured.normalizedRowValues.technicianIdentityLevel).toBe('generic');
+    // #10190 W06: an explicit OFF survives an unrelated update (merge semantics).
+    expect(captured.normalizedRowValues.allowUserEndSession).toBe(false);
   });
 
   it('a consent-only update preserves the stored capability settings (no fail-open re-enable)', async () => {
@@ -1325,6 +1331,14 @@ describe('listConfigPolicies feature links', () => {
     return chain;
   }
 
+  // db.select({configPolicyId}).from(assignments).where() — awaited off .where()
+  function assignmentsChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
   // db.select({partnerId}).from(organizations).where().limit(1) — the extra
   // statement the orgId-filter branch issues BEFORE the count query.
   function orgPartnerChain(rows: unknown[]) {
@@ -1442,7 +1456,8 @@ describe('listConfigPolicies feature links', () => {
           { id: 'link-pw', configPolicyId: 'policy-partnerwide', featureType: 'patch' },
           { id: 'link-org', configPolicyId: 'policy-org', featureType: 'security' },
         ]) as any,
-      );
+      )
+      .mockReturnValueOnce(assignmentsChain([]) as any);
 
     const result = await listConfigPolicies(
       orgAuth(),
@@ -1458,8 +1473,56 @@ describe('listConfigPolicies feature links', () => {
       id: 'policy-org',
       featureLinks: [{ id: 'link-org', featureType: 'security' }],
     });
-    // partnerId lookup + count + page + links — still ONE links statement.
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    // partnerId lookup + count + page + links + partner-wide assignments —
+    // still ONE links statement and ONE assignment statement per page.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(5);
+  });
+
+  // #9565: the list's "Partner-wide" badge claimed every partner-owned policy
+  // applied to all organizations, even with zero assignments. The flag comes
+  // from a real partner-level assignment, read in ONE statement per page and
+  // only when the page holds a partner-owned row.
+  it('flags only partner-owned policies that have a partner-level assignment', async () => {
+    const rows = [
+      { id: 'policy-assigned', name: 'Assigned to all orgs', orgId: null, partnerId: 'partner-1' },
+      { id: 'policy-unassigned', name: 'Not assigned yet', orgId: null, partnerId: 'partner-1' },
+      { id: 'policy-org', name: 'OliveTech only', orgId: ORG_ID },
+    ];
+    const assignments = assignmentsChain([{ configPolicyId: 'policy-assigned' }]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(3) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any)
+      .mockReturnValueOnce(assignments as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data.map((r) => [r.id, r.hasPartnerWideAssignment])).toEqual([
+      ['policy-assigned', true],
+      ['policy-unassigned', false],
+      ['policy-org', false],
+    ]);
+    const where = new PgDialect().sqlToQuery(assignments.where.mock.calls[0][0]);
+    expect(where.sql).toContain('"config_policy_assignments"."config_policy_id" in');
+    expect(where.sql).toContain('"config_policy_assignments"."level" =');
+    expect(where.params).toEqual(expect.arrayContaining(['policy-assigned', 'policy-unassigned', 'partner']));
+    // Org-owned rows can never be partner-wide, so they are not queried.
+    expect(where.params).not.toContain('policy-org');
+  });
+
+  it('skips the assignment read when the page has no partner-owned policy', async () => {
+    const rows = [{ id: 'policy-a', name: 'A', orgId: ORG_ID }];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(1) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data[0]).toMatchObject({ id: 'policy-a', hasPartnerWideAssignment: false });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
 
   it('skips the feature-link query entirely when the page is empty', async () => {
@@ -1612,5 +1675,35 @@ describe('addFeatureLink — maintenance inlineSettings service-layer validation
     await addFeatureLink('policy-1', 'maintenance', null, { recurrence: 'weekly', windowStart: '' });
 
     expect(normalizedRowValues.windowStart).toBeNull();
+  });
+});
+
+describe('containment service write backstops', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([
+    ['reference', 'other-policy', { version: 1 }, /featurePolicyId/],
+    ['invalid settings', null, { version: 1, defaultTtlHours: 0 }, /defaultTtlHours/],
+    ['missing version', null, {}, /version/],
+    ['null settings', null, null, /object/],
+  ])('add refuses %s before a transaction', async (_name, featurePolicyId, inlineSettings, error) => {
+    vi.mocked(db.transaction).mockResolvedValue({ id: 'unexpected' });
+    await expect(addFeatureLink('policy-1', 'containment', featurePolicyId as string | null, inlineSettings))
+      .rejects.toThrow(error as RegExp);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['reference', { featurePolicyId: 'other-policy' }, /featurePolicyId/],
+    ['invalid settings', { inlineSettings: { version: 1, defaultTtlHours: 0 } }, /defaultTtlHours/],
+    ['null settings', { inlineSettings: null }, /object/],
+  ])('update refuses %s before writing', async (_name, updates, error) => {
+    const tx = {
+      select: vi.fn(() => selectLimitRows([{ id: 'link-1', featureType: 'containment', inlineSettings: { version: 1 } }])),
+      update: vi.fn(() => ({ set: () => ({ where: () => ({ returning: async () => [{ id: 'link-1' }] }) }) })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    await expect(updateFeatureLink('link-1', updates, 'policy-1')).rejects.toThrow(error);
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });

@@ -37,6 +37,7 @@ class FakeChannel implements InputChannelLike {
 const CAPS: InputCapabilitiesSnapshot = {
   typeText: true,
   releasesHeldInput: true,
+  releaseHeldOnRequest: true,
   reliableInput: true,
   inputEpoch: 4,
   geoEpoch: 2,

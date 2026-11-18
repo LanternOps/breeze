@@ -26,6 +26,7 @@ import {
   type BackupHealthListOptions,
 } from '../../services/backupHealthReadModel';
 import { BACKUP_HEALTH_DEFAULT_LIMIT } from '../../services/backupHealthCursor';
+import { getBackupProvider, isBackupProviderKey } from '../../services/backupProviders/registry';
 import { emptyBackupHealthSummary } from '../../services/backupHealthRows';
 import { backupHealthDevicesQuerySchema } from './schemas';
 
@@ -123,16 +124,20 @@ backupHealthRoutes.get(
  * a partner/system caller; an org token would read zero rows through RLS
  * anyway, and short-circuiting saves the round-trip.
  */
-async function resolveUnmappedDevices(auth: { scope: string; partnerId: string | null }): Promise<number> {
+export async function resolveUnmappedDevices(auth: { scope: string; partnerId: string | null }): Promise<number> {
   if (auth.scope !== 'partner' && auth.scope !== 'system') return 0;
   if (!auth.partnerId) return 0;
   const rows = (await db
     .select({
       unmapped: backupProviderConnections.lastSyncUnmappedDevices,
+      provider: backupProviderConnections.provider,
     })
     .from(backupProviderConnections)
     .where(
       and(eq(backupProviderConnections.partnerId, auth.partnerId), eq(backupProviderConnections.isActive, true)),
-    )) as Array<{ unmapped: number | null }>;
-  return rows.reduce((sum, row) => sum + (row.unmapped ?? 0), 0);
+    )) as Array<{ unmapped: number | null; provider: string }>;
+  return rows
+    .filter((row) => isBackupProviderKey(row.provider)
+      && (getBackupProvider(row.provider).inventoryKind ?? 'endpoint') === 'endpoint')
+    .reduce((sum, row) => sum + (row.unmapped ?? 0), 0);
 }

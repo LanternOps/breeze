@@ -7,7 +7,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { insertMock, selectMock, updateMock, publishMock, getUserPermissionsMock } = vi.hoisted(() => ({
+const { insertMock, selectMock, updateMock, publishMock, getUserPermissionsMock, yaracAvailableMock } = vi.hoisted(() => ({
+  yaracAvailableMock: vi.fn(),
   insertMock: vi.fn(),
   selectMock: vi.fn(),
   updateMock: vi.fn(),
@@ -38,6 +39,10 @@ vi.mock('../../services/auditEvents', async () => {
   return { ...actual, writeRouteAudit: vi.fn() };
 });
 vi.mock('../../services/yaraRuleSetPublisher', () => ({ publishRuleSet: publishMock }));
+vi.mock('../../services/yaraPrecheck', async () => {
+  const actual = await vi.importActual<any>('../../services/yaraPrecheck');
+  return { ...actual, yaracAvailable: yaracAvailableMock };
+});
 
 import { yaraRoutes } from './yara';
 
@@ -172,5 +177,67 @@ describe('POST /yara/rule-sets/:id/rules set vanished before lock (#9176)', () =
     expect(res.status).toBe(404);
     expect(selectMock).toHaveBeenCalledTimes(2);
     expect(insertMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET rule sets: why a stale set is unpublished (#10306)', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: SET, orgId: ORG, partnerId: null, name: 'n', description: null, source: 'custom', isBuiltin: false,
+    enabled: true, autoQuarantine: false, currentVersion: 2, publishedVersion: 0, publishedSha256: null,
+    publishedAt: null, publishedEngine: null, stale: false, ruleCount: 1, createdAt: new Date(), updatedAt: new Date(),
+    ...over,
+  });
+  const mockList = (rows: unknown[]) =>
+    selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve(rows) }) }) });
+  const mockRules = (rules: unknown[]) =>
+    selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve(rules) }) }) });
+  const get = (path: string) => app({}).request(`/security${path}`);
+
+  it('list: a stale set reads checker_unavailable when the compiler cannot run', async () => {
+    yaracAvailableMock.mockResolvedValueOnce(false);
+    mockList([row({ stale: true }), row({ id: 'other', stale: false }), row({ id: 'third', stale: true })]);
+    const res = await get('/yara/rule-sets');
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.map((s: { staleReason: unknown }) => s.staleReason)).toEqual([
+      'checker_unavailable',
+      null,
+      'checker_unavailable',
+    ]);
+    // One probe per request, however many sets are stale.
+    expect(yaracAvailableMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('PATCH with no changes returns the set with its staleReason', async () => {
+    yaracAvailableMock.mockResolvedValueOnce(false);
+    mockVisibleSet(row({ stale: true }));
+    const res = await patch(app({}), `/yara/rule-sets/${SET}`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.staleReason).toBe('checker_unavailable');
+  });
+
+  it('list: a stale set reads errors when the compiler runs', async () => {
+    yaracAvailableMock.mockResolvedValueOnce(true);
+    mockList([row({ stale: true })]);
+    const { data } = await (await get('/yara/rule-sets')).json();
+    expect(data[0].staleReason).toBe('errors');
+  });
+
+  it('list: no stale set, no compiler probe', async () => {
+    mockList([row({ stale: false })]);
+    const { data } = await (await get('/yara/rule-sets')).json();
+    expect(data[0].staleReason).toBeNull();
+    expect(yaracAvailableMock).not.toHaveBeenCalled();
+  });
+
+  it('detail: a stale set reads checker_unavailable when the compiler cannot run', async () => {
+    yaracAvailableMock.mockResolvedValueOnce(false);
+    mockVisibleSet(row({ stale: true }));
+    mockRules([]);
+    const res = await get(`/yara/rule-sets/${SET}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.staleReason).toBe('checker_unavailable');
+    expect(data.rules).toEqual([]);
   });
 });

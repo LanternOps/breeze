@@ -1,5 +1,14 @@
 # Development Docker Compose with mounted code for hot-reloading
 # Usage: docker compose -f docker-compose.dev.yml up
+#
+# Host ports bind to 127.0.0.1 only (#9382): this stack ships fixed throwaway
+# credentials (Postgres breeze/breeze, MinIO minioadmin/minioadmin), and a bare
+# "5432:5432" publishes on every interface, so on a laptop on shared Wi-Fi the
+# dev database and object store are reachable from the LAN. Docker publishes
+# through its own NAT rules, so a host ufw/firewalld rule does not cover it.
+# Set BREEZE_DEV_BIND_ADDR (e.g. 0.0.0.0) to publish on another interface, and
+# change these passwords first if you do. Matches BREEZE_TEST_BIND_ADDR /
+# BREEZE_WT_BIND_ADDR (#9368) and docker-compose.override.yml.dev.
 
 services:
   # PostgreSQL Database
@@ -19,7 +28,7 @@ services:
       POSTGRES_PASSWORD: breeze
       POSTGRES_DB: breeze
     ports:
-      - "5432:5432"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
     networks:
@@ -33,18 +42,32 @@ services:
 
   # Redis for BullMQ job queue
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: breeze-redis-dev
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    # #9382: the base stack refuses to start without a real Redis password, but
+    # this one ran with no auth at all — so the BREEZE_DEV_BIND_ADDR opt-out
+    # above would have handed the LAN an unauthenticated Redis. A fixed
+    # throwaway default matches this file's Postgres breeze/breeze; override it
+    # with BREEZE_DEV_REDIS_PASSWORD.
+    # List form, not a string: a string command is shell-split, so a password
+    # with a space in it would arrive as two arguments.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${BREEZE_DEV_REDIS_PASSWORD:-breeze}
     ports:
-      - "6379:6379"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:6379:6379"
     volumes:
       - redis_dev_data:/data
     networks:
       - breeze-dev-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Authenticates, because api waits on `redis: service_healthy` (and web
+      # waits on api), and an unauthenticated PING now answers NOAUTH.
+      test: ["CMD", "redis-cli", "-a", "${BREEZE_DEV_REDIS_PASSWORD:-breeze}", "--no-auth-warning", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -60,7 +83,13 @@ services:
     environment:
       NODE_ENV: development
       DATABASE_URL: postgresql://breeze:breeze@postgres:5432/breeze
-      REDIS_URL: redis://redis:6379
+      # Discrete vars, not a hand-built REDIS_URL: resolveRedisUrl()
+      # (apps/api/src/services/redis.ts) assembles the URL and
+      # encodeURIComponent()s the password, so a '#' or '@' in an overridden
+      # BREEZE_DEV_REDIS_PASSWORD cannot truncate or corrupt it.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${BREEZE_DEV_REDIS_PASSWORD:-breeze}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - set in .env.dev}
       API_PORT: 3001
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?AGENT_ENROLLMENT_SECRET is required - set in .env.dev}
@@ -108,12 +137,15 @@ services:
       # path without editing this file. Matches docker-compose.yml's convention.
       BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-true}
     ports:
-      - "3001:3001"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:3001:3001"
     volumes:
       # Mount source code for hot-reloading
       - ./apps/api/src:/app/apps/api/src:cached
       - ./apps/api/migrations:/app/apps/api/migrations:ro
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # The manifest is BAKED into the image, so without this mount a local edit
@@ -124,8 +156,6 @@ services:
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
       - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       # Mount agent, viewer, and helper binaries for download endpoints
       - ./agent/bin:/app/apps/api/agent/bin:ro
       - ./viewer/bin:/app/apps/api/viewer/bin:ro
@@ -156,19 +186,20 @@ services:
       API_URL: http://api:3001
       PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:3001}
     ports:
-      - "4321:4321"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:4321:4321"
     volumes:
       # Mount source code for hot-reloading
       - ./apps/web/src:/app/apps/web/src:cached
       - ./apps/web/public:/app/apps/web/public:cached
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./packages/document-ui/src:/app/packages/document-ui/src:cached
       # Mount config files
       - ./apps/web/package.json:/app/apps/web/package.json:ro
       - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
       - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       - ./packages/document-ui/package.json:/app/packages/document-ui/package.json:ro
       - ./packages/document-ui/tsconfig.json:/app/packages/document-ui/tsconfig.json:ro
       # Exclude node_modules (use container's)
@@ -191,8 +222,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:9000:9000"
+      - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:9001:9001"
     volumes:
       - minio_dev_data:/data
     networks:

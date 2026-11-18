@@ -115,3 +115,9 @@ describe("BackupProviderCustomerMapping", () => {
     expect(within(row).getByTestId("backup-mapping-devices-cust-1").textContent).toContain("12");
   });
 });
+
+it.each([["dropsuite", "Workloads", "workloads"], ["cove", "Devices", "devices"]])("uses %s inventory wording", (provider, heading, noun) => {
+  render(<BackupProviderCustomerMapping connectionId="conn-1" provider={provider} customers={[customer()]} onChanged={onChanged} />);
+  expect(screen.getByTestId("backup-mapping-count-heading")).toHaveTextContent(heading);
+  expect(screen.getByTestId("backup-mapping-summary")).toHaveTextContent(noun);
+});

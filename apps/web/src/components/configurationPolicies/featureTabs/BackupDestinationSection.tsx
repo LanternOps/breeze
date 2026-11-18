@@ -3,13 +3,19 @@ import {
   Cloud,
   Loader2,
   Lock,
+  MinusCircle,
   Pencil,
   Plus,
   Server,
   Shield,
   XCircle,
 } from "lucide-react";
-import { deriveS3RegionFromEndpoint } from "@breeze/shared";
+import {
+  BACKUP_DESTINATION_PREFIX_MAX_LENGTH,
+  type BackupDestinationPrefixInvalidReason,
+  deriveS3RegionFromEndpoint,
+  normalizeBackupDestinationPrefix,
+} from "@breeze/shared";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { i18n } from "@/lib/i18n";
 import { ToggleRow, FieldError } from "./backupTabPrimitives";
@@ -84,9 +90,44 @@ export const emptyConfigForm: ConfigFormState = {
   isDefault: false,
 };
 
+// ── Key prefix validation (#7081) ──────────────────────────────────────────────
+// An S3 destination's prefix relocates its new snapshots to
+// `<prefix>/snapshots/`. The rules are the shared validator's, the same ones
+// the API applies on save and at backup time.
+function prefixReasonMessage(reason: BackupDestinationPrefixInvalidReason): string {
+  switch (reason) {
+    case "too_long":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidTooLong",
+        { max: BACKUP_DESTINATION_PREFIX_MAX_LENGTH },
+      );
+    case "empty_or_dot_segment":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidSegment",
+      );
+    case "reserved_segment":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidReserved",
+      );
+    case "unsafe_characters":
+    case "not_a_string":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidCharacters",
+      );
+  }
+}
+
+/** The form's key-prefix error, localized; null when valid or not an S3 destination. */
+export function destinationPrefixError(form: ConfigFormState): string | null {
+  if (form.provider !== "s3") return null;
+  const result = normalizeBackupDestinationPrefix(form.prefix);
+  return result.ok ? null : prefixReasonMessage(result.reason);
+}
+
 export type DestinationMode = "select" | "create" | "edit";
 
-export type TestStatus = "idle" | "testing" | "success" | "failed";
+/** "unsupported": the server does not test this destination (not a failure). */
+export type TestStatus = "idle" | "testing" | "success" | "failed" | "unsupported";
 
 // ── Capability helpers (also used by the Protection section) ───────────────────
 export function getObjectLockCapability(config?: BackupConfig | null) {
@@ -135,7 +176,7 @@ export function capabilitySummary(config?: BackupConfig | null): string {
 
 const PROVIDER_LABELS: Record<string, string> = {
   s3: "Amazon S3",
-  local: "Local / NAS",
+  local: "Local disk",
 };
 
 export function providerLabel(provider: string): string {
@@ -292,6 +333,9 @@ function DestinationCard({
               {testStatus === "failed" && (
                 <XCircle className="h-3 w-3 text-destructive" />
               )}
+              {testStatus === "unsupported" && (
+                <MinusCircle className="h-3 w-3 text-muted-foreground" />
+              )}
               {testStatus === "idle" && <Shield className="h-3 w-3" />}
               {testStatus === "testing"
                 ? i18n.t(
@@ -305,7 +349,11 @@ function DestinationCard({
                     ? i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.failed2",
                       )
-                    : i18n.t(
+                    : testStatus === "unsupported"
+                      ? i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.notTestedHere",
+                        )
+                      : i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.test",
                       )}
             </button>
@@ -357,6 +405,7 @@ export default function BackupDestinationSection({
 }) {
   const selectedConfig = configs.find((c) => c.id === selectedConfigId);
   const showForm = mode === "create" || mode === "edit";
+  const prefixError = showForm ? destinationPrefixError(form) : null;
 
   if (configsLoading) {
     return (
@@ -561,10 +610,10 @@ export default function BackupDestinationSection({
                     {
                       value: "local" as const,
                       label: i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.localNetworkPath",
+                        "policies:configurationPolicies.featureTabs.backupTab.localDiskDestination",
                       ),
                       description: i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.localDiskNASOrUNCShare",
+                        "policies:configurationPolicies.featureTabs.backupTab.localDiskOnDeviceDescription",
                       ),
                       icon: Server,
                     },
@@ -711,13 +760,19 @@ export default function BackupDestinationSection({
                     placeholder={i18n.t(
                       "policies:configurationPolicies.featureTabs.backupTab.backupsBreeze",
                     )}
+                    aria-invalid={prefixError ? true : undefined}
+                    aria-describedby="backup-destination-prefix-help"
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
-                  <p className="mt-1 chart-legend-xs text-muted-foreground">
+                  <p
+                    id="backup-destination-prefix-help"
+                    className="mt-1 chart-legend-xs text-muted-foreground"
+                  >
                     {i18n.t(
-                      "policies:configurationPolicies.featureTabs.backupTab.keyPrefixForOrganizingObjectsInThe",
+                      "policies:configurationPolicies.featureTabs.backupTab.keyPrefixHelp",
                     )}
                   </p>
+                  <FieldError message={prefixError ?? undefined} />
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground">
@@ -772,13 +827,13 @@ export default function BackupDestinationSection({
                 value={form.localPath}
                 onChange={(e) => onFormChange({ localPath: e.target.value })}
                 placeholder={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.varBackupsBreezeOrNasBackups",
+                  "policies:configurationPolicies.featureTabs.backupTab.localPathExample",
                 )}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <p className="mt-1 chart-legend-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.localDiskPathMountedNASOrUNC",
+                  "policies:configurationPolicies.featureTabs.backupTab.localPathAttachedDiskHelp",
                 )}
               </p>
               <FieldError message={fieldErrors.localPath} />

@@ -1,5 +1,7 @@
 ---
+import { registrationAliasTarget } from '@breeze/shared';
+
 // Standalone registration is not supported — funnel to partner registration,
 // which performs the runtime registration-enabled gate (#1308).
-return Astro.redirect('/register-partner', 301);
+return Astro.redirect(registrationAliasTarget(Astro.url.searchParams), 301);
 ---

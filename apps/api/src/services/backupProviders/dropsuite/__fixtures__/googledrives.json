@@ -1,0 +1,38 @@
+[
+  {
+    "drive_account_id": 41,
+    "email_account_id": 401,
+    "gd_tenant": "C0example",
+    "gd_drive_type": "g_drive",
+    "file_count": 5,
+    "storage": 300,
+    "last_backup": "2026-10-27T05:00:00.000Z",
+    "added_on": "2025-01-02T03:04:05.000Z",
+    "status": 10,
+    "errors": "Machine IP: 192.0.2.10"
+  },
+  {
+    "drive_account_id": 42,
+    "email_account_id": 402,
+    "gd_tenant": "C0example",
+    "gd_drive_type": "g_drive",
+    "file_count": 5,
+    "storage": 300,
+    "last_backup": "2026-10-27T04:00:00.000Z",
+    "added_on": "2025-01-02T03:04:05.000Z",
+    "status": 7,
+    "errors": "{\"skipped_gdrive\":[{\"item_id\":\"abc\",\"account_id\":42,\"name\":\"file.bin\"}]}"
+  },
+  {
+    "drive_account_id": 43,
+    "email_account_id": 403,
+    "gd_tenant": "C0example",
+    "gd_drive_type": "g_drive",
+    "file_count": 0,
+    "storage": 0,
+    "last_backup": "2026-10-27T04:00:00.000Z",
+    "added_on": "2025-01-02T03:04:05.000Z",
+    "status": 10,
+    "errors": null
+  }
+]

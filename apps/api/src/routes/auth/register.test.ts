@@ -180,6 +180,60 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
     );
   });
 
+  it('parks the signup intent server-side without a purchaseSelection key', async () => {
+    const res = await postRegisterPartner({ ...VALID_BODY, signupIntent: { intent: 'wisp', offer: 'founding' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'wisp', offer: 'founding' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the cloud intent when the client sends no intent fields', async () => {
+    await postRegisterPartner(VALID_BODY);
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
+  });
+
+  it('maps a legacy launch purchaseSelection to the cloud intent', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(200);
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
+  });
+
+  it('prefers signupIntent when both signupIntent and a legacy purchaseSelection are sent', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    await postRegisterPartner({ ...VALID_BODY, purchaseSelection, signupIntent: { intent: 'wisp', offer: 'founding' } });
+    expect(vi.mocked(createPendingRegistration).mock.calls[0]![0].signupIntent).toEqual({ intent: 'wisp', offer: 'founding' });
+  });
+
+  it.each([
+    { intent: 'hosting' },
+    { intent: 'cloud', offer: 'Bad Offer' },
+    { intent: 'cloud', price: 1 },
+    {}, null,
+  ])('rejects an invalid signupIntent before parking it: %j', async (signupIntent) => {
+    const res = await postRegisterPartner({ ...VALID_BODY, signupIntent });
+    expect(res.status).toBe(400);
+    expect(createPendingRegistration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' },
+    { catalogVersion: 'old', capacity: 250, billingPeriod: 'monthly' },
+    { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_client' },
+    {}, null,
+  ])('rejects an invalid legacy purchaseSelection before parking it: %j', async (purchaseSelection) => {
+    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(400);
+    expect(createPendingRegistration).not.toHaveBeenCalled();
+  });
+
   it('enqueues the verification job with the token HASH, never the raw token', async () => {
     await postRegisterPartner(VALID_BODY);
     const [arg] = vi.mocked(enqueueRegistrationVerification).mock.calls[0]!;

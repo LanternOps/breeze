@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildVulnQuery, bulkSummary } from './vulnerabilities';
+import { buildVulnQuery, bulkSummary, remediateSummary } from './vulnerabilities';
 
 describe('buildVulnQuery', () => {
   it('serializes set params, drops empty/false/undefined, and URL-encodes', () => {
@@ -43,5 +43,25 @@ describe('bulkSummary', () => {
     expect(summary).toContain('1 site access denied');
     // Full form: succeeded verb, total skipped, then the distinct-reason breakdown.
     expect(summary).toBe('20 accepted, 3 skipped — 2 finding not found, 1 site access denied');
+  });
+});
+
+describe('remediateSummary (#9533)', () => {
+  it('counts installs, not findings — several CVEs on a device share one install', () => {
+    expect(
+      remediateSummary({ scheduled: 3, installs: 1, alreadyQueued: [], skipped: [{ id: 'd', reason: 'no_available_patch' }] }),
+    ).toBe('Scheduled 1 install covering 3 findings; 1 skipped — 1 no available patch');
+  });
+
+  it('pluralizes and names findings that rode an install already queued', () => {
+    expect(remediateSummary({ scheduled: 4, installs: 2, alreadyQueued: ['a', 'b'], skipped: [] })).toBe(
+      'Scheduled 2 installs covering 4 findings (2 already queued)',
+    );
+  });
+
+  it('says nothing was scheduled instead of "0 installs covering 0 findings"', () => {
+    expect(
+      remediateSummary({ scheduled: 0, installs: 0, alreadyQueued: [], skipped: [{ id: 'a', reason: 'no_available_patch' }] }),
+    ).toBe('Nothing scheduled; 1 skipped — 1 no available patch');
   });
 });

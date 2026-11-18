@@ -10,5 +10,8 @@ pub mod consent;
 pub mod desktop;
 pub mod envelope;
 pub mod message;
+pub mod notifications;
+pub mod prompt;
+pub mod server_identity_unix;
 pub mod token;
 pub mod transport;

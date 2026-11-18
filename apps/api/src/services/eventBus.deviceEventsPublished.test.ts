@@ -10,7 +10,7 @@ const BUS = resolve(__dirname, 'eventBus.ts');
 // Declared + documented but not yet published — tracked separately from #9121.
 // Do NOT add to this list; publish the event or drop the type. The self-check
 // below fails once an entry is published or undeclared, forcing its removal.
-const KNOWN_UNPUBLISHED = new Set(['device.enrolled']);
+const KNOWN_UNPUBLISHED = new Set<string>();
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {

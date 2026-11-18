@@ -3,32 +3,23 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { quotes, quoteBlocks, quoteLines, quoteRecipients, quoteAcceptances } from '../../db/schema/quotes';
-import { partners } from '../../db/schema/orgs';
-import { portalBranding } from '../../db/schema/portal';
+import { quotes, quoteBlocks, quoteRecipients, quoteAcceptances } from '../../db/schema/quotes';
 import { acceptQuoteSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
 import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
 import { createQuotePayLink } from '../../services/quotePay';
-import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
-import { loadContractBlockRenderData, loadContractPdfInputs } from '../../services/contractTemplateRender';
+import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 import { assembleCustomerQuoteDocument } from '../../services/customerQuoteDocument';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
+import { renderCustomerQuotePdf, customerQuotePdfFilename } from '../../services/customerQuotePdf';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
-import { safeContentDispositionFilename } from '../../utils/httpHeaders';
-import { buildSellerSnapshot } from '../../services/sellerSnapshot';
-import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
-import { resolvePartnerDocumentLocale } from '../../services/documentLocale';
-import { resolveDocumentFooter } from '../../services/documentFooter';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
-import { resolveDocumentBrand } from '../../services/partnerDocumentBrand';
 
 export const quoteRoutes = new Hono();
 quoteRoutes.use('*', portalFinancialMutationGuard);
@@ -97,88 +88,16 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   }
 });
 
-// GET /quotes/:id/pdf
+// GET /quotes/:id/pdf — the shared customer PDF (also behind the public link's
+// Download PDF, #9860), rendered on this request's org context.
 quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
   try {
-  const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
-  if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
-  const blocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
-  const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-  // Same totals sweep as GET /quotes/:id: derive the amount due on acceptance
-  // (one-time only, tax-inclusive) + per-category subtotals so the PDF's
-  // "Remaining balance" line matches the portal detail view instead of falling
-  // back to renderQuotePdf's oneTimeTotal default (tax-exclusive on taxed
-  // deposit quotes).
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
-  // partners is a partner-axis RLS table — the portal request runs in ORG scope,
-  // where breeze_has_partner_access is false. A bare read returns 0 rows with NO
-  // error (the #1375 class), causing buildSellerSnapshot(undefined) to produce an
-  // all-null From block on legacy quotes whose seller_snapshot is NULL. Read under
-  // SYSTEM scope, exactly like the sibling portal/invoices.ts pay/settle paths do.
-  const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({
-      name: partners.name,
-      billingCompanyName: partners.billingCompanyName,
-      billingEmail: partners.billingEmail,
-      billingPhone: partners.billingPhone,
-      billingWebsite: partners.billingWebsite,
-      billingAddressLine1: partners.billingAddressLine1,
-      billingAddressLine2: partners.billingAddressLine2,
-      billingAddressCity: partners.billingAddressCity,
-      billingAddressRegion: partners.billingAddressRegion,
-      billingAddressPostalCode: partners.billingAddressPostalCode,
-      billingAddressCountry: partners.billingAddressCountry,
-      invoiceFooter: partners.invoiceFooter,
-      currencyCode: partners.currencyCode,
-      documentTheme: partners.documentTheme,
-      documentPageSize: partners.documentPageSize,
-      settings: partners.settings,
-    }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
-  ));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
-  const loadImage = async (imageId: string) => { const img = await readQuoteImage(imageId, id); return img ? { data: img.data } : null; };
-  const { renderQuotePdf } = await import('../../services/quotePdf');
-  // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
-  // the From block still renders (issued docs use the frozen column).
-  const quoteForRender = {
-    ...quote,
-    sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null),
-    dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal,
-    // Derived deposit figure — authoritative over the persisted depositAmount
-    // column (selected_lines deposits derive from flagged lines).
-    depositDueTotal: totals.depositDueTotal,
-    categoryBreakdown: totals.categoryBreakdown,
-  };
-  // Pre-fetch the same render data Task 13's portal detail route uses
-  // (system-context read of pinned template versions) and shape it for the
-  // renderer: substituted HTML per authored contract block, plus any uploaded
-  // contract PDFs to append after rendering (pdfkit can't draw an existing
-  // PDF's pages — see pdfMerge.ts).
-  // Takes quoteForRender (not the raw row) so {{client.name}}/{{seller.*}} resolve
-  // from the same overlaid fields the page renderer uses — the portal only serves
-  // frozen (sent+) quotes today, but the admin draft-PDF route shipped exactly
-  // this raw-vs-overlaid split as a blank {{client.name}} in contract text.
-  // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
-  // sent quote's frozen presentation always wins over the partner's live
-  // theme/pageSize columns.
-  const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
-  const branding = {
-    partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
-    footer: resolveDocumentFooter({ documentTerms: quote.terms, partnerFooter: partner?.invoiceFooter ?? null, brandingFooter: brand?.footerText ?? null }), currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-    theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
-    // Send-time locale snapshot → partner language → 'en' (#3777).
-    locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
-  };
-  // Same `branding.locale` the page renderer uses, so contract totals and the
-  // quote summary on the same PDF never disagree (#3777).
-  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender, branding.locale);
-  const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, undefined, contractRenderData);
-  const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
-  const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
-  const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
-  return new Response(new Uint8Array(finalPdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(finalPdf.length) } });
+    const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
+    if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    const finalPdf = await renderCustomerQuotePdf(quote);
+    const filename = customerQuotePdfFilename(quote);
+    return new Response(new Uint8Array(finalPdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(finalPdf.length) } });
   } catch (err) {
     // A legacy encrypted/corrupt uploaded contract PDF surfaces as a typed 4xx here
     // (matching the admin route's handleServiceError) instead of an uncaught 500.

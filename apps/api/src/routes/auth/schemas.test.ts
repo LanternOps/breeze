@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource, forceRebootStepUpResource, deviceReattachStepUpResource } from './schemas';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
@@ -111,6 +111,17 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
+  // #10650: removing the authenticator app is provable by a passkey or the
+  // authenticator itself. A recovery code can only ever mint delete_passkey;
+  // SMS is refused by the /mfa/step-up handler (it is a valid schema shape).
+  it('accepts remove_totp for totp and passkey, never for a recovery code', () => {
+    expect(mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'remove_totp' }).operation).toBe('remove_totp');
+    expect(mfaStepUpSchema.parse({ method: 'passkey', credential: { id: 'cred-1' }, operation: 'remove_totp' }).operation).toBe('remove_totp');
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'recovery', code: 'ABCD-1234', operation: 'remove_totp', passkeyId: '10000000-0000-4000-8000-000000000009' })
+    ).toThrow();
+  });
+
   // #4018: enroll_first_factor is a REAL StepUpOperation, so the `satisfies`
   // constraint on STEP_UP_OPERATIONS would happily accept it being added to
   // the client-requestable list — nothing in the type system stops that. But
@@ -203,9 +214,62 @@ describe('mfaStepUpSchema operation field', () => {
     ['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test', mode: 'reauthorize' }],
     ['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
       settings: { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD', reminderRepeatDays: null } }],
+    ['device_force_reboot', { deviceId: '00000000-0000-4000-8000-000000000050' }],
   ] as const)('accepts %s with its resource binding, unchanged', (operation, resource) => {
     const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
     expect(parsed.operation).toBe(operation);
+    expect(parsed.resource).toEqual(resource);
+  });
+
+  // #8318 §8: the reattach binding parses whole through the coarse union (it
+  // is first and strict, so no other member swallows or trims it).
+  const reattachResource = {
+    sourceDeviceId: '00000000-0000-4000-8000-000000000060',
+    targetDeviceId: '00000000-0000-4000-8000-000000000061',
+    targetVersion: 'a'.repeat(43),
+    evidenceLevel: 'hint',
+    restoreDecommissioned: true,
+  } as const;
+
+  it('accepts device_reattach with its resource binding, unchanged', () => {
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'device_reattach', resource: reattachResource });
+    expect(parsed.operation).toBe('device_reattach');
+    expect(parsed.resource).toEqual(reattachResource);
+  });
+
+  it.each([
+    ['an extra key', { ...reattachResource, targetOrgId: '00000000-0000-4000-8000-000000000062' }],
+    ['a non-uuid source', { ...reattachResource, sourceDeviceId: 'nope' }],
+    ['a raw agent id instead of the opaque version', { ...reattachResource, targetVersion: undefined, targetAgentId: 'a'.repeat(64) }],
+    ['a version that is not a MAC', { ...reattachResource, targetVersion: 'short' }],
+    ['an unknown evidence level', { ...reattachResource, evidenceLevel: 'tpm' }],
+    ['no restore choice', { ...reattachResource, restoreDecommissioned: undefined }],
+  ])('rejects a device_reattach binding with %s', (_label, resource) => {
+    expect(deviceReattachStepUpResource.safeParse(resource).success).toBe(false);
+  });
+
+  // #9380 review: pin `.strict()` on the force-reboot binding directly. The
+  // union-order test below cannot do it: that one passes if EITHER the member
+  // order or the strictness protects the richer bindings, so it stays green
+  // when only `.strict()` is removed. Both tests are load-bearing — this one
+  // for strictness, the one below for position — so neither is redundant.
+  it('rejects a force-reboot binding that carries any key besides deviceId', () => {
+    expect(forceRebootStepUpResource.safeParse({ deviceId: '00000000-0000-4000-8000-000000000010' }).success).toBe(true);
+    expect(forceRebootStepUpResource.safeParse({
+      deviceId: '00000000-0000-4000-8000-000000000010',
+      targetOrgId: '00000000-0000-4000-8000-000000000020',
+    }).success).toBe(false);
+  });
+
+  // #8729: the force-reboot binding is a bare { deviceId }. It is strict and
+  // last in the union, so a richer device binding never collapses onto it.
+  it('keeps a move-org resource whole now that a { deviceId }-only binding exists', () => {
+    const resource = {
+      deviceId: '00000000-0000-4000-8000-000000000010',
+      targetOrgId: '00000000-0000-4000-8000-000000000020',
+      targetSiteId: '00000000-0000-4000-8000-000000000030',
+    };
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'device_move_org', resource });
     expect(parsed.resource).toEqual(resource);
   });
 

@@ -26,6 +26,22 @@ import {
   type AiOperatorExecutionRefKind,
 } from '../../db/schema/aiOperatorTasks';
 import { captureException } from '../sentry';
+import { TEMP_PASSWORD_ENC_KEY, TEMP_PASSWORD_LEGACY_KEY } from '../actionIntents/resultSecrets';
+
+/**
+ * Credential keys of a secret-bearing result. They live ONLY on
+ * `action_intents.result`, where the one-time reveal and the expiry reaper
+ * burn them; nothing ever burns the operation row, so they are never copied
+ * onto it. Markers (`…Revealed`, `…Expired`, `…SealFailed`) carry no secret.
+ */
+const SEALED_SECRET_RESULT_KEYS: readonly string[] = [TEMP_PASSWORD_ENC_KEY, TEMP_PASSWORD_LEGACY_KEY];
+
+function withoutSealedSecrets(result: Record<string, unknown>): Record<string, unknown> {
+  if (!SEALED_SECRET_RESULT_KEYS.some((k) => Object.hasOwn(result, k))) return result;
+  const copy = { ...result };
+  for (const k of SEALED_SECRET_RESULT_KEYS) delete copy[k];
+  return copy;
+}
 
 /** Mirrors `ai_operator_operations_result_size_chk` (pg_column_size <= 64 KiB). */
 const MAX_OPERATION_RESULT_BYTES = 48 * 1024;
@@ -310,7 +326,7 @@ export async function recordOperationResult(input: RecordOperationResultInput): 
       .update(aiOperatorOperations)
       .set({
         resultState: input.resultState,
-        result: boundedResult(input.result),
+        result: boundedResult(withoutSealedSecrets(input.result)),
         resultAt: new Date(),
         ...(input.executionRef
           ? { executionRefKind: input.executionRef.kind, executionRefId: input.executionRef.id }

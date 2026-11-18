@@ -95,7 +95,9 @@
     "high": "Alta",
     "medium": "Media",
     "low": "Bassa",
-    "unknown": "Sconosciuta"
+    "unknown": "Sconosciuta",
+    "unscored": "Senza punteggio",
+    "unscoredTitle": "Per questa CVE non è ancora stato pubblicato un punteggio di gravità NVD."
   },
   "softwareGroupDrawer": {
     "titleFallback": "Gruppo software",
@@ -190,7 +192,8 @@
       "patch": "Patch"
     },
     "help": {
-      "riskAria": "Informazioni sul punteggio di rischio"
+      "riskAria": "Informazioni sul punteggio di rischio",
+      "patchAria": "Informazioni sulla colonna Patch"
     },
     "actions": {
       "openDetailsAria": "Apri i dettagli delle vulnerabilità di {{name}}"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Patch pronta",
-        "detail": "{{count}} rilevamenti aperti con una patch disponibile",
-        "detail_one": "{{count}} rilevamento aperto con una patch disponibile",
-        "detail_other": "{{count}} rilevamenti aperti con una patch disponibile"
+        "detail": "{{count}} rilevamenti aperti con una patch approvata pronta da installare",
+        "detail_one": "{{count}} rilevamento aperto con una patch approvata pronta da installare",
+        "detail_other": "{{count}} rilevamenti aperti con una patch approvata pronta da installare"
       },
       "acceptedExpiring": {
         "label": "Accettati, in scadenza a breve",
@@ -350,13 +353,15 @@
       "cvssAria": "Informazioni sul punteggio CVSS",
       "riskAria": "Informazioni sul punteggio di rischio",
       "epssAria": "Informazioni sul punteggio EPSS",
-      "kevAria": "Informazioni sul flag KEV"
+      "kevAria": "Informazioni sul flag KEV",
+      "patchAria": "Informazioni sulla colonna Patch"
     },
     "actions": {
       "openDetailsAria": "Apri i dettagli di {{cveId}}"
     },
     "patch": {
-      "ready": "Pronta"
+      "ready": "Pronta",
+      "update": "Aggiorna all'ultima versione"
     },
     "hasMore": "Sono mostrate le prime 500 CVE per rischio — restringi i filtri per vedere le altre."
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Boxes,
@@ -21,6 +21,15 @@ import { formatDateTime } from "@/lib/dateTimeFormat";
 import LinkSubscriptionPicker from "./LinkSubscriptionPicker";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
+import { SuggestionChip } from "./matching/SuggestionChip";
+import { SuggestedMatchReviewModal } from "./matching/SuggestedMatchReviewModal";
+import {
+  buildReviewLists,
+  type Pax8CompanySuggestion,
+  type Pax8MappingSummary,
+} from "./matching/pax8Suggestions";
+import { waitForSyncCompletion } from "./pax8SyncPoll";
 
 // ── Types mirrored from apps/api/src/routes/pax8.ts ────────────────────────
 interface Pax8Integration {
@@ -49,6 +58,8 @@ interface Pax8Company {
   ignored: boolean;
   lastSeenAt: string | null;
   updatedAt: string | null;
+  firstSeenAt?: string | null;
+  suggestion?: Pax8CompanySuggestion | null;
 }
 
 interface Pax8Subscription {
@@ -113,6 +124,14 @@ export default function Pax8Integration() {
   const [orgOptions, setOrgOptions] = useState<OrgOption[]>([]);
   const [mappingCompanyId, setMappingCompanyId] = useState<string | null>(null);
   const [linkingSub, setLinkingSub] = useState<Pax8Subscription | null>(null);
+  const [summary, setSummary] = useState<Pax8MappingSummary | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [staleNotice, setStaleNotice] = useState(false);
+  const [newSinceSync, setNewSinceSync] = useState(0);
+  const syncAbortRef = useRef<AbortController | null>(null);
+
+  // Cancel any in-flight sync poll on unmount.
+  useEffect(() => () => syncAbortRef.current?.abort(), []);
 
   const claims = getJwtClaims();
   const isOrgScoped = claims.scope === "organization";
@@ -165,8 +184,16 @@ export default function Pax8Integration() {
     ]);
     const companiesJson = await companiesRes.json().catch(() => ({}));
     const subsJson = await subsRes.json().catch(() => ({}));
-    if (companiesRes.ok)
-      setCompanies((companiesJson as { data?: Pax8Company[] }).data ?? []);
+    let loadedCompanies: Pax8Company[] | null = null;
+    if (companiesRes.ok) {
+      const body = companiesJson as {
+        data?: Pax8Company[];
+        summary?: Pax8MappingSummary;
+      };
+      loadedCompanies = body.data ?? [];
+      setCompanies(loadedCompanies);
+      setSummary(body.summary ?? null);
+    }
     if (subsRes.ok)
       setSubscriptions((subsJson as { data?: Pax8Subscription[] }).data ?? []);
     try {
@@ -175,7 +202,27 @@ export default function Pax8Integration() {
     } catch {
       // Preserve prior behavior: a failed org fetch leaves orgOptions as-is.
     }
+    return loadedCompanies;
   }, []);
+
+  /**
+   * Re-read companies after a mutation that already succeeded. A failed or
+   * non-OK refresh must never surface as a failed mutation: warn instead.
+   */
+  const refreshAfterMutation = useCallback(async () => {
+    let loaded: Pax8Company[] | null = null;
+    try {
+      loaded = await fetchCompaniesAndSubs();
+    } catch {
+      loaded = null;
+    }
+    if (loaded === null) {
+      showToast({
+        type: "warning",
+        message: t("pax8Integration.companiesRefreshFailed"),
+      });
+    }
+  }, [fetchCompaniesAndSubs]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -283,7 +330,17 @@ export default function Pax8Integration() {
   }, []);
 
   const handleSync = useCallback(async () => {
+    if (syncAbortRef.current) return; // a sync poll is already running
+    const controller = new AbortController();
+    syncAbortRef.current = controller;
     setSyncing(true);
+    setNewSinceSync(0);
+    // Snapshot first: the worker can finish before the enqueue response lands.
+    const before = {
+      lastSyncAt: integration?.lastSyncAt ?? null,
+      updatedAt: integration?.updatedAt ?? null,
+    };
+    const knownIds = new Set(companies.map((c) => c.pax8CompanyId));
     try {
       await runAction({
         request: () =>
@@ -295,24 +352,53 @@ export default function Pax8Integration() {
         successMessage: t("pax8Integration.pax8SyncScheduled"),
         onUnauthorized: UNAUTHORIZED,
       });
-      // Re-load to surface lastSync* once the worker finishes; the immediate
-      // re-fetch may still show the prior status (sync runs in the background).
+      // The sync runs in a worker; wait for lastSyncAt to move before re-reading.
+      const finished = await waitForSyncCompletion({
+        before,
+        signal: controller.signal,
+        read: async () => {
+          const res = await fetchWithAuth("/pax8/integration");
+          if (!res.ok) return null;
+          const json = (await res.json().catch(() => ({}))) as {
+            data?: Pax8Integration | null;
+          };
+          return json.data ?? null;
+        },
+      });
+      if (controller.signal.aborted) return;
+      if (!finished) {
+        showToast({
+          type: "warning",
+          message: t("pax8Integration.syncStillRunning"),
+        });
+      }
       await fetchIntegration();
-      await fetchCompaniesAndSubs();
+      const loaded = await fetchCompaniesAndSubs();
+      if (controller.signal.aborted) return;
+      if (finished && loaded) {
+        setNewSinceSync(
+          loaded.filter((c) => !knownIds.has(c.pax8CompanyId)).length,
+        );
+      }
     } catch (err) {
       if (isMfaError(err)) setLoadError(t("pax8Integration.mfaRequiredHint"));
       handleActionError(err, t("pax8Integration.failedToScheduleAPax8Sync"));
     } finally {
-      setSyncing(false);
+      if (syncAbortRef.current === controller) syncAbortRef.current = null;
+      if (!controller.signal.aborted) setSyncing(false);
     }
-  }, [fetchIntegration, fetchCompaniesAndSubs]);
+  }, [integration, companies, fetchIntegration, fetchCompaniesAndSubs]);
 
   const mapCompany = useCallback(
-    async (company: Pax8Company, orgId: string | null) => {
+    async (
+      company: Pax8Company,
+      orgId: string | null,
+      source?: "manual" | "suggestion",
+    ) => {
       if (!integration) return;
       setMappingCompanyId(company.pax8CompanyId);
       try {
-        const result = await runAction<{ data: Pax8Company }>({
+        await runAction({
           request: () =>
             fetchWithAuth("/pax8/companies/map", {
               method: "POST",
@@ -320,6 +406,7 @@ export default function Pax8Integration() {
                 integrationId: integration.id,
                 pax8CompanyId: company.pax8CompanyId,
                 orgId,
+                ...(source ? { source } : {}),
               }),
             }),
           errorFallback: t("pax8Integration.failedToMapThePax8Company"),
@@ -328,19 +415,123 @@ export default function Pax8Integration() {
             : t("pax8Integration.companyUnmapped"),
           onUnauthorized: UNAUTHORIZED,
         });
-        const mapped = result.data;
-        setCompanies((prev) =>
-          prev.map((c) =>
-            c.pax8CompanyId === company.pax8CompanyId ? { ...c, ...mapped } : c,
-          ),
-        );
       } catch (err) {
         handleActionError(err, t("pax8Integration.failedToMapThePax8Company"));
+        setMappingCompanyId(null);
+        return;
+      }
+      // Re-read: the server decides the row's final shape (mappedOrgId,
+      // suggestion, summary), so never merge the POST response locally.
+      try {
+        await refreshAfterMutation();
       } finally {
         setMappingCompanyId(null);
       }
     },
-    [integration],
+    [integration, refreshAfterMutation],
+  );
+
+  const { items: reviewItems, blocked: reviewBlocked } = useMemo(
+    () => buildReviewLists(companies),
+    [companies],
+  );
+
+  /** Ambiguous rows only offer their candidates; a currently mapped org stays selectable. */
+  const optionsFor = (company: Pax8Company): OrgOption[] => {
+    const s = company.suggestion;
+    if (!s || s.status !== "ambiguous") return orgOptions;
+    const allowed = new Set(s.candidates.map((c) => c.orgId));
+    if (company.mappedOrgId) allowed.add(company.mappedOrgId);
+    return orgOptions.filter((o) => allowed.has(o.id));
+  };
+
+  const renderChip = (company: Pax8Company) => {
+    const s = company.suggestion;
+    if (!s || company.mappedOrgId) return null;
+    const testId = `pax8-company-suggestion-${company.pax8CompanyId}`;
+    const detail = t("externalMatch.matchedOn", { key: s.matchKey });
+    return (
+      <div className="mb-1">
+        {s.status === "match" && (
+          <SuggestionChip
+            testId={testId}
+            label={t("externalMatch.suggested", { target: s.orgName })}
+            detail={detail}
+            disabled={mappingCompanyId === company.pax8CompanyId}
+            onAccept={() => void mapCompany(company, s.orgId, "suggestion")}
+          />
+        )}
+        {s.status === "ambiguous" && (
+          <SuggestionChip
+            testId={testId}
+            label={t("externalMatch.possibleMatches", { count: s.candidates.length })}
+            detail={detail}
+          />
+        )}
+        {s.status === "contested" && (
+          <SuggestionChip
+            testId={testId}
+            label={t("externalMatch.alsoMatches", {
+              names: s.contestedWith
+                .map((w) => w.pax8CompanyName ?? w.pax8CompanyId)
+                .join(", "),
+            })}
+            detail={detail}
+          />
+        )}
+      </div>
+    );
+  };
+
+  const confirmBulk = useCallback(
+    async (keys: string[]) => {
+      if (!integration) return;
+      const orgByCompany = new Map(
+        reviewItems.map((i) => {
+          const s = companies.find((c) => c.pax8CompanyId === i.key)?.suggestion;
+          return [i.key, s && s.status === "match" ? s.orgId : null] as const;
+        }),
+      );
+      const items = keys.flatMap((key) => {
+        const orgId = orgByCompany.get(key);
+        return orgId
+          ? [{ pax8CompanyId: key, orgId, expectedOrgId: null }]
+          : [];
+      });
+      setStaleNotice(false);
+      try {
+        await runAction({
+          request: () =>
+            fetchWithAuth("/pax8/companies/map-bulk", {
+              method: "POST",
+              body: JSON.stringify({ integrationId: integration.id, items }),
+            }),
+          errorFallback: t("pax8Integration.failedToMapThePax8Company"),
+          successMessage: t("externalMatch.bulkMapped", { count: items.length }),
+          onUnauthorized: UNAUTHORIZED,
+          // The stale-review outcome gets its own notice; avoid a second toast.
+          suppressErrorToast: (status, code) =>
+            status === 409 && code === "STALE_REVIEW",
+        });
+        setReviewOpen(false);
+      } catch (err) {
+        if (
+          err instanceof ActionError &&
+          err.status === 409 &&
+          err.code === "STALE_REVIEW"
+        ) {
+          setStaleNotice(true);
+          showToast({ type: "warning", message: t("externalMatch.staleReview") });
+          // Reload and keep the modal open on the fresh rows.
+          await refreshAfterMutation();
+          return;
+        }
+        handleActionError(err, t("pax8Integration.failedToMapThePax8Company"));
+        return;
+      }
+      await refreshAfterMutation();
+    },
+    [integration, companies, reviewItems, refreshAfterMutation],
   );
 
   const unlinkSubscription = useCallback(
@@ -420,14 +611,10 @@ export default function Pax8Integration() {
   if (isOrgScoped) {
     return (
       <div className="space-y-6" data-testid="pax8-panel">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Boxes className="h-5 w-5" />
-          </div>
-          <h1 className="text-2xl font-semibold">
-            {t("pax8Integration.pax8")}
-          </h1>
-        </div>
+        <IntegrationPanelHeader
+          icon={<Boxes className="h-4 w-4" />}
+          title={t("pax8Integration.pax8")}
+        />
         <p
           className="text-center text-sm text-muted-foreground"
           data-testid="pax8-org-scope"
@@ -462,40 +649,34 @@ export default function Pax8Integration() {
   return (
     <div className="space-y-6" data-testid="pax8-panel">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Boxes className="h-5 w-5" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("pax8Integration.pax8")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "pax8Integration.connectPax8ToSyncCompaniesAndLicenseSubscriptions",
-            )}
-          </p>
-        </div>
-        {isConfigured ? (
-          <span
-            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
-            data-testid="pax8-status-connected"
-          >
-            <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
-          </span>
-        ) : (
-          <span
-            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
-            data-testid="pax8-status-disconnected"
-          >
-            <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
-          </span>
+      <IntegrationPanelHeader
+        icon={<Boxes className="h-4 w-4" />}
+        title={t("pax8Integration.pax8")}
+        description={t(
+          "pax8Integration.connectPax8ToSyncCompaniesAndLicenseSubscriptions",
         )}
-      </div>
+        actions={
+          isConfigured ? (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
+              data-testid="pax8-status-connected"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
+              data-testid="pax8-status-disconnected"
+            >
+              <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
+            </span>
+          )
+        }
+      />
 
       {loadError && (
         <div
-          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+          className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
           data-testid="pax8-load-error"
         >
           {loadError}
@@ -742,12 +923,65 @@ export default function Pax8Integration() {
           className="rounded-xl border bg-card p-6 shadow-xs"
           data-testid="pax8-companies"
         >
-          <h2 className="text-lg font-semibold">
-            {t("pax8Integration.companyMapping")}
-          </h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold">
+              {t("pax8Integration.companyMapping")}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              {summary && (
+                <span
+                  className="rounded-full border bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground"
+                  data-testid="pax8-mapping-summary"
+                >
+                  {t("externalMatch.summary", {
+                    unmapped: summary.unmapped,
+                    suggested: summary.suggested,
+                  })}
+                </span>
+              )}
+              {reviewItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStaleNotice(false);
+                    setReviewOpen(true);
+                  }}
+                  className="h-8 rounded-md border px-3 text-xs font-medium hover:bg-muted"
+                  data-testid="pax8-review-suggestions"
+                >
+                  {t("externalMatch.reviewButton", { count: reviewItems.length })}
+                </button>
+              )}
+            </div>
+          </div>
           <p className="mb-4 text-sm text-muted-foreground">
             {t("pax8Integration.mapEachPax8CompanyToABreezeOrganization")}
           </p>
+          {newSinceSync > 0 && (
+            <p
+              className="mb-3 text-sm text-foreground"
+              data-testid="pax8-sync-new-companies"
+            >
+              {t("externalMatch.newSinceSync", { count: newSinceSync })}
+            </p>
+          )}
+          {staleNotice && (
+            <p
+              role="status"
+              className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+              data-testid="pax8-review-stale"
+            >
+              {t("externalMatch.staleReview")}
+            </p>
+          )}
+          <SuggestedMatchReviewModal
+            open={reviewOpen}
+            items={reviewItems}
+            blocked={reviewBlocked}
+            onConfirm={confirmBulk}
+            onClose={() => setReviewOpen(false)}
+            testIdPrefix="pax8"
+          />
           {companies.length === 0 ? (
             <p
               className="text-sm text-muted-foreground"
@@ -788,6 +1022,7 @@ export default function Pax8Integration() {
                       {company.status ?? "—"}
                     </td>
                     <td className="px-3 py-2">
+                      {renderChip(company)}
                       <select
                         value={company.mappedOrgId ?? ""}
                         disabled={mappingCompanyId === company.pax8CompanyId}
@@ -801,7 +1036,7 @@ export default function Pax8Integration() {
                         <option value="">
                           {t("pax8Integration.unmapped")}
                         </option>
-                        {orgOptions.map((org) => (
+                        {optionsFor(company).map((org) => (
                           <option key={org.id} value={org.id}>
                             {org.name}
                           </option>

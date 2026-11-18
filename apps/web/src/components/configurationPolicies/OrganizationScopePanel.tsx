@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import PartnerGroupAssignmentSection from "./PartnerGroupAssignmentSection";
 import { Search } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { runAction, ActionError } from "@/lib/runAction";
 import {
   AssignmentFilterBadges,
   AssignmentRoleOsFilters,
@@ -39,7 +41,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 // (a single partner-level assignment) and a subset (N organization-level
 // assignments) are mutually exclusive: turning on All orgs removes per-org
 // rows; checking any org removes the partner row. Role/OS filters ride on
-// those assignment rows. Site/group/device levels stay API-only.
+// those assignment rows. Device groups are assigned separately below.
 //
 // This panel fetches its OWN paginated, server-searched org list (never the
 // nav org store, which silently truncates at 50) — see #2285 review: a
@@ -231,14 +233,30 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
       cancelled = true;
     };
   }, [orgAssignmentByOrgId, orgsById, assignedOrgNames]);
-  const post = (body: Record<string, unknown>) =>
-    fetchWithAuth(`/configuration-policies/${policyId}/assignments`, {
-      method: "POST",
-      body: JSON.stringify(body),
+  // Every mutation goes through runAction: it toasts the outcome and throws an
+  // ActionError (already toasted) that `run` surfaces in the inline banner.
+  const post = (
+    body: Record<string, unknown>,
+    errorFallback: string,
+    successMessage?: string,
+  ) =>
+    runAction({
+      request: () =>
+        fetchWithAuth(`/configuration-policies/${policyId}/assignments`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+      errorFallback,
+      ...(successMessage ? { successMessage } : {}),
     });
-  const del = (aid: string) =>
-    fetchWithAuth(`/configuration-policies/${policyId}/assignments/${aid}`, {
-      method: "DELETE",
+  const del = (aid: string, errorFallback: string, successMessage?: string) =>
+    runAction({
+      request: () =>
+        fetchWithAuth(`/configuration-policies/${policyId}/assignments/${aid}`, {
+          method: "DELETE",
+        }),
+      errorFallback,
+      ...(successMessage ? { successMessage } : {}),
     });
   const run = async (id: string, fn: () => Promise<void>) => {
     setBusyId(id);
@@ -246,6 +264,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
     try {
       await fn();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       await fetchAssignments();
@@ -256,90 +275,43 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
     run("__all__", async () => {
       if (allOrgs) {
         if (partnerAssignment) {
-          const r = await del(partnerAssignment.id);
-          if (!r.ok)
-            throw new Error(
-              extractApiError(
-                await r.json().catch(() => null),
-                i18n.t(
-                  "policies:configurationPolicies.organizationScopePanel.failedToRemove",
-                ),
-              ),
-            );
+          await del(partnerAssignment.id, i18n.t("policies:configurationPolicies.organizationScopePanel.failedToRemove"), i18n.t("policies:configurationPolicies.organizationScopePanel.removedFromAllOrgs"));
         }
       } else {
         // Clear any per-org rows first, then apply partner-wide.
         for (const a of orgAssignmentByOrgId.values()) {
-          const r = await del(a.id);
-          if (!r.ok)
-            throw new Error(
-              extractApiError(
-                await r.json().catch(() => null),
-                i18n.t(
-                  "policies:configurationPolicies.organizationScopePanel.failedToRemove2",
-                ),
-              ),
-            );
+          await del(a.id, i18n.t("policies:configurationPolicies.organizationScopePanel.failedToRemove2"));
         }
-        const r = await post({
-          level: "partner",
-          priority: 0,
-          ...assignmentFilterPayload(roleFilter, osFilter),
-        }); // server derives targetId (#1724)
-        if (!r.ok)
-          throw new Error(
-            extractApiError(
-              await r.json().catch(() => null),
-              i18n.t(
-                "policies:configurationPolicies.organizationScopePanel.failedToAssignAllOrgs",
-              ),
-            ),
-          );
+        await post(
+          {
+            level: "partner",
+            priority: 0,
+            ...assignmentFilterPayload(roleFilter, osFilter),
+          }, // server derives targetId (#1724)
+          i18n.t("policies:configurationPolicies.organizationScopePanel.failedToAssignAllOrgs"),
+          i18n.t("policies:configurationPolicies.organizationScopePanel.appliedToAllOrgs"),
+        );
       }
     });
   const toggleOrg = (orgId: string) =>
     run(orgId, async () => {
       const existing = orgAssignmentByOrgId.get(orgId);
       if (existing) {
-        const r = await del(existing.id);
-        if (!r.ok)
-          throw new Error(
-            extractApiError(
-              await r.json().catch(() => null),
-              i18n.t(
-                "policies:configurationPolicies.organizationScopePanel.failedToRemove3",
-              ),
-            ),
-          );
+        await del(existing.id, i18n.t("policies:configurationPolicies.organizationScopePanel.failedToRemove3"));
       } else {
         // Checking a specific org drops the all-orgs row so the two never coexist.
         if (partnerAssignment) {
-          const r = await del(partnerAssignment.id);
-          if (!r.ok)
-            throw new Error(
-              extractApiError(
-                await r.json().catch(() => null),
-                i18n.t(
-                  "policies:configurationPolicies.organizationScopePanel.failedToNarrow",
-                ),
-              ),
-            );
+          await del(partnerAssignment.id, i18n.t("policies:configurationPolicies.organizationScopePanel.failedToNarrow"));
         }
-        const r = await post({
-          level: "organization",
-          targetId: orgId,
-          priority: 0,
-          ...assignmentFilterPayload(roleFilter, osFilter),
-        });
-        if (!r.ok)
-          throw new Error(
-            extractApiError(
-              await r.json().catch(() => null),
-              i18n.t(
-                "policies:configurationPolicies.organizationScopePanel.failedToAssignOrg",
-              ),
-            ),
-          );
+        await post(
+          {
+            level: "organization",
+            targetId: orgId,
+            priority: 0,
+            ...assignmentFilterPayload(roleFilter, osFilter),
+          },
+          i18n.t("policies:configurationPolicies.organizationScopePanel.failedToAssignOrg"),
+        );
       }
     });
   // Assigned section: every org with a current organization-level assignment,
@@ -557,6 +529,14 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
           </p>
         )}
       </div>
+      <PartnerGroupAssignmentSection
+        policyId={policyId}
+        assignments={assignments}
+        roleFilter={roleFilter}
+        osFilter={osFilter}
+        disabled={rowsDisabled}
+        onChanged={fetchAssignments}
+      />
     </div>
   );
 }

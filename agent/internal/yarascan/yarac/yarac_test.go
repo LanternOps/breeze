@@ -1,6 +1,7 @@
 package yarac
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -190,4 +191,30 @@ func TestGuestOverrideControlChild(t *testing.T) {
 		os.Exit(6)
 	}
 	os.Exit(0)
+}
+
+// TestIocImportGoldenValidates pins the W04 IOC importer's output (#6267):
+// `import "hash"` + hash.<algo>(0, filesize), `filename`/`filepath iequals`,
+// `ascii wide nocase`, the UTF-16LE hex pattern for non-ASCII strings and the
+// escaping all compile under the real policy. The golden is written by
+// packages/shared/src/utils/yaraIocImport.test.ts (UPDATE_GOLDEN=1). Decoded
+// here with encoding/json because yarascan imports yarac (no cycle).
+func TestIocImportGoldenValidates(t *testing.T) {
+	raw, err := os.ReadFile("../testdata/ioc-import.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b struct {
+		RuleSetID string `json:"ruleSetId"`
+		Rules     []Rule `json:"rules"`
+	}
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Rules) != 8 {
+		t.Fatalf("golden has %d rules, want one per IOC kind (8)", len(b.Rules))
+	}
+	if errs := ValidateSet(Set{ID: b.RuleSetID, Rules: b.Rules}, DefaultPolicy); len(errs) != 0 {
+		t.Fatalf("generated IOC rules must compile under DefaultPolicy: %+v", errs)
+	}
 }

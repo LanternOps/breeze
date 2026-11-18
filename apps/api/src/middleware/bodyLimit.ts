@@ -35,6 +35,7 @@ export type BodyLimitRule =
   | 'agent-ingest'
   | 'agent-hardware-health'
   | 'agent-time-status'
+  | 'agent-wake-status'
   | 'agent-workloads'
   | 'agent-topology-adjacency'
   | 'agent-unifi-telemetry'
@@ -43,6 +44,9 @@ export type BodyLimitRule =
   | 'quote-acceptance-evidence'
   | 'agreement-signed-copy'
   | 'edr-webhook'
+  | 'flow-webhook'
+  | 'yara-test-sample'
+  | 'wisp-thread-attachment'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -67,6 +71,13 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // batches events; 256 KB is ample and bounds pre-auth work.
   if (/^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
     return { rule: 'edr-webhook', maxSize: 256 * 1024, error: 'Request body too large' };
+  }
+  // Flow webhook ingress (Tool Catalog W05): public, HMAC/token authenticated in
+  // the handler, so the cap must hold before the body is read. 262,144 B is
+  // FLOW_RUN_LIMITS.webhookMaxBodyBytes (packages/shared); kept literal because
+  // this module is deliberately free of imports.
+  if (/^\/api\/v1\/webhooks\/flows\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path)) {
+    return { rule: 'flow-webhook', maxSize: 262_144, error: 'Request body too large' };
   }
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (path.startsWith('/api/v1/dev/push')) {
@@ -187,6 +198,22 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       error: 'Signed copy too large (max 10 MB)',
     };
   }
+  // YARA rule test upload (#6263 W04-2): one raw octet-stream sample, capped
+  // at 10 MiB (YARA_TEST_SAMPLE_MAX_BYTES) by the route's own exact check,
+  // which answers YARA_TEST_TOO_LARGE inside this 64 KiB slack. Every other
+  // /security/yara path stays at the default.
+  if (/^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test$/i.test(path)) {
+    return { rule: 'yara-test-sample', maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File too large (max 10 MB)' };
+  }
+  // Wisp thread attachment (W04 6b): one multipart text file OR a JSON
+  // `{ text, label }` paste, capped at 5 MiB of decoded text by the route
+  // (THREAD_ATTACHMENT_MAX_BYTES, 413 too_large). 1 MiB of headroom covers the
+  // multipart envelope and the JSON escaping of pasted text; the route
+  // registers the same ceiling (WISP_THREAD_ATTACHMENT_BODY_LIMIT). The JSON
+  // siblings under /wisp/thread stay at the default.
+  if (/^\/api\/v1\/wisp\/thread\/[^/]+\/attachments$/.test(path)) {
+    return { rule: 'wisp-thread-attachment', maxSize: 6 * 1024 * 1024, error: 'Attachment too large (max 5 MiB)' };
+  }
   if (path === '/api/v1/users/me/avatar') {
     return {
       rule: 'avatar',
@@ -233,6 +260,14 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
     return {
       rule: 'agent-time-status',
       maxSize: 512 * 1024,
+      error: 'Request body too large',
+    };
+  }
+  // Wake-on-LAN readiness snapshot (#10838): 64 KiB.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/wake-status$/)) {
+    return {
+      rule: 'agent-wake-status',
+      maxSize: 64 * 1024,
       error: 'Request body too large',
     };
   }

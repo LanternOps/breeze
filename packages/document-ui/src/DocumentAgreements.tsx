@@ -10,7 +10,7 @@ function Footer({ text }: { text: string }): ReactElement {
   return <p className="text-xs text-muted-foreground">{text}</p>;
 }
 
-function Body({ body, title, components }: { body: AgreementBody; title: string; components: DocumentHostComponents }): ReactElement {
+export function DocumentAgreementBody({ body, title, components }: { body: AgreementBody; title: string; components: DocumentHostComponents }): ReactElement {
   if (body.kind === 'terms') return <TermsBody text={body.text} label={title} />;
   if (body.kind === 'authored') {
     return (
@@ -71,7 +71,7 @@ function AgreementRow({
         <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
       </summary>
       <div className="border-t px-4 py-4 sm:px-5">
-        {lazy && !open ? null : <Body body={agreement.body} title={agreement.title} components={components} />}
+        {lazy && !open ? null : <DocumentAgreementBody body={agreement.body} title={agreement.title} components={components} />}
       </div>
     </details>
   );

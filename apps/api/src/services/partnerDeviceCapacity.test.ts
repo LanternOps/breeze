@@ -4,7 +4,71 @@ import type { SQL } from 'drizzle-orm';
 import {
   admitPartnerDeviceCapacity,
   previewPartnerDeviceCapacity,
+  effectivePartnerAdmissionLimit,
+  partnerAdmissionStatus,
 } from './partnerDeviceCapacity';
+
+describe('billing growth admission', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const paid = { maxDevices: 110, plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: 165, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') };
+  it('admits a temporary spike while retaining a finite ceiling', () => {
+    expect(effectivePartnerAdmissionLimit(paid, now)).toBe(165);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionLimit: 999999 }, now)).toBe(110);
+  });
+  it.each(['past_due', 'incomplete', 'trialing', 'canceled'])('does not widen admission for %s', status => {
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingSubscriptionStatus: status }, now)).toBe(110);
+  });
+  it('fails closed for expired/missing proof and never makes the paid cap smaller', () => {
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionExpiresAt: now }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionExpiresAt: null }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionLimit: 50 }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 110 }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, maxDevices: null }, now)).toBeNull();
+  });
+});
+
+describe('annual allowance bound scales with max_devices', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const annual = { maxDevices: 5000, plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: 5504, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') };
+  it('honours 5,504 for max_devices 5,000', () => {
+    expect(effectivePartnerAdmissionLimit(annual, now)).toBe(5504);
+  });
+  it('honours exactly 2 x max_devices and ignores 10,001 for max_devices 5,000', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10000 }, now)).toBe(10000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10001 }, now)).toBe(5000);
+  });
+  it('scales the bound just past the floor (max_devices 551 → bound 1,102)', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1101 }, now)).toBe(1101);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1102 }, now)).toBe(1102);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1103 }, now)).toBe(551);
+  });
+  it('keeps the 1,100 floor for small partners', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1100 }, now)).toBe(1100);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1101 }, now)).toBe(110);
+  });
+  it('a large max_devices never widens an expired, absent, non-active or non-community allowance', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionExpiresAt: now }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionExpiresAt: null }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: null }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingSubscriptionStatus: 'past_due' }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, plan: 'free' }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 5000 }, now)).toBe(5000);
+  });
+});
+
+describe('beta offers: admission limit pinned', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const betaPartner = { plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: null, billingAdmissionExpiresAt: null };
+  it('monthly beta (max_devices NULL, per-device) is unlimited', () => {
+    expect(effectivePartnerAdmissionLimit({ maxDevices: null, ...betaPartner }, now)).toBeNull();
+  });
+  it('prepaid beta of 5 units keeps its 1250 cap above the 1,100 widening ceiling', () => {
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 1250, ...betaPartner }, now)).toBe(1250);
+  });
+});
 
 function transactionFixture(input: {
   orgPartnerId?: string | null;
@@ -133,5 +197,76 @@ describe('previewPartnerDeviceCapacity', () => {
       .resolves.toEqual({ allowed: false, partnerId: 'partner-1', maxDevices: 3, activeCount: 3 });
     expect(f.locks).toEqual([]);
     expect(f.tx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('partnerAdmissionStatus', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  function statusFixture(input: { partner: Record<string, unknown> | null; activeCount: number }) {
+    const locks: string[] = [];
+    const whereArgs: unknown[] = [];
+    let index = 0;
+    const tx = {
+      execute: vi.fn(),
+      select: vi.fn(() => {
+        const i = index++;
+        if (i === 0) {
+          const rows = input.partner ? [input.partner] : [];
+          const limited = Object.assign(Promise.resolve(rows), { for: (mode: string) => { locks.push(mode); return Promise.resolve(rows); } });
+          return { from: () => ({ where: (arg: unknown) => { whereArgs.push(arg); return { limit: () => limited }; } }) };
+        }
+        if (i === 1) return { from: () => ({ where: (arg: unknown) => { whereArgs.push(arg); return {}; } }) };
+        return { from: () => ({ where: async (arg: unknown) => { whereArgs.push(arg); return [{ count: String(input.activeCount) }]; } }) };
+      }),
+    };
+    return { tx: tx as any, locks, whereArgs };
+  }
+
+  it('reports the billing allowance as the limit, with the licensed active count', async () => {
+    const f = statusFixture({
+      partner: { maxDevices: 100, plan: 'community', billingSubscriptionStatus: 'active',
+        billingAdmissionLimit: 110, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') },
+      activeCount: 110,
+    });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: 110, activeCount: 110 });
+    // Read-only: no row lock and no lock-timeout change.
+    expect(f.locks).toEqual([]);
+    expect(f.tx.execute).not.toHaveBeenCalled();
+  });
+
+  it('counts by the admission rule: this partner only, holding orgs, ephemeral and decommissioned left out', async () => {
+    const f = statusFixture({ partner: { maxDevices: 5 }, activeCount: 2 });
+    await partnerAdmissionStatus(f.tx, 'partner-1', now);
+    const dialect = new PgDialect();
+    const partnerWhere = dialect.sqlToQuery(f.whereArgs[0] as SQL);
+    expect(partnerWhere.params).toEqual(['partner-1']);
+    const orgSubquery = dialect.sqlToQuery(f.whereArgs[1] as SQL);
+    expect(orgSubquery.sql).toContain('"organizations"."partner_id" = $');
+    expect(orgSubquery.params).toContain('partner-1');
+    expect(orgSubquery.params).toContain('unassigned_pool');
+    const count = dialect.sqlToQuery(f.whereArgs[2] as SQL);
+    expect(count.sql).toContain('"devices"."is_ephemeral" = $');
+    expect(count.sql).toContain('"devices"."status" <> $');
+    expect(count.params).toContain('decommissioned');
+  });
+
+  it('an expired allowance falls back to max_devices', async () => {
+    const f = statusFixture({
+      partner: { maxDevices: 100, plan: 'community', billingSubscriptionStatus: 'active',
+        billingAdmissionLimit: 110, billingAdmissionExpiresAt: now },
+      activeCount: 100,
+    });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: 100, activeCount: 100 });
+  });
+
+  it('an unlimited partner has a null limit and still reports its count', async () => {
+    const f = statusFixture({ partner: { maxDevices: null }, activeCount: 42 });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: null, activeCount: 42 });
+  });
+
+  it('a missing partner row throws PARTNER_NOT_FOUND', async () => {
+    const f = statusFixture({ partner: null, activeCount: 0 });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now))
+      .rejects.toEqual(expect.objectContaining({ code: 'PARTNER_NOT_FOUND' }));
   });
 });

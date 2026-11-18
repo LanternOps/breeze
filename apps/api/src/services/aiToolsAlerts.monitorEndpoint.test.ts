@@ -39,7 +39,7 @@ const SECRET_URL = 'https://ops:hunter2@status.example.com/hooks/T1/B1/abc123?to
 const FRAGMENTS = ['hunter2', '/hooks/', 'abc123', 'xyz789'];
 
 describe('manage_alerts — network monitor endpoints', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it('get shows the stored target as scheme + host in message and context', async () => {
     const alert = {
@@ -48,12 +48,13 @@ describe('manage_alerts — network monitor endpoints', () => {
       context: { source: 'network_monitor', target: SECRET_URL, error: `Get "${SECRET_URL}": EOF` },
     };
     mockDb.select
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([alert]) }) }) })
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) });
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([alert]) }) }) });
 
     const raw = await handlerFor('manage_alerts')({ action: 'get', alertId: 'a1' }, unrestrictedAuth());
     for (const f of FRAGMENTS) expect(raw).not.toContain(f);
     const out = JSON.parse(raw);
+    expect(out.device).toBeNull();
+    expect(out.alert.deviceId).toBeNull();
     expect(out.alert.message).toBe('Monitor Status page is offline. Target: https://status.example.com. Status: offline.');
     expect(out.alert.context.target).toBe('https://status.example.com');
     expect(out.alert.context.error).toBe('Get "https://status.example.com": EOF');
@@ -66,10 +67,11 @@ describe('manage_alerts — network monitor endpoints', () => {
       context: { source: 'alert_rule' },
     };
     mockDb.select
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([alert]) }) }) })
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) });
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([alert]) }) }) });
 
     const out = JSON.parse(await handlerFor('manage_alerts')({ action: 'get', alertId: 'a2' }, unrestrictedAuth()));
+    expect(out.device).toBeNull();
+    expect(out.alert.deviceId).toBeNull();
     expect(out.alert.message).toBe('See https://docs.example.com/runbooks/cpu for steps.');
   });
 

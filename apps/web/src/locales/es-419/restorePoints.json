@@ -15,6 +15,7 @@
     "verificationFailed": "No se pudo verificar",
     "failed": "Error — {{message}}",
     "failedNoMessage": "Error",
+    "interrupted": "Desconocido — el agente se detuvo antes de poder informar sobre este punto de restauración",
     "unknown": "Esta versión de la consola no reconoce el resultado"
   },
   "list": {

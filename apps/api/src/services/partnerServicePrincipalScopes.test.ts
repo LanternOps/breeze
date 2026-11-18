@@ -149,6 +149,16 @@ describe('partner partner-service-principal scopes', () => {
     expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('tickets:write');
   });
 
+  it('accepts alerts:write as an explicit opt-in independent of alerts:read', () => {
+    expect(validatePartnerServicePrincipalScopes(['alerts:write'])).toEqual({
+      ok: true,
+      scopes: ['alerts:write'],
+    });
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain('alerts:write');
+    expect(hasPartnerServicePrincipalScope(['alerts:read'], 'alerts:write')).toBe(false);
+    expect(hasPartnerServicePrincipalScope(['alerts:write'], 'alerts:read')).toBe(false);
+  });
+
   it('accepts device-status:read as an explicit opt-in that never joins the default delegation', () => {
     expect(validatePartnerServicePrincipalScopes(['devices:read', 'device-status:read'])).toEqual({
       ok: true,

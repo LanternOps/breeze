@@ -677,22 +677,26 @@ describe('Streamable HTTP transport (POST /sse)', () => {
 
     it('sorts by name and decorates every tool with title, annotations and _meta', async () => {
       const { tools: listed, nextCursor } = await listWith();
-      expect(listed.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services', 'query_devices', 'whoami']);
+      expect(listed.map((t) => t.name)).toEqual(['cancel_action', 'get_action_status', 'get_backup_status', 'manage_services', 'query_devices', 'whoami']);
       expect(nextCursor).toBeUndefined();
-      expect(listed[0]).toMatchObject({ title: 'Get backup status', annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { 'app.breeze/domain': expect.any(String) } });
-      expect(listed[1]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-      expect(listed[1]!.inputSchema).toBeDefined();
+      // B-W04: cancel_action + get_action_status are the server-intrinsic action-status tools.
+      expect(listed[2]).toMatchObject({ title: 'Get backup status', annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, _meta: { 'app.breeze/domain': expect.any(String) } });
+      expect(listed[3]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+      expect(listed[3]!.inputSchema).toBeDefined();
     });
 
     it('paginates when MCP_TOOLS_LIST_PAGE_SIZE is set and rejects a bad cursor', async () => {
       vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '2');
       try {
         const page1 = await listWith();
-        expect(page1.tools.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services']);
+        expect(page1.tools.map((t) => t.name)).toEqual(['cancel_action', 'get_action_status']);
         expect(page1.nextCursor).toEqual(expect.any(String));
         const page2 = await listWith({ cursor: page1.nextCursor });
-        expect(page2.tools.map((t) => t.name)).toEqual(['query_devices', 'whoami']);
-        expect(page2.nextCursor).toBeUndefined();
+        expect(page2.tools.map((t) => t.name)).toEqual(['get_backup_status', 'manage_services']);
+        expect(page2.nextCursor).toEqual(expect.any(String));
+        const page3 = await listWith({ cursor: page2.nextCursor });
+        expect(page3.tools.map((t) => t.name)).toEqual(['query_devices', 'whoami']);
+        expect(page3.nextCursor).toBeUndefined();
         const app = appWithMcpRoutes();
         const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
         const bad = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': init.headers.get('Mcp-Session-Id')! }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: '!!' } }) });

@@ -17,7 +17,7 @@ vi.mock('../../services/backupHealthReadModel', () => ({
 vi.mock('../../middleware/auth', () => ({ requirePermission: vi.fn(() => (c: any, next: any) => next()) }));
 vi.mock('../../db', () => ({ db: { select: (...a: unknown[]) => selectMock(...(a as [])) } }));
 vi.mock('../../db/schema', () => ({
-  backupProviderConnections: { partnerId: 'bpn.partner_id', isActive: 'bpn.is_active', lastSyncUnmappedDevices: 'bpn.last_sync_unmapped_devices', lastSyncAt: 'bpn.last_sync_at', syncIntervalMinutes: 'bpn.sync_interval_minutes' },
+  backupProviderConnections: { provider: 'bpn.provider', partnerId: 'bpn.partner_id', isActive: 'bpn.is_active', lastSyncUnmappedDevices: 'bpn.last_sync_unmapped_devices', lastSyncAt: 'bpn.last_sync_at', syncIntervalMinutes: 'bpn.sync_interval_minutes' },
 }));
 vi.mock('drizzle-orm', () => ({
   and: (...c: unknown[]) => ({ op: 'and', conditions: c.filter(Boolean) }),
@@ -147,9 +147,18 @@ describe('GET /backup/health/devices', () => {
   });
 
   it('rolls up unmappedDevices across the partner active connections for a partner caller', async () => {
-    selectMock.mockImplementation(() => chain([{ unmapped: 4, isActive: true, lastSyncAt: null, syncIntervalMinutes: 30 }, { unmapped: 3, isActive: true, lastSyncAt: null, syncIntervalMinutes: 30 }]));
+    selectMock.mockImplementation(() => chain([{ provider: 'cove', unmapped: 4, isActive: true, lastSyncAt: null, syncIntervalMinutes: 30 }, { provider: 'cove', unmapped: 3, isActive: true, lastSyncAt: null, syncIntervalMinutes: 30 }]));
     const body = await (await app.request('/backup/health/devices')).json();
     expect(body.data.unmappedDevices).toBe(7);
+  });
+
+  it('excludes SaaS connection workload counters from unmapped devices', async () => {
+    selectMock.mockImplementation(() => chain([
+      { provider: 'cove', unmapped: 4 },
+      { provider: 'dropsuite', unmapped: 30 },
+    ]));
+    const body = await (await app.request('/backup/health/devices')).json();
+    expect(body.data.unmappedDevices).toBe(4);
   });
 
   it('reports unmappedDevices 0 for an org-scope caller, which cannot read connections', async () => {

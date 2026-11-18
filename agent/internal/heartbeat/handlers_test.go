@@ -23,7 +23,12 @@ var allCommandTypes = []string{
 	tools.CmdRegistryKeys, tools.CmdRegistryValues, tools.CmdRegistryGet,
 	tools.CmdRegistrySet, tools.CmdRegistryDelete,
 	tools.CmdRegistryKeyCreate, tools.CmdRegistryKeyDelete,
-	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdWakeOnLan,
+	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdForceReboot, tools.CmdWakeOnLan,
+
+	// handlers_oem.go init()
+	tools.CmdOemUpdateRun,
+	tools.CmdOemUpdateRelease,
+
 	tools.CmdRefreshInventory,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall, tools.CmdSoftwareUpdate,
 
@@ -139,7 +144,7 @@ var allCommandTypes = []string{
 	tools.CmdSupportEnd,
 
 	// handlers_incident_response.go init()
-	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
+	tools.CmdCollectEvidence, tools.CmdExecuteContainment, tools.CmdReleaseContainment,
 
 	// handlers_tunnel.go init()
 	tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
@@ -149,6 +154,9 @@ var allCommandTypes = []string{
 	tools.CmdActuateElevation,
 	tools.CmdPamApplyV2, tools.CmdPamCleanupV2,
 	tools.CmdPamReconcileV2,
+
+	// handlers_pam_notify.go init() — #8928 outcome notices
+	tools.CmdPamRequestNotify,
 
 	// handlers_encryption.go init()
 	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,

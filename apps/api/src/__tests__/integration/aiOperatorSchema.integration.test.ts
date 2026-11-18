@@ -46,6 +46,7 @@ import {
   devices,
 } from '../../db/schema';
 import { CUSTOM_RESOLVE_EXECUTORS, CUSTOM_WOULD_REVOKE_COUNTS } from '../../services/orgMergeCustomExecutors';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -64,16 +65,20 @@ function orgContext(orgId: string): DbAccessContext {
  * own `.code` is undefined — the SQLSTATE lands on `.cause.code`. A plain
  * `.rejects.toMatchObject({ code })` silently mismatches.
  */
-async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<void> {
+async function expectSqlState(fn: () => Promise<unknown>, code: string | readonly string[]): Promise<void> {
   let raised: unknown;
   try {
     await fn();
   } catch (err) {
     raised = err;
   }
-  expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
+  expect(raised, `expected SQLSTATE ${String(code)}, but the statement succeeded`).toBeDefined();
   const cause = (raised as { cause?: { code?: string } })?.cause;
-  expect(cause?.code ?? (raised as { code?: string })?.code).toBe(code);
+  const actual = cause?.code ?? (raised as { code?: string })?.code;
+  // A list means any of them: FOREIGN_KEY_VIOLATION_SQLSTATES for a RESTRICT
+  // refusal, which Postgres 18 reports as 23001 and older versions as 23503.
+  if (typeof code === 'string') expect(actual).toBe(code);
+  else expect(code).toContain(actual);
 }
 
 interface Tenant {
@@ -506,7 +511,7 @@ describe('AI Operator thin-slice schema', () => {
   // -------------------------------------------------------------------------
 
   describe('deleting a referenced task', () => {
-    it('is refused (23503) rather than half-clearing an action_intents link', async () => {
+    it('is refused (RESTRICT: 23503, or 23001 on Postgres 18) rather than half-clearing an action_intents link', async () => {
       // The trap this pins: `ON DELETE SET NULL (task_id)` can null only
       // columns of the FK, so it would leave task_step_key/operation_key set
       // and raise 23514 from action_intents_task_link_chk — deferring the FK
@@ -539,11 +544,11 @@ describe('AI Operator thin-slice schema', () => {
           withDbAccessContext(SYSTEM_CTX, () =>
             db.delete(aiOperatorTasks).where(eq(aiOperatorTasks.id, taskId)),
           ),
-        '23503',
+        FOREIGN_KEY_VIOLATION_SQLSTATES,
       );
     });
 
-    it('is refused (23503) rather than half-clearing an ai_agent_runs link', async () => {
+    it('is refused (RESTRICT: 23503, or 23001 on Postgres 18) rather than half-clearing an ai_agent_runs link', async () => {
       const taskId = await insertTask(t);
       await withSystemDbAccessContext(() =>
         db.insert(aiAgentRuns).values({
@@ -564,7 +569,7 @@ describe('AI Operator thin-slice schema', () => {
           withDbAccessContext(SYSTEM_CTX, () =>
             db.delete(aiOperatorTasks).where(eq(aiOperatorTasks.id, taskId)),
           ),
-        '23503',
+        FOREIGN_KEY_VIOLATION_SQLSTATES,
       );
     });
   });

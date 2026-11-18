@@ -30,6 +30,7 @@ vi.mock('../db', () => {
 import {
   isPublicLinkOrgStatusLive,
   PUBLIC_LINK_ORG_UNAVAILABLE,
+  resolveAgreementRequestLinkOrgGate,
   resolveOrgLinkGate,
   resolveQuoteLinkOrgGate,
 } from './publicLinkOrgGate';
@@ -128,6 +129,49 @@ describe('resolveOrgLinkGate', () => {
   it('admits again once a suspended partner is reactivated', async () => {
     dbResults.push([{ id: ORG_ID, status: 'active', partnerStatus: 'active' }]);
     expect((await resolveOrgLinkGate(ORG_ID)).blocked).toBe(false);
+  });
+});
+
+describe('resolveAgreementRequestLinkOrgGate (#9075 W2b)', () => {
+  const REQUEST_ID = '44444444-4444-4444-4444-444444444444';
+  const PARTNER_ID = '55555555-5555-5555-5555-555555555555';
+  const requestRow = { id: REQUEST_ID, orgId: SURVIVOR_ORG_ID, status: 'sent' };
+
+  it('returns the request, its CURRENT owning partner and an open gate in one read', async () => {
+    dbResults.push([{ request: requestRow, orgId: SURVIVOR_ORG_ID, status: 'active', partnerId: PARTNER_ID, partnerStatus: 'active', partnerName: 'Acme MSP' }]);
+    const res = await resolveAgreementRequestLinkOrgGate(REQUEST_ID, [ORG_ID, SURVIVOR_ORG_ID]);
+    expect(res.request).toEqual(requestRow);
+    expect(res.partnerId).toBe(PARTNER_ID);
+    expect(res.partnerName).toBe('Acme MSP');
+    expect(res.gate).toEqual({ orgId: SURVIVOR_ORG_ID, status: 'active', partnerStatus: 'active', blocked: false });
+    expect(dbResults).toHaveLength(0);
+  });
+
+  it.each([
+    ['archived', 'active'],
+    ['active', 'suspended'],
+    ['active', 'pending'],
+  ])('blocks org=%s partner=%s', async (status, partnerStatus) => {
+    dbResults.push([{ request: requestRow, orgId: ORG_ID, status, partnerId: PARTNER_ID, partnerStatus, partnerName: 'Acme MSP' }]);
+    expect((await resolveAgreementRequestLinkOrgGate(REQUEST_ID, [ORG_ID])).gate.blocked).toBe(true);
+  });
+
+  it('admits a trial org under an active partner', async () => {
+    dbResults.push([{ request: requestRow, orgId: ORG_ID, status: 'trial', partnerId: PARTNER_ID, partnerStatus: 'active', partnerName: 'Acme MSP' }]);
+    expect((await resolveAgreementRequestLinkOrgGate(REQUEST_ID, [ORG_ID])).gate.blocked).toBe(false);
+  });
+
+  it('no row → null request, null partner, gate OPEN (the resolver owns the 401)', async () => {
+    dbResults.push([]);
+    const res = await resolveAgreementRequestLinkOrgGate(REQUEST_ID, [ORG_ID]);
+    expect(res).toEqual({ request: null, partnerId: null, partnerName: null, gate: { orgId: null, status: null, partnerStatus: null, blocked: false } });
+  });
+
+  it('short-circuits without a query when there are no candidate orgs', async () => {
+    dbResults.push([{ request: requestRow, orgId: ORG_ID, status: 'active', partnerId: PARTNER_ID, partnerStatus: 'active', partnerName: 'x' }]);
+    const res = await resolveAgreementRequestLinkOrgGate(REQUEST_ID, []);
+    expect(res.request).toBeNull();
+    expect(dbResults).toHaveLength(1);
   });
 });
 

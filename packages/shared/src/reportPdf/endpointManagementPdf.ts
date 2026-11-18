@@ -24,7 +24,8 @@
  * web UI, not the PDF.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import type { ReportFormatChrome } from './reportLocale';
+import { autoTable } from 'jspdf-autotable';
 import type {
   ComplianceState,
   EndpointManagementSummary,
@@ -48,7 +49,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & ReportFormatChrome;
 
 export type EndpointManagementPdfOpts = {
   generatedAt: string;
@@ -157,14 +158,13 @@ export function renderEndpointManagementReport(
   const rows: IntuneDeviceRow[] = Array.isArray(summary.rows) ? summary.rows : [];
 
   // --- cover ---------------------------------------------------------------
-  const periodLabel = summary.period?.start && summary.period?.end
-    ? `Period ${summary.period.start} to ${summary.period.end}`
-    : 'Current inventory';
+  const range = chrome.formatPeriod(summary.period?.start, summary.period?.end);
+  const periodLabel = range ? `Reporting period ${range}` : 'Current inventory';
   let y = chrome.drawTitleBlock(
     doc,
     'Endpoint Management Review',
     summary.orgName ?? '',
-    `${periodLabel} · Generated ${opts.generatedAt}${opts.partnerName ? ` · ${opts.partnerName}` : ''}`,
+    [periodLabel, `Generated ${opts.generatedAt}`, opts.partnerName].filter(Boolean).join(chrome.metaSeparator),
     PAGE.bandH + 10,
   );
 
@@ -180,7 +180,7 @@ export function renderEndpointManagementReport(
     }
   } else {
     const asOf = summary.freshness?.intune_devices?.asOf;
-    if (asOf) y = drawProse(doc, chrome, `Intune inventory as of ${asOf}.`, y, 9, C.muted);
+    if (asOf) y = drawProse(doc, chrome, `Intune inventory as of ${chrome.formatDateTime(asOf) ?? asOf}.`, y, 9, C.muted);
   }
   y += 1.5;
 
@@ -244,7 +244,7 @@ export function renderEndpointManagementReport(
       startY: y,
       margin: { left: PAGE.mx, right: PAGE.mx },
       head: [['Date', 'Compliant', 'Not compliant', 'In grace', 'Unknown']],
-      body: trend.map((p) => [p.date, num(p.compliant), num(p.noncompliant), num(p.inGrace), num(p.unknown)]),
+      body: trend.map((p) => [chrome.formatDate(p.date) ?? p.date, num(p.compliant), num(p.noncompliant), num(p.inGrace), num(p.unknown)]),
       styles: { fontSize: 7.6, cellPadding: 1.4 },
       headStyles: { fillColor: C.primary, textColor: C.white },
       alternateRowStyles: { fillColor: C.zebra },
@@ -275,7 +275,7 @@ export function renderEndpointManagementReport(
         [r.operatingSystem, r.osVersion].filter(Boolean).join(' ') || '—',
         r.userPrincipalName ?? '—',
         r.ownerType ?? '—',
-        r.lastIntuneSyncAt ?? 'Never',
+        chrome.formatDate(r.lastIntuneSyncAt) ?? 'Never',
         r.complianceState ? COMPLIANCE_LABELS[r.complianceState] : 'Unknown',
         r.jailBroken ?? '—',
       ]),

@@ -97,7 +97,7 @@ describe('agent-token admin rotate -> heartbeat -> sibling reissue cycle', () =>
     const now = new Date('2026-09-25T12:00:00.000Z');
 
     const promoted = await promotePendingAgentCredentials({
-      deviceId: 'device-1',
+      agent: { deviceId: 'device-1', agentId: 'agent-1' },
       pendingTokenHash: 'staged-agent-hash',
       expectedAgentTokenHash: 'current-agent-hash',
       pendingWatchdogTokenHash: 'staged-watchdog-hash',

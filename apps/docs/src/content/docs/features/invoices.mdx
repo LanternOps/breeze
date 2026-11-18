@@ -68,6 +68,8 @@ When you assemble from work, every unbilled AI usage charge for a month that has
 
 A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.
 
+Labour amounts use the billed minutes converted to hours **rounded to two decimals**, × the rate, rounded once to the currency's smallest unit: 25 minutes at $135.00/h is 0.42 h × $135.00 = $56.70 (not $56.25), so quantity × rate always equals the line total. This is not a 6-minute increment -- any whole-minute duration is accepted -- and the ticket time panel, timesheet and technician time report show each entry's hours × rate.
+
 ### Time-entry line detail
 
 You choose how time-entry lines print on customer invoices under **Settings → Billing → Documents**, in the **Time entry lines on invoices** group:

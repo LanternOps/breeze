@@ -1,0 +1,375 @@
+{
+  "name": "classifier-narrowing",
+  "source": {
+    "run_id": 41956086306,
+    "pr": 11015
+  },
+  "changed": [
+    ".github/actionlint.yaml",
+    ".github/actions/tauri-apt-cache/action.yml",
+    ".github/scripts/ci-area-gating.test.mjs",
+    ".github/scripts/ci-cache-policy.test.mjs",
+    ".github/scripts/ci-pr-selection.test.mjs",
+    ".github/scripts/classify-pr-paths.sh",
+    ".github/scripts/classify-pr-paths.test.mjs",
+    ".github/scripts/prepare-ci-apt-sources.test.mjs",
+    ".github/scripts/tauri-apt.sh",
+    ".github/scripts/tauri-apt.test.mjs",
+    ".github/workflows/ci-cache-seed.yml",
+    ".github/workflows/ci.yml"
+  ],
+  "flags": {
+    "code": "true",
+    "docs": "false",
+    "agent": "true",
+    "app": "true",
+    "api": "true",
+    "web": "true",
+    "portal": "true",
+    "addins": "true",
+    "m365": "true",
+    "rust": "true",
+    "topology_browser": "true",
+    "agent_code": "true",
+    "integration": "true",
+    "path_readers": "false",
+    "reader_tests": ""
+  },
+  "mobile": "true",
+  "jobs": [
+    {
+      "name": "Detect Code Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Read Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Actions Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Type Check",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 1/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 3/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 2/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 7/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Detect Mobile Native Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Viewer",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 4/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Word Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 8/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 6/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Document UI",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Communications Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 5/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 1/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 4/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Security Audit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Outlook Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Agent Windows manifest guard",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Agent (race)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Mobile",
+      "conclusion": "success"
+    },
+    {
+      "name": "Rust Check (Tauri apps)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Release Ledger",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 2/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Portal",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 3/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint Agent (Go)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations",
+      "conclusion": "success"
+    },
+    {
+      "name": "Workspace Runtime Smoke",
+      "conclusion": "success"
+    },
+    {
+      "name": "Rust Check (Windows)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Agent",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (api)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Recovery media E2E (QEMU)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Excel Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Topology Production Browser Gate (Chromium)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations (non-superuser)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Office Add-in Core",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (portal)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (web)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Shared",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 3/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 10/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 4/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 13/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 6/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test PowerPoint Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 8/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 12/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 15/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 16/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 7/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 14/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 11/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 5/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 1/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 2/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 9/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docs Check",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Path-read contracts",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Mobile iOS (Simulator)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Agent (Windows)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (linux/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Windows Runtime Smoke",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (darwin/arm64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (windows/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (darwin/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Graph Read Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build API",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Communications Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Smoke Test",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Portal",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Web",
+      "conclusion": "success"
+    },
+    {
+      "name": "Portal Dev E2E (hydration, non-blocking)",
+      "conclusion": "failure"
+    },
+    {
+      "name": "Build M365 Graph Actions Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Guided Setup Smoke (self-host installer)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Auth Browser Transition (Chromium)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Record CI Provenance",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Main Red Alert",
+      "conclusion": "skipped"
+    }
+  ],
+  "ci_success": "success",
+  "base_ci": "ci-1f0d080945a7.yml",
+  "head_ci": "ci-9d4f1ed25909.yml",
+  "expect": {
+    "verdict": "pass"
+  }
+}

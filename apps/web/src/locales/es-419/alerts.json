@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% confianza"
   },
   "alertDetailPage": {
+    "externalTickets": "Tickets externos",
+    "externalTicketsFailedToLoad": "No se pudieron cargar los tickets externos.",
     "loadingAlert": "Cargando alerta...",
     "backToAlerts": "Volver a alertas",
     "goBack": "Volver",
@@ -66,8 +68,8 @@
     "alertAcknowledged": "Alerta reconocida",
     "failedToResolveAlert": "No se pudo resolver la alerta",
     "alertResolved": "Alerta resuelta",
-    "alertsBreadcrumb": "Ruta de navegación de alertas",
-    "alertFallback": "Reserva de alerta",
+    "alertsBreadcrumb": "Alertas",
+    "alertFallback": "Alerta",
     "unknownMetric": "Métrica desconocida",
     "severity": {
       "critical": "Crítico",
@@ -82,6 +84,21 @@
       "resolved": "Resuelto",
       "suppressed": "suprimido",
       "dismissed": "Descartado"
+    },
+    "createPsaTicket": "Crear ticket PSA",
+    "psaTicketRequested": "Ticket PSA solicitado",
+    "failedToCreatePsaTicket": "No se pudo solicitar el ticket PSA",
+    "lifecycleLine": {
+      "text": "{{rearm}} · enfriamiento {{minutes}} min ({{source}})",
+      "rearmNewEvidence": "Se rearma con evidencia nueva",
+      "rearmAfterDelay": "Se rearma después de {{minutes}} min",
+      "sources": {
+        "monitor": "este monitor",
+        "org": "valor predeterminado de la organización",
+        "partner": "valor predeterminado del partner",
+        "builtin": "valor predeterminado integrado",
+        "legacy": "regla de alerta"
+      }
     }
   },
   "alertDetails": {
@@ -112,6 +129,7 @@
     "close": "Cerrar",
     "createALinkedTicketPreFilledFrom": "Cree un ticket vinculado precargado a partir de esta alerta",
     "createTicket": "Crear ticket",
+    "viewTicket": "Ver ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Silenciar esta alerta: detiene las notificaciones sin resolverlas",
     "suppress": "Suprimir",
     "dismissPermanentlyHidesThisAlertForGood": "Descartar permanentemente: oculta esta alerta definitivamente (el vencimiento de la garantía no volverá a alertar para la misma fecha de finalización; otras condiciones aún pueden abrir una nueva alerta si se repiten)",
@@ -124,7 +142,7 @@
     "unknownMetric": "Métrica desconocida",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Resolver alerta",
-    "ticketCreationFailedRetry": "Reintento fallido al crear el ticket",
+    "ticketCreationFailedRetry": "No se pudo crear el ticket. Inténtelo de nuevo",
     "ticketCreated": "Ticket {{ticket}} creado",
     "severity": {
       "critical": "Crítico",
@@ -235,7 +253,7 @@
     "partnerWideTargetsEveryDeviceEachOrg": "(en todo el socio: se dirige a todos los dispositivos; se aplica el enrutamiento de notificaciones predeterminado de cada organización)",
     "thisOrganizationOnly": "Esta organización sólo",
     "failedToFetchAlertRule": "No se pudo recuperar la regla de alerta",
-    "genericError": "Error genérico",
+    "genericError": "Ocurrió un error",
     "failedToSaveAlertRule": "No se pudo guardar la regla de alerta",
     "createAlertRule": "Crear regla de alerta",
     "editAlertRule": "Editar regla de alerta",
@@ -311,12 +329,12 @@
     "automaticallyResolveWhenConditionIsNoLonger": "Resolver automáticamente cuando la condición ya no se cumple",
     "whenEnabledAlertsWillAutoResolveIf": "Cuando está habilitada, las alertas se resolverán automáticamente si la métrica vuelve a la normalidad.",
     "cancel": "Cancelar",
-    "severityHelp": "Ayuda de gravedad",
+    "severityHelp": "Determina el enrutamiento de las notificaciones y la prioridad en el panel. Las alertas críticas avisan de inmediato al personal de guardia.",
     "selectTargetType": "Seleccionar tipo de objetivo",
     "noTargetsAvailable": "No hay objetivos disponibles",
-    "conditionsHelp": "Condiciones Ayuda",
-    "notificationChannelsHelp": "Ayuda de canales de notificación",
-    "cooldownHelp": "Ayuda de enfriamiento",
+    "conditionsHelp": "Todas las condiciones deben cumplirse al mismo tiempo para que se dispare la alerta. Agregue varias para crear reglas compuestas.",
+    "notificationChannelsHelp": "Dónde enviar las alertas. Configure los canales en Configuración > Canales de notificación.",
+    "cooldownHelp": "Después de dispararse, la regla espera este tiempo antes de poder dispararse de nuevo para el mismo dispositivo.",
     "saveRule": "Guardar regla",
     "severityOption": {
       "critical": "Crítico",
@@ -457,8 +475,6 @@
     "loadingAlerts": "Cargando alertas...",
     "tryAgain": "Intentar otra vez",
     "alerts": "Alertas",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Supervise las alertas en sus dispositivos. Las reglas se gestionan en",
-    "configurationPolicies": "Políticas de configuración",
     "alert": "alerta",
     "dismissedAlertsAreHiddenForGoodWarranty": "Las alertas descartadas se ocultan para siempre. El vencimiento de la garantía no volverá a alertar para la misma fecha de finalización; otras alertas aún pueden activarse nuevamente si su condición se repite.",
     "cancel": "Cancelar",
@@ -471,8 +487,8 @@
     "deviceStatusUnavailable": "No pudimos cargar el estado de sus dispositivos. Actualice para volver a intentarlo.",
     "setUpAlertRules": "Configurar reglas de alerta",
     "failedToFetchAlerts": "No se pudieron recuperar las alertas",
-    "unknownDevice": "Dispositivo desconocido",
-    "genericError": "Error genérico",
+    "unknownDevice": "Desconocido",
+    "genericError": "Ocurrió un error",
     "failedToAcknowledgeAlert": "No se pudo reconocer la alerta",
     "alertAcknowledged": "Alerta reconocida",
     "failedToResolveAlert": "No se pudo resolver la alerta",
@@ -504,7 +520,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} alerta?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} alerta?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?",
+    "subtitle": "Supervise las alertas en sus dispositivos. Los umbrales se definen en <monitors>Monitores</monitors>; impleméntelos en los clientes con <policies>Políticas de configuración</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Alertas activas",
@@ -544,7 +561,8 @@
     "sections": {
       "channels": "Canales",
       "routing": "Enrutamiento",
-      "escalation": "Políticas de escalamiento"
+      "escalation": "Políticas de escalamiento",
+      "inheritedChannels": "Compartidos por su socio"
     },
     "routing": {
       "everythingElse": "Todo lo demás",
@@ -651,6 +669,7 @@
       "info": "Información"
     },
     "status": {
+      "open": "Abierto",
       "active": "Activo",
       "acknowledged": "Reconocido",
       "resolved": "Resuelto",
@@ -856,7 +875,7 @@
     "noRecipients": "Sin destinatarios",
     "emailNotification": "Notificación por correo electrónico",
     "slackNotification": "Notificación Slack",
-    "teamsNotification": "Notificación de Teams",
+    "teamsNotification": "Notificación de Microsoft Teams",
     "pagerDutyIntegration": "Integración del PagerDuty",
     "customWebhook": "Webhook personalizado",
     "pushoverKey": "Clave {{key}}…",
@@ -928,12 +947,12 @@
     "routingRuleDeleted": "Regla de enrutamiento eliminada",
     "failedToDeleteRoutingRule": "No se pudo eliminar la regla de enrutamiento",
     "failedToFetchNotificationChannels": "No se pudieron recuperar los canales de notificación",
-    "genericError": "Error genérico",
+    "genericError": "Ocurrió un error",
     "ruleCount": "Recuento de reglas",
     "createNotificationChannel": "Crear canal de notificación",
     "editNotificationChannel": "Editar canal de notificación",
     "createChannel": "Crear canal",
-    "deleteChannelConfirm": "Eliminar canal Confirmar",
+    "deleteChannelConfirm": "¿Eliminar el canal “{{name}}”? Las alertas que se envían solo a este canal dejarán de entregarse.",
     "deleting": "Eliminando",
     "editRoutingRule": "Editar regla de enrutamiento",
     "newRoutingRule": "Nueva regla de enrutamiento",
@@ -964,5 +983,10 @@
       "body": "Las plantillas existentes siguen siendo editables aquí y se convertirán en la próxima versión.",
       "link": "Abrir Monitores"
     }
+  },
+  "subject": {
+    "label": "Elemento afectado",
+    "backupWorkload": "Carga de respaldo",
+    "topologySite": "Sitio de topología"
   }
 }

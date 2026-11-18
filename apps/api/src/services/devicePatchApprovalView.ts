@@ -51,10 +51,17 @@ function ineligibleState(entry: PatchIneligibleEntry): DevicePatchApprovalState 
     case 'blocked_by_source':
     case 'blocked_by_category':
     case 'blocked_by_app_rule':
+    case 'blocked_by_feature_update_policy':
+    // A vendor lane is delivering this class (spec 4.6). No patch job installs it
+    // while that holds; the device's own Install button still does.
+    case 'managed_by_vendor_updates':
     case 'explicitly_declined':
     // The policy links a ring that does not resolve: nothing installs until
     // the link is fixed (#8186).
     case 'ring_reference_invalid':
+    // A per-user install the SYSTEM agent cannot apply (#10249): no run will
+    // install it whatever the ring says.
+    case 'unsupported_user_scope':
       return 'excluded';
     case 'not_outstanding':
     case 'superseded':

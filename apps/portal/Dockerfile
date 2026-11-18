@@ -5,7 +5,7 @@
 # the main domain's reverse proxy. See docker/Caddyfile.prod for the carve-out.
 
 # Stage 1: Base image with pnpm
-FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS base
+FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS base
 RUN npm install -g pnpm@10.34.5
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -59,7 +59,7 @@ WORKDIR /app/apps/portal
 RUN pnpm build
 
 # Stage 4: Production runner
-FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS runner
+FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS runner
 WORKDIR /app
 
 # Install security updates and wget for healthcheck; remove the base image's

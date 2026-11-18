@@ -1,14 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-const { authorizeLiveRemoteSessionAccessMock } = vi.hoisted(() => ({
+const { authorizeLiveRemoteSessionAccessMock, endRemoteSessionAsOperatorMock } = vi.hoisted(() => ({
   authorizeLiveRemoteSessionAccessMock: vi.fn(),
+  endRemoteSessionAsOperatorMock: vi.fn(),
 }));
 
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules.
 // Shapes mirror desktopWs_lifecycle.test.ts so module resolution matches.
 // -------------------------------------------------------------------
+
+// Existing route cases exercise the non-isolated ICE plan.
+vi.mock('./remote/desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./remote/helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./remote/helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -68,6 +81,12 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerJtiRevoked: vi.fn(async () => false),
   isViewerSessionRevoked: vi.fn(async () => false),
   revokeViewerSession: vi.fn(async () => undefined),
+}));
+
+// #10542: the reconnect hold. Defaults: marking succeeds, nothing is held.
+vi.mock('../services/desktopReconnectGrace', () => ({
+  markDesktopViewerReconnectIntent: vi.fn(async () => true),
+  enforceExpiredDesktopReconnectHold: vi.fn(async () => 'none'),
 }));
 
 vi.mock('./agentWs', () => ({
@@ -146,6 +165,14 @@ vi.mock('../services/remoteRevocationLease', () => ({
   })),
 }));
 
+// #11931: the operator end itself is unit-tested in
+// services/remoteSessionOperatorEnd.test.ts (and against a real row in
+// integration/remoteDesktopTerminalIntent.integration.test.ts); these cases pin
+// the viewer route's authorization and how it answers.
+vi.mock('../services/remoteSessionOperatorEnd', () => ({
+  endRemoteSessionAsOperator: endRemoteSessionAsOperatorMock,
+}));
+
 vi.mock('../services/remoteWsAuthorization', () => ({
   authorizeConsumedRemoteWsTicket: vi.fn(),
   authorizeLiveRemoteSessionAccess: authorizeLiveRemoteSessionAccessMock,
@@ -154,7 +181,8 @@ vi.mock('../services/remoteWsAuthorization', () => ({
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
+import { logSessionAudit } from './remote/helpers';
 import { verifyViewerAccessToken } from '../services/jwt';
 import { isViewerJtiRevoked, isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, sendDesktopIceCandidateToAgent } from './agentWs';
@@ -163,6 +191,7 @@ import { createDesktopWsRoutes } from './desktopWs';
 import { RemoteSessionPromptPolicyError } from './remote/consentGate';
 import { getRedis } from '../services/redis';
 import { desktopStartInFlightRedisKey } from '../services/desktopStartInFlight';
+import { enforceExpiredDesktopReconnectHold, markDesktopViewerReconnectIntent } from '../services/desktopReconnectGrace';
 
 // -------------------------------------------------------------------
 // Helpers
@@ -868,6 +897,93 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
   });
 });
 
+// #10542: a peer drop the viewer's reconnect caused is held for a short grace.
+// These routes are the viewer half of that: the ICE-server fetch marks the
+// reconnect, and a held session whose deadline passed is ended before any
+// viewer-token route serves it again.
+describe('viewer reconnect hold (#10542)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('none');
+    vi.mocked(markDesktopViewerReconnectIntent).mockResolvedValue(true);
+  });
+
+  const iceServersRequest = () => buildApp().request(`/${SESSION_ID}/viewer/ice-servers`, {
+    headers: { Authorization: 'Bearer valid.viewer.token' },
+  });
+
+  it('marks a reconnect in flight when the viewer fetches ICE servers for an active session', async () => {
+    primeHappyPath();
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, desktopStartGeneration: 7n }, device: DEVICE, user: USER });
+    const res = await iceServersRequest();
+    expect(res.status).toBe(200);
+    // The mark names the start the session is on, so a late drop for an
+    // older peer is never held against a newer start.
+    expect(markDesktopViewerReconnectIntent).toHaveBeenCalledWith(SESSION_ID, 7n);
+  });
+
+  it('does not mark the first connect (session not yet active)', async () => {
+    primeHappyPath();
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, status: 'pending' }, device: DEVICE, user: USER });
+    const res = await iceServersRequest();
+    expect(res.status).toBe(200);
+    expect(markDesktopViewerReconnectIntent).not.toHaveBeenCalled();
+  });
+
+  it('still serves ICE servers when the mark cannot be written', async () => {
+    primeHappyPath();
+    vi.mocked(markDesktopViewerReconnectIntent).mockResolvedValue(false);
+    expect((await iceServersRequest()).status).toBe(200);
+  });
+
+  it('accepts the reconnect offer while the hold is running', async () => {
+    primeHappyPath();
+    rigDesktopStartIntentSelects({ lockedStatus: 'active' });
+    const res = await offerRequest();
+    expect(res.status).toBe(200);
+    expect(enforceExpiredDesktopReconnectHold).toHaveBeenCalledWith(
+      expect.objectContaining({ id: SESSION_ID, deviceId: DEVICE_ID }),
+    );
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses with 401 'Session closed' once the hold's deadline passed (and it ended the session)", async () => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('ended');
+    const res = await offerRequest();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Session closed' });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses with 503 when the hold record cannot be checked', async () => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('unavailable');
+    const res = await offerRequest();
+    expect(res.status).toBe(503);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([['ws-ticket', 'POST'], ['ice-servers', 'GET']])('enforces an expired hold on %s too', async (route, method) => {
+    primeHappyPath();
+    vi.mocked(enforceExpiredDesktopReconnectHold).mockResolvedValue('ended');
+    const res = await buildApp().request(`/${SESSION_ID}/viewer/${route}`, {
+      method, headers: { Authorization: 'Bearer valid.viewer.token' },
+    });
+    expect(res.status).toBe(401);
+    expect(markDesktopViewerReconnectIntent).not.toHaveBeenCalled();
+  });
+
+  it('does not run the hold check on the failure-diagnostics read', async () => {
+    primeHappyPath();
+    const res = await buildApp().request(`/${SESSION_ID}/viewer/session`, {
+      headers: { Authorization: 'Bearer valid.viewer.token' },
+    });
+    expect(res.status).toBe(200);
+    expect(enforceExpiredDesktopReconnectHold).not.toHaveBeenCalled();
+  });
+});
+
 // #8947: one viewer window posted two offers ~250 ms apart; both were accepted
 // and dispatched, and the first peer was orphaned. The real start-intent and
 // in-flight-marker code runs here against an in-memory Redis.
@@ -1091,5 +1207,138 @@ describe('trickle ICE viewer routes (#9182)', () => {
     const body = await (await getSession()).json();
     expect(body.webrtcAnswer).toBeNull();
     expect(body.agentIceCandidates).toEqual([]);
+  });
+});
+
+describe('POST /:id/viewer/end — the viewer hang-up records operator_ended (#11931)', () => {
+  const endRequest = (headers: Record<string, string> = { Authorization: 'Bearer valid.viewer.token' }) =>
+    buildApp().request(`/${SESSION_ID}/viewer/end`, { method: 'POST', headers });
+
+  const ENDED_ROW = {
+    id: SESSION_ID,
+    status: 'disconnected',
+    endedAt: new Date('2026-11-16T10:00:00.000Z'),
+    durationSeconds: 42,
+    terminationPhase: 'pending',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+    endRemoteSessionAsOperatorMock.mockResolvedValue({
+      ok: true,
+      updated: ENDED_ROW,
+      terminalGeneration: 4n,
+      durationSeconds: 42,
+    });
+  });
+
+  it('ends the live session as the operator, in a system DB context, and audits it', async () => {
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      id: SESSION_ID,
+      status: 'disconnected',
+      durationSeconds: 42,
+      terminationPhase: 'pending',
+      terminalGeneration: '4',
+    });
+    expect(endRemoteSessionAsOperatorMock).toHaveBeenCalledTimes(1);
+    expect(endRemoteSessionAsOperatorMock).toHaveBeenCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ id: SESSION_ID, type: 'desktop' }),
+      device: expect.objectContaining({ id: DEVICE_ID, agentId: AGENT_ID }),
+    }));
+    // No request transaction exists on viewer-token routes.
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+    expect(logSessionAudit).toHaveBeenCalledWith(
+      'session_ended',
+      USER_ID,
+      'org-1',
+      expect.objectContaining({ sessionId: SESSION_ID, deviceId: DEVICE_ID, endedVia: 'viewer', durationSeconds: 42 }),
+      '127.0.0.1',
+    );
+  });
+
+  it('refuses a request with no viewer token', async () => {
+    const res = await endRequest({});
+    expect(res.status).toBe(401);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an invalid or expired viewer token', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue(null as never);
+    const res = await endRequest();
+    expect(res.status).toBe(401);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a viewer token minted for a different session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValue({
+      ...VALID_PAYLOAD,
+      sessionId: '99999999-9999-4999-8999-999999999999',
+    } as never);
+    const res = await endRequest();
+    expect(res.status).toBe(403);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a revoked viewer token', async () => {
+    vi.mocked(isViewerJtiRevoked).mockResolvedValue(true);
+    const res = await endRequest();
+    expect(res.status).toBe(401);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  it('does not touch a session that has already ended', async () => {
+    mockViewerSelect({ session: { ...ACTIVE_SESSION, status: 'disconnected' }, device: DEVICE, user: USER });
+    const res = await endRequest();
+    expect(res.status).toBe(401);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  // The route must use the live re-check, not just the token: a technician
+  // whose site, role, membership or the device policy changed cannot end it
+  // here (the peer close still ends it, as peer_disconnected).
+  it.each([
+    ['site_denied', 403],
+    ['permission_denied', 403],
+    ['session_not_owned', 403],
+    ['user_inactive', 403],
+    ['policy_denied', 403],
+    ['device_offline', 503],
+  ] as const)('refuses when live authorization denies with %s', async (reason, status) => {
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({ ok: false, status, reason });
+    const res = await endRequest();
+    expect(res.status).toBe(status);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+    expect(logSessionAudit).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 when another terminal writer won the race', async () => {
+    endRemoteSessionAsOperatorMock.mockResolvedValue({ ok: false, reason: 'already_ended', status: 'disconnected' });
+    const res = await endRequest();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Session is already ended', status: 'disconnected' });
+    expect(logSessionAudit).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 when the row is gone', async () => {
+    endRemoteSessionAsOperatorMock.mockResolvedValue({ ok: false, reason: 'not_found' });
+    const res = await endRequest();
+    expect(res.status).toBe(404);
+  });
+
+  it('audits and then fails when the viewer token could not be revoked', async () => {
+    endRemoteSessionAsOperatorMock.mockResolvedValue({
+      ok: true,
+      updated: ENDED_ROW,
+      terminalGeneration: 4n,
+      durationSeconds: 42,
+      viewerRevocationError: new Error('viewer session revocation unavailable'),
+    });
+    const res = await endRequest();
+    expect(res.status).toBe(500);
+    expect(logSessionAudit).toHaveBeenCalledTimes(1);
   });
 });

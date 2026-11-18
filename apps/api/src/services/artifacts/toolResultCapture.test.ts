@@ -27,6 +27,7 @@ vi.mock('../../config/env', () => ({
 }));
 
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
+import { PAGE_RESUME_KEY } from '../aiToolPageResume';
 import { BlobStorageUnavailableError } from './blobStorage';
 import {
   captureContextFrom,
@@ -77,6 +78,14 @@ describe('captureContextFrom — run path attributes from the principal (reconci
   });
 });
 
+describe('captureContextFrom — flow principal (W04 #5219)', () => {
+  it('captures nothing for a flow run, even with a chat scope supplied: its run id is not an agent run', () => {
+    const flowAuth = { principal: { kind: 'flow', flowId: 'flow-1', runId: RUN }, orgId: ORG } as never;
+    expect(captureContextFrom(flowAuth, undefined, 't')).toBeNull();
+    expect(captureContextFrom(flowAuth, { capture: { orgId: ORG, sessionId: SESSION } }, 't')).toBeNull();
+  });
+});
+
 describe('captureContextFrom — chat path attributes from ExecuteToolOptions.capture', () => {
   it('anchors on the session, with the session org, when auth.orgId is null (partner-scope login)', () => {
     expect(captureContextFrom(partnerAuth, { capture: { orgId: ORG, sessionId: SESSION } }, 'get_event_logs'))
@@ -121,6 +130,34 @@ describe('captureLargeToolResult — threshold boundary (spec §5.2)', () => {
     const parsed = JSON.parse(out) as { artifact: { handle: string }; compacted: string };
     expect(parsed.artifact.handle).toBe(HANDLE);
     expect(parsed.compacted).toBe(raw);
+  });
+});
+
+// #10385: the page-resume descriptor is compaction input the envelope helpers
+// attach to every non-empty page. It must not push a page over the capture
+// threshold, and it is not part of the stored result — but the compactor still
+// needs it on the `compacted` copy to re-issue nextCursor.
+describe('captureLargeToolResult — page-resume descriptor (#10385)', () => {
+  const descriptor = { v: 1, key: 'rows', f: '0123456789abcdef', mode: 'offset', offset: 0, rows: 1 };
+  const withDescriptor = (rowChars: number) => JSON.stringify({ rows: ['r'.repeat(rowChars)], [PAGE_RESUME_KEY]: descriptor });
+  const plainLength = (rowChars: number) => JSON.stringify({ rows: ['r'.repeat(rowChars)] }).length;
+
+  it('does not count the descriptor toward the threshold', async () => {
+    const rowChars = MAX_TOOL_RESULT_CHARS - plainLength(0);
+    expect(plainLength(rowChars)).toBe(MAX_TOOL_RESULT_CHARS);
+    const raw = withDescriptor(rowChars);
+    expect(raw.length).toBeGreaterThan(MAX_TOOL_RESULT_CHARS);
+    expect(await captureLargeToolResult(raw, ctx())).toBe(raw);
+    expect(mocks.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('stores the result without the descriptor, and hands it to the compactor on the compacted copy', async () => {
+    const raw = withDescriptor(30_000);
+    const out = JSON.parse(await captureLargeToolResult(raw, ctx())) as { compacted: string };
+    const storedText = (mocks.createArtifact.mock.calls[0]![0] as { body: Buffer }).body.toString('utf8');
+    expect(storedText).not.toContain(PAGE_RESUME_KEY);
+    expect(JSON.parse(storedText)).toEqual({ rows: ['r'.repeat(30_000)] });
+    expect(JSON.parse(out.compacted)).toEqual({ rows: ['r'.repeat(30_000)], [PAGE_RESUME_KEY]: descriptor });
   });
 });
 

@@ -170,6 +170,37 @@ describe('compactToolResultForChat', () => {
     expect((parsed._chat as Record<string, unknown>).outputCompacted).toBe(true);
   });
 
+  // ─── #11673: a run's report is read whole ────────────────────────────
+
+  it("keeps get_ai_agent_run's full run summary (up to the run's 2,000-char cap), next step included", () => {
+    const summary = `${'- **Evidence:** spooler crashed under memory pressure again.\n'.repeat(30)}\n**Next step:** collect a dump.`;
+    expect(summary.length).toBeGreaterThan(1_500);
+    expect(summary.length).toBeLessThanOrEqual(2_000);
+    const raw = JSON.stringify({ trace: { id: 'r1', status: 'completed', summary, findings: [] } });
+    const parsed = JSON.parse(compactToolResultForChat('get_ai_agent_run', raw)) as { trace: { summary: string } };
+    expect(parsed.trace.summary).toBe(summary);
+  });
+
+  it("keeps get_ai_agent_run's full summary when a large trace forces the tighter tiers", () => {
+    const nextStep = '**Next step:** collect a dump.';
+    const summary = `${'- **Evidence:** spooler crashed under memory pressure again.\n'.repeat(31)}\n${nextStep}`;
+    expect(summary.length).toBeLessThanOrEqual(2_000);
+    const entries = Array.from({ length: 80 }, (_, i) => ({ kind: 'tool_call', tool: `tool_${i}`, detail: 'd'.repeat(400) }));
+    const raw = JSON.stringify({ trace: { id: 'r1', status: 'completed', summary, entries } });
+    expect(raw.length).toBeGreaterThan(MAX_TOOL_RESULT_CHARS * 3);
+    const out = compactToolResultForChat('get_ai_agent_run', raw);
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_CHARS);
+    const parsed = JSON.parse(out) as { trace: { summary: string } };
+    expect(parsed.trace.summary).toBe(summary);
+  });
+
+  it('a summary field of any other tool keeps the generic string budget', () => {
+    const summary = 'x'.repeat(2_000);
+    const raw = JSON.stringify({ data: { summary } });
+    const parsed = JSON.parse(compactToolResultForChat('list_ai_agent_runs', raw)) as { data: { summary: string } };
+    expect(parsed.data.summary).toContain('[truncated 500 chars]');
+  });
+
   // ─── #3093: structured stdout survives compaction ───────────────────
 
   it('keeps plain-text stdout up to 6K chars without truncation', () => {
@@ -857,5 +888,46 @@ describe('character-window fields survive compaction intact (A-W05 Q3)', () => {
     const raw = JSON.stringify({ text: 'w'.repeat(30_000), other: 'z'.repeat(30_000) });
     const out = JSON.parse(compactToolResultForChat('some_tool', raw)) as { text: string; _chat?: { outputCompacted?: boolean } };
     expect(out.text.length).toBeLessThan(30_000);
+  });
+});
+
+// #10411: the chat handler compacts a tool result for the model, then
+// postToolUse compacts that SAME string again before persisting the
+// tool_result row. A JSON stdout becomes an object on the first pass, and the
+// second pass dropped it — the transcript kept only {status, exitCode,
+// commandId} while the model had read the stdout.
+describe('compactToolResultForChat is stable on its own output (#10411)', () => {
+  it('keeps a structured (JSON) stdout when an already-compacted command result is compacted again', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      commandId: 'cmd-1',
+      stdout: JSON.stringify({ processes: [{ name: 'svchost.exe', pid: 4 }], total: 1 }),
+    });
+    const once = compactToolResultForChat('execute_command', raw);
+    const twice = compactToolResultForChat('execute_command', once);
+    expect(JSON.parse(once).stdout).toEqual({ processes: [{ name: 'svchost.exe', pid: 4 }], total: 1 });
+    expect(JSON.parse(twice)).toEqual(JSON.parse(once));
+  });
+
+  it('keeps a first pass\'s stdoutChars/stderrChars instead of re-counting the already-shortened text', () => {
+    const firstPass = JSON.stringify({
+      status: 'completed',
+      exitCode: 1,
+      commandId: 'cmd-2',
+      stdout: 'out '.repeat(25),
+      stdoutChars: 30_000,
+      stderr: 'err '.repeat(10),
+      stderrChars: 9_000,
+    });
+    const again = JSON.parse(compactToolResultForChat('execute_command', firstPass));
+    expect(again.stdout).toBe('out '.repeat(25));
+    expect(again.stdoutChars).toBe(30_000);
+    expect(again.stderrChars).toBe(9_000);
+  });
+
+  it('never trusts a supplied stdoutChars smaller than the stdout it describes', () => {
+    const understated = JSON.stringify({ status: 'completed', exitCode: 0, stdout: 'x'.repeat(500), stdoutChars: 3 });
+    expect(JSON.parse(compactToolResultForChat('execute_command', understated)).stdoutChars).toBe(500);
   });
 });

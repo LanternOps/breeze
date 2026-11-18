@@ -84,16 +84,12 @@
  * assumption copied from a sibling: `workerEntrypointClosure.contract.test.ts`
  * (the mechanical authority) was run for BOTH values, and this module's
  * runtime import closure reaches neither `routes/agentWs.ts` nor
- * `services/agentCommandAwait.ts`. `alertVerdictScheduler` — same job shape,
- * `socket-owner` placement — reaches them only through
- * `alertVerdictSubscriber` -> `aiToolsOrgs` -> `tenantOffboarding` ->
- * `orgMerge` -> `routes/portal/helpers`, none of which this module imports.
- * The deepest AI dependency here is `createAndEnqueueAgentRun`, which inserts
+ * `services/agentCommandAwait.ts`. The deepest AI dependency here is `createAndEnqueueAgentRun`, which inserts
  * a run row and enqueues; socket dispatch happens later, in `aiAgentRunner`.
  * Do not relitigate the value by reasoning about it — run the tool.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { AiAgentScheduleKind, AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 
@@ -106,14 +102,14 @@ import { aiAgentSchedules, aiAgents, organizations } from '../db/schema';
 import { envFlag } from '../config/env';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import { CronOccurrenceCache } from '../services/aiAgents/sweepOccurrence';
 import {
   effectiveSchedule,
   resolveEffectiveSchedulesForPartner,
   type ScheduleOverrideSummary,
 } from '../services/aiAgents/scheduleService';
-import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
-import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
+import { createAndEnqueueAgentRun, type CreateAgentRunInput } from '../services/aiAgents/runService';
+import { partnerFanoutOrgCondition } from '../services/partnerFanoutOrgs';
 
 export const AI_AGENT_SWEEP_QUEUE = 'ai-agent-sweep';
 
@@ -142,6 +138,19 @@ const FUTURE_CREATED_AT_WARN_MS = 60 * 60 * 1000;
 export interface SweepOccurrenceJobData {
   scheduleId: string;
   occurrenceKey: string;
+  /**
+   * Wisp W07 (plan Task 3) — a ONE-OFF specialist occurrence produced only by
+   * the Wisp coordinator (`specialistLaunchers.launchSweep`). TRUSTED INTERNAL
+   * INPUT, like `CreateAgentRunInput.grant`: the cron tick never sets these.
+   *   orgIds     restricts the fan-out (∩ the partner's sweepable orgs)
+   *   grant      pins each admitted run to the grant + requesting assessment
+   *   sweepKinds intersects the org's effective kinds (never widens)
+   * A specialist occurrence does not write `last_run_summary` — that column
+   * is the SCHEDULE's last cron occurrence, which a one-off must not clobber.
+   */
+  orgIds?: string[];
+  grant?: CreateAgentRunInput['grant'];
+  sweepKinds?: AiSweepKind[];
 }
 
 type SweepJobData = SweepOccurrenceJobData | Record<string, never>;
@@ -252,6 +261,10 @@ async function claimOccurrence(
   return rows.length > 0;
 }
 
+/** Each baseline schedule's latest occurrence, kept between ticks, so a tick
+ *  evaluates only the minutes since the previous one (see CronOccurrenceCache). */
+const occurrences = new CronOccurrenceCache();
+
 /**
  * One scan of every enabled partner baseline. See this module's header for
  * the add-then-CAS ordering, which is asserted in `aiAgentSweepScheduler.test.ts`.
@@ -272,6 +285,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
   const baselines = await runWithSystemDbAccess(loadDueBaselines);
 
   let enqueued = 0;
+  occurrences.beginPass();
   for (const baseline of baselines) {
     // Per-baseline error boundary. One partner must never be able to stop the
     // scan for every other partner, and there are two realistic ways it could:
@@ -281,7 +295,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
     // faults; the tick is idempotent and re-runs in 5 minutes, so the right
     // response is to log this one loudly and keep scanning.
     try {
-      const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
+      const occurrence = occurrences.latest(baseline.cron, baseline.timezone, now);
       if (!occurrence) continue;
       if (occurrence.key === baseline.lastOccurrenceKey) continue;
 
@@ -399,6 +413,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
     }
   }
 
+  occurrences.endPass();
   return { scanned: baselines.length, enqueued };
 }
 
@@ -452,14 +467,6 @@ async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBas
   return (rows[0] as OccurrenceBaselineRow | undefined) ?? null;
 }
 
-/**
- * Statuses a sweep may run against — the SAME live-org definition
- * `middleware/auth.ts`'s partner-scope org resolution uses. Everything else
- * (`suspended`, `churned`, `offboarding`, `merging`, `archived`, `purging`) is
- * a tenant in a terminal or frozen lifecycle state; `archived` is what an
- * archived_at org carries.
- */
-const SWEEPABLE_ORG_STATUSES = ['active', 'trial'] as const;
 
 /**
  * Hard admission ceiling per occurrence (review fix, #4189).
@@ -485,24 +492,26 @@ export const MAX_ORGS_PER_OCCURRENCE = 500;
  * (`partner_id` + `type <> 'quick_support'` — quick_support is the partner's
  * hidden holder for ephemeral support enrolments, which no scheduled hygiene
  * sweep may touch) and narrows it to LIVE tenants: soft-deleted orgs and orgs
- * outside `SWEEPABLE_ORG_STATUSES` are excluded from the enumeration entirely,
+ * outside `PARTNER_FANOUT_ORG_STATUSES` are excluded from the enumeration entirely,
  * so they are not merely skipped — they never appear in `orgsTotal` either.
  * A sweep is unattended, recurring, LLM-spending work; billing a churned or
  * mid-offboarding tenant for it, or raising findings a nobody will action, is
  * strictly worse than not running.
+ *
+ * Also the fan-out set of a partner-wide flow schedule (tool catalog W04,
+ * jobs/flowScheduleTick.ts): the same live-tenant rule and the same cap.
+ * Runs on the ambient `db` — call it inside a system DB context.
  */
-async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[]; capped: number }> {
+export async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[]; capped: number }> {
   const { db } = dbModule;
   const rows = await db
     .select({ id: organizations.id })
     .from(organizations)
     .where(and(
       eq(organizations.partnerId, partnerId),
-      ne(organizations.type, 'quick_support'),
-      // Nor the holding org: no sweep (or model spend) on devices not yet assigned.
-      notHoldingOrgCondition(),
-      isNull(organizations.deletedAt),
-      inArray(organizations.status, [...SWEEPABLE_ORG_STATUSES]),
+      // Live tenants only (not quick_support, not the holding org, not
+      // deleted, active/trial) — the predicate the flow event trigger shares.
+      partnerFanoutOrgCondition(),
     ))
     // Deterministic: the cap below takes a PREFIX of this list, so without a
     // stable order a capped partner would sweep an arbitrary — and different
@@ -585,7 +594,8 @@ export async function processSweepOccurrence(
     console.info('[AiAgentSweepScheduler] sweep occurrence skipped — schedule or agent is no longer eligible', {
       scheduleId, occurrenceKey,
     });
-    return writeEmptySummary(scheduleId, occurrenceKey);
+    // A Wisp one-off never overwrites the schedule's cron summary (W07).
+    return data.grant ? emptySummary(occurrenceKey) : writeEmptySummary(scheduleId, occurrenceKey);
   }
 
   // Called with NO ambient DB context — it opens its own system context (and
@@ -596,7 +606,8 @@ export async function processSweepOccurrence(
     console.warn('[AiAgentSweepScheduler] baseline vanished from the partner resolver between reads', {
       scheduleId, occurrenceKey,
     });
-    return writeEmptySummary(scheduleId, occurrenceKey);
+    // A Wisp one-off never overwrites the schedule's cron summary (W07).
+    return data.grant ? emptySummary(occurrenceKey) : writeEmptySummary(scheduleId, occurrenceKey);
   }
   const overridesByOrg: Map<string, ScheduleOverrideSummary> = entry.overridesByOrg;
 
@@ -608,9 +619,18 @@ export async function processSweepOccurrence(
   // much more alarming — statement than "the schedule was turned off".
   const scheduleDisabled = !entry.baseline.enabled;
 
-  const { orgIds, capped } = await runWithSystemDbAccess(
+  const partnerOrgs = await runWithSystemDbAccess(
     () => loadPartnerOrgIds(baseline.partnerId as string),
   );
+  // Wisp W07: a specialist occurrence sweeps only the orgs it names, and only
+  // those the partner enumeration itself would sweep (quick_support, holding,
+  // deleted and suspended orgs stay out). It is sweep-only.
+  const wispOccurrence = data.grant !== undefined;
+  const requestedOrgs = data.orgIds ? new Set(data.orgIds) : null;
+  const orgIds = wispOccurrence && baseline.kind !== 'sweep'
+    ? []
+    : requestedOrgs ? partnerOrgs.orgIds.filter((id) => requestedOrgs.has(id)) : partnerOrgs.orgIds;
+  const capped = requestedOrgs ? 0 : partnerOrgs.capped;
 
   const skipReasons: Record<string, number> = {};
   let runsAdmitted = 0;
@@ -690,6 +710,12 @@ export async function processSweepOccurrence(
         countSkip('override_disabled');
         continue;
       }
+      // Wisp W07: a requested kind set that shares nothing with what this org
+      // may sweep leaves nothing to do — the same outcome as an empty override.
+      if (data.sweepKinds && !effective.sweepKinds.some((k) => data.sweepKinds!.includes(k))) {
+        countSkip('override_disabled');
+        continue;
+      }
 
       // Per-org error boundary. Admission touches Postgres, Redis and the
       // budget/billing lookups, so one org's transient failure (or one corrupt
@@ -745,7 +771,11 @@ export async function processSweepOccurrence(
                 triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'patch' },
                 dedupeKey: `patch-${baseline.id}-${orgId}-${occurrenceKey}`,
               };
-            case 'sweep':
+            case 'sweep': {
+              // Wisp W07: a requested kind set narrows, never widens.
+              const sweepKinds = data.sweepKinds
+                ? effective.sweepKinds.filter((k) => data.sweepKinds!.includes(k))
+                : effective.sweepKinds;
               return {
                 orgId,
                 kind: 'triage',
@@ -753,9 +783,11 @@ export async function processSweepOccurrence(
                 deviceId: null,
                 profile: 'sweep',
                 scheduleId: baseline.id,
-                triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds },
                 dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+                ...(data.grant ? { grant: data.grant } : {}),
               };
+            }
             default: {
               const exhaustive: never = kind;
               throw new Error(`[AiAgentSweepScheduler] unknown schedule kind ${String(exhaustive)}`);
@@ -781,7 +813,8 @@ export async function processSweepOccurrence(
     // rethrown so it can never mask an in-flight error from the loop.
     summary = buildSummary();
     try {
-      await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
+      // A Wisp one-off must not overwrite the schedule's cron summary.
+      if (!wispOccurrence) await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
     } catch (error) {
       console.error('[AiAgentSweepScheduler] failed to persist last_run_summary', {
         scheduleId, occurrenceKey, error,

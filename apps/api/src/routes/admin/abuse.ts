@@ -16,16 +16,17 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
+import { cancelPendingEmailChange } from '../../services/pendingEmailCancellation';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { getBreezeBillingClient } from '../../services/breezeBillingClient';
+import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from '../../services/breezeBillingClient';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { billingStatusContradictsPayment } from '../../services/partnerActivation';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
 import type { Database } from '../../db';
 
-import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
 export const abuseRoutes = new Hono();
 
 // The `users.disabled_reason` marker written by partner suspension. Unsuspend
@@ -144,21 +145,20 @@ export async function suspendPartnerForAbuse(
           );
 
           // Cancel any other pending/sent commands for those devices.
-          await tx
-            .update(deviceCommands)
-            .set({
-              status: 'cancelled',
-              completedAt: new Date(),
-              result: { reason: 'partner_suspended_for_abuse' },
-              ...terminalPayloadErasureSet(),
-            })
-            .where(
-              and(
-                inArray(deviceCommands.deviceId, deviceIds),
-                ne(deviceCommands.type, 'self_uninstall'),
-                inArray(deviceCommands.status, ['pending', 'sent'])
-              )
-            );
+          // Through the shared helper (#9719) so the owning script execution /
+          // patch job / deployment result / incident action is terminalised too.
+          await cancelDeviceCommands({
+            executor: tx,
+            // A hook failure must not roll back the surrounding writes; it is
+            // isolated per command (savepoint), logged and sent to Sentry.
+            isolateFailures: true,
+                        result: { reason: 'partner_suspended_for_abuse' },
+            where: and(
+              inArray(deviceCommands.deviceId, deviceIds),
+              ne(deviceCommands.type, 'self_uninstall'),
+              inArray(deviceCommands.status, ['pending', 'sent'])
+            )!,
+          });
         }
 
         // Collect users for revocation BEFORE deleting sessions.
@@ -194,6 +194,7 @@ export async function suspendPartnerForAbuse(
         for (const { id } of disableResult) {
           await advanceUserEpochs(tx, id, { auth: true });
           await revokeAllRefreshFamilies(tx, id, 'suspended');
+          await cancelPendingEmailChange(tx, id);
         }
 
         // Revoke API keys for orgs under this partner.
@@ -297,7 +298,26 @@ export async function suspendPartnerForAbuse(
     // (self-hosted). Outcome is recorded in the audit trail either way.
     let billingSubscriptionCanceled: boolean | null = null;
     let billingCancelError: string | null = null;
+    // Open Checkout Sessions stay payable for up to 24 h after the suspend
+    // unless they are expired, and Stripe refuses to cancel an `incomplete`
+    // subscription while its session is open, so they are closed first
+    // (#11952). Never throws; the outcome goes on the audit row.
+    let billingCheckoutsClosed: CloseOpenCheckoutsResult | null = null;
     if (process.env.BREEZE_BILLING_URL) {
+      try {
+        billingCheckoutsClosed = await getBreezeBillingClient().closeOpenCheckouts({
+          partnerId,
+          reason: 'admin:suspend_for_abuse',
+        });
+      } catch (err) {
+        // getBreezeBillingClient throws only when billing is not configured.
+        billingCheckoutsClosed = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
+      }
+      if (billingCheckoutsClosed.status === 'failed') {
+        captureException(new Error(
+          `[admin/suspend-for-abuse] close-open-checkouts failed for partner ${partnerId}: ${billingCheckoutsClosed.detail}`,
+        ), c);
+      }
       try {
         const cancelResult = await getBreezeBillingClient().cancelSubscription({
           partnerId,
@@ -309,6 +329,8 @@ export async function suspendPartnerForAbuse(
         captureException(err, c);
       }
     }
+
+    const checkoutsCloseFailed = billingCheckoutsClosed !== null && billingCheckoutsClosed.status !== 'closed';
 
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
@@ -335,6 +357,7 @@ export async function suspendPartnerForAbuse(
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
           billingSubscriptionCanceled,
           ...(billingCancelError !== null ? { billingCancelError } : {}),
+          ...(billingCheckoutsClosed !== null ? { billingCheckoutsClosed } : {}),
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
             : {}),
@@ -388,6 +411,7 @@ export async function suspendPartnerForAbuse(
           queuedUninstalls: result.deviceCount,
           billingSubscriptionCanceled,
           ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
+          ...(checkoutsCloseFailed ? { billingCheckoutsCloseFailed: true } : {}),
         },
         500,
       );
@@ -408,6 +432,8 @@ export async function suspendPartnerForAbuse(
       // Sentry/audit, so they can cancel manually in Stripe.
       billingSubscriptionCanceled,
       ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
+      // Same for open checkouts: those sessions need a manual expire.
+      ...(checkoutsCloseFailed ? { billingCheckoutsCloseFailed: true } : {}),
     });
 }
 

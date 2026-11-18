@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, LayoutTemplate } from 'lucide-react';
+import { PortalVisibilityBadge } from '../deliverables/PortalVisibilityBadge';
 import {
   MANAGED_EVIDENCE_REPORT_TYPES,
   defaultPortalVisibleForCadence,
@@ -36,12 +37,6 @@ interface LoadFailure {
 
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
-
-/** Fallback label for a managed evidence type until its wave adds a locale key. */
-function humanizeReportType(type: string): string {
-  const words = type.replace(/_/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
 
 interface ItemFormState {
   name: string;
@@ -127,6 +122,7 @@ const labelClass = 'block text-xs font-medium text-muted-foreground';
  */
 export default function DeliverableTemplatesPage() {
   const { t } = useTranslation('deliverables');
+  const { t: tReports } = useTranslation('reports');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const uid = useId();
 
@@ -476,6 +472,9 @@ export default function DeliverableTemplatesPage() {
                       <span className="ml-2 text-xs text-muted-foreground">
                         {t(/* i18n-dynamic */ `cadence.${item.cadence}`)}
                       </span>
+                      <span className="ml-2">
+                        <PortalVisibilityBadge visible={item.portalVisible} testId={`deliverable-template-item-portal-${item.id}`} />
+                      </span>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -543,6 +542,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-lead-days"
                           value={itemForm.leadDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, leadDays: e.target.value }))}
                         />
@@ -555,6 +555,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-grace-days"
                           value={itemForm.graceDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, graceDays: e.target.value }))}
                         />
@@ -564,6 +565,7 @@ export default function DeliverableTemplatesPage() {
                         <select
                           id={`${uid}-item-mode-${set.id}`}
                           className={inputClass}
+                          data-testid="deliverable-template-item-completion-mode"
                           value={itemForm.completionMode}
                           onChange={(e) => setItemForm((f) => ({ ...f, completionMode: e.target.value as DeliverableCompletionMode }))}
                         >
@@ -576,6 +578,7 @@ export default function DeliverableTemplatesPage() {
                         <input
                           type="checkbox"
                           checked={itemForm.artifactRequired}
+                          data-testid="deliverable-template-item-artifact-required"
                           onChange={(e) => setItemForm((f) => ({ ...f, artifactRequired: e.target.checked }))}
                         />
                         {t('templates.form.artifactRequired')}
@@ -606,10 +609,10 @@ export default function DeliverableTemplatesPage() {
                           }
                         >
                           <option value="">{t('form.autoEvidenceNone')}</option>
-                          {/* Each report-type wave adds its label under
-                              `reports.types` when it lands (#5784 W02 first). */}
                           {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
-                            <option key={type} value={type}>{humanizeReportType(type)}</option>
+                            <option key={type} value={type}>
+                              {tReports(/* i18n-dynamic */ `reports.reportsList.reportTypes.${type}`)}
+                            </option>
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>

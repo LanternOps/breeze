@@ -21,7 +21,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { devices } from '../db/schema';
 
 const CACHE_TTL_MS = 60 * 1000; // 1 minute — site assignment changes are rare
@@ -67,11 +67,11 @@ export async function resolveDeviceSiteId(
   if (cached) return cached.siteId;
 
   try {
-    const [row] = await db
+    const [row] = await withDbTransactionIfHeld(() => db
       .select({ siteId: devices.siteId })
       .from(devices)
       .where(eq(devices.id, deviceId))
-      .limit(1);
+      .limit(1));
 
     const siteId = row?.siteId ?? undefined;
     setCached(deviceId, siteId);

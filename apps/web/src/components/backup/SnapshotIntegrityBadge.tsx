@@ -21,6 +21,19 @@ const TONE_CLASS: Record<Tone, string> = {
   failed: 'border-destructive/40 bg-destructive/10 text-destructive',
 };
 
+/** The badge tone (and so the `snapshotIntegrityBadge.*` key) for a status; null when unknown. */
+export function snapshotIntegrityTone(status?: string | null): Tone | null {
+  return (status ? TONE_BY_STATUS[status] : undefined) ?? null;
+}
+
+/**
+ * True when restoring this snapshot will ask for a second-factor confirmation
+ * (#9629). Presentational hint only: the server gate decides.
+ */
+export function isUnverifiedSnapshotStatus(status?: string | null): boolean {
+  return status ? TONE_BY_STATUS[status] === 'unverified' : false;
+}
+
 /**
  * Whether a snapshot's contents are covered by a verified integrity record.
  * Renders nothing when the API does not report a status (an older server) or

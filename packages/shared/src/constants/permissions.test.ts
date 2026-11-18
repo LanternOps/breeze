@@ -72,9 +72,13 @@ describe('agreements permission (agreements vocabulary + IA split, W02)', () => 
 
   // No `manage`: publish and archive are write operations on a template
   // (spec §4). A third action would be an ungated capability with no gate.
-  it('declares no third action', () => {
+  // #9075 W2a (OD7 B) adds `send` — sending a legal document, copying its
+  // link, voiding it and recording a client's assent are a different blast
+  // radius from editing templates. Still no `manage`.
+  it('declares exactly read, write and send', () => {
     const agreementKeys = Object.keys(PERMISSION_GRANTS).filter((k) => k.startsWith('AGREEMENTS_'));
-    expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_WRITE']);
+    expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_SEND', 'AGREEMENTS_WRITE']);
+    expect((PERMISSION_GRANTS as Record<string, unknown>).AGREEMENTS_SEND).toEqual({ resource: 'agreements', action: 'send' });
   });
 });
 
@@ -114,5 +118,11 @@ describe('agent recovery grant (#9234)', () => {
   it('is its own devices action, distinct from devices:execute', () => {
     expect(PERMISSION_GRANTS.DEVICES_RECOVER_AGENT).toEqual({ resource: 'devices', action: 'recover_agent' });
     expect(PERMISSION_GRANTS.DEVICES_RECOVER_AGENT).not.toEqual(PERMISSION_GRANTS.DEVICES_EXECUTE);
+  });
+});
+
+describe('AI workspace execute grant (Wisp W02, spec §4.6)', () => {
+  it('is its own execute-class key, not ai_agents:read', () => {
+    expect(PERMISSION_GRANTS.AI_WORKSPACE_EXECUTE).toEqual({ resource: 'ai_workspace', action: 'execute' });
   });
 });

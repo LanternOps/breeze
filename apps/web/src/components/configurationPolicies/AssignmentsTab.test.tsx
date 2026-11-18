@@ -55,12 +55,13 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
   });
 
   it('lists the partner organizations as a checklist', async () => {
-    fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse({ data: [] })) // assignments
-      .mockResolvedValueOnce(jsonResponse({
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations?')) return jsonResponse({
         data: [{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }],
         pagination: { page: 1, limit: 100, total: 2 },
-      })); // org list
+      });
+      return jsonResponse({ data: [] });
+    });
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
 
     expect(await screen.findByRole('checkbox', { name: 'Acme Corp' })).toBeInTheDocument();
@@ -68,9 +69,11 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
   });
 
   it('checks the All-orgs toggle when a partner-level assignment already exists', async () => {
-    fetchWithAuth.mockResolvedValue(
-      jsonResponse({ data: [{ id: 'a1', level: 'partner', targetId: PARTNER_ID, priority: 0 }] })
-    );
+    fetchWithAuth.mockImplementation(async (url: string) => jsonResponse({
+      data: url === `/configuration-policies/${POLICY_ID}/assignments`
+        ? [{ id: 'a1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]
+        : [],
+    }));
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
 
     await waitFor(() =>

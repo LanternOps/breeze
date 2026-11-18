@@ -6,6 +6,7 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { invalidateTicketConfig } from '../../lib/ticketConfigApi';
+import BusinessHoursCard from './BusinessHoursCard';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 
 // Authoritative built-in SLA defaults (mirrors PRIORITY_SLA_DEFAULTS in apps/api).
@@ -216,6 +217,8 @@ export default function TicketPrioritiesTab() {
           </>
         )}
       </div>
+
+      <BusinessHoursCard />
     </div>
   );
 }

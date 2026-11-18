@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { assetCheckouts, devices } from '../../db/schema';
 import {
@@ -25,26 +25,37 @@ assetRoutes.get('/assets', zValidator('query', listSchema), async (c) => {
   const query = c.req.valid('query');
   const { page, limit, offset } = getPagination(query);
 
-  const availableWhere = and(
+  // #9773: the Equipment page is "Everything checked out to you" — only devices
+  // with an open checkout held by the signed-in portal user. It used to list the
+  // org's *available* (not checked-out) devices, so customers saw machines they
+  // had never borrowed. EXISTS only narrows the org-scoped device set (the
+  // checkout is pinned to the same org too), and unlike a join it cannot repeat
+  // a device: nothing in the schema stops two open checkouts of one device, as
+  // the checkout route checks before it inserts.
+  const assetWhere = and(
     eq(devices.orgId, auth.user.orgId),
     // Ephemeral Quick Support devices are never checkoutable assets, and this is
     // an end-customer-facing surface — exclude them defensively.
     eq(devices.isEphemeral, false),
-    isNull(assetCheckouts.id)
+    exists(
+      db
+        .select({ one: sql`1` })
+        .from(assetCheckouts)
+        .where(
+          and(
+            eq(assetCheckouts.deviceId, devices.id),
+            eq(assetCheckouts.orgId, auth.user.orgId),
+            eq(assetCheckouts.checkedOutTo, auth.user.id),
+            isNull(assetCheckouts.checkedInAt)
+          )
+        )
+    )
   );
 
   const assetCountResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(devices)
-    .leftJoin(
-      assetCheckouts,
-      and(
-        eq(assetCheckouts.deviceId, devices.id),
-        eq(assetCheckouts.orgId, auth.user.orgId),
-        isNull(assetCheckouts.checkedInAt)
-      )
-    )
-    .where(availableWhere);
+    .where(assetWhere);
   const assetCount = assetCountResult[0]?.count ?? 0;
 
   const data = await db
@@ -57,15 +68,7 @@ assetRoutes.get('/assets', zValidator('query', listSchema), async (c) => {
       lastSeenAt: devices.lastSeenAt
     })
     .from(devices)
-    .leftJoin(
-      assetCheckouts,
-      and(
-        eq(assetCheckouts.deviceId, devices.id),
-        eq(assetCheckouts.orgId, auth.user.orgId),
-        isNull(assetCheckouts.checkedInAt)
-      )
-    )
-    .where(availableWhere)
+    .where(assetWhere)
     .orderBy(desc(devices.updatedAt), desc(devices.id))
     .limit(limit)
     .offset(offset);

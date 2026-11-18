@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for breeze-backup, breeze-desktop-helper and
+  breeze-watchdog. Identical to what they were signed with before #10375.
+  None of them runs the YARA engine, so none gets
+  com.apple.security.cs.allow-unsigned-executable-memory — that exception is
+  scoped to breeze-agent (agent-macos.entitlements.plist).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

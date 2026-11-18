@@ -33,10 +33,16 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.D.String()) }
 
 // ActionDropSockets is the internal action that closes every simulated agent
-// socket at once (sockethub.go).
+// socket at once, client side, with no close frame (sockethub.go).
 const ActionDropSockets = "drop-sockets"
 
-var internalActions = map[string]bool{ActionDropSockets: true}
+// ActionDrainSockets stands in for a draining API instance: it gives every
+// live session a drain hint of withinMs, then closes its socket as a server
+// going away (close code 1001). The drain SENDER is the API's (W5c); this
+// action replaces it for the agent-side measurement.
+const ActionDrainSockets = "drain-sockets"
+
+var internalActions = map[string]bool{ActionDropSockets: true, ActionDrainSockets: true}
 
 // preWindow is the baseline window before each event's start: the reconnect
 // curve's baseline is the mean live-socket count over it.
@@ -53,6 +59,8 @@ var stormVarRe = regexp.MustCompile(`^STORM_[A-Z0-9_]+$`)
 type Action struct {
 	Exec     []string `json:"exec,omitempty"`
 	Internal string   `json:"internal,omitempty"`
+	// WithinMs is the drain window, drain-sockets only.
+	WithinMs *int64 `json:"withinMs,omitempty"`
 }
 
 // Event is one fault: start actions at At (from the steady-window open), end
@@ -125,12 +133,18 @@ func (sc *Scenario) expand(lookup func(string) (string, bool)) error {
 }
 
 func validateAction(ev string, a Action) error {
+	if a.WithinMs != nil && a.Internal != ActionDrainSockets {
+		return fmt.Errorf("event %q: withinMs is only valid on %s", ev, ActionDrainSockets)
+	}
 	switch {
 	case len(a.Exec) > 0 && a.Internal != "":
 		return fmt.Errorf("event %q: an action is either exec or internal, not both", ev)
 	case a.Internal != "":
 		if !internalActions[a.Internal] {
 			return fmt.Errorf("event %q: unknown internal action %q", ev, a.Internal)
+		}
+		if a.Internal == ActionDrainSockets && (a.WithinMs == nil || *a.WithinMs < 0) {
+			return fmt.Errorf("event %q: %s needs withinMs >= 0", ev, ActionDrainSockets)
 		}
 	case len(a.Exec) == 0:
 		return fmt.Errorf("event %q: an action needs exec or internal", ev)

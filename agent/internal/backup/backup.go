@@ -619,7 +619,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			readOnly, bindErr := m.bindBrokeredJournal(runCtx, journal, issuer, dispatched)
 			switch {
 			case errors.Is(bindErr, errJournalUnusable):
-				log.Warn("checkpoint journal unusable for this brokered run, proceeding without resume support", "error", bindErr.Error())
+				warnJournalUnusable(job, bindErr)
 				journal.Abandon()
 				journal = nil
 			case bindErr != nil:
@@ -630,7 +630,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			default:
 				readOnlyCompletion = readOnly
 			}
-		} else if err := journal.BindRun(m.config.JobID, dispatched); err != nil {
+		} else if err := journal.BindRun(m.config.JobID, dispatched); errors.Is(err, errJournalUnusable) {
+			warnJournalUnusable(job, err)
+			journal.Abandon()
+			journal = nil
+		} else if err != nil {
 			log.Warn("failed to bind checkpoint journal to this run", "error", err.Error())
 		}
 	}
@@ -668,6 +672,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 		if journal.DiscardedOldFormat() {
 			appendWarning(job, warnJournalDiscardedOldFormat+": an interrupted run's checkpoint from an earlier helper version was discarded; this run started a new snapshot")
+		}
+		if journal.CheckpointingDisabled() {
+			appendWarning(job, warnJournalCheckpointingDisabled+": the interrupted run's checkpoint is damaged and could not be repaired, often because the disk is full; this run resumed from it but records no new progress")
 		}
 		if resumedJournal {
 			log.Info("resuming interrupted backup from checkpoint journal",
@@ -849,7 +856,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if vssSession != nil {
 			ssOpts.ShadowPaths = vssSession.ShadowPaths
 		}
-		manifest, stagingDir, ssErr := collectSystemState(ssOpts)
+		manifest, stagingDir, ssErr := collectSystemState(runCtx, ssOpts)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
@@ -1037,6 +1044,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if vssSession != nil {
 		for i := range reparseSkipped.sample {
 			reparseSkipped.sample[i].path = livePathForVSS(reparseSkipped.sample[i].path, vssSession.ShadowPaths)
+		}
+		for i := range reparseSkipped.notLocalSample {
+			reparseSkipped.notLocalSample[i].path = livePathForVSS(reparseSkipped.notLocalSample[i].path, vssSession.ShadowPaths)
 		}
 		// Junctions captured as links (#7325) restore under the live path
 		// they mirror, exactly like files (originalPathsForVSS below).
@@ -1304,7 +1314,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// before the (throttled) per-file progress calls start arriving.
 		// No snapshot exists yet — createSnapshotWithProgress mints the ID
 		// below and emits it on its own first (forced) progress call.
-		progressFn(0, len(files), 0, bytesTotal, "")
+		progressFn(RunProgress{FilesTotal: len(files), BytesTotal: bytesTotal})
 	}
 
 	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
@@ -1312,7 +1322,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// cleanup entirely (D18 §3.5) — see that block earlier in this
 	// function. D15's snapshotOpts/withSystemState wiring is independent of
 	// that and slots in here unchanged.
-	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions)}
+	snapshotOpts := []createSnapshotOption{
+		withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions),
+		// Mid-pass warnings (the window forecast, #11014) land on the job as
+		// they happen, so a run that later fails still reports them.
+		withRunWarning(func(w string) { appendWarning(job, w) }),
+	}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
 		// ordinary manifest.json — see withSystemState's doc comment. This
@@ -1598,6 +1613,14 @@ func removeWarning(job *BackupJob, fragment string) {
 	}
 }
 
+// warnJournalUnusable reports a checkpoint journal that could not be restarted
+// (see errJournalUnusable). The run still completes, but if it dies nothing
+// records how far it got, so the job says so.
+func warnJournalUnusable(job *BackupJob, err error) {
+	log.Warn("checkpoint journal could not be restarted, proceeding without resume support", "error", err.Error())
+	appendWarning(job, warnJournalCheckpointingDisabled+": the checkpoint journal could not be created, often because the disk is full; this run started a new snapshot and cannot resume if interrupted")
+}
+
 func appendWarning(job *BackupJob, fragment string) {
 	if fragment == "" {
 		return
@@ -1639,7 +1662,7 @@ func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func())
 				// the pre-upload phases. filesDone stays 0, so nothing the loop
 				// later reports can appear to go backwards. This keepalive only
 				// runs before the snapshot is created, so it never has an ID.
-				onProgress(0, 0, 0, 0, "")
+				onProgress(RunProgress{})
 			}
 		}
 	}()
@@ -1910,10 +1933,17 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 // collectBackupFilesWithSkips is collectBackupFilesFromPaths plus a record of
 // every reparse point the walk skipped (#7051): junctions, volume mount points
 // and other reparse points Go reports as os.ModeIrregular. Those are neither
-// traversed nor captured, but no longer silently. The returned *reparseSkips
-// is never nil.
+// traversed nor captured, but no longer silently. WOF-compressed and local
+// cloud files are the exception: they are data files and are captured, and
+// unhydrated cloud placeholders are skipped without being read (#7326,
+// placeholder.go). The returned *reparseSkips is never nil.
 func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, *reparseSkips, error) {
 	skips := newReparseSkips()
+	// Placeholders must look like placeholders to this walk, or an
+	// unhydrated OneDrive file reads as a plain file and the upload
+	// downloads it (#7326). Scoped to this goroutine's locked OS thread.
+	releasePlaceholders := exposePlaceholdersForWalk()
+	defer releasePlaceholders()
 	if m.config.CaptureSecurityDescriptors {
 		// Scoped to this walk: SeBackupPrivilege/SeSecurityPrivilege are
 		// disabled again on return, never left enabled process-wide.
@@ -1941,8 +1971,19 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 
 		rootLabel := fmt.Sprintf("path_%d", idx)
 		if !info.IsDir() {
-			if !info.Mode().IsRegular() {
+			// Same placeholder policy as the walk below (#7326).
+			if sp, skip := notStoredLocally(cleanRoot, info); skip {
+				skips.addNotLocal(sp)
 				continue
+			}
+			if !info.Mode().IsRegular() {
+				sp, ok := skippedReparsePointFor(cleanRoot, info)
+				if !ok || !captureAsDataFile(&sp) {
+					if ok {
+						skips.add(sp)
+					}
+					continue
+				}
 			}
 			relPath := filepath.Base(cleanRoot)
 			if excl.matches(relPath) || isWithinAnyDir(cleanRoot, journalDirs) {
@@ -2053,6 +2094,15 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 					dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
 					return fs.SkipDir
 				}
+				// A directory with no local representation (RECALL_ON_OPEN,
+				// #7326) is not descended: enumerating it would fetch it,
+				// and nothing under it is on this machine.
+				if dinfo, infoErr := entry.Info(); infoErr == nil {
+					if sp, skip := notStoredLocally(path, dinfo); skip {
+						skips.addNotLocal(sp)
+						return fs.SkipDir
+					}
+				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
 				childCount[filepath.Dir(path)]++
 				return nil
@@ -2084,31 +2134,49 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 				})
 				return nil
 			}
-			if !info.Mode().IsRegular() {
-				// Neither a directory, a regular file nor a symlink: on
-				// Windows that includes junctions and volume mount points,
-				// which Go reports as ModeIrregular and WalkDir therefore
-				// never descends into. Not captured, but recorded so the
-				// run's Warning names it (#7051). Either way the entry is
-				// not in the backup, so it must not count as a child: a
-				// directory whose only child was skipped is empty and
-				// needs its own entry to be recreated on restore.
-				//
-				// A junction with a drive-path target is captured as a
-				// link instead (#7325, junction.go). It still does not
-				// count as a child: junctions sit in their own manifest
-				// array that older readers ignore, so its parent keeps
-				// the KindDir entry it had before and an older restore
-				// recreates exactly what it did before.
+			// A file whose data is not on this machine (an unhydrated cloud
+			// placeholder, #7326) is skipped and reported before anything
+			// opens it: reading it would download it. Like a skipped
+			// reparse point it does not count as its parent's child.
+			if sp, skip := notStoredLocally(path, info); skip {
 				childCount[filepath.Dir(path)]--
-				if sp, ok := skippedReparsePointFor(path, info); ok {
-					if j, captured := capturedJunction(&sp, info); captured {
-						skips.junctions = append(skips.junctions, j)
-					} else {
-						skips.add(sp)
-					}
-				}
+				skips.addNotLocal(sp)
 				return nil
+			}
+			if !info.Mode().IsRegular() {
+				// A WOF-compressed file, or a cloud file whose data is
+				// local, is a data file Go reports as ModeIrregular (#7326).
+				// Once it opens through its filter it is read like any other
+				// file, so it leaves this block and is captured below as a
+				// regular file.
+				sp, classified := skippedReparsePointFor(path, info)
+				if !classified || !captureAsDataFile(&sp) {
+					// Neither a directory, a regular file nor a symlink: on
+					// Windows that includes junctions and volume mount
+					// points, which Go reports as ModeIrregular and WalkDir
+					// therefore never descends into. Not captured, but
+					// recorded so the run's Warning names it (#7051). Either
+					// way the entry is not in the backup, so it must not
+					// count as a child: a directory whose only child was
+					// skipped is empty and needs its own entry to be
+					// recreated on restore.
+					//
+					// A junction with a drive-path target is captured as a
+					// link instead (#7325, junction.go). It still does not
+					// count as a child: junctions sit in their own manifest
+					// array that older readers ignore, so its parent keeps
+					// the KindDir entry it had before and an older restore
+					// recreates exactly what it did before.
+					childCount[filepath.Dir(path)]--
+					if classified {
+						if j, captured := capturedJunction(&sp, info); captured {
+							skips.junctions = append(skips.junctions, j)
+						} else {
+							skips.add(sp)
+						}
+					}
+					return nil
+				}
 			}
 			seen[snapshotPath] = struct{}{}
 			files = append(files, backupFile{

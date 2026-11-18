@@ -18,19 +18,48 @@
     "pendingApproverDescription": "Bu işlemin Onaylar alanında veya Breeze mobil uygulamasında onaylanması gerekiyor.",
     "timeRemaining": "{{minutes}} dakika {{seconds}} saniye kaldı",
     "urgentWarning": "30 saniyeden az kaldı. Bu istek otomatik olarak reddedilecek.",
-    "progressLabel": "Otomatik reddetmeden önce kalan süre",
+    "progressLabel": "Otomatik reddedilmeden önce kalan süre",
     "showParameters": "Parametreleri göster",
+    "ticketComment": {
+      "publicTo": "{{recipient}} için müşterinin görebileceği yanıt",
+      "publicNoRecipient": "Müşterinin görebileceği yanıt (talep sahibine e-postayla gönderilir)",
+      "publicNoEmail": "Müşterinin görebileceği yanıt (kayıtlı talep sahibi e-postası yok, bu yüzden e-posta gönderilmez)",
+      "internal": "Dahili not (müşteri göremez)"
+    },
+    "memory": {
+      "heading": "Wisp hatırlayacak",
+      "subjectKey": "Anahtar: {{key}} (bu anahtara sahip önceki anıların yerini alır)",
+      "moreInParameters": "Diğer alanlar yalnızca Parametreleri göster altında.",
+      "scope": {
+        "user": "Yalnızca siz",
+        "org": "Bu müşteri",
+        "partner": "Tüm MSP'niz"
+      },
+      "types": {
+        "preference": "Tercih",
+        "standing_instruction": "Kalıcı talimat",
+        "fact": "Bilgi",
+        "decision": "Karar",
+        "concern_outcome": "Endişe sonucu",
+        "work_summary": "İş özeti"
+      }
+    },
     "approve": "Onayla",
     "reject": "Reddet",
     "approveVerify": "Doğrula ve Onayla",
     "verifying": "Doğrulama bekleniyor…",
+    "approving": "Onaylanıyor…",
     "deny": "Reddet",
     "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
     "alreadyDecided": "Bu talebe zaten karar verildi.",
+    "resolvedApproved": "Bu istek onaylandı.",
+    "resolvedNotApproved": "Bu istek onaylanmadı, bu nedenle işlem çalıştırılmadı.",
+    "resolvedEnded": "Bu istek artık burada bir karar beklemiyor.",
     "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, artık başka bir onaylayan bu isteğe karar vermelidir.",
+    "approverScopeRequired": "Bu onay, iş ortağının tüm organizasyonlarını etkiler; bu nedenle tüm organizasyonlara erişimi olan iş ortağı düzeyinde bir onaylayan gerekir.",
     "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
     "freshFactorRequired": "Bu kontrol, bu onay için yapılmış yeni bir geçiş anahtarı doğrulaması (Touch ID, Windows Hello veya donanım anahtarı) gerektirir. Tekrar deneyin.",
     "registerDevice": "Bu cihazı kaydedin",
@@ -41,24 +70,26 @@
     "deniedToast": "İşlem reddedildi",
     "deniedToast_one": "{{count}} işlem reddedildi",
     "deniedToast_other": "{{count}} işlem reddedildi",
-    "refusedToast": "Onay uygulanmadı. İstek reddedildi.",
+    "refusedToast": "Onayınız engellendi, bu nedenle istek reddedildi.",
     "runContextLabel": "Çalıştırma bağlamı:",
-    "runContextChosenByAssistant": "asistan tarafından seçildi",
+    "runContextChosenByAssistant": "Breeze AI tarafından seçildi",
     "runContextScriptDefault": "komut dosyasının kayıtlı varsayılanı",
-    "runContextOverrides": "asistan tarafından seçildi ve komut dosyasının kayıtlı varsayılanını geçersiz kılıyor ({{context}})"
+    "runContextOverrides": "Breeze AI tarafından seçildi ve komut dosyasının kayıtlı varsayılanını ({{context}}) geçersiz kılıyor"
   },
   "aiChatInput": {
     "waiting": "Yanıt bekleniyor...",
     "placeholder": "Cihazlarınız hakkında bilgi alın...",
     "stopResponse": "Yanıtı durdur",
-    "thinking": "AI düşünüyor... İptal etmek için durdur'a tıklayın",
-    "sendShortcut": "Göndermek için Cmd+Enter"
+    "send": "Mesajı gönder"
   },
   "aiChatMessages": {
-    "title": "Breeze Yapay Zeka Asistanı",
+    "title": "Breeze AI",
     "description": "Cihazlarınız, uyarılarınız, ölçümleriniz hakkında bilgi alın veya sorunları giderin.",
+    "stopped": "Durduruldu",
     "unknownTool": "Bilinmeyen araç",
     "toolResult": "Araç sonucu",
+    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı.",
+    "openScriptProposal": "Çalıştırmalarını görmek veya kitaplığa kaydetmek için öneriyi açın",
     "pauseAi": "AI'yi duraklat",
     "quickActions": {
       "serverHealth": {
@@ -86,8 +117,22 @@
         "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
       }
     },
-    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı.",
-    "openScriptProposal": "Çalıştırmalarını görmek veya kitaplığa kaydetmek için öneriyi açın"
+    "toolGroup": {
+      "done": "{{count}} tamamlandı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "expand": "Ayrıntıları göster",
+      "collapse": "Ayrıntıları gizle"
+    },
+    "divider": {
+      "today": "Bugün {{time}}",
+      "yesterday": "Dün {{time}}"
+    },
+    "specialists": {
+      "heading_one": "{{count}} uzmana devredildi",
+      "heading_other": "{{count}} uzmana devredildi"
+    },
+    "loadEarlier": "Öncekileri yükle"
   },
   "aiChatSidebar": {
     "history": "Geçmiş",
@@ -105,14 +150,36 @@
     "noM365Customer": "M365 müşterisi yok",
     "dismiss": "Kapat"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Breeze AI'da aç",
+    "continueInPanel": "Yan panelde devam et",
+    "openPastConversation": "Geçmiş bir konuşmayı aç",
+    "closeTabInAssistant": "Bu konuşmayı açmak için Breeze AI'da bir sekmeyi kapatın",
+    "closeTabToOpen": "Bu konuşmayı açmak için bir sekmeyi kapatın",
+    "notAvailable": "Bu konuşma kullanılamıyor",
+    "wasClosed": "Bu konuşma kapatıldı",
+    "topologyFromMap": "İncelemeler topoloji haritasından açılır",
+    "openInPanel": "Yan panelde aç",
+    "replaceConfirm": "Yan paneldeki konuşma değiştirilsin mi? Geçmişinizde kalmaya devam eder.",
+    "joinedMidResponse": "Yanıtın ortasında katıldınız. Tam yanıt tamamlandığında görünür.",
+    "chooseModelInPanel": "Model seçmek için yan panelde devam edin",
+    "tabMenu": "Sekme seçenekleri",
+    "anotherOrg": "Başka bir kuruluş",
+    "device": "Cihaz",
+    "newChat": "Yeni sohbet"
+  },
   "aiContextBadge": {
+    "record": "Kayıt",
     "context": "Bağlam",
     "dashboard": "Kontrol Paneli"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msjlar",
-    "messageCount_one": "{{count}} msj",
-    "messageCount_other": "{{count}} msjlar"
+    "messageCount": "Bu ay {{count}} mesaj",
+    "messageCount_one": "Bu ay {{count}} mesaj",
+    "messageCount_other": "Bu ay {{count}} mesaj",
+    "thisMonth": "Bu ay {{amount}}",
+    "credits_one": "{{formatted}} kredi",
+    "credits_other": "{{formatted}} kredi"
   },
   "aiPlanProgressBar": {
     "completed": "Plan tamamlandı ({{completed}}/{{total}})",
@@ -138,10 +205,11 @@
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:",
-    "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu"
+    "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu",
+    "unknownTool": "Bilinmeyen araç · çalıştırılmadı"
   },
   "aiForOfficePage": {
-    "title": "Office için AI",
+    "title": "Breeze AI for Office",
     "description": "Müşterilerinizin Excel'inde yönetilen yapay zeka asistanı — sağlama, politika, denetim, kullanım ve şablonlar",
     "tabs": {
       "orgs": "Organizasyonlar",
@@ -175,7 +243,7 @@
       "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (Entra eklenti uygulaması kaydı) API üzerinde ayarlayın ve yeniden yükleyin."
     },
     "title": "Müşteri kuruluşları",
-    "description": "Müşteri kuruluşu başına Excel AI asistanını sağlayın: Entra kiracısını eşleyin, yönetici onayı verin, politikayı etkinleştirin, eklentiyi dağıtın.",
+    "description": "Müşteri kuruluşu başına Breeze AI for Office'i sağlayın: Entra kiracısını eşleyin, yönetici onayı verin, politikayı etkinleştirin, eklentiyi dağıtın.",
     "columns": {
       "aiEnabled": "AI etkin",
       "entraTenant": "Entra kiracı",
@@ -189,7 +257,7 @@
     "noOrganizations": "Kuruluş yok",
     "removeMapping": {
       "title": "Kiracı eşlemesini kaldır",
-      "message": "{{orgName}}'nin Entra kiracısındaki kullanıcılar artık Excel asistanında oturum açamayacak. Kuruluş politikası ve kullanım geçmişi tutulur.",
+      "message": "{{orgName}}'nin Entra kiracısındaki kullanıcılar artık Breeze AI for Office'te oturum açamayacak. Kuruluş politikası ve kullanım geçmişi tutulur.",
       "confirm": "Eşlemeyi kaldır"
     },
     "wizard": {
@@ -211,7 +279,7 @@
       "openNewTab": "Yeni sekmede aç",
       "afterConsent": "Verdikten sonra Microsoft, Breeze onay sayfasına yönlendirir. Onay, ilk kullanıcı Excel'den oturum açtığında burada verildiği gibi görünür - Microsoft'a karşı canlı bir anket yoktur (Plan-4 karar 1).",
       "consentGranted": "İzin verdim",
-      "enableDescription": "Bu kuruluş için asistanı etkinleştirin. Bu, güvenli varsayılanlarla (tüm kullanıcılar, son kullanıcı onayıyla okuma/yazma, finansal/kimlik bilgisi türleri için DLP düzenlemesi) kuruluş politikasına <code>enabled: true</code> yazar. Daha sonra politika düzenleyicide her şeyi ayarlayın.",
+      "enableDescription": "Bu kuruluş için Breeze AI for Office'i etkinleştirin. Bu, güvenli varsayılanlarla (tüm kullanıcılar, son kullanıcı onayıyla okuma/yazma, finansal/kimlik bilgisi türleri için DLP düzenlemesi) kuruluş politikasına <code>enabled: true</code> yazar. Daha sonra politika düzenleyicide her şeyi ayarlayın.",
       "enabling": "Etkinleştiriliyor…",
       "alreadyEnabled": "Zaten etkin — devam et",
       "enableAi": "Office için AI'yı etkinleştirin",
@@ -238,7 +306,7 @@
     },
     "organizations": "Organizasyonlar",
     "title": "Kuruluş politikası",
-    "description": "Bu müşteri kuruluşunun Excel asistanının yapmasına izin verilen her şey.",
+    "description": "Bu müşteri kuruluşunun Breeze AI for Office'inin yapmasına izin verilen her şey.",
     "sections": {
       "general": "Genel",
       "userAccess": "Kullanıcı erişimi",
@@ -270,8 +338,10 @@
     "noLimit": "Sınır yok",
     "messagesPerMinute": "Kullanıcı başına mesaj/dakika",
     "messagesPerHour": "Mesaj/kuruluş başına saat",
-    "retentionDays": "Transkript saklama (gün)",
+    "retentionDays": "İstemci yapay zeka transkript saklama (gün)",
     "keepForever": "Sonsuza kadar sakla",
+    "retentionScope": "İstemci yapay zeka (AI for Office) görüşmelerine uygulanır. Boş bırakılırsa süresiz saklanır. Teknisyen yapay zeka görüşmelerinin kendi süresi vardır.",
+    "retentionTechnicianLink": "Teknisyen yapay zeka saklama ayarları",
     "brandingDescription": "Eklenti altbilgisinde gösterilir: \"BT sağlayıcınız tarafından yönetilir\" — beyaz etiket kancası (özellik §11).",
     "displayName": "Görünen ad",
     "mspNamePlaceholder": "MSP adınız",
@@ -309,6 +379,7 @@
       "pending": "beklemede",
       "approved": "onaylandı",
       "rejected": "reddedildi",
+      "stopped": "durduruldu",
       "completed": "tamamlandı",
       "failed": "başarısız oldu"
     },
@@ -351,6 +422,7 @@
     "requestedAt": "talep edildi {{time}}",
     "approvedAt": "onaylandı {{time}}",
     "rejectedAt": "reddedildi {{time}}",
+    "stoppedAt": "durduruldu {{time}}",
     "appliedAt": "uygulandı {{time}}",
     "flagDialog": {
       "title": "Oturumu işaretle",
@@ -435,8 +507,8 @@
     "dismiss": "Kapat"
   },
   "workspaceEmptyState": {
-    "title": "Yapay Zeka Çalışma Alanı",
-    "description": "Aynı anda birden fazla AI görüşmesini çalıştırın. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
+    "title": "Breeze AI",
+    "description": "Aynı anda birden fazla görüşme yürütün. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
     "newConversation": "Yeni Konuşma",
     "limit": "5'e kadar eşzamanlı görüşme"
   },
@@ -490,10 +562,36 @@
     "verified": "Doğrulandı",
     "verificationFailed": "Doğrulama başarısız",
     "verificationUnknown": "Doğrulanamadı",
+    "notRunAwaitingReview": "İnceleme bekleniyor — henüz çalıştırılmadı",
+    "notRunReviewed": "İncelendi — henüz çalıştırılmadı",
+    "notRunApproved": "Onaylandı — henüz çalıştırılmadı",
+    "notRun": "Çalıştırılmadı",
+    "reviewVerdictApprove": "İnceleyen onaylanmasını öneriyor",
+    "reviewVerdictChanges": "İnceleyen değişiklik öneriyor",
+    "reviewVerdictReject": "İnceleyen reddedilmesini öneriyor",
     "promoteDescription": "Açıklama (isteğe bağlı)",
     "ownerScopeOrganization": "Yalnızca bu kuruluş",
     "ownerScopePartner": "Bu iş ortağına bağlı tüm kuruluşlar",
-    "nameRequired": "Bir ad girilmesi zorunludur."
+    "nameRequired": "Bir ad girilmesi zorunludur.",
+    "reviewFailedTitle": "Yapay zekâ incelemesi başarısız oldu",
+    "reviewFailureUnknown": "Herhangi bir neden kaydedilmedi.",
+    "overrideApproved": "Başarılı bir yapay zekâ incelemesi olmadan onaylandı",
+    "overrideExplain": "İnceleme bir karara varamadı, yani bu betiği hiçbir şey denetlemedi. Betiği yukarıda okuyup kendiniz onaylayabilirsiniz.",
+    "overrideRun": "Yapay zekâ incelemesi olmadan çalıştır",
+    "overrideRunNotice": "Bu betiğin, başarılı bir yapay zekâ incelemesi olmadan cihazlarında çalışmasını onaylıyorsunuz. Denetim günlüğü bunu sizin adınıza kaydeder.",
+    "overrideRunConfirm": "Onayla ve çalıştır",
+    "overrideRunSuccess": "Betik cihazlarına gönderildi",
+    "overrideRunUndelivered": "Betiği almayan cihazlar: {{count}}",
+    "overrideSave": "Yapay zekâ incelemesi olmadan kitaplığa kaydet",
+    "overrideSaveNotice": "Bu betiği doğrulanmış bir çalıştırma ve başarılı bir yapay zekâ incelemesi olmadan kaydediyorsunuz. Denetim günlüğü bunu sizin adınıza kaydeder.",
+    "overrideErrorExpired": "Bu teklifin süresi doldu. Yeni bir teklif isteyin.",
+    "overrideErrorState": "Bu teklif değişti. Güncel durumunu kontrol edin.",
+    "overrideErrorNotSoleApprover": "Bu betiğin, isteyen kişiden başka biri tarafından onaylanması gerekir.",
+    "overrideErrorStepUp": "İş ortağınız, bu ekranın sağlayabileceğinden daha güçlü bir onay gerektiriyor.",
+    "overrideErrorNoDevice": "Hiçbir hedef cihaz betiği almadı, bu yüzden hiçbir şey çalışmadı. Yeniden deneyebilirsiniz.",
+    "overrideErrorPolicy": "Yapay zekâ veri politikası, bir kullanıcı profili yolunu okuduğu için bu betiği reddediyor.",
+    "overrideErrorStrict": "Bu tehlike kalıplarını onaylamak betik yazma izni ve MFA gerektirir ve her kalıp işaretlenmelidir.",
+    "savedToLibrary": "Betik kütüphanesine kaydedildi"
   },
   "aiRunCard": {
     "title": "Analiz çalıştırması",
@@ -506,8 +604,29 @@
       "failed": "başarısız",
       "cancelled": "iptal edildi",
       "expired": "süresi doldu",
-      "skipped": "atlandı"
-    }
+      "skipped": "atlandı",
+      "awaiting_approval": "onay bekliyor"
+    },
+    "approvals": {
+      "pending_one": "{{count}} adım onayınızı bekliyor",
+      "pending_other": "{{count}} adım onayınızı bekliyor",
+      "waiting": "Onayınızı bekleyen adımlar var",
+      "review": "Onaylar'da incele"
+    },
+    "stepApprovals": {
+      "title": "Onayınız bekleniyor",
+      "wispFor": "{{name}} için Wisp",
+      "approve": "Onayla",
+      "deny": "Reddet",
+      "waitingForApprover": "Bir onaylayıcı bekleniyor"
+    },
+    "continue": "Devam et",
+    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et.",
+    "chainStep": "Bu incelemenin {{step}}. adımı",
+    "goal": "Hedef: {{goal}}",
+    "findings": "Bulgular: {{count}}",
+    "findingsHigh": "({{count}} yüksek)",
+    "files": "Dosyalar:"
   },
   "aiModelPicker": {
     "chooseModel": "Model seçin",
@@ -530,7 +649,11 @@
     "thinking": "Düşünme"
   },
   "aiThinking": {
-    "label": "Düşünüyor… {{seconds}} sn"
+    "label": "Düşünüyor… {{seconds}} sn",
+    "waitingApproval": "Onayınız bekleniyor",
+    "waitingApprovalPhone": "Onayınız bekleniyor (telefonunuza gönderildi)",
+    "waitingOthers": "Başka bir onaylayıcı bekleniyor",
+    "openApprovals": "Onayları aç"
   },
   "aiTurnModel": {
     "answeredBy": "Yanıtlayan: {{model}}",
@@ -551,5 +674,478 @@
     "created": "{{model}} üzerinde yeni sohbet bir özetten başlatıldı.",
     "failed": "Yeni sohbet başlatılamadı. Tekrar deneyin.",
     "openFailed": "Yeni sohbet oluşturuldu ancak açılamadı. Sohbet geçmişinizde bulabilirsiniz; mesajınız gönderilmedi."
+  },
+  "buyCredits": {
+    "link": "Kredi satın al"
+  },
+  "sessionClosed": {
+    "message": "Bu görüşme başka bir yerde kapatıldı, bu yüzden mesajınız gönderilmedi. Mesaj aşağıdaki kutuda duruyor. Devam etmek için yeni bir oturum başlatın.",
+    "startNew": "Yeni oturum başlat"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "turnLimitRolled": "Bu görüşme tur sınırına ulaştı, bu nedenle Wisp bu konu başlığında yeni bir oturum açtı. Mesajınızı yeniden gönderin.",
+    "locked": {
+      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir.",
+      "server": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
+    },
+    "modal": {
+      "title": "Wisp'i aç",
+      "refreshTitle": "Wisp yetkisini yenile",
+      "scopeLabel": "Wisp şunun üzerinde çalışabilir",
+      "scopeOrg": "Bu kuruluş",
+      "scopePartner": "Tüm kuruluşlar",
+      "explain": "Wisp, sizin yapmaya yetkili olduğunuz işlemler kapsamında çalışır. Devam etmek için kimliğinizi doğrulayın.",
+      "code": "Kimlik doğrulayıcı kodu",
+      "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
+      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce <profileLink>profilinizde</profileLink> birini kurun.",
+      "noOrg": "Önce üst bölümden bir kuruluş seçin.",
+      "confirm": "Onayla",
+      "cancel": "İptal",
+      "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
+      "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin.",
+      "turningOn": "Wisp açılıyor…",
+      "alreadyOnOrg": "Wisp bu kuruluş için zaten açık.",
+      "alreadyOnPartner": "Wisp tüm kuruluşlar için zaten açık.",
+      "open": "Aç",
+      "opening": "Açılıyor…",
+      "grantEnded": "Wisp bu kapsam için artık açık değil. Yeniden açmak için kimliğinizi doğrulayın.",
+      "unattendedReadsTitle": "Gözetimsiz okumaları aç"
+    },
+    "header": {
+      "scopeAll": "Tüm kuruluşlar",
+      "scopeFallback": "bu kuruluş",
+      "status": {
+        "active": "Etkin",
+        "paused": "Duraklatıldı",
+        "revoked": "İptal edildi",
+        "expired": "Süresi doldu",
+        "budgetReached": "Bütçeye ulaşıldı"
+      },
+      "refresh": "Yetkiyi yenile",
+      "revoke": "Wisp'i kapat",
+      "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Wisp sizin için çalışmayı bırakır ve konuları kapanır. Bu konuların sohbetleri, sorunları ve etkinlikleri artık gösterilmez.",
+      "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin.",
+      "refreshKeepsTerms": "Bu konuşma önceki yetki koşullarını korur. Yenilenen yetkiyi kullanmak için yeni bir konuşma başlatın.",
+      "startNewConversation": "Yeni bir konuşma başlat",
+      "dismissNote": "Kapat",
+      "menu": {
+        "label": "Diğer işlemler",
+        "openHome": "Wisp ana sayfasını aç",
+        "settings": "Bütçe ve kontroller…",
+        "refresh": "Yetkiyi yenile…",
+        "revoke": "Wisp'i kapat…"
+      }
+    },
+    "settings": {
+      "title": "Bütçe ve kontrol aralığı",
+      "budget": "Günlük bütçe",
+      "budgetHelp": "Sohbeti de içerir. Bütçe tükendiğinde arka plan kontrolleri 00:00 UTC'ye kadar duraklatılır ve sohbet bir uyarıyla çalışmaya devam eder. Kuruluşun yapay zeka bütçesi sohbet için geçerli olmaya devam eder.",
+      "tick": "Kontrol aralığı (dakika)",
+      "save": "Kaydet",
+      "unattendedReads": {
+        "title": "Gözetimsiz okumalar",
+        "description": "Açıkken Wisp ve arka plan çalıştırmaları aşağıdakileri sormadan yapar:",
+        "registryKey": "Bir kayıt defteri anahtarını oku",
+        "registryValue": "Bir kayıt defteri değerini oku",
+        "securityLog": "Güvenlik olay günlüğünde arama yap",
+        "deviceNote": "Bir cihaz hakkında not kaydet",
+        "applies": "Yeni konuşmalara ve yeni arka plan çalıştırmalarına uygulanır."
+      },
+      "summaryRefine": {
+        "title": "Model tarafından yazılan oturum notları",
+        "description": "Bir konuşma bittiğinde model, varılan sonuçları ve hâlâ açık olanları yazar. Her not bir model çağrısıdır ve Wisp'in günlük bütçesinden düşülür. Kapalıyken Wisp bunun yerine basit bir özet tutar."
+      }
+    },
+    "focus": {
+      "label": "Çalışılan müşteri",
+      "none": "Müşteri odağı yok",
+      "pick": "Bir müşteriye odaklan…",
+      "clear": "Odağı temizle"
+    },
+    "attachments": {
+      "title": "Bu konuya eklendi",
+      "drop": "Buraya bir e-posta konuşması, .eml veya CSV bırakın ya da metin yapıştırın",
+      "paste": "Metin yapıştır",
+      "label": "Etiket",
+      "add": "Ekle",
+      "empty": "Henüz bir şey eklenmedi",
+      "expires": "Bitiş: {{date}}",
+      "limits": "En fazla 20 dosya, her biri 5 MB, yalnızca metin",
+      "focusRequired": "Eklemeden önce bir müşteri odağı seçin",
+      "loadFailed": "Ekler yüklenemedi"
+    },
+    "toast": {
+      "on": "Wisp açık",
+      "onFailed": "Wisp açılamadı",
+      "off": "Wisp kapalı",
+      "offFailed": "Wisp kapatılamadı",
+      "refreshed": "Yetki yenilendi",
+      "refreshFailed": "Yetki yenilenemedi",
+      "grantCheckFailed": "Wisp yetkiniz kontrol edilemedi, bu yüzden bu konuşma bir Breeze AI sohbeti olarak başladı.",
+      "settingsSaved": "Wisp ayarları kaydedildi",
+      "settingsFailed": "Wisp ayarları kaydedilemedi",
+      "focusSet": "Wisp artık {{org}} üzerinde çalışıyor",
+      "focusCleared": "Müşteri odağı temizlendi",
+      "focusFailed": "Odak değiştirilemedi",
+      "attached": "Konuya eklendi",
+      "attachFailed": "Eklenemedi",
+      "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
+      "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için tekrar deneyin.",
+      "paused": "Wisp duraklatıldı",
+      "resumed": "Wisp devam ettirildi",
+      "pauseFailed": "Wisp duraklatılamadı",
+      "resumeFailed": "Wisp devam ettirilemedi",
+      "unattendedReadsOn": "Gözetimsiz okumalar açıldı",
+      "unattendedReadsOnFailed": "Gözetimsiz okumalar açılamadı",
+      "unattendedReadsOff": "Gözetimsiz okumalar kapatıldı",
+      "unattendedReadsOffFailed": "Gözetimsiz okumalar kapatılamadı",
+      "summaryRefineOn": "Oturum notları açıldı",
+      "summaryRefineOff": "Oturum notları kapatıldı",
+      "summaryRefineFailed": "Oturum notları değiştirilemedi"
+    },
+    "spend": {
+      "meter": "Bugün {{budget}} içinden {{spent}}",
+      "breakdown": "Arka plan {{background}} · Sohbet {{chat}} · Bugün {{budget}} içinden {{spent}}",
+      "resets": "{{hours}} saat içinde sıfırlanır",
+      "raise": "Bugünün bütçesini artır",
+      "atCeiling": "Bugünün bütçesi planınızın sınırında.",
+      "seePlans": "Planları gör",
+      "label": "Bugünkü Wisp harcaması",
+      "allAiMonth": "Bu ay tüm yapay zekâ: {{amount}}",
+      "allAiMessages": "{{formatted}} mesaj",
+      "allAiMessages_one": "{{formatted}} mesaj",
+      "allAiMessages_other": "{{formatted}} mesaj"
+    },
+    "notice": {
+      "creditsExhausted": "Yapay zekâ krediniz bitti."
+    },
+    "pause": "Wisp'i duraklat",
+    "resume": "Devam et",
+    "paused": {
+      "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez.",
+      "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir.",
+      "system": {
+        "budgetExhausted": "Wisp'in bugünkü bütçesi aşıldı: arka plan kontrolleri {{time}} UTC'ye kadar duraklatıldı. Sohbet çalışmaya devam eder.",
+        "budgetExhaustedNoTime": "Wisp'in bugünkü bütçesi aşıldı: arka plan kontrolleri 00:00 UTC'ye kadar duraklatıldı. Sohbet çalışmaya devam eder.",
+        "grantorAccessLost": "Breeze tarafından duraklatıldı: erişiminiz artık bu yetkiyi kapsamıyor. Erişiminiz geri geldiğinde Wisp kendiliğinden devam eder.",
+        "grantorSuspended": "Breeze tarafından duraklatıldı: hesabınız askıya alındı. Askıya alma kaldırıldığında Wisp kendiliğinden devam eder.",
+        "factorExpired": "Breeze tarafından duraklatıldı: bu yetki için oturum açma doğrulamanızın süresi doldu.",
+        "entitlementLost": "Breeze tarafından duraklatıldı: planınız artık Wisp içermiyor. Planınız yeniden içerdiğinde Wisp kendiliğinden devam eder.",
+        "unknown": "Breeze tarafından duraklatıldı. Buradan devam ettiremezsiniz."
+      }
+    },
+    "live": {
+      "checking": "{{org}} kontrol ediliyor…",
+      "checkingUnnamed": "Bir müşteri kontrol ediliyor…"
+    },
+    "thread": {
+      "notFound": "Bu Wisp konuşması yok ya da size ait değil.",
+      "loadFailed": "Bu Wisp konuşması yüklenemedi.",
+      "retry": "Tekrar dene",
+      "stale": "Bu ileti dizisi yenilenemedi. Gördükleriniz güncel olmayabilir."
+    },
+    "activity": {
+      "title": "Etkinlik",
+      "empty": "Henüz bir şey yok. Wisp'in çalışmaları burada görünür.",
+      "loadFailed": "Etkinlik yüklenemedi",
+      "loadMore": "Daha fazla yükle",
+      "cost": "Maliyet {{amount}}",
+      "kind": {
+        "assessment": "Kontrol",
+        "concern": "Endişe",
+        "specialist": "Uzman",
+        "approval": "Onay",
+        "memory": "Bellek",
+        "nudge": "Hatırlatma",
+        "brief": "Özet"
+      },
+      "show": "Göster",
+      "hide": "Gizle",
+      "count_one": "{{count}} yeni",
+      "count_other": "{{count}} yeni"
+    },
+    "home": {
+      "briefSentAt": "Gönderildi: {{time}}",
+      "briefStale": "Önceki bir günden",
+      "needsYouTitle": "Dikkatinizi bekleyenler",
+      "needsYouCount_one": "{{count}} öğe",
+      "needsYouCount_other": "{{count}} öğe",
+      "needsYouApprovals_one": "{{count}} öğe onayınızı bekliyor",
+      "needsYouApprovals_other": "{{count}} öğe onayınızı bekliyor",
+      "threadPaused": "Wisp duraklatıldı. Konuşmaya devam etmek için üst bölümden sürdürün.",
+      "threadEnded": "Bu yetki sona erdi. Wisp ile konuşmak için yeni bir yetki başlatın.",
+      "threadOpening": "Konuşma açılıyor…",
+      "threadOpenFailed": "Konuşma açılamadı.",
+      "threadDismissError": "Kapat",
+      "openChats": "Tüm sohbetler",
+      "memory": "Bellek",
+      "startTitle": "Wisp’i işe koyun",
+      "startBody": "Wisp, sizin kontrol ettiğiniz bir yetki kapsamında cihaz filonuzu, taleplerinizi ve faturalandırmayı izler; karar gerektirenleri size getirir.",
+      "startAction": "Wisp’i başlat",
+      "disabledTitle": "Wisp kapalı",
+      "disabledBody": "Bir iş ortağı yöneticisi Wisp’i Ayarlar → Yapay Zeka Aracıları bölümünden kapattı. Sohbetleriniz çalışmaya devam eder.",
+      "disabledSettings": "Yapay Zeka Aracıları ayarlarını aç",
+      "loadFailed": "Wisp ana sayfası yüklenemedi.",
+      "noAccess": "Wisp'e erişiminiz yok",
+      "historyFailed": "Bu konuşma yüklenemedi.",
+      "refreshFailed": "Yeni gönderiler denetlenemedi.",
+      "earlierFailed": "Önceki mesajlar yüklenemedi."
+    },
+    "links": {
+      "title": "Bağlantılı öğeler",
+      "empty": "Henüz bağlantılı bir şey yok. Wisp aklında tutsun diye bir talebi, cihazı veya faturayı bağlayın.",
+      "add": "Öğe bağla",
+      "remove": "{{label}} bağlantısını kaldır",
+      "removed": "Bağlantı kaldırıldı",
+      "removeFailed": "Bağlantı kaldırılamadı.",
+      "addedByWisp": "Wisp tarafından eklendi",
+      "added": "Wisp’e bağlandı",
+      "addFailed": "Bu öğe bağlanamadı.",
+      "count": "{{count}} / {{max}} bağlı",
+      "groupPinned": "Sabitlenenler",
+      "groupConcerns": "Açık konular",
+      "groupRecent": "Son kullanılanlar",
+      "pin": "Sabitle",
+      "dismiss": "Kapat",
+      "more": "Daha fazla",
+      "neighbours": "İlgili öğeler"
+    },
+    "picker": {
+      "title": "Wisp’e öğe bağla",
+      "searchPlaceholder": "Ad veya numaraya göre ara",
+      "kindsLabel": "Öğe türü",
+      "kinds": {
+        "ticket": "Talepler",
+        "quote": "Teklifler",
+        "invoice": "Faturalar",
+        "contract": "Sözleşmeler",
+        "device": "Cihazlar",
+        "organization": "Kuruluşlar",
+        "site": "Konumlar",
+        "alert": "Uyarılar",
+        "run": "Aracı çalıştırmaları",
+        "task": "Yapay Zekâ Görevleri",
+        "user": "Kullanıcılar"
+      },
+      "loading": "Aranıyor…",
+      "empty": "Eşleşme yok.",
+      "loadFailed": "Bu liste yüklenemedi.",
+      "alreadyLinked": "Zaten bağlı",
+      "close": "Kapat"
+    },
+    "sidebar": {
+      "meetWisp": "Wisp ile tanışın",
+      "handedOff": "Bu konuşma sayfada açık.",
+      "handedOffAction": "Sayfada devam et"
+    },
+    "partnerSwitch": {
+      "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",
+      "label": "Wisp'e izin ver",
+      "savedOn": "Wisp açıldı",
+      "savedOff": "Wisp kapatıldı",
+      "saveFailed": "Wisp ayarı değiştirilemedi.",
+      "adminOnly": "Bunu yalnızca iş ortağı yöneticileri değiştirebilir.",
+      "loadFailed": "Wisp ayarı yüklenemedi."
+    },
+    "post": {
+      "brief": "Sabah özeti",
+      "nudge": "Hatırlatma",
+      "nudgeResolved": "Çözüldü",
+      "digest": "Derleme",
+      "checkIn": "Planlı kontrol",
+      "summary": "Özet",
+      "open": "Aç",
+      "unread": "Okunmamış",
+      "specialistResult": "Uzman raporu",
+      "firstLook": "İlk bakış",
+      "couldntLook": "Henüz bakılamadı"
+    },
+    "checkIn": {
+      "runNow": "Şimdi çalıştır",
+      "runNowMessage": "Planlı kontrole devam et",
+      "scheduledAt": "Wisp yeniden kontrol edecek: {{time}}",
+      "waitingFor": {
+        "deviceOnline": "Cihazın çevrimiçi olması bekleniyor · {{time}} itibarıyla vazgeçer",
+        "scriptFinished": "Betiğin bitmesi bekleniyor · {{time}} itibarıyla vazgeçer",
+        "commandFinished": "Komutun bitmesi bekleniyor · {{time}} itibarıyla vazgeçer",
+        "runSettled": "Çalıştırmanın bitmesi bekleniyor · {{time}} itibarıyla vazgeçer"
+      },
+      "cancel": "Planlı kontrolü iptal et",
+      "cancelled": "Planlı kontrol iptal edildi",
+      "cancelFailed": "Planlı kontrol iptal edilemedi."
+    },
+    "welcome": {
+      "title": "{{scope}} kapsamına göz atıyorum.",
+      "body": "İlk özetiniz, göz attıktan sonra her sabah gelir. Bu arada bana her şeyi sorabilirsiniz.",
+      "firstLookTitle": "{{scope}} kapsamına ilk kez göz attım.",
+      "firstLookBody": "Bulduklarım yukarıdaki gönderide. Bununla ilgili bana her şeyi sorabilirsiniz.",
+      "couldntLookTitle": "{{scope}} kapsamına henüz göz atamadım.",
+      "couldntLookBody": "Nedenini ve ne zaman yeniden deneyeceğimi yukarıdaki gönderide bulabilirsiniz. Bu arada bana her şeyi sorabilirsiniz.",
+      "couldntLookChat": "Nedenini ve ne zaman yeniden deneyeceğimi Wisp ana sayfasında bulabilirsiniz.",
+      "progress_one": "{{count}} kuruluştan {{lookedAt}} tanesine bakıldı",
+      "progress_other": "{{count}} kuruluştan {{lookedAt}} tanesine bakıldı",
+      "progressQueued": "{{count}} sırada",
+      "progressFailed": "{{count}} başarısız",
+      "briefAt": "Sabah özetiniz {{time}} saatinde gönderilir ({{timezone}}).",
+      "suggestions": {
+        "needsMe": {
+          "label": "Bugün neye ihtiyacım var?",
+          "prompt": "Bugün hangi konular dikkatimi gerektiriyor? Kısa tut."
+        },
+        "offline": {
+          "label": "Hangi cihazlar çevrimdışı?",
+          "prompt": "Cihazlarımdan hangileri şu an çevrimdışı?"
+        },
+        "sweep": {
+          "label": "Sağlık taraması çalıştır",
+          "prompt": "{{scope}} için şimdi bir sağlık taraması çalıştır."
+        },
+        "overnight": {
+          "label": "Gece boyunca ne oldu?",
+          "prompt": "Müşterilerimde gece boyunca ne oldu?"
+        }
+      }
+    },
+    "rail": {
+      "workersTitle": "Çalışanlar",
+      "workersEmpty": "Çalışan uzman yok.",
+      "allRuns": "Tüm çalıştırmalar",
+      "details": "Ayrıntılar",
+      "ended": "Bu yetki sona erdi; bu nedenle sorunları, çalışanları ve etkinlikleri artık gösterilmiyor.",
+      "workerStatus": {
+        "queued": "Sırada",
+        "running": "Çalışıyor",
+        "awaiting_approval": "Onay bekliyor",
+        "no_approvals_pending": "Onay bekleyen bir şey yok",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız"
+      }
+    },
+    "composer": {
+      "placeholder": "Wisp'e mesaj",
+      "link": "Bir öğe bağla"
+    },
+    "talk": {
+      "openFailed": "Sohbet açılamadı: {{message}}",
+      "button": "Wisp ile konuş",
+      "buttonPlain": "Bunu yapay zekâya sor",
+      "draft": "{{label}} hakkında: ",
+      "switchFocus": "Wisp, {{from}} üzerine odaklanmış. {{to}} odağına geçilsin mi?"
+    },
+    "plainChat": {
+      "new": "Yeni basit sohbet",
+      "newDescription": "Erişiminiz olan tüm araçlarla Breeze AI. Wisp değil.",
+      "wispDescription": "Wisp, yetkiniz kapsamında",
+      "label": "Breeze AI · Wisp değil"
+    },
+    "instruction": {
+      "remembered": "Hatırlandı: {{text}}",
+      "conflictBanner": "Hatırlanan bir talimatla çelişiyor: “{{text}}”",
+      "enforcedForm": "Wisp şunu önermeyecek: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "bitiş tarihi yok",
+      "keep": "Sakla",
+      "keepForOrg": "{{org}} içindeki herkes için sakla",
+      "forget": "Unut",
+      "unmatched": "Not olarak kaydedildi: Tüm cihaz adlarını eşleştiremedim.",
+      "kept": "Saklandı",
+      "keptForOrg": "{{org}} içindeki herkes için saklandı",
+      "crossOrg": "Bu cihazlar birden fazla kuruluşta olduğundan bu yalnızca sizin için saklanabilir.",
+      "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+      "verb": {
+        "reboot": "yeniden başlatma",
+        "shutdown": "kapatma",
+        "run_script": "betik çalıştırma",
+        "patch_install": "yama yükleme",
+        "any_change": "herhangi bir değişiklik yapma"
+      }
+    }
+  },
+  "wispConcerns": {
+    "title": "Endişeler",
+    "empty": "Şu anda Wisp'in radarında bir şey yok.",
+    "snooze": "Ertele",
+    "snoozeOneHour": "1 saat",
+    "snoozeTomorrow": "Yarın 9:00'a kadar",
+    "snoozeWeek": "7 gün",
+    "dismiss": "Yok say",
+    "resolve": "Çöz",
+    "resolveOutcomePlaceholder": "Ne oldu?",
+    "resolveSubmit": "Çözüldü olarak işaretle",
+    "snoozed": "Ertelendi",
+    "dismissed": "Yok sayıldı",
+    "resolved": "Çözüldü",
+    "quietUntil": "{{when}} tarihine kadar sessiz",
+    "digestOnly": "yalnızca özet",
+    "showAll": "Tümünü göster",
+    "showLive": "Açık olanları göster",
+    "loadFailed": "Endişeler yüklenemedi",
+    "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+    "severity": {
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "subject": {
+      "ticket": "Talep",
+      "device": "Cihaz",
+      "alert": "Uyarı",
+      "org": "Müşteri",
+      "integration": "Entegrasyon",
+      "run": "Çalıştırma",
+      "task": "Görev",
+      "incident": "Olay",
+      "quote": "Teklif",
+      "invoice": "Fatura",
+      "contract": "Sözleşme",
+      "site": "Konum",
+      "readiness": "Hazırlık"
+    },
+    "reviewApproval": "Onayı incele",
+    "openLink": "Aç",
+    "useful": "Yararlı",
+    "notUseful": "Yararlı değil",
+    "feedbackNotePlaceholder": "Ne daha iyi olabilirdi? (isteğe bağlı)",
+    "feedbackSend": "Gönder",
+    "feedbackGivenUseful": "Bunu yararlı olarak işaretlediniz",
+    "feedbackGivenNotUseful": "Bunu yararlı değil olarak işaretlediniz",
+    "feedbackSaved": "Teşekkürler. Wisp bunu hatırlayacak."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transkript {{date}} tarihinde saklama süresi nedeniyle kaldırıldı",
+    "removedLabel": "Saklama süresi nedeniyle kaldırıldı",
+    "removedHelp": "Mesajlar, başlık ve araç ayrıntıları transkript saklama süresine göre kaldırıldı. Maliyet, model ve tur sayısı korunur.",
+    "preview": {
+      "counting": "Bu süreden eski görüşmeler sayılıyor…",
+      "unavailable": "Bu süreden eski görüşmeler sayılamadı.",
+      "noneEnforced": "Bu süreye göre kaldırılması gereken görüşme yok.",
+      "nonePending": "Bu süreye göre kaldırılması gereken görüşme yok. Saklama uygulaması kapalı, bu nedenle henüz hiçbir şey kaldırılmıyor.",
+      "orgPending_one": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgPending_other": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgEnforced_one": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "orgEnforced_other": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerPending_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerPending_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerEnforced_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerEnforced_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak."
+    }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Bu yanıt zaman aşımına uğradı",
+    "disconnected": "Yanıt tamamlanmadan bağlantı kesildi.",
+    "tryAgain": "Tekrar dene",
+    "conversationGone": "Bu konuşma artık kullanılamıyor. Devam etmek için yeni bir sohbet başlatın."
+  },
+  "aiNotifications": {
+    "responseReady": "Yanıt hazır",
+    "needsApproval": "Onayınız gerekiyor",
+    "needsInput": "Girişiniz gerekiyor",
+    "failed": "Yanıt başarısız oldu",
+    "enable": "Bir yanıt hazır olduğunda bana bildir",
+    "disable": "Breeze AI bildirimlerini kapat",
+    "blocked": "Bu site için bildirimler engellendi. Tarayıcı ayarlarından izin verin."
   }
 }

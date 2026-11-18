@@ -46,6 +46,10 @@ import {
   users,
   deviceVulnerabilities,
   vulnerabilities,
+  businessCalendars,
+  businessCalendarRevisions,
+  businessCalendarIntervals,
+  orgTicketSettings,
 } from '../../db/schema';
 import { moveTicketOrg, TicketServiceError } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
@@ -1172,5 +1176,92 @@ describe('moveTicketOrg — device_vulnerabilities.ticket_id detach (#4645)', ()
     const after = await readFinding(finding.id);
     expect(after?.ticketId).toBe(ticket.id);
     expect(after?.orgId).toBe(orgA.id);
+  });
+});
+
+// #8973 W4 (spec §4.3 "Move-org"): the moved ticket re-resolves its business
+// calendar for the TARGET org, in the move statement; frozen arms keep their
+// deadline and the source org's own calendar is never left referenced.
+describe('moveTicketOrg — business calendar re-resolution (#8973 W4)', () => {
+  async function calendar(owner: { orgId: string | null; partnerId: string | null }, opts: { isPartnerDefault?: boolean; timezone: string }) {
+    return withSystemDbAccessContext(async () => {
+      const [cal] = await db.insert(businessCalendars).values({ ...owner, name: `Cal ${uid()}`, isPartnerDefault: opts.isPartnerDefault ?? false }).returning();
+      const [rev] = await db.insert(businessCalendarRevisions).values({ calendarId: cal!.id, ...owner, revision: 1, timezone: opts.timezone }).returning();
+      await db.insert(businessCalendarIntervals).values([1, 2, 3, 4, 5].map((weekday) => ({
+        revisionId: rev!.id, ...owner, weekday, startMinute: 540, endMinute: 1020,
+      })));
+      return { calendarId: cal!.id, revisionId: rev!.id };
+    });
+  }
+
+  async function seed() {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const actor = await createUser({ partnerId: partner.id, orgId: null, email: `move-cal-${uid()}@example.test` });
+    const sourceCal = await calendar({ orgId: orgA.id, partnerId: null }, { timezone: 'Europe/London' });
+    await withSystemDbAccessContext(() => db.insert(orgTicketSettings).values({ orgId: orgA.id, businessCalendarId: sourceCal.calendarId }));
+    // Mon 2030-06-03 09:00 New York.
+    const createdAt = new Date('2030-06-03T13:00:00Z');
+    const insert = async (extra: Record<string, unknown>) => {
+      const [t] = await (getTestDb() as any).insert(tickets).values({
+        orgId: orgA.id, partnerId: partner.id, ticketNumber: `CAL-${uid()}`, subject: 'calendar move', source: 'manual',
+        createdAt, slaCalendarRevisionId: sourceCal.revisionId, responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+        responseDueAt: new Date('2030-06-03T09:00:00Z'), resolutionDueAt: new Date('2030-06-03T16:00:00Z'), ...extra,
+      }).returning();
+      return t as typeof tickets.$inferSelect;
+    };
+    return { partner, orgA, orgB, actor: { kind: 'user' as const, userId: actor.id }, sourceCal, insert };
+  }
+
+  it("snapshots the target org's partner default and recomputes the unfrozen arms", async () => {
+    const { partner, orgB, actor, sourceCal, insert } = await seed();
+    const partnerDefault = await calendar({ orgId: null, partnerId: partner.id }, { isPartnerDefault: true, timezone: 'America/New_York' });
+    const open = await insert({});
+    const answered = await insert({ firstResponseAt: new Date('2030-06-03T13:30:00Z') });
+
+    await withSystemDbAccessContext(() => moveTicketOrg(open.id, orgB.id, actor));
+    await withSystemDbAccessContext(() => moveTicketOrg(answered.id, orgB.id, actor));
+
+    const a = await readTicket(open.id);
+    expect(a).toMatchObject({
+      orgId: orgB.id,
+      slaCalendarRevisionId: partnerDefault.revisionId,
+      responseDueAt: new Date('2030-06-03T14:00:00Z'), // Mon 10:00 NY
+      resolutionDueAt: new Date('2030-06-03T21:00:00Z'), // Mon 17:00 NY
+    });
+    const b = await readTicket(answered.id);
+    expect(b?.slaCalendarRevisionId).toBe(partnerDefault.revisionId);
+    // Frozen response arm keeps the deadline it had.
+    expect(b?.responseDueAt).toEqual(new Date('2030-06-03T09:00:00Z'));
+    expect(b?.resolutionDueAt).toEqual(new Date('2030-06-03T21:00:00Z'));
+
+    const referenced = await (getTestDb() as any).select({ id: tickets.id }).from(tickets).where(eq(tickets.slaCalendarRevisionId, sourceCal.revisionId));
+    expect(referenced).toEqual([]);
+  });
+
+  it('a ticket with pause history keeps its accrued business minutes; the new calendar counts from them', async () => {
+    const { partner, orgB, actor, insert } = await seed();
+    await calendar({ orgId: null, partnerId: partner.id }, { isPartnerDefault: true, timezone: 'America/New_York' });
+    const paused = await insert({ slaPausedBusinessMinutes: 30, slaPausedMinutes: 900 });
+
+    await withSystemDbAccessContext(() => moveTicketOrg(paused.id, orgB.id, actor));
+
+    const moved = await readTicket(paused.id);
+    expect(moved?.slaPausedBusinessMinutes).toBe(30);
+    expect(moved?.slaPausedMinutes).toBe(900);
+    // Mon 09:00 NY + (60 + 30) business minutes → Mon 10:30 NY.
+    expect(moved?.responseDueAt).toEqual(new Date('2030-06-03T14:30:00Z'));
+  });
+
+  it('with no calendar in the target org the snapshot is nulled (24×7), never the source calendar', async () => {
+    const { orgB, actor, insert } = await seed();
+    const open = await insert({});
+
+    await withSystemDbAccessContext(() => moveTicketOrg(open.id, orgB.id, actor));
+
+    const moved = await readTicket(open.id);
+    expect(moved?.slaCalendarRevisionId).toBeNull();
+    expect(moved?.responseDueAt).toEqual(new Date('2030-06-03T14:00:00Z')); // created + 60 wall-clock minutes
   });
 });

@@ -5,10 +5,11 @@ package sessionbroker
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type darwinDetectorNoCgo struct{}
@@ -23,7 +24,7 @@ func (d *darwinDetectorNoCgo) ListSessions() ([]DetectedSession, error) {
 	// Use "stat -f %Su /dev/console" to get the console user without CGO
 	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "stat", "-f", "%Su", "/dev/console").Output()
+	out, err := procspawn.CommandContext(ctx, "stat", "-f", "%Su", "/dev/console").Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect console user via stat: %w", err)
 	}
@@ -38,7 +39,7 @@ func (d *darwinDetectorNoCgo) ListSessions() ([]DetectedSession, error) {
 	// Resolve UID for the console user (needed for launchctl domain targeting)
 	uidCtx, uidCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 	defer uidCancel()
-	uidOut, err := exec.CommandContext(uidCtx, "id", "-u", username).Output()
+	uidOut, err := procspawn.CommandContext(uidCtx, "id", "-u", username).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve UID for user %q: %w", username, err)
 	}

@@ -15,15 +15,19 @@ Loop for testing the current worktree end to end:
 3. Drive Playwright: `pnpm wt-stack test -- tests/<spec>.spec.ts`, or point the
    Playwright MCP browser at `baseUrl`.
 4. Tear down: `pnpm wt-stack down` (removes volumes by default). Run it from
-   the same worktree **and branch** that ran `up` — the project name is derived
-   from the branch, so a renamed branch or deleted worktree orphans the stack
-   (see "Tear down when done" below for how to reap those).
+   the same worktree that ran `up`; the branch does not matter (#9864). `up`
+   records the compose project in `.breeze-stack.json` and `down`, `up` and
+   `test` reuse it; without a descriptor the name is derived from the worktree
+   path (`breeze-wt-<dir>-<hash>`). `down` exits non-zero when it finds no
+   matching project instead of silently doing nothing; pass
+   `BREEZE_WT_PROJECT=<name>` to target a specific project. A deleted worktree
+   still orphans its stack (see "Tear down when done" below).
 
 Notes:
 - Requires Node v22.20.0 on PATH and a populated root `.env` (image refs).
 - `.env.stack` pins `RESEND_API_KEY`, `MAILGUN_API_KEY` and `SMTP_HOST` to empty so a QA stack never sends real email even though the root `.env` carries live keys; set `BREEZE_WT_STACK_LIVE_MAIL=1` to keep the root values.
 - Caddy serves plain HTTP in dev; `baseUrl` is `http://localhost:<port>`.
-- Caddy's host port is random by default and **changes if caddy is restarted** (`docker restart` re-allocates it), stranding anything that read `baseUrl`. Export `BREEZE_WT_CADDY_PORT=<free port>` before `pnpm wt-stack up` to pin it; the descriptor then has `caddyPortPinned: true`. Required for any storm scenario that restarts caddy (`socket-drop`, `storm-suite`) — `storm.sh` refuses to run it otherwise (#8718).
+- Caddy's host port is random by default and **changes if caddy is restarted** (`docker restart` re-allocates it), stranding anything that read `baseUrl`. Export `BREEZE_WT_CADDY_PORT=<free port>` before `pnpm wt-stack up` to pin it; the descriptor then has `caddyPortPinned: true`. Required for any storm scenario that restarts caddy (`socket-drop`, `storm-suite`) — `storm.sh` refuses to run it otherwise (#8718). `up` refuses to start when another compose project already publishes the pinned port (#9864).
 - OrbStack is recommended for speed but not required — the CLI uses only the
   standard `docker compose` interface.
 - `pnpm wt-stack ls` lists running stacks; `pnpm wt-stack info` prints the descriptor.

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { WORKER_REGISTRY } from './services/workerRegistry';
+import { WORKER_REGISTRY, selectWorkers } from './services/workerRegistry';
 import { initializePamActuationWorker, shutdownPamActuationWorker } from './jobs/pamActuationWorker';
 
 describe('PAM actuation worker runtime lifecycle', () => {
@@ -11,6 +11,14 @@ describe('PAM actuation worker runtime lifecycle', () => {
     const mod = await entry!.load();
     expect(mod.init).toBe(initializePamActuationWorker);
     expect(mod.shutdown).toBe(shutdownPamActuationWorker);
+  });
+
+  it('runs on the worker and all roles, not api, now that it is global (#4142)', () => {
+    const includesPam = (role: 'api' | 'worker' | 'all') =>
+      selectWorkers(role).some((entry) => entry.name === 'pamActuationWorker');
+    expect(includesPam('api')).toBe(false);
+    expect(includesPam('all')).toBe(true);
+    expect(includesPam('worker')).toBe(true);
   });
 
   it('the workers shutdown phase precedes Redis teardown in the shutdown plan', () => {

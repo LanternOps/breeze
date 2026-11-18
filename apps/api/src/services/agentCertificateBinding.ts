@@ -335,3 +335,79 @@ export async function enforceAgentCertificateBinding(input: {
   recordAgentCertificateBindingMetric(mode, decision.reason, input.pathClass);
   return decision;
 }
+
+/**
+ * The staged (pending_activation) certificate of a reattach as a binding
+ * identity, or null when that row is no longer pending on the target (never
+ * a `legacy_identity` free pass: null means "not a candidate").
+ */
+async function loadStagedCertificateIdentity(
+  stagedCertificateId: string,
+  targetDeviceId: string,
+): Promise<AgentCertificateBindingIdentity | null> {
+  const [row] = await withSystemDbAccessContext(() => db
+    .select({ serialNumber: deviceMtlsCertificates.serialNumber, state: deviceMtlsCertificates.state })
+    .from(deviceMtlsCertificates)
+    .where(and(eq(deviceMtlsCertificates.id, stagedCertificateId), eq(deviceMtlsCertificates.deviceId, targetDeviceId)))
+    .limit(1));
+  if (!row || row.state !== 'pending_activation') return null;
+  // The staged certificate is the identity this install will hold: match it
+  // as an active one.
+  return { storedSerial: normalizeCertificateSerial(row.serialNumber), storedState: 'active' };
+}
+
+/**
+ * #8318 §6.4 — the binding decision of `POST /agents/:id/rebind-confirm`,
+ * which authenticates with the confirm-only token, not with an agent
+ * credential, and is presented by an install in the middle of becoming
+ * another device. Every candidate goes through `checkAgentCertificateBinding`,
+ * the exact decision agent auth makes:
+ *   - `before_confirm`: the SOURCE as agent auth sees it (its active
+ *     certificate, or `legacy_identity` when it has no certificate history at
+ *     all — never a `pending_revocation` row, which reads
+ *     `certificate_not_active`), OR the TARGET's staged certificate while it
+ *     is still pending on the target. The target's active certificate belongs
+ *     to the OLD install and is never accepted here.
+ *   - `after_confirm` (a confirmed intent or a ledger replay): the TARGET as
+ *     agent auth now sees it, i.e. the new install's active certificate. The
+ *     source (its certificate is pending revocation, its legacy serial
+ *     belongs to a retired row) is no longer accepted.
+ * `audit` observes; `off` skips the reads.
+ */
+export async function enforceRebindConfirmCertificateBinding(input: {
+  phase: 'before_confirm' | 'after_confirm';
+  sourceDeviceId: string;
+  targetDeviceId: string;
+  stagedCertificateId: string | null;
+  assertion: AgentCertificateAssertion;
+}): Promise<AgentCertificateBindingDecision> {
+  const mode = getAgentMtlsBindingMode();
+  if (mode === 'off') return { allowed: true, reason: 'mode_off' };
+
+  const decide = (identity: AgentCertificateBindingIdentity) => checkAgentCertificateBinding({
+    mode,
+    assertionTrusted: input.assertion.assertionTrusted,
+    assertedVerified: input.assertion.assertedVerified,
+    assertedSerial: input.assertion.assertedSerial,
+    storedSerial: identity.storedSerial,
+    storedState: identity.storedState,
+  });
+
+  let decision: AgentCertificateBindingDecision;
+  if (input.phase === 'after_confirm') {
+    decision = decide(await loadAgentCertificateBindingIdentity(input.targetDeviceId));
+  } else {
+    const candidates = [decide(await loadAgentCertificateBindingIdentity(input.sourceDeviceId))];
+    const staged = input.stagedCertificateId
+      ? await loadStagedCertificateIdentity(input.stagedCertificateId, input.targetDeviceId)
+      : null;
+    if (staged) candidates.push(decide(staged));
+    // A real match wins over a pass that only audit mode grants.
+    decision = candidates.find((c) => c.allowed && (c.reason === 'matched' || c.reason === 'legacy_identity'))
+      ?? candidates.find((c) => c.allowed)
+      ?? candidates[0]!;
+  }
+  recordAgentCertificateBindingMetric(mode, decision.reason, 'rest');
+  return decision;
+}
+

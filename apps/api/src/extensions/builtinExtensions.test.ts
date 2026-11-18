@@ -9,6 +9,7 @@ import {
 import {
   BUILTIN_EXTENSION_NAMES,
   builtinTenancyDeclarations,
+  ExtensionMigrationParityError,
   isBuiltinEnabled,
   loadBuiltinExtensions,
   type BuiltinExtension,
@@ -35,6 +36,7 @@ import {
 } from './stateStore';
 import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import type { RegisterableExtensionWebAsset } from './webAssets';
+import { ReadOnlyDatabaseError } from '../db/readOnlyDatabase';
 
 /**
  * The built-in loading path is exercised entirely through injected ports, so
@@ -594,6 +596,137 @@ describe('loadBuiltinExtensions — mode: worker', () => {
 });
 
 /**
+ * #11741 item 4: on a read-only database (`default_transaction_read_only = on`)
+ * an enabled built-in boots from what the last writable boot recorded instead
+ * of crash-looping on the per-boot `installed_extensions` /
+ * `extension_schema_history` writes. Anything that genuinely needs a write
+ * (a pending migration, a first boot) still fails, with an error that names the
+ * read-only condition.
+ */
+describe('loadBuiltinExtensions — read-only database (#11741)', () => {
+  enableFixtureBuiltin();
+
+  async function recordedState(opts: { enabled?: boolean; floor?: string } = {}) {
+    const backend = new InMemoryExtensionStateBackend();
+    const stateStore = new ExtensionStateStore(backend);
+    // What a previous writable boot left behind.
+    await stateStore.upsertObserved({ name: NAME, configuredVersion: VERSION });
+    await stateStore.recordActive(NAME, VERSION);
+    if (opts.enabled === false) await stateStore.setEnabled(NAME, false);
+    if (opts.floor) await stateStore.recordSchemaFloor(NAME, VERSION, opts.floor);
+    const writes = [
+      vi.spyOn(backend, 'upsertObserved'),
+      vi.spyOn(backend, 'recordActive'),
+      vi.spyOn(backend, 'insertSchemaFloor'),
+      vi.spyOn(backend, 'setEnabled'),
+      vi.spyOn(backend, 'recordFailure'),
+    ];
+    return { stateStore, writes };
+  }
+
+  function quietWarnings() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('activates from the recorded state without writing, verifying parity instead of migrating', async () => {
+    const warn = quietWarnings();
+    const { stateStore, writes } = await recordedState({ enabled: false });
+    const runMigrations = vi.fn(async () => {});
+    const checkMigrationParity = vi.fn(async () => {});
+    const h = createHarness({
+      stateStore,
+      ports: { isDatabaseReadOnly: async () => true, runMigrations, checkMigrationParity },
+    });
+
+    await h.load();
+
+    expect(runMigrations).not.toHaveBeenCalled();
+    expect(checkMigrationParity).toHaveBeenCalledTimes(1);
+    expect(h.calls).toEqual(['migration', 'tenancy', 'stage', 'validate', 'activate', 'web']);
+    // The persisted operator flag still decides the snapshot.
+    expect(h.registry.get(NAME)?.enabled).toBe(false);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('read-only'));
+  });
+
+  it('writes nothing in worker mode either', async () => {
+    quietWarnings();
+    const { stateStore, writes } = await recordedState();
+    const h = createHarness({ stateStore, ports: { isDatabaseReadOnly: async () => true } });
+
+    await h.load('worker');
+
+    expect(h.registry.get(NAME)?.enabled).toBe(true);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+  });
+
+  it('fails with a read-only error when a migration is pending', async () => {
+    const { stateStore } = await recordedState();
+    const h = createHarness({
+      stateStore,
+      ports: {
+        isDatabaseReadOnly: async () => true,
+        checkMigrationParity: async () => {
+          throw new ExtensionMigrationParityError('missing from ledger: demo-builtin/0002-next.sql');
+        },
+      },
+    });
+
+    const error = await h.load().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain('read-only');
+    expect((error as Error).message).toContain('missing from ledger: demo-builtin/0002-next.sql');
+    expect((error as Error).cause).toBeInstanceOf(ExtensionMigrationParityError);
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('does not relabel a failure of the parity check itself as a read-only problem', async () => {
+    const { stateStore } = await recordedState();
+    const lost = Object.assign(new Error('Connection terminated unexpectedly'), { code: 'CONNECTION_CLOSED' });
+    const h = createHarness({
+      stateStore,
+      ports: { isDatabaseReadOnly: async () => true, checkMigrationParity: async () => { throw lost; } },
+    });
+    await expect(h.load()).rejects.toBe(lost);
+  });
+
+  it('fails with a read-only error on a first boot (no recorded state)', async () => {
+    const backend = new InMemoryExtensionStateBackend();
+    const upsert = vi.spyOn(backend, 'upsertObserved');
+    const h = createHarness({
+      stateStore: new ExtensionStateStore(backend),
+      ports: { isDatabaseReadOnly: async () => true },
+    });
+
+    const error = await h.load().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain(NAME);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('still refuses code older than the recorded schema floor', async () => {
+    const { stateStore } = await recordedState({ floor: '9.0.0' });
+    const h = createHarness({ stateStore, ports: { isDatabaseReadOnly: async () => true } });
+
+    await expect(h.load()).rejects.toThrow(/OLDER than the highest recorded schema floor 9\.0\.0/);
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('leaves the writable path unchanged', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const h = createHarness({ ports: { isDatabaseReadOnly: async () => false, runMigrations } });
+    await h.load();
+    expect(runMigrations).toHaveBeenCalledTimes(1);
+    expect((await h.stateStore.get(NAME))?.lifecycleState).toBe('active');
+  });
+});
+
+/**
  * The DEPLOYMENT enable flag. Being compiled into the image makes a built-in
  * available, not loaded: a deployment that never asked for it must boot with no
  * migrations, no schema and none of the built-in's infrastructure requirements
@@ -696,6 +829,71 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
       }
     },
   );
+
+  // Wisp W08: `enableEnvAliases` (the workspace built-in's
+  // BREEZE_WISP_CONNECTOR_ENABLED) is a second way in through the REAL loader,
+  // and the disabled line names whichever flag the operator actually set.
+  describe('enable-flag aliases', () => {
+    const ALIAS = 'BREEZE_DEMO_BUILTIN_ALIAS_ENABLED';
+    afterEach(() => {
+      delete process.env[ALIAS];
+    });
+
+    it('loads the built-in when only the alias is "true"', async () => {
+      process.env[ALIAS] = 'true';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeDefined();
+        expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).not.toContain('builtin_extension_disabled');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a built-in without that alias ignores it', async () => {
+      process.env[ALIAS] = 'true';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin()] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeUndefined();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('reports a mistyped alias as SET, naming the alias, with the canonical flag and alias list', async () => {
+      process.env[ALIAS] = '1';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeUndefined();
+        const line = warn.mock.calls[0]!.join(' ');
+        expect(line).toContain(`${ALIAS} is SET but is not the exact string`);
+        expect(line).toContain('"observedValue":"1"');
+        expect(line).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+        expect(line).toContain(`"enableFlagAliases":["${ALIAS}"]`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('with nothing set, reports never-configured and still lists the alias', async () => {
+      const warn = captureWarnings();
+      try {
+        await createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] }).load();
+        const line = warn.mock.calls[0]!.join(' ');
+        expect(line).toContain('"observedValue":null');
+        expect(line).toContain('opt-in per deployment');
+        expect(line).toContain(`"enableFlagAliases":["${ALIAS}"]`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
 
   // A previously-enabled deployment left `demo_*` on the database. Without the
   // declaration, the unaccounted-public-tables sweep aborts boot on those
@@ -1049,6 +1247,54 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
     } finally {
       if (previous === undefined) delete process.env.BREEZE_WORKSPACE_ENABLED;
       else process.env.BREEZE_WORKSPACE_ENABLED = previous;
+    }
+  });
+
+  /**
+   * W08 (spec §17.2, w00 A35): the connector is "Wisp" to users, so its flag
+   * gains the alias BREEZE_WISP_CONNECTOR_ENABLED. BREEZE_WORKSPACE_ENABLED
+   * keeps working (deployment contract above). The ENGINE flag
+   * BREEZE_WISP_ENABLED must never imply the connector: the connector needs
+   * pgvector and the engine does not.
+   */
+  it('also enables the workspace built-in under the BREEZE_WISP_CONNECTOR_ENABLED alias, never under BREEZE_WISP_ENABLED', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace')!;
+    expect(workspace.enableEnvAliases).toEqual(['BREEZE_WISP_CONNECTOR_ENABLED']);
+
+    const names = ['BREEZE_WORKSPACE_ENABLED', 'BREEZE_WISP_CONNECTOR_ENABLED', 'BREEZE_WISP_ENABLED'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      for (const name of names) delete process.env[name];
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+
+      process.env.BREEZE_WISP_CONNECTOR_ENABLED = 'true';
+      expect(isBuiltinEnabled(workspace)).toBe(true);
+
+      // Same strict-string convention as the primary flag.
+      process.env.BREEZE_WISP_CONNECTOR_ENABLED = '1';
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+      delete process.env.BREEZE_WISP_CONNECTOR_ENABLED;
+
+      process.env.BREEZE_WISP_ENABLED = 'true';
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  });
+
+  it('a built-in with no aliases is gated on its primary flag alone', () => {
+    const fixture = { ...BUILTINS[0]!, enableEnvVar: 'BREEZE_ALIAS_FIXTURE_ENABLED', enableEnvAliases: undefined };
+    vi.stubEnv('BREEZE_ALIAS_FIXTURE_ENABLED', 'true');
+    vi.stubEnv('BREEZE_WISP_CONNECTOR_ENABLED', 'true');
+    try {
+      expect(isBuiltinEnabled(fixture)).toBe(true);
+      vi.stubEnv('BREEZE_ALIAS_FIXTURE_ENABLED', '');
+      expect(isBuiltinEnabled(fixture)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 

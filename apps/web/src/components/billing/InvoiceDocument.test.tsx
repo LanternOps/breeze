@@ -96,7 +96,9 @@ describe('InvoiceDocumentPreview — renders the customer view', () => {
     render(<InvoiceDocumentPreview detail={detail} />);
     await waitFor(() => expect(screen.getByTestId('document-root')).toBeInTheDocument());
     const wrapper = screen.getByTestId('invoice-preview-paper');
-    expect(wrapper.style.getPropertyValue('--doc-accent')).toBe('#1d4ed8');
+    // The accent is written by a passive effect after the commit that mounts the
+    // document, so document-root can be visible a tick before it lands (#9818).
+    await waitFor(() => expect(wrapper.style.getPropertyValue('--doc-accent')).toBe('#1d4ed8'));
     expect(wrapper.contains(screen.getByTestId('document-root'))).toBe(true);
   });
 

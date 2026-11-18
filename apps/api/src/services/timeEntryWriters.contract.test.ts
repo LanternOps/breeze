@@ -23,6 +23,7 @@ export const TIME_ENTRY_WRITER_ALLOWLIST: Record<string, string> = {
   'services/ticketService.ts': 'org_id re-stamp on a ticket org move',
   'services/tenantCascade.ts': 'org erasure',
   'services/orgMergeRegistry.ts': 'org merge repoint',
+  'services/ticketMerge/repoint.ts': 'same-org merge re-points ticket_id; billing fields unchanged (spec §3.3)',
 };
 
 const WRITE_PATTERNS: RegExp[] = [

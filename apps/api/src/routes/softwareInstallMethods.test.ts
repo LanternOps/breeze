@@ -23,6 +23,7 @@ function chainMock(terminalValue: any): any {
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -251,6 +252,21 @@ describe('softwareInstallMethodRoutes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('rejects methods on Breeze built-in packages (builtinPackageKey set, #6958)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        chainMock([ownedCatalogItem({ builtinPackageKey: 'controld_windows' })]) as any,
+      );
+
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ platform: 'windows', kind: 'winget', packageId: 'Vendor.App' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     async function postDuplicate() {
       return app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
         method: 'POST',
@@ -372,12 +388,13 @@ describe('softwareInstallMethodRoutes', () => {
       });
     }
 
-    it.each(SQLSTATE_SHAPES)(
-      'maps a referencing-deployment FK violation (23503) to 409 without auditing — %s',
-      async (_label, build) => {
+    // 23001: Postgres 18's code for a RESTRICT foreign-key refusal (#11624).
+    it.each(SQLSTATE_SHAPES.flatMap(([label, build]) => (['23503', '23001'] as const).map((code) => [`${code}, ${label}`, build, code] as const)))(
+      'maps a referencing-deployment FK violation to 409 without auditing — %s',
+      async (_label, build, code) => {
         mockOwnedMethodLookup();
         vi.mocked(db.delete).mockImplementationOnce(() => {
-          throw build('23503', 'update or delete on table violates foreign key constraint', {
+          throw build(code, 'update or delete on table violates foreign key constraint', {
             table_name: 'software_deployments',
             detail: 'Key (id)=(...) is still referenced from table "software_deployments".',
           });

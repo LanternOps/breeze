@@ -4,6 +4,7 @@
  * integer HUNDREDTHS internally so a period of 300 x 20-minute entries sums to
  * exactly 99.00, never 98.99999.
  */
+import { laborHundredths } from '@breeze/shared';
 import { computePeriod } from './contractMath';
 
 export const HOUR_BLOCK_CLOSE_CAP = 12;
@@ -19,10 +20,11 @@ export interface HourBlockLineSpec {
 const toH = (v: string | number): number => Math.round(Number(v) * 100);
 const fromH = (h: number): number => h / 100;
 
-/** Hundredths of an hour for one entry: round(minutes / 60, 2). 5m/3 never ties. */
+/** Hundredths of an hour for one entry — the shared labour rule (#9561,
+ *  `laborHundredths`): hours rounded to 2 dp. Block hours refuse a negative. */
 function entryHundredths(minutes: number): number {
   if (!Number.isFinite(minutes) || minutes < 0) throw new Error('minutes must be >= 0');
-  return Math.round((minutes * 100) / 60);
+  return laborHundredths(minutes);
 }
 
 export function entryHours(minutes: number): number {

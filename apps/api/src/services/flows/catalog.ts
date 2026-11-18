@@ -28,8 +28,34 @@ export type FlowCatalogEntry =
   | { source: 'tenant'; name: string; descriptor: TenantToolDescriptor; validate: ValidateFunction }
   | { source: 'builtin'; name: FlowBuiltinName };
 
-/** The flow authoring tools — a flow never drafts or reads flows. */
-export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>(FLOW_TOOL_NAMES);
+/** An owner's flow catalog: step tool name → what it resolves to. */
+export type FlowCatalog = Map<string, FlowCatalogEntry>;
+
+/**
+ * Core tools that are agent-reachable but never flow-eligible:
+ *  - the flow authoring tools — a flow never drafts or reads flows;
+ *  - Wisp W03's `remember` / `recall` — agent-reachable (a grant-bearing
+ *    assessment run needs `recall`), but a flow step never carries a Wisp
+ *    grant (`AuthContext.wispGrant`), so in a flow they would always answer
+ *    `wisp_grant_required`. A flows-only exclusion: the never-agent deny set
+ *    in aiGuardrails.ts is deliberately untouched. `confirm_memory` /
+ *    `retract_memory` are human-only, so already unreachable;
+ *  - Wisp W05a's concern chat tools (`list_concerns`, `raise_concern`,
+ *    `snooze_concern`, `resolve_concern`, `create_watch`) — the same rule:
+ *    each refuses without `auth.wispGrant`. Named here before W05a lands so
+ *    the exclusion holds whichever PR merges first;
+ *  - Wisp W08's thread-link chat tools (`link_entity`, `list_links`) — the
+ *    same rule: each refuses without `auth.wispGrant`;
+ *  - the Wisp check-in chat tools (`schedule_check_in`, `list_check_ins`,
+ *    `cancel_check_in`, #10991 W03) — the same rule.
+ */
+export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>([
+  ...FLOW_TOOL_NAMES,
+  'remember', 'recall',
+  'list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch',
+  'link_entity', 'list_links',
+  'schedule_check_in', 'list_check_ins', 'cancel_check_in',
+]);
 
 /**
  * Core input fields that name an owned asset other than a device, keyed by
@@ -51,8 +77,11 @@ export function listFlowEligibleCoreTools(): string[] {
   return listAgentReachableTools().filter((name) => !FLOW_EXCLUDED_CORE_TOOLS.has(name));
 }
 
-export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<Map<string, FlowCatalogEntry>> {
-  const catalog = new Map<string, FlowCatalogEntry>();
+export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<FlowCatalog> {
+  const catalog: FlowCatalog = new Map();
+  // W5 PR B (#5220): every shared built-in is in the catalog. Built-ins are
+  // authorized by rule 7 (FLOW_BUILTIN_PERMISSIONS), revalidated at run time
+  // and parked at Tier 3 like any other step (plan Decision 12).
   for (const name of Object.keys(FLOW_BUILTIN_STEPS) as FlowBuiltinName[]) {
     catalog.set(name, { source: 'builtin', name });
   }

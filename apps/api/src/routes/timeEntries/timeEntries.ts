@@ -19,6 +19,7 @@ import { canManageTimeEntryBilling } from '../../services/timeEntryBillingPermis
 import { writeRouteAudit } from '../../services/auditEvents';
 import { timeSuggestionRoutes } from './suggestions';
 import { locationSitesRoutes } from './locationSites';
+import { ticketMergedResponse } from '../../services/ticketMerge/errors';
 
 export const timeEntriesApiRoutes = new Hono();
 
@@ -136,6 +137,9 @@ function writeBulkTimeEntryAudits(
 }
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // #8972 W1: a write reached a merged tombstone → 409 with the survivor id.
+  const merged = ticketMergedResponse(c, err);
+  if (merged) return merged;
   if (err instanceof TimeEntryServiceError) {
     // `details` carries the machine-readable half of a code (e.g. #4617
     // APPROVAL_REQUIRED's { trigger, pendingRequestId }); absent otherwise.

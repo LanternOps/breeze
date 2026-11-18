@@ -1,9 +1,13 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { devices, securityStatus } from '../../db/schema';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { appearedRemoteTools } from '../../services/remoteToolAlerts/knownTools';
+import { raiseRemoteToolAppearedAlerts } from '../../services/remoteToolAlerts/alerts';
 import { recordAgentIngestSubmission } from '../metrics';
 import { securityStatusIngestSchema, managementPostureIngestSchema } from './schemas';
 import { upsertSecurityStatusForDevice } from './helpers';
@@ -138,18 +142,30 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const identity = { deviceId: device.id, agentId };
+  let written: { id: string }[];
   try {
-    await db
-      .update(devices)
-      .set({
-        managementPosture: payload,
-        updatedAt: new Date(),
-      })
-      .where(eq(devices.id, device.id));
+    // #8318 §6.4: the row was read by the authenticated agent_id (`:id`);
+    // the write is bound to the same identity through updateOwnDeviceRow.
+    written = await updateOwnDeviceRow(db, identity, {
+      managementPosture: payload,
+      updatedAt: new Date(),
+    });
   } catch (err) {
     console.error('[agents] management posture DB update failed:', { agentId, deviceId: device.id, error: err });
     recordAgentIngestSubmission('management_posture', 'failed');
     return c.json({ error: 'Failed to save management posture' }, 500);
+  }
+  // 0 rows: nothing persisted, so no success metric and no audit. The row
+  // either changed hands after the read above (a reattach confirm or an
+  // in-place re-enroll: the stale-credential 401 the beats give) or vanished
+  // (the same answer as a row the read did not find).
+  if (written.length === 0) {
+    if (await ownDeviceRowChangedHands(db, identity)) {
+      console.warn('[agents] stale management posture submit: the device row changed hands after auth; refusing it', identity);
+      throw staleAgentCredentialRejection();
+    }
+    return c.json({ error: 'Device not found' }, 404);
   }
   recordAgentIngestSubmission('management_posture', 'success');
 
@@ -170,6 +186,17 @@ agentSecurityRoutes.put('/:id/management/posture', zValidator('json', management
     } catch (auditErr) {
       console.error('[agents] audit event write failed for posture submit:', auditErr);
     }
+  }
+
+  // #11306 — a remote access / RMM tool the previous scan did not have alerts
+  // the partner. A device's first posture is the baseline and raises nothing.
+  // Raised after this request's transaction commits, so the alert path never
+  // holds a second pooled connection while this one is open (#1105) and never
+  // fires for a posture that rolled back. It never throws.
+  const appeared = appearedRemoteTools(device.managementPosture, payload);
+  if (appeared.length > 0) {
+    const target = { deviceId: device.id, orgId: device.orgId, detectedAt: payload.collectedAt, tools: appeared };
+    runAfterDbContextCommit('management-posture.remote-tool-alerts', () => raiseRemoteToolAppearedAlerts(target));
   }
 
   return c.json({ success: true });

@@ -51,11 +51,11 @@ describe('install boundary handlers', () => {
 });
 
 /**
- * Protocol columns the boundary deliberately keeps. Wave 1b's
- * `rebindProtocolVersion` will join: the new install reports it at enroll, so
- * it is not reset at the boundary (§4.1).
+ * Protocol columns the boundary deliberately keeps. `rebindProtocolVersion`
+ * (wave 1b): the new install reports it at enroll, so it is not reset at the
+ * boundary (§4.1).
  */
-const NOT_RESET_AT_BOUNDARY: ReadonlySet<string> = new Set<string>([]);
+const NOT_RESET_AT_BOUNDARY: ReadonlySet<string> = new Set<string>(['rebindProtocolVersion']);
 
 describe('device row reset (§5.5 capability columns)', () => {
   it('resets every declared protocol capability of the old install', () => {
@@ -65,6 +65,14 @@ describe('device row reset (§5.5 capability columns)', () => {
     const reset = Object.keys(INSTALL_BOUNDARY_RESET_COLUMNS);
     const missing = capabilityColumns.filter((key) => !reset.includes(key));
     expect(missing, 'a new *ProtocolVersion column must join INSTALL_BOUNDARY_RESET_COLUMNS').toEqual([]);
+  });
+
+  it('keeps the possible-replacement flag: it is row history, not install state (#8318 §7.3)', () => {
+    const reset = Object.keys(INSTALL_BOUNDARY_RESET_COLUMNS);
+    for (const key of ['possibleReplacementOfDeviceId', 'possibleReplacementReason', 'possibleReplacementDetectedAt']) {
+      expect(getTableColumns(devices), key).toHaveProperty(key);
+      expect(reset, key).not.toContain(key);
+    }
   });
 
   it('resets each column to its "not declared" value', () => {

@@ -1,6 +1,6 @@
 ---
 title: Regional Settings
-description: Partner-level localization defaults — timezone, date/time format, console language, and business hours — that cascade to new organizations and sites.
+description: Partner-level localization defaults — timezone, date/time format, and console language — that cascade to new organizations and sites.
 sidebar:
   order: 11
   label: Regional Settings
@@ -8,7 +8,7 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-The **Regional** tab in Partner Settings holds partner-level localization defaults: timezone, date and time format, console language, and business hours. These are the defaults **new organizations and sites inherit** when they are created under the partner, so setting them once establishes a consistent baseline across the tenant.
+The **Regional** tab in Partner Settings holds partner-level localization defaults: timezone, date and time format, and console language. These are the defaults **new organizations and sites inherit** when they are created under the partner, so setting them once establishes a consistent baseline across the tenant.
 
 Reach it at **Settings → Partner → Regional** (the tab is anchored at `#regional`). Changes are saved to the partner's `settings` JSONB via `PATCH /orgs/partners/me`, where the keys are merged rather than replaced. The timezone additionally populates the first-class `partners.timezone` column.
 
@@ -28,23 +28,12 @@ Reach it at **Settings → Partner → Regional** (the tab is anchored at `#regi
 </Aside>
 
 <Aside type="note">
-  **Currency is not on this tab.** Your billing currency lives at **Settings → Billing** (the setup wizard also asks for it during the Regional step). New organizations are stamped with the partner currency when they are created and are *not* rewritten if you change it later. See [Invoices → Where the currency comes from](/features/invoices/#where-the-currency-comes-from).
+  **Business hours are not on this tab.** The calendars that SLA deadlines are counted on now live at **Settings → Ticketing → Priorities & SLAs → Business hours**. See [Ticketing → Business hours](/features/ticketing/#business-hours).
 </Aside>
 
----
-
-## Business Hours
-
-Business hours define the partner's standard operating window for support and alerting. Choose one of four presets:
-
-| Preset | Meaning |
-|---|---|
-| **24/7** | Always available. |
-| **Business Hours** | Mon–Fri, 9am–5pm. (Default.) |
-| **Extended Hours** | Mon–Fri 7am–7pm, Sat 9am–1pm. |
-| **Custom** | Set your own per-day schedule. |
-
-Selecting **Custom** reveals a per-day editor for Monday through Sunday. Each day has an **Open** checkbox and, when open, a start and end time (`HH:MM`). The default custom schedule opens Mon–Fri 09:00–17:00 and marks Saturday and Sunday closed. Custom day schedules are stored under `businessHours.custom`; the presets store only `businessHours.preset`.
+<Aside type="note">
+  **Currency is not on this tab.** Your billing currency lives at **Settings → Billing** (the setup wizard also asks for it during the Regional step). New organizations are stamped with the partner currency when they are created and are *not* rewritten if you change it later. See [Invoices → Where the currency comes from](/features/invoices/#where-the-currency-comes-from).
+</Aside>
 
 ---
 

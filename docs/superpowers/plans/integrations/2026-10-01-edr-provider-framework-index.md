@@ -24,9 +24,9 @@ index — `get_feature_status` before starting any wave). Branch per wave:
 | W02 | [Surfacing — incidents feed, UI, portal, alerts, read-only AI tools](2026-10-01-edr-provider-framework-w02-surfacing.md) | 2 (API, web) | W01 |
 | W03 | Actions + AI + push hints (GravityZone first) | 2 (actions + AI, webhook/push) | W01 (W02 recommended first for the UI buttons) |
 | W04 | [Emsisoft cloud EMC adapter](2026-10-17-edr-provider-framework-w04-emsisoft.md) — #7436 gate cleared 2026-10-17 (cloud EMC only) | 2 (PR-A read adapter + framework extension points, PR-B actions + `edr_detection_action`) | W01 (+W03 for actions) |
-| W05 | Sophos Central adapter | 1 | W01 (+W03 for actions) |
-| W06 | Installer dispatch + #6960 hook | 1 | W01 + at least one adapter with `installer !== 'none'` |
-| W07 | Agent detection signatures (absorbs #7551 / PR #7634) | 1 residual (after #7634) | none |
+| W05 | [Sophos Central adapter](2026-11-08-edr-provider-framework-w05-sophos-central-adapter.md) (draft) | 2 (W05.1 vendor-neutral framework fixes, W05.2 adapter + lab gate) | W01 (+W03 for actions) |
+| W06 | [Installer dispatch + #6960 hook](2026-11-05-edr-provider-framework-w06-installer-dispatch.md) (draft) | 3 (W06.1 framework + GravityZone, W06.2 hook, W06.3 lab gate) | W01 + at least one adapter with `installer !== 'none'` |
+| W07 | [Agent detection signatures — Trend Micro residual](2026-11-08-edr-provider-framework-w07-agent-detection-signatures.md) (draft; #7634 merged) | 1 | none |
 
 W01 → W02 / W03 (parallel after W01). W04 / W05 are adapter-only and can start any time after
 W01; their action halves need W03. W06 after the GravityZone adapter (W01) and W03's actions
@@ -240,6 +240,12 @@ CI; sandbox gate like W01. 1 PR. Low–medium.
 
 ## W05 — Sophos Central adapter
 
+> **Superseded by the wave plan** [`2026-11-08-edr-provider-framework-w05-sophos-central-adapter.md`](2026-11-08-edr-provider-framework-w05-sophos-central-adapter.md)
+> (2026-11-08, draft for approval): two PRs — W05.1 fixes four vendor-neutral framework gaps (one live mapping per vendor
+> tenant across connections, an explicit `closed` re-read update, fresh tenant-host routing, an opt-in provider-wide rate
+> window), W05.2 is the adapter (plus the catalog CHECK migration a new provider key requires). Alerts carry no status, so
+> closure is a lab-proven two-signal check rather than an `open_set` model. The text below is kept as the original sketch.
+
 **Content.** `sophos/{client,adapter,normalize}.ts`: OAuth2 client-credentials at `id.sophos.com`
 (1 h JWT, token cache keyed `(connection, credential version, tenant)`), `whoami` →
 `partner`/`organization`/`tenant`, `/partner/v1/tenants` (or `/organization/v1/tenants`) with the
@@ -255,6 +261,11 @@ it does, that is an interface bug to fix in the framework, not a Sophos special 
 
 ## W06 — Installer dispatch + #6960 hook
 
+> **Superseded by the wave plan** [`2026-11-05-edr-provider-framework-w06-installer-dispatch.md`](2026-11-05-edr-provider-framework-w06-installer-dispatch.md)
+> (2026-11-05, draft for approval): three PRs (framework + GravityZone dormant, security-agents hook dormant, owner lab
+> gate that enables both), `getInstaller` split into a sync-time fetch and a pure dispatch-time build, Emsisoft installer
+> proposed as a follow-up. The text below is kept as the original sketch.
+
 **Content.** `BuiltinProvider` widened to `'huntress' | 'sentinelone' | EdrProviderKey` (installer-
 capable subset); `edrInstallerResolver.ts` becomes a dispatch map with an **exhaustive switch that
 throws** (closes today's "anything not Huntress resolves as S1" fall-through at `:60`);
@@ -269,6 +280,11 @@ built here — only `listEdrProviders().filter(installer !== 'none')` is made av
 brzlab VM through a Breeze deployment. 1 PR. Medium.
 
 ## W07 — Agent detection signatures (absorbs #7551)
+
+> **Superseded by the wave plan** [`2026-11-08-edr-provider-framework-w07-agent-detection-signatures.md`](2026-11-08-edr-provider-framework-w07-agent-detection-signatures.md)
+> (2026-11-08, draft for approval): #7634 merged 2026-10-02 and Cylance landed via #9389, so the residual is Trend Micro
+> (agent `providerFromName` + `mgmtdetect` signature, `security_provider` value) and the Huntress decision (pinned out).
+> The text below is kept as the original sketch.
 
 **Content.** First land **PR #7634** (open; delivers #7551: Emsisoft / Webroot / ThreatDown /
 WithSecure in `providerFromName` + `mgmtdetect`, ESET `mgmtdetect`, enum migration). Residual PR:

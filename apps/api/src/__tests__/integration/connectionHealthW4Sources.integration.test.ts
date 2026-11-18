@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   backupProviderConnections,
+  connectionHealthIncidents,
   googleWorkspaceConnections,
   huntressIntegrations,
   pax8Integrations,
@@ -21,6 +22,7 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { webhookSource } from '../../services/connectionHealth/sources/webhook';
+import { runKindInSystemScope } from '../../services/connectionHealth/reconcile';
 import { sentinelOneSource } from '../../services/connectionHealth/sources/sentinelOne';
 import { pax8Source } from '../../services/connectionHealth/sources/pax8';
 import { unifiSource } from '../../services/connectionHealth/sources/unifi';
@@ -52,9 +54,28 @@ describe('webhook source (terminal delivery failures)', () => {
   }
   async function delivery(webhookId: string, over: Partial<typeof webhookDeliveries.$inferInsert>) {
     await asSystem(() => db.insert(webhookDeliveries).values({
-      webhookId, eventType: 'device.offline', eventId: randomUUID(), payload: {}, status: 'failed', attempts: 5, createdAt: minAgo(10), ...over,
+      webhookId, eventType: 'device.offline', eventId: randomUUID(), payload: {}, status: 'failed', attempts: 5, createdAt: minAgo(21 * 60), failedAt: minAgo(10), ...over,
     }));
   }
+
+  it('a broken partner webhook produces a partner incident without attributing it to the event org', async () => {
+    const { p, o } = await org();
+    const w = await webhook(o, { orgId: null, partnerId: p });
+    await delivery(w, { orgId: o, responseStatus: 503 });
+    expect((await observe(webhookSource)).find(x => x.sourceId === w)).toMatchObject({
+      partnerId: p, orgId: null, state: 'broken', condition: 'delivery_failed',
+    });
+    // Transient failures need two observations before opening. Exercise the
+    // real transition/store path so a partner observation cannot silently fail
+    // to become an incident or inherit the delivery event's organization.
+    await runKindInSystemScope(webhookSource, NOW, false);
+    await runKindInSystemScope(webhookSource, new Date(NOW.getTime() + 60_000), false);
+    const incidents = await asSystem(() => db.select().from(connectionHealthIncidents)
+      .where(eq(connectionHealthIncidents.sourceId, w)));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({ partnerId: p, orgId: null, sourceKind: 'webhook', resolvedAt: null });
+    expect(incidents[0]!.openedAt).toBeInstanceOf(Date);
+  });
 
   it('a terminal failure in the window opens; non-terminal, superseded, sweep and old rows do not', async () => {
     const { p, o } = await org();
@@ -62,10 +83,10 @@ describe('webhook source (terminal delivery failures)', () => {
       webhook(o), webhook(o), webhook(o), webhook(o), webhook(o),
     ]);
     await delivery(terminal, { errorMessage: 'HTTP 503 from https://hooks.example.test/in?token=abc', responseStatus: 503 });
-    await delivery(midRetry, { attempts: 2 });
+    await delivery(midRetry, { status: 'scheduled', failedAt: null, attempts: 2, nextRetryAt: new Date(NOW.getTime() + 60_000) });
     await delivery(superseded, { errorMessage: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued' });
     await delivery(sweep, { attempts: 0, errorMessage: 'Delivery was claimed by a worker that stopped before reporting a result; outcome unknown' });
-    await delivery(old, { createdAt: minAgo(120) });
+    await delivery(old, { createdAt: minAgo(10), failedAt: minAgo(120) });
 
     const obs = await observe(webhookSource);
     expect(obs.filter((x) => x.sourceId === terminal)).toEqual([expect.objectContaining({
@@ -82,19 +103,12 @@ describe('webhook source (terminal delivery failures)', () => {
     expect((await observe(webhookSource, [w])).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
   });
 
-  it('honours a custom retry budget', async () => {
-    const { o } = await org();
-    const w = await webhook(o, { retryPolicy: { maxRetries: 2, backoffMultiplier: 2, initialDelayMs: 1000, maxDelayMs: 5000 } });
-    await delivery(w, { attempts: 2 });
-    expect(ids(await observe(webhookSource))).toContain(w);
-  });
-
   it('tracked: a later success recovers; an old failure without success stays broken; disabled retires; deleted is absent', async () => {
     const { o } = await org();
     const [recovered, stillBroken, disabled, deleted] = await Promise.all([webhook(o), webhook(o), webhook(o), webhook(o)]);
-    await delivery(recovered, { createdAt: minAgo(90) });
+    await delivery(recovered, { createdAt: minAgo(21 * 60), failedAt: minAgo(90) });
     await asSystem(() => db.update(webhooks).set({ lastSuccessAt: minAgo(30) }).where(eq(webhooks.id, recovered)));
-    await delivery(stillBroken, { createdAt: minAgo(600) });
+    await delivery(stillBroken, { createdAt: minAgo(21 * 60), failedAt: minAgo(600) });
     await delivery(disabled, {});
     await asSystem(() => db.update(webhooks).set({ status: 'disabled' }).where(eq(webhooks.id, disabled)));
     await asSystem(() => db.delete(webhooks).where(eq(webhooks.id, deleted)));
@@ -106,11 +120,11 @@ describe('webhook source (terminal delivery failures)', () => {
     expect(ids(obs)).not.toContain(deleted);
   });
 
-  it('a success before the failure does not count as recovery', async () => {
+  it('a success after creation but before terminal failure does not count as recovery', async () => {
     const { o } = await org();
     const w = await webhook(o, { lastSuccessAt: minAgo(60) });
-    await delivery(w, { createdAt: minAgo(10) });
-    expect((await observe(webhookSource)).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
+    await delivery(w, { createdAt: minAgo(21 * 60), failedAt: minAgo(10) });
+    expect((await observe(webhookSource, [w])).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
   });
 });
 

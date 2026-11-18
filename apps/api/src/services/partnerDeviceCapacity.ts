@@ -8,6 +8,45 @@ export type PartnerDeviceCapacityTx = Parameters<Parameters<typeof db.transactio
 
 export const PARTNER_DEVICE_CAPACITY_LOCK_TIMEOUT_MS = 3_000;
 
+/** Fixed floor of the allowance bound, kept for partners with a small max_devices. */
+const BILLING_ADMISSION_BOUND_FLOOR = 1100;
+
+/**
+ * A billing allowance can widen admission, never erase the reserved limit.
+ *
+ * Billing writes the allowance as ceilingFor(commitment) + pending devices
+ * (commitment + pending while over commitment), so it scales with the
+ * commitment. The sanity bound is max(1,100, 2 x max_devices): a large annual
+ * commitment is honoured, while a corrupt or runaway value is still ignored.
+ * The bound only matters once every other proof holds (community, active,
+ * unexpired); an absent or expired allowance always falls back to max_devices.
+ *
+ * Known limitation: when pending devices exceed commitment - commitment/10
+ * (about 90% of the commitment), the wanted allowance passes the bound.
+ * Billing clamps it to the bound before writing (the partners CHECK
+ * partners_billing_admission_valid rejects anything larger), so admission is
+ * capped at max(1,100, 2 x max_devices) and the remaining pending devices are
+ * not admitted. Billing alerts ops when it clamps. A stored value above the
+ * bound can only come from outside billing and is ignored here, falling back
+ * to max_devices. Do not widen the bound further to cover that case.
+ */
+export function effectivePartnerAdmissionLimit(partner: {
+  maxDevices: number | null;
+  plan?: string;
+  billingSubscriptionStatus?: string | null;
+  billingAdmissionLimit?: number | null;
+  billingAdmissionExpiresAt?: Date | string | null;
+}, now = new Date()): number | null {
+  if (partner.maxDevices === null) return null;
+  const expiry = partner.billingAdmissionExpiresAt ? new Date(partner.billingAdmissionExpiresAt).getTime() : NaN;
+  const limit = partner.billingAdmissionLimit;
+  if (partner.plan === 'community' && partner.billingSubscriptionStatus === 'active'
+    && typeof limit === 'number' && Number.isInteger(limit) && limit > 0
+    && limit <= Math.max(BILLING_ADMISSION_BOUND_FLOOR, partner.maxDevices * 2)
+    && Number.isFinite(expiry) && expiry > now.getTime()) return Math.max(partner.maxDevices, limit);
+  return partner.maxDevices;
+}
+
 export type PartnerDeviceCapacityResult =
   | { allowed: true; partnerId: string; maxDevices: number | null; activeCount: number | null }
   | { allowed: false; partnerId: string; maxDevices: number; activeCount: number };
@@ -62,7 +101,9 @@ export async function admitPartnerDeviceCapacity(
   }
 
   const [partner] = await tx
-    .select({ maxDevices: partners.maxDevices })
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
     .from(partners)
     .where(eq(partners.id, input.expectedPartnerId))
     .limit(1)
@@ -74,7 +115,7 @@ export async function admitPartnerDeviceCapacity(
     await tx.execute(sql`select set_config('lock_timeout', ${`${priorLockTimeout}ms`}, true)`);
   }
 
-  return decideCapacity(tx, input, partner.maxDevices);
+  return decideCapacity(tx, input, effectivePartnerAdmissionLimit(partner));
 }
 
 /**
@@ -96,14 +137,16 @@ export async function previewPartnerDeviceCapacity(
     throw new PartnerDeviceCapacityError('ORG_PARTNER_CHANGED', 'Organization partner changed during device admission');
   }
   const [partner] = await tx
-    .select({ maxDevices: partners.maxDevices })
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
     .from(partners)
     .where(eq(partners.id, input.expectedPartnerId))
     .limit(1);
   if (!partner) {
     throw new PartnerDeviceCapacityError('PARTNER_NOT_FOUND', 'Partner not found during device admission');
   }
-  return decideCapacity(tx, input, partner.maxDevices);
+  return decideCapacity(tx, input, effectivePartnerAdmissionLimit(partner));
 }
 
 /**
@@ -148,6 +191,52 @@ function licensedDeviceConditions(tx: PartnerDeviceCapacityTx, partnerId?: strin
   ];
 }
 
+/**
+ * Read-only admission status for a partner: the limit admission enforces
+ * right now (the billing allowance when it holds, else max_devices; null =
+ * unlimited) and the number of devices counted against it, by the same rule
+ * admitPartnerDeviceCapacity uses. Takes no row lock, so it is a display
+ * value, never an admission. Run it in system scope so the count covers every
+ * org of the partner, exactly as admission does.
+ */
+export async function partnerAdmissionStatus(
+  tx: PartnerDeviceCapacityTx,
+  partnerId: string,
+  now = new Date(),
+): Promise<{ limit: number | null; activeCount: number }> {
+  const [partner] = await tx
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  if (!partner) {
+    throw new PartnerDeviceCapacityError('PARTNER_NOT_FOUND', 'Partner not found');
+  }
+  return {
+    limit: effectivePartnerAdmissionLimit(partner, now),
+    activeCount: await countLicensedActiveDevices(tx, partnerId),
+  };
+}
+
+async function countLicensedActiveDevices(
+  tx: PartnerDeviceCapacityTx,
+  partnerId: string,
+  excludeDeviceId?: string,
+): Promise<number> {
+  const licensed = licensedDeviceConditions(tx, partnerId);
+  const [countResult] = await tx
+    .select({ count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(
+      ...licensed,
+      ne(devices.status, 'decommissioned'),
+      ...(excludeDeviceId ? [ne(devices.id, excludeDeviceId)] : []),
+    ));
+  return Number(countResult?.count ?? 0);
+}
+
 async function decideCapacity(
   tx: PartnerDeviceCapacityTx,
   input: { expectedPartnerId: string; excludeDeviceId?: string },
@@ -157,16 +246,7 @@ async function decideCapacity(
     return { allowed: true, partnerId: input.expectedPartnerId, maxDevices: null, activeCount: null };
   }
 
-  const licensed = licensedDeviceConditions(tx, input.expectedPartnerId);
-  const [countResult] = await tx
-    .select({ count: sql<number>`count(*)` })
-    .from(devices)
-    .where(and(
-      ...licensed,
-      ne(devices.status, 'decommissioned'),
-      ...(input.excludeDeviceId ? [ne(devices.id, input.excludeDeviceId)] : []),
-    ));
-  const activeCount = Number(countResult?.count ?? 0);
+  const activeCount = await countLicensedActiveDevices(tx, input.expectedPartnerId, input.excludeDeviceId);
   if (activeCount >= maxDevices) {
     return { allowed: false, partnerId: input.expectedPartnerId, maxDevices, activeCount };
   }

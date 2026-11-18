@@ -1,0 +1,17 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API users.signOut",
+  "_notes": "Structurally unobservable: the probe makes no provider call in either phase, so the probe shapes are empty. Subsumed by a verified google_suspend_user on the same account (D-R1-11).",
+  "toolName": "google_signout",
+  "provider": "google",
+  "preSatisfied": null,
+  "preSatisfiedUnreachable": "the Directory user resource exposes no session-validity field, so the probe always answers unknown and the write is never skipped",
+  "preUnsatisfied": {},
+  "writeOk": {
+    "directory.users.signOut": { "data": "" }
+  },
+  "postSatisfied": {},
+  "writeRefusal": {
+    "directory.users.signOut": { "error": { "code": 403, "message": "Not Authorized to access this resource/api" } }
+  }
+}

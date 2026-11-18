@@ -13,6 +13,20 @@ var (
 
 const watcherMaxRetries = 5
 
+// watcherHealthyUptime is how long Assist must stay up after its last launch
+// before a running tick clears the watcher's failure count (#10302). Resetting
+// on any running tick let an Assist that lived a few seconds, or that the
+// heartbeat relaunched just before a tick, restart forever without reaching
+// watcherMaxRetries. Only a running tick at least this long after the launch
+// clears it; earlier ticks (the short backoff after a crash) leave it alone.
+const watcherHealthyUptime = 60 * time.Second
+
+// watcherGiveUpRetry is how long a session whose watcher gave up stays given
+// up before ensureRunningSession tries Assist again (#10183). A new Assist
+// version retries at once. Matches helperAbandonRetryAfter: a few attempts per
+// six hours bounds a permanent crash without needing an agent restart.
+const watcherGiveUpRetry = 6 * time.Hour
+
 type watcher struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -35,7 +49,6 @@ func newSessionWatcher(parent context.Context, mgr *Manager, state *sessionState
 func (w *watcher) run() {
 	defer close(w.done)
 
-	var failures int
 	interval := watcherBaseInterval
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
@@ -54,35 +67,71 @@ func (w *watcher) run() {
 			(w.state.pid > 0 && w.mgr.isOurProcessFunc(w.state.pid, w.mgr.binaryPath))
 		if running {
 			w.mgr.reapDuplicateHelpersLocked(w.state)
+			w.mgr.trackAssistExitsLocked(w.state)
+			// Not yet healthy: the failure count stands, so a crash after this
+			// tick is still counted against it (#10302).
+			w.mgr.noteAssistRunningLocked(w.state)
 			w.mgr.mu.Unlock()
-			failures = 0
 			interval = watcherBaseInterval
 			timer.Reset(interval)
 			continue
 		}
 
+		// #10379: gone because nobody is signed in any more (sign-out, or
+		// a switch to the logon screen) is a wait, not a crash. The count
+		// is left as it was and Apply relaunches once a user signs in.
+		if !w.mgr.sessionHasSignedInUserLocked(w.state.key) {
+			w.mgr.noteWaitingForUserLocked(w.state, "no signed-in user in the session")
+			w.mgr.mu.Unlock()
+			return
+		}
+
 		// Helper is not running — this counts as a failure whether the
 		// spawn itself fails OR the previous spawn succeeded but the
 		// helper crashed before the next check.
-		failures++
+		w.state.crashFailures++
+		failures := w.state.crashFailures
+		exit, exitKnown := w.mgr.takeAssistExitLocked(w.state)
+		if exitKnown {
+			w.state.lastExit, w.state.lastExitKnown = exit, true
+		}
 
 		if failures > watcherMaxRetries {
 			w.state.watcherGaveUp = true
+			w.state.gaveUpAt = w.mgr.nowTime()
+			w.state.gaveUpVersion = w.mgr.installedVersionLocked()
+			w.state.crashFailures = 0 // a retry after the give-up starts a fresh count
+			lastExit, lastKnown := w.state.lastExit, w.state.lastExitKnown
 			w.mgr.mu.Unlock()
 			log.Error("breeze assist keeps crashing, giving up",
 				"session", w.state.key,
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
+				"lastExitCode", exitCodeField(lastExit, lastKnown),
+				"retryAfter", watcherGiveUpRetry.String(),
 			)
 			return
 		}
 
 		err := w.mgr.ensureRunningSession(w.state)
-		if errors.Is(err, ErrNotInstalled) {
-			// #6872: not a crash. The failure counted above dies with this
-			// goroutine, watcherGaveUp is left alone, and Apply starts a
-			// fresh watcher once the server-offered install lands.
+		if errors.Is(err, ErrNoActiveSession) {
+			// #10379: the launch found no user token (the user signed out
+			// after the check above). Not a crash: undo this tick's count
+			// and wait for Apply to relaunch.
+			w.state.crashFailures--
+			w.mgr.noteWaitingForUserLocked(w.state, err.Error())
 			w.mgr.mu.Unlock()
-			log.Debug("breeze assist not installed; watcher exiting", "session", w.state.key)
+			return
+		}
+		if errors.Is(err, ErrNotInstalled) || errors.Is(err, errWebView2Outdated) || errors.Is(err, errCrashLoop) {
+			// #6872: not a crash. The failure counted above is dropped,
+			// watcherGaveUp is left alone, and Apply starts a
+			// fresh watcher once the server-offered install lands (or, for a
+			// WebView2 refusal the gate already logged, once the runtime is
+			// updated; for a crash loop given up earlier, at its retry).
+			w.state.crashFailures = 0
+			w.mgr.mu.Unlock()
+			log.Debug("breeze assist cannot be started; watcher exiting", "session", w.state.key, "reason", err.Error())
 			return
 		}
 		w.mgr.mu.Unlock()
@@ -92,6 +141,7 @@ func (w *watcher) run() {
 				"session", w.state.key,
 				"error", err.Error(),
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
 			)
 		} else {
 			// WARN, not INFO: the helper exited unexpectedly (there is no Exit
@@ -100,6 +150,7 @@ func (w *watcher) run() {
 			log.Warn("breeze assist restarted by watcher",
 				"session", w.state.key,
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
 			)
 		}
 
@@ -110,6 +161,20 @@ func (w *watcher) run() {
 		interval = backoff
 		timer.Reset(interval)
 	}
+}
+
+// noteAssistRunningLocked records a tick that found Assist running. The
+// failure count is cleared only once Assist has stayed up watcherHealthyUptime
+// since its last launch by the agent (any ensureRunningSession caller). With
+// no agent launch recorded (Assist was already running when the agent started)
+// the run counts as healthy. Reports whether the run is healthy. Must be
+// called with m.mu held.
+func (m *Manager) noteAssistRunningLocked(state *sessionState) bool {
+	if !state.lastSpawnAt.IsZero() && m.nowTime().Sub(state.lastSpawnAt) < watcherHealthyUptime {
+		return false
+	}
+	state.crashFailures = 0
+	return true
 }
 
 func (w *watcher) stop() {

@@ -92,10 +92,18 @@ const checkDeviceMaintenanceWindow = vi.fn(async () => {
   maintenanceDepths.push(contextDepth);
   return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
 });
+const winnerDepths: number[] = [];
+type Winner = { configPolicyId: string; featurePolicyId: string | null; assignmentLevel: string } | null;
+let winnerFor: (deviceId: string) => Winner = () => null;
+const resolvePatchPolicyWinnersForDevices = vi.fn(async (deviceIds: readonly string[]) => {
+  winnerDepths.push(contextDepth);
+  return new Map(deviceIds.map((id) => [id, winnerFor(id)] as const));
+});
 vi.mock('../services/featureConfigResolver', async (importActual) => ({
   // The real role/OS predicate (pure) is used by the shared assignment resolver.
   matchesRoleOsFilter: (await importActual<typeof import('../services/featureConfigResolver')>()).matchesRoleOsFilter,
   checkDeviceMaintenanceWindow,
+  resolvePatchPolicyWinnersForDevices,
 }));
 
 const loadPolicyLocalPatchConfig = vi.fn(async () => ({
@@ -145,6 +153,8 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     maxDepth = 0;
     dbCallDepths.length = 0;
     maintenanceDepths.length = 0;
+    winnerDepths.length = 0;
+    winnerFor = () => null;
     selectResults = [];
   });
 
@@ -175,12 +185,137 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
     // Every DB read/write ran inside a context...
     expect(dbCallDepths.length).toBeGreaterThan(0);
     for (const depth of dbCallDepths) expect(depth).toBe(1);
-    // ...including the per-device maintenance lookup.
+    // ...including the per-device maintenance lookup and the #9632 winner lookup.
     expect(maintenanceDepths).toEqual([1]);
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledWith(['dev-1']);
+    expect(winnerDepths).toEqual([1]);
     // No nesting: depth never exceeded 1 (i.e. no big outer wrapper around the scan).
     expect(maxDepth).toBe(1);
     // Many SEPARATE short contexts were opened — not one spanning the whole scan.
     expect(contextOpenCount).toBeGreaterThanOrEqual(5);
+  });
+
+  // #9632: closest level wins. The due-path fixture above, with the device's
+  // winning patch policy set per case.
+  function dueOnePolicyOneDevice() {
+    return [
+      [{ configPolicyId: 'cp-1', policyName: 'Broad', policyOrgId: 'org-1', featureLinkId: 'fl-1' }],
+      [{ level: 'organization', targetId: 'org-1' }],
+      [{ id: 'dev-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-1', orgId: 'org-1', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+    ];
+  }
+
+  it('does not schedule a device whose patch settings are won by a different (closer) policy (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-pilot', featurePolicyId: 'ring-pilot', assignmentLevel: 'device_group' });
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(0);
+    // Dropped before the per-device maintenance lookup and the insert.
+    expect(checkDeviceMaintenanceWindow).not.toHaveBeenCalled();
+  });
+
+  it('schedules the device when this policy is its winner (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-1', featurePolicyId: 'ring-1', assignmentLevel: 'organization' });
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(1);
+  });
+
+  it('retries a transient winner-lookup failure inside the due minute and still schedules (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-1', featurePolicyId: 'ring-1', assignmentLevel: 'organization' });
+    resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(2);
+    expect(result.created).toBe(1);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('fails closed and reports to Sentry when every winner-lookup attempt fails (#9632)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    for (let i = 0; i < 3; i += 1) {
+      resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+    }
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(3);
+    expect(result.created).toBe(0);
+    expect(checkDeviceMaintenanceWindow).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_scheduler_stage: 'closest_wins_resolve_failed' },
+      { fingerprint: ['patch-scheduler', 'closest-wins-resolve-failed'] },
+    );
+  });
+
+  it('spends the retries once per tick: a second due policy tries the failing lookup once, without waiting (#9632)', async () => {
+    selectResults = [
+      [
+        { configPolicyId: 'cp-1', policyName: 'Broad', policyOrgId: 'org-1', featureLinkId: 'fl-1' },
+        { configPolicyId: 'cp-2', policyName: 'Other', policyOrgId: 'org-2', featureLinkId: 'fl-2' },
+      ],
+      // cp-1: assignments, expansion, scheduling contexts, occurrence check
+      [{ level: 'organization', targetId: 'org-1' }],
+      [{ id: 'dev-1', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-1', orgId: 'org-1', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+      // cp-2: the same for its own device
+      [{ level: 'organization', targetId: 'org-2' }],
+      [{ id: 'dev-2', deviceRole: 'workstation', osType: 'windows' }],
+      [{ deviceId: 'dev-2', orgId: 'org-2', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
+      [],
+    ];
+    for (let i = 0; i < 4; i += 1) {
+      resolvePatchPolicyWinnersForDevices.mockRejectedValueOnce(new Error('remaining connection slots'));
+    }
+
+    const pending = scanAndCreateJobs();
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(resolvePatchPolicyWinnersForDevices).toHaveBeenCalledTimes(4); // 3 for cp-1, then 1 for cp-2
+    expect(result.created).toBe(0);
+    expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the device out and reports to Sentry when the closer winner cannot be scheduled (#9632, #8678)', async () => {
+    selectResults = dueOnePolicyOneDevice();
+    winnerFor = () => ({ configPolicyId: 'cp-pilot', featurePolicyId: 'ring-gone', assignmentLevel: 'device_group' });
+    // First load: cp-1 in the scan loop (valid). Second: the winner cp-pilot (disabled ring).
+    loadPolicyLocalPatchConfig
+      .mockImplementationOnce(async () => ({
+        ring: { valid: true, ringId: 'ring-1', classification: 'ok' },
+        settings: { scheduleFrequency: 'daily', scheduleTime: '02:00' },
+      }))
+      .mockImplementationOnce(async () => ({
+        ring: { valid: false, ringId: 'ring-gone', classification: 'disabled_ring' },
+        settings: { scheduleFrequency: 'daily', scheduleTime: '02:00' },
+      }));
+
+    const result = await scanAndCreateJobs();
+
+    expect(result.created).toBe(0);
+    expect(loadPolicyLocalPatchConfig).toHaveBeenCalledWith('cp-pilot');
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { patch_scheduler_stage: 'closest_wins_winner_unschedulable' },
+      { fingerprint: ['patch-scheduler', 'closest-wins-winner-unschedulable'] },
+    );
   });
 
   // BREEZE-1A. A failed orphan-recovery read yields an EMPTY stale-jobs list,

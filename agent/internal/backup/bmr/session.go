@@ -18,22 +18,22 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 // newHTTPClient backs every core BMR trust-boundary request (authenticate,
 // exchange, progress, completion) — see certpin.go. VerifyPeerCertificate
 // runs alongside (never instead of) Go's normal certificate-chain
 // validation, so with no pin configured this is exactly the client that
-// existed before certificate pinning did.
+// existed before certificate pinning did. These requests carry the recovery
+// code or token in their bodies, so redirects follow the shared
+// credentialed-request policy.
 var newHTTPClient = func() *http.Client {
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				VerifyPeerCertificate: verifyPinnedServerCert,
-			},
+	return httpguard.NewClient(&http.Transport{
+		TLSClientConfig: &tls.Config{
+			VerifyPeerCertificate: verifyPinnedServerCert,
 		},
-	}
+	}, 30*time.Second)
 }
 
 var runRecovery = RunRecoveryContext

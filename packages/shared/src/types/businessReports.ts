@@ -236,6 +236,98 @@ export type AiUsageByClientSummary = {
   rows: AiUsageByClientDetailRow[];
 };
 
+// ---- MRR & renewals (`mrr_renewals`, #9828 W1) ------------------------------
+// Measured at run time: contracts keep no status history, so there is no
+// period and no backdating. Money is a per-currency decimal string, never
+// summed across currencies.
+
+export type MrrRenewalsGroupBy = 'organization' | 'contract';
+export type MrrRenewalsHorizonDays = 30 | 60 | 90 | 180;
+/** How a detail row was valued: live (`active`, `paused`, `draft`) or from the
+ *  invoice of a billed final term (`billed_final_term`). */
+export type MrrContractBasis = 'active' | 'billed_final_term' | 'paused' | 'draft';
+
+export type MrrCurrencyTotals = {
+  currencyCode: string;
+  /** In-term contracts (`active` + `billed_final_term`). mrr = baseMrr + overageMrr. */
+  mrr: string;
+  baseMrr: string;
+  /** Billed allowance overage of `active` rows only (a billed final term is not split). */
+  overageMrr: string;
+  /** The `billed_final_term` share of `mrr`. */
+  finalTermMrr: string;
+  /** mrr × 12. */
+  arr: string;
+  contractCount: number;
+  /** Beside MRR, never in it. */
+  pausedMrr: string;
+  pausedCount: number;
+  /** Draft contracts, beside MRR, never in it. */
+  pendingActivationMrr: string;
+  pendingActivationCount: number;
+  /** In-term contracts with no end date (part of `mrr`). */
+  evergreenMrr: string;
+  evergreenCount: number;
+};
+export type MrrGroupRow = MrrCurrencyTotals & { groupKey: string; groupLabel: string };
+export type MrrRenewalTotals = {
+  currencyCode: string; autoRenewMrr: string; autoRenewCount: number; manualMrr: string; manualCount: number;
+};
+/** Billed recurring revenue in one calendar month (owner timezone): issued
+ *  contract invoice lines, a period's line spread evenly over its months.
+ *  Billed, not MRR. `partial` marks the run month. */
+export type MrrBilledMonth = { month: string; currencyCode: string; amount: string; partial: boolean };
+export type MrrContractDetailRow = {
+  contractId: string;
+  contractName: string;
+  orgId: string;
+  orgName: string | null;
+  status: string;
+  basis: MrrContractBasis;
+  intervalMonths: number;
+  currencyCode: string;
+  baseMonthly: string;
+  /** Null for a billed final term (billed as a lump, never split). */
+  overageMonthly: string | null;
+  mrr: string;
+  startDate: string;
+  endDate: string | null;
+  /** Days from asOf to endDate; null when open-ended. */
+  daysRemaining: number | null;
+  autoRenew: boolean;
+  renewalTermMonths: number | null;
+  inRenewalWindow: boolean;
+  /** When the advance renewal notice for THIS end date was sent; looked up for
+   *  renewal-window rows only, null otherwise. */
+  advanceNoticeSentAt: string | null;
+};
+export type MrrRenewalsSummary = {
+  generatedAt: string;
+  /** False when nothing was queried (site-restricted authority, or a partner
+   *  with no organizations): every figure below is unmeasured, not zero. */
+  measured: boolean;
+  /** UTC calendar date of the run (contract dates are UTC, like billing). */
+  asOf: string;
+  /** The report owner's timezone (billed-series months and notes only). */
+  timeZone: string;
+  scope: ReportScopeMeta;
+  groupBy: MrrRenewalsGroupBy;
+  renewalHorizonDays: MrrRenewalsHorizonDays;
+  byCurrency: MrrCurrencyTotals[];
+  groups: MrrGroupRow[];
+  /** `contractIds`: rows with inRenewalWindow, end date ascending. */
+  renewals: { totals: MrrRenewalTotals[]; contractIds: string[] };
+  activeNotInTerm: {
+    contractId: string; contractName: string; orgName: string | null; reason: string; startDate: string; endDate: string | null;
+  }[];
+  /** Contracts that should count but could not be valued; excluded from MRR. */
+  skipped: { contractId: string; contractName: string; orgName: string | null; reason: string }[];
+  billedRecurring: MrrBilledMonth[];
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: MrrContractDetailRow[];
+};
+
 const EMPTY_DETAIL: DetailRowMeta = { cap: 5000, stored: 0, available: 0, truncated: false };
 
 export function emptyTicketSlaSummary(note: string): TicketSlaSummary {
@@ -330,6 +422,247 @@ export function emptyAiUsageByClientSummary(note: string): AiUsageByClientSummar
       charges: [],
     },
     groups: [],
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
+
+export function emptyMrrRenewalsSummary(note: string): MrrRenewalsSummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    measured: false,
+    // A UTC calendar date like every real run's asOf, never a full timestamp.
+    asOf: new Date().toISOString().slice(0, 10),
+    timeZone: 'UTC',
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    renewalHorizonDays: 90,
+    byCurrency: [],
+    groups: [],
+    renewals: { totals: [], contractIds: [] },
+    activeNotInTerm: [],
+    skipped: [],
+    billedRecurring: [],
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// quote_win_rate (#9828 W2): win rate over quote REVISION LINEAGES (one
+// lineage = one opportunity). The headline is decided-only (OD5-A); money is
+// per currency and never summed across currencies.
+// ---------------------------------------------------------------------------
+
+export type QuoteWinRateGroupBy = 'organization' | 'author' | 'currency';
+export type QuoteOutcome = 'won' | 'lost' | 'expired' | 'open' | 'anomaly';
+export type QuoteWinRateCounts = {
+  lineages: number; won: number; lost: number; expired: number; open: number; anomalies: number; viewed: number;
+};
+export type QuoteWinRateRates = {
+  /** won / (won + lost + expired) — the headline (OD5-A). null with no decided lineage, never 0. */
+  winRate: number | null;
+  /** won / lineages */
+  closeRate: number | null;
+  /** viewed / lineages */
+  viewedRate: number | null;
+  medianDaysToWin: number | null;
+  medianDaysToLoss: number | null;
+};
+export type QuoteWinRateMoneyRow = {
+  currencyCode: string;
+  quotedOneTime: string; wonOneTime: string;
+  quotedMonthlyRecurring: string; wonMonthlyRecurring: string;
+  /** (wonOneTime + wonMRV) / (decided one-time + decided MRV), per currency. null when nothing is decided. */
+  valueWinRate: number | null;
+};
+export type QuoteWinRateGroupRow = QuoteWinRateCounts & QuoteWinRateRates & {
+  groupKey: string; groupLabel: string; money: QuoteWinRateMoneyRow[];
+};
+export type QuoteWinRateDetailRow = {
+  rootQuoteId: string; terminalQuoteId: string; quoteNumber: string | null;
+  orgId: string; orgName: string | null; authorName: string;
+  versions: number; firstSentAt: string; outcome: QuoteOutcome; outcomeAt: string | null;
+  currencyCode: string; oneTimeTotal: string; monthlyRecurringValue: string; declineReason: string | null;
+};
+export type QuoteWinRateSummary = {
+  generatedAt: string;
+  period: ReportPeriodMeta;
+  scope: ReportScopeMeta;
+  groupBy: QuoteWinRateGroupBy;
+  overall: QuoteWinRateCounts & QuoteWinRateRates & { money: QuoteWinRateMoneyRow[] };
+  groups: QuoteWinRateGroupRow[];
+  diagnostics: { unreachable: number; depthCapped: number };
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: QuoteWinRateDetailRow[];
+};
+
+export function emptyQuoteWinRateSummary(note: string): QuoteWinRateSummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    period: { kind: 'custom', start: '', end: '', label: '', timeZone: 'UTC' },
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    overall: {
+      lineages: 0, won: 0, lost: 0, expired: 0, open: 0, anomalies: 0, viewed: 0,
+      winRate: null, closeRate: null, viewedRate: null, medianDaysToWin: null, medianDaysToLoss: null,
+      money: [],
+    },
+    groups: [],
+    diagnostics: { unreachable: 0, depthCapped: 0 },
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Client profitability (`client_profitability`, #9828 W3; spec §3.1)
+// ---------------------------------------------------------------------------
+
+/** Revenue mix categories, in print order. A category is the invoice line's
+ *  source: contract → recurring (hour-block overage → labor), time entry →
+ *  labor, part / catalog / bundle / a quote-sold catalog line → product,
+ *  AI usage → ai, anything else → other. */
+export const CLIENT_PROFITABILITY_REVENUE_CATEGORIES = ['recurring', 'labor', 'product', 'ai', 'other'] as const;
+export type ClientProfitabilityRevenueCategory = (typeof CLIENT_PROFITABILITY_REVENUE_CATEGORIES)[number];
+export type ClientProfitabilityGroupBy = 'organization' | 'source';
+
+/**
+ * One currency's billed money (per client, or partner-wide). Money is a
+ * decimal string rounded once to the currency; ratios are fractions (0..1)
+ * and null when unmeasured, never 0.
+ *
+ * Margin is measured over cost-bearing lines only: a line with no recorded
+ * cost is unknown cost, never zero cost, so `costCoveragePct` (the share of
+ * revenue the margin is measured on) is printed beside every margin.
+ *
+ * The rate and labor-estimate fields are null unless the client's hours are
+ * attributed to this currency (`hoursAttribution: 'single_currency'`) and
+ * some completed time was logged; the estimate fields are also null when no
+ * labor rate is set or it is in another currency. On a partner-wide
+ * `byCurrency` row they are null when any client billed in the currency is
+ * not attributed to it, so they cover the same clients as the margin. `estimatedContributionAfterLabor` = grossMargin + NULL-cost labor
+ * and recurring revenue − estimatedLaborCost (Gate B 6).
+ */
+export type ProfitabilityMoneyRow = {
+  currencyCode: string;
+  revenue: string;
+  costBearingRevenue: string;
+  cost: string;
+  grossMargin: string;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string;
+  linesMissingCost: number;
+  partialCostBundles: number;
+  mix: Record<ClientProfitabilityRevenueCategory, string>;
+  /** (recurring + labor revenue) ÷ hours worked. */
+  effectiveServiceRate: number | null;
+  /** All revenue ÷ hours worked. */
+  revenuePerHour: number | null;
+  /** All completed hours × the uniform labor rate. */
+  estimatedLaborCost: string | null;
+  estimatedContributionAfterLabor: string | null;
+  /** Recurring revenue with no recorded cost — the share of the estimate's
+   *  service revenue that is an assumption (a resold licence would sit here). */
+  nullCostRecurringRevenue: string;
+  /** Product, AI and other revenue with no recorded cost: never in the estimate. */
+  excludedUnknownCostRevenue: string;
+};
+
+/** Hours worked (completed entries, 2 dp), split by effective coverage. */
+export type ProfitabilityHours = { total: number; billable: number; included: number; nonBillable: number };
+
+export type ClientProfitabilityHoursAttribution = 'single_currency' | 'multi_currency' | 'no_revenue';
+
+export type ClientProfitabilityOrgRow = {
+  orgId: string;
+  orgName: string | null;
+  /** Printed once per client, never per currency row. */
+  hours: ProfitabilityHours;
+  money: ProfitabilityMoneyRow[];
+  hoursAttribution: ClientProfitabilityHoursAttribution;
+};
+
+/** Per (revenue category, currency): the `source` grouping. */
+export type ClientProfitabilitySourceRow = {
+  category: ClientProfitabilityRevenueCategory;
+  currencyCode: string;
+  revenue: string;
+  costBearingRevenue: string;
+  cost: string;
+  grossMargin: string;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string;
+  linesMissingCost: number;
+  partialCostBundles: number;
+};
+
+/**
+ * One per (client, currency) at partner scope, plus one hours-only row
+ * (`currencyCode` null, money null) for a client whose hours cannot sit on a
+ * single money row, and one for internal (no-organization) time; one per
+ * invoice at org scope (hours null there).
+ */
+export type ClientProfitabilityDetailRow = {
+  orgId: string | null;
+  orgName: string | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  issueDate: string | null;
+  currencyCode: string | null;
+  revenue: string | null;
+  cost: string | null;
+  grossMargin: string | null;
+  marginPct: number | null;
+  costCoveragePct: number | null;
+  unknownCostRevenue: string | null;
+  recurringRevenue: string | null;
+  laborRevenue: string | null;
+  productRevenue: string | null;
+  aiRevenue: string | null;
+  otherRevenue: string | null;
+  hoursTotal: number | null;
+  hoursBillable: number | null;
+  hoursIncluded: number | null;
+  hoursNonBillable: number | null;
+  effectiveServiceRate: number | null;
+  estimatedContributionAfterLabor: string | null;
+};
+
+export type ClientProfitabilitySummary = {
+  generatedAt: string;
+  period: ReportPeriodMeta;
+  scope: ReportScopeMeta;
+  groupBy: ClientProfitabilityGroupBy;
+  /** The report's uniform labor rate, or null (hours only, no estimate). */
+  laborCostPerHour: { amount: string; currencyCode: string } | null;
+  byCurrency: ProfitabilityMoneyRow[];
+  orgs: ClientProfitabilityOrgRow[];
+  sources: ClientProfitabilitySourceRow[];
+  /** Partner scope: time entries with no organization, printed once. */
+  unattributedHours: ProfitabilityHours | null;
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: ClientProfitabilityDetailRow[];
+};
+
+export function emptyClientProfitabilitySummary(note: string): ClientProfitabilitySummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    period: { kind: 'custom', start: '', end: '', label: '', timeZone: 'UTC' },
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    laborCostPerHour: null,
+    byCurrency: [],
+    orgs: [],
+    sources: [],
+    unattributedHours: null,
     detail: { ...EMPTY_DETAIL },
     notes: [note],
     rows: [],

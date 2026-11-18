@@ -61,6 +61,18 @@ describe('digest email', () => {
     expect(text).toContain('Consent needed');
   });
 
+  it('token-reuse revocations show reconnect guidance instead of a dead Fix link (#9594)', () => {
+    const { html, text } = buildDigestEmail({
+      ...base,
+      plan: { open: [inc({ condition: 'grant_revoked_reuse', fixHref: '/settings/connected-apps' })], restored: [] },
+    });
+    expect(html).not.toContain('connected-apps');
+    expect(html).not.toContain('>Fix<');
+    expect(html).toContain('Reconnect from the client app');
+    expect(text).toContain('No action in Breeze.');
+    expect(text).not.toContain('Fix:');
+  });
+
   it('carries the unsubscribe link and the preferences link in HTML and text', () => {
     const { html, text } = buildDigestEmail({ ...base, plan: { open: [inc()], restored: [] } });
     expect(html).toContain('href="https://app.example.test/api/v1/email/unsubscribe?t=abc.def"');

@@ -34,7 +34,7 @@ function webhook(overrides: Record<string, unknown> = {}) {
     orgId: 'org-1',
     name: 'Alert relay',
     url: 'https://hooks.example.com/alerts',
-    events: ['alert.created'],
+    events: ['alert.triggered'],
     headers: [],
     status: 'active',
     hasSecret: true,
@@ -148,7 +148,7 @@ describe('WebhooksPage — delivery retry', () => {
   });
 
   it('POSTs the real API route /webhooks/:id/retry/:deliveryId, toasts, and refetches deliveries', async () => {
-    const failed = { id: 'del-9', eventType: 'alert.created', status: 'failed', createdAt: '2026-10-01T00:00:00Z' };
+    const failed = { id: 'del-9', eventType: 'alert.triggered', status: 'failed', createdAt: '2026-10-01T00:00:00Z' };
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
         return url === '/webhooks/wh-1/retry/del-9'

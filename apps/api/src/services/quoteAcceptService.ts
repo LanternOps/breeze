@@ -39,6 +39,7 @@ import {
 // One-way import: quoteLifecycle does NOT import this module, so there is no
 // cycle (verify with `grep -n quoteAcceptService services/quoteLifecycle.ts`).
 import {
+  assertQuoteHasCustomerVisibleLine,
   assertQuoteSendGates,
   claimQuoteSent,
   resolveParentToSupersede,
@@ -274,6 +275,22 @@ export async function acceptQuote(
     .where(eq(quoteLines.quoteId, quote.id))
     .orderBy(quoteLines.sortOrder);
 
+  // Empty-quote gate (#9963), for EVERY status and origin, before anything is
+  // written: an item-less quote used to convert into a $0 draft invoice. A
+  // draft refuses through the shared send gate's wording; a quote that already
+  // went out empty (sent before the send gate existed) cannot be edited, so the
+  // copy names the way forward for whoever is looking at it.
+  if (!lines.some((l) => l.customerVisible)) {
+    if (quote.status === 'draft') assertQuoteHasCustomerVisibleLine(lines, 'accept');
+    throw new QuoteServiceError(
+      origin === 'on_behalf'
+        ? 'This quote has no items, so there is nothing to accept — use Revise to issue a version with items.'
+        : 'This quote has no items to accept. Please contact your provider for an updated quote.',
+      422,
+      'QUOTE_EMPTY',
+    );
+  }
+
   // Draft claim (spec §5). Inside the caller's transaction, so a later failure
   // rolls the claim back with everything else.
   let supersededByClaim: QuoteSupersedeResult | undefined;
@@ -380,11 +397,15 @@ export async function acceptQuote(
       // #6227: fallback for the invoice presentation stamp when the quote
       // carries no presentation snapshot (legacy pre-snapshot quotes).
       documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+      // #12097: region signal for a partner that never chose a page size.
+      billingAddressCountry: partners.billingAddressCountry,
       // #6229: the quote org's payment-terms override rides on this read (NULL
       // = inherit the partner's), resolved below by resolveInvoiceTermsDays.
       // The join is pinned to the same partner, so a mismatched org can only
       // yield NULL (inherit), never another tenant's value.
       orgTermsDays: organizations.invoiceTermsDays,
+      // #9778: client name for the auto-created contract's name.
+      orgName: organizations.name,
     })
     .from(partners)
     .leftJoin(organizations, and(eq(organizations.id, quote.orgId), eq(organizations.partnerId, partners.id)))
@@ -667,9 +688,12 @@ export async function acceptQuote(
   const startDate = effectiveDate; // accept date, date-only UTC (shared with the snapshot)
   const contractSpecs = buildContractSpecsFromQuote(
     {
+      quoteId: quote.id,
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,
+      title: quote.title ?? null,
+      orgName: partner?.orgName ?? null,
       currencyCode: quote.currencyCode,
       terms: quote.terms ?? null,
     },

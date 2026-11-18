@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -25,17 +25,31 @@ interface PartRow {
 }
 
 interface Props {
+  /** Inside a titled Details section: no own rule or heading. */
+  embedded?: boolean;
+  /** Reports how many parts the ticket carries, for the section summary. */
+  onCountChange?: (count: number) => void;
   ticketId: string;
   /** The ticket org's currency (ISO 4217). Drives the catalog prefill (#3775):
    *  unit price comes from the item's price-book row in THIS currency (blank
    *  when the book has no row), cost only when the item's cost is denominated
    *  in it. Ticket parts themselves are still single-currency — wave-4 boundary. */
   currencyCode?: string;
+  /** #10073: the ticket is a merged tombstone. Every part write on it answers
+   *  409 TICKET_MERGED, so the list stays visible and nothing that writes is
+   *  offered. The host shows the reason. */
+  readOnly?: boolean;
 }
 
-export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
+export default function TicketPartsCard({ ticketId, currencyCode, readOnly = false, embedded = false, onCountChange }: Props) {
   const { t } = useTranslation('tickets');
   const [parts, setParts] = useState<PartRow[]>([]);
+  const [partsLoaded, setPartsLoaded] = useState(false);
+  const onCountRef = useRef(onCountChange);
+  onCountRef.current = onCountChange;
+  useEffect(() => {
+    if (partsLoaded) onCountRef.current?.(parts.length);
+  }, [partsLoaded, parts.length]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   // The part being edited is already invoiced: the pricing fields are locked
@@ -58,7 +72,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
     const res = await fetchWithAuth(`/tickets/${ticketId}/parts`)
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
-    if (res?.data) setParts(res.data as PartRow[]);
+    if (res?.data) { setParts(res.data as PartRow[]); setPartsLoaded(true); }
   }, [ticketId]);
 
   useEffect(() => {
@@ -73,6 +87,10 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
       .then((body) => { if (body?.data) setCatalog(body.data as CatalogItem[]); })
       .catch(() => { /* picker simply has no options */ });
   }, []);
+
+  // A form left open when the ticket turns read-only (merged while editing)
+  // stops rendering; nothing on it could save.
+  const showForm = formOpen && !readOnly;
 
   const linkedItem = catalogItemId ? catalog.find((c) => c.id === catalogItemId) ?? null : null;
 
@@ -213,10 +231,10 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   };
 
   return (
-    <div className="mt-3 border-t pt-3" data-testid="ticket-parts-card">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketPartsCard.title')}</p>
+    <div className={embedded ? undefined : 'mt-3 border-t pt-3'} data-testid="ticket-parts-card">
+      {!embedded && <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketPartsCard.title')}</p>}
 
-      {parts.length === 0 && !formOpen && (
+      {parts.length === 0 && !showForm && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="ticket-parts-empty">{t('ticketPartsCard.empty')}</p>
       )}
 
@@ -256,7 +274,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
                     </span>
                   )}
                 </div>
-                {confirmingDeleteId === part.id ? (
+                {readOnly ? null : confirmingDeleteId === part.id ? (
                   <div
                     className="mt-0.5 flex items-center gap-1"
                     data-testid={`ticket-part-delete-confirm-${part.id}`}
@@ -310,14 +328,15 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
         <button
           type="button"
           onClick={openAdd}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+          disabled={readOnly}
+          className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-parts-add-toggle"
         >
           {t('ticketPartsCard.addPart')}
         </button>
       </div>
 
-      {formOpen && (
+      {showForm && (
         <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-parts-form">
           {/* Optional: pull a part from the catalog to prefill + link it (#1368). */}
           {catalog.length > 0 && !(editingId != null && editingBilled) && (

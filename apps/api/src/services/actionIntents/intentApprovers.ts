@@ -5,7 +5,8 @@
  *
  * Given an org, returns the distinct set of user ids eligible to decide a
  * Tier-3 action intent: a user is eligible iff their role in (or covering)
- * the org grants `approvals:decide`.
+ * the org grants `approvals:decide` — directly or through role inheritance
+ * (`roles.parent_role_id`; usersWithPermission → roleInheritance, #11702).
  *
  * Mirrors `resolveElevationApprovers` (services/pamApprovers.ts) EXACTLY for
  * the role/membership resolution — role-ids granting the permission (incl.
@@ -38,6 +39,7 @@ import { effectiveTargetDeviceId, resolveIntentTargetDevice } from './intentTarg
 import {
   aiAgentRuns,
   devices,
+  flowRuns,
   organizations,
   organizationUsers,
   partnerUsers,
@@ -46,6 +48,7 @@ import {
 } from '../../db/schema';
 import { aiTools } from '../aiTools';
 import { requiredPermissionsForTool } from '../aiGuardrails';
+import { FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION, flowIntentApproverRule } from './flowIntentApproverRule';
 import {
   PERMISSIONS,
   canAccessOrg,
@@ -55,11 +58,14 @@ import {
 } from '../permissions';
 import { resolveUsersWithPermissionForOrg, type PermissionPair } from '../usersWithPermission';
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
+import { resolvePartnerAxisApprovers } from './partnerAxisApprover';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
- * `orgId`. Empty array when none qualify. Pure-read; opens its own system DB
- * context, so it may be called from any ambient context (or none).
+ * `orgId`: the org's `approvals:decide` holders, or with `requirePartnerAxis`
+ * the full-partner holders of its partner. Empty array when none qualify.
+ * Pure-read; opens its own system DB context, so it may be called from any
+ * ambient context (or none).
  */
 export interface ResolveIntentApproversOpts {
   /**
@@ -93,6 +99,13 @@ export interface ResolveIntentApproversOpts {
    * `no_eligible_approvers` (intentService.ts).
    */
   requireOrgWideGovernance?: boolean;
+  /**
+   * Pass `true` when `intentRequiresPartnerAxisApprover` says so: the pool becomes the
+   * full-partner `approvals:decide` holders of the org's partner, with no org members.
+   * The fan-out and the sole-operator re-derivation must pass the same value, for the
+   * reason given on `requireOrgWideGovernance`.
+   */
+  requirePartnerAxis?: boolean;
   /**
    * Review finding #1: invoked with the ceiling-filter diagnostics whenever
    * the filter actually ran (i.e. whenever
@@ -132,7 +145,9 @@ export async function resolveIntentApproversWithDiagnostics(
   orgId: string,
   opts?: ResolveIntentApproversOpts,
 ): Promise<{ approvers: string[]; diagnostics: ResolveIntentApproversDiagnostics | null }> {
-  const deciders = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
+  const deciders = opts?.requirePartnerAxis
+    ? await resolvePartnerAxisApprovers(orgId)
+    : await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
   let eligible = deciders;
   if (opts?.alsoRequire && eligible.length > 0) {
     const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));
@@ -420,11 +435,18 @@ export async function resolveAgentIntentApprovers(opts: {
   toolName: string;
   input: Record<string, unknown>;
   targetScope: IntentTargetScope;
+  /**
+   * Tool catalog W04 (#5219): an EXTERNAL (tenant tool-source) step has no
+   * core RBAC mapping — `requiredPermissionsForTool` answers null for a
+   * `<slug>__<name>` and nobody would be eligible. The flow lane passes the
+   * external-tool grant instead (the same requirement chat applies).
+   */
+  requiredOverride?: Array<{ resource: string; action: string }>;
 }): Promise<string[]> {
   // No RBAC mapping (unknown tool / unknown action / missing action on a
   // multiplexed tool) ⇒ nobody is eligible. Short-circuits before any
   // membership lookup.
-  const required = requiredPermissionsForTool(opts.toolName, opts.input);
+  const required = opts.requiredOverride ?? requiredPermissionsForTool(opts.toolName, opts.input);
   if (required === null) return [];
 
   // Candidate pool: the same active-member union resolveIntentApprovers
@@ -508,8 +530,14 @@ export async function isAgentIntentDecideAuthorized(
   intent: Pick<
     ActionIntent,
     'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId'
-  >,
+  > & Partial<Pick<ActionIntent, 'requestingFlowRunId' | 'toolSourceToolId'>>,
 ): Promise<boolean> {
+  // Tool catalog W04 (#5219), Decision 6: a supervised FLOW intent is decided
+  // by the same action-and-target pool. It has no requester and no device of
+  // its own — the target comes from the step's arguments only.
+  if (!intent.requestingAgentRunId && intent.requestingFlowRunId) {
+    return isFlowIntentDecideAuthorized(userId, intent as typeof intent & { requestingFlowRunId: string });
+  }
   const runId = intent.requestingAgentRunId;
   if (!runId) return false;
 
@@ -580,4 +608,56 @@ export async function isAgentIntentDecideAuthorized(
     required,
     targetScope,
   });
+}
+
+/**
+ * The external-tool grant a flow intent's approvers must hold when the step is
+ * a tenant tool (Tier 3 ⇒ `external_tools:write`, toolSources/guardrails.ts).
+ */
+// The shared create/decide approver rule lives in a leaf (flowIntentApproverRule.ts).
+export { FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION, flowIntentApproverRule };
+
+/**
+ * Decide-time twin of the flow fan-out (createActionIntent): the run must still
+ * sit in the intent's org, the decider must hold the step's full RBAC mapping
+ * (or the external-tool grant) AND reach every device the stored arguments
+ * name. Fails closed on any doubt.
+ */
+async function isFlowIntentDecideAuthorized(
+  userId: string,
+  intent: Pick<ActionIntent, 'orgId' | 'actionName' | 'arguments'> & {
+    requestingFlowRunId: string;
+    toolSourceToolId?: string | null;
+  },
+): Promise<boolean> {
+  const rule = flowIntentApproverRule(intent);
+  const required = rule.required;
+  if (required === null) return false;
+
+  const { run, partnerId } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [runRow] = await db
+        .select({ orgId: flowRuns.orgId })
+        .from(flowRuns)
+        .where(eq(flowRuns.id, intent.requestingFlowRunId))
+        .limit(1);
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, intent.orgId))
+        .limit(1);
+      return { run: runRow ?? null, partnerId: org?.partnerId ?? null };
+    }),
+  );
+  if (!run || run.orgId !== intent.orgId) return false;
+
+  let targetScope: IntentTargetScope;
+  try {
+    targetScope = rule.indirect
+      ? { kind: 'indirect' }
+      : await resolveIntentTargetScope(intent.actionName, intent.arguments ?? {}, { deviceId: null }, intent.orgId);
+  } catch {
+    return false;
+  }
+  return userHasActionAndTargetAuthority(userId, { orgId: intent.orgId, partnerId, required, targetScope });
 }

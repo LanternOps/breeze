@@ -27,11 +27,17 @@ export const softwareCatalog = pgTable('software_catalog', {
   id: uuid('id').primaryKey().defaultRandom(),
   // Dual-axis ownership: exactly one of org_id / partner_id is set
   // (CHECK software_catalog_one_owner_chk). Partner-scoped rows are built-in
-  // integration packages, marked by integrationProvider ('huntress'|'sentinelone',
-  // CHECK software_catalog_integration_provider_chk).
+  // integration packages, marked by integrationProvider (the legacy providers or
+  // an EDR provider key, CHECK software_catalog_integration_provider_chk).
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   integrationProvider: varchar('integration_provider', { length: 20 }),
+  // #6958: a Breeze-defined built-in package (e.g. 'controld_windows').
+  // Partner-owned only and unique per partner
+  // (CHECK software_catalog_builtin_package_key_chk, index
+  // software_catalog_partner_builtin_key_uidx). Like integrationProvider, a
+  // non-null key makes the row immutable outside system scope.
+  builtinPackageKey: varchar('builtin_package_key', { length: 40 }),
   name: varchar('name', { length: 200 }).notNull(),
   vendor: varchar('vendor', { length: 200 }),
   description: text('description'),
@@ -75,6 +81,10 @@ export const softwareVersions = pgTable('software_versions', {
   silentUninstallArgs: text('silent_uninstall_args'),
   preInstallScript: text('pre_install_script'),
   postInstallScript: text('post_install_script'),
+  // #6958: whether the scripts above are dispatched. Only a create path whose
+  // writer holds devices.execute sets it true; scripts stored before the
+  // column existed stay dormant (never sent) until the version is re-created.
+  installScriptsEnabled: boolean('install_scripts_enabled').notNull().default(false),
   // Detection rules (issue #2022): an array of clauses the agent evaluates
   // against the device's real state to confirm whether the package is actually
   // present — independent of the installer exit code. Shape validated by
@@ -190,6 +200,8 @@ export const softwareInventoryObservations = pgTable('software_inventory_observa
   identityOwnerUq: uniqueIndex('software_inventory_observations_identity_owner_uq').on(table.id, table.orgId, table.deviceId),
   deviceReceivedIdx: index('software_inventory_observations_device_received_idx').on(table.deviceId, table.receivedAt, table.id),
   orgReceivedIdx: index('software_inventory_observations_org_received_idx').on(table.orgId, table.receivedAt),
+  // Age scan for jobs/observationRetention.ts (#11737).
+  receivedAtIdx: index('software_inventory_observations_received_at_idx').on(table.receivedAt),
   deviceOrgFk: foreignKey({
     columns: [table.deviceId, table.orgId],
     foreignColumns: [devices.id, devices.orgId],
@@ -247,11 +259,16 @@ export const softwareInventory = pgTable('software_inventory', {
 // Rows are deleted on complete/abort; the softwareUploadSessionCleanup job
 // reaps sessions idle for SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS (2h) or older
 // than SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (24h) regardless of activity.
-// Tenancy shape 1 (direct org_id, forced RLS — see
-// migrations/2026-08-11-software-upload-sessions.sql).
+// Tenancy: dual-axis org XOR partner (software_upload_sessions_one_owner_chk,
+// forced RLS, no partner-wide SELECT branch — see
+// migrations/2027-01-22-230300-software-upload-sessions-partner-owner.sql).
+// A session mirrors the owner of the catalog row it uploads into: an
+// org-owned package books an org session, a partner-wide package (#9246)
+// books a partner session.
 export const softwareUploadSessions = pgTable('software_upload_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
   // ON DELETE CASCADE so a direct `DELETE FROM software_catalog` outside the
   // org-erasure path cannot strand sessions. It is NOT needed for the org
   // cascade itself: deleteOrgCascade runs topologicalCascadeOrder(), which
@@ -279,6 +296,7 @@ export const softwareUploadSessions = pgTable('software_upload_sessions', {
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   orgIdx: index('software_upload_sessions_org_id_idx').on(table.orgId),
+  partnerIdx: index('software_upload_sessions_partner_id_idx').on(table.partnerId),
   catalogIdx: index('software_upload_sessions_catalog_id_idx').on(table.catalogId),
   lastActivityIdx: index('software_upload_sessions_last_activity_idx').on(table.lastActivityAt),
 }));

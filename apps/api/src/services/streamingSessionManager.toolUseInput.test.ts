@@ -26,6 +26,14 @@ const { queryMock, insertedRows, redactMock } = vi.hoisted(() => ({
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
+// Wisp W04 Task 4: getOrCreate resolves the session's delegation grant itself
+// (lookupWispGrant); every session in this suite is an ordinary one.
+vi.mock('./wisp/chatCeiling', () => ({
+  lookupWispGrant: vi.fn(async () => null),
+  unreachableWispAuth: (auth: unknown) => auth,
+  WispSessionUnavailableError: class WispSessionUnavailableError extends Error {},
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -80,6 +88,9 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: redactMock,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';

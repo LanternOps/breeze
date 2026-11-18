@@ -439,8 +439,19 @@ interface SeedReportOptions {
   schedule?: 'one_time' | 'daily' | 'weekly' | 'monthly';
   config?: Record<string, unknown>;
   updatedAt?: Date;
+  /** Defaults to `updatedAt`. */
+  createdAt?: Date;
   type?: 'device_inventory' | 'alert_summary' | 'compliance';
 }
+
+/**
+ * #9562: a never-run schedule is measured from its creation, so a definition
+ * the due scan at 2026-07-21 should consider must have been saved before the
+ * occurrence that scan looks at — otherwise a "not due" assertion would pass
+ * for the wrong reason (created after the scan time) instead of the scope
+ * gate under test.
+ */
+const SAVED_BEFORE_SCAN = new Date('2026-07-01T00:00:00.000Z');
 
 async function seedReport(options: SeedReportOptions): Promise<string> {
   const at = options.updatedAt ?? new Date();
@@ -454,7 +465,7 @@ async function seedReport(options: SeedReportOptions): Promise<string> {
       schedule: options.schedule ?? 'one_time',
       format: 'csv',
       createdBy: options.createdBy ?? null,
-      createdAt: at,
+      createdAt: options.createdAt ?? at,
       updatedAt: at,
       ...provenanceValues(options.orgId, options.scope),
     })
@@ -2500,6 +2511,7 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     const legacyId = await seedReport({
       orgId: f.orgA,
       name: 'scheduled-legacy',
+      createdAt: SAVED_BEFORE_SCAN,
       schedule: 'daily',
       scope: { kind: 'legacy', userId: f.unrestrictedUser.id },
       createdBy: f.unrestrictedUser.id,
@@ -2507,6 +2519,7 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     const oldWriterId = await seedReport({
       orgId: f.orgA,
       name: 'scheduled-old-writer',
+      createdAt: SAVED_BEFORE_SCAN,
       schedule: 'daily',
       scope: { kind: 'null' },
       createdBy: f.unrestrictedUser.id,
@@ -2514,6 +2527,7 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     const executableId = await seedReport({
       orgId: f.orgA,
       name: 'scheduled-executable',
+      createdAt: SAVED_BEFORE_SCAN,
       schedule: 'daily',
       scope: { kind: 'unrestricted', userId: f.unrestrictedUser.id },
       createdBy: f.unrestrictedUser.id,
@@ -2567,6 +2581,7 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     const legacyId = await seedReport({
       orgId: f.orgA,
       name: 'scheduled-legacy-reauth',
+      createdAt: SAVED_BEFORE_SCAN,
       schedule: 'daily',
       scope: { kind: 'legacy', userId: f.unrestrictedUser.id },
       createdBy: f.unrestrictedUser.id,
@@ -3100,6 +3115,7 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
     const reportId = await seedReport({
       orgId: f.orgA,
       name: 'scheduled system narrative',
+      createdAt: SAVED_BEFORE_SCAN,
       schedule: 'weekly',
       scope: { kind: 'system' },
       createdBy: null,

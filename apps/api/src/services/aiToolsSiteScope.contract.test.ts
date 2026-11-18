@@ -162,6 +162,11 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // `list_time_sync_issues`: `listFleetTimeStatus` names both axes at its entry
   // point (siteScopeCondition + deviceScopeCondition, idempotent with fleetScope).
   ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
+  // `export_dataset`'s set-based adapters (`aiToolsExportDatasets/*.ts`):
+  // resolves the export's device set through the frozen frame,
+  // `allowedDeviceIds` and `deviceSiteDenied`; behaviour pinned by
+  // `aiToolsExportShared.test.ts`.
+  ['exportDeviceSet', 'aiToolsExportShared.ts'],
 ];
 
 /**
@@ -195,6 +200,25 @@ const AI_TOOLS_SOURCES = aiToolsSources();
  * write one, it is a gap, not an exception.
  */
 const SITE_TABLE_EXCEPTIONS: readonly string[] = [
+  // Full-control W12 (#6782, quorum QW7). `manage_software_deployments` `deploymentOutsideDeviceAxis`: reads the device
+  // ids of ONE deployment only to check them against a device-bound session's exact-device allowlist (an extra, stricter
+  // axis); it returns a boolean, and the deployment itself is then read through the route's own site-scoped services.
+  'aiToolsSoftwareDeployments.ts:deploymentResults#0',
+  // Full-control W13 PR B (#6783, W13-D8). `manage_support_sessions`: Quick Support sessions and their temporary
+  // devices live in the partner's hidden Quick Support org, which has no site of the caller's. The tool refuses every
+  // site- or device-restricted session before any read (scopeDenied) and pins the partner in SQL; the device and
+  // remote-session reads only probe the online / live status of the session devices just read.
+  'aiToolsSupportSessions.ts:supportSessions#0',
+  'aiToolsSupportSessions.ts:devices#0',
+  'aiToolsSupportSessions.ts:remoteSessions#0',
+  // Full-control W11 (#6781). `manage_access_reviews` `isScopeMember`: an existence check that a create's
+  // `reviewerId` is a member of the review's own partner or org (W11-D7). Only reached after `reviewOwner`, which
+  // refuses every site- or device-restricted session; it selects no member data.
+  'aiToolsAccessReviews.ts:organizationUsers#0',
+  // `manage_pam_rules` `otherAutoApproveRule`: the W11-D3 safety count of the org's auto-approving rules,
+  // deliberately across EVERY site (a stricter answer than the caller's own view), run inside the write's
+  // transaction after the target rule passed `ruleSiteDenied`. Returns a boolean; selects no rule content.
+  'aiToolsPamRules.ts:pamRules#0',
   // `markBackupJobDispatchFailed` / `markRestoreJobFailed`: internal status
   // writes keyed by a job id the SAME handler just created — no caller input,
   // nothing to attribute to a site.
@@ -419,11 +443,13 @@ describe('contract: the site axis is reachable for a caller with no device axis'
 /** REVIEWED EXCEPTIONS — tools whose optional id genuinely needs no site axis. */
 const OPTIONAL_SITE_ARG_EXCEPTIONS: readonly string[] = [
   // FALSE POSITIVE of the same-file scan: `export_dataset` fans out to
-  // per-dataset adapters in `aiToolsExportDatasets.ts`, each of which narrows
-  // (the device-scoped ones call `verifyDeviceAccess` per device). One adapter
-  // per dataset rather than a single read model, so it does not fit
-  // `CROSS_FILE_GUARDED_DELEGATES` either. Pinned by
-  // `aiToolsExportDatasets.test.ts`.
+  // per-dataset adapters in `aiToolsExportDatasets.ts` and the adapter
+  // directory `aiToolsExportDatasets/`, each of which narrows (the device-scoped
+  // ones call `verifyDeviceAccess` per device; the set-based ones resolve their
+  // devices through `exportDeviceSet`). One adapter per dataset rather than a
+  // single read model, so the tool itself does not fit
+  // `CROSS_FILE_GUARDED_DELEGATES`. Pinned by `aiToolsExportDatasets.test.ts`
+  // and `aiToolsExportShared.test.ts`.
   'aiToolsExport.ts:export_dataset',
   // `m365_query_sites`' `siteId` is a Microsoft Graph composite SHAREPOINT site
   // id read live from the customer tenant — unrelated to `sites.id` and to the

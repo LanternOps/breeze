@@ -8,13 +8,22 @@ import App from './App';
 import { ConsentWindow } from './windows/ConsentWindow';
 import { CallerVerifyWindow, type Branding, type CallerRequest } from './windows/CallerVerifyWindow';
 import { loadCallerBranding } from './windows/callerVerifyBranding';
+import { useCallerLogo } from './windows/callerVerifyLogo';
 import { SessionBanner } from './windows/SessionBanner';
 import { MessageCardWindow } from './components/MessageCard';
 import { EndpointChatWindow } from './components/EndpointChat';
+import { PromptCardWindow } from './prompt/PromptCardWindow';
 import { initTheme } from './lib/theme';
+import { loadUiContext, useUiContext } from './i18n/uiContext';
 
 // Initialize theme before rendering
 initTheme();
+
+// Locale + runtime branding of this session (never throws; defaults stay on
+// failure). Cards that render technician or agent text (message, chat,
+// prompt) are denied this command by design and do not call it; the message
+// card receives its locale inside its own label-checked view instead.
+if (!/^#(message|chat|prompt)\//.test(window.location.hash)) void loadUiContext();
 
 // ── Banner window ────────────────────────────────────────────────────────────
 
@@ -42,6 +51,9 @@ type CallerView = { request: CallerRequest; deadlineMs: number };
 function CallerVerifyHost({ verificationId }: { verificationId: string }) {
   const [view, setView] = useState<CallerView | null>(null);
   const [branding, setBranding] = useState<Branding>(null);
+  // Session locale from the Helper's UI context; the partner branding below
+  // keeps its own source (/api/v1/helper/config).
+  const { locale } = useUiContext();
 
   useEffect(() => {
     let live = true;
@@ -52,6 +64,9 @@ function CallerVerifyHost({ verificationId }: { verificationId: string }) {
     loadCallerBranding().then((b) => { if (live) setBranding(b); }).catch(() => {});
     return () => { live = false; };
   }, [verificationId]);
+  // #10190 W04: the synced logo bytes when /helper/config names the same
+  // logo, else the https logoUrl, else none (callerVerifyLogo.ts).
+  const logo = useCallerLogo(branding, verificationId);
 
   if (!view) return null;
   return (
@@ -59,7 +74,8 @@ function CallerVerifyHost({ verificationId }: { verificationId: string }) {
       req={view.request}
       deadlineMs={view.deadlineMs}
       branding={branding}
-      locale={navigator.language}
+      logo={logo}
+      locale={locale}
       onDecision={(choice) => invoke<void>('submit_caller_verify', { verificationId, choice })}
     />
   );
@@ -78,6 +94,9 @@ if (hash.startsWith('#caller-verify/')) {
 } else if (hash.startsWith('#chat/')) {
   // Endpoint live chat (#8743): its own window, not the AI chat and never the main one.
   root = <EndpointChatWindow conversationId={hash.slice('#chat/'.length)} />;
+} else if (hash.startsWith('#prompt/')) {
+  // Prompt host card (#10190): its own `prompt-<hash>` window, never the main one.
+  root = <PromptCardWindow promptId={hash.slice('#prompt/'.length)} />;
 } else if (hash === '#consent') {
   root = <ConsentWindow />;
 } else if (hash === '#banner') {

@@ -33,14 +33,26 @@ export interface ClassifiedRequest {
 export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>> = Object.freeze({
   // protected
   'POST /:id/heartbeat': 'protected',
+  // #4618: the in-progress isolation probe must reach the control plane under load.
+  'POST /:id/isolation/:isolationId/verify': 'protected',
   'GET /:id/commands': 'protected',
   'POST /:id/commands/:commandId/result': 'protected',
   'POST /:id/commands/:commandId/pam-observations': 'protected',
   'POST /:id/pam/reconciliation-bindings': 'protected',
+  'POST /:id/pam/elevation-unable': 'protected',
   'POST /:id/rotate-token': 'protected',
   'POST /:id/rotate-token/confirm': 'protected',
   'POST /:id/uninstall-intent': 'protected',
   'POST /:id/elevation-requests': 'protected',
+  // #8971: the user's decline of a pending elevation. Interactive and
+  // security-relevant (it closes a request a technician could still approve);
+  // the agent retries, but a shed call keeps the request approvable meanwhile.
+  'POST /:id/elevation-requests/:requestId/withdraw': 'protected',
+  // #11065: the post-reboot BitLocker/BIOS check after a vendor update. Once per
+  // run and 4 KiB at most, and not periodic: there is no next cycle to resend it
+  // in, so a shed report would leave the protection-still-suspended alert
+  // unresolved (the agent sender, W02, is not built yet).
+  'PUT /:id/oem-updates/verification': 'protected',
   'PUT /:id/eventlogs': 'protected',
   'GET /:id/winget-bootstrap/manifest': 'protected',
   'GET /:id/winget-bootstrap/file/:name': 'protected',
@@ -48,6 +60,12 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'GET /:id/storage-sessions/:sessionId/object': 'protected',
   'POST /:id/approve': 'protected',
   'POST /:id/deny': 'protected',
+  // Reinstall reattach (#8318 §6.3, §6.4): one exchange per human-authorized
+  // reattach, rate-limited on their own, inside a 15-minute staged window a
+  // shed request could run out (the intent then expires and a human must
+  // request again). Recovery work, like token rotation.
+  'POST /:id/rebind': 'protected',
+  'POST /:id/rebind-confirm': 'protected',
   // standard
   'GET /:id/config': 'standard',
   'PUT /:id/monitoring-results': 'standard',
@@ -58,6 +76,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   // compiled rules); a refused fetch is a per-set error on that scan, never a
   // failed scan, and the next scan retries.
   'GET /:id/yara/rule-sets/:ruleSetId/:version': 'standard',
+  // Prompt logo (#10190 W03): read-only, at most 256 KB, fetched once per
+  // logo sha (the agent caches it); a shed fetch only delays the logo, the
+  // prompt still draws with the MSP name, and the agent retries.
+  'GET /:id/prompt-identity/logo': 'standard',
   'PUT /:id/sessions': 'standard',
   'PUT /:id/changes': 'standard',
   'PUT /:id/patches': 'standard',
@@ -65,6 +87,7 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'PUT /:id/patches/installed': 'standard',
   'PUT /:id/hardware-health': 'standard',
   'PUT /:id/time-status': 'standard',
+  'PUT /:id/wake-status': 'standard',
   'PUT /:id/peripherals/events': 'standard',
   'POST /:id/boot-performance': 'standard',
   'POST /:id/reliability': 'standard',

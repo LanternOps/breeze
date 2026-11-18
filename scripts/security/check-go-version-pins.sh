@@ -130,6 +130,7 @@ done
 GO_DOCKERFILES=(
   apps/api/Dockerfile
   docker/Dockerfile.api
+  docker/Dockerfile.api.dev
 )
 for file in "${GO_DOCKERFILES[@]}"; do
   [ -f "$file" ] || { note "$file is missing — it must build breeze-yarac with golang:$pinned"; continue; }

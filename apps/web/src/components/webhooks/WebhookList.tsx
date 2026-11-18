@@ -8,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 // The API's status vocabulary (routes/webhooks.ts). PATCH takes the same
 // values, so the toggle and the edit form's switch write `status`, never an
 // `enabled` flag the API would strip (#6767).
+export type WebhookOwnerFilter = 'all' | 'organization' | 'partner';
+
 export type WebhookStatus = 'active' | 'paused' | 'failed';
 
 type DisplayStatus = 'active' | 'disabled';
@@ -20,12 +22,6 @@ export const isWebhookActive = (webhook: Pick<Webhook, 'status' | 'enabled'>): b
 
 export type WebhookAuthType = 'hmac' | 'bearer';
 
-export type WebhookAuth = {
-  type: WebhookAuthType;
-  secret?: string;
-  token?: string;
-};
-
 export type WebhookHeader = {
   key: string;
   // GET /webhooks returns every header value as a redaction marker object.
@@ -34,22 +30,24 @@ export type WebhookHeader = {
 
 export type Webhook = {
   id: string;
+  orgId?: string | null;
+  partnerId?: string | null;
+  ownerScope?: 'organization' | 'partner';
   name: string;
   url: string;
   events: string[];
+  payloadVersion?: 1 | 2;
   status?: WebhookStatus;
   enabled?: boolean;
-  lastTriggeredAt?: string | null;
-  lastTriggered?: string;
+  lastDeliveryAt?: string | null;
   successCount?: number;
   failureCount?: number;
-  secret?: string;
-  bearerToken?: string;
-  auth?: WebhookAuth;
   // Set by GET /webhooks in place of the secret itself, which is never returned.
   hasSecret?: boolean;
+  // Derived by the API (#9652): 'bearer' when an `Authorization: Bearer …`
+  // header is stored, else 'hmac' when a signing secret is, else 'none'.
+  authType?: WebhookAuthType | 'none';
   headers?: WebhookHeader[];
-  payloadTemplate?: string;
 };
 
 type WebhookListProps = {
@@ -61,6 +59,10 @@ type WebhookListProps = {
   onSelect?: (webhook: Webhook) => void;
   selectedWebhookId?: string | null;
   timezone?: string;
+  /** False when the host already titles the panel (embedded in Integrations). */
+  showTitle?: boolean;
+  ownerScope?: WebhookOwnerFilter;
+  onOwnerScopeChange?: (value: WebhookOwnerFilter) => void;
 };
 
 const statusStyles: Record<DisplayStatus, string> = {
@@ -85,10 +87,15 @@ export default function WebhookList({
   onToggle,
   onSelect,
   selectedWebhookId,
-  timezone
+  timezone,
+  showTitle = true,
+  ownerScope,
+  onOwnerScopeChange
 }: WebhookListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
+  const [localOwnerScope, setLocalOwnerScope] = useState<WebhookOwnerFilter>('all');
+  const ownerFilter = ownerScope ?? localOwnerScope;
   const [statusFilter, setStatusFilter] = useState<DisplayStatus | 'all'>('all');
   const [testingId, setTestingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -104,9 +111,10 @@ export default function WebhookList({
             webhook.url.toLowerCase().includes(normalizedQuery);
       const matchesStatus = statusFilter === 'all' ? true : getStatus(webhook) === statusFilter;
 
-      return matchesQuery && matchesStatus;
+      const matchesOwner = ownerFilter === 'all' || (ownerFilter === 'partner' ? Boolean(webhook.partnerId) : !webhook.partnerId);
+      return matchesQuery && matchesStatus && matchesOwner;
     });
-  }, [webhooks, query, statusFilter]);
+  }, [webhooks, query, statusFilter, ownerFilter]);
 
   // Write actions render only when their handler is supplied, so a read-only
   // caller gets the list without controls that would be refused.
@@ -138,12 +146,14 @@ export default function WebhookList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          {showTitle && (
+            <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          )}
           <p className="text-sm text-muted-foreground">
             {t('longTail.webhooks.WebhookList.webhookCount', { filtered: filteredWebhooks.length, total: webhooks.length })}
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <input
             type="search"
             placeholder={t('longTail.webhooks.WebhookList.searchPlaceholder')}
@@ -151,6 +161,20 @@ export default function WebhookList({
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
+          <FilterSelect
+            label={t('longTail.webhooks.ownership.label')}
+            value={ownerFilter}
+            onChange={event => {
+              const value = event.target.value as WebhookOwnerFilter;
+              setLocalOwnerScope(value);
+              onOwnerScopeChange?.(value);
+            }}
+            className="w-full sm:w-44"
+          >
+            <option value="all">{t('longTail.webhooks.ownership.all')}</option>
+            <option value="organization">{t('longTail.webhooks.ownership.organization')}</option>
+            <option value="partner">{t('longTail.webhooks.ownership.allOrganizations')}</option>
+          </FilterSelect>
           <FilterSelect
             label={t('longTail.webhooks.WebhookList.filters.statusFilterLabel')}
             value={statusFilter}
@@ -190,7 +214,7 @@ export default function WebhookList({
                 const eventsToShow = webhook.events.slice(0, 2);
                 const remainingEvents = webhook.events.length - eventsToShow.length;
                 const status = getStatus(webhook);
-                const lastTriggered = webhook.lastTriggeredAt ?? webhook.lastTriggered;
+                const lastTriggered = webhook.lastDeliveryAt;
 
                 return (
                   <tr
@@ -201,7 +225,14 @@ export default function WebhookList({
                       selectedWebhookId === webhook.id && 'bg-muted/30'
                     )}
                   >
-                    <td className="px-4 py-3 text-sm font-medium">{webhook.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      {webhook.name}
+                      {webhook.partnerId && (
+                        <span data-testid="webhook-partner-badge" className="mt-1 block w-fit rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                          {t('longTail.webhooks.ownership.allOrganizations')}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <span className="truncate block max-w-[260px]" title={webhook.url}>
                         {webhook.url}

@@ -31,9 +31,7 @@ vi.mock('../../services/deviceActions', () => ({
   toggleMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
-  permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
-  sendBulkWakeCommand: vi.fn(),
   summarizeBulkWakeFailures: vi.fn(() => ''),
   summarizeBulkCommandFailures: vi.fn(() => ''),
   watchWakeOutcome: vi.fn(),
@@ -68,7 +66,6 @@ vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
-vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('./LinkVmHostModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));

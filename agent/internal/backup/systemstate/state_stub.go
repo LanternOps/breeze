@@ -2,7 +2,10 @@
 
 package systemstate
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // ErrUnsupportedPlatform is returned on platforms without a system state collector.
 var ErrUnsupportedPlatform = errors.New("systemstate: unsupported platform")
@@ -20,10 +23,10 @@ func newCollector(_ CollectOptions) Collector {
 	return &StubCollector{}
 }
 
-func (c *StubCollector) CollectState(_ string) (*SystemStateManifest, error) {
+func (c *StubCollector) CollectState(_ context.Context, _ string) (*SystemStateManifest, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
-func (c *StubCollector) CollectHardwareProfile() (*HardwareProfile, error) {
+func (c *StubCollector) CollectHardwareProfile(_ context.Context) (*HardwareProfile, error) {
 	return nil, ErrUnsupportedPlatform
 }

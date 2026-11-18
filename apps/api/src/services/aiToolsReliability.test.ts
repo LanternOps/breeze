@@ -53,6 +53,26 @@ vi.mock('./aiToolsAgentLogs', () => ({
   registerAgentLogTools: vi.fn(),
 }));
 
+vi.mock('./wisp/memoryTools', () => ({
+  registerWispMemoryTools: vi.fn(),
+}));
+
+vi.mock('./wisp/concernTools', () => ({
+  registerWispConcernTools: vi.fn(),
+}));
+
+vi.mock('./wisp/linkTools', () => ({
+  registerWispLinkTools: vi.fn(),
+}));
+
+vi.mock('./wisp/checkInTools', () => ({
+  registerWispCheckInTools: vi.fn(),
+}));
+
+vi.mock('./aiToolsWisp', () => ({
+  registerWispTools: vi.fn(),
+}));
+
 vi.mock('./aiToolsConfigPolicy', () => ({
   registerConfigPolicyTools: vi.fn(),
 }));
@@ -325,7 +345,7 @@ describe('aiTools assign_security_training authorization', () => {
       { ...siteRestrictedAuth, token: { mfa: false } },
     );
 
-    expect(JSON.parse(result)).toEqual({ error: 'MFA required' });
+    expect(JSON.parse(result)).toMatchObject({ error: expect.stringMatching(/^MFA required/), code: 'MFA_REQUIRED' });
     expect(mockGetUserRiskOrgMembership).not.toHaveBeenCalled();
     expect(mockAssignSecurityTraining).not.toHaveBeenCalled();
   });

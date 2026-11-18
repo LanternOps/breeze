@@ -21,6 +21,7 @@ import { generateDueInvoice } from '../services/contractService';
 import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
 import { runHourBlockAlertSweep } from '../services/contractHourBlockAlerts';
 import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
+import { billingEnabledOrgPredicate, isBillingDisabledError } from '../services/billingEnabled';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
@@ -60,7 +61,10 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           // an archived tenant must not keep generating (and auto-issuing +
           // emailing) invoices from inside its purge countdown. Structurally
           // identical to runContractRenewalSweep, so it is fixed with it.
-          buildAutomationEligibleOrgPredicate(contracts.orgId)
+          buildAutomationEligibleOrgPredicate(contracts.orgId),
+          // BRZ-8807: a partner with billing off moves no new money — never
+          // select (and never fail + Sentry daily on) its contracts.
+          billingEnabledOrgPredicate(contracts.orgId)
         )
       )
     )
@@ -85,6 +89,14 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         deferred++;
         console.error('[contract-billing] renewal pending after the renewal sweep: contractId=%s orgId=%s — not billed, not expired', row.id, row.orgId);
         captureException(new Error(`contract ${row.id} billing deferred: auto-renew term ended but the renewal sweep did not extend it`));
+      }
+      // #9509: the sweep only picks contracts whose pointer is due, so a lost
+      // ledger claim means the pointer sat on a period that was already billed.
+      // generateDueInvoice moved it on (the next run bills), but the invariant
+      // broke, so report it rather than leave it to a stdout warning.
+      if (res.skipped === 'already_billed') {
+        console.error('[contract-billing] already billed: due contract pointed at a claimed period; pointer moved on: contractId=%s orgId=%s', row.id, row.orgId);
+        captureException(new Error(`contract ${row.id} billing pointer was on an already-claimed period (moved past it)`));
       }
       // Wave 3 (#3775): a catalog line billed at the contract snapshot because
       // the price book has no row in the contract's currency is never silent —
@@ -127,6 +139,9 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         );
       }
     } catch (err) {
+      // Flag flipped off after the selection: not a failure, the rollback already
+      // left the contract untouched and it is simply not selected from now on.
+      if (isBillingDisabledError(err)) continue;
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(String(err)));
@@ -148,6 +163,8 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           await sendInvoiceEmail(res.invoiceId!, res.actor!);
         }));
       } catch (err) {
+        // Billing switched off between the commit and the issue: the draft stays a draft.
+        if (isBillingDisabledError(err)) continue;
         console.error('[ContractWorker] post-commit issue/send failed', `contractId=${row.id}`, `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
         captureException(err instanceof Error ? err : new Error(String(err)));
       }

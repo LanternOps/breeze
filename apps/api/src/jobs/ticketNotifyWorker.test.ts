@@ -879,6 +879,70 @@ function resetPushMocks(): void {
   getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
 }
 
+describe('ticket.merged (#8972 W1, spec §3.7)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateSetMock.mockReset();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+  });
+
+  const SURVIVOR = {
+    id: 't-dst', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0002', ticketNumber: 'KQ-2', subject: 'Printer offline',
+    assignedTo: 'u-2', deletedAt: null, deviceId: null, emailThreadKey: null, submitterEmail: 'other@acme.example',
+  };
+  const SOURCE = {
+    id: 't-src', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0009', ticketNumber: 'KQ-9', subject: 'Printer still broken',
+    mergedIntoTicketId: 't-dst', submitterEmail: 'enduser@acme.example', submitterName: 'End User', deletedAt: null,
+  };
+  const merged = (over: { actorUserId?: string; notifyRequester?: boolean } = {}) => handleTicketEvent({
+    type: 'ticket.merged', ticketId: 't-dst', orgId: 'o-1', partnerId: 'p-1', actorUserId: over.actorUserId ?? 'u-1',
+    eventId: 'evt-merge', payload: { sourceTicketId: 't-src', targetTicketId: 't-dst', notifyRequester: over.notifyRequester ?? true },
+  });
+
+  it('gives the survivor\'s assignee an in-app notice and emails the source requester ONCE, threaded to the survivor', async () => {
+    selectMock.mockResolvedValue([]);
+    selectMock
+      .mockResolvedValueOnce([SURVIVOR])
+      .mockResolvedValueOnce([SOURCE]);
+    await merged();
+    expect(push.createNotification).toHaveBeenCalledTimes(1);
+    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'u-2', type: 'ticket', link: '/tickets#T-2026-0002',
+      dedupeKey: 'ticket:t-dst:merged:t-src:u-2',
+    }));
+    const customer = sendEmailMock.mock.calls.map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.purpose === 'ticket.customer_notification');
+    expect(customer).toHaveLength(1);
+    expect(customer[0]).toMatchObject({ to: 'enduser@acme.example' });
+    expect(customer[0]!.subject).toContain('T-2026-0009');
+    expect(customer[0]!.subject).toContain('T-2026-0002');
+    expect(customer[0]!.html).toContain('T-2026-0002');
+    expect((customer[0]!.headers as Record<string, string>)['In-Reply-To']).toBe('<ticket-t-dst@tickets.example.com>');
+  });
+
+  it('notifyRequester: false sends no requester email', async () => {
+    selectMock.mockResolvedValue([]);
+    selectMock.mockResolvedValueOnce([SURVIVOR]).mockResolvedValueOnce([SOURCE]);
+    await merged({ notifyRequester: false });
+    expect(sendEmailMock.mock.calls.filter((c) => (c[0] as { purpose: string }).purpose === 'ticket.customer_notification')).toEqual([]);
+  });
+
+  it('no assignee notice when the assignee did the merge', async () => {
+    selectMock.mockResolvedValue([]);
+    selectMock.mockResolvedValueOnce([SURVIVOR]).mockResolvedValueOnce([SOURCE]);
+    await merged({ actorUserId: 'u-2', notifyRequester: false });
+    expect(push.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('retries (throws) while the source does not yet read as merged (pre-commit emission)', async () => {
+    selectMock.mockResolvedValueOnce([SURVIVOR]).mockResolvedValueOnce([{ ...SOURCE, mergedIntoTicketId: null }]);
+    await expect(merged()).rejects.toThrow(/not yet visible/i);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('ticket push fan-out (W07)', () => {
   beforeEach(() => {
     resetPushMocks();

@@ -461,6 +461,28 @@ describe('decideApprovalBatch', () => {
     expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
   });
 
+  // Tool catalog W04 (#5219) finding 1: a supervised FLOW intent is the other
+  // requester-less shape the decide core sends through the pool branch.
+  it('accepts supervised FLOW-originated cards (requestingFlowRunId, no agent run)', async () => {
+    const flow = { requestingAgentRunId: null, requestingFlowRunId: 'flow-run-1', source: 'flow' };
+    const batchRows = [1, 2].map((n) => ({ approval: buildApproval(n), intent: buildIntent(n, flow) }));
+    mockDb({ batchRows });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.results.map((r) => r.httpStatus)).toEqual([200, 200]);
+    expect(vi.mocked(isAgentIntentDecideAuthorized)).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ id: 'intent-1', requestingFlowRunId: 'flow-run-1' }),
+    );
+  });
+
   // (d)
   it('403s step_up_required for the WHOLE batch, deciding nothing', async () => {
     const batchRows = [1, 2].map((n) => ({ approval: buildApproval(n), intent: buildIntent(n) }));

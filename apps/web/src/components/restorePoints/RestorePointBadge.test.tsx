@@ -23,6 +23,7 @@ const CASES: Array<[Exclude<RestorePointStatus, 'requested'>, RegExp]> = [
   ['insufficient_privileges', /not enough privileges/i],
   ['verification_failed', /could not be verified/i],
   ['failed', /failed/i],
+  ['interrupted', /agent stopped before it could report/i],
 ];
 
 describe('RestorePointBadge', () => {
@@ -56,6 +57,14 @@ describe('RestorePointBadge', () => {
     expect(text).not.toMatch(/roll ?back|backup/i);
   });
 
+  // #9163: the agent restarted or shut down before it reported the outcome.
+  it('renders interrupted as an unknown outcome, not as a failure or a success', () => {
+    render(<RestorePointBadge outcome={outcome({ status: 'interrupted' })} />);
+    const badge = screen.getByTestId('restore-point-badge');
+    expect(badge.textContent).toBe('Unknown — the agent stopped before it could report this restore point');
+    expect(badge.getAttribute('data-tone')).toBe('warning');
+  });
+
   it('renders existing_accepted as NEUTRAL, naming the age and the Windows limit', () => {
     render(
       <RestorePointBadge
@@ -87,6 +96,7 @@ describe('RestorePointBadge', () => {
     ['insufficient_privileges', 'warning'],
     ['verification_failed', 'warning'],
     ['failed', 'danger'],
+    ['interrupted', 'warning'],
     ['unsupported', 'neutral'],
     ['skipped_definition_only', 'neutral'],
     ['skipped_no_mutation', 'neutral'],

@@ -121,6 +121,18 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\F-Secure\PSB`, OS: "windows"},
 			},
 		},
+		{
+			// #8171. Windows only until a lab Mac proves a probe.
+			name: "Trend Micro",
+			os:   []string{"windows"},
+			probes: []Check{
+				{Type: CheckServiceRunning, Value: "ntrtscan", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "PccNTMon.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Trend Micro\Security Agent`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Trend Micro\Client Server Security Agent`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Trend Micro\Endpoint Basecamp`, OS: "windows"},
+			},
+		},
 	}
 
 	byName := map[string]Signature{}

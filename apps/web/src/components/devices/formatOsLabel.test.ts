@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { formatOsLabel } from './formatOsLabel';
+import { formatOsBuild, formatOsLabel } from './formatOsLabel';
+
+describe('formatOsBuild (#9610) — shared by header and Details', () => {
+  it('prefers a reported build', () => {
+    expect(formatOsBuild('windows', 'Microsoft Windows 11 Pro', '22631')).toBe('22631');
+  });
+
+  it('derives the build from a bare NT osVersion when osBuild is empty', () => {
+    expect(formatOsBuild('windows', '10.0.22631.4317', null)).toBe('22631');
+    expect(formatOsBuild('windows', '11.0.22631', '')).toBe('22631');
+  });
+
+  it('handles OS type case and whitespace-only builds', () => {
+    expect(formatOsBuild('Windows', '10.0.22631', '  ')).toBe('22631');
+    expect(formatOsBuild('windows', '10.0', null)).toBeNull();
+  });
+
+  it('returns null when nothing is derivable', () => {
+    expect(formatOsBuild('windows', 'Microsoft Windows 11 Pro', null)).toBeNull();
+    expect(formatOsBuild('macos', 'darwin 26.5.1', null)).toBeNull();
+    expect(formatOsBuild(null, null, null)).toBeNull();
+  });
+});
 
 describe('formatOsLabel (#9026)', () => {
   it('turns a bare Windows dotted version into "Windows 11 (build N)"', () => {

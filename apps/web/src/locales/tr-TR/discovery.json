@@ -203,6 +203,7 @@
       "scanQueued": "\"{{name}}\" için keşif taraması sıraya alındı",
       "profileCreated": "\"{{name}}\" keşif profili oluşturuldu",
       "profileUpdated": "\"{{name}}\" keşif profili güncellendi",
+      "profileDeleted": "\"{{name}}\" keşif profili silindi",
       "profileMoved": "Profil {{site}} sitesine taşındı.",
       "assetsMoved_one": "{{count}} ağ cihazı taşındı",
       "assetsMoved_other": "{{count}} ağ cihazı taşındı",
@@ -342,6 +343,8 @@
       "subnets": "Alt ağlar"
     },
     "configuredCount": "{{count}} profilleri yapılandırıldı",
+    "configuredCount_one": "{{count}} profil yapılandırıldı",
+    "configuredCount_other": "{{count}} profil yapılandırıldı",
     "empty": "Henüz keşif profili yok. Taramaya başlamak için ilk profilinizi oluşturun.",
     "lastRun": "Son çalıştırma {{time}}",
     "loading": "Keşif profilleri yükleniyor...",
@@ -438,6 +441,8 @@
       "selectSite": "Kaydetmeden önce bir site seçin."
     },
     "configuredCount": "{{count}} temeller yapılandırıldı",
+    "configuredCount_one": "{{count}} taban çizgisi yapılandırıldı",
+    "configuredCount_other": "{{count}} taban çizgisi yapılandırıldı",
     "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "networkChangeDetailModal": {

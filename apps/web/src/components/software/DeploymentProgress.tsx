@@ -18,7 +18,7 @@ import type {
   SoftwareDeploymentAggregateStatus,
   SoftwareDeploymentCounts,
 } from "./DeploymentList";
-import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from "@breeze/shared";
+import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS, commandOutputExcerpt } from "@breeze/shared";
 import { describeInFlight, type InFlightStage } from "./deploymentInFlight";
 import RestorePointBadge, { type RestorePointBadgeOutcome } from "../restorePoints/RestorePointBadge";
 
@@ -100,6 +100,31 @@ const resultStatusStyles: Record<
     color: "bg-slate-500/20 text-slate-700 border-slate-500/40",
   },
 };
+
+/** Header caption under the percentage: one label per real aggregate status. */
+function headerStatusLabel(d: DeploymentDetail): string {
+  switch (d.status) {
+    case "completed":
+      return i18n.t("policies:software.deploymentProgress.deploymentComplete");
+    case "completed_with_errors":
+      return i18n.t("policies:software.deploymentProgress.completedWithErrors");
+    case "failed":
+      return i18n.t("policies:software.deploymentProgress.failed");
+    case "cancelled":
+      return i18n.t("policies:software.deploymentProgress.cancelled");
+    case "pending": {
+      const at = d.scheduledAt ? Date.parse(d.scheduledAt) : NaN;
+      if (Number.isFinite(at) && at > Date.now()) {
+        return i18n.t("policies:software.deploymentProgress.scheduledFor", {
+          time: formatDateTimeCentral(d.scheduledAt),
+        });
+      }
+      return i18n.t("policies:software.deploymentProgress.inProgress");
+    }
+    default:
+      return i18n.t("policies:software.deploymentProgress.inProgress");
+  }
+}
 
 const queuedOfflineStyle = {
   labelKey: "policies:software.deploymentProgress.queuedOffline",
@@ -393,11 +418,7 @@ export default function DeploymentProgress({
               {percent}%
             </p>
             <p className="text-xs text-muted-foreground">
-              {deployment.status === "completed"
-                ? i18n.t(
-                    "policies:software.deploymentProgress.deploymentComplete",
-                  )
-                : i18n.t("policies:software.deploymentProgress.inProgress")}
+              {headerStatusLabel(deployment)}
             </p>
           </div>
         </div>
@@ -535,6 +556,13 @@ export default function DeploymentProgress({
                   result.errorMessage,
                 );
                 const inFlight = describeInFlight(result);
+                // #10307: the vendor's reason (e.g. ctrld "Invalid provisioning
+                // code") is often only in the output, never in the exit code.
+                // ANSI-stripped, bounded tail; rendered as a text node only.
+                const outputExcerpt =
+                  result.status === "failed"
+                    ? commandOutputExcerpt(result.output)
+                    : null;
                 const style = result.queuedOffline
                   ? queuedOfflineStyle
                   : managerUnavailable
@@ -627,7 +655,20 @@ export default function DeploymentProgress({
                           {result.errorMessage}
                         </span>
                       ) : (
-                        "—"
+                        !outputExcerpt && "—"
+                      )}
+                      {outputExcerpt && (
+                        <div
+                          className="mt-1 max-w-md"
+                          data-testid={`deployment-result-output-${result.id}`}
+                        >
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {t("policies:software.deploymentProgress.deviceOutputTail")}
+                          </p>
+                          <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border bg-muted/40 px-2 py-1 font-mono text-xs text-foreground">
+                            {outputExcerpt.text}
+                          </pre>
+                        </div>
                       )}
                     </td>
                   </tr>

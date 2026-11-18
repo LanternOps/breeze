@@ -42,7 +42,9 @@ export interface InstallerVariableContext {
 }
 
 // Matches `{{ key }}` with optional inner whitespace; the key itself excludes braces.
-const TOKEN = /\{\{\s*([^{}]+?)\s*\}\}/g;
+// Exported (#6958) so install-script substitution (installScriptPayload.ts)
+// shares this exact grammar. Global: use with String#replace / matchAll only.
+export const INSTALLER_VARIABLE_TOKEN = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const CUSTOM_FIELD_KEY = /^device\.customField\.([a-z][a-z0-9_]*)$/;
 
 // A device-writable custom-field value substituted into `silentInstallArgs`
@@ -97,7 +99,7 @@ function quoteForArgv(value: string): string {
   return `"${value}"`;
 }
 
-function resolveKey(
+export function resolveInstallerVariableKey(
   key: string,
   ctx: InstallerVariableContext,
   isStrictVariableToken: boolean,
@@ -169,6 +171,16 @@ function resolveKey(
   return String(raw);
 }
 
+/**
+ * Whether one `INSTALLER_VARIABLE_TOKEN` match at `offset` is written in the
+ * strict `{{var.<key>}}` form the var.* namespace requires (see
+ * `resolveInstallerVariableKey`): the shared grammar on the isolated match, and
+ * no `$` immediately before it.
+ */
+export function isStrictVariableTokenOccurrence(template: string, match: string, offset: number): boolean {
+  return template[offset - 1] !== '$' && findVariableTokens(match).length === 1;
+}
+
 export interface SubstitutionResult {
   value: string | null;
   /** Full token strings (e.g. `["{{device.customField.licenseKey}}"]`) left unresolved. */
@@ -193,7 +205,7 @@ export function substituteInstallerVariables(
 
   const argvSafe = options.argvSafe ?? false;
   const unresolved: string[] = [];
-  const value = template.replace(TOKEN, (match: string, rawKey: string, offset: number) => {
+  const value = template.replace(INSTALLER_VARIABLE_TOKEN, (match: string, rawKey: string, offset: number) => {
     // Per-OCCURRENCE strictness for the var.* namespace: `findVariableTokens`
     // applied to the isolated match reproduces the shared `{{var.<key>}}`
     // grammar exactly (key charset, no inner whitespace), and the manual
@@ -201,7 +213,7 @@ export function substituteInstallerVariables(
     // can't see since the `$` sits outside `match`. Computed per match (not
     // just per key) so the same key written once strictly and once loosely
     // in one template is judged independently each time.
-    const isStrictVariableToken = template[offset - 1] !== '$' && findVariableTokens(match).length === 1;
+    const isStrictVariableToken = isStrictVariableTokenOccurrence(template, match, offset);
     // Per-OCCURRENCE quoting: a template author who already wrote
     // `TRANSFORMS="{{org.name}}"` supplied the wrapping quotes themselves —
     // standard MSI-property syntax. If we also wrap the resolved value, the
@@ -211,7 +223,7 @@ export function substituteInstallerVariables(
     // adds quotes when the occurrence ISN'T already sitting directly inside
     // a literal `"..."` pair in the template.
     const alreadyQuoted = template[offset - 1] === '"' && template[offset + match.length] === '"';
-    const resolved = resolveKey(rawKey.trim(), ctx, isStrictVariableToken, argvSafe, alreadyQuoted);
+    const resolved = resolveInstallerVariableKey(rawKey.trim(), ctx, isStrictVariableToken, argvSafe, alreadyQuoted);
     if (resolved == null) {
       unresolved.push(match);
       return match;

@@ -55,3 +55,25 @@ describe('desktopCommandResultSchema accepts a clipboard summary', () => {
     expect(parses({ transfers: [{ direction: 'host_to_viewer', type: 'text', count: 1, bytes: 1, text: 'x' }], blocked: 0 })).toBe(false);
   });
 });
+
+// #10190 W06: the agent reports "the user ended this session" as its own
+// `desk-userend-<id>` result, for the same reason.
+describe('desktopCommandResultSchema accepts an ended-by-user report', () => {
+  const SESSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  it('accepts the shape the agent sends', () => {
+    expect(desktopCommandResultSchema.safeParse({
+      type: 'command_result',
+      commandId: `desk-userend-${SESSION}`,
+      status: 'completed',
+      result: { sessionId: SESSION, event: 'ended_by_user' },
+    }).success).toBe(true);
+  });
+  it('rejects an extra key', () => {
+    expect(desktopCommandResultSchema.safeParse({
+      type: 'command_result',
+      commandId: `desk-userend-${SESSION}`,
+      status: 'completed',
+      result: { sessionId: SESSION, event: 'ended_by_user', reason: 'free text' },
+    }).success).toBe(false);
+  });
+});

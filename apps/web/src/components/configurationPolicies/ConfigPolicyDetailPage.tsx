@@ -26,6 +26,9 @@ import {
   Info,
   Trash2,
   History,
+  ShieldBan,
+  Cpu,
+  Power,
 } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { cn } from "@/lib/utils";
@@ -68,6 +71,9 @@ import TimeSyncTab from './featureTabs/TimeSyncTab';
 import WorkloadInventoryTab from './featureTabs/WorkloadInventoryTab';
 import SecurityAgentsTab from './featureTabs/SecurityAgentsTab';
 import SystemProtectionTab from './featureTabs/SystemProtectionTab';
+import ContainmentTab from './featureTabs/ContainmentTab';
+import VendorUpdatesTab from './featureTabs/VendorUpdatesTab';
+import WakeOnLanTab from './featureTabs/WakeOnLanTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 import { usePageItemName } from '../layout/usePageItemName';
 
@@ -136,6 +142,9 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   workload_inventory: <Container className="h-4 w-4" />,
   security_agents: <ShieldCheck className="h-4 w-4" />,
   system_protection: <History className="h-4 w-4" />,
+  containment: <ShieldBan className="h-4 w-4" />,
+  oem_updates: <Cpu className="h-4 w-4" />,
+  wake_on_lan: <Power className="h-4 w-4" />,
 };
 // Which feature tabs the editor renders, in display order. Derived from
 // FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
@@ -464,6 +473,7 @@ export default function ConfigPolicyDetailPage({
       parentLink: parentLinkFor(ft),
       siblingLinks: featureLinks,
       orgId: policy?.orgId ?? null,
+      partnerId: policy?.partnerId ?? null,
     };
     switch (ft) {
       case 'patch': return <PatchTab {...props} />;
@@ -489,6 +499,9 @@ export default function ConfigPolicyDetailPage({
       case 'workload_inventory': return <WorkloadInventoryTab {...props} />;
       case 'security_agents': return <SecurityAgentsTab {...props} />;
       case 'system_protection': return <SystemProtectionTab {...props} />;
+      case 'containment': return <ContainmentTab {...props} />;
+      case 'oem_updates': return <VendorUpdatesTab {...props} />;
+      case 'wake_on_lan': return <WakeOnLanTab {...props} />;
     }
   };
   return (

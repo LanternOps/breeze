@@ -35,6 +35,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { PatchIneligibleReason } from '@breeze/shared';
+import { DEFAULT_RING_FEATURE_UPDATES, featureUpdateAllowed, isWindowsFeatureUpdateCandidate } from '@breeze/shared/validators';
 import { db } from '../db';
 import {
   devicePatches, devices, organizations, patches, patchPolicies,
@@ -42,6 +43,7 @@ import {
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
+import { getVendorLaneDelivery, type VendorManagedClass } from './oemUpdates/laneDelivery';
 import { captureException } from './sentry';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from './patchManualDecisions';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
@@ -96,6 +98,26 @@ export interface PatchInstallEligibility {
 // every unit suite that mocks '../db/schema' without this export would
 // otherwise fail at import time.
 const isOutstanding = (status: string): boolean => (OUTSTANDING_DEVICE_PATCH_STATUSES as readonly string[]).includes(status);
+
+/**
+ * The update class a vendor lane could own this patch under, or null when it stays
+ * with Windows Update whatever a lane does (spec 4.6). Goes by what this device says
+ * the update is, so a NULL from an older agent is never left to a lane. Nor is an
+ * update no lane owns: a Surface run leaves an Intel driver to Windows Update, and a
+ * printer driver is not in a PC vendor's catalog. A security classification beats
+ * the type: such an update is not the lane's to withhold.
+ */
+function vendorManagedClassOf(patch: {
+  source: string;
+  category: string | null;
+  reportedUpdateType: string | null;
+  reportedUpdateOwner: string | null;
+}): VendorManagedClass | null {
+  if (patch.source !== 'microsoft' || !patch.reportedUpdateOwner) return null;
+  if (patch.reportedUpdateType !== 'driver' && patch.reportedUpdateType !== 'firmware') return null;
+  if (patch.category && canonicalizePatchCategory(patch.category) === 'security') return null;
+  return patch.reportedUpdateType;
+}
 
 /** The core: config injected, three reads, a reason for every exclusion. */
 export async function evaluatePatchInstallEligibility(args: {
@@ -167,6 +189,11 @@ export async function evaluatePatchInstallEligibility(args: {
       // Linux (#7800) entries have no vendor releaseDate, so deferral windows
       // anchor on when we first saw the patch instead of failing closed.
       firstSeenAt: devicePatches.createdAt,
+      // 'machine' | 'user' | NULL (#2727). A 'user' row is detection-only.
+      scope: devicePatches.scope,
+      // This device's own report (#11073), never the shared row's.
+      reportedUpdateType: devicePatches.reportedUpdateType,
+      reportedUpdateOwner: devicePatches.reportedUpdateOwner,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -190,6 +217,13 @@ export async function evaluatePatchInstallEligibility(args: {
     // Without a requested list the query itself is status-filtered; with one,
     // every listed row came back and its status decides.
     if (requested && !isOutstanding(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
+    // A per-user WinGet install (#2727) cannot be applied by the SYSTEM agent:
+    // dispatching it fails the job, or — after an agent restart wiped its
+    // in-memory user-scope set — installs a second, machine-wide copy. Deny it
+    // here, before any approval rule, so every dispatcher (patch jobs, the AI
+    // patch plan, the release-time effect digest) agrees with the web UI's
+    // disabled Install button (#10249).
+    if (row.scope === 'user') { deny(row.patchId, 'unsupported_user_scope'); continue; }
     if (args.excludeSuperseded && row.supersededBy) { deny(row.patchId, 'superseded'); continue; }
     pendingPatches.push(row);
   }
@@ -244,6 +278,27 @@ export async function evaluatePatchInstallEligibility(args: {
 
   if (categoryFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
+  // Windows feature releases ("Windows 11, version 25H2") follow the ring's
+  // feature-update policy: block (default, and what an absent value means),
+  // allow, or pin to one release. Like the source/category/app-rule gates it
+  // only narrows the candidate set and therefore overrides a manual approval —
+  // a blocked or off-pin release is never installed. Non-feature patches pass.
+  const featurePolicy = ringConfig.featureUpdates ?? DEFAULT_RING_FEATURE_UPDATES;
+  const featureFiltered = categoryFiltered.filter((p) => {
+    if (!isWindowsFeatureUpdateCandidate(p)) return true;
+    if (featureUpdateAllowed(featurePolicy, p.title)) return true;
+    const policyLabel = featurePolicy.mode === 'pin'
+      ? `pin ${featurePolicy.product} ${featurePolicy.targetVersion}`
+      : featurePolicy.mode;
+    console.warn(
+      `[PatchApproval] device ${deviceId}: feature update ${p.patchId} ("${p.title}") excluded by ring feature-update policy (${policyLabel})`
+    );
+    deny(p.patchId, 'blocked_by_feature_update_policy');
+    return false;
+  });
+
+  if (featureFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
+
   // App rules filter before manual approvals are loaded — a block/pin
   // overrides even an explicit manual approval in the job flow; manual
   // per-device installs bypass this evaluator entirely. The live path fills
@@ -251,8 +306,8 @@ export async function evaluatePatchInstallEligibility(args: {
   // is still enforced, with the stricter verdict winning.
   const appRuleMaps = [buildAppRuleMap(ringConfig.ringAppRules), buildAppRuleMap(ringConfig.apps)]
     .filter((m) => m.size > 0);
-  const finalCandidates = appRuleMaps.length > 0
-    ? categoryFiltered.filter((p) => {
+  const appRuleFiltered = appRuleMaps.length > 0
+    ? featureFiltered.filter((p) => {
       if (!p.packageId && isThirdPartyPatchSource(p.source)) {
         // Deliberate allow-with-warn: holding every unidentified third-party
         // patch because one unrelated app is pinned/blocked would be
@@ -272,7 +327,29 @@ export async function evaluatePatchInstallEligibility(args: {
       }
       return true;
     })
-    : categoryFiltered;
+    : featureFiltered;
+
+  if (appRuleFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
+
+  // One owner per update class (spec 4.6): a driver or firmware update a vendor lane
+  // is really delivering here is left to it. Read now and never frozen in a job's
+  // snapshot, so a lane that goes Overdue hands the class back on the next job. Like
+  // the gates above it only narrows, so it also beats a manual approval; a tech's
+  // install on the device (routes/devices/patches.ts) bypasses this evaluator. Only
+  // a device with such a candidate pays for the read, and a failed read throws as
+  // the reads above do, rather than guessing either way.
+  const delivery = appRuleFiltered.some((p) => vendorManagedClassOf(p) !== null)
+    ? await getVendorLaneDelivery(deviceId)
+    : null;
+  const finalCandidates = appRuleFiltered.filter((p) => {
+    const vendorClass = vendorManagedClassOf(p);
+    if (!delivery?.lane || !vendorClass || !delivery.classes.has(vendorClass) || p.reportedUpdateOwner !== delivery.lane) {
+      return true;
+    }
+    console.warn(`[PatchApproval] device ${deviceId}: patch ${p.patchId} (${vendorClass}) left to the ${delivery.lane} vendor lane`);
+    deny(p.patchId, 'managed_by_vendor_updates');
+    return false;
+  });
 
   if (finalCandidates.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
@@ -354,6 +431,25 @@ export async function resolveApprovedPatchesForDevice(
     requiresReboot: e.requiresReboot,
     approvalReason: e.approvalReason,
   }));
+}
+
+/**
+ * True when the device has pending updates and EVERY one of them was excluded
+ * by the vendor-lane rule (#11243). The executor asks this only after
+ * `resolveApprovedPatchesForDevice` came back empty, so the job history can say
+ * "left to the vendor lane" instead of "nothing approved". Any other reason
+ * among the exclusions (deferral, no approval, ...) means a tech still has an
+ * action to take, so this stays false.
+ */
+export async function areAllPendingPatchesManagedByVendorLane(
+  deviceId: string,
+  orgId: string,
+  ringConfig: ApprovalEvaluationConfig
+): Promise<boolean> {
+  const verdict = await evaluatePatchInstallEligibility({ deviceId, orgId, config: ringConfig });
+  return verdict.eligible.length === 0
+    && verdict.ineligible.length > 0
+    && verdict.ineligible.every((i) => i.reason === 'managed_by_vendor_updates');
 }
 
 // Strict shape for one stored ring categoryRules entry — the same shape the
@@ -440,6 +536,8 @@ export async function resolveDevicePatchEvaluation(
     // The ring owns the app rules (#8186); the resolver already normalised
     // them (coerceRingAppRules). The policy's inline `apps` is not read.
     ringAppRules: ringId ? ring.appRules : [],
+    // The ring's Windows feature-release policy; no ring → block.
+    featureUpdates: ringId ? ring.featureUpdates : DEFAULT_RING_FEATURE_UPDATES,
   };
 
   if (ringId) {
@@ -447,21 +545,27 @@ export async function resolveDevicePatchEvaluation(
     // executor threads them (jobs/patchJobExecutor.ts) — partnerId feeds the
     // cross-partner ring guard in the evaluator.
     const [ringRow] = await db
-      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
+      .select({
+        deferralDays: patchPolicies.deferralDays,
+        partnerId: patchPolicies.partnerId,
+        enabled: patchPolicies.enabled,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringId), eq(patchPolicies.kind, 'ring')))
       .limit(1);
-    if (ringRow) {
+    if (ringRow && ringRow.enabled === true) {
       config.deferralDays = ringRow.deferralDays;
       config.ringPartnerId = ringRow.partnerId;
     } else {
-      // The ring resolved as valid a moment ago and is gone now (deleted
-      // between the two reads). Keeping its category/auto-approve rules with
-      // a zeroed deferral window would fail OPEN — the direction
-      // `disabledForMalformedField` refuses — and treating it as "no ring"
-      // would drop its app rules, the only ones there are (#8186). Fail
-      // closed: deny everything, as for any unresolvable ring, and say so.
-      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read — denying every candidate (ring_reference_invalid)`;
+      // The ring resolved as valid a moment ago and is gone now: deleted or
+      // disabled between the two reads (a delete is a soft delete, so the row
+      // survives with `enabled = false`; #8909). Keeping its
+      // category/auto-approve rules with a zeroed deferral window would fail
+      // OPEN — the direction `disabledForMalformedField` refuses — and
+      // treating it as "no ring" would drop its app rules, the only ones there
+      // are (#8186). Fail closed: deny everything, as for any unresolvable
+      // ring, and say so.
+      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read (${ringRow ? 'disabled' : 'missing'}) — denying every candidate (ring_reference_invalid)`;
       console.warn(message);
       captureException(new Error(message));
       return {

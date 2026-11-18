@@ -11,12 +11,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * The real-DB proof is configComplianceAlertDelivery.integration.test.ts.
  */
 
-const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock, withDbTransactionMock, captureExceptionMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
   publishEventMock: vi.fn(),
   resolveRulesMock: vi.fn(),
   scanDueMock: vi.fn(),
+  withDbTransactionMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../jobs/automationWorker', () => ({ enqueueAutomationRun: vi.fn() }));
@@ -27,9 +29,11 @@ vi.mock('../db', () => ({
     update: vi.fn(),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  hasDbAccessContext: () => true,
+  withDbTransaction: withDbTransactionMock,
 }));
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./featureConfigResolver', () => ({
   resolveComplianceRulesForDevice: resolveRulesMock,
   scanDueComplianceChecks: scanDueMock,
@@ -77,6 +81,9 @@ beforeEach(() => {
   publishEventMock.mockReset();
   resolveRulesMock.mockReset();
   scanDueMock.mockReset();
+  withDbTransactionMock.mockReset();
+  withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  captureExceptionMock.mockReset();
 
   mockSelects();
   insertMock.mockReturnValue({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) });
@@ -163,5 +170,411 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
 
     expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.violation']);
     expect(result.afterCommit).toBeUndefined();
+  });
+
+  // #10401 — the scan runs every device in ONE system transaction. A SQL error
+  // in one evaluation aborts that transaction, and postgres.js re-throws it at
+  // COMMIT: nothing the scan wrote persists, no event goes out, and every
+  // compliance alert in the fleet stays as it was. Each device runs in its own
+  // savepoint, and each rule set in a savepoint nested inside it, so a failed
+  // rule set rolls back alone: the device's other rule sets still commit and
+  // still raise their events.
+  describe('per-rule-set isolation', () => {
+    const OTHER = { ...DEVICE, id: '55555555-5555-4555-8555-555555555555', hostname: 'WS-2' };
+    const SECOND_RULE = { ...RULE, id: '66666666-6666-4666-8666-666666666666', name: 'Second rule set' };
+    const sqlError = Object.assign(new Error('value too long for type character varying(200)'), { code: '22001' });
+
+    /**
+     * Models Postgres savepoints: each withDbTransaction opens a frame, a
+     * rejected callback discards its frame (ROLLBACK TO SAVEPOINT), a resolved
+     * one merges it into the parent (RELEASE). `committed` is what the outer
+     * transaction would commit. By default SECOND_RULE's upsert fails on
+     * DEVICE. With `failReleaseOfCall` every upsert succeeds and instead the
+     * n-th savepoint (1-based) fails at RELEASE, after its callback has run:
+     * the failure lands once the rule set has already buffered its events.
+     */
+    function trackSavepoints(opts: { failReleaseOfCall?: number } = {}) {
+      const committed: string[] = [];
+      const frames: string[][] = [committed];
+      let calls = 0;
+      const releaseError = Object.assign(new Error('release failed'), { code: '40001' });
+      withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+        const call = ++calls;
+        const frame: string[] = [];
+        frames.push(frame);
+        try {
+          const out = await fn();
+          if (call === opts.failReleaseOfCall) throw releaseError;
+          frames.pop();
+          frames[frames.length - 1]!.push(...frame);
+          return out;
+        } catch (error) {
+          frames.pop();
+          throw error;
+        }
+      });
+      insertMock.mockImplementation(() => ({
+        values: (row: { deviceId: string; configItemName: string }) => ({
+          onConflictDoUpdate: () => {
+            if (!opts.failReleaseOfCall && row.deviceId === DEVICE.id && row.configItemName === SECOND_RULE.name) {
+              return Promise.reject(sqlError);
+            }
+            frames[frames.length - 1]!.push(`${row.deviceId}:${row.configItemName}`);
+            return Promise.resolve();
+          },
+        }),
+      }));
+      return committed;
+    }
+
+    beforeEach(() => {
+      let deviceLookups = 0;
+      selectMock.mockImplementation(() => {
+        const chain: Record<string, unknown> = {};
+        const step = () => chain;
+        chain.from = step;
+        chain.where = step;
+        chain.innerJoin = step;
+        chain.leftJoin = step;
+        chain.limit = () => Promise.resolve([deviceLookups++ === 0 ? DEVICE : OTHER]);
+        chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+        return chain;
+      });
+      scanDueMock.mockResolvedValue([
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: SECOND_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+      ]);
+      resolveRulesMock.mockResolvedValue([RULE, SECOND_RULE]);
+      publishEventMock.mockResolvedValue('event-id');
+    });
+
+    it('rolls back only the failed rule set; the device\'s other rule sets commit and raise events', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints();
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+
+        expect(committed).toEqual([`${DEVICE.id}:${RULE.name}`, `${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesEvaluated).toBe(2);
+        expect(result.devicesFailed).toBe(0);
+        expect(result.ruleSetsFailed).toBe(1);
+        expect(result.results.map((r) => [r.deviceId, r.complianceRuleId])).toEqual([
+          [DEVICE.id, RULE.id],
+          [OTHER.id, RULE.id],
+        ]);
+        expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+        expect(captureExceptionMock).toHaveBeenCalledWith(
+          sqlError,
+          undefined,
+          { job: 'config-policy-compliance-scan', stage: 'rule_set' },
+          { fingerprint: ['config-policy-compliance-device', '22001'] },
+        );
+
+        await result.afterCommit!();
+        const published = publishEventMock.mock.calls.map((c) => {
+          const payload = c[2] as { deviceId: string; configPolicyComplianceRuleId: string };
+          return `${c[0]}:${payload.deviceId}:${payload.configPolicyComplianceRuleId}`;
+        });
+        expect(published).toEqual([
+          `policy.evaluated:${DEVICE.id}:${RULE.id}`,
+          `policy.violation:${DEVICE.id}:${RULE.id}`,
+          `policy.evaluated:${OTHER.id}:${RULE.id}`,
+          `policy.violation:${OTHER.id}:${RULE.id}`,
+        ]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('without deferEnqueue, publishes the surviving rule sets inline and nothing for the failed one', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      trackSavepoints();
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance();
+
+        expect(result.ruleSetsFailed).toBe(1);
+        const publishedRules = publishEventMock.mock.calls.map(
+          (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
+        );
+        expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Savepoints open in order: DEVICE, its RULE, its SECOND_RULE (call 3),
+    // OTHER, its RULE. SECOND_RULE's events are already buffered when its
+    // savepoint fails, so only the per-rule-set buffer keeps them back.
+    it.each([
+      ['with deferEnqueue', true],
+      ['without deferEnqueue', false],
+    ])('a rule set that fails after buffering its events hands none of them on (%s)', async (_label, defer) => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints({ failReleaseOfCall: 3 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance(defer ? { deferEnqueue: true } : {});
+        if (defer) await result.afterCommit!();
+
+        expect(committed).toEqual([`${DEVICE.id}:${RULE.name}`, `${OTHER.id}:${RULE.name}`]);
+        expect(result.ruleSetsFailed).toBe(1);
+        const publishedRules = publishEventMock.mock.calls.map(
+          (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
+        );
+        expect(publishedRules).not.toContain(SECOND_RULE.id);
+        expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Without deferEnqueue nothing goes out while the device's savepoint is
+    // open: a device-level failure after a rule set succeeded must not leave
+    // that rule set's events published for rows that rolled back.
+    it('without deferEnqueue, a device that fails after a rule set succeeded publishes nothing for it', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Calls: DEVICE (1) fails at release after both rule sets succeeded.
+      const committed = trackSavepoints({ failReleaseOfCall: 1 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance();
+
+        expect(committed).toEqual([`${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesFailed).toBe(1);
+        const publishedFor = publishEventMock.mock.calls.map((c) => (c[2] as { deviceId: string }).deviceId);
+        expect(publishedFor).toEqual([OTHER.id, OTHER.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('a device whose every rule set fails counts as a failed device without failing the scan', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints();
+      resolveRulesMock.mockImplementation(async (deviceId: string) => (deviceId === DEVICE.id ? [SECOND_RULE] : [RULE]));
+      scanDueMock.mockResolvedValue([
+        { complianceRule: SECOND_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+      ]);
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+
+        expect(committed).toEqual([`${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesFailed).toBe(1);
+        expect(result.ruleSetsFailed).toBe(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
+  // Every evaluation failing is a fault the whole scan shares, not one bad rule
+  // set: the job must fail rather than commit an empty scan that looks healthy.
+  // A device counts as failed when it threw outright or every rule set failed.
+  it('fails the scan when every evaluation fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    insertMock.mockImplementation(() => ({
+      values: () => ({ onConflictDoUpdate: () => Promise.reject(new Error('column does not exist')) }),
+    }));
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true }))
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 1 rule set(s))');
+      expect(publishEventMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // A failure outside any rule set (resolving the device's rules, loading its
+  // telemetry) still rolls back the whole device and is reported as one.
+  it('fails the scan when every device fails before reaching a rule set', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const loadError = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    resolveRulesMock.mockRejectedValue(loadError);
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true }))
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 0 rule set(s))');
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        loadError,
+        undefined,
+        { job: 'config-policy-compliance-scan', stage: 'device' },
+        { fingerprint: ['config-policy-compliance-device', '42P01'] },
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * #12130: a rule whose value the device's org does not collect is not assessed.
+ * Alone it leaves the rule set `pending`: no policy.violation (so no alert), no
+ * policy.compliant, and no remediation, even under `enforce`.
+ */
+describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not collected (#12130)', () => {
+  const SCRIPT_ID = '77777777-7777-4777-8777-777777777777';
+  const REGISTRY_RULE = {
+    ...RULE,
+    name: 'Firewall on',
+    enforcementLevel: 'enforce',
+    remediationScriptId: SCRIPT_ID,
+    rules: [{
+      type: 'registry_check',
+      registryPath: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall',
+      registryValueName: 'EnableFirewall',
+      registryExpectedValue: '1',
+      remediation: { type: 'script', scriptId: SCRIPT_ID },
+    }],
+  };
+
+  beforeEach(() => {
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([REGISTRY_RULE]);
+  });
+
+  it('records pending, publishes policy.evaluated and policy.not_assessed, and dispatches no remediation', async () => {
+    publishEventMock.mockResolvedValue('event-id');
+    const upserts: Array<Record<string, unknown>> = [];
+    insertMock.mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        upserts.push(v);
+        return { onConflictDoUpdate: () => Promise.resolve(), returning: () => Promise.resolve([{ id: 'run-1' }]) };
+      },
+    }));
+
+    // Every list select resolves to [], so the org's probe list is empty.
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ complianceRuleId: REGISTRY_RULE.id, status: 'pending', remediationTriggered: false }),
+    ]);
+    // Strix (PR #12184): a rule the probe cap left uncollected is announced on
+    // its own event, never only as a quiet `pending`; still no violation.
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.not_assessed']);
+    expect(publishEventMock.mock.calls[1]![1]).toBe(ORG_ID);
+    expect(publishEventMock.mock.calls[1]![2]).toMatchObject({
+      configPolicyComplianceRuleId: REGISTRY_RULE.id,
+      configPolicyComplianceRuleName: REGISTRY_RULE.name,
+      configPolicyId: REGISTRY_RULE.featureLinkId,
+      deviceId: DEVICE.id,
+      status: 'pending',
+      reason: 'probe_cap',
+      notAssessedRules: 1,
+    });
+    // Only the compliance upsert: no automation run was inserted.
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({ status: 'pending' });
+    const ruleResult = (upserts[0]!.details as { ruleResults: Array<Record<string, unknown>> }).ruleResults[0];
+    expect(ruleResult).toMatchObject({ passed: null, data: { outcome: 'not_collected' } });
+  });
+
+  /** Records every `.from(table)`; list selects resolve [], `.limit` the device. */
+  function trackFromTables(): unknown[] {
+    const fromTables: unknown[] = [];
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = (table: unknown) => { fromTables.push(table); return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    return fromTables;
+  }
+
+  it('in a set that fails on another rule, only the failed rule\'s remediation is attempted', async () => {
+    const MIXED = {
+      ...REGISTRY_RULE,
+      remediationScriptId: null,
+      rules: [
+        REGISTRY_RULE.rules[0],
+        {
+          type: 'required_software', softwareName: 'Contoso Agent', versionOperator: 'any',
+          remediation: { type: 'script', scriptId: '99999999-9999-4999-8999-999999999999' },
+        },
+      ],
+    };
+    scanDueMock.mockResolvedValue([
+      { complianceRule: MIXED, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([MIXED]);
+    publishEventMock.mockResolvedValue('event-id');
+    const fromTables = trackFromTables();
+
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+
+    expect(result.results).toEqual([expect.objectContaining({ status: 'non_compliant' })]);
+    // The failed rule raises its violation; the uncollected one is still announced.
+    expect(publishEventMock.mock.calls.map((c) => c[0]))
+      .toEqual(['policy.evaluated', 'policy.violation', 'policy.not_assessed']);
+    // triggerConfigPolicyRemediation looks for a matching automation once per
+    // attempted remediation; the unassessed registry rule must not be one.
+    const { automations } = await import('../db/schema');
+    expect(fromTables.filter((t) => t === automations)).toHaveLength(1);
+  });
+
+  it('a failed probe-list read fails the device; nothing is recorded as a verdict', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { automationPolicies } = await import('../db/schema');
+    const readError = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      let table: unknown;
+      chain.from = (t: unknown) => { table = t; return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+        (table === automationPolicies ? reject(readError) : resolve([]));
+      return chain;
+    });
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance())
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 0 rule set(s))');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(publishEventMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('reads each org\'s probe list once per scan, and not at all for rule sets that read no collected state', async () => {
+    const OTHER = { ...DEVICE, id: '88888888-8888-4888-8888-888888888888', hostname: 'WS-3' };
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+    ]);
+    const fromTables: unknown[] = [];
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = (table: unknown) => { fromTables.push(table); return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    publishEventMock.mockResolvedValue('event-id');
+
+    const { automationPolicies } = await import('../db/schema');
+    const first = await scanAndEvaluateConfigPolicyCompliance();
+    expect(first.results).toHaveLength(2);
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(1);
+
+    fromTables.length = 0;
+    resolveRulesMock.mockResolvedValue([RULE]);
+    scanDueMock.mockResolvedValue([
+      { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    await scanAndEvaluateConfigPolicyCompliance();
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(0);
   });
 });

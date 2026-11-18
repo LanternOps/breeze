@@ -9,6 +9,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { toCsv } from '@/lib/csvExport';
+import { endReasonLabelKey } from './sessionEndReason';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -54,13 +55,14 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
       }
 
       // Create CSV content
-      const csvHeaders = ['ID', 'Device', 'User', 'Type', 'Status', 'Started', 'Ended', 'Duration (s)', 'Bytes Transferred'];
+      const csvHeaders = ['ID', 'Device', 'User', 'Type', 'Status', 'End Reason', 'Started', 'Ended', 'Duration (s)', 'Bytes Transferred'];
       const rows = sessions.map((s: RemoteSession) => [
         s.id,
         s.deviceHostname,
         s.userName,
         s.type,
         s.status,
+        s.endReason ?? '',
         s.startedAt || s.createdAt,
         s.endedAt || '',
         s.durationSeconds || '',
@@ -161,6 +163,11 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                     <dt className="text-sm text-muted-foreground">{t('common:labels.status')}</dt>
                     <dd className="text-sm capitalize">
                       {selectedSession.status}
+                      {endReasonLabelKey(selectedSession.endReason) && (
+                        <span className="ml-2 normal-case text-xs text-muted-foreground" data-testid="session-detail-end-reason">
+                          {t(/* i18n-dynamic */ endReasonLabelKey(selectedSession.endReason)!)}
+                        </span>
+                      )}
                       {selectedSession.terminationPhase === 'pending' && (
                         <span className="ml-2 normal-case text-xs text-warning">
                           {t('sessionHistoryPage.teardownPending')}
@@ -172,6 +179,12 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                     <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.duration')}</dt>
                     <dd className="text-sm">{formatDuration(selectedSession.durationSeconds)}</dd>
                   </div>
+                  {selectedSession.errorMessage && (
+                    <div className="sm:col-span-2">
+                      <dt className="text-sm text-muted-foreground">{t('sessionHistoryPage.fields.error')}</dt>
+                      <dd className="text-sm break-words" data-testid="session-detail-error">{selectedSession.errorMessage}</dd>
+                    </div>
+                  )}
                 </dl>
               </div>
 

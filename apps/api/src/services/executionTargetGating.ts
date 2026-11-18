@@ -23,6 +23,8 @@ import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
  * place and every execution surface stays in sync with it automatically.
  */
 
+export const UNRESOLVABLE_EXECUTION_GROUP_FIELD = 'unresolvable';
+
 export interface RefusedExecutionGroup {
   id: string;
   refusedFields: string[];
@@ -54,16 +56,26 @@ export function partitionGroupsByExecutionFieldProvenance(
  * Look up a set of group IDs and split them into execution-safe vs. refused,
  * by their stored `filterFieldsUsed`. No org predicate is applied here — the
  * caller is expected to have already scoped `groupIds` to whatever
- * org/partner boundary applies to its own execution path; this function only
- * makes the field-provenance decision.
+ * org/partner boundary applies to its own execution path. The partner-wide
+ * SELECT branch must never widen an execution target: an id the caller cannot
+ * see is refused, never silently dropped from the refused set. The config-policy
+ * resolver keys its execution-gated drop on `refusedGroups`.
  */
 export async function resolveExecutionSafeGroupIds(groupIds: string[]): Promise<ExecutionSafeGroupsResult> {
-  if (groupIds.length === 0) return { allowedGroupIds: [], refusedGroups: [] };
+  const requestedGroupIds = [...new Set(groupIds)];
+  if (requestedGroupIds.length === 0) return { allowedGroupIds: [], refusedGroups: [] };
   const rows = await db
     .select({ id: deviceGroups.id, filterFieldsUsed: deviceGroups.filterFieldsUsed })
     .from(deviceGroups)
-    .where(inArray(deviceGroups.id, groupIds));
-  return partitionGroupsByExecutionFieldProvenance(rows);
+    .where(inArray(deviceGroups.id, requestedGroupIds));
+  const result = partitionGroupsByExecutionFieldProvenance(rows);
+  const visibleGroupIds = new Set(rows.map((row) => row.id));
+  for (const id of requestedGroupIds) {
+    if (!visibleGroupIds.has(id)) {
+      result.refusedGroups.push({ id, refusedFields: [UNRESOLVABLE_EXECUTION_GROUP_FIELD] });
+    }
+  }
+  return result;
 }
 
 /**
@@ -97,7 +109,9 @@ export function auditRefusedExecutionGroups(
  */
 export function warningsForRefusedExecutionGroups(refusedGroups: RefusedExecutionGroup[]): string[] {
   return refusedGroups.map((group) =>
-    `Device group ${group.id} was excluded from this execution target because its rules match on agent-reported field(s) (${group.refusedFields.join(', ')}) that the device reports about itself; a device group used as an execution target must key on server-controlled or low-risk agent-reported fields only.`,
+    group.refusedFields.includes(UNRESOLVABLE_EXECUTION_GROUP_FIELD)
+      ? `Device group ${group.id} was excluded from this execution target because it could not be resolved (it no longer exists or is not visible here).`
+      : `Device group ${group.id} was excluded from this execution target because its rules match on agent-reported field(s) (${group.refusedFields.join(', ')}) that the device reports about itself; a device group used as an execution target must key on server-controlled or low-risk agent-reported fields only.`,
   );
 }
 

@@ -582,6 +582,9 @@ function stablePrincipalFor(auth: AuthContext): {
       return { kind: 'system', id: auth.principal.reason };
     case 'unknown':
       throw new RecoveryAuthorizationDeniedError('unknown_principal');
+    // Tool catalog W04 (#5219): no rehydration path exists for a flow run (the
+    // persisted vocabulary has no flow kind, and a run id is not an agent run).
+    case 'flow':
     case 'agent':
     case 'helper':
       throw new RecoveryAuthorizationDeniedError('principal_kind_not_supported');

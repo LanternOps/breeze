@@ -156,7 +156,16 @@ Search queries are matched using SQL `ILIKE` against the following fields:
 | **Scripts** | `name`, `description` |
 | **Alerts** | `title`, `message` |
 
-Results are returned in a flat array, each item tagged with its `type` (`devices`, `scripts`, or `alerts`).
+Results are returned in a flat array, each item tagged with its `type` (`devices`, `scripts`, or `alerts`) and the organization it belongs to (`orgId`, `orgName`). A partner-wide script has `orgId: null`.
+
+By default the search covers every organization you can access. Two optional parameters change that:
+
+| Parameter | Effect |
+|---|---|
+| `orgId` | Returns results from this organization only. |
+| `preferOrgId` | Lists this organization's matches first in each category. Results from your other organizations still appear. |
+
+Either parameter returns `403` for an organization you cannot access.
 
 ```bash
 curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
@@ -169,12 +178,16 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
     {
       "id": "dev-uuid",
       "type": "devices",
+      "orgId": "org-uuid",
+      "orgName": "Acme Corp",
       "title": "Workstation 01",
       "description": "online"
     },
     {
       "id": "script-uuid",
       "type": "scripts",
+      "orgId": null,
+      "orgName": null,
       "title": "Workstation Setup",
       "description": "Initial workstation provisioning script"
     }
@@ -189,6 +202,8 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
 ### Command Palette and Keyboard Shortcuts
 
 In the web app the same search backs the command palette. Open it with **Cmd+K** (macOS) or **Ctrl+K**, or press **/** on any page that does not claim that key for its own filter bar. Before you type, the palette lists your **recent devices** (the last five device pages you opened), **recently visited** pages, and quick actions — so `Cmd+K`, `Enter` returns you to the last device you were working on. As you type, matching recents and **settings pages** appear instantly while the server search runs. Settings results come from the same catalogue as the **Settings** page and sidebar, in your language, and only include screens you have access to.
+
+Server results come from every customer you can access, even when one is selected in the header. When you have more than one customer, each result shows the customer it belongs to, and partner-wide scripts show **Partner-wide**. Matches from the customer selected in the header are listed first. To see only that customer, turn on **This customer only** under the search box. It is off by default.
 
 Recent devices also appear in the sidebar under **Devices & Assets**; the chevron beside the row hides or shows them, and the choice is remembered. Recents are stored per user in the browser, never on the server.
 
@@ -343,7 +358,7 @@ Four additional core fields are yes/no checks -- they don't read a single column
 |---|---|---|
 | `orgId` | Organization | `equals`, `in` |
 | `siteId` | Site | `equals`, `in` |
-| `groupId` | Device Group | `equals`, `in` |
+| `groupId` | Device Group | `equals`, `notEquals`, `in`, `notIn` (negations from v0.124.0; a device in no group matches `notEquals`, and excluding a dynamic group uses its last evaluated membership) |
 
   </TabItem>
   <TabItem label="Computed">
@@ -398,11 +413,11 @@ Custom fields default to `string` type operators. The actual field type is resol
 | `after` | date, datetime | date string | Date is after value |
 | `between` | number, date, datetime | `{ from, to }` | Value is between `from` and `to` (inclusive) |
 | `withinLast` | date, datetime | `{ amount, unit }` | Date is within the last N units. Units: `minutes`, `hours`, `days`, `weeks`, `months` |
+| `notWithinLast` | date, datetime | `{ amount, unit }` | Date is **not** within the last N units |
 
 <Aside type="caution" title="Enum values must match exactly">
 From v0.123.0, a value outside an enum field's allowed set (for example `osType notEquals "Windows"` instead of `"windows"`) is rejected with `400`, and the error names the allowed values. Earlier releases dropped such a value, which could widen a target to every device. A stored deployment target or dynamic group rule with a bad value now fails visibly instead of matching more devices than intended.
 </Aside>
-| `notWithinLast` | date, datetime | `{ amount, unit }` | Date is **not** within the last N units |
 
 ### Value Types
 

@@ -30,7 +30,7 @@ describe('runHourBlockCloseOutSweep (real DB) #8181', () => {
     expect(inv!.status).toBe('draft');
     expect(inv!.id).not.toBe(r.invoiceId);
     const lines = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, inv!.id)));
-    expect(lines.map((l) => l.description)).toEqual(['Support hours — hours over block, 2026-07-01 – 2026-08-01']);
+    expect(lines.map((l) => l.name)).toEqual(['Support hours — hours over block, 2026-07-01 – 2026-08-01']);
   });
 
   it('cancelled mid-period with no overage: closes, marks entries, creates no invoice', async () => {

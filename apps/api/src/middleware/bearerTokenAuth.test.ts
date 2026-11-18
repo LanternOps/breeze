@@ -116,7 +116,7 @@ vi.mock('jose', async () => {
   };
 });
 
-import { importJWK, jwtVerify, type JWK } from 'jose';
+import { errors, importJWK, jwtVerify, type JWK } from 'jose';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from './mcpTenantToolSelfManagedContext';
 import { oauthGrants } from '../db/schema';
@@ -350,6 +350,35 @@ describe('bearerTokenAuthMiddleware', () => {
     errorSpy.mockRestore();
   });
 
+  it.each([
+    ['non-200 JWKS response', () => new errors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response')],
+    ['JWKS fetch timeout', () => new errors.JWKSTimeout()],
+    ['malformed JWKS document', () => new errors.JWKSInvalid('JSON Web Key Set malformed')],
+    ['unparseable JWKS body', () => new errors.JOSEError('Failed to parse the JSON Web Key Set HTTP response as JSON')],
+  ])('returns 503 (not 401) when the JWKS endpoint is unavailable: %s', async (_name, makeErr) => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(jwtVerify).mockRejectedValueOnce(makeErr());
+
+    await expect(
+      bearerTokenAuthMiddleware(createContext({ Authorization: 'Bearer token' }), vi.fn())
+    ).rejects.toMatchObject({
+      status: 503,
+      message: 'oauth verification temporarily unavailable',
+    });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('keeps no-matching-key JWKS errors at 401', async () => {
+    vi.mocked(jwtVerify).mockRejectedValueOnce(new errors.JWKSNoMatchingKey());
+    await expectUnauthorized(createContext({ Authorization: 'Bearer token' }), /invalid token: ERR_JWKS_NO_MATCHING_KEY/);
+  });
+
+  it('keeps multiple-matching-keys at 401 (token-triggerable via a kid-less header)', async () => {
+    vi.mocked(jwtVerify).mockRejectedValueOnce(new errors.JWKSMultipleMatchingKeys());
+    await expectUnauthorized(createContext({ Authorization: 'Bearer token' }), /invalid token: ERR_JWKS_MULTIPLE_MATCHING_KEYS/);
+  });
+
   it('authorizes a matching live auth epoch before consulting Redis', async () => {
     dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6, grantActive: true }];
     const token = await mintToken({
@@ -372,6 +401,18 @@ describe('bearerTokenAuthMiddleware', () => {
       1,
       { attributes: { reason: 'authorized', legacyClaim: false } },
     );
+  });
+
+  // #9758: an MCP Tier-3 intent filed by this request records the epoch the
+  // token was verified at, so release can refuse after a bump.
+  it('carries the verified live auth epoch onto the OAuth apiKey context', async () => {
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6, grantActive: true }];
+    const token = await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, auth_epoch: 6, jti: 'epoch-ctx-jti' });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+
+    await bearerTokenAuthMiddleware(c, vi.fn());
+
+    expect((c.get('apiKey') as { oauthAuthEpoch?: unknown }).oauthAuthEpoch).toBe(6);
   });
 
   it.each([
@@ -613,6 +654,7 @@ describe('bearerTokenAuthMiddleware', () => {
       keyPrefix: 'oauth',
       scopes: ['mcp:read', 'mcp:write', 'ai:read', 'ai:write'],
       rateLimit: 1000,
+      oauthAuthEpoch: 1,
       createdBy: userId,
     });
     expect(c.get('apiKeyOrgId')).toBe(orgId);
@@ -940,6 +982,7 @@ describe('bearerTokenAuthMiddleware', () => {
       keyPrefix: 'oauth',
       scopes: ['mcp:read', 'ai:read'],
       rateLimit: 1000,
+      oauthAuthEpoch: 1,
       createdBy: userId,
     });
     expect(c.get('apiKeyOrgId')).toBeUndefined();

@@ -1,4 +1,5 @@
 import { escapeHtml, renderLayout, renderLinkRow, renderParagraph } from '../emailLayout';
+import { RECONNECT_GUIDANCE, remedyFor } from './remedy';
 import { localAgeDays, type DigestIncident, type UserDigestPlan } from './digestPlan';
 
 // Daily connection health digest email (spec 2026-10-15 §4, §5, §7). English
@@ -30,6 +31,9 @@ export const DIGEST_CONDITION_LABELS: Readonly<Record<string, string>> = {
   delivery_failed: 'Deliveries failing',
   sync_stale: 'Sync stalled',
   verification_failed: 'Verification failed',
+  destination_access_denied: 'Destination refused access',
+  destination_not_found: 'Destination not found',
+  destination_failing: 'Destination failing',
 };
 
 export function conditionLabel(code: string): string {
@@ -101,13 +105,15 @@ export function buildDigestEmail(ctx: DigestEmailContext): { subject: string; ht
       for (const i of g.rows) {
         const meta = `${conditionLabel(i.condition)} · ${ageText(i, now, timeZone)}`;
         const detail = i.detail ? `<br />${escapeHtml(i.detail)}` : '';
+        // No repair page exists for some conditions: show guidance, not a dead "Fix" link.
+        const guided = remedyFor(i.condition) !== null;
         html.push(renderParagraph(
           `${escapeHtml(i.displayName)} — ${escapeHtml(meta)}${detail}<br />`
-          + `<a href="${escapeHtml(fixUrl(i))}">Fix</a>`,
+          + (guided ? escapeHtml(RECONNECT_GUIDANCE) : `<a href="${escapeHtml(fixUrl(i))}">Fix</a>`),
         ));
         text.push(`- ${i.displayName} — ${meta}`);
         if (i.detail) text.push(`  ${i.detail}`);
-        text.push(`  Fix: ${fixUrl(i)}`);
+        text.push(guided ? `  ${RECONNECT_GUIDANCE}` : `  Fix: ${fixUrl(i)}`);
       }
       text.push('');
     }

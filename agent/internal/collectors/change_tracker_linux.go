@@ -18,48 +18,50 @@ func (c *ChangeTrackerCollector) collectStartupItems(ctx context.Context) ([]Tra
 	items := make([]TrackedStartupItem, 0)
 
 	// systemd services enabled at boot.
-	output, err := runCollectorOutputWithContext(
-		ctx,
-		collectorShortCommandTimeout,
-		"systemctl",
-		"list-unit-files",
-		"--type=service",
-		"--state=enabled,enabled-runtime,static,indirect,generated,linked,linked-runtime",
-		"--no-legend",
-		"--no-pager",
-		"--plain",
-	)
-	if err != nil {
-		combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup query failed: %w", err))
-	} else {
-		scanner := newCollectorScanner(output)
-		for scanner.Scan() {
-			fields := strings.Fields(strings.TrimSpace(scanner.Text()))
-			if len(fields) < 1 {
-				continue
+	if hostHasSystemd() {
+		output, err := runCollectorOutputWithContext(
+			ctx,
+			collectorShortCommandTimeout,
+			"systemctl",
+			"list-unit-files",
+			"--type=service",
+			"--state=enabled,enabled-runtime,static,indirect,generated,linked,linked-runtime",
+			"--no-legend",
+			"--no-pager",
+			"--plain",
+		)
+		if err != nil {
+			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup query failed: %w", err))
+		} else {
+			scanner := newCollectorScanner(output)
+			for scanner.Scan() {
+				fields := strings.Fields(strings.TrimSpace(scanner.Text()))
+				if len(fields) < 1 {
+					continue
+				}
+				unit := strings.TrimSpace(fields[0])
+				if !isValidCollectorServiceUnit(unit) {
+					continue
+				}
+				name := strings.TrimSuffix(unit, ".service")
+				items = append(items, TrackedStartupItem{
+					Name:    truncateCollectorString(name),
+					Type:    "systemd",
+					Path:    truncateCollectorString(unit),
+					Enabled: true,
+				})
+				if len(items) >= collectorResultLimit {
+					break
+				}
 			}
-			unit := strings.TrimSpace(fields[0])
-			if !isValidCollectorServiceUnit(unit) {
-				continue
+			if err := scanner.Err(); err != nil {
+				combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup parse failed: %w", err))
 			}
-			name := strings.TrimSuffix(unit, ".service")
-			items = append(items, TrackedStartupItem{
-				Name:    truncateCollectorString(name),
-				Type:    "systemd",
-				Path:    truncateCollectorString(unit),
-				Enabled: true,
-			})
-			if len(items) >= collectorResultLimit {
-				break
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl startup parse failed: %w", err))
 		}
 	}
 
 	// @reboot cron entries.
-	cronFiles, err := discoverLinuxCronFiles()
+	cronFiles, err := linuxCronFiles()
 	if err != nil {
 		combinedErr = errors.Join(combinedErr, err)
 	} else {
@@ -90,7 +92,7 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 	var combinedErr error
 	tasks := make([]TrackedScheduledTask, 0)
 
-	cronFiles, err := discoverLinuxCronFiles()
+	cronFiles, err := linuxCronFiles()
 	if err != nil {
 		combinedErr = errors.Join(combinedErr, err)
 	} else {
@@ -113,48 +115,50 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 	}
 
 	// systemd timers.
-	timerOut, timerErr := runCollectorOutputWithContext(
-		ctx,
-		collectorShortCommandTimeout,
-		"systemctl",
-		"list-timers",
-		"--all",
-		"--no-legend",
-		"--no-pager",
-		"--plain",
-	)
-	if timerErr != nil {
-		combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer query failed: %w", timerErr))
-	} else {
-		scanner := newCollectorScanner(timerOut)
-		for scanner.Scan() {
-			fields := strings.Fields(strings.TrimSpace(scanner.Text()))
-			if len(fields) < 2 {
-				continue
-			}
-			timerUnit := fields[len(fields)-2]
-			activates := fields[len(fields)-1]
-			if !isValidCollectorTimerUnit(timerUnit) {
-				continue
-			}
+	if hostHasSystemd() {
+		timerOut, timerErr := runCollectorOutputWithContext(
+			ctx,
+			collectorShortCommandTimeout,
+			"systemctl",
+			"list-timers",
+			"--all",
+			"--no-legend",
+			"--no-pager",
+			"--plain",
+		)
+		if timerErr != nil {
+			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer query failed: %w", timerErr))
+		} else {
+			scanner := newCollectorScanner(timerOut)
+			for scanner.Scan() {
+				fields := strings.Fields(strings.TrimSpace(scanner.Text()))
+				if len(fields) < 2 {
+					continue
+				}
+				timerUnit := fields[len(fields)-2]
+				activates := fields[len(fields)-1]
+				if !isValidCollectorTimerUnit(timerUnit) {
+					continue
+				}
 
-			schedule := ""
-			if len(fields) >= 2 {
-				schedule = strings.Join(fields[0:2], " ")
+				schedule := ""
+				if len(fields) >= 2 {
+					schedule = strings.Join(fields[0:2], " ")
+				}
+				tasks = append(tasks, TrackedScheduledTask{
+					Name:     truncateCollectorString(strings.TrimSuffix(timerUnit, ".timer")),
+					Path:     truncateCollectorString(timerUnit),
+					Status:   "active",
+					Schedule: truncateCollectorString(schedule),
+					Command:  truncateCollectorString(activates),
+				})
+				if len(tasks) >= collectorResultLimit {
+					break
+				}
 			}
-			tasks = append(tasks, TrackedScheduledTask{
-				Name:     truncateCollectorString(strings.TrimSuffix(timerUnit, ".timer")),
-				Path:     truncateCollectorString(timerUnit),
-				Status:   "active",
-				Schedule: truncateCollectorString(schedule),
-				Command:  truncateCollectorString(activates),
-			})
-			if len(tasks) >= collectorResultLimit {
-				break
+			if err := scanner.Err(); err != nil {
+				combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer parse failed: %w", err))
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			combinedErr = errors.Join(combinedErr, fmt.Errorf("systemctl timer parse failed: %w", err))
 		}
 	}
 
@@ -244,6 +248,9 @@ type cronEntry struct {
 	command    string
 	lineNumber int
 }
+
+// linuxCronFiles is a seam so tests don't depend on the host's cron paths.
+var linuxCronFiles = discoverLinuxCronFiles
 
 func discoverLinuxCronFiles() ([]string, error) {
 	files := []string{"/etc/crontab"}

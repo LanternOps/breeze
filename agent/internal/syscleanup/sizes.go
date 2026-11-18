@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Two size grammars, because the tools genuinely differ:
@@ -17,8 +18,8 @@ import (
 //
 // Parsing one with the other's base is a silent 7% error at MB and 10% at GB.
 
-var decimalSizePattern = regexp.MustCompile(`^([0-9]+(?:[.,][0-9]+)?)\s*([kKMGTP]?B)$`)
-var binarySizePattern = regexp.MustCompile(`^([0-9]+(?:[.,][0-9]+)?)\s*([KkMGTP]?)(?:i?B?)$`)
+var decimalSizePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([0-9]+(?:[.,][0-9]+)?)\s*([kKMGTP]?B)$`) })
+var binarySizePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([0-9]+(?:[.,][0-9]+)?)\s*([KkMGTP]?)(?:i?B?)$`) })
 
 var decimalUnitFactor = map[string]float64{
 	"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12, "PB": 1e15,
@@ -50,10 +51,10 @@ func parseSizeWith(text string, pattern *regexp.Regexp, factors map[string]float
 
 // parseDecimalSize reads apt's 1000-based sizes ("12.3 MB").
 func parseDecimalSize(text string) (int64, bool) {
-	return parseSizeWith(text, decimalSizePattern, decimalUnitFactor, 2)
+	return parseSizeWith(text, decimalSizePattern(), decimalUnitFactor, 2)
 }
 
 // parseBinarySize reads dnf's and journalctl's 1024-based sizes ("1.2G").
 func parseBinarySize(text string) (int64, bool) {
-	return parseSizeWith(text, binarySizePattern, binaryUnitFactor, 2)
+	return parseSizeWith(text, binarySizePattern(), binaryUnitFactor, 2)
 }

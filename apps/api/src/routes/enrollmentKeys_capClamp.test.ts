@@ -251,6 +251,7 @@ describe('redeemShortCode (fix round 3, #2776)', () => {
   function mockParentLookup(overrides: Record<string, unknown> = {}) {
     const parent = {
       id: 'parent-1',
+      credentialGeneration: 7,
       orgId: ORG_ID,
       siteId: SITE_ID,
       name: 'Invite parent',
@@ -261,12 +262,15 @@ describe('redeemShortCode (fix round 3, #2776)', () => {
       expiresAt: new Date(Date.now() + 3_600_000),
       ...overrides,
     };
+    const lockMode = vi.fn();
+    const limit = vi.fn().mockResolvedValue([parent]);
+    const lockable = { limit, for: vi.fn((mode: string) => { lockMode(mode); return lockable; }) };
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([parent]) }),
+        where: vi.fn().mockReturnValue(lockable),
       }),
     } as any);
-    return parent;
+    return Object.assign(parent, { lockMode });
   }
 
   function mockChildInsertCapture(): () => any {
@@ -305,6 +309,23 @@ describe('redeemShortCode (fix round 3, #2776)', () => {
     expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
     expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
     expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
+  });
+
+  it('records the invite link and its credential generation on the downloaded installer key', async () => {
+    clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) => ttlMinutes);
+    const parent = mockParentLookup();
+    const getInserted = mockChildInsertCapture();
+    mockClaimSuccess();
+
+    const result = await redeemShortCode('lin123');
+
+    expect(result).not.toBeNull();
+    const inserted = getInserted();
+    expect(inserted.sourceLinkKeyId).toBe('parent-1');
+    expect(inserted.sourceLinkKeyGeneration).toBe(7);
+    // The link row is read under a row lock so a concurrent rotation either
+    // sees this installer key or the redemption sees the rotated link.
+    expect(parent.lockMode).toHaveBeenCalledWith('update');
   });
 
   it('does not shorten the invite child key TTL when the partner cap is above the default (no-op clamp)', async () => {

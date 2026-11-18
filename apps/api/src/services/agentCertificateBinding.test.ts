@@ -24,6 +24,7 @@ vi.mock('../db', () => {
 
 vi.mock('../db/schema', () => ({
   deviceMtlsCertificates: {
+    id: 'deviceMtlsCertificates.id',
     deviceId: 'deviceMtlsCertificates.deviceId',
     state: 'deviceMtlsCertificates.state',
     serialNumber: 'deviceMtlsCertificates.serialNumber',
@@ -39,6 +40,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import {
   checkAgentCertificateBinding,
   enforceAgentCertificateBinding,
+  enforceRebindConfirmCertificateBinding,
   getAgentMtlsBindingMode,
   loadAgentCertificateBindingIdentity,
   normalizeCertificateSerial,
@@ -567,5 +569,124 @@ describe('registerAgentCertificateBindingPrometheusCounter', () => {
 
     // reuses the existing metric on the same registry instead of throwing
     expect(() => registerAgentCertificateBindingPrometheusCounter(registry)).not.toThrow();
+  });
+});
+
+describe('enforceRebindConfirmCertificateBinding (#8318 §6.4, review finding 4)', () => {
+  const ORIGINAL = process.env.AGENT_MTLS_BINDING_MODE;
+  const SOURCE = '44444444-4444-4444-8444-444444444444';
+  const TARGET = '55555555-5555-4555-8555-555555555555';
+  const STAGED_ID = '66666666-6666-4666-8666-666666666666';
+  const SOURCE_SERIAL = 'AA00000000000000000A';
+  const STAGED_SERIAL = 'BB00000000000000000B';
+  const TARGET_SERIAL = 'CC00000000000000000C';
+
+  const assertion = (serial: string | null, trusted = true): AgentCertificateAssertion => ({
+    assertionTrusted: trusted,
+    assertedVerified: serial !== null,
+    assertedSerial: serial,
+  });
+  const decide = (phase: 'before_confirm' | 'after_confirm', serial: string | null, opts: { trusted?: boolean; staged?: boolean } = {}) =>
+    enforceRebindConfirmCertificateBinding({
+      phase,
+      sourceDeviceId: SOURCE,
+      targetDeviceId: TARGET,
+      stagedCertificateId: opts.staged === false ? null : STAGED_ID,
+      assertion: assertion(serial, opts.trusted ?? true),
+    });
+  /** loadAgentCertificateBindingIdentity's reads: active row, else latest row, else the legacy column. */
+  const identityReads = (identity: { active?: string; latest?: { serial: string; state: string }; legacy?: string | null }) => {
+    if (identity.active) {
+      mockSelectOnce([{ serialNumber: identity.active, state: 'active' }]);
+      return;
+    }
+    mockSelectOnce([]);
+    if (identity.latest) {
+      mockSelectOnce([{ serialNumber: identity.latest.serial, state: identity.latest.state }]);
+      return;
+    }
+    mockSelectOnce([]);
+    mockSelectOnce([{ legacySerial: identity.legacy ?? null }]);
+  };
+  const stagedRead = (state: string | null) => mockSelectOnce(state ? [{ serialNumber: STAGED_SERIAL, state }] : []);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(withSystemDbAccessContext).mockImplementation(
+      (async (fn: () => Promise<unknown>) => fn()) as never,
+    );
+    setAgentCertificateBindingMetricsRecorder(null);
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.AGENT_MTLS_BINDING_MODE;
+    else process.env.AGENT_MTLS_BINDING_MODE = ORIGINAL;
+  });
+
+  it('mode off: no read, allowed', async () => {
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+    await expect(decide('before_confirm', null)).resolves.toEqual({ allowed: true, reason: 'mode_off' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('before confirm: the source\'s ACTIVE certificate matches', async () => {
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', SOURCE_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('before confirm: the target\'s staged certificate matches while it is pending', async () => {
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', STAGED_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('before confirm: a staged row that is no longer pending is not a candidate (no legacy free pass)', async () => {
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_revocation');
+    await expect(decide('before_confirm', STAGED_SERIAL)).resolves.toEqual({ allowed: false, reason: 'serial_mismatch' });
+  });
+
+  it('before confirm: a source certificate in pending_revocation is refused (certificate_not_active)', async () => {
+    identityReads({ latest: { serial: SOURCE_SERIAL, state: 'pending_revocation' } });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', SOURCE_SERIAL)).resolves.toEqual({ allowed: false, reason: 'certificate_not_active' });
+  });
+
+  it('before confirm: the target\'s (old install\'s) certificate is never accepted', async () => {
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', TARGET_SERIAL)).resolves.toEqual({ allowed: false, reason: 'serial_mismatch' });
+  });
+
+  it('before confirm: a source with no certificate history passes as legacy_identity, exactly as agent auth would', async () => {
+    identityReads({ legacy: null });
+    await expect(decide('before_confirm', null, { staged: false })).resolves.toEqual({ allowed: true, reason: 'legacy_identity' });
+  });
+
+  it('before confirm: the source\'s legacy column serial is its identity, as in agent auth', async () => {
+    identityReads({ legacy: SOURCE_SERIAL });
+    await expect(decide('before_confirm', SOURCE_SERIAL, { staged: false })).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('after confirm: only the target\'s active certificate (the new install\'s) matches; the source no longer does', async () => {
+    identityReads({ active: STAGED_SERIAL });
+    await expect(decide('after_confirm', STAGED_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+    identityReads({ active: STAGED_SERIAL });
+    await expect(decide('after_confirm', SOURCE_SERIAL)).resolves.toEqual({ allowed: false, reason: 'serial_mismatch' });
+  });
+
+  it('refuses a missing or untrusted assertion in enforce, allows it in audit', async () => {
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', null)).resolves.toEqual({ allowed: false, reason: 'missing_assertion' });
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', SOURCE_SERIAL, { trusted: false })).resolves.toEqual({ allowed: false, reason: 'untrusted_assertion' });
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    identityReads({ active: SOURCE_SERIAL });
+    stagedRead('pending_activation');
+    await expect(decide('before_confirm', null)).resolves.toMatchObject({ allowed: true });
   });
 });

@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(boş)",
       "noOutput": "Çıkış yok",
+      "purged": "Çıktı saklama süresi sonrasında kaldırıldı ({{date}})",
       "title": "Çıkış",
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"
@@ -720,6 +721,8 @@
       "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
       "pending": "Komut dosyası çalıştırılmayı bekliyor",
       "queued": "Komut dosyası cihaza gönderilmek üzere sırada",
+      "queuedAwaitingPickup": "Henüz etkin bir ajan oturumu bunu almadı. Betik, cihazın ajanı bir sonraki bağlantısında teslim edilir.",
+      "deviceOffline": "Cihaz çevrimdışı. Betik, cihaz yeniden bağlandığında teslim edilir.",
       "cancelling": "Durdurma istendi — cihazdan onay bekleniyor.",
       "cancelled": "Komut dosyası cihazda durduruldu"
     },
@@ -743,7 +746,8 @@
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
       "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
-      "queuedOffline": "Sırada — cihaz çevrimdışı"
+      "queuedOffline": "Sırada — cihaz çevrimdışı",
+      "queuedAwaitingPickup": "Kuyrukta — cihazın almasını bekliyor"
     }
   },
   "executionHistory": {
@@ -774,7 +778,8 @@
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
       "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
-      "queuedOffline": "Sırada — cihaz çevrimdışı"
+      "queuedOffline": "Sırada — cihaz çevrimdışı",
+      "queuedAwaitingPickup": "Kuyrukta — alınmayı bekliyor"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -803,7 +808,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "İhtiyacınız olan komut dosyasını açıklayın...",
-      "opening": "Yapay zeka asistanı açılıyor..."
+      "opening": "Breeze AI açılıyor..."
     },
     "actions": {
       "stopGenerating": "Oluşturmayı durdur",
@@ -822,12 +827,12 @@
       "reject": "Reddet"
     },
     "empty": {
-      "title": "Komut Dosyası Yapay Zekası Asistanı",
-      "description": "Neye ihtiyacınız olduğunu açıklayın, ben de sizin için senaryoyu yazayım."
+      "title": "Breeze AI",
+      "description": "Breeze AI'dan bu komut dosyasını yazmasını veya incelemesini isteyin."
     }
   },
   "scriptAiPanel": {
-    "title": "AI Komut Dosyası Yardımcısı",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "AI değişikliğini yeniden uygulayın",
       "redo": "Yinele",
@@ -966,11 +971,20 @@
       "allAdmitted": "Seçilen tüm cihazlar kabul edildi ve kuyruğa alındı.",
       "partiallyAdmitted": "Bazı cihazlar kabul edildi ve kuyruğa alındı. Kalan hedefleri inceleyin.",
       "rejected": "Hiçbir cihaz kabul edilmedi. Aşağıdaki nedenleri inceleyin.",
-      "queued": "Kuyruğa alındı"
+      "queued": "Kuyruğa alındı",
+      "reasons": {
+        "not_found_or_inaccessible": "Cihaz bulunamadı veya erişilemiyor",
+        "site_access_denied": "Bu cihazın sitesine erişiminiz yok",
+        "script_org_mismatch": "Komut dosyası, cihazdan farklı bir kuruluşa ait",
+        "os_incompatible": "Komut dosyası bu cihazın işletim sistemiyle uyumlu değil",
+        "device_decommissioned": "Cihaz hizmet dışı bırakıldı",
+        "maintenance_suppressed": "Atlandı: cihaz bir bakım penceresinde"
+      }
     },
     "confirm": {
       "title": "Yürütmeyi Onayla",
-      "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar."
+      "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar.",
+      "descriptionOffline": "“{{name}}” betiğini {{count}} cihazda {{runAs}} olarak çalıştırın. Betikler şimdi sıraya alınır: çevrimiçi cihazlar hemen başlar, {{offline}} çevrimdışı cihaz tekrar çevrimiçi olduğunda çalışır."
     },
     "selectedCount": "{{count}} cihaz seçildi",
     "executeBlocked": "Çalıştırma kullanılamıyor: seçili bir cihaz bu betiği burada çalıştıramıyor (gösterilenden farklı bir kuruluşa ait olabilir veya artık erişilebilir değil).",
@@ -1015,6 +1029,7 @@
       "submitting": "{{count}} gruba gönderiliyor...",
       "warningsTitle": "Sunucudan notlar",
       "confirmDescription": "“{{name}}” betiğini {{groups}} cihaz grubunda {{runAs}} olarak çalıştırın. Betikler sıraya alınır ve hemen çalışmaya başlar.",
+      "confirmDescriptionOffline": "“{{name}}” betiğini {{groups}} cihaz grubunda {{runAs}} olarak çalıştırın. Betikler şimdi sıraya alınır: çevrimiçi cihazlar hemen başlar, {{offline}} çevrimdışı cihaz tekrar çevrimiçi olduğunda çalışır.",
       "confirmMembers": "Şu anda bu gruplarda {{count}} benzersiz cihaz var; üyelik onayladığınızda yeniden okunur.",
       "confirmMembersUnknown": "Cihaz sayısı henüz bilinmiyor; üyelik onayladığınızda okunur.",
       "errors": {
@@ -1122,8 +1137,8 @@
       "exitCodeSeverity": "Çıkış Kodu Önem Derecesi"
     },
     "ai": {
-      "toggleTitle": "AI Komut Dosyası Yardımcısını Aç/Kapat (⌘⇧I)",
-      "button": "Yapay Zeka Asistanı"
+      "toggleTitle": "Breeze AI'ı Aç/Kapat (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Henüz parametre yok. Parametreler, kullanıcıların çalışma zamanında değerler sağlamasına olanak tanır; komut dosyanızda bunlara şu şekilde başvurun:",
@@ -1538,6 +1553,22 @@
     "riskLow": "Düşük",
     "riskMedium": "Orta",
     "riskHigh": "Yüksek",
-    "riskCritical": "Kritik"
+    "riskCritical": "Kritik",
+    "reviewInApprovals": "Onaylar’da incele",
+    "status": {
+      "proposed": "İnceleme bekliyor",
+      "scan_rejected": "Güvenlik taramasında reddedildi",
+      "review_failed": "Yapay zekâ incelemesi başarısız",
+      "reviewed": "İncelendi",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi",
+      "changes_requested": "Değişiklik istendi",
+      "expired": "Süresi doldu",
+      "superseded": "Yerine yenisi geçti",
+      "executed": "Çalıştırıldı",
+      "verified": "Doğrulandı",
+      "verification_failed": "Doğrulama başarısız",
+      "promoted": "Kütüphaneye kaydedildi"
+    }
   }
 }

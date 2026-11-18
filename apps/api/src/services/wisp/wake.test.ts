@@ -1,0 +1,798 @@
+/**
+ * Wisp W05b Task 9 — the wake coordinator's pure round-robin, the 60 s
+ * per-(grant, org) debounce, and the event subscriber body.
+ *
+ * `db.execute` is a router: each statement is rendered with PgDialect and
+ * answered from a fixture keyed by its shape, so the SQL predicates the
+ * mocks cannot evaluate are asserted on the rendered text. BullMQ is a fake
+ * queue that keeps one record per jobId, the way Redis does.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+type FakeJobRecord = { name: string; data: unknown; opts: Record<string, unknown>; state: string; timestamp: number };
+
+const h = vi.hoisted(() => ({
+  enabled: true,
+  inSystem: false,
+  executes: [] as Array<{ text: string; params: unknown[]; inSystem: boolean }>,
+  route: (_text: string, _params: unknown[]): unknown[] => [],
+  jobs: new Map<string, FakeJobRecord>(),
+  adds: [] as Array<{ name: string; data: unknown; opts: Record<string, unknown>; inSystem: boolean }>,
+  resolveGrantCeiling: vi.fn(),
+  /** Make Job.remove() reject (BullMQ refuses to remove an active / locked job). */
+  removeFails: false,
+  /** Job.updateData / Job.promote calls, in order (#10406 on_demand upgrade). */
+  updates: [] as Array<{ id: string; data: unknown }>,
+  promotes: [] as string[],
+  /** Runs inside Job.updateData after the data is written: a worker claiming the job mid-update. */
+  onUpdateData: null as null | ((rec: FakeJobRecord) => void),
+}));
+
+vi.mock('../../db', async () => {
+  const { PgDialect: Dialect } = await import('drizzle-orm/pg-core');
+  const dialect = new Dialect();
+  return {
+    db: {
+      execute: vi.fn(async (query: Parameters<InstanceType<typeof Dialect>['sqlToQuery']>[0]) => {
+        const { sql: text, params } = dialect.sqlToQuery(query);
+        h.executes.push({ text, params, inSystem: h.inSystem });
+        return h.route(text, params);
+      }),
+    },
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+      h.inSystem = true;
+      try { return await fn(); } finally { h.inSystem = false; }
+    }),
+  };
+});
+vi.mock('../../config/env', () => ({ wispEnabled: () => h.enabled }));
+vi.mock('../redis', () => ({ getBullMQConnection: () => ({}) }));
+vi.mock('./grantAuthority', () => {
+  class GrantInactiveError extends Error {}
+  return { GrantInactiveError, resolveGrantCeiling: h.resolveGrantCeiling };
+});
+vi.mock('bullmq', () => {
+  const makeJob = (id: string, rec: FakeJobRecord) => ({
+    id,
+    name: rec.name,
+    data: rec.data,
+    timestamp: rec.timestamp,
+    getState: async () => rec.state,
+    remove: async () => {
+      if (h.removeFails) throw new Error('Job is locked');
+      h.jobs.delete(id);
+    },
+    updateData: async (data: unknown) => {
+      h.updates.push({ id, data });
+      rec.data = data;
+      h.onUpdateData?.(rec);
+    },
+    // BullMQ: promote moves a delayed job to waiting and throws for any other state.
+    promote: async () => {
+      h.promotes.push(id);
+      if (rec.state !== 'delayed') throw new Error(`Job ${id} is not in the delayed state`);
+      rec.state = 'waiting';
+    },
+  });
+  return {
+    Queue: class {
+      async add(name: string, data: unknown, opts: Record<string, unknown>) {
+        h.adds.push({ name, data, opts, inSystem: h.inSystem });
+        const id = String(opts.jobId);
+        let rec = h.jobs.get(id);
+        // BullMQ: an add whose jobId still exists in Redis is a silent no-op.
+        if (!rec) {
+          rec = { name, data, opts, state: opts.delay ? 'delayed' : 'waiting', timestamp: Date.now() };
+          h.jobs.set(id, rec);
+        }
+        return makeJob(id, rec);
+      }
+      async getJob(id: string) {
+        const rec = h.jobs.get(id);
+        return rec ? makeJob(id, rec) : undefined;
+      }
+      async close() {}
+    },
+  };
+});
+
+import { GrantInactiveError } from './grantAuthority';
+import {
+  CHECK_IN_JOB,
+  WISP_WAKE_DEBOUNCE_MS,
+  WISP_WAKE_QUEUE,
+  WISP_WAKE_TICK_INTERVAL_MS,
+  checkInJobId,
+  enqueueCheckIn,
+  handleWispWakeEvent,
+  isCheckInJobLive,
+  onDemandSuccessorJobId,
+  pickRoundRobinOrg,
+  removeCheckInJob,
+  requestAssessment,
+  wakeJobId,
+} from './wake';
+import type { BreezeEvent } from '../eventBus';
+
+const G1 = '00000000-0000-4000-8000-0000000000a1';
+const G2 = '00000000-0000-4000-8000-0000000000a2';
+const P1 = '00000000-0000-4000-8000-0000000000c1';
+const O1 = '00000000-0000-4000-8000-0000000000b1';
+const O2 = '00000000-0000-4000-8000-0000000000b2';
+const O3 = '00000000-0000-4000-8000-0000000000b3';
+const ALERT = '00000000-0000-4000-8000-0000000000d1';
+const RUN = '00000000-0000-4000-8000-0000000000e1';
+const TASK = '00000000-0000-4000-8000-0000000000f1';
+const REV = '00000000-0000-4000-8000-0000000000f9';
+
+function event(type: string, orgId: string, payload: Record<string, unknown>): BreezeEvent {
+  return {
+    id: `evt-${type}`,
+    type: type as BreezeEvent['type'],
+    orgId,
+    source: 'test',
+    priority: 'normal',
+    payload,
+    metadata: { timestamp: new Date().toISOString() },
+  };
+}
+
+function ceiling(orgIds: string[]) {
+  return { grantId: G1, revisionId: REV, partnerId: P1, orgIds: new Set(orgIds), siteIds: null, orgTerms: new Map(), status: 'active' };
+}
+
+function orgId(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+}
+
+/** Fixture rows per statement shape. */
+type Fixtures = {
+  eventGrants?: Array<{ grant_id: string }>;
+  runProfile?: Array<{ profile: string }>;
+  grantRow?: Array<{ id: string; partner_id: string; status: string; current_revision_id: string | null }>;
+  orgs?: Array<{ id: string; name: string }>;
+  lastAssessed?: Array<{ org_id: string; last_assessed_at: string | Date | null }>;
+};
+
+function useFixtures(f: Fixtures) {
+  h.route = (text) => {
+    if (/FROM wisp_grants g\s+JOIN organizations/.test(text)) return f.eventGrants ?? [];
+    if (/SELECT profile FROM ai_agent_runs/.test(text)) return f.runProfile ?? [];
+    if (/FROM wisp_grants\s+WHERE id =/.test(text)) return f.grantRow ?? [];
+    if (/SELECT id, name\s+FROM organizations/.test(text)) return f.orgs ?? [];
+    if (/max\(finished_at\)/.test(text)) return f.lastAssessed ?? [];
+    throw new Error(`unrouted statement: ${text}`);
+  };
+}
+
+const assessAdds = () => h.adds.filter((a) => a.name === 'assess');
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.enabled = true;
+  h.inSystem = false;
+  h.executes = [];
+  h.jobs = new Map();
+  h.adds = [];
+  h.removeFails = false;
+  h.updates = [];
+  h.promotes = [];
+  h.onUpdateData = null;
+  useFixtures({});
+  h.resolveGrantCeiling.mockReset();
+});
+
+describe('constants', () => {
+  it('pins the queue name, the 60 s debounce and the 5 minute tick', () => {
+    expect(WISP_WAKE_QUEUE).toBe('wisp-wake');
+    expect(WISP_WAKE_DEBOUNCE_MS).toBe(60_000);
+    expect(WISP_WAKE_TICK_INTERVAL_MS).toBe(5 * 60 * 1000);
+  });
+
+  it('wakeJobId has no ":" (BullMQ reserves it)', () => {
+    expect(wakeJobId(G1, O1)).toBe(`wisp-assess-${G1}-${O1}`);
+    expect(wakeJobId(G1, O1)).not.toContain(':');
+  });
+});
+
+describe('pickRoundRobinOrg', () => {
+  const t0 = new Date('2026-10-24T08:00:00.000Z');
+  const t1 = new Date('2026-10-24T09:00:00.000Z');
+
+  it('returns null for no candidates', () => {
+    expect(pickRoundRobinOrg([])).toBeNull();
+  });
+
+  it('prefers never-assessed orgs, lowest orgId first', () => {
+    expect(pickRoundRobinOrg([
+      { orgId: O3, lastAssessedAt: null },
+      { orgId: O1, lastAssessedAt: t0 },
+      { orgId: O2, lastAssessedAt: null },
+    ])).toBe(O2);
+  });
+
+  it('otherwise returns the oldest lastAssessedAt; ties by orgId', () => {
+    expect(pickRoundRobinOrg([
+      { orgId: O1, lastAssessedAt: t1 },
+      { orgId: O3, lastAssessedAt: t0 },
+      { orgId: O2, lastAssessedAt: t0 },
+    ])).toBe(O2);
+    expect(pickRoundRobinOrg([
+      { orgId: O1, lastAssessedAt: t1 },
+      { orgId: O2, lastAssessedAt: t0 },
+    ])).toBe(O2);
+  });
+
+  it('is deterministic under input shuffling', () => {
+    const base = [
+      { orgId: O1, lastAssessedAt: t1 },
+      { orgId: O2, lastAssessedAt: t0 },
+      { orgId: O3, lastAssessedAt: t0 },
+      { orgId: orgId(9), lastAssessedAt: t1 },
+    ];
+    const orders = [base, [...base].reverse(), [base[2]!, base[0]!, base[3]!, base[1]!]];
+    for (const order of orders) expect(pickRoundRobinOrg(order)).toBe(O2);
+    // and the input is not mutated
+    expect(base[0]!.orgId).toBe(O1);
+  });
+});
+
+describe('requestAssessment', () => {
+  it('coalesces N wake requests inside 60 s into one delayed job with id wisp-assess-<grant>-<org>', async () => {
+    const results: string[] = [];
+    for (let i = 0; i < 25; i += 1) {
+      results.push(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'event', eventType: 'alert.triggered', eventId: `e${i}` } }));
+    }
+    expect(results[0]).toBe('queued');
+    expect(results.slice(1).every((r) => r === 'coalesced')).toBe(true);
+    expect(h.jobs.size).toBe(1);
+    const [job] = [...h.jobs.entries()];
+    expect(job![0]).toBe(`wisp-assess-${G1}-${O1}`);
+    expect(job![1].state).toBe('delayed');
+    expect(job![1].opts).toMatchObject({ jobId: `wisp-assess-${G1}-${O1}`, delay: 60_000 });
+    // A transient enqueue failure retries on the same job (same jobId, so the
+    // window keeps coalescing while the retry waits in 'delayed').
+    expect(job![1].opts).toMatchObject({ attempts: 3, backoff: { type: 'exponential', delay: 30_000 } });
+    // The first request's reason is the one stored.
+    expect(job![1].data).toMatchObject({ grantId: G1, orgId: O1, reason: { kind: 'event', eventId: 'e0' } });
+  });
+
+  it('keys the window per (grant, org): another org or grant gets its own job', async () => {
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'tick' } })).toBe('queued');
+    expect(await requestAssessment({ grantId: G1, orgId: O2, reason: { kind: 'tick' } })).toBe('queued');
+    expect(await requestAssessment({ grantId: G2, orgId: O1, reason: { kind: 'tick' } })).toBe('queued');
+    expect(h.jobs.size).toBe(3);
+  });
+
+  it('a watch request carries its watchRecord onto the job (#11424); a coalesced one adds nothing', async () => {
+    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord })).toBe('queued');
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]!.data).toEqual({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord })).toBe('coalesced');
+    expect(assessAdds()).toHaveLength(1);
+  });
+
+  it('a new request after the job completed creates a new job', async () => {
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'tick' } })).toBe('queued');
+    // removeOnComplete drops the record ...
+    h.jobs.delete(wakeJobId(G1, O1));
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: 'w1' } })).toBe('queued');
+    // ... and a retained completed / failed record must not swallow the next wake.
+    h.jobs.get(wakeJobId(G1, O1))!.state = 'completed';
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'onboarding' } })).toBe('queued');
+    h.jobs.get(wakeJobId(G1, O1))!.state = 'failed';
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'tick' } })).toBe('queued');
+    expect(assessAdds()).toHaveLength(4);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.state).toBe('delayed');
+  });
+
+  it('carries the deterministic digest hint in the job data', async () => {
+    await requestAssessment({
+      grantId: G1, orgId: O1, reason: { kind: 'tick' }, subject: { kind: 'alert', id: ALERT },
+    });
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ subject: { kind: 'alert', id: ALERT } });
+  });
+});
+
+// #10406: a person asking for an assessment now must not be swallowed by a
+// queued tick / event job (which reads only the since-watermark window).
+describe('requestAssessment — on_demand upgrade (#10406)', () => {
+  const OD = { kind: 'on_demand' as const, requestId: 'req-1' };
+  const seed = (state: string, data: Record<string, unknown> = { grantId: G1, orgId: O1, reason: { kind: 'tick' } }) => {
+    h.jobs.set(wakeJobId(G1, O1), { name: 'assess', data, opts: { jobId: wakeJobId(G1, O1), delay: 60_000 }, state, timestamp: 1 });
+  };
+
+  it('onDemandSuccessorJobId is the window id plus -od, with no colon', () => {
+    expect(onDemandSuccessorJobId(G1, O1)).toBe(`wisp-assess-${G1}-${O1}-od`);
+    expect(onDemandSuccessorJobId(G1, O1)).not.toContain(':');
+  });
+
+  it('no live job: adds the window job with the on_demand reason and no debounce delay', async () => {
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]).toMatchObject({ data: { reason: OD }, opts: { jobId: wakeJobId(G1, O1), delay: 0, attempts: 3 } });
+  });
+
+  it('a delayed tick job is upgraded in place: updateData with the on_demand reason, then promote', async () => {
+    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'tick' }, subject: { kind: 'alert', id: ALERT } });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    // The digest hint stays; only the reason changes.
+    expect(h.updates).toEqual([{ id: wakeJobId(G1, O1), data: { grantId: G1, orgId: O1, reason: OD, subject: { kind: 'alert', id: ALERT } } }]);
+    expect(h.promotes).toEqual([wakeJobId(G1, O1)]);
+    expect(assessAdds()).toHaveLength(0);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.state).toBe('waiting');
+  });
+
+  it('a waiting or prioritized job is upgraded without a promote', async () => {
+    for (const state of ['waiting', 'prioritized']) {
+      h.jobs = new Map(); h.updates = []; h.promotes = []; h.adds = [];
+      seed(state);
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+      expect(h.updates).toHaveLength(1);
+      expect(h.promotes).toEqual([]);
+      expect(assessAdds()).toHaveLength(0);
+    }
+  });
+
+  it('an active job gets a successor job (-od) with the on_demand reason and delay 0; the active job is untouched', async () => {
+    seed('active');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(h.updates).toEqual([]);
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]).toMatchObject({
+      data: { grantId: G1, orgId: O1, reason: OD },
+      opts: { jobId: `wisp-assess-${G1}-${O1}-od`, delay: 0, attempts: 3 },
+    });
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: { kind: 'tick' } });
+  });
+
+  it('claim race: the job turns active during updateData → the successor is added', async () => {
+    seed('delayed');
+    h.onUpdateData = (rec) => { rec.state = 'active'; };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+  });
+
+  it('an updateData that throws (job claimed and removed) falls back to the successor', async () => {
+    seed('waiting');
+    h.onUpdateData = (rec) => { rec.state = 'completed'; throw new Error('Missing key for job'); };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+  });
+
+  // Review finding: replacing an event / watch reason would drop its focus (the
+  // alert, anomaly incident or watch the run is about). Those jobs keep their
+  // reason and the on-demand request gets the successor instead.
+  it('an event or watch job keeps its reason: the on_demand request gets the successor', async () => {
+    const event = { kind: 'event', eventType: 'alert.triggered', eventId: 'e1', alertId: ALERT };
+    for (const reason of [event, { kind: 'watch', watchId: 'w1' }]) {
+      h.jobs = new Map(); h.updates = []; h.promotes = []; h.adds = [];
+      seed('delayed', { grantId: G1, orgId: O1, reason });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(h.updates).toEqual([]);
+      expect(h.promotes).toEqual([]);
+      expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason });
+      expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+    }
+  });
+
+  // #11424 × #10406: processAssessJob records a watch's hit-set only when a run
+  // is admitted FOR that watch. The watch job keeps its reason and its
+  // watchRecord; the on-demand successor carries none, so admitting it can
+  // never mark the watch's change as seen.
+  it('a watch job keeps its watchRecord; the on_demand successor carries none', async () => {
+    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
+    const data = { grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord };
+    seed('delayed', data);
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(h.updates).toEqual([]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toEqual(data);
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]!.data).toEqual({ grantId: G1, orgId: O1, reason: OD });
+  });
+
+  it('an onboarding job is upgraded in place like a tick', async () => {
+    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'onboarding' } });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    expect(h.updates).toHaveLength(1);
+  });
+
+  // Review finding: BullMQ no-ops an add whose id is still in Redis, so a
+  // finished record that cannot be removed must fail the request, never
+  // report 'queued' with nothing queued.
+  it('a finished record that cannot be removed throws instead of a silent no-op add', async () => {
+    seed('failed');
+    h.removeFails = true;
+    await expect(requestAssessment({ grantId: G1, orgId: O1, reason: OD })).rejects.toThrow(/could not remove/);
+    expect(assessAdds()).toHaveLength(0);
+
+    h.jobs = new Map();
+    seed('active');
+    h.jobs.set(onDemandSuccessorJobId(G1, O1), { name: 'assess', data: {}, opts: {}, state: 'failed', timestamp: 1 });
+    await expect(requestAssessment({ grantId: G1, orgId: O1, reason: OD })).rejects.toThrow(/could not remove/);
+    expect(assessAdds()).toHaveLength(0);
+  });
+
+  it('a retained completed / failed window record is replaced by a fresh on_demand window job with no delay', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs = new Map(); h.adds = [];
+      seed(state);
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(assessAdds()).toHaveLength(1);
+      expect(assessAdds()[0]).toMatchObject({ opts: { jobId: wakeJobId(G1, O1), delay: 0 } });
+      expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    }
+  });
+
+  it('a failed promote is not fatal: the job already carries on_demand and is still unclaimed → upgraded', async () => {
+    seed('delayed');
+    // Something else moved the job to waiting between our read and promote(),
+    // so the fake's promote throws (BullMQ: "not in the delayed state").
+    h.onUpdateData = (rec) => { rec.state = 'waiting'; };
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    expect(h.promotes).toEqual([wakeJobId(G1, O1)]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    expect(assessAdds()).toHaveLength(0);
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining('could not promote'), expect.anything());
+    consoleWarn.mockRestore();
+  });
+
+  it('a non-on_demand request onto an on_demand job coalesces and never downgrades it', async () => {
+    seed('waiting', { grantId: G1, orgId: O1, reason: OD });
+    for (const reason of [{ kind: 'tick' as const }, { kind: 'watch' as const, watchId: 'w1' }, { kind: 'event' as const, eventType: 'alert.triggered', eventId: 'e1' }]) {
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason })).toBe('coalesced');
+    }
+    expect(h.updates).toEqual([]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+  });
+
+  it('a second on_demand onto an on_demand job (queued or active) coalesces', async () => {
+    for (const state of ['delayed', 'active']) {
+      h.jobs = new Map(); h.updates = []; h.adds = [];
+      seed(state, { grantId: G1, orgId: O1, reason: OD });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-2' } })).toBe('coalesced');
+      expect(h.updates).toEqual([]);
+      expect(assessAdds()).toHaveLength(0);
+    }
+  });
+
+  it('a live successor absorbs repeats: one -od job, later on_demand requests coalesce', async () => {
+    seed('active');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-2' } })).toBe('coalesced');
+    // The window job finished while the successor still waits: still one on_demand job.
+    h.jobs.delete(wakeJobId(G1, O1));
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-3' } })).toBe('coalesced');
+    expect(assessAdds()).toHaveLength(1);
+  });
+
+  it('a retained completed / failed successor record is removed before the successor is added', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs = new Map(); h.adds = [];
+      seed('active');
+      h.jobs.set(onDemandSuccessorJobId(G1, O1), { name: 'assess', data: {}, opts: {}, state, timestamp: 1 });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(h.jobs.get(onDemandSuccessorJobId(G1, O1))!.state).toBe('waiting');
+      expect(h.jobs.get(onDemandSuccessorJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    }
+  });
+});
+
+describe('check-in job helpers', () => {
+  const CI = '00000000-0000-4000-8000-0000000000c9';
+
+  it('checkInJobId is wisp-check-in-<id> and contains no colon', () => {
+    expect(CHECK_IN_JOB).toBe('check-in');
+    expect(checkInJobId(CI)).toBe(`wisp-check-in-${CI}`);
+    expect(checkInJobId(CI)).not.toContain(':');
+  });
+
+  it('enqueueCheckIn adds name check-in with the retry options and the delay', async () => {
+    await enqueueCheckIn(CI, 600_000);
+    expect(h.adds).toHaveLength(1);
+    expect(h.adds[0]).toMatchObject({
+      name: 'check-in',
+      data: { checkInId: CI },
+      opts: {
+        jobId: `wisp-check-in-${CI}`,
+        delay: 600_000,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: true,
+        removeOnFail: { count: 100 },
+      },
+    });
+  });
+
+  it('enqueueCheckIn removes a retained completed / failed record with the same id first', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state, timestamp: 1 });
+      h.adds = [];
+      await enqueueCheckIn(CI, 0);
+      expect(h.adds).toHaveLength(1);
+      // The retained record is gone, so the add created a fresh waiting job.
+      expect(h.jobs.get(checkInJobId(CI))!.state).toBe('waiting');
+    }
+  });
+
+  it('enqueueCheckIn throws when a retained finished record cannot be removed (the add would silently no-op)', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'failed', timestamp: 1 });
+    h.removeFails = true;
+    await expect(enqueueCheckIn(CI, 0)).rejects.toThrow(/could not remove/);
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('enqueueCheckIn leaves a live job alone (no second job, no removal)', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: { delay: 5 }, state: 'delayed', timestamp: 1 });
+    await enqueueCheckIn(CI, 0);
+    expect(h.adds).toHaveLength(0);
+    expect(h.jobs.get(checkInJobId(CI))!.timestamp).toBe(1);
+  });
+
+  it('enqueueCheckIn clamps a negative or non-finite delay to 0', async () => {
+    await enqueueCheckIn(CI, -5_000);
+    expect(h.adds[0]!.opts.delay).toBe(0);
+    h.jobs.clear();
+    await enqueueCheckIn(CI, Number.NaN);
+    expect(h.adds[1]!.opts.delay).toBe(0);
+  });
+
+  it('removeCheckInJob removes a present job and returns true', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'delayed', timestamp: 1 });
+    expect(await removeCheckInJob(CI)).toBe(true);
+    expect(h.jobs.has(checkInJobId(CI))).toBe(false);
+  });
+
+  it('removeCheckInJob returns false for a missing job', async () => {
+    expect(await removeCheckInJob(CI)).toBe(false);
+  });
+
+  it('removeCheckInJob swallows a remove error (active job) and returns false', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'active', timestamp: 1 });
+    h.removeFails = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await removeCheckInJob(CI)).toBe(false);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('isCheckInJobLive is false for a missing job and for completed / failed, true for live states', async () => {
+    expect(await isCheckInJobLive(CI)).toBe(false);
+    for (const [state, live] of [['completed', false], ['failed', false], ['delayed', true], ['waiting', true], ['active', true], ['prioritized', true]] as const) {
+      h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state, timestamp: 1 });
+      expect(await isCheckInJobLive(CI)).toBe(live);
+    }
+  });
+});
+
+describe('handleWispWakeEvent', () => {
+  it('returns without DB access when wispEnabled() is false', async () => {
+    h.enabled = false;
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.triggered', O1, { alertId: ALERT }));
+    await handleWispWakeEvent(event('wisp.grant.created', O1, { grantId: G1 }));
+    expect(h.executes).toHaveLength(0);
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('fans one request per active grant covering the event org; a paused grant gets none', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }, { grant_id: G2 }] });
+    await handleWispWakeEvent(event('ticket.sla_breached', O1, { ticketId: TASK }));
+    const q = h.executes.find((e) => /FROM wisp_grants g/.test(e.text))!;
+    expect(q.inSystem).toBe(true);
+    // Only active, unexpired grants of the org's partner that cover the org.
+    expect(q.text).toMatch(/g\.status = 'active'/);
+    expect(q.text).toMatch(/g\.expires_at >/);
+    expect(q.text).toMatch(/\(g\.org_id IS NULL OR g\.org_id = organizations\.id\)/);
+    expect(q.text).toMatch(/organizations\.partner_id = g\.partner_id/);
+    // Live orgs only (copied from aiAgentSweepScheduler's loadPartnerOrgIds).
+    expect(q.text).toMatch(/organizations\.type <> 'quick_support'/);
+    expect(q.text).toMatch(/organizations\.deleted_at IS NULL/);
+    expect(q.text).toMatch(/organizations\.status IN \('active', 'trial'\)/);
+    expect(q.text).toMatch(/"organizations"\."type" <>/); // notHoldingOrgCondition()
+    expect(q.params).toContain(O1);
+
+    const adds = assessAdds();
+    expect(adds.map((a) => (a.data as { grantId: string }).grantId)).toEqual([G1, G2]);
+    for (const a of adds) {
+      expect(a.inSystem).toBe(false); // never enqueue inside a DB context
+      expect(a.data).toMatchObject({
+        orgId: O1,
+        reason: { kind: 'event', eventType: 'ticket.sla_breached', eventId: 'evt-ticket.sla_breached' },
+      });
+      // ticket.sla_breached is not a digest event: no hint.
+      expect(a.data).not.toHaveProperty('subject');
+    }
+  });
+
+  it('a non-uuid event org reads nothing', async () => {
+    await handleWispWakeEvent(event('alert.triggered', 'not-a-uuid', { alertId: ALERT }));
+    expect(h.executes).toHaveLength(0);
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('ignores ai.agent.run.completed for profile assessment', async () => {
+    useFixtures({ runProfile: [{ profile: 'assessment' }], eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('ai.agent.run.completed', O1, { runId: RUN }));
+    await handleWispWakeEvent(event('ai.agent.run.failed', O1, { runId: RUN }));
+    expect(h.executes.some((e) => /FROM wisp_grants g/.test(e.text))).toBe(false);
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('wakes on ai.agent.run.completed of another profile', async () => {
+    useFixtures({ runProfile: [{ profile: 'triage' }], eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('ai.agent.run.completed', O1, { runId: RUN }));
+    const lookup = h.executes.find((e) => /SELECT profile FROM ai_agent_runs/.test(e.text))!;
+    expect(lookup.params).toContain(RUN);
+    expect(assessAdds()).toHaveLength(1);
+  });
+
+  it('alert.triggered carries { kind: alert } as the digest hint', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.triggered', O1, { alertId: ALERT }));
+    expect(assessAdds()[0]!.data).toMatchObject({ subject: { kind: 'alert', id: ALERT } });
+  });
+
+  // #10388: the run must be told WHICH alert the event is about, not the bus
+  // event id (no tool can look a bus event up).
+  it('alert.resolved carries the alert and device ids in the reason; non-uuids are dropped', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: ALERT, deviceId: TASK, resolvedBy: RUN }));
+    const data = assessAdds()[0]!.data as { reason: Record<string, unknown> };
+    expect(data.reason).toEqual({
+      kind: 'event', eventType: 'alert.resolved', eventId: 'evt-alert.resolved', alertId: ALERT, deviceId: TASK,
+    });
+    // alert.resolved is not a budget-path digest event: no concern hint.
+    expect(data).not.toHaveProperty('subject');
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: 'nope', deviceId: 'dev-1' }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).toEqual({
+      kind: 'event', eventType: 'alert.resolved', eventId: 'evt-alert.resolved',
+    });
+  });
+
+  // #11425: the anomaly publisher sends ids only ({ incidentId, deviceId }).
+  // Dropping incidentId left the run with "event anomaly.incident_opened for
+  // device X" and nothing that names the anomaly, so the model went looking in
+  // list_incidents (security/IR) and raised a "can't verify" concern.
+  it('anomaly.incident_opened carries the anomaly incident id in the reason; a non-uuid is dropped', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('anomaly.incident_opened', O1, { incidentId: ALERT, deviceId: TASK }));
+    const data = assessAdds()[0]!.data as { reason: Record<string, unknown> };
+    expect(data.reason).toEqual({
+      kind: 'event', eventType: 'anomaly.incident_opened', eventId: 'evt-anomaly.incident_opened',
+      anomalyIncidentId: ALERT, deviceId: TASK,
+    });
+    // Not a budget-path digest event: no concern hint.
+    expect(data).not.toHaveProperty('subject');
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('anomaly.incident_opened', O1, { incidentId: 'nope', deviceId: TASK }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).not.toHaveProperty('anomalyIncidentId');
+  });
+
+  it('only anomaly.incident_opened reads payload.incidentId as an anomaly incident', async () => {
+    // integration.health_opened also sends `incidentId` — a connection-health
+    // incident. It must not be labelled a metric anomaly in the reason.
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('integration.health_opened', O1, { incidentId: ALERT }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).not.toHaveProperty('anomalyIncidentId');
+  });
+
+  it('alert.triggered carries the alert id in the reason as well as the digest hint', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.triggered', O1, { alertId: ALERT }));
+    expect(assessAdds()[0]!.data).toMatchObject({ reason: { kind: 'event', alertId: ALERT } });
+    expect((assessAdds()[0]!.data as { reason: object }).reason).not.toHaveProperty('deviceId');
+  });
+
+  it('a failed operator task carries { kind: task } and failed: true', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('ai.operator.task.finished', O1, { taskId: TASK, state: 'failed' }));
+    expect(assessAdds()[0]!.data).toMatchObject({ subject: { kind: 'task', id: TASK }, failed: true });
+  });
+
+  it('integration.health_opened and ticket.stale name their subjects; a non-uuid id is dropped', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('integration.health_opened', O1, { incidentId: ALERT }));
+    expect(assessAdds()[0]!.data).toMatchObject({ subject: { kind: 'integration', id: ALERT } });
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('ticket.stale', O1, { ticketId: TASK }));
+    expect(assessAdds()[0]!.data).toMatchObject({ subject: { kind: 'ticket', id: TASK } });
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('alert.triggered', O1, { alertId: 'nope' }));
+    expect(assessAdds()[0]!.data).not.toHaveProperty('subject');
+  });
+
+  it('wisp.grant.created fans ≤ 10 onboarding requests, ordered by org name', async () => {
+    // 13 live orgs; 12 inside the ceiling; names deliberately not in id order.
+    const names = ['Mango', 'apple', 'Kiwi', 'Banana', 'Lime', 'cherry', 'Date', 'Fig', 'Grape', 'Honeydew', 'Jackfruit', 'Elder', 'Outside'];
+    const orgs = names.map((name, i) => ({ id: orgId(100 + i), name }));
+    const inCeiling = orgs.filter((o) => o.name !== 'Outside').map((o) => o.id);
+    useFixtures({
+      grantRow: [{ id: G1, partner_id: P1, status: 'active', current_revision_id: REV }],
+      orgs: [...orgs].reverse(), // shuffled relative to name order
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceiling(inCeiling));
+
+    // Partner-wide grants route on the partner id (routes/wisp.ts publishGrantEvent).
+    await handleWispWakeEvent(event('wisp.grant.created', P1, { grantId: G1, partnerId: P1, orgId: null }));
+
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(G1, REV);
+    const adds = assessAdds();
+    expect(adds).toHaveLength(10);
+    const byId = new Map(orgs.map((o) => [o.id, o.name]));
+    expect(adds.map((a) => byId.get((a.data as { orgId: string }).orgId))).toEqual([
+      'apple', 'Banana', 'cherry', 'Date', 'Elder', 'Fig', 'Grape', 'Honeydew', 'Jackfruit', 'Kiwi',
+    ]);
+    for (const a of adds) expect(a.data).toMatchObject({ grantId: G1, reason: { kind: 'onboarding' } });
+    // The grant's own routing id is never treated as an event org.
+    expect(h.executes.some((e) => /FROM wisp_grants g/.test(e.text))).toBe(false);
+  });
+
+  it('wisp.grant.created for an inactive grant requests nothing', async () => {
+    useFixtures({ grantRow: [{ id: G1, partner_id: P1, status: 'paused', current_revision_id: REV }] });
+    await handleWispWakeEvent(event('wisp.grant.created', P1, { grantId: G1 }));
+    expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+    expect(h.adds).toHaveLength(0);
+
+    useFixtures({ grantRow: [{ id: G1, partner_id: P1, status: 'active', current_revision_id: REV }] });
+    h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(G1, 'paused'));
+    await handleWispWakeEvent(event('wisp.grant.created', P1, { grantId: G1 }));
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('wisp.grant.resumed issues one tick request for the round-robin org', async () => {
+    useFixtures({
+      grantRow: [{ id: G1, partner_id: P1, status: 'active', current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }, { id: O2, name: 'B' }, { id: O3, name: 'C' }],
+      lastAssessed: [
+        { org_id: O1, last_assessed_at: '2026-10-24 09:00:00+00' },
+        { org_id: O2, last_assessed_at: '2026-10-24 08:00:00+00' },
+        { org_id: O3, last_assessed_at: '2026-10-24 07:00:00+00' }, // oldest, but outside the ceiling
+      ],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceiling([O1, O2]));
+    await handleWispWakeEvent(event('wisp.grant.resumed', O1, { grantId: G1, partnerId: P1, orgId: O1 }));
+    const adds = assessAdds();
+    expect(adds).toHaveLength(1);
+    expect(adds[0]!.data).toMatchObject({ grantId: G1, orgId: O2, reason: { kind: 'tick' } });
+    const last = h.executes.find((e) => /max\(finished_at\)/.test(e.text))!;
+    expect(last.text).toMatch(/profile = 'assessment'/);
+    // An assessment that ended awaiting_approval (it minted an intent) still
+    // assessed the org: counting only 'completed' would leave that org
+    // "never assessed" and the floor tick would pick it forever.
+    expect(last.text).toMatch(/status IN \('completed', 'awaiting_approval'\)/);
+    expect(last.text).not.toMatch(/status = 'completed'/);
+    expect(last.params).toContain(G1);
+  });
+
+  // #11423: a tick skipped because nothing changed still looked at the org.
+  // If the round-robin ignored those rows, the unchanged org would stay the
+  // oldest and every later floor tick would pick it (and skip it) forever.
+  it('the round-robin counts a no_changes skip as a look, so the floor tick moves on to the next org', async () => {
+    useFixtures({
+      grantRow: [{ id: G1, partner_id: P1, status: 'active', current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }, { id: O2, name: 'B' }],
+      lastAssessed: [
+        { org_id: O1, last_assessed_at: '2026-10-24 09:30:00+00' }, // its last tick was a no_changes skip
+        { org_id: O2, last_assessed_at: '2026-10-24 09:00:00+00' },
+      ],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceiling([O1, O2]));
+    await handleWispWakeEvent(event('wisp.grant.resumed', O1, { grantId: G1, partnerId: P1, orgId: O1 }));
+    expect(assessAdds()[0]!.data).toMatchObject({ orgId: O2 });
+    const last = h.executes.find((e) => /max\(finished_at\)/.test(e.text))!;
+    expect(last.text).toMatch(/status IN \('completed', 'awaiting_approval'\)\s+OR \(status = 'skipped' AND error_code = 'no_changes'\)/);
+  });
+});

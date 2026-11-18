@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
 import { removeUnreferencedScreenshotFiles } from '../services/screenshotStorage';
 import { ensureDefaultProfile } from '../services/billingProfileService';
@@ -8,6 +9,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
+import { refuseReservedBrandName } from '../lib/reservedBrandName';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
@@ -26,12 +28,13 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { markPermissionGate } from '../middleware/permissionGate';
+import { wispEnabled } from '../config/env';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
   clampSessionTimeoutInSettings,
-  sessionTimeoutMinutesSchema,
   sessionTimeoutSettingsError,
 } from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -82,10 +85,11 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, securityLimitSchemas, portalCustomCssSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_SIGNUP_INTENT } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
+import { partnerSettingsInheritanceRoutes } from './partnerSettingsInheritance';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -109,7 +113,14 @@ import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
+import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
+import { registerPortalEntraTenantRoutes } from './orgPortalEntraTenant';
+import { registerOrgPortalDirectoryRoutes } from './orgPortalDirectory';
+import { registerOrgPortalScimRoutes } from './orgPortalScim';
+import { registerOrgCustomerDomainRoutes } from './orgCustomerDomains';
+import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
+import { registerOrgPortalAccessRequestRoutes } from './orgPortalAccessRequests';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
@@ -119,7 +130,9 @@ import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 
 import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
+import { partnerVisibleOrgConditions } from '../services/partnerVisibleOrgs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { partnerPageSizeWire } from '../services/documentThemes';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
  * `security.allowedMethods` and drop the alias key so it is never persisted.
@@ -210,6 +223,16 @@ const paginationSchema = z.object({
   limit: z.string().optional()
 });
 
+/** UUID enrollment defaults name groups; legacy sentinels remain valid. */
+async function partnerEnrollmentGroupIds(settings: unknown): Promise<string[]> {
+  if (!settings || typeof settings !== 'object') return [];
+  const defaults = (settings as Record<string, unknown>).defaults;
+  if (!defaults || typeof defaults !== 'object') return [];
+  const groupId = (defaults as Record<string, unknown>).deviceGroup;
+  if (typeof groupId !== 'string' || !z.string().guid().safeParse(groupId).success) return [];
+  return findPartnerOwnedGroupIds([groupId]);
+}
+
 /**
  * Save-time validation for agent/watchdog version pins on a `settings.defaults`
  * object (issue #2124). A pin of 'latest' / unset is always valid. A concrete
@@ -244,7 +267,7 @@ async function validateAgentVersionPins(defaults: unknown): Promise<string | nul
 }
 
 const createPartnerSchema = z.object({
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['msp', 'enterprise', 'internal']).optional(),
   // plan and maxDevices are managed by the billing service (via direct DB writes).
@@ -285,6 +308,18 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   }),
 });
 
+/**
+ * A settings subtree with its own home (e.g. `flows`, written only by
+ * PUT /flows/limits): a wholesale settings write keeps the stored subtree and
+ * ignores an incoming one, so it can neither erase nor set it. Mutates `next`.
+ */
+function keepOwnedSettingsSubtree(next: Record<string, unknown>, currentSettings: unknown, key: string): void {
+  const stored = currentSettings && typeof currentSettings === 'object' && !Array.isArray(currentSettings)
+    ? (currentSettings as Record<string, unknown>)[key]
+    : undefined;
+  if (stored === undefined) delete next[key]; else next[key] = stored;
+}
+
 // PATCH /partners/:id writes the settings column wholesale. A write whose
 // settings (or security object) simply omits `ipAllowlist` must not silently
 // delete an active allowlist (fail-open); an explicit `ipAllowlist: []` still
@@ -312,7 +347,7 @@ function preserveIpAllowlistOnOmit(
 
 export const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
@@ -496,6 +531,9 @@ orgRoutes.use('*', authMiddleware);
 
 // Mounted after authMiddleware so the pin route inherits authentication.
 orgRoutes.route('/', siteLocationRoutes);
+// Partner settings inheritance read model (#9170): after authMiddleware, before
+// /partners/:id. Its middleware is per endpoint, never a wildcard.
+orgRoutes.route('/', partnerSettingsInheritanceRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
@@ -544,6 +582,15 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 // never dereferences `partners.*` at load time. Test files that
 // `vi.mock('../db/schema')` with a partial mock would otherwise fail to import
 // orgs.ts at all ("No 'partners' export is defined on the mock").
+// #12097: `documentPageSize` on the wire is the size the partner's documents
+// print on (its choice, else its region default) — never the raw nullable
+// column. `documentPageSizeChoice` carries the stored choice for the Billing →
+// Documents form. Every partner-row response goes through this beside
+// withMaskedSettings.
+function withPartnerPageSize<T extends { documentPageSize: string | null; billingAddressCountry: string | null; settings: unknown }>(row: T) {
+  return { ...row, ...partnerPageSizeWire(row) };
+}
+
 const partnerPublicColumns = () => ({
   id: partners.id,
   name: partners.name,
@@ -585,6 +632,10 @@ const partnerPublicColumns = () => ({
   invoiceLineShowNote: partners.invoiceLineShowNote,
   invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
+  // #9075 W4a: Settings → Billing → Agreements reads these back.
+  agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
+  agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
+  agreementMaxReminders: partners.agreementMaxReminders,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   trustPageUnbranded: partners.trustPageUnbranded,
   serviceManagementMode: partners.serviceManagementMode,
@@ -612,7 +663,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
     .orderBy(partners.createdAt, partners.id);
 
   return c.json({
-    data: data.map(withMaskedSettings),
+    data: data.map((row) => withMaskedSettings(withPartnerPageSize(row))),
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -636,9 +687,16 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   if (createAssigneeError) {
     return c.json({ error: createAssigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
   }
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   const clash = await db
@@ -661,6 +719,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         slug: data.slug,
         type: data.type,
         maxOrganizations: data.maxOrganizations,
+        // This route bypasses createPartner. Persist the fresh-business offer
+        // here too; existing partners' absent intent remains a legacy commitment.
+        purchaseSelection: { ...DEFAULT_SIGNUP_INTENT },
         settings: encryptColumnValueForWrite('partners', 'settings', createSecrets.settings),
         billingEmail: data.billingEmail
       })
@@ -690,18 +751,12 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
     }
   });
 
-  return c.json(withMaskedSettings(partner), 201);
+  return c.json(withMaskedSettings(partner ? withPartnerPageSize(partner) : partner), 201);
 });
 
 // --- Partner Self-Service (partner-scoped users) ---
 // NOTE: all /partners/me handlers (GET, PATCH) must stay above /partners/:id in this file
 // so Hono's router matches the static segment "me" before the dynamic :id handler.
-
-const dayScheduleSchema = z.object({
-  start: z.string(),
-  end: z.string(),
-  closed: z.boolean().optional()
-});
 
 const supportedLocales = SUPPORTED_LOCALES;
 
@@ -749,10 +804,10 @@ const partnerSettingsSchema = z.object({
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.enum(supportedLocales).optional(),
-  businessHours: z.object({
-    preset: z.enum(['24/7', 'business', 'extended', 'custom']),
-    custom: z.record(z.string(), dayScheduleSchema).optional()
-  }).optional(),
+  // businessHours retired (#8973 W4, Gate B5): business hours are business
+  // calendars now (routes/businessCalendars.ts). Zod strips the key, so a stale
+  // client's value never reaches the shallow merge below and the stored blob
+  // (imported into a calendar by 2027-01-03-160000) is left untouched.
   contact: z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
@@ -774,9 +829,11 @@ const partnerSettingsSchema = z.object({
     // The scalar limits below accept an explicit `null` meaning "clear back to
     // the inherited default" (#8976). The handler deep-merges `security`, so an
     // omitted key keeps the stored value; `null` is the only way to unset one.
-    minLength: z.number().int().min(6).max(128).nullable().optional(),
+    // The numeric bounds live in @breeze/shared (securityLimits.ts) so the
+    // partner settings form validates against the same limits (#10081).
+    minLength: securityLimitSchemas.minLength.nullable().optional(),
     complexity: z.enum(['standard', 'strict', 'passphrase']).nullable().optional(),
-    expirationDays: z.number().int().min(0).nullable().optional(),
+    expirationDays: securityLimitSchemas.expirationDays.nullable().optional(),
     requireMfa: z.boolean().optional(),
     // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
     // working before enrolment is enforced. Optional on purpose: a PATCH that
@@ -796,8 +853,8 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: sessionTimeoutMinutesSchema.nullable().optional(),
-    maxSessions: z.number().int().min(1).nullable().optional(),
+    sessionTimeout: securityLimitSchemas.sessionTimeout.nullable().optional(),
+    maxSessions: securityLimitSchemas.maxSessions.nullable().optional(),
     ipAllowlist: z
       .array(z.string())
       .optional()
@@ -843,12 +900,15 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   defaults: z.object({
     policyDefaults: z.record(z.string(), z.string()).optional(),
+    // #9617: a real device_groups.id (org level only; a partner-level value
+    // cannot name a per-org group). Legacy display strings are accepted so old
+    // clients don't 400, but enrollment ignores anything that isn't a group id.
+    // `alertThreshold` and `autoEnrollment.sendWelcome` were removed (no
+    // consumer); z.object strips them from old clients' payloads rather than 400.
     deviceGroup: z.string().optional(),
-    alertThreshold: z.string().optional(),
     autoEnrollment: z.object({
       enabled: z.boolean(),
       requireApproval: z.boolean(),
-      sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     // Reject malformed windows on the partner (/partners/me) write path at save
@@ -878,7 +938,9 @@ const partnerSettingsSchema = z.object({
     primaryColor: z.string().optional(),
     secondaryColor: z.string().optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
-    customCss: z.string().optional(),
+    // #9674: layered ahead of each child org's own CSS on the portal
+    // (routes/portal/portalCustomCss.ts), so it gets the org path's rules.
+    customCss: portalCustomCssSchema,
   }).optional(),
   aiBudgets: z.object({
     enabled: z.boolean().optional(),
@@ -1014,7 +1076,7 @@ const PARTNER_SECURITY_CLEARABLE_KEYS = [
 
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
-  name: z.string().min(1).optional(),
+  name: refuseReservedBrandName(z.string().min(1)).optional(),
   billingEmail: z.string().email().optional(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: z.string().max(2000).nullable().optional(),
@@ -1051,7 +1113,13 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   }
 
   // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
-  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
+  // wispEnabled (Wisp W03): computed per request, not a column — the web nav gate
+  // for the Wisp memory page, sat beside the platform-granted aiForOfficeEnabled.
+  return c.json(withMaskedSettings({
+    ...withPartnerPageSize(partner),
+    settings: clampSessionTimeoutInSettings(partner.settings),
+    wispEnabled: wispEnabled(),
+  }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -1112,6 +1180,9 @@ orgRoutes.patch(
   async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
+
+  const partnerGroupIds = await partnerEnrollmentGroupIds(body.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
   // Agent/watchdog version pins (issue #2124) — reject unknown versions at save
   // time so a partner-locked pin can't silently freeze every child org's fleet.
@@ -1423,9 +1494,9 @@ orgRoutes.patch(
   });
 
   if (emailTemplateWarnings.length > 0) {
-    return c.json({ ...withMaskedSettings(partner), warnings: emailTemplateWarnings });
+    return c.json({ ...withMaskedSettings(withPartnerPageSize(partner)), warnings: emailTemplateWarnings });
   }
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 // --- Individual partner management (system-scoped) ---
@@ -1443,7 +1514,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
@@ -1451,6 +1522,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   const id = c.req.param('id')!;
 
   const data = c.req.valid('json');
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
@@ -1506,6 +1580,8 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         const next = updates.settings as Record<string, unknown>;
         const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
         if (stored === undefined) delete next.ai; else next.ai = stored;
+        // settings.flows is owned by PUT /flows/limits (W05 #5220): same rule.
+        keepOwnedSettingsSubtree(next, currentPartner.settings, 'flows');
 
         // Same contract as PATCH /partners/me: a default inbound assignee
         // must be an assignable member of THIS partner.
@@ -1623,7 +1699,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     }
   });
 
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -1728,17 +1804,43 @@ async function resolveArchivedOrgScope(
   return null;
 }
 
+// Requests on GET /organizations that passed WITHOUT organizations:read and
+// must be served the name-level projection only (see the gate below).
+const nameLevelOrgListRequests = new WeakSet<Context>();
+
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
 // — every org user implicitly needs their org's name to render the app shell.
-// Partner/system scope still requires the permission: they list many orgs and
-// receive full rows. The handler's organization branch is hard-scoped to
-// auth.orgId and projects to safe fields only.
+// The handler's organization branch is hard-scoped to auth.orgId and projects
+// to safe fields only.
+//
+// Partner-scope callers get full rows only with organizations:read. Without it
+// (#9528: an org-restricted technician on a custom "Remote Control" role) they
+// still need the NAMES of the orgs they can already reach — the top-nav org
+// switcher and the /devices org filter are fed by this route — so they fall
+// back to the same name-level projection, limited to auth.accessibleOrgIds and
+// never including the archived block. organizations:read stays the permission
+// for managing orgs and for reading full org rows.
+//
+// The strict gate is PROBED (its `next` only records success) rather than
+// re-implemented, so whatever it grants keeps the full-row path and any
+// non-403 failure still propagates. Automation principals never get the
+// fallback: requirePermission denies them outright, and so does this gate.
+// System scope is unchanged — it is not tied to an accessible-org set.
 const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
   if (!auth) throw new HTTPException(401, { message: 'Not authenticated' });
   if (auth.scope === 'organization') return next();
-  return requireOrgRead(c, next);
+  if (auth.scope !== 'partner' || isAutomationPrincipal(auth)) return requireOrgRead(c, next);
+
+  let granted = false;
+  try {
+    await requireOrgRead(c, async () => { granted = true; });
+  } catch (err) {
+    if (!(err instanceof HTTPException) || err.status !== 403) throw err;
+  }
+  if (!granted) nameLevelOrgListRequests.add(c);
+  return next();
 };
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
@@ -1788,7 +1890,10 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // they are read through the READ ONLY archived context and appended. A
   // partner-scope caller is hard-pinned to its own verified partner id; a
   // partner token with no partnerId gets nothing rather than every partner's.
-  const archivedScope = includeArchived === 'true'
+  // #9528 — a partner caller admitted without organizations:read (see
+  // requireOrgReadUnlessOwnOrg): name-level rows of its accessible orgs only.
+  const nameLevelOnly = nameLevelOrgListRequests.has(c);
+  const archivedScope = includeArchived === 'true' && !nameLevelOnly
     ? await resolveArchivedOrgScope(auth, queryPartnerId)
     : null;
 
@@ -1810,7 +1915,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     // would select the whole table. Fail closed even in dead code.
     conditions = noLiveOrgs
       ? sql`false`
-      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+      // Shared with the partner settings inheritance counts (#9170).
+      : and(...partnerVisibleOrgConditions(orgIds), searchCondition);
   } else {
     // #4166 — system scope short-circuits every RLS predicate and this branch
     // carries NO status filter, so archive-lifecycle orgs already come back
@@ -1894,6 +2000,26 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // `created_at, id` the tiebreaker, so LIMIT/OFFSET slices the intended
   // sequence. `buildOrganizationListQuery` owns that shape and is pinned on the
   // compiled SQL in `orgs.listQuery.test.ts`.
+  if (nameLevelOnly) {
+    // Same population, order and pagination as the full list — only the
+    // projection differs, and no device counts or archived block ride along.
+    const data = noLiveOrgs
+      ? []
+      : await buildOrganizationListQuery({
+          conditions,
+          limit,
+          offset,
+          preferredOrder,
+          columns: {
+            id: organizations.id,
+            name: organizations.name,
+            slug: organizations.slug,
+            status: organizations.status,
+          },
+        });
+    return c.json({ data, pagination: { page, limit, total: Number(count) } });
+  }
+
   const ordered = noLiveOrgs
     ? []
     : await buildOrganizationListQuery({ conditions, limit, offset, preferredOrder });
@@ -2070,9 +2196,16 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const data = c.req.valid('json');
   // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   let targetPartnerId: string | null = null;
@@ -2539,6 +2672,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   // #2879 — suspended orgs are outside canAccessOrg/accessibleOrgIds, so a
   // partner-scope status-only lifecycle transition (suspended→offboarding /
   // reactivation) gets one narrow escape hatch; anything else stays a 404.
@@ -2731,11 +2867,13 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
-    updates.settings = encryptColumnValueForWrite(
-      'organizations',
-      'settings',
-      stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
-    );
+    const orgSettingsNext = stripOrgLifecycleInternalSettings(resolvedSecrets.settings);
+    // settings.flows is owned by PUT /flows/limits (W05 #5220; orgs:write is
+    // not automations:write): the wholesale write keeps the stored block.
+    if (orgSettingsNext && typeof orgSettingsNext === 'object' && !Array.isArray(orgSettingsNext)) {
+      keepOwnedSettingsSubtree(orgSettingsNext as Record<string, unknown>, currentOrg?.settings, 'flows');
+    }
+    updates.settings = encryptColumnValueForWrite('organizations', 'settings', orgSettingsNext);
   }
   // `billingContact` is deliberately NOT in this UPDATE. It is written by
   // syncBillingContactRow in runUpdate below, only after this guarded UPDATE
@@ -2928,8 +3066,22 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 // Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
 registerOrgPortalSettingsRoutes(orgRoutes);
+// Customer-portal sign-in & registration policy (portal_access_policies) — see routes/orgPortalAccessPolicy.ts
+registerPortalAccessPolicyRoutes(orgRoutes);
+// Customer-portal Entra tenant proof + proof-run links (client_ai_tenant_mappings) — see routes/orgPortalEntraTenant.ts
+registerPortalEntraTenantRoutes(orgRoutes);
+// Customer-portal directory deprovisioning: status, apply/dismiss held runs, restore/remove a disabled sign-in — see routes/orgPortalDirectory.ts
+registerOrgPortalDirectoryRoutes(orgRoutes);
+// Customer-portal Entra SCIM provisioning tokens (portal_scim_tokens) — see routes/orgPortalScim.ts
+registerOrgPortalScimRoutes(orgRoutes);
+// Customer sender domains + ownership verification (customer_email_domains) — see routes/orgCustomerDomains.ts
+registerOrgCustomerDomainRoutes(orgRoutes);
+// Staff read-only "Customer view" of the portal read models (#9350)
+registerOrgPortalPreviewRoutes(orgRoutes);
 // Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
 registerOrgPortalUsersRoutes(orgRoutes);
+// Customer-portal access-request queue (portal_access_requests) — see routes/orgPortalAccessRequests.ts
+registerOrgPortalAccessRequestRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
 registerOrgBillingProfileRoutes(orgRoutes);
@@ -2991,7 +3143,58 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
 // --- Sites (organization-scoped) ---
 
-orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
+/**
+ * Per-site device counts for a set of sites, shared by the Sites list and
+ * `GET /sites/:id` so the number a tile/list shows and the number the site page
+ * shows cannot drift (#9791).
+ *
+ * `deviceCount` excludes ephemeral (Quick Support), parked and decommissioned
+ * rows, so it equals what the agent-class, site-filtered Devices list shows.
+ * `removedDeviceCount` (#7471) counts decommissioned rows, which keep their
+ * site FK and block site deletion.
+ *
+ * Takes no org: the list route spans orgs for a partner-wide read, and
+ * `devices` is org-scoped under RLS, so the grouped query stays
+ * tenant-isolated either way. An empty id list never issues `site_id IN ()`.
+ */
+async function getDeviceCountsBySite(siteIds: string[]): Promise<{
+  deviceCountBySite: Map<string, number>;
+  removedCountBySite: Map<string, number>;
+}> {
+  const deviceCountBySite = new Map<string, number>();
+  const removedCountBySite = new Map<string, number>();
+  if (siteIds.length === 0) return { deviceCountBySite, removedCountBySite };
+
+  const counts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    // Removed (decommissioned) devices are excluded alongside the ephemeral
+    // Quick Support ones (#5315): the org record's Devices tab lists
+    // `GET /devices`, which drops decommissioned rows by default, so counting
+    // them here made the Sites table disagree with the tab beside it.
+    .where(and(
+      inArray(devices.siteId, siteIds),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
+      ne(devices.status, 'decommissioned'),
+    ))
+    .groupBy(devices.siteId);
+  for (const row of counts) {
+    deviceCountBySite.set(row.siteId, Number(row.count));
+  }
+  // The DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+  // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
+  const removedCounts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
+    .groupBy(devices.siteId);
+  for (const row of removedCounts) {
+    removedCountBySite.set(row.siteId, Number(row.count));
+  }
+  return { deviceCountBySite, removedCountBySite };
+}
+
+orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
 
@@ -3079,37 +3282,23 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // it with a single grouped query over the returned page's site ids —
   // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
   // non-empty page so an empty list never issues a `site_id IN ()` query.
-  const deviceCountBySite = new Map<string, number>();
-  const removedCountBySite = new Map<string, number>();
-  const siteIds = data.map((s) => s.id);
-  if (siteIds.length > 0) {
-    const counts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      // Removed (decommissioned) devices are excluded alongside the ephemeral
-      // Quick Support ones (#5315): the org record's Devices tab lists
-      // `GET /devices`, which drops decommissioned rows by default, so counting
-      // them here made the Sites table disagree with the tab beside it.
-      .where(and(
-        inArray(devices.siteId, siteIds),
-        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-        ne(devices.status, 'decommissioned'),
-      ))
-      .groupBy(devices.siteId);
-    for (const row of counts) {
-      deviceCountBySite.set(row.siteId, Number(row.count));
-    }
-    // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
-    // block site deletion, so surface them next to the active count — the
-    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
-    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
-    const removedCounts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
-      .groupBy(devices.siteId);
-    for (const row of removedCounts) {
-      removedCountBySite.set(row.siteId, Number(row.count));
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite(data.map((s) => s.id));
+
+  // A listing with no org filter spans orgs (the fleet-wide Sites page,
+  // #9794), so each row names its org for the Organization column. One
+  // request-context (RLS-scoped) lookup over the page's distinct org ids, never
+  // a query per row. An org-filtered listing skips it: the caller already
+  // knows the org, and this route is on the org-switch hot path.
+  let orgNameById: Map<string, string> | undefined;
+  if (!effectiveOrgId) {
+    orgNameById = new Map();
+    const pageOrgIds = [...new Set(data.map((s) => s.orgId).filter((id): id is string => Boolean(id)))];
+    if (pageOrgIds.length > 0) {
+      const orgRows = await db
+        .select({ id: organizations.id, name: organizations.name })
+        .from(organizations)
+        .where(inArray(organizations.id, pageOrgIds));
+      for (const row of orgRows) orgNameById.set(row.id, row.name);
     }
   }
 
@@ -3117,6 +3306,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     ...withMaskedSettings(site),
     deviceCount: deviceCountBySite.get(site.id) ?? 0,
     removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
+    ...(orgNameById && { orgName: orgNameById.get(site.orgId) ?? null }),
   }));
 
   // Ride the org's resolved enrollment defaults along on this response (#2776).
@@ -3245,7 +3435,15 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
-  return c.json(withMaskedSettings(site));
+  // Same helper as the list route, so the site page's count and its
+  // "View all devices" link agree with the Sites list (#9791).
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite([site.id]);
+
+  return c.json({
+    ...withMaskedSettings(site),
+    deviceCount: deviceCountBySite.get(site.id) ?? 0,
+    removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
+  });
 });
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', updateSiteSchema), async (c) => {

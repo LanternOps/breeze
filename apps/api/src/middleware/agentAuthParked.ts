@@ -20,6 +20,12 @@ import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
  *   `self_uninstall`.
  * - `uninstall-intent`: the agent reporting its own removal (a timestamp write
  *   on its own row).
+ * - `rebind` (#8318 §6.3): phase 1 of a human-authorized reattach. A parked
+ *   device is the typical SOURCE: a reinstalled machine that enrolled into the
+ *   holding area and is being reattached onto its existing record. The route
+ *   acts only on an intent naming this device as its source, and writes
+ *   nothing to any device row. (`rebind-confirm` authenticates outside
+ *   agentAuthMiddleware, with its confirm-only token.)
  *
  * Certificate renewal (`/renew-cert*`, routes/agents/mtls.ts) authenticates
  * outside agentAuthMiddleware by design (AGENT_AUTH_SKIP_ID_SEGMENTS) and is
@@ -35,6 +41,7 @@ export const PARKED_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   'commands',
   'rotate-token',
   'uninstall-intent',
+  'rebind',
 ]);
 
 /** The deny body every refused route returns for a parked device. */

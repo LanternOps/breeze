@@ -6,7 +6,7 @@
 
 import { Hono } from 'hono';
 import { routePath as honoRoutePath } from 'hono/route';
-import { avg, and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { avg, and, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { Counter, Gauge, Histogram } from 'prom-client';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -71,6 +71,7 @@ import { envFloat } from '../utils/envFloat';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { admissionRouteLabelOf } from '../services/safeRequestLabel';
+import { resolveAnalyticsDateWindow, resolveAnalyticsOrgScope } from './analyticsQueryScope';
 export {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -258,6 +259,13 @@ const agentFilterSignatureReportsTotal = new Counter({
   registers: [register]
 });
 
+const agentControlPlaneBlockReportsTotal = new Counter({
+  name: 'breeze_agent_control_plane_block_reports_total',
+  help: 'Heartbeats carrying a controlPlaneBlock episode (#8868), by parse result. A rising result="invalid" means the server is discarding agent reports (contract drift between agent and API)',
+  labelNames: ['result'] as const,
+  registers: [register]
+});
+
 // #4340 — routine agent-telemetry submits used to be chained into audit_logs
 // (~97% of its volume). They are audited now only on failure or on a real
 // change; this counter is where the routine volume stays observable.
@@ -268,6 +276,16 @@ const agentIngestSubmissionsTotal = new Counter({
   name: 'breeze_agent_ingest_submissions_total',
   help: 'Agent telemetry submissions by kind and outcome',
   labelNames: ['kind', 'outcome'] as const,
+  registers: [register]
+});
+
+// #11735 — Windows Security audit records dropped at event-log ingest as known
+// noise (routes/agents/eventLogNoiseFilter.ts). `event_id` is bounded by that
+// list, so its cardinality is fixed.
+const agentEventLogNoiseDroppedTotal = new Counter({
+  name: 'breeze_agent_eventlog_noise_dropped_total',
+  help: 'Windows Security event-log records dropped at ingest as known noise, by Windows event id (a re-sent batch is counted again)',
+  labelNames: ['event_id'] as const,
   registers: [register]
 });
 
@@ -358,6 +376,13 @@ const backupAttestationsTotal = new Counter({
   name: 'breeze_backup_attestation_total',
   help: 'Snapshot attestation outcomes, at recording (recorded, duplicate_same, conflict, binding_mismatch, invalid, missing_from_capable, not_offered, capability_unknown, missing_expectation, job_reuse_refused) and at server verification (verified, mismatch, verify_unavailable, verify_parked)',
   labelNames: ['outcome'] as const,
+  registers: [register]
+});
+
+const backupSnapshotFileIndexTotal = new Counter({
+  name: 'breeze_backup_snapshot_file_index_total',
+  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit), hydration (a run building the index from the manifest ended) and statistics (a large publish refreshed the table\'s planner statistics), by outcome (dropped, complete, skipped, a failure code, or analyzed/busy/error)',
+  labelNames: ['event', 'outcome'] as const,
   registers: [register]
 });
 
@@ -650,6 +675,8 @@ function initializeMetricDefaults(): void {
   agentHeartbeatEchTotal.labels('true').inc(0);
   agentHeartbeatEchTotal.labels('false').inc(0);
   agentFilterSignatureReportsTotal.inc(0);
+  agentControlPlaneBlockReportsTotal.labels('valid').inc(0);
+  agentControlPlaneBlockReportsTotal.labels('invalid').inc(0);
   scriptsExecutedTotal.inc(0);
   backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
   backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
@@ -703,6 +730,7 @@ const httpRequestState = new Map<string, CounterValue>();
 const agentHeartbeatState = new Map<string, CounterValue>();
 const agentHeartbeatEchState = new Map<string, CounterValue>();
 let agentFilterSignatureReports = 0;
+const agentControlPlaneBlockReports = { valid: 0, invalid: 0 };
 const softwarePolicyEvaluationState = new Map<string, CounterValue>();
 const softwareRemediationDecisionState = new Map<string, CounterValue>();
 const sensitiveDataFindingState = new Map<string, CounterValue>();
@@ -865,8 +893,18 @@ export function recordAgentFilterSignatureReport(): void {
   agentFilterSignatureReports += 1;
 }
 
+/** #8868 — one heartbeat that carried a `controlPlaneBlock` object, by parse result. */
+export function recordAgentControlPlaneBlockReport(result: 'valid' | 'invalid'): void {
+  agentControlPlaneBlockReportsTotal.labels(result).inc();
+  agentControlPlaneBlockReports[result] += 1;
+}
+
 export function recordAgentIngestSubmission(kind: AgentIngestKind, outcome: AgentIngestOutcome): void {
   agentIngestSubmissionsTotal.labels(kind, outcome).inc();
+}
+
+export function recordEventLogNoiseDropped(eventId: number, count: number): void {
+  agentEventLogNoiseDroppedTotal.labels(String(eventId)).inc(count);
 }
 
 export function updateBusinessMetrics(metrics: {
@@ -1004,6 +1042,14 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
+}
+
+function recordSnapshotFileIndexMetric(event: string, outcome: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupSnapshotFileIndexTotal
+    .labels(normalizeMetricLabel(event, 'unknown'), normalizeMetricLabel(outcome, 'unknown'))
+    .inc(safeCount);
 }
 
 function recordRestoreIntegrityMetric(commandType: string, status: string, reason: string, count = 1): void {
@@ -1236,6 +1282,7 @@ function bindMetricsRecorders(): void {
     onConditionalWriteProbe: recordConditionalWriteProbeMetric,
     onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
     onRestoreIntegrity: recordRestoreIntegrityMetric,
+    onSnapshotFileIndex: recordSnapshotFileIndexMetric,
   });
 
   setAnomalyMetricsRecorder({
@@ -1289,6 +1336,8 @@ export function resetMetricsForTesting(): void {
   agentHeartbeatState.clear();
   agentHeartbeatEchState.clear();
   agentFilterSignatureReports = 0;
+  agentControlPlaneBlockReports.valid = 0;
+  agentControlPlaneBlockReports.invalid = 0;
   softwarePolicyEvaluationState.clear();
   softwareRemediationDecisionState.clear();
   sensitiveDataFindingState.clear();
@@ -1525,12 +1574,22 @@ function emptyDashboardMetrics() {
 
 metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   const auth = c.get('auth');
-  const orgCondition =
-    typeof auth?.orgCondition === 'function'
-      ? auth.orgCondition(devices.orgId)
-      : auth?.orgId
-        ? eq(devices.orgId, auth.orgId)
-        : undefined;
+  // The org switcher's selection arrives as `?orgId=`; it may only narrow the
+  // token's reach (#9648).
+  const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+  if (!orgScope.ok) {
+    return c.json({ error: orgScope.error }, orgScope.status);
+  }
+  const orgCondition = orgScope.orgCondition(devices.orgId);
+  // "Sessions in range" follows the selected range (preset or custom, #9650);
+  // the other figures here (uptime, active sessions) are point-in-time.
+  const sessionWindow = resolveAnalyticsDateWindow(
+    { range: c.req.query('range'), startDate: c.req.query('startDate'), endDate: c.req.query('endDate') },
+    (range) => (range === '24h' ? 1 : range === '7d' ? 7 : 30)
+  );
+  if (!sessionWindow.ok) {
+    return c.json({ error: sessionWindow.error }, sessionWindow.status);
+  }
 
   // `allowedSiteIds` is populated by requirePermission. `undefined` is
   // unrestricted; `[]` is restricted to no sites and must never widen into
@@ -1592,9 +1651,9 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
       .where(activeSessionCondition);
     const activeSessions = Number(sessionRow?.count ?? 0);
 
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const totalSessionCondition = and(
-      gte(remoteSessions.createdAt, thirtyDaysAgo),
+      gte(remoteSessions.createdAt, sessionWindow.since),
+      sessionWindow.until ? lt(remoteSessions.createdAt, sessionWindow.until) : undefined,
       orgCondition,
       siteCondition
     );
@@ -1624,6 +1683,26 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
   }
 });
 
+/**
+ * `device_metrics.timestamp` is `timestamp without time zone` holding UTC, so the
+ * raw fallback's date_trunc comes back as a bare "YYYY-MM-DD 00:00:00" (or a Date).
+ * Emit the same ISO-8601 `Z` form the rollup path does, so clients never have to
+ * guess the zone (#11284).
+ */
+function trendBucketToIso(bucket: unknown): string {
+  if (bucket instanceof Date) return bucket.toISOString();
+  const text = String(bucket);
+  const hasZone = /(Z|[+-]\d{2}(:?\d{2})?)$/i.test(text.replace(/^\d{4}-\d{2}-\d{2}/, ''));
+  // Postgres renders a whole-hour offset as "+00"; Date needs "+00:00".
+  const iso = text.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+  const parsed = new Date(`${iso}${hasZone ? '' : 'Z'}`);
+  if (Number.isNaN(parsed.getTime())) {
+    // Surfaces through the route's catch (500 + log) rather than shipping a non-ISO string.
+    throw new Error(`trendBucketToIso: unparseable bucket ${JSON.stringify(text)}`);
+  }
+  return parsed.toISOString();
+}
+
 metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   // Trend metrics aggregate `metric_rollups`, which is pre-aggregated per
   // organization and carries no site axis. There is no safe site predicate to
@@ -1641,28 +1720,29 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
   }
 
   const auth = c.get('auth');
-  const orgCondition =
-    typeof auth?.orgCondition === 'function'
-      ? auth.orgCondition(devices.orgId)
-      : auth?.orgId
-        ? eq(devices.orgId, auth.orgId)
-        : undefined;
-  const range = c.req.query('range') ?? '30d';
-  const days = range === '24h' ? 1 : range === '7d' ? 7 : 30;
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+  if (!orgScope.ok) {
+    return c.json({ error: orgScope.error }, orgScope.status);
+  }
+  const orgCondition = orgScope.orgCondition(devices.orgId);
+  // Custom range (`startDate`/`endDate`) wins over the `range` preset (#9649).
+  const dateWindow = resolveAnalyticsDateWindow(
+    { range: c.req.query('range'), startDate: c.req.query('startDate'), endDate: c.req.query('endDate') },
+    (range) => (range === '24h' ? 1 : range === '7d' ? 7 : 30)
+  );
+  if (!dateWindow.ok) {
+    return c.json({ error: dateWindow.error }, dateWindow.status);
+  }
+  const { since, until } = dateWindow;
 
   try {
-    const rollupOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(metricRollups.orgId)
-        : auth?.orgId
-          ? eq(metricRollups.orgId, auth.orgId)
-          : undefined;
+    const rollupOrgCondition = orgScope.orgCondition(metricRollups.orgId);
     const rollupCondition = and(
       eq(metricRollups.sourceTable, 'device_metrics'),
       eq(metricRollups.bucketSeconds, 86400),
       inArray(metricRollups.metricName, ['cpu_percent', 'ram_percent']),
       gte(metricRollups.bucketStart, since),
+      ...(until ? [lt(metricRollups.bucketStart, until)] : []),
       sql`${metricRollups.sampleCount} > 0`,
       sql`${metricRollups.avgValue} IS NOT NULL`,
       ...(rollupOrgCondition ? [rollupOrgCondition] : [])
@@ -1693,9 +1773,11 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
       return c.json(Array.from(byBucket.values()));
     }
 
-    const trendsCondition = orgCondition
-      ? and(gte(deviceMetrics.timestamp, since), orgCondition)
-      : gte(deviceMetrics.timestamp, since);
+    const trendsCondition = and(
+      gte(deviceMetrics.timestamp, since),
+      ...(until ? [lt(deviceMetrics.timestamp, until)] : []),
+      ...(orgCondition ? [orgCondition] : [])
+    );
     const rows = await db
       .select({
         bucket: sql<string>`date_trunc('day', ${deviceMetrics.timestamp})`.as('bucket'),
@@ -1711,7 +1793,7 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
     if (rows.length > 0) {
       return c.json(
         rows.map((r) => ({
-          timestamp: r.bucket,
+          timestamp: trendBucketToIso(r.bucket),
           cpu: Math.round(Number(r.cpu ?? 0)),
           memory: Math.round(Number(r.memory ?? 0))
         }))
@@ -1790,6 +1872,7 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     agent_heartbeat_ech: Array.from(agentHeartbeatEchState.values()),
     agent_filter_signature_reports_total: agentFilterSignatureReports,
+    agent_control_plane_block_reports: { ...agentControlPlaneBlockReports },
     process: {
       uptime_seconds: process.uptime(),
       node_version: process.version

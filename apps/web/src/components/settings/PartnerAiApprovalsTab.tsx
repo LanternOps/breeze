@@ -3,33 +3,85 @@ import {
   AI_APPROVAL_TIMEOUT_MAX_MINUTES,
   AI_APPROVAL_TIMEOUT_MIN_MINUTES,
   type AiApprovalSettings,
+  type InheritableAiBudgetSettings,
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import FieldLabel from './partnerSettings/FieldLabel';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: AiApprovalSettings;
   onChange: (data: AiApprovalSettings) => void;
+  /**
+   * Approval mode is stored in `aiBudgets` (same JSONB, same resolver) but is
+   * not a budget, so it is edited here beside the approval timeout. The page
+   * passes the `aiBudgets` draft through so both tabs share one save unit.
+   */
+  budgets?: InheritableAiBudgetSettings;
+  onBudgetsChange?: (data: InheritableAiBudgetSettings) => void;
 };
+
+const APPROVAL_MODE_HELP_KEYS = {
+  per_step: 'aiUsagePage.eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej',
+  action_plan: 'aiUsagePage.aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh',
+  auto_approve: 'aiUsagePage.tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ',
+  hybrid_plan: 'aiUsagePage.likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist',
+} as const;
 
 // Canonical options, plus the current stored value if it's off this ladder
 // (e.g. written by an older client, or hand-edited) so the select never
 // silently discards it.
 const CANONICAL_MINUTES = [5, 10, 15, 20, 30, 45, 60];
 
-export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
+export default function PartnerAiApprovalsTab({ data, onChange, budgets, onBudgetsChange }: Props) {
   const { t } = useTranslation('settings');
   const current = data.interactiveTimeoutMinutes;
   const options = current != null && !CANONICAL_MINUTES.includes(current)
     ? [...CANONICAL_MINUTES, current].sort((a, b) => a - b)
     : CANONICAL_MINUTES;
 
+  const approvalMode = budgets?.approvalMode;
+
   return (
     <div className="space-y-6">
+      {budgets && onBudgetsChange && (
+        <div className="space-y-2">
+          <FieldLabel htmlFor="partner-ai-approvals-mode" fieldId="aiBudgets.approvalMode">
+            {t('partnerAiBudgets.approvalMode')}
+          </FieldLabel>
+          <select
+            id="partner-ai-approvals-mode"
+            data-testid="partner-ai-approvals-mode"
+            value={approvalMode ?? ''}
+            onChange={(e) =>
+              onBudgetsChange({
+                ...budgets,
+                approvalMode: (e.target.value || undefined) as InheritableAiBudgetSettings['approvalMode'],
+              })
+            }
+            className="h-10 w-full max-w-xs rounded-md border bg-background px-3 text-sm"
+          >
+            <option value="">{t('partnerAiBudgets.notSet')}</option>
+            <option value="per_step">{t('partnerAiBudgets.modes.perStep')}</option>
+            <option value="action_plan">{t('partnerAiBudgets.modes.actionPlan')}</option>
+            <option value="auto_approve">{t('partnerAiBudgets.modes.autoApprove')}</option>
+            <option value="hybrid_plan">{t('partnerAiBudgets.modes.hybridPlan')}</option>
+          </select>
+          <InheritanceLine fieldId="aiBudgets.approvalMode" />
+          {approvalMode && (
+            <p className="text-xs text-muted-foreground">
+              {t(/* i18n-dynamic */ APPROVAL_MODE_HELP_KEYS[approvalMode])}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">{t('partnerAiApprovals.modeDescription')}</p>
+        </div>
+      )}
+
       <div className="space-y-2">
-        <label htmlFor="partner-ai-approvals-timeout" className="text-sm font-medium">
+        <FieldLabel htmlFor="partner-ai-approvals-timeout" fieldId="aiApprovals.interactiveTimeoutMinutes">
           {t('partnerAiApprovals.timeoutLabel')}
-        </label>
+        </FieldLabel>
         <select
           id="partner-ai-approvals-timeout"
           data-testid="partner-ai-approvals-timeout"
@@ -51,6 +103,7 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
             </option>
           ))}
         </select>
+        <InheritanceLine fieldId="aiApprovals.interactiveTimeoutMinutes" />
         <p className="text-xs text-muted-foreground">
           {t('partnerAiApprovals.range', {
             min: AI_APPROVAL_TIMEOUT_MIN_MINUTES,
@@ -60,9 +113,6 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
       </div>
 
       <p className="text-xs text-muted-foreground">{t('partnerAiApprovals.description')}</p>
-      <p className="text-xs text-muted-foreground" data-testid="partner-ai-approvals-org-override-note">
-        {t('partnerAiApprovals.orgOverrideNote')}
-      </p>
       <p className="text-xs text-muted-foreground" data-testid="partner-ai-approvals-not-unattended-note">
         {t('partnerAiApprovals.notForUnattendedNote')}
       </p>

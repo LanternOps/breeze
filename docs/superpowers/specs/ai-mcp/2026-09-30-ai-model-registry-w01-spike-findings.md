@@ -145,3 +145,16 @@ Run on 2026-10-13 for dependabot PR #8701 (`@anthropic-ai/claude-agent-sdk` 0.3.
 ### Outcome
 
 `VERIFIED_AGENT_SDK_VERSION` moves to `0.3.296`. The W05 resume spike was re-run in full on 0.3.296; see `2026-10-01-ai-model-registry-w05-resume-spike-findings.md`, 2026-10-14 section.
+
+## 2026-11-12: re-run on Agent SDK 0.3.323
+
+Run on 2026-11-12 for a manual bump (`@anthropic-ai/claude-agent-sdk` 0.3.296 → **0.3.323**, bundled Claude Code 2.1.323). Passthrough spike against the local capture server (`--model claude-sonnet-5-5 --fast-model claude-opus-5-5`), same variants, with `SDK_CHILD_HOST_CONTEXT_GUARDS` in the env.
+
+- D1 **No**, unchanged: without the guard the CLI still sends `display: "updates"` plus the beta (and still rewrites an explicit `omitted`); with `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=0` the request carries `{"type":"adaptive"}` and no updates beta.
+- D2 **Yes**, unchanged: `settings.fastMode` still produces `speed: "fast"` plus `fast-mode-2026-02-01`.
+- D3 unchanged: `inference_geo` still travels via `CLAUDE_CODE_EXTRA_BODY`.
+- Base beta header against the capture server (guarded): `claude-code-20250219, interleaved-thinking-2025-05-14, context-management-2025-06-27, per-turn-control-2026-07-01, mid-conversation-tool-changes-2026-07-01, thinking-token-count-2026-05-13, effort-2025-11-24`. Not compared field by field with the 0.3.296 capture (that output was not kept).
+
+### Outcome
+
+`VERIFIED_AGENT_SDK_VERSION` moves to `0.3.323`. The W05 resume spike was re-run in full on 0.3.323; see `2026-10-01-ai-model-registry-w05-resume-spike-findings.md`, 2026-11-12 section.

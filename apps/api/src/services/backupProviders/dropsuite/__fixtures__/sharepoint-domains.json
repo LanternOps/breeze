@@ -1,0 +1,13 @@
+[
+  {
+    "id": 21,
+    "domain_name": "contoso.example",
+    "site_count": 3,
+    "file_count": 500,
+    "storage": 4096,
+    "last_backup": "2026-10-27T05:00:00.000Z",
+    "errors": "",
+    "deactivated_since": null,
+    "added_on": "2025-01-02T03:04:05.000Z"
+  }
+]

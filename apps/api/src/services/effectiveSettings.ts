@@ -1,12 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
+import {
+  AI_BUDGET_DEFAULTS,
+  DEFAULT_AI_ALERT_THRESHOLD_PERCENTS,
+  PARTNER_SETTINGS_CATALOG,
+  type CatalogEntry,
+} from '@breeze/shared';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
 import { aiBudgets } from '../db/schema/ai';
 import { keepsStoredSettingsSecret } from './settingsSecretMasking';
 import { clampSessionTimeoutInSettings } from './sessionTimeoutLimits';
+import { resolveForwardingDestination } from './logForwardingDestination';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,15 +30,29 @@ const SETTING_CATEGORIES = [
 
 type SettingCategory = (typeof SETTING_CATEGORIES)[number];
 
-interface EffectiveSettingsResult {
-  /** Merged settings — partner values win, org fills gaps */
+export interface EffectiveSettingsResult {
+  /**
+   * Merged settings — partner values win, org fills gaps. For a path listed in
+   * `partnerDefaults` this is the PARTNER's value, which the runtime resolver
+   * uses only when the org has none of its own.
+   */
   effective: Record<string, Record<string, unknown>>;
-  /** Dot-path list of fields locked by the partner (e.g. "security.requireMfa") */
+  /**
+   * Dot-path list of partner-set fields whose partner value is in force over
+   * the org's (e.g. "security.requireMfa"). Derived from the partner settings
+   * catalog's kind (#9762): see {@link classifyPartnerKey}.
+   */
   locked: string[];
+  /**
+   * Dot-path list of partner-set fields the org may override — the partner
+   * value is only a default (catalog kind `overridable`, e.g.
+   * "defaults.agentVersionPins"). Disjoint from `locked`.
+   */
+  partnerDefaults: string[];
 }
 
 /** #4388 — pre-cap alert rungs (1-99). Empty = pre-cap warnings off; 100 is always implicit. */
-export const DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: readonly number[] = Object.freeze([50, 80, 95]);
+export { DEFAULT_AI_ALERT_THRESHOLD_PERCENTS };
 
 export interface EffectiveAiBudget {
   enabled: boolean;
@@ -52,21 +73,11 @@ export interface EffectiveAiBudget {
   toolRateLimitMultiplier: number;
 }
 
-const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
-  enabled: true,
-  monthlyBudgetCents: null,
-  dailyBudgetCents: null,
-  maxTurnsPerSession: 50,
-  messagesPerMinutePerUser: 20,
-  messagesPerHourPerOrg: 200,
-  approvalMode: 'per_step',
-  // Frozen as a tripwire (#4388 review finding): if a merge site is ever
-  // added that forgets to copy this array before returning it, mutating it
-  // in place (e.g. .push()) throws in strict mode instead of silently
-  // corrupting the default thresholds for every other org, process-wide.
-  alertThresholdPercents: Object.freeze([...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS]) as number[],
-  toolRateLimitMultiplier: 1,
-};
+// AI_BUDGET_DEFAULTS is owned by @breeze/shared (constants/aiBudgetDefaults.ts)
+// so the web and the partner settings catalog read the same values. Its
+// threshold array is frozen as a tripwire (#4388 review finding): a merge site
+// that forgets to copy it throws on an in-place mutation instead of silently
+// corrupting the defaults for every other org, process-wide.
 
 const AI_BUDGET_FIELDS = [
   'enabled',
@@ -93,22 +104,105 @@ function asRecord(val: unknown): Record<string, unknown> {
 }
 
 /**
- * Merge a single settings category.
- * Partner fields always win and are added to `locked`.
- * Org fields only fill in fields the partner hasn't set.
+ * Retired `defaults` keys (#9617). `deviceGroup` is now an ORG-level real group
+ * id (a partner-level value cannot name a per-org group), and `alertThreshold` /
+ * `autoEnrollment.sendWelcome` had no consumer and were removed. Legacy values a
+ * partner already stored must neither lock the org's field nor be advertised as
+ * enforced, so the partner layer is read through this filter.
+ */
+function withoutRetiredPartnerDefaults(
+  category: string,
+  cat: Record<string, unknown>,
+): Record<string, unknown> {
+  if (category !== 'defaults') return cat;
+  const { deviceGroup: _dg, alertThreshold: _at, ...rest } = cat;
+  const auto = rest.autoEnrollment;
+  if (auto && typeof auto === 'object' && !Array.isArray(auto) && 'sendWelcome' in auto) {
+    const { sendWelcome: _sw, ...autoRest } = auto as Record<string, unknown>;
+    rest.autoEnrollment = autoRest;
+  }
+  return rest;
+}
+
+/** Drop the retired `autoEnrollment.sendWelcome` from a submitted patch (old clients still send it). */
+function withoutRetiredPatchFields(
+  category: string,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const auto = patch.autoEnrollment;
+  if (category !== 'defaults' || !auto || typeof auto !== 'object' || Array.isArray(auto) || !('sendWelcome' in auto)) {
+    return patch;
+  }
+  const { sendWelcome: _sw, ...autoRest } = auto as Record<string, unknown>;
+  return { ...patch, autoEnrollment: autoRest };
+}
+
+/**
+ * In-force predicates for catalog entries with qualifier 'conditional', keyed
+ * by catalog id. Each one asks the entry's own runtime resolver, so the lock
+ * report cannot drift from what the runtime does. A conditional entry with no
+ * predicate here is treated as always in force (the pre-#9762 behaviour); the
+ * test suite fails if one is added without a predicate.
+ */
+export const CONDITIONAL_LOCK_IN_FORCE: Readonly<Record<string, (partnerSettings: Record<string, unknown>) => boolean>> = {
+  // resolveForwardingDestination: only an enabled partner destination with an
+  // endpoint replaces the org's own; otherwise the org's applies.
+  eventLogs: (partnerSettings) =>
+    resolveForwardingDestination(partnerSettings.eventLogs, undefined).source === 'partner',
+};
+
+type PartnerKeyClass = 'locked' | 'partnerDefault' | 'notInForce';
+
+/**
+ * #9762 — what a partner-set `category.field` key does to the org, from the
+ * partner settings catalog. The catalog entries covering the key are those
+ * with a path equal to it or nested under it (`defaults.agentVersionPins`
+ * covers `.agent` and `.watchdog`).
+ *
+ * - every covering entry `overridable` → a partner default the org may override;
+ * - every covering entry a `conditional` lock that is not in force → neither;
+ * - otherwise (`locks`, `partnerOnly`, `unclassified`, or no catalog entry at
+ *   all) → locked. Uncatalogued and unclassified keys keep the presence lock
+ *   they always had: under-reporting a real lock is worse than over-reporting.
+ */
+function classifyPartnerKey(key: string, partnerSettings: Record<string, unknown>): PartnerKeyClass {
+  const covering = PARTNER_SETTINGS_CATALOG.filter((entry) =>
+    entry.paths.some((path) => path === key || path.startsWith(`${key}.`)),
+  );
+  if (covering.length === 0) return 'locked';
+  if (covering.every((entry) => entry.kind === 'overridable')) return 'partnerDefault';
+  const notInForce = (entry: CatalogEntry) => {
+    if (entry.kind !== 'locks' || entry.qualifier !== 'conditional') return false;
+    const inForce = CONDITIONAL_LOCK_IN_FORCE[entry.id];
+    return inForce ? !inForce(partnerSettings) : false;
+  };
+  if (covering.every(notInForce)) return 'notInForce';
+  return 'locked';
+}
+
+/**
+ * Merge a single settings category: partner fields win in `effective` and are
+ * reported in `locked` or `partnerDefaults` by {@link classifyPartnerKey}; org
+ * fields only fill in fields the partner hasn't set.
  */
 function mergeCategory(
   category: string,
-  partnerCat: Record<string, unknown>,
+  partnerCatRaw: Record<string, unknown>,
   orgCat: Record<string, unknown>,
+  partnerSettings: Record<string, unknown>,
   locked: string[],
+  partnerDefaults: string[],
 ): Record<string, unknown> {
+  const partnerCat = withoutRetiredPartnerDefaults(category, partnerCatRaw);
   const effective: Record<string, unknown> = {};
 
-  // Partner fields win
+  // Partner fields win in `effective`; the catalog decides what they do to the org.
   for (const [field, value] of Object.entries(partnerCat)) {
     effective[field] = value;
-    locked.push(`${category}.${field}`);
+    const key = `${category}.${field}`;
+    const keyClass = classifyPartnerKey(key, partnerSettings);
+    if (keyClass === 'locked') locked.push(key);
+    else if (keyClass === 'partnerDefault') partnerDefaults.push(key);
   }
 
   // Org fills gaps
@@ -121,6 +215,90 @@ function mergeCategory(
   return effective;
 }
 
+/** The `ai_budgets` columns the merge reads; any subset (a missing row is `null`). */
+export type AiBudgetRow = { [K in (typeof AI_BUDGET_FIELDS)[number]]?: unknown };
+
+/**
+ * Pure core of the category merge in {@link getEffectiveOrgSettings}: for each
+ * category (security, notifications, eventLogs, defaults, branding) a partner
+ * key that is present wins in `effective` and is listed in `locked` or
+ * `partnerDefaults` by its catalog kind (#9762); the org value fills only the
+ * keys the partner has not set. Stored session timeouts above the ceiling
+ * are reported clamped. AI budgets are not part of this core (see
+ * {@link resolveEffectiveAiBudgetFromRows}).
+ */
+export function resolveEffectiveCategorySettings(
+  partnerSettingsRaw: unknown,
+  orgSettingsRaw: unknown,
+): EffectiveSettingsResult {
+  const partnerSettings = asRecord(partnerSettingsRaw);
+  const orgSettings = asRecord(orgSettingsRaw);
+
+  const effective: Record<string, Record<string, unknown>> = {};
+  const locked: string[] = [];
+  const partnerDefaults: string[] = [];
+
+  for (const category of SETTING_CATEGORIES) {
+    const partnerCat = asRecord(partnerSettings[category]);
+    const orgCat = asRecord(orgSettings[category]);
+
+    // Only include the category if either side has data
+    if (
+      Object.keys(partnerCat).length > 0 ||
+      Object.keys(orgCat).length > 0
+    ) {
+      effective[category] = mergeCategory(category, partnerCat, orgCat, partnerSettings, locked, partnerDefaults);
+    }
+  }
+
+  // #6111 — a stored session timeout above the 720-minute ceiling (written
+  // before the cap existed) is reported clamped, partner-locked or not.
+  if (effective.security) {
+    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
+  }
+
+  return { effective, locked, partnerDefaults };
+}
+
+/**
+ * Pure core of {@link getEffectiveAiBudget}: platform defaults, then the org's
+ * `ai_budgets` row (non-null columns), then the partner's `settings.aiBudgets`,
+ * where a property that is present wins even when its value is `null` (an
+ * explicit "no cap"). Always returns a fresh threshold array.
+ */
+export function resolveEffectiveAiBudgetFromRows(
+  partnerAiBudgets: unknown,
+  orgRow: AiBudgetRow | null,
+): EffectiveAiBudget {
+  // #4388 review — `{ ...AI_BUDGET_DEFAULTS }` is a shallow copy: without the
+  // explicit override every org with no override would share one mutable
+  // array reference process-wide.
+  const result: EffectiveAiBudget = {
+    ...AI_BUDGET_DEFAULTS,
+    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
+  };
+
+  // Org table row overrides defaults
+  if (orgRow) {
+    for (const field of AI_BUDGET_FIELDS) {
+      const val = orgRow[field];
+      if (val !== null && val !== undefined) {
+        result[field] = val as never;
+      }
+    }
+  }
+
+  // Partner JSONB wins
+  const partnerBudget = asRecord(partnerAiBudgets);
+  for (const field of AI_BUDGET_FIELDS) {
+    if (field in partnerBudget && partnerBudget[field] !== undefined) {
+      result[field] = partnerBudget[field] as never;
+    }
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // getEffectiveOrgSettings
 // ---------------------------------------------------------------------------
@@ -129,8 +307,10 @@ function mergeCategory(
  * Build the effective settings for an org by merging partner defaults on top.
  *
  * For each category (security, notifications, eventLogs, defaults, branding)
- * the partner value locks the field — the org value only applies where the
- * partner hasn't set anything.
+ * the partner value wins in `effective` — the org value only applies where the
+ * partner hasn't set anything. Whether a partner-set field is reported as
+ * locked or as an overridable partner default comes from the partner settings
+ * catalog (#9762).
  *
  * Also merges AI budget: partner JSONB `aiBudgets` overrides the org's
  * `ai_budgets` table row, with hard-coded defaults as the final fallback.
@@ -174,30 +354,7 @@ export async function getEffectiveOrgSettings(
   }
 
   const partnerSettings = asRecord(partner.settings);
-  const orgSettings = asRecord(org.settings);
-
-  const effective: Record<string, Record<string, unknown>> = {};
-  const locked: string[] = [];
-
-  // Merge each category
-  for (const category of SETTING_CATEGORIES) {
-    const partnerCat = asRecord(partnerSettings[category]);
-    const orgCat = asRecord(orgSettings[category]);
-
-    // Only include the category if either side has data
-    if (
-      Object.keys(partnerCat).length > 0 ||
-      Object.keys(orgCat).length > 0
-    ) {
-      effective[category] = mergeCategory(category, partnerCat, orgCat, locked);
-    }
-  }
-
-  // #6111 — a stored session timeout above the 720-minute ceiling (written
-  // before the cap existed) is reported clamped, partner-locked or not.
-  if (effective.security) {
-    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
-  }
+  const { effective, locked, partnerDefaults } = resolveEffectiveCategorySettings(partnerSettings, org.settings);
 
   // Merge AI budget
   const partnerBudget = asRecord(partnerSettings.aiBudgets);
@@ -227,7 +384,8 @@ export async function getEffectiveOrgSettings(
     }
   }
 
-  // Partner JSONB wins and locks
+  // Partner JSONB wins and locks. Every `aiBudgets.*` catalog entry is kind
+  // `locks`, so these go straight to `locked` without classifyPartnerKey.
   for (const field of AI_BUDGET_FIELDS) {
     if (field in partnerBudget && partnerBudget[field] !== undefined) {
       mergedBudget[field] = partnerBudget[field];
@@ -237,7 +395,7 @@ export async function getEffectiveOrgSettings(
 
   effective.aiBudgets = mergedBudget;
 
-  return { effective, locked };
+  return { effective, locked, partnerDefaults };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,16 +419,22 @@ export async function getEffectiveOrgSettings(
  * fields the partner never intended to enforce (issue #2752 — `autoEnrollment`
  * is always present in the `defaults` payload, so it locked the whole category).
  *
- * Note this deliberately does NOT change `mergeCategory`/`locked` reporting: a
- * partner-set field is still advertised as locked, and getOrgAgentUpdateConfig's
- * presence-based resolution stays in lockstep with it. Only the write guard's
- * strictness changes, from "field present" to "value actually diverges".
+ * This guard is still presence-based: it does not consult the catalog the way
+ * `locked` reporting does (#9762). The org PATCH route (routes/orgs.ts) strips
+ * a hard-coded exemption list before calling it — `agentVersionPins`,
+ * `defaultEnrollmentTtlMinutes`, `defaultEnrollmentDeviceCount`, the catalog's
+ * overridable `defaults` entries today; a new overridable `defaults` field must
+ * be added there too or it stays write-locked. The other partner defaults
+ * (Pushover, a not-in-force Event Logs destination) have no org value under
+ * these categories: the org's own lives on its Pushover channels and in
+ * `settings.logForwarding` (see the `orgSource` of their inheritance bindings).
  */
 export async function assertNotLocked(
   orgId: string,
   category: string,
-  patch: Record<string, unknown>,
+  patchRaw: Record<string, unknown>,
 ): Promise<void> {
+  const patch = withoutRetiredPatchFields(category, patchRaw);
   const org = await db
     .select({ partnerId: organizations.partnerId, settings: organizations.settings })
     .from(organizations)
@@ -299,7 +463,7 @@ export async function assertNotLocked(
   }
 
   const partnerSettings = asRecord(partner.settings);
-  const partnerCat = asRecord(partnerSettings[category]);
+  const partnerCat = withoutRetiredPartnerDefaults(category, asRecord(partnerSettings[category]));
   const orgCat = asRecord(asRecord(org.settings)[category]);
 
   // The org editor re-posts its whole settings blob with every stored secret
@@ -365,36 +529,9 @@ export async function getEffectiveAiBudget(
       .then((rows) => rows[0]),
   ]);
 
-  // Start from defaults. #4388 review — same shallow-copy hazard as
-  // getEffectiveOrgSettings above: without the explicit override, every org
-  // with no override would share one mutable array reference process-wide.
-  const result: EffectiveAiBudget = {
-    ...AI_BUDGET_DEFAULTS,
-    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
-  };
-
-  // Org table row overrides defaults
-  if (orgBudgetRow) {
-    for (const field of AI_BUDGET_FIELDS) {
-      const val = orgBudgetRow[field];
-      if (val !== null && val !== undefined) {
-        result[field] = val as never;
-      }
-    }
-  }
-
-  // Partner JSONB wins
   if (!partner) {
     throw new HTTPException(404, { message: 'Partner not found' });
   }
-  {
-    const partnerBudget = asRecord(asRecord(partner.settings).aiBudgets);
-    for (const field of AI_BUDGET_FIELDS) {
-      if (field in partnerBudget && partnerBudget[field] !== undefined) {
-        result[field] = partnerBudget[field] as never;
-      }
-    }
-  }
 
-  return result;
+  return resolveEffectiveAiBudgetFromRows(asRecord(partner.settings).aiBudgets, orgBudgetRow ?? null);
 }

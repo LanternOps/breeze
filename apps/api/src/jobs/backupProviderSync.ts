@@ -202,8 +202,8 @@ async function recordSyncFailure(
  * returns the row's new `updated_at`, which is the fence phase 3 compares
  * against.
  * Phase 2 — vendor HTTP under runOutsideDbContext, holding no pooled
- * connection. Any failure aborts BEFORE a single row is written; the adapter
- * throws on a partial page, so "absent from the snapshot" always means "gone".
+ * connection. Unclassified failures abort before writing. Explicit customer
+ * failures keep that customer’s stored rows while the other customers sync.
  * Phase 3 — one system transaction holding the per-connection advisory lock:
  * re-read FOR UPDATE, abort if deleted/deactivated/credentials changed, then
  * persist and write the counters.
@@ -297,9 +297,10 @@ export async function syncConnectionById(
           id: current.id,
           partnerId: current.partnerId,
           provider: current.provider,
+          inventoryKind: adapter.inventoryKind,
           showProviderNameInPortal: current.showProviderNameInPortal,
         },
-        { customers, devices: vendorDevices },
+        { customers, ...vendorDevices },
       );
 
       // Counters commit in the SAME transaction as the rows they describe, so
@@ -309,7 +310,9 @@ export async function syncConnectionById(
         .set({
           lastSyncAt: new Date(),
           lastSyncStatus: 'success',
-          lastSyncError: null,
+          lastSyncError: vendorDevices.failedCustomerIds.length > 0
+            ? `${new Set(vendorDevices.failedCustomerIds).size} customer(s) skipped: access denied or unavailable`
+            : null,
           status: 'connected',
           lastSyncCustomers: result.customers,
           lastSyncUnmappedCustomers: result.unmappedCustomers,

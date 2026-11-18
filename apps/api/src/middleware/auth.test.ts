@@ -135,7 +135,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
+import { authMiddleware, computeAccessibleOrgIds, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -1287,6 +1287,43 @@ describe('requirePermission', () => {
     expect(body).toBe('Permission denied');
   });
 
+  // #11621: an opted-in denial names the grant and carries a code, on the
+  // default Hono error path too (no app.onError): PermissionDeniedError.getResponse.
+  it('answers an opted-in coded denial with { error, message, code } and a fresh body per request', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('remote', 'access', { denial: { code: 'X_REQUIRED', message: 'needs remote:access' } }));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(mockPerms);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await app.request('/test');
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'needs remote:access', message: 'needs remote:access', code: 'X_REQUIRED' });
+    }
+  });
+
+  it('keeps the plain "No permissions found" for an unresolvable role even with a denial set', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', baseAuth);
+      await next();
+    });
+    app.use(requirePermission('remote', 'access', { denial: { code: 'X_REQUIRED', message: 'needs remote:access' } }));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+
+    const res = await app.request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('No permissions found');
+  });
+
   it('allows when user has the exact required permission', async () => {
     const app = new Hono();
     app.use(async (c: any, next: any) => {
@@ -1784,5 +1821,41 @@ describe('requireOrgAccess', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+// #9529: `accessibleOrgIds[0]` is the last-resort org for an AI session (and
+// the default of every `getOrgId` tool helper). The org query has no ORDER BY,
+// so that element used to be whatever the planner returned first.
+describe('computeAccessibleOrgIds ordering (#9529)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const ROWS = [
+    { id: 'org-zulu', slug: 'zulu', type: 'customer' },
+    { id: 'org-qs', slug: 'quick-support-partner-123', type: 'quick_support' },
+    { id: 'org-acme', slug: 'Acme', type: 'customer' },
+    { id: 'org-beta', slug: 'beta', type: 'internal' },
+  ];
+
+  it('returns an orgAccess=all list in slug order, the hidden Quick Support org last', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'all', orgIds: null }]) as any)
+      .mockReturnValueOnce(selectWithWhere(ROWS) as any);
+
+    const reach = await computeAccessibleOrgIds('partner', 'partner-123', null, 'user-123');
+
+    expect(reach).toEqual({ orgIds: ['org-acme', 'org-beta', 'org-zulu', 'org-qs'], partnerOrgAccess: 'all' });
+  });
+
+  it('orders an orgAccess=selected list the same way, regardless of row order', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'selected', orgIds: ['org-zulu', 'org-acme'] }]) as any)
+      .mockReturnValueOnce(selectWithWhere([...ROWS].reverse()) as any);
+
+    const reach = await computeAccessibleOrgIds('partner', 'partner-123', null, 'user-123');
+
+    expect(reach.orgIds).toEqual(['org-acme', 'org-beta', 'org-zulu', 'org-qs']);
   });
 });

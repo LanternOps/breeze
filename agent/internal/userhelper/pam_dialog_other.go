@@ -2,8 +2,19 @@
 
 package userhelper
 
-import "github.com/breeze-rmm/agent/internal/ipc"
+import (
+	"context"
+	"errors"
 
-func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
+	"github.com/breeze-rmm/agent/internal/ipc"
+)
+
+func showPamDialog(context.Context, ipc.PamRequestDialog) ipc.PamDialogResult {
 	return ipc.PamDialogResult{Approved: false, DismissedByUser: true}
+}
+
+// showSystemPromptOS: the SYSTEM helper renders prompts only on Windows (it
+// advertises nothing elsewhere).
+func showSystemPromptOS(context.Context, nativePromptModel, func()) nativeOutcome {
+	return nativeOutcome{Err: errors.New("the SYSTEM helper renders prompts only on Windows")}
 }

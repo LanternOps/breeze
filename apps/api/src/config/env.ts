@@ -222,10 +222,12 @@ export function toolSourcesEnabled(): boolean {
 }
 
 // Tool Catalog W3 (#5218). Platform kill switch for Flows (flow documents,
-// flow AI tools, /api/v1/flows). Default OFF. Read at CALL time so a test can
-// flip it per-case without vi.resetModules().
+// flow AI tools, /api/v1/flows). Default ON since W06 R1 (#5221, plan
+// Decision 11): unset or empty is on; `FLOWS_ENABLED=false` keeps Flows off
+// and standalone Jobs writable. Read at CALL time so a test can flip it
+// per-case without vi.resetModules().
 export function flowsEnabled(): boolean {
-  return envFlag('FLOWS_ENABLED', false);
+  return envFlag('FLOWS_ENABLED', true);
 }
 
 // Topology rollout deployment kill switch. Partner and organization flags are
@@ -315,6 +317,26 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
 }
 
 /**
+ * Recipe-level gate for `identity_offboarding` (Recipe Library W06; spec §9's
+ * `deterministic` class ships behind its own flag). Nests under
+ * AI_OPERATOR_TASKS_ENABLED, exactly as the service-recovery flag does. Stays
+ * OFF until the R1c lab run passes; nothing in the repo enables it.
+ */
+export function aiOperatorIdentityOffboardingEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', false);
+}
+
+/**
+ * Recipe-level gate for `identity_onboarding` (Recipe Library W07 R2). Nests
+ * under AI_OPERATOR_TASKS_ENABLED exactly as the offboarding flag does, and is
+ * read at call time. Stays OFF until the R2c lab run passes; nothing in the
+ * repo enables it.
+ */
+export function aiOperatorIdentityOnboardingEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', false);
+}
+
+/**
  * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
  *
  * THREE conditions, all read at CALL time so a test can flip one without
@@ -333,6 +355,25 @@ export function aiWorkspaceEnabled(): boolean {
     isHosted()
     && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
     && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
+}
+
+/**
+ * Wisp, the always-on delegated agent (Wisp design §10).
+ *
+ * This is the DEPLOYMENT switch; the `wisp` entitlement (W01) is the commercial
+ * switch, and both must be on before anything Wisp-shaped runs. Same three-term
+ * conjunction as aiWorkspaceEnabled(), all read at CALL time: hosted, the AI
+ * agents platform switch, and BREEZE_WISP_ENABLED. Default OFF. With it off the
+ * /api/v1/wisp routes answer 404, the grant hooks are not installed and the
+ * reconciler skips every tick. config/validate.ts refuses the flag in production
+ * without IS_HOSTED=true.
+ */
+export function wispEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_WISP_ENABLED', false)
   );
 }
 
@@ -406,6 +447,60 @@ export function positiveIntEnv(name: string, fallback: number, min: number, max:
   const parsed = Number.parseInt(raw.trim(), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.min(Math.max(parsed, min), max);
+}
+
+/**
+ * Tool catalog W04 (#5219): how long a parked Tier-3 flow step's action intent
+ * waits for a human (both approval scopes). Default 24 h, clamped 1..168.
+ */
+export function flowApprovalTtlHours(): number {
+  return positiveIntEnv('FLOW_APPROVAL_TTL_HOURS', 24, 1, 168);
+}
+
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 8: how many runs of one
+ * flow owner (an org, or a partner for its partner-wide flows) may be
+ * `running` at once, across every API replica. Parked runs do not count.
+ * Default 20, clamped 1..500.
+ */
+export function flowMaxRunningPerOwner(): number {
+  return positiveIntEnv('FLOW_MAX_RUNNING_PER_OWNER', 20, 1, 500);
+}
+
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 9: days after a run
+ * finishes before its bodies (trigger payload, inputs, step inputs/outputs)
+ * are pruned. Rows are never deleted. Default 90, clamped 7..3650.
+ */
+export function flowRunRetentionDays(): number {
+  return positiveIntEnv('FLOW_RUN_RETENTION_DAYS', 90, 7, 3650);
+}
+
+/**
+ * Tool catalog W05 (#5220): inbound webhook deliveries accepted per minute for
+ * one flow (Redis limiter; over it the intake answers 429). Default 120,
+ * clamped 1..6000.
+ */
+export function flowWebhookRatePerMinute(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_RATE_PER_MINUTE', 120, 1, 6000);
+}
+
+/**
+ * Tool catalog W05 (#5220): days a non-accepted flow webhook delivery row
+ * (refused / org_unresolved / invalid_body) is kept; accepted rows live as
+ * long as their run. Default 30, clamped 1..365.
+ */
+export function flowWebhookDeliveryRetentionDays(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 30, 1, 365);
+}
+
+/**
+ * Tool catalog W05 (#5220): the most for-each items one flow step runs at
+ * once; the step's own `forEach.concurrency` is capped by this. Default 5,
+ * clamped 1..10.
+ */
+export function flowForEachMaxParallel(): number {
+  return positiveIntEnv('FLOW_FOREACH_MAX_PARALLEL', 5, 1, 10);
 }
 
 /** Per-API-instance `sync-domain` concurrency (spec §5.3). */
@@ -518,6 +613,63 @@ export function ipClassifyProvider(
 
 export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): string {
   return (source.IP_CLASSIFY_API_KEY ?? '').trim();
+}
+
+/**
+ * The classifier in effect: a keyed provider, or the offline baseline
+ * (Tor exit list + hosting ASNs, #11698) when none is configured.
+ */
+export function activeIpClassifier(source: NodeJS.ProcessEnv = process.env): 'offline' | 'ipinfo' | 'ipdata' {
+  const provider = ipClassifyProvider(source);
+  return provider === 'none' ? 'offline' : provider;
+}
+
+export const IP_CLASSIFY_TOR_LIST_DEFAULT_URL = 'https://check.torproject.org/torbulkexitlist';
+/**
+ * Pinned to a commit, not a branch: the hosting list feeds a security gate, so
+ * a change upstream reaches deployments only through a reviewed bump of this
+ * pin. Bump it together with services/ipClassifyData/hostingAsnSnapshot.ts.
+ */
+export const IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL =
+  'https://raw.githubusercontent.com/brianhama/bad-asn-list/b825d2e0e09684842599b75881fc76cb42f0e8c6/bad-asn-list.csv';
+export const IP_CLASSIFY_ASN_DB_DEFAULT_URL = 'https://iptoasn.com/data/ip2asn-combined.tsv.gz';
+
+const warnedIpClassifySourceVars = new Set<string>();
+
+/**
+ * Unset or empty → the default URL; `none`/`off`/`false` → null (download
+ * disabled, the bundled snapshot or nothing is used); any other value must be
+ * an https URL. An invalid value (including plain http) warns once and
+ * disables the download rather than silently using the default the operator
+ * tried to replace.
+ */
+function resolveIpClassifySourceUrl(name: string, raw: string | undefined, fallback: string): string | null {
+  const value = (raw ?? '').trim();
+  if (value === '') return fallback;
+  if (['none', 'off', 'false', '0'].includes(value.toLowerCase())) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:') return url.toString();
+  } catch {
+    // fall through to the warning
+  }
+  if (!warnedIpClassifySourceVars.has(name)) {
+    warnedIpClassifySourceVars.add(name);
+    console.warn(`[IPClassify] ${name} is not an https URL; that offline source will not be downloaded`);
+  }
+  return null;
+}
+
+export function ipClassifyTorListUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_TOR_LIST_URL', source.IP_CLASSIFY_TOR_LIST_URL, IP_CLASSIFY_TOR_LIST_DEFAULT_URL);
+}
+
+export function ipClassifyHostingAsnUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_HOSTING_ASN_URL', source.IP_CLASSIFY_HOSTING_ASN_URL, IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL);
+}
+
+export function ipClassifyAsnDbUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_ASN_DB_URL', source.IP_CLASSIFY_ASN_DB_URL, IP_CLASSIFY_ASN_DB_DEFAULT_URL);
 }
 
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:

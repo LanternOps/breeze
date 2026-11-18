@@ -8,6 +8,7 @@
  * that will catch any actual type errors at runtime against a real database.
  */
 import { randomUUID } from 'crypto';
+import type { PlanType } from '@breeze/shared';
 import { getTestDb, type TestDatabase } from './setup';
 import { hashPassword } from '../../services/password';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -164,7 +165,7 @@ export interface CreatePartnerOptions {
   name?: string;
   slug?: string;
   type?: 'msp' | 'enterprise' | 'internal';
-  plan?: 'free' | 'pro' | 'enterprise' | 'unlimited';
+  plan?: PlanType;
   /** Defaults to 'active'. Use 'suspended' / 'churned' / 'pending' to test the tenant-status gate. */
   status?: 'pending' | 'active' | 'suspended' | 'churned';
   /** Set to a Date to soft-delete the partner (drives the deletedAt branch in tenantStatus.ts). */
@@ -342,6 +343,18 @@ export async function createDevice(options: CreateDeviceOptions): Promise<{ id: 
   return { id: device.id };
 }
 
+/**
+ * A device's current `agent_id`: what an agent authenticated as that device
+ * carries into a command claim (#8318 §6.4 — the claim's flip re-checks it).
+ */
+export async function deviceAgentId(deviceId: string): Promise<string> {
+  const [row] = await getTestDb().execute<{ agent_id: string }>(
+    sql`SELECT agent_id FROM devices WHERE id = ${deviceId}::uuid`,
+  );
+  if (!row) throw new Error(`deviceAgentId: no device ${deviceId}`);
+  return row.agent_id;
+}
+
 // ============================================
 // Role Utilities
 // ============================================
@@ -433,6 +446,27 @@ export async function assignUserToPartner(
     .returning();
 
   return assignment;
+}
+
+/**
+ * A partner service principal is bounded by its owner's live authority on
+ * every request: the owner must stay an active partner member with all-org
+ * access whose role backs the principal's scopes. Fixtures that seed a
+ * principal for a bare user call this to make that user a partner-wide admin
+ * (every permission, all-org access). A user who already belongs to the
+ * partner is left exactly as the test set them up.
+ */
+export async function ensurePartnerServicePrincipalOwner(userId: string, partnerId: string) {
+  const database = db();
+  const [existing] = await database
+    .select({ id: partnerUsers.id })
+    .from(partnerUsers)
+    .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
+    .limit(1);
+  if (existing) return;
+  const role = await createRole({ scope: 'partner', partnerId, name: `Principal owner ${randomUUID().slice(0, 8)}` });
+  await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+  await assignUserToPartner(userId, partnerId, role.id, 'all');
 }
 
 /**

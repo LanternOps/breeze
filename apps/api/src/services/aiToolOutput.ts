@@ -2,6 +2,13 @@ import { redactLogFields, redactLogMessage, redactToolOutputFields } from './log
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText, sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+import {
+  PAGE_RESUME_KEY,
+  pageResumeRowCount,
+  readPageResume,
+  resumePointAfter,
+  type PageResume,
+} from './aiToolPageResume';
 
 // Re-exported for existing importers; the rule set lives in ./redactionPatterns.
 export { BARE_SECRET_PATTERNS };
@@ -30,7 +37,32 @@ type CompactConfig = {
    * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
    */
   maxStdoutChars: number;
+  /**
+   * #11673: string leaves under these keys get the stdout budget, never less
+   * than LONG_TEXT_MIN_CHARS — set per tool from LONG_TEXT_KEYS_BY_TOOL,
+   * never on a tier itself.
+   */
+  longTextKeys?: ReadonlySet<string>;
 };
+
+/**
+ * #11673: per tool, the keys whose text the model reads to answer and that
+ * end with the conclusion, so the generic 1,500-char leaf cap cuts the part
+ * it needs. `get_ai_agent_run`'s `summary` is a run's report (up to 2,000
+ * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
+ */
+const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // #11966: `resultSummary` is a step's result, already compacted and bounded
+  // (STEP_RESULT_MAX_CHARS, mcpActionStatus.ts) under the step's own tool. A
+  // second cut here would drop the part the chat was asked about.
+  get_ai_agent_run: new Set(['summary', 'resultSummary']),
+};
+/**
+ * A long-text key never drops below this, even in the tighter tiers (where
+ * stdout falls to 2,000 / 1,000): a whole run report is the point of reading
+ * the run, so the tiers shrink the trace around it instead.
+ */
+const LONG_TEXT_MIN_CHARS = 2_000;
 
 const DEFAULT_CONFIG: CompactConfig = {
   maxStringChars: 1_500,
@@ -288,8 +320,13 @@ function compactValue(
 
   if (typeof value === 'string') {
     // stdout carries the command output the model asked for — give it the
-    // dedicated (larger) budget instead of the generic leaf cap (#3093).
-    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    // dedicated (larger) budget instead of the generic leaf cap (#3093), and
+    // so does a tool's registered long-text key (#11673).
+    const maxChars = keyHint === 'stdout'
+      ? config.maxStdoutChars
+      : config.longTextKeys?.has(keyHint) === true
+        ? Math.max(config.maxStdoutChars, LONG_TEXT_MIN_CHARS)
+        : config.maxStringChars;
     return truncateText(value, maxChars, stats);
   }
 
@@ -519,6 +556,18 @@ const COMMAND_STYLE_HANDLED_KEYS = new Set([
   'status', 'exitCode', 'durationMs', 'error', 'stdout', 'stdoutChars', 'stderr', 'stderrChars', 'data',
 ]);
 
+/**
+ * A `stdoutChars`/`stderrChars` already on the payload: set by an earlier
+ * pass of `compactCommandStylePayload` over the same result (#10411), so it
+ * counts the text before that pass truncated it — re-counting the truncated
+ * string would understate what the tool returned.
+ */
+function priorCharCount(value: unknown, textChars = 0): number | undefined {
+  // Never smaller than the text in hand: a count below it cannot describe that
+  // text's original, so a payload-supplied value cannot understate the output.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= textChars ? value : undefined;
+}
+
 function compactCommandStylePayload(
   payload: Record<string, unknown>,
   stats: CompactStats,
@@ -576,8 +625,23 @@ function compactCommandStylePayload(
       output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
-      output.stdoutChars = payload.stdout.length;
+      output.stdoutChars = priorCharCount(payload.stdoutChars, payload.stdout.length) ?? payload.stdout.length;
     }
+  } else if (payload.stdout !== undefined && payload.stdout !== null) {
+    // #10411: a structured stdout that an EARLIER pass of this function
+    // already parsed into an object. The chat handler compacts a result for
+    // the model and postToolUse compacts that same string again before
+    // persisting the tool_result row; skipping a non-string stdout here (it
+    // is a handled key, so the passthrough loop below skips it too) left the
+    // transcript with {status, exitCode, commandId} while the model had read
+    // the output. Keep it, bounded and redacted exactly as on the first pass.
+    const redactedStdout = redactToolOutputFields(payload.stdout, redactAiToolOutputText);
+    output.stdout = compactValue(redactedStdout, stats, {
+      ...config,
+      maxArrayItems: Math.min(config.maxArrayItems, 50),
+    });
+    const priorChars = priorCharCount(payload.stdoutChars);
+    if (priorChars !== undefined) output.stdoutChars = priorChars;
   }
 
   if (typeof payload.stderr === 'string') {
@@ -590,7 +654,7 @@ function compactCommandStylePayload(
         stats,
       );
     }
-    output.stderrChars = payload.stderr.length;
+    output.stderrChars = priorCharCount(payload.stderrChars, payload.stderr.length) ?? payload.stderr.length;
   }
 
   if (payload.data !== undefined) {
@@ -954,6 +1018,61 @@ function extractPagingEnvelope(value: unknown): Record<string, unknown> {
   return out;
 }
 
+/**
+ * #10385: split the page-resume descriptor (aiToolPageResume.ts) off a tool
+ * result. It is ALWAYS removed — it is compaction input, never model output —
+ * and returned only when well-formed.
+ */
+function takePageResume(value: unknown): { payload: unknown; resume: PageResume | null; malformed: boolean } {
+  if (!isRecord(value) || !(PAGE_RESUME_KEY in value)) return { payload: value, resume: null, malformed: false };
+  const { [PAGE_RESUME_KEY]: descriptor, ...payload } = value;
+  const resume = readPageResume(descriptor);
+  return { payload, resume, malformed: resume === null };
+}
+
+/** Row count of the page the tool built, or null if it no longer matches the descriptor. */
+function pagedRowCount(source: unknown, resume: PageResume): number | null {
+  if (!isRecord(source)) return null;
+  const rows = source[resume.key];
+  if (!Array.isArray(rows) || rows.length !== pageResumeRowCount(resume)) return null;
+  return rows.length;
+}
+
+/**
+ * #10385: compaction cut the paged row array, so the tool's `nextCursor` /
+ * `showing` / `hasMore` describe rows the model never received — following the
+ * cursor would skip them, and a `hasMore: false` page offered no cursor at all.
+ * Rewrite the envelope to describe what was actually kept: `nextCursor`
+ * resumes right after the last kept row. `total` is the size of the whole
+ * result set and stays as the tool reported it.
+ */
+function applyPageResume(compacted: unknown, original: number, resume: PageResume): unknown {
+  if (!isRecord(compacted)) return compacted;
+  const rows = compacted[resume.key];
+  if (!Array.isArray(rows)) return compacted;
+  const hasSentinel = rows.length > 0 && priorArrayOmitted(rows[rows.length - 1]) !== null;
+  const kept = rows.length - (hasSentinel ? 1 : 0);
+  if (kept >= original) return compacted;
+  const counts = { showing: kept, ...(compacted.count === original ? { count: kept } : {}) };
+  const next = resumePointAfter(resume, kept);
+  // Past the tool's offset ceiling no cursor can reach the dropped rows (the
+  // tool would clamp it back onto rows already shown). Correct the counts and
+  // leave the tool's own continuation as it wrote it.
+  if (next.kind === 'unreachable') return { ...compacted, ...counts };
+  return { ...compacted, ...counts, hasMore: true, nextCursor: next.kind === 'cursor' ? next.cursor : null };
+}
+
+function warnUnusablePageResume(toolName: string, reason: 'malformed' | 'row_count_mismatch'): void {
+  // Tool name and reason only. A tool that reshapes its rows after building
+  // the envelope loses the cursor fix; this is how that gets noticed.
+  console.warn('[AI] page-resume descriptor unusable; envelope left as the tool wrote it:', reason, 'tool:', toolName);
+}
+
+// #10385: a digest carries no rows, so the only lossless continuation is this
+// same page position again, with fewer rows per call.
+const DIGEST_RESUME_HINT = 'Call again with the nextCursor value and a smaller limit';
+const DIGEST_RESTART_HINT = 'Call again with a smaller limit';
+
 function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
   if (!isRecord(value)) return null;
   const { artifact, compacted } = value as Record<string, unknown>;
@@ -981,6 +1100,29 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
+  // Full-control W16 PR A (#6786): the service name is the model's (and so a prompt's) text, echoed back; an
+  // admission refusal's sentence, returned as `error`, can quote it.
+  create_operator_task: new Set(['serviceName', 'error']),
+  // Full-control W16 PR B (#6786): a design's labels, names and refs were written by a model from device evidence, and
+  // hostnames by devices; none becomes instructions, and neither does a stored ledger error.
+  manage_fleet_designs: new Set(['label', 'groupName', 'policyName', 'name', 'itemName', 'hostname', 'itemRef', 'functionKey', 'error']),
+  // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
+  // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
+  get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
+  get_account_readiness: new Set(['name', 'email', 'phone', 'mobile', 'label', 'provider']),
+  list_portal_users: new Set(['name', 'email']),
+  list_users: new Set(['name', 'email', 'roleName']),
+  get_user: new Set(['name', 'email', 'roleName']),
+  list_roles: new Set(['name', 'description', 'roleName', 'parentRoleName', 'sourceRoleName', 'email']),
+  // W15: vendor/person text never becomes instructions (including provisioned field values).
+  get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
+  search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
+  manage_pax8_subscriptions: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'pax8CompanyName', 'mappedOrgName', 'productName', 'vendorName', 'error']),
+  manage_pax8_orders: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'productName', 'error', 'provisioningDetails']),
   // Windows/syslog event text: writable by any local unprivileged process.
   search_logs: new Set(['message']),
   get_log_trends: new Set(['source']),
@@ -990,6 +1132,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Huntress incident text: vendor-authored, but routinely echoes
   // endpoint-chosen artifact names (filenames, process names, paths).
   get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // Huntress agent rows (#10393): hostname is chosen on the endpoint, and
+  // platform/status are vendor-reported strings; deviceHostname is the
+  // Breeze device's agent-reported hostname.
+  get_huntress_agents: new Set(['hostname', 'deviceHostname', 'platform', 'status']),
   // EDR-framework detection rows: vendor-authored strings that routinely echo
   // endpoint-chosen artifact names (threat/file/process names). get_edr_status
   // is deliberately absent: it carries Breeze-generated labels and notes only.
@@ -997,13 +1143,137 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),
+  // Full-control W06 (#6776). The inbound-email review queue holds mail the router could not
+  // place: sender, recipient, subject and parse error are all attacker-authored. Attachment
+  // filenames come from the uploader (or a run artifact name) and `text` is decoded file
+  // content. Time suggestions echo a ticket subject (requester-authored) and a device hostname
+  // (self-reported at enrollment).
+  manage_ticket_inbox: new Set(['subject', 'fromAddress', 'toAddress', 'error']),
+  manage_ticket_attachments: new Set(['originalFilename', 'text']),
+  manage_time_suggestions: new Set(['subject', 'hostname']),
+  // Full-control W07 (#6777). Alert title/message come from a rule match against endpoint-reported
+  // data; the RCA evidence timeline carries event-log text (`title`, `summary`, `message`) and
+  // metadata authored on the endpoint; a group's `rootCause`/`alerts` echo alert titles.
+  get_alert_correlations: new Set(['title', 'message', 'summary', 'label']),
+  // Reliability offender labels are service, hardware-source and process names reported by the
+  // device (`get_fleet_health` also returns them under `offenders`).
+  get_fleet_health: new Set(['label', 'detail']),
+  // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
+  manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
+  // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
+  // fenced as data, never instructions.
+  manage_backup_verification: new Set(['deviceName', 'reason', 'message', 'error']),
+  get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
+  // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
+  manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
+  list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
+  // Device, computer and customer names, and a provider's label, come from agents and vendors.
+  get_backup_health: new Set(['name', 'computerName', 'orgName', 'providerLabel']),
+  // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
+  // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
+  // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
+  // are fenced here as data, never instructions.
+  get_topology_graph: new Set(['label', 'role', 'vendor', 'model', 'os', 'type']),
+  manage_topology_manual: new Set(['label', 'notes']),
+  manage_topology_monitoring: new Set(['label', 'hostname', 'host', 'provider', 'independenceLabel']),
+  manage_topology_templates: new Set(['name', 'description', 'label', 'hostname', 'host']),
+  // Full-control W09 (#6779). Template / OID names and descriptions, known-guest labels and notes are
+  // operator-authored; UniFi console / site / device / client names, SSIDs, hostnames and error strings come from
+  // the vendor or the network. All are fenced as data, never instructions.
+  manage_snmp_templates: new Set(['name', 'description', 'vendor', 'deviceClass', 'label', 'unit', 'templateName']),
+  get_snmp_metrics: new Set(['name', 'deviceName']),
+  manage_known_guests: new Set(['label', 'notes']),
+  get_unifi_status: new Set(['accountLabel', 'name', 'hostname', 'ssid', 'unifiHostName', 'unifiSiteName', 'lastPollError', 'lastSyncError', 'error', 'model']),
+  probe_network_asset: new Set(['error']),
+  // Full-control W10 (#6780). Operator-task objectives / hand-offs / step and event text are written by humans and other agent
+  // runs; plan renderings and labels name provider accounts; the Fleet Design markdown is model-generated from device-reported
+  // data; origin labels are session titles or agent names. All are fenced as data, never instructions (quorum QW4).
+  get_device_ai_activity: new Set(['label']),
+  list_operator_tasks: new Set(['objective', 'label', 'name', 'outcomeDetail', 'handoffSummary']),
+  get_operator_task: new Set([
+    'objective', 'label', 'name', 'outcomeDetail', 'handoffSummary', 'targetLabel', 'principalLabel',
+    'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
+  ]),
+  get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
+  // Full-control W11 (#6781, quorum QW10): every free-text field the security policy tools return, nested included.
+  // Device-reported (hostnames, local admin usernames, password-policy rule text, encryption volume labels, audit
+  // deviations), staff-authored (policy, review, rule and signer-group names, descriptions, notes, exclusions,
+  // match patterns) or identity data (member names and emails): data for the model, never instructions.
+  get_security_compliance: new Set([
+    'deviceName', 'username', 'rule', 'drive', 'method', 'status', 'providerVersion', 'definitionsVersion', 'name', 'title',
+  ]),
+  manage_security_recommendations: new Set(['title', 'description']),
+  manage_access_reviews: new Set(['name', 'description', 'notes', 'userName', 'userEmail', 'reviewerName', 'roleName']),
+  manage_audit_baselines: new Set(['name', 'baselineName', 'hostname', 'setting', 'actual', 'reason']),
+  manage_security_policies: new Set(['name', 'description', 'providerId', 'exclusions']),
+  manage_compliance_policies: new Set(['name']),
+  manage_recovery_keys: new Set(['hostname', 'volumeMount', 'protectorId', 'keyType']),
+  manage_pam_rules: new Set([
+    'name', 'description', 'matchSigner', 'matchPathGlob', 'matchParentImage', 'matchCommandLine', 'matchUser',
+    'matchAdGroup', 'matchToolName', 'subjectCn', 'signers',
+  ]),
+  // Full-control W12 (#6782, W12-D8): package, vendor and version strings are device- or vendor-reported; catalog,
+  // deployment, finding and custom-field names, notes and values are staff-authored or device-written. Data for the
+  // model, never instructions.
+  manage_software_catalog: new Set([
+    'name', 'vendor', 'category', 'description', 'version', 'releaseNotes', 'packageId', 'downloadHost',
+    'silentInstallArgs', 'silentUninstallArgs', 'architecture', 'originalFileName',
+  ]),
+  search_packages: new Set(['id', 'name', 'publisher', 'description', 'version', 'packageId', 'title', 'homepage']),
+  manage_software_deployments: new Set(['name', 'hostname', 'errorMessage', 'output', 'softwareName', 'version', 'error']),
+  get_device_software: new Set(['name', 'version', 'vendor', 'hostname']),
+  manage_device_software: new Set(['name', 'version']),
+  manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
+  manage_fleet_findings: new Set(['title']),
+  // #10383: get_fleet_findings returns the same cached finding title (a log-correlation
+  // finding's title echoes the matched rule name or event pattern).
+  get_fleet_findings: new Set(['title']),
+  // #10383: generate_report device_inventory data returns the device-reported osVersion
+  // (fenced as for manage_software_inventory). hostname/agentVersion stay verbatim, per the
+  // hostname rule and query_agent_versions.
+  generate_report: new Set(['osVersion']),
+  manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
+  // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
+  // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
+  // warranty strings are device-reported, vendor-reported or staff-authored. Data for the model, never instructions.
+  get_device_events: new Set(['message', 'action', 'name', 'errorMessage', 'hostname']),
+  get_device_health: new Set(['reason', 'agentVersion', 'hostname']),
+  get_process_samples: new Set(['name', 'user', 'hostname']),
+  get_management_posture: new Set(['name', 'version', 'product', 'hostname', 'displayName', 'orgName']),
+  manage_device_function: new Set(['label', 'evidence']),
+  manage_device_links: new Set(['name', 'hostname', 'displayName']),
+  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
+  manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
+  // W13 PR B (#6783): agent-read event text, staff-authored variable keys / values / descriptions, and the
+  // support-session attribution label. Data for the model, never instructions.
+  browse_device_event_log: new Set(['name', 'displayName', 'message', 'source', 'category', 'user', 'computer', 'logName', 'hostname']),
+  manage_tenant_variables: new Set(['key', 'value', 'description', 'orgName']),
+  manage_support_sessions: new Set(['attributionLabel', 'endedReason']),
+  // W14 (#6784, W14-D6): staff-authored rate-card / work-type / template text, customer-facing invoice text, signer
+  // names and device-reported hostnames. Data for the model, never instructions.
+  manage_billing_profiles: new Set(['name', 'notes', 'modelId']),
+  manage_billing_settings: new Set(['invoiceFooter', 'billingTermsAndConditions', 'billingCompanyName', 'billingContact', 'billingContactName', 'name', 'invoiceNumberPrefix', 'billingWebsite', 'taxId']),
+  manage_contract_templates: new Set(['name', 'description', 'bodyHtml', 'warnings']),
+  manage_contract_documents: new Set(['templateName', 'signerName', 'acceptanceMethod', 'quoteNumber']),
+  get_device_billing: new Set(['description', 'contractName', 'name']),
+  // W14 PR B (#6784): names that came from the accounting provider or from staff, and provider error text.
+  manage_accounting_sync: new Set(['displayName', 'breezeDisplayName', 'proposedRemoteName', 'proposedRemoteEmail', 'sku', 'lastError', 'error', 'docNumber', 'invoiceNumber', 'email']),
+  // W14 (#6784): get_invoice lineId returns the billed devices' hostnames, which the devices reported.
+  get_invoice: new Set(['hostname']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
-  manage_alerts: new Set(['title', 'message']),
+  // #10408: `orgName` (multi-org callers) is a tenant-set name read into a
+  // session that spans other tenants — fenced as data, never instructions.
+  manage_alerts: new Set(['title', 'message', 'orgName']),
+  // #10383: manage_alert_rules get_rule returns the rule's recentAlerts[].title, the same
+  // device-derived alert title manage_alerts fences.
+  manage_alert_rules: new Set(['title']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
-  query_devices: new Set(['hostname', 'displayName']),
+  query_devices: new Set(['hostname', 'displayName', 'orgName']),
   get_device_details: new Set(['hostname', 'displayName']),
   // get_device_context's CURRENT result is plain text (device memory —
   // issues/quirks/follow-ups), never a JSON `hostname`/`displayName` field,
@@ -1043,7 +1313,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_script_execution_history: new Set(['stdout', 'stderr', 'errorMessage']),
   // A captured large result is read back window by window: without this the
   // artifact handle would be an unfenced route to the same device bytes.
-  read_artifact: new Set(['text']),
+  // #11845: `name` too, since an analysis run's output file is named by the
+  // model in the sandbox.
+  read_artifact: new Set(['text', 'name']),
   // ── Other device-reported text (#8852 W04) ─────────────────────────────
   // Every remaining tool in a command-dispatching aiTools*.ts file that
   // returns endpoint-authored strings (paths, names, OS error text, raw OS
@@ -1080,6 +1352,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   browse_snapshots: new Set(['label', 'metadata']),
   restore_snapshot: new Set(['selectedPaths']),
   trigger_backup: new Set(['errorLog']),
+  // #11768: the terminal line of a failed job's errorLog, written by the agent.
+  query_backups: new Set(['failureSummary']),
+  get_backup_status: new Set(['failureSummary']),
   list_network_assets: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_network_asset: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_ip_history: new Set(['hostname', 'interfaceName']),
@@ -1096,6 +1371,12 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_browser_security: new Set(['name', 'version', 'extensionId', 'details']),
   // Per-device install history: the installer's/OS's own error text.
   manage_patches: new Set(['errorMessage']),
+  // #9532: the affected software's name/version/vendor come from the agent's
+  // software inventory (an installer's DisplayName, settable by a local
+  // user). Every string under `software` is fenced; CVE ids, scores and
+  // Breeze-authored skip reasons stay verbatim.
+  get_device_vulnerabilities: new Set(['software']),
+  remediate_vulnerability: new Set(['software']),
 } as const;
 
 /**
@@ -1228,6 +1509,12 @@ export function compactToolResultForChat(
     });
   }
 
+  // #10385: the page-resume descriptor is compaction input — strip it before
+  // anything else sees the payload, and keep it to fix the envelope below.
+  const taken = takePageResume(parsed);
+  const { payload } = taken;
+  if (taken.malformed) warnUnusablePageResume(toolName, 'malformed');
+
   const stats = emptyStats();
   // A-W05 (D12): resolved once per call — every tier's stats copy carries it
   // (object spread), so the sentinel and _chat.nextStep always agree.
@@ -1237,7 +1524,7 @@ export function compactToolResultForChat(
   // cannot survive into a truncated `preview` further down (#2603). This is the
   // single chokepoint every aiTools*.ts result passes through, which is why the
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
-  const errorScrubbed = scrubErrorFieldsDeep(parsed, 0, false, { toolName });
+  const errorScrubbed = scrubErrorFieldsDeep(payload, 0, false, { toolName });
 
   // Neutralize injection-shaped text in fields that carry raw, endpoint- or
   // vendor-sourced content before it is measured/compacted. Same chokepoint
@@ -1250,36 +1537,63 @@ export function compactToolResultForChat(
   const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 
+  // #10385: the descriptor is only usable while its row count still matches
+  // the page — row N must be position N for a re-minted cursor to be right.
+  const pagedRows = taken.resume ? pagedRowCount(sanitized, taken.resume) : null;
+  if (taken.resume && pagedRows === null) warnUnusablePageResume(toolName, 'row_count_mismatch');
+  const resume = pagedRows !== null && pagedRows > 0 ? taken.resume : null;
+
   // Try each tier from `sanitized`, not from the previous tier's output: a
   // tighter tier that re-compacted already-compacted data would report drop
   // counts relative to the prior tier (e.g. "30 dropped" when 180 of 200 are
   // gone) and leave `stdoutTruncation` stale. Recomputing from the sanitized
   // payload keeps the marker and counters accurate for whichever tier ships.
   const baseStats: CompactStats = { ...stats };
+  const longTextKeys = Object.hasOwn(LONG_TEXT_KEYS_BY_TOOL, toolName) ? LONG_TEXT_KEYS_BY_TOOL[toolName] : undefined;
   let serialized = '';
-  for (const tier of COMPACTION_TIERS) {
+  for (const baseTier of COMPACTION_TIERS) {
+    const tier: CompactConfig = longTextKeys ? { ...baseTier, longTextKeys } : baseTier;
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);
-    const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
+    const resumed = resume && pagedRows !== null ? applyPageResume(compacted, pagedRows, resume) : compacted;
+    const withMeta = appendChatMeta(resumed, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
     if (serialized.length <= maxChars) {
       return serialized;
     }
   }
 
+  // #10385: the digest drops EVERY row, so the tool's nextCursor (which points
+  // past this page) would skip all of them. Point back at the start of this
+  // page instead, and ask for a smaller one.
+  const pagingEnvelope = extractPagingEnvelope(sanitized);
+  let nextStep = SENTINEL_HINTS[resolvePaginationHint(toolName)];
+  if (resume && pagedRows !== null) {
+    // The start of this page is always reachable — the tool just served it.
+    const start = resumePointAfter(resume, 0);
+    const cursor = start.kind === 'cursor' ? start.cursor : null;
+    Object.assign(pagingEnvelope, {
+      showing: 0,
+      ...(pagingEnvelope.count === pagedRows ? { count: 0 } : {}),
+      hasMore: true,
+      nextCursor: cursor,
+    });
+    nextStep = cursor ? DIGEST_RESUME_HINT : DIGEST_RESTART_HINT;
+  }
+
   return JSON.stringify({
-    ...extractPagingEnvelope(sanitized),
+    ...pagingEnvelope,
     summarized: true,
     _chat: {
       outputCompacted: true,
       originalChars: rawResult.length,
       reason: 'max_output_chars_exceeded',
-      nextStep: SENTINEL_HINTS[resolvePaginationHint(toolName)],
+      nextStep,
     },
     summary: {
       toolName,
-      keys: isRecord(parsed) ? Object.keys(parsed).slice(0, 20) : [],
+      keys: isRecord(payload) ? Object.keys(payload).slice(0, 20) : [],
     },
     preview: serialized.slice(0, RAW_PREVIEW_CHARS),
   });

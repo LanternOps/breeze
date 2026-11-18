@@ -16,11 +16,12 @@ type DetailEntry = { label: string; color: string; bgColor: string; icon: typeof
 
 export const executionRowStatusConfig: Record<ExecutionStatus, RowEntry> = {
   pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  // #5128 W2 — a queued execution's command hasn't reached the device yet;
-  // "Queued — device offline" replaces the ambiguous bare "Queued" now that
-  // the offline work queue makes this the common, expected case rather than
-  // a transient in-flight state.
-  queued: { label: 'status.queuedOffline', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
+  // #5128 W2 replaced the bare "Queued" with "Queued — device offline", but a
+  // queued execution only means its command did not reach a live agent
+  // session — the device can still report Online (#9563). The base label is
+  // the neutral "awaiting pickup"; resolveExecutionStatusLabel upgrades it to
+  // "device offline" only when the device's own status says so.
+  queued: { label: 'status.queuedAwaitingPickup', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
   running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
   cancelling: { label: 'status.cancelling', color: 'bg-warning/15 text-warning border-warning/30', icon: Loader2 },
   completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
@@ -31,7 +32,7 @@ export const executionRowStatusConfig: Record<ExecutionStatus, RowEntry> = {
 
 export const executionDetailStatusConfig: Record<ExecutionStatus, DetailEntry> = {
   pending: { label: 'status.pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
-  queued: { label: 'status.queuedOffline', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
+  queued: { label: 'status.queuedAwaitingPickup', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
   running: { label: 'status.running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
   cancelling: { label: 'status.cancelling', color: 'text-warning', bgColor: 'bg-warning/10', icon: Loader2 },
   completed: { label: 'status.completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
@@ -60,11 +61,32 @@ const TERMINAL_EXECUTION_STATUSES = new Set<ExecutionStatus>(['completed', 'fail
 export function resolveExecutionStatusLabel(
   status: ExecutionStatus,
   cancelState: CancelState | null | undefined,
+  deviceStatus?: string | null,
 ): string {
+  if (status === 'queued' && deviceStatus === 'offline') return 'status.queuedOffline';
   if (!cancelState || cancelState === 'requested' || !TERMINAL_EXECUTION_STATUSES.has(status)) {
     return executionRowStatusConfig[status].label;
   }
   if (status === 'cancelled') return 'status.cancelled';
   if (cancelState === 'failed') return 'status.cancelFailed';
   return `status.${status}CancelTooLate`;
+}
+
+/**
+ * #9563 — the sentence under the status in Execution Details. For a run that
+ * has not reached the device yet (`pending`/`queued`), the device's own status
+ * decides the copy: offline gets a distinct "the device is offline" message;
+ * anything else (online, unknown, maintenance…) says the run is waiting for the
+ * agent to pick it up, because an undelivered command does not prove the
+ * device is offline. Returns a key under `executionDetails.`.
+ */
+export function resolveExecutionStatusDescription(
+  status: ExecutionStatus,
+  deviceStatus?: string | null,
+): string {
+  if ((status === 'pending' || status === 'queued') && deviceStatus === 'offline') {
+    return 'statusDescription.deviceOffline';
+  }
+  if (status === 'queued') return 'statusDescription.queuedAwaitingPickup';
+  return `statusDescription.${status}`;
 }

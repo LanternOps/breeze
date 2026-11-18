@@ -206,6 +206,15 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(defaultOfflinePolicy('system_cleanup_run')).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60 * 1000 });
   });
 
+  // #8729: "Force reboot now" must mean now. A queued force reboot that reached
+  // a laptop hours later would force-close whatever the person there is
+  // working on, so it gets the live_only window, not the 24 h power_state one.
+  it('delivers force_reboot live-only, not on the 24 h power-state window', () => {
+    expect(COMMAND_OFFLINE_POLICY_REGISTRY.force_reboot).toBe('live_only');
+    expect(defaultOfflinePolicy('force_reboot')).toEqual({ kind: 'queue', deliverWithinMs: 15 * 60 * 1000 });
+    expect(deliveryTtlMs('live_only')).toBeLessThan(deliveryTtlMs('power_state'));
+  });
+
   it('live_only TTL is env-tunable with a one-minute floor', () => {
     vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '5');
     expect(deliveryTtlMs('live_only')).toBe(5 * 60 * 1000);
@@ -221,6 +230,18 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(policy.kind === 'queue' && policy.deliverWithinMs).toBe(deliveryTtlMs('standard'));
     expect(GATED_COMMAND_TYPES).toContain('notify_user');
     expect(LIFECYCLE_COMMAND_TYPES).not.toContain('notify_user');
+  });
+
+  it('registers pam_request_notify as a short queueable type, partner-trust gated (#8928)', () => {
+    expect(CommandTypes.PAM_REQUEST_NOTIFY).toBe('pam_request_notify');
+    expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES).toContain('pam_request_notify');
+    const policy = defaultOfflinePolicy('pam_request_notify');
+    expect(policy.kind).toBe('queue');
+    expect(policy.kind === 'queue' && policy.deliverWithinMs).toBe(deliveryTtlMs('short'));
+    // Carries technician free text (the deny reason): operator content, so it
+    // is GATED like notify_user and never a lifecycle type (decision T2).
+    expect(GATED_COMMAND_TYPES).toContain('pam_request_notify');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('pam_request_notify');
   });
 
   it('registers the endpoint chat types as live (never queued for an offline device) (#8743)', () => {

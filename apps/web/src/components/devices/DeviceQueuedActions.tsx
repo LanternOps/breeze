@@ -19,7 +19,8 @@ type QueuedCommand = {
 // #8296 — mirrors POWER_STATE_BARRIER_TYPES (apps/api/src/services/
 // commandClaimEligibility.ts): these are held at claim time while any
 // delivered (`sent`) command is still running on the device.
-const POWER_COMMAND_TYPES = new Set(["reboot", "shutdown", "reboot_safe_mode"]);
+// `force_reboot` (#8729) is in the server barrier set too.
+const POWER_COMMAND_TYPES = new Set(["reboot", "shutdown", "reboot_safe_mode", "force_reboot"]);
 
 // Mirrors MARK_FAILED_MIN_AGE_MS on POST /devices/:id/commands/:cmdId/mark-failed.
 // The server enforces it (409 TOO_RECENT); this only decides whether to show

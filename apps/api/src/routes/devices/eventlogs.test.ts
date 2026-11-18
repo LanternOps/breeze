@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   getDeviceMock,
@@ -128,5 +129,66 @@ describe('device eventlogs stored-log category sensitivity', () => {
     const res = await app().request(`/${DEVICE_ID}/eventlogs?category=application`);
 
     expect(res.status).toBe(200);
+  });
+});
+
+// #10053: a reliability factor link selects every source its scored events came
+// from, so the list accepts the source filter repeated (`?source=a&source=b`).
+// A single `source` keeps its exact-match behaviour (additive change).
+describe('device eventlogs multi-value source filter', () => {
+  const dialect = new PgDialect();
+  const renderWhere = () => dialect.sqlToQuery(selectWhereArgs[selectWhereArgs.length - 1] as any);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectWhereArgs.length = 0;
+    canReadSensitiveMock.mockResolvedValue(true);
+    getDeviceMock.mockResolvedValue({
+      id: DEVICE_ID,
+      orgId: ORG_ID,
+      siteId: '44444444-4444-4444-8444-444444444444',
+      hostname: 'device-1',
+    });
+  });
+
+  it('filters by any of several repeated source values', async () => {
+    const res = await app().request(
+      `/${DEVICE_ID}/eventlogs?source=EventLog&source=${encodeURIComponent('Microsoft-Windows-Kernel-Power')}`
+    );
+
+    expect(res.status).toBe(200);
+    const { sql, params } = renderWhere();
+    expect(sql).toMatch(/"source" in \(\$\d+, \$\d+\)/);
+    expect(params).toEqual(expect.arrayContaining(['EventLog', 'Microsoft-Windows-Kernel-Power']));
+  });
+
+  it('keeps a single source as an exact match', async () => {
+    const res = await app().request(`/${DEVICE_ID}/eventlogs?source=${encodeURIComponent('Service Control Manager')}`);
+
+    expect(res.status).toBe(200);
+    const { sql, params } = renderWhere();
+    expect(sql).toMatch(/"source" = \$\d+/);
+    expect(params).toContain('Service Control Manager');
+  });
+
+  it('treats an empty source value as no filter, alone or beside a real one', async () => {
+    let res = await app().request(`/${DEVICE_ID}/eventlogs?source=`);
+    expect(res.status).toBe(200);
+    expect(renderWhere().sql).not.toMatch(/"source"/);
+
+    res = await app().request(`/${DEVICE_ID}/eventlogs?source=&source=EventLog`);
+    expect(res.status).toBe(200);
+    const { sql, params } = renderWhere();
+    expect(sql).toMatch(/"source" = \$\d+/);
+    expect(sql).not.toMatch(/"source" in/);
+    expect(params).toContain('EventLog');
+    expect(params).not.toContain('');
+  });
+
+  it('rejects more source values than the cap', async () => {
+    const qs = Array.from({ length: 26 }, (_, i) => `source=S${i}`).join('&');
+    const res = await app().request(`/${DEVICE_ID}/eventlogs?${qs}`);
+
+    expect(res.status).toBe(400);
   });
 });

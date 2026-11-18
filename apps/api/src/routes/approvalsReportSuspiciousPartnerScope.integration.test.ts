@@ -48,11 +48,12 @@
  */
 import '../__tests__/integration/setup';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db, withSystemDbAccessContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
+import { apiKeys } from '../db/schema/apiKeys';
 import { aiSessions, aiToolExecutions } from '../db/schema/ai';
 import { approvalRequests } from '../db/schema/approvals';
 import { auditLogs } from '../db/schema/audit';
@@ -212,6 +213,81 @@ async function seedIntent(s: Scenario): Promise<{ intentId: string; approvalRowI
   expect(snapshot.status).toBe('pending_approval');
   expect(snapshot.requesterApprovalRequestId).toBeTruthy();
   return { intentId: snapshot.id, approvalRowId: snapshot.requesterApprovalRequestId! };
+}
+
+/**
+ * B-W04 (#6158, D-B35): an `mcp_api` intent filed through a real human API
+ * key the REPORTER minted in the intent's org — the shape the MCP route
+ * produces (`source 'mcp_api'`, origin `api_key:<key id>`, requester = the key
+ * creator). `execute_command` is supervised, so the single approval row is the
+ * reporter's own. The AuthContext is the one `buildAuthFromApiKey` returns for
+ * an org-pinned key (same literal mcpIntentCap.integration.test.ts uses).
+ */
+async function seedMcpOriginIntent(
+  s: Scenario,
+): Promise<{ intentId: string; approvalRowId: string; keyId: string }> {
+  const rawKey = `brz_${randomBytes(24).toString('hex')}`;
+  const [key] = await withSystemDbAccessContext(() =>
+    db
+      .insert(apiKeys)
+      .values({
+        orgId: s.intentOrgId,
+        createdBy: s.user.id,
+        name: 'reported-mcp-key',
+        keyHash: createHash('sha256').update(rawKey).digest('hex'),
+        keyPrefix: rawKey.slice(0, 12),
+        scopes: ['ai:read', 'ai:execute'],
+        status: 'active',
+      })
+      .returning({ id: apiKeys.id }),
+  );
+  if (!key) throw new Error('seed: api_keys insert returned nothing');
+
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([s.intentOrgId]);
+  const keyAuth: AuthContext = {
+    principal: { kind: 'api_key', apiKeyId: key.id },
+    user: { id: s.user.id, email: s.user.email, name: 'API Key: reported-mcp-key', isPlatformAdmin: false },
+    token: {} as AuthContext['token'],
+    partnerId: s.partnerId,
+    orgId: s.intentOrgId,
+    scope: 'organization',
+    accessibleOrgIds: [s.intentOrgId],
+    orgCondition,
+    canAccessOrg,
+  };
+  const snapshot = await createActionIntent(keyAuth, {
+    toolName: 'execute_command',
+    input: { deviceId: randomUUID(), commandType: 'kill_process', payload: { pid: 4242 } },
+    source: 'mcp_api',
+    orgId: s.intentOrgId,
+    idempotencyKey: `mcp:v1:${key.id}:report-suspicious`,
+    correlationId: randomUUID(),
+    requestingClientLabel: 'MCP · reported-mcp-key',
+  });
+  expect(snapshot.status).toBe('pending_approval');
+  expect(snapshot.requesterApprovalRequestId).toBeTruthy();
+
+  const [intent] = await withSystemDbAccessContext(() =>
+    db
+      .select({
+        source: actionIntents.source,
+        originPrincipalKind: actionIntents.originPrincipalKind,
+        originPrincipalId: actionIntents.originPrincipalId,
+        requestedByUserId: actionIntents.requestedByUserId,
+      })
+      .from(actionIntents)
+      .where(eq(actionIntents.id, snapshot.id)),
+  );
+  // The precondition the revocation branch keys on, pinned so a seed drift
+  // cannot turn the case into a plain (non-MCP) report.
+  expect(intent).toEqual({
+    source: 'mcp_api',
+    originPrincipalKind: 'api_key',
+    originPrincipalId: key.id,
+    requestedByUserId: s.user.id,
+  });
+
+  return { intentId: snapshot.id, approvalRowId: snapshot.requesterApprovalRequestId!, keyId: key.id };
 }
 
 /**
@@ -530,6 +606,43 @@ describe('report-suspicious as a partner-scoped caller (real Postgres, breeze_ap
       const audits = await readSuspiciousAudit(approvalRowId);
       expect(audits).toHaveLength(1);
       expect(audits[0]?.orgId).toBeNull();
+    },
+  );
+
+  runDb(
+    'mcp_api intent reported by the key owner: 200 { reported, credentialRevoked }, and the origin API key is revoked',
+    async () => {
+      const s = seeded!;
+      const { intentId, approvalRowId, keyId } = await seedMcpOriginIntent(s);
+
+      const res = await reportSuspiciousAsPartner(s, approvalRowId);
+      // An MCP-origin report answers 200 with a body (the plain path is 204).
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ reported: true, credentialRevoked: true });
+
+      await withSystemDbAccessContext(async () => {
+        const [key] = await db
+          .select({ status: apiKeys.status })
+          .from(apiKeys)
+          .where(eq(apiKeys.id, keyId));
+        expect(key?.status).toBe('revoked');
+
+        const [row] = await db
+          .select({ status: approvalRequests.status })
+          .from(approvalRequests)
+          .where(eq(approvalRequests.id, approvalRowId));
+        expect(row?.status).toBe('reported');
+
+        const [intent] = await db
+          .select({ status: actionIntents.status })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId));
+        expect(intent?.status).toBe('rejected');
+      });
+
+      const audits = await readSuspiciousAudit(approvalRowId);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]?.orgId).toBe(s.intentOrgId);
     },
   );
 });

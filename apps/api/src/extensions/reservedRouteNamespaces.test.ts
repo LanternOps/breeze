@@ -100,6 +100,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     //   lifecycleAdminRoutes          → admin
     //   m365CallbackRoute             → c2c
     //   tenantVariableRoutes          → tenant-variables
+    //   serviceCatalogRoutes          → service-catalog
     // If this list changes, open the new sub-router, resolve its top-level
     // segments by hand, and add them to RESERVED_ROUTE_NAMESPACES.
     const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].map((m) => m[1]!).sort();
@@ -113,6 +114,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
       'lifecycleAdminRoutes',
       'lifecycleRoutes',
       'm365CallbackRoute',
+      'serviceCatalogRoutes',
       'tenantVariableRoutes',
       'ticketApprovalRoutes',
       'ticketApprovalSettingsRoutes',

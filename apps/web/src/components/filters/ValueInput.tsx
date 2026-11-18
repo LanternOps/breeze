@@ -29,6 +29,39 @@ export function ValueInput({
     );
   }
 
+  if (field?.key === 'software.version') {
+    const software = value && typeof value === 'object' && 'name' in value && 'version' in value
+      ? value
+      : { name: '', version: '' };
+    return (
+      <div className={`flex flex-wrap gap-2 ${className}`}>
+        <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+          {t('filters.value.softwareName')}
+          <input
+            type="text"
+            data-testid="software-version-name-input"
+            value={software.name}
+            maxLength={500}
+            onChange={e => onChange({ ...software, name: e.target.value })}
+            placeholder={t('filters.value.softwareExample')}
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+          />
+        </label>
+        <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+          {t('filters.value.softwareVersion')}
+          <input
+            type="text"
+            data-testid="software-version-value-input"
+            value={software.version}
+            maxLength={100}
+            onChange={e => onChange({ ...software, version: e.target.value })}
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+          />
+        </label>
+      </div>
+    );
+  }
+
   // Duration input for withinLast/notWithinLast
   if (operator === 'withinLast' || operator === 'notWithinLast') {
     return (

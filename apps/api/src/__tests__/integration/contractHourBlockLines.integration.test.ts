@@ -10,9 +10,10 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { contractBillingPeriods, contractHourPeriods, contractLines, contracts, organizations, partners, timeEntries, users } from '../../db/schema';
 import {
-  activateContract, addContractLineToContract, computeContractEstimate, removeContractLine, summarizeActiveContractMrrByOrg,
+  activateContract, addContractLineToContract, computeContractEstimate, removeContractLine,
   updateContractLine, type ContractActorT,
 } from '../../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../../services/contractMrr';
 import { computeOpenHourBlockPeriod } from '../../services/contractHourBlockEstimate';
 import { closeHourBlockPeriods } from '../../services/contractHourBlockClose';
 import { listContractHourPeriods } from '../../services/contractHourPeriodsRead';

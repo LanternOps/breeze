@@ -14,6 +14,7 @@ import { MONITOR_KINDS } from '@breeze/shared';
  */
 
 const {
+  loadPolicyApplicationProvidersMock,
   hasPermMock,
   mfaOkMock,
   listMonitorDefinitionsMock,
@@ -25,6 +26,7 @@ const {
   selectMock,
   isMonitorAttachableToPolicyMock,
 } = vi.hoisted(() => ({
+  loadPolicyApplicationProvidersMock: vi.fn(async (): Promise<string[]> => []),
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOkMock: vi.fn(() => true),
   listMonitorDefinitionsMock: vi.fn(),
@@ -40,6 +42,8 @@ const {
   // that the route respects the pre-check's answer.
   isMonitorAttachableToPolicyMock: vi.fn(async () => true),
 }));
+
+vi.mock('../services/eventLogPolicyProviders', () => ({ loadPolicyApplicationProviders: loadPolicyApplicationProvidersMock }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
@@ -160,6 +164,8 @@ function selectChain<T>(rows: T) {
 
 vi.mock('../db', () => ({
   db: { select: selectMock },
+  hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 import { monitorDefinitionRoutes } from './monitorDefinitions';
@@ -254,6 +260,7 @@ function jsonRequest(app: Hono, method: string, path: string, body?: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  loadPolicyApplicationProvidersMock.mockResolvedValue([]);
   hasPermMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   selectMock.mockReturnValue(selectChain([]));
@@ -310,6 +317,55 @@ describe('GET /monitor-definitions/kinds', () => {
       overridableKeys: ['minHealth', 'includePredictiveFailure', 'consecutiveSnapshots'],
       defaultSeverity: 'high', agentDelivered: false,
     });
+  });
+});
+
+describe('#10935: autoResolveConditions without logic never reaches the service', () => {
+  const noLogic = { conditions: [{ type: 'event_log', category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 }] };
+  const eventLog = { kind: 'event_log', condition: { category: 'application', level: 'warning', countThreshold: 1, windowMinutes: 60 } };
+
+  it('POST returns 400 at autoResolveConditions, not 201', async () => {
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({ ...eventLog, autoResolveConditions: noLogic }));
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('autoResolveConditions');
+    expect(createMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH returns 400 at autoResolveConditions, with or without the kind', async () => {
+    for (const body of [{ autoResolveConditions: noLogic }, { kind: 'event_log', autoResolveConditions: noLogic }]) {
+      const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, body);
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('autoResolveConditions');
+    }
+    expect(updateMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts the event_log shape', async () => {
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', messagePattern: 'Power Restored' },
+    }));
+
+    expect(res.status).toBe(201);
+    expect(createMonitorDefinitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the warning for a recovery event that is not collected', async () => {
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This', countThreshold: 1, windowMinutes: 60 },
+    }));
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This' },
+    }));
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { warnings?: string[] };
+    expect(body.warnings).toEqual(expect.arrayContaining([expect.stringContaining('Recovery condition')]));
   });
 });
 
@@ -391,6 +447,35 @@ describe('event_log collection warnings at save (#8174)', () => {
     windowMinutes: 60,
   });
 
+  it.each(['POST', 'PATCH'])('%s uses scoped policy providers for advisory warnings', async (method) => {
+    const row = { ...monitorRow(), kind: 'event_log', condition: infoCondition('Dell UPS Local Node Manager') };
+    createMonitorDefinitionMock.mockResolvedValue(row);
+    updateMonitorDefinitionMock.mockResolvedValue(row);
+    const request = () => jsonRequest(buildApp(), method, method === 'POST' ? '' : `/${MONITOR_ID}`, method === 'POST' ? validCreateBody() : { name: 'Renamed' });
+    expect((await (await request()).json()).warnings).toHaveLength(1);
+    loadPolicyApplicationProvidersMock.mockResolvedValue(['Dell UPS Local Node Manager']);
+    expect((await (await request()).json()).warnings).toBeUndefined();
+    expect(loadPolicyApplicationProvidersMock).toHaveBeenLastCalledWith({ orgId: ORG_ID, partnerId: null });
+  });
+
+  it('does not query providers for other monitor kinds or composites without event logs', async () => {
+    for (const row of [monitorRow(), monitorRow({ kind: 'composite', condition: { children: [{ kind: 'cpu', condition: {} }] } })]) {
+      createMonitorDefinitionMock.mockResolvedValue(row);
+      await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+    }
+    expect(loadPolicyApplicationProvidersMock).not.toHaveBeenCalled();
+  });
+
+  it('queries providers for an event-log composite child', async () => {
+    loadPolicyApplicationProvidersMock.mockResolvedValue(['Dell UPS Local Node Manager']);
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow({ kind: 'composite', condition: { children: [
+      { kind: 'event_log', condition: infoCondition('Dell UPS') },
+    ] } }));
+    const response = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+    expect((await response.json()).warnings).toBeUndefined();
+    expect(loadPolicyApplicationProvidersMock).toHaveBeenCalledTimes(1);
+  });
+
   it('POST returns warnings for an info-level Application source outside the agent allowlist', async () => {
     const created = { ...monitorRow(), kind: 'event_log', condition: infoCondition('Application Error') };
     createMonitorDefinitionMock.mockResolvedValue(created);
@@ -429,6 +514,16 @@ describe('event_log collection warnings at save (#8174)', () => {
 });
 
 describe('PATCH /monitor-definitions/:id', () => {
+  it('passes only the sent keys to the service, so a description-only PATCH resets nothing', async () => {
+    updateMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, orgId: 'org-1', name: 'Monitor', kind: 'offline' });
+
+    const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, { description: 'x' });
+
+    expect(res.status).toBe(200);
+    expect(updateMonitorDefinitionMock).toHaveBeenCalledTimes(1);
+    expect(updateMonitorDefinitionMock.mock.calls[0]?.[1]).toStrictEqual({ description: 'x' });
+  });
+
   it('maps a MonitorValidationError to 400 { error: INVALID_MONITOR, details }', async () => {
     updateMonitorDefinitionMock.mockRejectedValue(
       new MonitorValidationError('deliveryChannelIds required when deliveryMode is channels'),

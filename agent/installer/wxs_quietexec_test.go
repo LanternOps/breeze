@@ -37,6 +37,7 @@ var quietExecCAs = []struct {
 	// TestBootstrapEnrollKeepsTokenOutOfLog).
 	{"BootstrapEnroll", "deferred", "check", "WixSilentExec"},
 	{"UninstallNotify", "deferred", "ignore", "WixQuietExec"},
+	{"IsolationReleaseOnUninstall", "deferred", "check", "WixQuietExec"},
 }
 
 // quietExecCmd returns the (still XML-escaped) command line a deferred

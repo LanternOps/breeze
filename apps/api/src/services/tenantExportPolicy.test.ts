@@ -641,3 +641,18 @@ describe('retiring columns (#7606)', () => {
     }
   });
 });
+
+describe('software install-script columns are classified (#6958 PR C)', () => {
+  it('includes software_catalog.builtin_package_key (a varchar package key, not an open container)', () => {
+    const cols = CORE_TENANT_EXPORT_POLICY['software_catalog']!.columns;
+    expect(cols['builtin_package_key'], 'software_catalog.builtin_package_key unclassified').toBeDefined();
+    expect(cols['builtin_package_key']!.decision).toBe('include');
+  });
+
+  it('software_versions stays parent-keyed with no export entry of its own', () => {
+    // software_versions has no org_id; it follows software_catalog
+    // (orgMergeRegistry `follows-parent`), so install_scripts_enabled needs no
+    // classification. If an entry is ever added, classify that column too.
+    expect(CORE_TENANT_EXPORT_POLICY['software_versions']).toBeUndefined();
+  });
+});

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link2, MessageSquare, Save, Send, Users, Webhook } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { ActionError, runAction } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -127,19 +129,34 @@ const saveIntegration = async (
   }
 };
 
+/**
+ * Runs a test (`test: true` — the API sends it without saving the settings)
+ * and returns the API's success message, if any. A failure throws an
+ * ActionError carrying the API's reason (rejected webhook, unreachable host, no
+ * deliverable destination), which the caller shows beside the button. Only a
+ * throttled test (#12102) is also toasted: it is not a result of the test.
+ */
 const sendTest = async (
   endpoint: string,
   payload: Record<string, unknown>,
   errorMessage: string,
-) => {
-  const response = await fetchWithAuth(endpoint, {
-    method: "POST",
-    body: JSON.stringify({ ...payload, test: true }),
+): Promise<string | undefined> => {
+  const data = await runAction<{ message?: unknown }>({
+    request: () =>
+      fetchWithAuth(endpoint, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, test: true }),
+      }),
+    errorFallback: errorMessage,
+    suppressErrorToast: (status) => status !== 429,
   });
+  return typeof data?.message === "string" && data.message ? data.message : undefined;
+};
 
-  if (!response.ok) {
-    throw new Error(errorMessage);
-  }
+/** Status-line text for a failed test, or null for a 401 (the auth redirect handles it). */
+const testFailureMessage = (err: unknown, fallback: string): string | null => {
+  if (err instanceof ActionError && err.status === 401) return null;
+  return err instanceof Error && err.message ? err.message : fallback;
 };
 
 export default function CommunicationIntegrations() {
@@ -324,7 +341,9 @@ export default function CommunicationIntegrations() {
     setSlackTesting(true);
     setSlackStatus(null);
     try {
-      await sendTest(
+      // The API answers 422 for a Slack test (nothing here can deliver one);
+      // if it ever succeeds, its own message says what happened.
+      const message = await sendTest(
         "/integrations/slack",
         {
           enabled: slackEnabled,
@@ -336,18 +355,13 @@ export default function CommunicationIntegrations() {
         },
         t("communicationIntegrations.unableToSendTestNotification"),
       );
-      setSlackStatus({
-        tone: "success",
-        message: t("communicationIntegrations.slackTestNotificationQueued"),
-      });
+      setSlackStatus(message ? { tone: "success", message } : null);
     } catch (err) {
-      setSlackStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.slackTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.slackTestNotificationFailed"),
+      );
+      setSlackStatus(message ? { tone: "error", message } : null);
     } finally {
       setSlackTesting(false);
     }
@@ -390,7 +404,9 @@ export default function CommunicationIntegrations() {
     setTeamsTesting(true);
     setTeamsStatus(null);
     try {
-      await sendTest(
+      // The API answers 422 for a Teams test (nothing here can deliver one);
+      // if it ever succeeds, its own message says what happened.
+      const message = await sendTest(
         "/integrations/teams",
         {
           enabled: teamsEnabled,
@@ -402,18 +418,13 @@ export default function CommunicationIntegrations() {
         },
         t("communicationIntegrations.unableToSendTestNotification"),
       );
-      setTeamsStatus({
-        tone: "success",
-        message: t("communicationIntegrations.teamsTestNotificationQueued"),
-      });
+      setTeamsStatus(message ? { tone: "success", message } : null);
     } catch (err) {
-      setTeamsStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.teamsTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.teamsTestNotificationFailed"),
+      );
+      setTeamsStatus(message ? { tone: "error", message } : null);
     } finally {
       setTeamsTesting(false);
     }
@@ -466,16 +477,14 @@ export default function CommunicationIntegrations() {
       );
       setDiscordStatus({
         tone: "success",
-        message: t("communicationIntegrations.discordTestNotificationQueued"),
+        message: t("communicationIntegrations.discordTestNotificationSent"),
       });
     } catch (err) {
-      setDiscordStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.discordTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.discordTestNotificationFailed"),
+      );
+      setDiscordStatus(message ? { tone: "error", message } : null);
     } finally {
       setDiscordTesting(false);
     }
@@ -496,16 +505,12 @@ export default function CommunicationIntegrations() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">
-          {t("communicationIntegrations.communicationIntegrations")}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "communicationIntegrations.connectChatToolsRouteAlertsBySeverityAnd",
-          )}
-        </p>
-      </div>
+      <IntegrationPanelHeader
+        title={t("communicationIntegrations.communicationIntegrations")}
+        description={t(
+          "communicationIntegrations.connectChatToolsRouteAlertsBySeverityAnd",
+        )}
+      />
 
       {loadError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -552,11 +557,15 @@ export default function CommunicationIntegrations() {
                     {t("communicationIntegrations.workspace")}
                   </p>
                   <p className="text-sm font-medium">
-                    {slackWorkspaceName ? slackWorkspaceName : "Not connected"}
+                    {slackWorkspaceName
+                      ? slackWorkspaceName
+                      : t("communicationIntegrations.notConnected")}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {t("communicationIntegrations.workspaceID", {
-                      id: slackWorkspaceId || "Pending connection",
+                      id:
+                        slackWorkspaceId ||
+                        t("communicationIntegrations.pendingConnection"),
                     })}
                   </p>
                 </div>
@@ -568,12 +577,23 @@ export default function CommunicationIntegrations() {
                     }
                   }}
                   disabled={!slackEnabled}
+                  aria-describedby={
+                    slackEnabled ? undefined : "slack-connect-disabled-reason"
+                  }
                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Link2 className="h-4 w-4" />
                   {t("communicationIntegrations.connectWorkspace")}
                 </button>
               </div>
+              {!slackEnabled && (
+                <p
+                  id="slack-connect-disabled-reason"
+                  className="mt-2 text-xs text-muted-foreground"
+                >
+                  {t("communicationIntegrations.turnOnSlackToConnectWorkspace")}
+                </p>
+              )}
               <p className="mt-2 text-xs text-muted-foreground">
                 {t(
                   "communicationIntegrations.oauthRedirectStartsWhenYouConnectASlack",

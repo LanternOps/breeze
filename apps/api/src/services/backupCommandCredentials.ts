@@ -48,7 +48,11 @@ export const BACKUP_WRITE_CREDENTIAL_COMMAND_TYPES: readonly string[] = [
   CommandTypes.HYPERV_BACKUP,
 ];
 
-const READ_TYPES = new Set(BACKUP_READ_CREDENTIAL_COMMAND_TYPES);
+// `vault_sync` reads the snapshot it copies into the local vault from the
+// destination the snapshot was written to (#11858). It is not a restore-shaped
+// read (no storage session, no integrity gate), so it is resolved here only,
+// and only for a local destination, like every other read.
+const READ_TYPES = new Set<string>([...BACKUP_READ_CREDENTIAL_COMMAND_TYPES, CommandTypes.VAULT_SYNC]);
 // Every backup-writing type, including backup_run (never queued by this
 // server, but a row that exists is held to the same rule).
 const WRITE_TYPES = new Set(BACKUP_WRITE_GATED_COMMAND_TYPES);

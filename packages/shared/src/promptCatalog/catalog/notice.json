@@ -1,0 +1,185 @@
+{
+  "namespace": "notice",
+  "messages": {
+    "action.ok": {
+      "en": "OK",
+      "de-DE": "OK",
+      "es-419": "Aceptar",
+      "fr-FR": "OK",
+      "fr-CA": "OK",
+      "it-IT": "OK",
+      "pt-BR": "OK",
+      "tr-TR": "Tamam"
+    },
+    "action.openSettings": {
+      "en": "Open Settings",
+      "de-DE": "Einstellungen öffnen",
+      "es-419": "Abrir Configuración",
+      "fr-FR": "Ouvrir les Réglages",
+      "fr-CA": "Ouvrir les Réglages",
+      "it-IT": "Apri Impostazioni",
+      "pt-BR": "Abrir Ajustes",
+      "tr-TR": "Ayarları Aç"
+    },
+    "safeMode.title": {
+      "en": "Your computer will restart in safe mode",
+      "de-DE": "Ihr Computer wird im abgesicherten Modus neu gestartet",
+      "es-419": "Su computadora se reiniciará en modo seguro",
+      "fr-FR": "Votre ordinateur va redémarrer en mode sans échec",
+      "fr-CA": "Votre ordinateur va redémarrer en mode sans échec",
+      "it-IT": "Il tuo computer verrà riavviato in modalità provvisoria",
+      "pt-BR": "Seu computador será reiniciado no modo de segurança",
+      "tr-TR": "Bilgisayarınız güvenli modda yeniden başlatılacak"
+    },
+    "safeMode.body": {
+      "en": "Your computer will restart into safe mode with networking at {at}. Save your work now.",
+      "de-DE": "Ihr Computer wird um {at} im abgesicherten Modus mit Netzwerktreibern neu gestartet. Speichern Sie jetzt Ihre Arbeit.",
+      "es-419": "Su computadora se reiniciará en modo seguro con funciones de red a las {at}. Guarde su trabajo ahora.",
+      "fr-FR": "Votre ordinateur va redémarrer en mode sans échec avec prise en charge réseau à {at}. Enregistrez votre travail maintenant.",
+      "fr-CA": "Votre ordinateur va redémarrer en mode sans échec avec prise en charge réseau à {at}. Enregistrez votre travail maintenant.",
+      "it-IT": "Il tuo computer verrà riavviato in modalità provvisoria con rete alle {at}. Salva subito il tuo lavoro.",
+      "pt-BR": "Seu computador será reiniciado no modo de segurança com rede às {at}. Salve seu trabalho agora.",
+      "tr-TR": "Bilgisayarınız {at} saatinde ağ desteği ile güvenli modda yeniden başlatılacak. Çalışmanızı şimdi kaydedin."
+    },
+    "safeMode.bodyNow": {
+      "en": "Your computer is restarting into safe mode with networking now. Save your work.",
+      "de-DE": "Ihr Computer wird jetzt im abgesicherten Modus mit Netzwerktreibern neu gestartet. Speichern Sie Ihre Arbeit.",
+      "es-419": "Su computadora se está reiniciando ahora en modo seguro con funciones de red. Guarde su trabajo.",
+      "fr-FR": "Votre ordinateur redémarre maintenant en mode sans échec avec prise en charge réseau. Enregistrez votre travail.",
+      "fr-CA": "Votre ordinateur redémarre maintenant en mode sans échec avec prise en charge réseau. Enregistrez votre travail.",
+      "it-IT": "Il tuo computer si sta riavviando ora in modalità provvisoria con rete. Salva il tuo lavoro.",
+      "pt-BR": "Seu computador está sendo reiniciado agora no modo de segurança com rede. Salve seu trabalho.",
+      "tr-TR": "Bilgisayarınız şimdi ağ desteği ile güvenli modda yeniden başlatılıyor. Çalışmanızı kaydedin."
+    },
+    "sessionEnded.title": {
+      "en": "Remote session ended",
+      "de-DE": "Remotesitzung beendet",
+      "es-419": "Sesión remota finalizada",
+      "fr-FR": "Session à distance terminée",
+      "fr-CA": "Session à distance terminée",
+      "it-IT": "Sessione remota terminata",
+      "pt-BR": "Sessão remota encerrada",
+      "tr-TR": "Uzak oturum sona erdi"
+    },
+    "sessionEnded.body": {
+      "en": "{technician} is no longer connected to your computer.",
+      "de-DE": "{technician} ist nicht mehr mit Ihrem Computer verbunden.",
+      "es-419": "{technician} ya no está conectado a su computadora.",
+      "fr-FR": "{technician} n'est plus connecté à votre ordinateur.",
+      "fr-CA": "{technician} n'est plus connecté à votre ordinateur.",
+      "it-IT": "{technician} non è più connesso al tuo computer.",
+      "pt-BR": "{technician} não está mais conectado ao seu computador.",
+      "tr-TR": "{technician} artık bilgisayarınıza bağlı değil."
+    },
+    "sessionEnded.bodyNoTechnician": {
+      "en": "The technician is no longer connected to your computer.",
+      "de-DE": "Der Techniker ist nicht mehr mit Ihrem Computer verbunden.",
+      "es-419": "El técnico ya no está conectado a su computadora.",
+      "fr-FR": "Le technicien n'est plus connecté à votre ordinateur.",
+      "fr-CA": "Le technicien n'est plus connecté à votre ordinateur.",
+      "it-IT": "Il tecnico non è più connesso al tuo computer.",
+      "pt-BR": "O técnico não está mais conectado ao seu computador.",
+      "tr-TR": "Teknisyen artık bilgisayarınıza bağlı değil."
+    },
+    "sessionEnded.durationLabel": {
+      "en": "Duration",
+      "de-DE": "Dauer",
+      "es-419": "Duración",
+      "fr-FR": "Durée",
+      "fr-CA": "Durée",
+      "it-IT": "Durata",
+      "pt-BR": "Duração",
+      "tr-TR": "Süre"
+    },
+    "sessionEnded.durationMinutes": {
+      "en": "{minutes} min",
+      "de-DE": "{minutes} Min.",
+      "es-419": "{minutes} min",
+      "fr-FR": "{minutes} min",
+      "fr-CA": "{minutes} min",
+      "it-IT": "{minutes} min",
+      "pt-BR": "{minutes} min",
+      "tr-TR": "{minutes} dk"
+    },
+    "sessionEnded.durationUnderMinute": {
+      "en": "Less than a minute",
+      "de-DE": "Weniger als eine Minute",
+      "es-419": "Menos de un minuto",
+      "fr-FR": "Moins d'une minute",
+      "fr-CA": "Moins d'une minute",
+      "it-IT": "Meno di un minuto",
+      "pt-BR": "Menos de um minuto",
+      "tr-TR": "Bir dakikadan kısa"
+    },
+    "tcc.title": {
+      "en": "Permission required",
+      "de-DE": "Berechtigung erforderlich",
+      "es-419": "Se requiere un permiso",
+      "fr-FR": "Autorisation requise",
+      "fr-CA": "Autorisation requise",
+      "it-IT": "Autorizzazione necessaria",
+      "pt-BR": "Permissão necessária",
+      "tr-TR": "İzin gerekli"
+    },
+    "tcc.bodyFullDiskAccess": {
+      "en": "The Breeze agent needs Full Disk Access to work properly. Turn it on in System Settings › Privacy & Security › Full Disk Access. macOS asks separately for Screen Recording and Accessibility.",
+      "de-DE": "Der Breeze-Agent benötigt Festplattenvollzugriff, um richtig zu funktionieren. Aktivieren Sie ihn unter Systemeinstellungen › Datenschutz & Sicherheit › Festplattenvollzugriff. Nach Bildschirmaufnahme und Bedienungshilfen fragt macOS separat.",
+      "es-419": "El agente de Breeze necesita Acceso total al disco para funcionar correctamente. Actívelo en Configuración del Sistema › Privacidad y seguridad › Acceso total al disco. macOS solicita por separado Grabación de pantalla y Accesibilidad.",
+      "fr-FR": "L'agent Breeze a besoin de l'accès complet au disque pour fonctionner correctement. Activez-le dans Réglages Système › Confidentialité et sécurité › Accès complet au disque. macOS demande séparément l'enregistrement de l'écran et l'accessibilité.",
+      "fr-CA": "L'agent Breeze a besoin de l'accès complet au disque pour fonctionner correctement. Activez-le dans Réglages Système › Confidentialité et sécurité › Accès complet au disque. macOS demande séparément l'enregistrement de l'écran et l'accessibilité.",
+      "it-IT": "L'agente Breeze ha bisogno di Accesso completo al disco per funzionare correttamente. Attivalo in Impostazioni di Sistema › Privacy e sicurezza › Accesso completo al disco. macOS chiede separatamente Registrazione schermo e Accessibilità.",
+      "pt-BR": "O agente Breeze precisa de Acesso Total ao Disco para funcionar corretamente. Ative-o em Ajustes do Sistema › Privacidade e Segurança › Acesso Total ao Disco. O macOS solicita separadamente Gravação de Tela e Acessibilidade.",
+      "tr-TR": "Breeze ajanının düzgün çalışması için Tam Disk Erişimi gerekir. Bunu Sistem Ayarları › Gizlilik ve Güvenlik › Tam Disk Erişimi bölümünden açın. macOS, Ekran Kaydı ve Erişilebilirlik için ayrıca izin ister."
+    },
+    "tcc.bodyOthers": {
+      "en": "The Breeze agent needs Screen Recording and Accessibility. If you dismissed the macOS prompts, turn them on in System Settings › Privacy & Security.",
+      "de-DE": "Der Breeze-Agent benötigt Bildschirmaufnahme und Bedienungshilfen. Falls Sie die macOS-Abfragen geschlossen haben, aktivieren Sie sie unter Systemeinstellungen › Datenschutz & Sicherheit.",
+      "es-419": "El agente de Breeze necesita Grabación de pantalla y Accesibilidad. Si cerró las solicitudes de macOS, actívelos en Configuración del Sistema › Privacidad y seguridad.",
+      "fr-FR": "L'agent Breeze a besoin de l'enregistrement de l'écran et de l'accessibilité. Si vous avez fermé les demandes de macOS, activez-les dans Réglages Système › Confidentialité et sécurité.",
+      "fr-CA": "L'agent Breeze a besoin de l'enregistrement de l'écran et de l'accessibilité. Si vous avez fermé les demandes de macOS, activez-les dans Réglages Système › Confidentialité et sécurité.",
+      "it-IT": "L'agente Breeze ha bisogno di Registrazione schermo e Accessibilità. Se hai chiuso le richieste di macOS, attivale in Impostazioni di Sistema › Privacy e sicurezza.",
+      "pt-BR": "O agente Breeze precisa de Gravação de Tela e Acessibilidade. Se você fechou as solicitações do macOS, ative-as em Ajustes do Sistema › Privacidade e Segurança.",
+      "tr-TR": "Breeze ajanının Ekran Kaydı ve Erişilebilirlik izinlerine ihtiyacı var. macOS isteklerini kapattıysanız bunları Sistem Ayarları › Gizlilik ve Güvenlik bölümünden açın."
+    },
+    "tcc.missingLabel": {
+      "en": "Missing permissions",
+      "de-DE": "Fehlende Berechtigungen",
+      "es-419": "Permisos faltantes",
+      "fr-FR": "Autorisations manquantes",
+      "fr-CA": "Autorisations manquantes",
+      "it-IT": "Autorizzazioni mancanti",
+      "pt-BR": "Permissões ausentes",
+      "tr-TR": "Eksik izinler"
+    },
+    "tcc.permission.fullDiskAccess": {
+      "en": "Full Disk Access",
+      "de-DE": "Festplattenvollzugriff",
+      "es-419": "Acceso total al disco",
+      "fr-FR": "Accès complet au disque",
+      "fr-CA": "Accès complet au disque",
+      "it-IT": "Accesso completo al disco",
+      "pt-BR": "Acesso Total ao Disco",
+      "tr-TR": "Tam Disk Erişimi"
+    },
+    "tcc.permission.screenRecording": {
+      "en": "Screen Recording",
+      "de-DE": "Bildschirmaufnahme",
+      "es-419": "Grabación de pantalla",
+      "fr-FR": "Enregistrement de l'écran",
+      "fr-CA": "Enregistrement de l'écran",
+      "it-IT": "Registrazione schermo",
+      "pt-BR": "Gravação de Tela",
+      "tr-TR": "Ekran Kaydı"
+    },
+    "tcc.permission.accessibility": {
+      "en": "Accessibility",
+      "de-DE": "Bedienungshilfen",
+      "es-419": "Accesibilidad",
+      "fr-FR": "Accessibilité",
+      "fr-CA": "Accessibilité",
+      "it-IT": "Accessibilità",
+      "pt-BR": "Acessibilidade",
+      "tr-TR": "Erişilebilirlik"
+    }
+  }
+}

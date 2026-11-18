@@ -54,6 +54,77 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
+  // #10190 W02 — helperCapabilities.promptHost: the live renderer observation.
+  // Telemetry only: a malformed block drops to absent on its own and never
+  // takes the caller-verification readiness beside it, or the beat, with it.
+  describe('helperCapabilities.promptHost (#10190)', () => {
+    const readiness = { callerVerify: true, usernames: ['alex'] };
+    const good = { protocolVersion: 1, kinds: ['notice.info@1', 'restart.prompt@2'], rendererVersion: '0.2.0' };
+
+    function parsePromptHost(promptHost: unknown) {
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: { ...readiness, promptHost } });
+      expect(r.success).toBe(true);
+      if (!r.success) throw new Error('heartbeat rejected');
+      expect(r.data.helperCapabilities?.callerVerify).toBe(true);
+      expect(r.data.helperCapabilities?.usernames).toEqual(['alex']);
+      return r.data.helperCapabilities?.promptHost;
+    }
+
+    it('keeps a well-formed report', () => {
+      expect(parsePromptHost(good)).toEqual(good);
+    });
+
+    it('keeps a renderer that advertises no kinds (every W02 renderer)', () => {
+      expect(parsePromptHost({ protocolVersion: 1, kinds: [], rendererVersion: '0.2.0' }))
+        .toEqual({ protocolVersion: 1, kinds: [], rendererVersion: '0.2.0' });
+    });
+
+    it('accepts the limits exactly', () => {
+      const kinds = Array.from({ length: 16 }, (_, i) => `notice.info@${i + 1}`);
+      expect(parsePromptHost({ protocolVersion: 16, kinds, rendererVersion: 'v'.repeat(32) })).toEqual({
+        protocolVersion: 16, kinds, rendererVersion: 'v'.repeat(32),
+      });
+      expect(parsePromptHost({ protocolVersion: 0, kinds: [], rendererVersion: '' })).toEqual({
+        protocolVersion: 0, kinds: [], rendererVersion: '',
+      });
+    });
+
+    it('drops an unknown additive key instead of the whole report (a newer agent)', () => {
+      expect(parsePromptHost({ ...good, uiLocale: 'de-DE' })).toEqual(good);
+    });
+
+    it('is absent when the agent sends none (old agent)', () => {
+      expect(parsePromptHost(undefined)).toBeUndefined();
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: readiness });
+      expect(r.success && r.data.helperCapabilities?.promptHost).toBeUndefined();
+    });
+
+    it.each([
+      ['protocolVersion above 16', { ...good, protocolVersion: 17 }],
+      ['negative protocolVersion', { ...good, protocolVersion: -1 }],
+      ['fractional protocolVersion', { ...good, protocolVersion: 1.5 }],
+      ['string protocolVersion', { ...good, protocolVersion: '1' }],
+      ['missing protocolVersion', { kinds: good.kinds, rendererVersion: good.rendererVersion }],
+      ['17 kinds', { ...good, kinds: Array.from({ length: 17 }, (_, i) => `notice.info@${i + 1}`) }],
+      ['a bare kind (no version)', { ...good, kinds: ['notice.info'] }],
+      ['an upper-case kind', { ...good, kinds: ['Notice.Info@1'] }],
+      ['a kind with no namespace', { ...good, kinds: ['notice@1'] }],
+      ['a four-digit version', { ...good, kinds: ['notice.info@1000'] }],
+      ['a leading-zero version', { ...good, kinds: ['notice.info@01'] }],
+      ['version 0', { ...good, kinds: ['notice.info@0'] }],
+      ['kinds not an array', { ...good, kinds: 'notice.info@1' }],
+      ['a non-string kind', { ...good, kinds: [1] }],
+      ['rendererVersion of 33 code points', { ...good, rendererVersion: 'v'.repeat(33) }],
+      ['numeric rendererVersion', { ...good, rendererVersion: 2 }],
+      ['missing rendererVersion', { protocolVersion: 1, kinds: [] }],
+      ['a string', 'assist'],
+      ['null', null],
+      ['an array', [good]],
+    ])('drops %s to absent without failing the beat', (_label, promptHost) => {
+      expect(parsePromptHost(promptHost)).toBeUndefined();
+    });
+  });
+
   // Agents from #8618 W1 send a bounded `watchdogInstall` object; since W2
   // (#8620) the API ingests it. The wire field is z.unknown(), so a beat
   // carrying it — well-formed or not — is always accepted and the value is
@@ -906,6 +977,46 @@ describe('heartbeatSchema — rebootStatus (#3207 W5)', () => {
     expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
     expect(data.rebootStatus?.deadline).toBeUndefined();
   });
+
+  // #10190 W05 — the last decision the person at the keyboard made on the
+  // restart prompt. Audit input only; never part of the stored schedule.
+  it('accepts lastUserAction with each action and renderer', () => {
+    for (const action of ['postponed', 'restart_now']) {
+      for (const renderer of ['assist', 'native', 'headless']) {
+        const data = parse({
+          scheduledAt: SCHEDULED_AT,
+          deferralsUsed: 1,
+          maxDeferrals: 3,
+          lastUserAction: { action, atUnixMs: 1_788_349_000_000, renderer },
+        });
+        expect(data.rebootStatus?.lastUserAction).toEqual({ action, atUnixMs: 1_788_349_000_000, renderer });
+      }
+    }
+  });
+
+  it('malformed lastUserAction does not fail heartbeat', () => {
+    // An unknown action or renderer, a non-integer or negative time, a
+    // missing member or a wrong type drops only lastUserAction: the heartbeat
+    // still parses and the rest of the restart snapshot is kept.
+    const malformed: unknown[] = [
+      { action: 'snooze', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'webview' },
+      { action: 'postponed', atUnixMs: 1.5, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: -1, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: '1788349000000', renderer: 'assist' },
+      { action: 'postponed', renderer: 'assist' },
+      'postponed',
+      null,
+      42,
+    ];
+    for (const lastUserAction of malformed) {
+      const data = parse({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, lastUserAction });
+      expect(data.status).toBe('ok');
+      expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
+      expect(data.rebootStatus?.deferralsUsed).toBe(2);
+      expect(data.rebootStatus?.lastUserAction).toBeUndefined();
+    }
+  });
 });
 
 // #8317 — the identity-sync fields are informational: a malformed value drops
@@ -1049,6 +1160,44 @@ describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
     ['a 5KB state', { state: 'x'.repeat(5000) }],
   ])('never rejects the heartbeat for %s', (_label, bad) => {
     expect(heartbeatSchema.safeParse({ ...minimal, watchdogInstall: bad }).success).toBe(true);
+  });
+});
+
+// Control-plane block episodes (#8868). Same contract as watchdogInstall: the
+// wire field is z.unknown().optional(), so old agents omit it and a malformed
+// object never rejects the beat. Strict parsing lives in parseControlPlaneBlock.
+describe('heartbeatSchema — controlPlaneBlock tolerance (#8868)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const valid = {
+    kind: 'web_filter',
+    host: 'cp.example',
+    firstSeenAt: '2026-10-18T09:00:00Z',
+    lastSeenAt: '2026-10-18T09:03:00Z',
+    httpStatus: 302,
+    locationHost: 'warn.filter-a.example',
+  };
+
+  it('an old agent that omits the field parses, and the key stays undefined', () => {
+    const r = heartbeatSchema.safeParse(minimal);
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toBeUndefined();
+  });
+
+  it('carries a well-formed controlPlaneBlock object through untouched', () => {
+    const r = heartbeatSchema.safeParse({ ...minimal, echActive: true, controlPlaneBlock: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toEqual(valid);
+  });
+
+  it.each([
+    ['a string', 'garbage'],
+    ['a number', 42],
+    ['null', null],
+    ['unknown kind', { ...valid, kind: 'isp_filter' }],
+    ['markup in locationHost', { ...valid, locationHost: '<script>' }],
+    ['a 5KB host', { ...valid, host: 'a'.repeat(5000) }],
+  ])('never rejects the heartbeat for %s', (_label, bad) => {
+    expect(heartbeatSchema.safeParse({ ...minimal, controlPlaneBlock: bad }).success).toBe(true);
   });
 });
 

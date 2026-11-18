@@ -20,6 +20,7 @@
     "state": {
       "met": "Respecté",
       "notMet": "Non respecté",
+      "metLate": "Respecté en retard",
       "breached": "Violation",
       "pausedLeft": "En pause · temps restant : {{relative}}",
       "left": "Temps restant : {{relative}}"
@@ -83,7 +84,10 @@
       "low": "Faible"
     },
     "checklistProgress": "{{done}}/{{total}} étapes",
-    "checklistTitle": "Liste de vérification : {{done}} étapes sur {{total}} terminées"
+    "checklistTitle": "Liste de vérification : {{done}} étapes sur {{total}} terminées",
+    "merged": "Fusionné",
+    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}",
+    "imported": "Importé"
   },
   "ticketArchivedList": {
     "emptyTitle": "Aucun billet archivé.",
@@ -135,8 +139,25 @@
       "remove": "Retirer le fichier",
       "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
       "tooLarge": "{{name}} dépasse 10 Mo.",
-      "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
-      "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+      "rejectedType": "{{name}} n'a pas été joint : seuls les images JPEG, PNG et WebP et les PDF sont pris en charge.",
+      "rejectedEmpty": "{{name}} n'a pas été joint : le fichier est vide.",
+      "sentWithoutAttachmentReply_one": "Réponse publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentNote_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
+      "sentWithoutAttachmentReply_other": "Réponse publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "rejectedTicketDeleted": "{{name}} n’a pas été joint : ce billet a été supprimé.",
+      "rejectedTicketMerged": "{{name}} n’a pas été joint : ce billet a été fusionné avec un autre billet.",
+      "rejectedNotFound": "{{name}} n’a pas été joint : le billet est introuvable.",
+      "rejectedMalformed": "{{name}} n’a pas été joint : le téléversement était mal formé. Essayez de le joindre de nouveau.",
+      "openMergedTicket": "Ouvrir le billet fusionné",
+      "notKept_one": "1 pièce jointe n’a pas été conservée avec ce brouillon ({{names}}). Joignez-la de nouveau ou fermez l’avis pour envoyer sans elle.",
+      "notKept_other": "{{count}} pièces jointes n’ont pas été conservées avec ce brouillon ({{names}}). Joignez-les de nouveau ou fermez l’avis pour envoyer sans elles.",
+      "notKeptDismiss": "Fermer"
+    },
+    "modeLabel": "Visibilité du commentaire",
+    "recipient": {
+      "emails": "Envoyé par courriel à {{recipient}}",
+      "none": "Aucun courriel du demandeur au dossier. La réponse est enregistrée dans le billet, sans envoi de courriel."
     }
   },
   "ticketFeed": {
@@ -175,7 +196,9 @@
       "broken": "Impossible de charger {{name}}",
       "open": "Ouvrir la pièce jointe",
       "remove": "Retirer la pièce jointe"
-    }
+    },
+    "mergedFrom": "de {{number}}",
+    "mergedFromUnknown": "d'un billet fusionné"
   },
   "ticketPartsCard": {
     "title": "Pièces",
@@ -235,6 +258,8 @@
     },
     "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
     "includedMinutes": "{{hours}} h incluses au contrat",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Chaque entrée facture ses minutes arrondies en heures (2 décimales) × son taux.",
     "missingRateCount_one": "1 entrée n'a pas de taux horaire — non comptée dans le montant ci-dessus",
     "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus",
     "deleteEntry": "Supprimer l’entrée de temps de {{duration}} de {{tech}}",
@@ -333,6 +358,11 @@
     "selectedCount_other": "{{count}} sélectionnés",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un billet. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le billet {{number}} n’est pas dans cette vue.",
+    "movedToClosed": {
+      "message": "{{status}} — maintenant sous {{tab}}",
+      "view": "Voir dans {{tab}}"
+    },
     "ticketingSettings": "Paramètres de billetterie",
     "assignFailed": "Assignation échouée. Réessayez.",
     "assignedToYou": "Vous a été attribué",
@@ -349,6 +379,7 @@
       "triage": "Ordre de triage",
       "newest": "Les plus récents d’abord",
       "oldest": "Les plus anciens d’abord",
+      "updated": "Mis à jour récemment",
       "due": "Date d’échéance"
     },
     "priority": {
@@ -404,13 +435,28 @@
       "confirm": "Supprimer les billets"
     },
     "filterByType": "Filtrer par type",
-    "allTypes": "Tous les types"
+    "allTypes": "Tous les types",
+    "showMerged": "Afficher les fusionnés",
+    "shortcutsButton": "Raccourcis",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, priorité {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, priorité {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA : temps restant {{relative}}",
+        "atRisk": "SLA à risque, temps restant {{relative}}",
+        "paused": "SLA en pause, temps restant {{relative}}",
+        "breached": "SLA en violation"
+      }
+    },
+    "importTickets": "Importer des billets",
+    "importedOnly": "Importés seulement"
   },
   "ticketWorkbench": {
     "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
     "loadFailed": "Impossible de charger le billet.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du billet",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",
@@ -470,6 +516,91 @@
       "blockedCurrency": "Ce billet comporte {{timeCount}} entrées de temps non facturées et {{partCount}} pièces non facturées évaluées en {{sourceCurrency}}, mais {{targetOrg}} facture en {{targetCurrency}}. Facturez-les d’abord, ou déplacez quand même : les montants restent en {{sourceCurrency}} et ne peuvent être facturés que sur un brouillon en {{sourceCurrency}}.",
       "acceptCurrency": "Je comprends que ces montants restent en {{sourceCurrency}} et ne sont pas convertis.",
       "moveAnyway": "Déplacer quand même"
+    },
+    "merge": {
+      "open": "Fusionner avec…",
+      "title": "Fusionner {{number}} avec un autre billet",
+      "description": "Les commentaires, le temps, les pièces et les liens de {{number}} sont déplacés vers le billet choisi. {{number}} est ensuite fermé et renvoie vers ce billet.",
+      "pickerLabel": "Billet cible",
+      "searchPlaceholder": "Rechercher par numéro ou objet",
+      "pickerHint": "Seuls les billets ouverts de cette organisation sont listés, du plus ancien au plus récent.",
+      "loading": "Chargement des billets…",
+      "candidatesFailed": "Impossible de charger les billets. Fermez la boîte de dialogue et réessayez.",
+      "noCandidates": "Aucun autre billet ouvert dans cette organisation.",
+      "previewLoading": "Vérification de la fusion…",
+      "previewFailed": "Impossible de vérifier cette fusion. Sélectionnez de nouveau le billet pour réessayer.",
+      "side": {
+        "source": "Ce billet",
+        "survivor": "La cible",
+        "both": "Les deux billets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Un billet ne peut pas être fusionné avec lui-même.",
+        "MERGE_CROSS_ORG": "Les deux billets doivent appartenir à la même organisation.",
+        "MERGE_SOURCE_INELIGIBLE": "Ce billet ne peut pas être fusionné (il est supprimé ou déjà fusionné).",
+        "MERGE_SURVIVOR_INELIGIBLE": "La cible ne peut pas recevoir de fusion (elle est fermée, supprimée ou déjà fusionnée).",
+        "MERGE_DELIVERABLE_PINNED": "Un billet rattaché à un livrable de service ne peut pas être fusionné.",
+        "MERGE_IMPORT_WINDOW": "Un billet dans une fenêtre d'importation ouverte ne peut pas être fusionné.",
+        "MERGE_APPROVAL_STATE": "Les billets avec des demandes d'approbation ou un budget ne peuvent pas être fusionnés.",
+        "MERGE_WORK_KIND_MISMATCH": "Le soutien et le travail de projet ne peuvent pas être fusionnés.",
+        "MERGE_PENDING_INTENTS": "Ce billet a des actions d'IA en attente. Attendez qu'elles se terminent ou annulez-les.",
+        "ORG_MERGING": "Cette organisation est en cours de fusion. Réessayez plus tard.",
+        "MERGE_SCOPE_DENIED": "Vous n'avez pas accès à un appareil ou à un site de l'un de ces billets."
+      },
+      "suggested": "{{number}} est plus ancien; c'est généralement celui à conserver.",
+      "movesTo": "Déplacé vers {{number}}",
+      "nothingMoves": "Rien d'autre n'est déplacé.",
+      "counts": {
+        "ticket_comments": "Commentaires : {{count}}",
+        "time_entries": "Entrées de temps : {{count}}",
+        "ticket_parts": "Pièces : {{count}}",
+        "ticket_alert_links": "Liens d'alerte : {{count}}",
+        "ticket_attachments": "Pièces jointes : {{count}}",
+        "ticket_email_links": "Liens courriel : {{count}}",
+        "ticket_checklist_items": "Éléments de liste de vérification : {{count}}",
+        "ticket_external_refs": "Références externes : {{count}}",
+        "ticket_links": "Liens entre billets : {{count}}",
+        "device_vulnerabilities": "Vulnérabilités : {{count}}",
+        "organization_key_dates": "Rappels de dates clés : {{count}}",
+        "service_deliverable_occurrences": "Occurrences de livrables : {{count}}",
+        "ai_operator_task_targets": "Cibles de la tâche IA : {{count}}",
+        "ticket_drafts": "Brouillons supprimés : {{count}}"
+      },
+      "droppedHeading": "Liens supprimés",
+      "dropped": {
+        "between_pair": "lien entre les deux billets",
+        "pair_unique": "doublon d’un lien que la cible a déjà",
+        "self": "pointerait vers lui-même",
+        "canonical_duplicate": "doublon après réordonnancement",
+        "cycle": "créerait un cycle",
+        "limit": "dépasse la limite de liens par billet"
+      },
+      "retained": "Reste sur {{number}} : {{name}}",
+      "anIntegration": "une intégration",
+      "device": {
+        "keeps": "Le billet fusionné conserve {{device}}.",
+        "takes": "Le billet fusionné reprend {{device}}.",
+        "unknown": "un autre appareil"
+      },
+      "requesterAccess": "Le demandeur de {{source}} verra le fil public de {{survivor}} dans le portail et pourra y répondre.",
+      "notify": "Informer par courriel le demandeur de {{number}} que sa demande a été fusionnée",
+      "noRequester": "{{number}} n'a pas de demandeur à qui envoyer un courriel.",
+      "warning": "Cette action est irréversible. {{source}} passe en lecture seule et renvoie vers {{survivor}}.",
+      "confirm": "Fusionner",
+      "merging": "Fusion en cours…",
+      "failed": "Échec de la fusion. Réessayez.",
+      "merged": "Fusionné avec {{number}}",
+      "mfaRequired": "La fusion de billets exige l'authentification multifacteur. Reconnectez-vous avec l'AMF et réessayez.",
+      "alreadyMerged": "L'un de ces billets a déjà été fusionné. Choisissez une autre cible.",
+      "retry": "Ces billets ont été modifiés pendant la fusion. Réessayez."
+    },
+    "mergedBanner": {
+      "mergedInto": "Ce billet a été fusionné avec {{number}} le {{date}}.",
+      "pending": "Ce billet a été fusionné avec un autre billet le {{date}}.",
+      "deleted": "Ce billet a été fusionné le {{date}} avec un billet qui a été supprimé ou que vous ne pouvez pas voir.",
+      "open": "Ouvrir {{number}}",
+      "readOnly": "Les billets fusionnés sont en lecture seule. Répondez sur le billet avec lequel il a été fusionné.",
+      "railReadOnly": "Le temps, la facturation et les pièces sont en lecture seule sur un billet fusionné. Saisissez le temps et les pièces sur le billet avec lequel il a été fusionné."
     },
     "triage": {
       "title": "Triage suggéré",
@@ -744,6 +875,64 @@
       "SELF_LINK": "Un ticket ne peut pas être lié à lui-même.",
       "NOT_FOUND": "Ce ticket est introuvable ou n’est plus disponible.",
       "LINK_GONE": "Ce lien a déjà été supprimé."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Navigation entre billets",
+    "backTo": "Retour à {{tab}}",
+    "position": "{{index}} sur {{total}}",
+    "previous": "Billet précédent",
+    "next": "Billet suivant",
+    "more": "Plus d'actions",
+    "sections": "Sections du billet",
+    "tabs": {
+      "conversation": "Échanges",
+      "details": "Détails"
+    },
+    "descriptionAria": "Demande de {{author}}",
+    "invoiceDialogTitle": "Une partie du travail n'a pas été facturée",
+    "nextOffer": {
+      "label": "Ensuite",
+      "open": "Ouvrir",
+      "openAria": "Ouvrir {{number}} {{subject}}",
+      "atRisk": "À risque · reste {{relative}}",
+      "noSla": "Sans SLA"
+    },
+    "requester": {
+      "noEmail": "Aucun courriel au dossier"
+    },
+    "endpoint": {
+      "noDevice": "Aucun appareil lié",
+      "lastSeen": "vu pour la dernière fois {{ago}}",
+      "loading": "Chargement de l'appareil",
+      "loadFailed": "L'état en direct de l'appareil n'a pas pu être chargé.",
+      "os": "Système d'exploitation",
+      "signedIn": "Connecté",
+      "nobodySignedIn": "Personne de connecté",
+      "lastUser": "Dernier utilisateur {{user}}",
+      "activeAlerts": "Alertes actives",
+      "noAlerts": "Aucune alerte active",
+      "alertsFailed": "Les alertes n'ont pas pu être chargées.",
+      "untitledAlert": "Alerte sans titre",
+      "userSignedIn": "{{user}} connecté",
+      "alertCount": "{{count}} alertes",
+      "alertCount_one": "{{count}} alerte",
+      "alertCount_other": "{{count}} alertes",
+      "openDetails": "{{device}} : ouvrir les détails de l'appareil"
+    },
+    "details": {
+      "properties": "Propriétés",
+      "logged": "{{time}} saisi",
+      "partCount": "{{count}} pièces",
+      "partCount_one": "{{count}} pièce",
+      "partCount_other": "{{count}} pièces",
+      "pendingApprovals": "{{count}} en attente",
+      "pendingApprovals_one": "{{count}} en attente",
+      "pendingApprovals_other": "{{count}} en attente",
+      "linkCount": "{{count}} liés",
+      "linkCount_one": "{{count}} lié",
+      "linkCount_other": "{{count}} liés",
+      "approvals": "Approbations"
     }
   }
 }

@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import OperatorWorkspace from '../../components/aiOperator/OperatorWorkspace';
+---
+
+<DashboardLayout titleKey="titles.aiTasks">
+  <OperatorWorkspace client:load />
+</DashboardLayout>

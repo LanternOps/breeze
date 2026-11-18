@@ -38,8 +38,16 @@ vi.mock('../services/invoiceLinkToken', () => ({
   buildPublicInvoiceUrl: (t: string) => `https://portal.example.test/portal/invoice/${t}`,
 }));
 
-const { onlinePayMock } = vi.hoisted(() => ({ onlinePayMock: vi.fn() }));
-vi.mock('../services/partnerStripe', () => ({ isPartnerOnlinePaymentAvailable: onlinePayMock }));
+// #9585: the view reads availability on its own system-context connection; the
+// second-connection variant must never run inside that open transaction.
+const { onlinePayMock, nestedOnlinePayMock, onlinePayDepths } = vi.hoisted(() => {
+  const depths: number[] = [];
+  return { onlinePayMock: vi.fn(), nestedOnlinePayMock: vi.fn(), onlinePayDepths: depths };
+});
+vi.mock('../services/partnerStripe', () => ({
+  isPartnerOnlinePaymentAvailable: nestedOnlinePayMock,
+  isPartnerOnlinePaymentAvailableOnCallerConnection: onlinePayMock,
+}));
 
 const { markViewedMock } = vi.hoisted(() => ({ markViewedMock: vi.fn() }));
 vi.mock('../services/invoiceService', async (importActual) => {
@@ -81,6 +89,7 @@ vi.mock('../services/redis', () => ({ getRedis: () => null })); // limiter fails
 vi.mock('../services/documentThemes', () => ({
   resolveThemeId: (t: unknown) => t ?? 'classic',
   resolvePageSize: (p: unknown) => p ?? 'letter',
+  resolvePartnerPageSize: (p: { documentPageSize?: unknown } | null | undefined) => p?.documentPageSize ?? 'letter',
 }));
 
 // Org-lifecycle gate (Wave 4 review fix C-A.1): each handler runs one extra
@@ -129,7 +138,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbResults.length = 0;
   resolveMock.mockResolvedValue(null);
-  onlinePayMock.mockResolvedValue(true);
+  onlinePayDepths.length = 0;
+  onlinePayMock.mockImplementation(async () => { onlinePayDepths.push(ctx.depth); return true; });
+  nestedOnlinePayMock.mockResolvedValue(true);
   inFlightMock.mockResolvedValue({ inProgress: false, amount: '0.00' });
   settleMock.mockResolvedValue({ settled: true, invoiceId: INV_ID });
   mintMock.mockResolvedValue({ token: TOKEN, expiresAt: new Date(), origin: 'reproduced' });
@@ -149,6 +160,36 @@ describe('GET /invoices/public/:token', () => {
     const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
     expect(data.payable).toBe(false);
     expect(data.chargeNow).toMatchObject({ amount: '100.00' }); // amounts still shown
+  });
+
+  // #3803 item 8: the mint refuses a balance the currency cannot express, so the
+  // view must not offer a Pay CTA for it (the page shows "online payment
+  // unavailable" instead). The exact amount owed is still displayed.
+  it('is NOT payable for a legacy JPY balance the currency cannot express', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'JPY', total: '1000.50', balance: '1000.50' }));
+    dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(false);
+    expect(data.chargeNow).toMatchObject({ amount: '1000.50', isDeposit: false });
+  });
+
+  it('shows the amount the Checkout will charge for a zero-decimal invoice (currency-aware, not USD rounding)', async () => {
+    resolveMock.mockResolvedValue(invoice({ currencyCode: 'JPY', total: '2000.00', balance: '2000.00', depositDue: '1000.50' }));
+    dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(true);
+    expect(data.chargeNow).toMatchObject({ amount: '1001.00', isDeposit: true });
+  });
+
+  it('reads online-payment availability on the view\'s own system-context connection, never a nested one (#9585)', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push([{ id: 'l1', name: 'RMM seat', quantity: '5' }], PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.payable).toBe(true);
+    expect(onlinePayMock).toHaveBeenCalledWith('p1');
+    // Exactly one system context is open around the read: the handler's own.
+    expect(onlinePayDepths).toEqual([1]);
+    expect(nestedOnlinePayMock).not.toHaveBeenCalled();
   });
 
   it('returns the customer view with chargeNow + payable and stamps viewed', async () => {
@@ -218,6 +259,16 @@ describe('GET /invoices/public/:token', () => {
     expect(res.status).toBe(200);
     const { data } = await res.json();
     expect(data.branding).toMatchObject({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('a void invoice falls back to the partner Branding logo/colour (#9676)', async () => {
+    resolveMock.mockResolvedValue(invoice({ status: 'void' }));
+    dbResults.push(
+      [{ ...PARTNER_ROW[0], settings: { branding: { logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' } } }],
+      [{ logoUrl: null, primaryColor: null }],
+    );
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.branding).toMatchObject({ logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' });
   });
 
   // #5856: the route selects ticketId/ticketSubject for grouping, but the wire
@@ -615,7 +666,7 @@ it('public invoice pay forwards only explicit card authorization', async () => {
   expect(res.status).toBe(200);
   expect(payLinkMock).toHaveBeenCalledWith(INV_ID, expect.anything(), expect.objectContaining({
     saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
-  }));
+  }), { billingGate: false });
 });
 it('public invoice pay refuses an unaccepted save request before Checkout', async () => {
   resolveMock.mockResolvedValue(invoice());

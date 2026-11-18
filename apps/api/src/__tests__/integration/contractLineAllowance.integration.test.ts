@@ -83,7 +83,7 @@ async function readInvoice(invoiceId: string) {
 
 async function readLines(invoiceId: string) {
   return withSystemDbAccessContext(() => db.select({
-    id: invoiceLines.id, description: invoiceLines.description, quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice,
+    id: invoiceLines.id, name: invoiceLines.name, description: invoiceLines.description, quantity: invoiceLines.quantity, unitPrice: invoiceLines.unitPrice,
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible,
     costBasis: invoiceLines.costBasis, catalogItemId: invoiceLines.catalogItemId,
     parentLineId: invoiceLines.parentLineId, sourceId: invoiceLines.sourceId,
@@ -128,12 +128,13 @@ describe('allowance + overage generation (real DB) #3205 W04', () => {
 
     const lines = await readLines(res.invoiceId!);
     expect(lines).toHaveLength(hasOverageLine ? 2 : 1);
-    expect(lines[0]).toMatchObject({ description: 'Endpoints', quantity: baseQty, unitPrice: '10.00' });
+    // #9664: the contract text is the line's NAME; no blurb repeats it.
+    expect(lines[0]).toMatchObject({ name: 'Endpoints', description: null, quantity: baseQty, unitPrice: '10.00' });
 
     if (hasOverageLine) {
       // The sibling: a real, editable, customer-visible charge — NOT a bundle child.
       expect(lines[1]).toMatchObject({
-        description: 'Overage: 1 above 25 included — Endpoints',
+        name: 'Overage: 1 above 25 included — Endpoints',
         quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00',
         taxable: true, customerVisible: true, catalogItemId: null,
         parentLineId: null, sourceId: lineId, sourceContractId: f.contractId,
@@ -170,7 +171,7 @@ describe('allowance + overage generation (real DB) #3205 W04', () => {
     const res = await withSystemDbAccessContext(() => generateDueInvoice(f.contractId, SWEEP_AT));
     const lines = await readLines(res.invoiceId!);
 
-    expect(lines.map((line) => line.description)).toEqual([
+    expect(lines.map((line) => line.name)).toEqual([
       'Bill endpoints',
       'Overage: 1 above 25 included — Bill endpoints',
       'Flag endpoints',
@@ -249,7 +250,7 @@ describe('allowance + overage generation (real DB) #3205 W04', () => {
     const res = await withSystemDbAccessContext(() => generateDueInvoice(f.contractId, SWEEP_AT));
     const lines = await readLines(res.invoiceId!);
     expect(lines[0]).toMatchObject({ quantity: '2.00' });
-    expect(lines[1]).toMatchObject({ description: 'Overage: 1 above 2 included — Seats', quantity: '1.00', parentLineId: null });
+    expect(lines[1]).toMatchObject({ name: 'Overage: 1 above 2 included — Seats', quantity: '1.00', parentLineId: null });
   });
 
   it('a second July run is not_due and leaves the contract invoice line count unchanged', async () => {

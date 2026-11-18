@@ -19,7 +19,9 @@ import { organizations } from '../db/schema';
 import { backupStatusReportConfigSchema } from './reportConfigSchemas';
 import {
   BACKUP_STATUS_BUCKET_IDS,
-  bucketForBackupStatus,
+  bucketForBackupRow,
+  saasWorkloadLabel,
+  verifiedBootableState,
   EXTERNAL_BACKUP_STATUS_SEVERITY,
   type BackupHealth,
   type BackupHealthRow,
@@ -70,36 +72,40 @@ function pct(count: number, total: number): number {
 
 /**
  * Status-bucket grouping is a SHARED contract, not a local fold: W01's
- * `bucketForBackupStatus` (`@breeze/shared`) sorts every `ExternalBackupStatus`
- * into one of `BACKUP_STATUS_BUCKET_IDS` — `no_backups`, `completed`,
+ * `bucketForBackupRow` (`@breeze/shared`) sorts every row into one of
+ * `BACKUP_STATUS_BUCKET_IDS` — `no_backups`, `completed`, `overdue` (a
+ * `completed` row with no success in 48 hours, #12025),
  * `completed_with_errors`, `in_progress`, `unsuccessful` (`failed` +
  * `over_quota` + `no_selection` + `interrupted`), `other` (`not_started` +
- * `unknown`) — and the W03 web overview uses the exact same mapping for its
+ * `unknown` + `paused`) — and the W03 web overview uses the exact same mapping for its
  * own status bar, so this report and the overview can never disagree about
  * where a status lands. (This plan's first draft defined an equivalent local
  * fold here under the DECISION that no shared helper existed yet at W05
  * plan-authoring time — it does now, per the coordinator's follow-up, and
  * this file imports it instead of re-deriving it.)
  *
- * `other` is the catch-all for the two statuses the spec's Web UI section's
- * five NAMED buckets don't mention (`not_started`, `unknown`) — this function
- * renders it only when its count is non-zero, the same rule the overview
- * applies, so an org with no `other`-bucketed device never shows an empty,
- * unfamiliar sixth segment next to Cove's own five.
+ * `other` is the catch-all for the statuses the spec's Web UI section's five
+ * NAMED buckets don't mention (`not_started`, `unknown`, `paused`) — this
+ * function renders it only when its count is non-zero, the same rule the
+ * overview applies, so an org with no `other`-bucketed device never shows an
+ * empty, unfamiliar segment next to Cove's own five. `overdue` (#12025)
+ * follows the same rule.
  */
 function buildStatusBuckets(rows: BackupHealthRow[]): BackupStatusBucket[] {
   const counts: Record<BackupStatusBucketId, number> = {
     no_backups: 0,
     completed: 0,
+    overdue: 0,
     completed_with_errors: 0,
     in_progress: 0,
     unsuccessful: 0,
     other: 0,
   };
-  for (const row of rows) counts[bucketForBackupStatus(row.status)] += 1;
+  // By ROW, not status: an overdue `completed` row is not "Completed" (#12025).
+  for (const row of rows) counts[bucketForBackupRow(row)] += 1;
   const total = rows.length;
   return BACKUP_STATUS_BUCKET_IDS
-    .filter((key) => key !== 'other' || counts[key] > 0)
+    .filter((key) => (key !== 'other' && key !== 'overdue') || counts[key] > 0)
     .map((key) => ({ key, count: counts[key], pct: pct(counts[key], total) }));
 }
 
@@ -135,7 +141,8 @@ function toCsvRow(row: BackupHealthRow): Record<string, string | number | boolea
     organization: row.orgName,
     source: row.source,
     provider: row.providerLabel,
-    deviceType: row.osType,
+    deviceType: row.accountType === 'm365' || row.accountType === 'gws' ? 'saas' : row.osType,
+    workload: row.accountType === 'm365' || row.accountType === 'gws' ? row.dataSources.map(saasWorkloadLabel).join('; ') : null,
     accountType: row.accountType,
     status: row.status,
     health: row.health,
@@ -147,6 +154,9 @@ function toCsvRow(row: BackupHealthRow): Record<string, string | number | boolea
     errorsCount: row.errorsCount,
     dataSources: row.dataSources.join('; '),
     agentOnline: row.agentOnline,
+    verifiedBootable: verifiedBootableState(row),
+    verifiedBootableAt: row.verifiedBootableAt,
+    verifiedBootableFailedChecks: (row.verifiedBootableFailedChecks ?? []).join('; '),
   };
 }
 

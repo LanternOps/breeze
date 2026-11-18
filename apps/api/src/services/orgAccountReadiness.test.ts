@@ -330,6 +330,7 @@ describe('loadAccountReadiness', () => {
     const where = compiledWhere(tickets);
     expect(where.sql).toContain('"tickets"."org_id" in (');
     expect(where.sql).toContain('"tickets"."deleted_at" is null');
+    expect(where.sql).toContain('"tickets"."merged_into_ticket_id" is null');
     expect(where.sql).toContain('"tickets"."status" in (');
     expect(where.params).toEqual([ORG_A, ORG_B, 'new', 'open', 'pending', 'on_hold']);
     expect(result.get(ORG_A)?.tickets).toEqual({ open: 4, awaitingCustomer: 1, slaBreached: 2 });

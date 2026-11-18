@@ -35,7 +35,11 @@
  * RBAC/Redis state this unit test has no business standing up; see the
  * mock preamble below, modeled on aiAgentSdk.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { Hono } from 'hono';
+import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
+import { extensionContributionRegistry } from '../extensions/contributionRegistry';
+import { getToolTier } from './aiTools';
 import { createSessionPreToolUse } from './aiAgentSdk';
 import { db } from '../db';
 import * as aiGuardrails from './aiGuardrails';
@@ -78,11 +82,11 @@ vi.mock('./aiAgent', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 
@@ -98,6 +102,16 @@ vi.mock('./aiInputSanitizer', async (importOriginal) => ({
 // file — see the header comment.
 
 const mockWriteAuditEvent = vi.fn();
+// #9854: createSessionPreToolUse validates input against the full tool schema
+// before any approval. This suite's fixtures use placeholder ids/arguments the
+// real schemas reject, and it pins behaviour downstream of that check, so the
+// validator is stubbed to "valid". The check itself is pinned in
+// aiAgentSdk.test.ts ('#9854: input is validated before any approval').
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()),
+  validateToolInput: () => ({ success: true }),
+}));
+
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: (...args: unknown[]) => mockWriteAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
@@ -115,6 +129,9 @@ vi.mock('./aiAgentSdkTools', () => ({
     manage_update_rings: 1,
     manage_peripheral_policies: 1,
     manage_patches: 1,
+    // #11989: known to the whitelist so the call reaches checkGuardrails; its
+    // real tier (4) comes from the extension registration in that describe.
+    demo_ext_tier4_tool: 1,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -145,6 +162,10 @@ vi.mock('./pamToolActionGovernance', () => ({
 const mockCreateActionIntent = vi.fn();
 const mockWaitForIntentDecision = vi.fn();
 const mockTransitionIntent = vi.fn();
+// #11222: which org the intent is filed in is pinned in intentRowTarget.test.ts. The gate under
+// test here is the tier, so the row these calls name is the session org's (no row read).
+vi.mock('./actionIntents/intentRowTarget', () => ({ resolveIntentRowTarget: async () => null }));
+
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
@@ -385,5 +406,67 @@ describe('#3552: enforcement-arming AI tools are gated at the real checkGuardrai
       expect(mockCreateActionIntent).not.toHaveBeenCalled();
       expect(result.allowed).toBe(true);
     });
+  });
+});
+
+// #11989: a tool registered at base Tier 4 is refused by the chat gate with
+// the guardrail's own reason — never routed to an approval card or a durable
+// intent. Registered through the extension contribution registry (the one path
+// that admits `tier: 4`), so getToolTier and checkGuardrails both stay real.
+// The guardrail and agent-gate halves live in
+// aiGuardrails.tier4Registration.contract.test.ts.
+describe('#11989: a base-Tier-4 registration is refused by the chat gate', () => {
+  const TIER4_TOOL = 'demo_ext_tier4_tool';
+
+  beforeAll(() => {
+    const manifest: ExtensionManifestV1 = {
+      apiVersion: 'breeze.extensions/v1',
+      name: 'demo-tier4',
+      version: '1.0.0',
+      routeNamespace: 'demo-tier4',
+      requires: { breeze: '>=1.0.0', serverSdk: '^1.0.0', capabilities: [] },
+      server: { entry: 'dist/server.js' },
+      migrationsDir: 'migrations',
+      schemaCompatibilityFloor: '1.0.0',
+      jobs: [],
+      aiTools: [{ name: TIER4_TOOL }],
+      tenancy: { orgCascadeDeleteTables: [], deviceCascadeDeleteTables: [], deviceOrgDenormalizedTables: [] },
+    };
+    const staging = extensionContributionRegistry.begin(manifest);
+    staging.registrar.mountRoute(new Hono());
+    staging.registrar.registerAiTool(TIER4_TOOL, {
+      definition: { name: TIER4_TOOL, description: 'demo', input_schema: { type: 'object' } },
+      tier: 4,
+      handler: async () => 'ok',
+    });
+    extensionContributionRegistry.activate(staging.finish());
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(aiGuardrails, 'checkToolPermission').mockResolvedValue(null);
+    vi.spyOn(aiGuardrails, 'checkToolRateLimit').mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    mockInsertReturning({ id: 'exec-tier4' });
+    mockCreateActionIntent.mockResolvedValue({ id: 'intent-tier4', status: 'pending_approval', approvalRequestIds: [] });
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+  });
+
+  it('the seam is live: the real getToolTier answers 4', () => {
+    expect(getToolTier(TIER4_TOOL)).toBe(4);
+  });
+
+  it.each(['per_step', 'auto_approve'] as const)('refuses it under %s with the Tier-4 reason, before any approval', async (approvalMode) => {
+    const session = makeActiveSession({ approvalMode });
+
+    const result = await createSessionPreToolUse(session)(TIER4_TOOL, {});
+
+    expect(result).toEqual({
+      allowed: false,
+      error: `Tool "${TIER4_TOOL}" is registered at Tier 4 and is not available`,
+    });
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(waitForApproval).not.toHaveBeenCalled();
   });
 });

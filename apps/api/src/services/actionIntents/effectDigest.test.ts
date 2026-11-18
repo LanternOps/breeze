@@ -8,6 +8,7 @@ import {
   effectDigestResolverKey,
   hasPinnedDigest,
 } from './effectDigest';
+import { drPlanDefinitionDigest } from '../drPlanDefinition';
 
 /**
  * The ONE seam this suite needs (#3409 PR4c-1).
@@ -670,6 +671,32 @@ describe('computeEffectDigestOutcome', () => {
     });
   });
 
+  // Full-control W02 (#6756): channel delete is four_eyes (QV3).
+  describe('manage_notification_channels:delete', () => {
+    const args = { action: 'delete', channelId: 'channel-1' };
+    const row = { name: 'Ops Slack', type: 'slack', orgId: null, partnerId: 'partner-1' };
+
+    it('pins the channel identity: a rename or re-scope changes the digest, a test run does not', async () => {
+      const before = await digestFor('manage_notification_channels', args, makeFakeDb([[row]]).database);
+      const sameAfterATest = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row }]]).database);
+      const renamed = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, name: 'Billing Slack' }]]).database);
+      const rescoped = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, orgId: 'org-1', partnerId: null }]]).database);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).toBe(sameAfterATest);
+      expect(before).not.toBe(renamed);
+      expect(before).not.toBe(rescoped);
+    });
+
+    it('reports missing_arg without a channelId and target_absent for a deleted channel', async () => {
+      const { database, select } = makeFakeDb([]);
+      expect(await computeEffectDigestOutcome('manage_notification_channels', { action: 'delete' }, database))
+        .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      expect(select).not.toHaveBeenCalled();
+      expect(await computeEffectDigestOutcome('manage_notification_channels', args, makeFakeDb([[]]).database))
+        .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    });
+  });
+
   describe('execute_dr_plan', () => {
     it('pins the plan revision — a plan edited between approval and release changes the digest', async () => {
       const args = { planId: 'plan-1', executionType: 'failover' };
@@ -685,6 +712,52 @@ describe('computeEffectDigestOutcome', () => {
       );
       expect(before).toMatch(/^[0-9a-f]{64}$/);
       expect(before).not.toBe(after);
+    });
+
+    const drPlan = { orgId: 'org-1', updatedAt: new Date('2026-08-01T00:00:00Z'), status: 'active' };
+    const drGroup = {
+      id: 'group-1', planId: 'plan-1', orgId: 'org-1', name: 'Group', sequence: 0, dependsOnGroupId: null,
+      devices: ['device-1'], restoreConfig: { commandType: 'vm_restore_from_backup', payload: { vmName: 'approved' } },
+      estimatedDurationMinutes: 5,
+    };
+    const drArgs = { planId: 'plan-1', executionType: 'failover' };
+
+    it.each([
+      { devices: ['device-2'] }, { restoreConfig: { commandType: 'vm_restore_from_backup', payload: { vmName: 'other' } } },
+      { sequence: 2 }, { dependsOnGroupId: 'group-2' }, { orgId: 'org-2' },
+      { name: 'Renamed group' }, { estimatedDurationMinutes: 60 },
+    ])('pins every group field that decides what runs: %j', async (change) => {
+      const before = await digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [drGroup]]).database);
+      const after = await digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [{ ...drGroup, ...change }]]).database);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).not.toBe(after);
+    });
+
+    it('pins group addition, removal and order, but not nested key order', async () => {
+      const digest = (groups: unknown[]) => digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], groups]).database);
+      const second = { ...drGroup, id: 'group-2', sequence: 1 };
+      expect(await digest([])).not.toBe(await digest([drGroup]));
+      expect(await digest([drGroup])).not.toBe(await digest([drGroup, second]));
+      expect(await digest([drGroup, second])).not.toBe(await digest([second, drGroup]));
+      expect(await digest([{ ...drGroup, restoreConfig: { a: 1, b: 2 } }]))
+        .toBe(await digest([{ ...drGroup, restoreConfig: { b: 2, a: 1 } }]));
+    });
+
+    it('hands the release the exact definition it hashed, with that digest', async () => {
+      const groups = [structuredClone(drGroup)];
+      const released = await computeEffectDigestForRelease('execute_dr_plan', drArgs, makeFakeDb([[drPlan], groups]).database);
+      groups[0]!.restoreConfig.payload.vmName = 'changed-after-read';
+      expect(released.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(released.context?.verifiedDrPlan?.digest).toBe(released.digest);
+      expect(released.context?.verifiedDrPlan?.definition).toMatchObject({
+        planId: 'plan-1', orgId: 'org-1', status: 'active',
+        groups: [{ id: 'group-1', devices: ['device-1'], restoreConfig: { payload: { vmName: 'approved' } } }],
+      });
+    });
+
+    it('produces the digest the execution service recomputes under the plan lock', async () => {
+      const released = await computeEffectDigestForRelease('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [drGroup]]).database);
+      expect(drPlanDefinitionDigest(released.context!.verifiedDrPlan!.definition)).toBe(released.digest);
     });
 
     it('reports target_absent for a deleted plan', async () => {
@@ -872,6 +945,56 @@ describe('operator_plan (Recipe Library E4)', () => {
     expect(await computeEffectDigestOutcome('operator_plan', ARGS, makeFakeDb([[row(0, { argumentDigest: 'nothex' })]]).database))
       .toEqual({ kind: 'unresolved', reason: 'target_absent' });
     expect(await computeEffectDigestOutcome('operator_plan', { taskId: 't' }, makeFakeDb([]).database))
+      .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+  });
+});
+
+// Wisp W03: confirm_memory / retract_memory are four_eyes surfaces (registry tier 3, the
+// operator_plan precedent). The approver signs off on a block REFERENCE; the pin makes a
+// block edited, superseded or retracted between approval and release fail closed.
+describe.each(['confirm_memory', 'retract_memory'])('%s effect digest', (tool) => {
+  const BLOCK = '55555555-5555-4555-8555-555555555555';
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    id: BLOCK,
+    tenantPartnerId: 'p1',
+    ownerKind: 'user',
+    ownerUserId: 'u1',
+    ownerOrgId: null,
+    blockType: 'preference',
+    subjectKey: 'ticket.notify',
+    content: { channel: 'sms', quiet: { from: 22, to: 7 } },
+    confidence: 'medium',
+    status: 'unconfirmed',
+    supersededById: null,
+    updatedAt: new Date('2026-10-23T00:00:00Z'),
+    ...overrides,
+  });
+  const digestOf = async (r: Record<string, unknown> | null) =>
+    digestFor(tool, { blockId: BLOCK }, makeFakeDb([r ? [r] : []]).database);
+
+  it('is stable for the same row, including content key order', async () => {
+    const a = await digestOf(row());
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(await digestOf(row())).toBe(a);
+    expect(await digestOf(row({ content: { quiet: { to: 7, from: 22 }, channel: 'sms' } }))).toBe(a);
+  });
+
+  it.each([
+    ['content', { content: { channel: 'email', quiet: { from: 22, to: 7 } } }],
+    ['status', { status: 'retracted' }],
+    ['supersededById', { supersededById: '66666666-6666-4666-8666-666666666666' }],
+    ['updatedAt', { updatedAt: new Date('2026-10-23T00:00:01Z') }],
+    ['owner', { ownerKind: 'org', ownerUserId: null, ownerOrgId: 'o1' }],
+    ['subjectKey', { subjectKey: 'ticket.other' }],
+    ['confidence', { confidence: 'high' }],
+  ])('changes when %s changes', async (_label, overrides) => {
+    expect(await digestOf(row(overrides))).not.toBe(await digestOf(row()));
+  });
+
+  it('target_absent when the block is gone (or hidden by RLS); missing_arg without blockId', async () => {
+    expect(await computeEffectDigestOutcome(tool, { blockId: BLOCK }, makeFakeDb([[]]).database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(await computeEffectDigestOutcome(tool, {}, makeFakeDb([]).database))
       .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
   });
 });

@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
-import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
-import { organizations, devices, partners, partnerUsers } from '../db/schema';
+import { organizations, devices, partners, partnerUsers, alerts } from '../db/schema';
+import { listLatestPostureScoresByOrgs } from '../services/securityPosture';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { getEmailService } from '../services/email';
+import { ENTITLEMENTS, ENTITLEMENT_KEYS } from '@breeze/shared';
+import { EntitlementResolutionError, getEntitlements, type ResolvedEntitlements } from '../services/entitlements';
 
 import { notHiddenOrgType } from '../services/unassignedPool/visibility';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -34,23 +37,26 @@ const requirePartnerDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.reso
 
 partnerRoutes.use('*', authMiddleware);
 
+/**
+ * The caller's partner: the JWT claim when present (partner- AND org-scoped
+ * tokens carry it), else the caller's own partner_users row (system-scoped
+ * users). Never client input, so it is safe to pin partner-axis reads to it.
+ */
+async function resolveCallerPartnerId(auth: { partnerId: string | null; user: { id: string } }): Promise<string | null> {
+  if (auth.partnerId) return auth.partnerId;
+  const [assoc] = await db
+    .select({ partnerId: partnerUsers.partnerId })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.userId, auth.user.id))
+    .limit(1);
+  return assoc?.partnerId ?? null;
+}
+
 // GET /partner/me — return the current user's partner
 partnerRoutes.get('/me', async (c) => {
   const auth = c.get('auth');
 
-  // If the token already carries a partnerId, look it up directly
-  let partnerId = auth.partnerId;
-
-  // For system-scoped users, resolve via partner_users table
-  if (!partnerId) {
-    const [assoc] = await db
-      .select({ partnerId: partnerUsers.partnerId })
-      .from(partnerUsers)
-      .where(eq(partnerUsers.userId, auth.user.id))
-      .limit(1);
-    partnerId = assoc?.partnerId ?? null;
-  }
-
+  const partnerId = await resolveCallerPartnerId(auth);
   if (!partnerId) {
     return c.json({ error: 'No partner association' }, 404);
   }
@@ -93,6 +99,53 @@ partnerRoutes.get('/me', async (c) => {
     // Capability flag only (#9256): lets the web say "created but not emailed"
     // instead of promising an email on a server with no transport.
     emailConfigured: !!getEmailService(),
+  });
+});
+
+// GET /partner/me/entitlements — the caller's partner plan + resolved
+// entitlement set (Partner Entitlements W1 §9, #9907). authMiddleware only, no
+// requireScope: org-scoped tokens must be able to read it (FeatureLock renders
+// for every user), and it is exempt from partnerGuard via the /partner/me/
+// prefix. Reads go through services/entitlements.ts, which takes the
+// partner-axis escape (#2822) — an org context sees zero rows directly.
+partnerRoutes.get('/me/entitlements', async (c) => {
+  const auth = c.get('auth');
+  const partnerId = await resolveCallerPartnerId(auth);
+  // `reason` is the operator's free-text note on a manual/licence row (e.g. an
+  // abuse hold). It is MSP-internal: an org-scoped caller — possibly a
+  // customer org's own user — gets the state and source, never the note.
+  const showReason = auth.scope !== 'organization';
+  if (!partnerId) {
+    return c.json({ error: 'No partner association' }, 404);
+  }
+
+  let resolved: ResolvedEntitlements;
+  try {
+    resolved = await getEntitlements(partnerId);
+  } catch (err) {
+    if (err instanceof EntitlementResolutionError) {
+      c.header('Retry-After', '30');
+      return c.json({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable' }, 503);
+    }
+    throw err;
+  }
+
+  return c.json({
+    plan: resolved.plan,
+    entitlements: ENTITLEMENT_KEYS.map((key) => {
+      const e = resolved.entitlements[key];
+      return {
+        key,
+        label: ENTITLEMENTS[key].label,
+        why: ENTITLEMENTS[key].why,
+        state: e.state,
+        source: e.source,
+        limits: e.limits,
+        expiresAt: e.expiresAt ? e.expiresAt.toISOString() : null,
+        graceUntil: e.graceUntil ? e.graceUntil.toISOString() : null,
+        reason: showReason ? e.reason : null,
+      };
+    }),
   });
 });
 
@@ -163,12 +216,58 @@ partnerRoutes.get(
       ne(devices.status, 'decommissioned'),
     ));
 
+  // Only devices the card lists count toward its rollups: hidden (ephemeral,
+  // parked, decommissioned) devices would otherwise make alertCount/compliance
+  // disagree with deviceCount (#5315).
+  const visibleDeviceIds = new Set(deviceRows.map((d) => d.id));
+
+  // Open alerts (active + acknowledged; resolved/suppressed/dismissed are not
+  // actionable) in one grouped query over the already-scoped org list (#11039).
+  // The route gate is orgs:read + devices:read only (devices:read also covers
+  // the posture scores — same gate as /security reads). Alert counts need
+  // alerts:read: without it they stay 0 (the pre-#11039 value), not leaked.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const canReadAlerts = !!perms && hasPermission(perms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+  const alertRows = canReadAlerts
+    ? await db
+        .select({ orgId: alerts.orgId, deviceId: alerts.deviceId, n: count() })
+        .from(alerts)
+        .where(and(inArray(alerts.orgId, orgIdList), inArray(alerts.status, ['active', 'acknowledged'])))
+        .groupBy(alerts.orgId, alerts.deviceId)
+    : [];
+  const alertsByOrg = new Map<string, number>();
+  const alertsByDevice = new Map<string, number>();
+  for (const r of alertRows) {
+    // Org-level alerts (no device) count; device alerts only for listed devices.
+    if (r.deviceId && !visibleDeviceIds.has(r.deviceId)) continue;
+    const n = Number(r.n);
+    alertsByOrg.set(r.orgId, (alertsByOrg.get(r.orgId) ?? 0) + n);
+    if (r.deviceId) alertsByDevice.set(r.deviceId, n);
+  }
+
+  // Compliance = the persisted security-posture overall score (the same one the
+  // security posture views show); an org/device with no snapshot is null, not 100.
+  const postureRows = await listLatestPostureScoresByOrgs(orgIdList, [...visibleDeviceIds]);
+  const scoreByDevice = new Map<string, number>();
+  const orgScores = new Map<string, number[]>();
+  for (const r of postureRows) {
+    scoreByDevice.set(r.deviceId, r.overallScore);
+    const list = orgScores.get(r.orgId) ?? [];
+    list.push(r.overallScore);
+    orgScores.set(r.orgId, list);
+  }
+  const orgCompliance = (orgId: string): number | null => {
+    const list = orgScores.get(orgId);
+    if (!list || list.length === 0) return null;
+    return Math.round(list.reduce((a, b) => a + b, 0) / list.length);
+  };
+
   const devicesByOrg = new Map<string, Array<{
     id: string;
     name: string;
     status: string;
     alertCount: number;
-    compliance: number;
+    compliance: number | null;
     lastSeen: string;
   }>>();
 
@@ -178,8 +277,8 @@ partnerRoutes.get(
       id: row.id,
       name: row.hostname,
       status: row.status,
-      alertCount: 0,
-      compliance: 100,
+      alertCount: alertsByDevice.get(row.id) ?? 0,
+      compliance: scoreByDevice.get(row.id) ?? null,
       lastSeen: row.lastSeenAt ? row.lastSeenAt.toISOString() : new Date(0).toISOString(),
     });
     devicesByOrg.set(row.orgId, list);
@@ -198,8 +297,8 @@ partnerRoutes.get(
       name: org.name,
       status: org.status,
       deviceCount: orgDevices.length,
-      alertCount: 0,
-      compliance: 100,
+      alertCount: alertsByOrg.get(org.id) ?? 0,
+      compliance: orgCompliance(org.id),
       mrr: 0, // deprecated (wave 7 #3779) — read mrrByCurrency
       mrrByCurrency: mrrByOrg.get(org.id) ?? [],
       devices: orgDevices

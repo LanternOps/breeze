@@ -79,7 +79,7 @@ export default function ManualModelForm({
 
   return (
     <Drawer open onClose={onClose} title={t('aiModels.models.manual.title')} dataTestId="ai-manual-model-drawer" closeDisabled={saving}>
-      <div className="space-y-5">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4" data-testid="ai-manual-model-drawer-body">
         <div className="space-y-1">
           <label className="text-sm font-medium" htmlFor="ai-manual-model-id">{t('aiModels.models.manual.modelId')}</label>
           <input id="ai-manual-model-id" data-testid="ai-manual-model-id" className={inputClass} value={modelId} maxLength={200}
@@ -110,17 +110,17 @@ export default function ManualModelForm({
             <p role="alert" className="text-xs text-destructive">{t('aiModels.offering.invalidPrices')}</p>
           )}
         </fieldset>
-        <div className="flex justify-end gap-2 border-t pt-4">
-          <button type="button" data-testid="ai-manual-model-cancel" onClick={onClose} disabled={saving}
-            className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
-            {t('common:actions.cancel')}
-          </button>
-          <button type="button" data-testid="ai-manual-model-save" onClick={() => { void handleSave(); }} disabled={!canSave || saving}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {saving ? t('common:states.saving') : t('common:actions.save')}
-          </button>
-        </div>
+      </div>
+      <div className="flex justify-end gap-2 border-t px-5 py-4" data-testid="ai-manual-model-drawer-footer">
+        <button type="button" data-testid="ai-manual-model-cancel" onClick={onClose} disabled={saving}
+          className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+          {t('common:actions.cancel')}
+        </button>
+        <button type="button" data-testid="ai-manual-model-save" onClick={() => { void handleSave(); }} disabled={!canSave || saving}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {saving ? t('common:states.saving') : t('common:actions.save')}
+        </button>
       </div>
     </Drawer>
   );

@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import {
   backupSlaConfigs,
   backupSlaEvents,
@@ -25,6 +26,7 @@ import {
   SQL,
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -434,6 +436,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('configure_backup_sla', async (input, auth) => {
+      const mfaError = mfaGatedToolError('configure_backup_sla', typeof input.action === 'string' ? input.action : undefined, auth);
+      if (mfaError) return mfaError;
       const action = input.action as string;
 
       // A backup SLA config is an ORG-WIDE governance object: it is created and
@@ -444,6 +448,11 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       // caller itself, covering the site axis AND the exact-device axis.
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
+
+      if (action === 'create' || action === 'update') {
+        const partnerGroupIds = await findPartnerOwnedGroupIds(Array.isArray(input.targetGroups) ? input.targetGroups as string[] : []);
+        if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
       }
 
       if (action === 'create') {

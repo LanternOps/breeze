@@ -1,0 +1,134 @@
+import type { Dispatch, SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Brain, MessagesSquare } from 'lucide-react';
+import type { Concern, CurrentActivity, WispBriefSchedule, WispThreadLink } from '@breeze/shared';
+import type { WispState } from '@/stores/aiStore';
+import { WispGrantActions, WispGrantDetails } from '../ai/WispThreadHeader';
+import { useWispGrantControls } from '../ai/useWispGrantControls';
+import WispActivityPanel from './WispActivityPanel';
+import WispIdentityCard from './WispIdentityCard';
+import WispLinksPanel from './WispLinksPanel';
+import WispNeedsYou from './WispNeedsYou';
+import WispWorkersPanel from './WispWorkersPanel';
+
+type Wisp = NonNullable<WispState>;
+
+export type WispRailProps = {
+  wisp: Wisp;
+  orgName: string | null;
+  current: CurrentActivity;
+  /** Null hides the section (the thread page has no home payload). */
+  needsYou: Concern[] | null;
+  /** Null hides the section. */
+  links: WispThreadLink[] | null;
+  onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
+  onWispChange: (patch: Partial<Wisp>) => void;
+  onRevoked: () => void | Promise<void>;
+  /** Bumped when a check starts or finishes: workers and activity reload. */
+  activityKey: number;
+  /** The brief time and resolved zone (#10402). The thread page has no home payload, so it passes none. */
+  briefSchedule?: WispBriefSchedule | null;
+};
+
+const CHATS_HREF = '/ai/chat';
+const MEMORY_HREF = '/settings/wisp-memory';
+const BOX = 'overflow-hidden rounded-lg border bg-card';
+
+/**
+ * `WispNeedsYou` is its own bordered section, so it is not boxed again. Its
+ * concern list scrolls past 22rem (needs-you runs to 50 rows) while the
+ * section header and count stay put; the list's own bottom border would
+ * double the section's, so it goes too.
+ */
+const NEEDS_YOU_BODY =
+  '[&_[data-testid=wisp-concerns]]:max-h-[22rem] [&_[data-testid=wisp-concerns]]:overflow-y-auto [&_[data-testid=wisp-concerns]]:border-b-0';
+
+/**
+ * The Wisp home's right rail (W01 #10211, spec §4.1): who Wisp is and the
+ * grant controls, what needs you, the specialists at work, the linked items,
+ * the activity timeline (collapsed: the thread's posts carry the narrative),
+ * then the way out to all chats and memory. `#needs-you`, `#links` and
+ * `#activity` land on these sections.
+ */
+export default function WispRail({
+  wisp,
+  orgName,
+  current,
+  needsYou,
+  links,
+  onLinksChange,
+  onWispChange,
+  onRevoked,
+  activityKey,
+  briefSchedule = null,
+}: WispRailProps) {
+  const { t } = useTranslation(['ai', 'pages']);
+  // #10104: an ended delegation (revoked or expired) authorizes no reads; the
+  // concerns, activity and links routes answer 409 grant_inactive. Say so once
+  // instead of mounting panes that can only fail.
+  const ended = wisp.status === 'revoked' || wisp.status === 'expired';
+  // The card states scope and status itself, so the grant controls are laid
+  // out in parts: the actions end the card's title row (no icon-only row under
+  // it), the meter, pause and notices follow. Customer focus is a chat-session
+  // setting (spec §6.1) the details do not offer, and the live line is the card's.
+  const controls = useWispGrantControls({ wisp, orgName, onWispChange, onRevoked });
+
+  return (
+    <div className="space-y-4" data-testid="wisp-rail">
+      <div className={BOX}>
+        <WispIdentityCard
+          wisp={wisp}
+          orgName={orgName}
+          currentActivity={current}
+          actions={<WispGrantActions controls={controls} wideningAvailable={wisp.wideningAvailable} />}
+        >
+          <WispGrantDetails wisp={wisp} wideningAvailable={wisp.wideningAvailable} controls={controls} />
+          {!ended && briefSchedule?.timeLocal && (
+            <p data-testid="wisp-rail-brief-at" className="text-xs text-muted-foreground">
+              {t('ai:wisp.welcome.briefAt', { time: briefSchedule.timeLocal, timezone: briefSchedule.timezone })}
+            </p>
+          )}
+        </WispIdentityCard>
+      </div>
+
+      {ended ? (
+        <p className={`${BOX} px-4 py-3 text-sm text-muted-foreground`} data-testid="wisp-rail-ended" role="status">
+          {t('ai:wisp.rail.ended')}
+        </p>
+      ) : (
+        <>
+          {needsYou !== null && (
+            <div className={NEEDS_YOU_BODY}>
+              <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={needsYou} refreshKey={activityKey} />
+            </div>
+          )}
+
+          <div className={BOX}>
+            <WispWorkersPanel threadId={wisp.threadId} refreshKey={activityKey} />
+          </div>
+
+          {links !== null && (
+            <div className={BOX}>
+              <WispLinksPanel threadId={wisp.threadId} links={links} onLinksChange={onLinksChange} canAdd={wisp.status === 'active'} />
+            </div>
+          )}
+
+          <section id="activity" className={BOX}>
+            <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} collapsible />
+          </section>
+        </>
+      )}
+
+      <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label={t('pages:titles.wisp')} data-testid="wisp-rail-nav">
+        <a href={CHATS_HREF} data-testid="wisp-home-chats" className="flex items-center gap-1.5 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+          <MessagesSquare className="h-4 w-4" aria-hidden="true" />
+          {t('ai:wisp.home.openChats')}
+        </a>
+        <a href={MEMORY_HREF} data-testid="wisp-home-memory" className="flex items-center gap-1.5 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+          <Brain className="h-4 w-4" aria-hidden="true" />
+          {t('ai:wisp.home.memory')}
+        </a>
+      </nav>
+    </div>
+  );
+}

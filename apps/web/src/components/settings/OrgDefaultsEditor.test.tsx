@@ -1,23 +1,103 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchWithAuthMock }));
 
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 
 const ORG = 'Acme Corp';
+const G1 = '11111111-1111-4111-8111-111111111111';
+const G2 = '22222222-2222-4222-8222-222222222222';
+const GDYN = '33333333-3333-4333-8333-333333333333';
+
+beforeEach(() => {
+  fetchWithAuthMock.mockReset();
+  fetchWithAuthMock.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+});
+
+describe('OrgDefaultsEditor — default device group picker (#9617)', () => {
+  const groupsResponse = {
+    ok: true,
+    json: async () => ({
+      data: [
+        { id: G1, name: 'Servers', type: 'static' },
+        { id: G2, name: 'Laptops', type: 'static' },
+        { id: GDYN, name: 'Windows 11 (dynamic)', type: 'dynamic' },
+      ],
+    }),
+  };
+
+  it("lists the org's real static groups (not hard-coded names) and saves the group id", async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" onSave={onSave} />);
+
+    await screen.findByRole('option', { name: 'Servers' });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/device-groups?orgId=org-1'));
+    expect(screen.getByRole('option', { name: 'Laptops' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Windows 11 (dynamic)' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Contractors' })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId('default-device-group'), G2);
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(G2);
+  });
+
+  it('treats a legacy display-string value as unset and saves no deviceGroup', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        organizationId="org-1"
+        defaults={{ deviceGroup: 'Contractors' }}
+        onSave={onSave}
+      />,
+    );
+    await screen.findByRole('option', { name: 'Servers' });
+    expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe('');
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBeUndefined();
+  });
+
+  it('shows a stored id missing from the list as unavailable, not as None, and keeps it on save', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const GONE = '44444444-4444-4444-8444-444444444444';
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{ deviceGroup: GONE }} onSave={onSave} />);
+    await screen.findByRole('option', { name: 'Servers' });
+    expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe(GONE);
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(GONE);
+  });
+
+  it('pre-selects a stored group id and no longer renders alert-threshold or send-welcome controls', async () => {
+    fetchWithAuthMock.mockResolvedValue(groupsResponse);
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{ deviceGroup: G1 }} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('default-device-group') as HTMLSelectElement).value).toBe(G1),
+    );
+    expect(screen.queryByRole('combobox', { name: 'Default alert severity' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('auto-enrollment-send-welcome')).not.toBeInTheDocument();
+  });
+});
 
 describe('OrgDefaultsEditor filter selects accessible name (#7156)', () => {
-  it('gives the device-group, alert-threshold, and agent-update-policy selects a real accessible name', () => {
+  it('gives the device-group and agent-update-policy selects a real accessible name', () => {
     render(<OrgDefaultsEditor organizationName={ORG} onSave={vi.fn()} />);
 
     expect(screen.getByRole('combobox', { name: 'Default device group' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Default alert severity' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Agent update policy' })).toBeInTheDocument();
   });
 });
 
 describe('OrgDefaultsEditor — maintenance window', () => {
-  it('defaults an unconfigured org to the explicit "always (24/7)" state and saves it durably', async () => {
+  it('shows an unconfigured org in the "always (24/7)" state without saving it as an override', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(<OrgDefaultsEditor organizationName={ORG} onSave={onSave} />);
@@ -26,8 +106,20 @@ describe('OrgDefaultsEditor — maintenance window', () => {
     expect(screen.getByTestId('maintenance-mode-always')).toBeChecked();
     expect(screen.queryByTestId('maintenance-start')).not.toBeInTheDocument();
 
+    // No stored window already means "update anytime" to the resolver, so an
+    // untouched control writes nothing (#9945).
     await user.click(screen.getByTestId('save-defaults'));
     expect(onSave).toHaveBeenCalledTimes(1);
+    expect('maintenanceWindow' in onSave.mock.calls[0][0]).toBe(false);
+  });
+
+  it('saves the 24/7 sentinel when the admin switches a stored window back to always', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{ maintenanceWindow: 'Sun 02:00-04:00' }} onSave={onSave} />);
+
+    await user.click(screen.getByTestId('maintenance-mode-always'));
+    await user.click(screen.getByTestId('save-defaults'));
     expect(onSave.mock.calls[0][0].maintenanceWindow).toBe('24/7');
   });
 
@@ -106,9 +198,11 @@ describe('OrgDefaultsEditor — maintenance window', () => {
     expect(screen.getByTestId('maintenance-mode-always')).toBeChecked();
     // Marked dirty on mount so saving overwrites the invalid stored value.
     expect(onDirty).toHaveBeenCalled();
-    // Saving persists the durable always sentinel, replacing the bad value.
+    // Saving drops the bad value, so the field inherits again (the resolver
+    // reads a missing window as "anytime") rather than becoming a 24/7
+    // override the admin never chose (#9945).
     await user.click(screen.getByTestId('save-defaults'));
-    expect(onSave.mock.calls[0][0].maintenanceWindow).toBe('24/7');
+    expect('maintenanceWindow' in onSave.mock.calls[0][0]).toBe(false);
   });
 
   it('does not show the invalid-stored notice for a clean window', () => {
@@ -272,7 +366,7 @@ describe('OrgDefaultsEditor — enrollment defaults (#2776)', () => {
 // hard-coded seeds, a partner-set `autoEnrollment` collided with the server-side
 // lock guard and 403'd every save in the category.
 describe('OrgDefaultsEditor — partner locks', () => {
-  const ENFORCED = { enabled: false, requireApproval: false, sendWelcome: false };
+  const ENFORCED = { enabled: false, requireApproval: false };
 
   it('disables the auto-enrollment checkboxes and flags them as partner-managed', () => {
     render(
@@ -285,7 +379,6 @@ describe('OrgDefaultsEditor — partner locks', () => {
 
     expect(screen.getByTestId('auto-enrollment-enabled')).toBeDisabled();
     expect(screen.getByTestId('auto-enrollment-require-approval')).toBeDisabled();
-    expect(screen.getByTestId('auto-enrollment-send-welcome')).toBeDisabled();
     expect(screen.getByTestId('auto-enrollment-locked')).toBeInTheDocument();
   });
 
@@ -298,9 +391,8 @@ describe('OrgDefaultsEditor — partner locks', () => {
       />,
     );
 
-    // The hard-coded default would have been enabled=true / sendWelcome=true.
+    // The hard-coded default would have been enabled=true.
     expect(screen.getByTestId('auto-enrollment-enabled')).not.toBeChecked();
-    expect(screen.getByTestId('auto-enrollment-send-welcome')).not.toBeChecked();
   });
 
   it('echoes the partner value back verbatim on save so the write is a permitted no-op', async () => {
@@ -312,7 +404,7 @@ describe('OrgDefaultsEditor — partner locks', () => {
         onSave={onSave}
         // The org's own stored value diverges from the partner's — it is inert
         // while the lock holds, and must not be what we post.
-        defaults={{ autoEnrollment: { enabled: true, requireApproval: true, sendWelcome: true } }}
+        defaults={{ autoEnrollment: { enabled: true, requireApproval: true } }}
         locked={['defaults.autoEnrollment']}
         effectiveDefaults={{ autoEnrollment: ENFORCED }}
       />,
@@ -325,26 +417,32 @@ describe('OrgDefaultsEditor — partner locks', () => {
   });
 
   it('leaves unlocked fields editable and org-owned', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: G1, name: 'Servers', type: 'static' }] }),
+    });
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(
       <OrgDefaultsEditor
         organizationName={ORG}
+        organizationId="org-1"
         onSave={onSave}
         locked={['defaults.autoEnrollment']}
-        effectiveDefaults={{ autoEnrollment: ENFORCED, deviceGroup: 'Critical Infrastructure' }}
+        effectiveDefaults={{ autoEnrollment: ENFORCED }}
       />,
     );
 
     const group = screen.getByTestId('default-device-group') as HTMLSelectElement;
     expect(group).toBeEnabled();
-    await user.selectOptions(group, 'Contractors');
+    await screen.findByRole('option', { name: 'Servers' });
+    await user.selectOptions(group, G1);
     await user.click(screen.getByTestId('save-defaults'));
 
-    expect(onSave.mock.calls[0][0].deviceGroup).toBe('Contractors');
-    // The locked field still rides along unchanged — that is the payload shape
-    // the API now accepts.
-    expect(onSave.mock.calls[0][0].autoEnrollment).toEqual(ENFORCED);
+    expect(onSave.mock.calls[0][0].deviceGroup).toBe(G1);
+    // The org never stored autoEnrollment, so the partner's locked value is not
+    // copied onto the org row (#9945).
+    expect('autoEnrollment' in onSave.mock.calls[0][0]).toBe(false);
   });
 
   it('never treats agentVersionPins as locked — it is inherit-with-override (#2124)', async () => {
@@ -372,6 +470,8 @@ describe('OrgDefaultsEditor — partner locks', () => {
       <OrgDefaultsEditor
         organizationName={ORG}
         onSave={onSave}
+        // An inert org value from before the lock; re-posting it would 403.
+        defaults={{ maintenanceWindow: 'Mon 01:00-02:00' }}
         locked={['defaults.maintenanceWindow']}
         effectiveDefaults={{ maintenanceWindow: 'Sun 02:00-04:00' }}
       />,
@@ -393,10 +493,240 @@ describe('OrgDefaultsEditor — partner locks', () => {
     expect(screen.getByTestId('auto-enrollment-enabled')).toBeEnabled();
     expect(screen.queryByTestId('auto-enrollment-locked')).not.toBeInTheDocument();
     await user.click(screen.getByTestId('save-defaults'));
-    expect(onSave.mock.calls[0][0].autoEnrollment).toEqual({
-      enabled: true,
-      requireApproval: false,
-      sendWelcome: true,
+    // Untouched and never stored: nothing is written (#9945).
+    expect('autoEnrollment' in onSave.mock.calls[0][0]).toBe(false);
+  });
+});
+
+// Issue #9945: the editor used to rebuild the whole `defaults` blob from its
+// controls on every save, so changing one field wrote every displayed default
+// as an explicit org override (`{}` became six keys). The save payload must
+// carry only what the org already stored plus what the admin actually changed.
+describe('OrgDefaultsEditor — only changed fields become overrides (#9945)', () => {
+  it('saves exactly the one field the admin changed on an org with no overrides', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: G1, name: 'Servers', type: 'static' }] }),
     });
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} organizationId="org-1" defaults={{}} onSave={onSave} />);
+
+    await screen.findByRole('option', { name: 'Servers' });
+    await user.selectOptions(screen.getByTestId('default-device-group'), G1);
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ deviceGroup: G1 });
+  });
+
+  it('writes nothing when Save is clicked without changes', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} onSave={onSave} />);
+
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0]).toEqual({});
+  });
+
+  it('keeps untouched stored overrides verbatim and adds only the edited field', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const stored = {
+      policyDefaults: { deviceCompliance: 'lenient', dataProtection: 'strict', accessControl: 'standard' },
+      // Legacy value the UI folds into "auto" for display; untouched, it must
+      // not be rewritten.
+      agentUpdatePolicy: 'staged',
+      maintenanceWindow: 'Sun 02:00-04:00',
+    };
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={stored} onSave={onSave} />);
+
+    await user.selectOptions(screen.getByTestId('org-default-enrollment-ttl'), '1440');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ ...stored, defaultEnrollmentTtlMinutes: 1440 });
+  });
+
+  it('does not write an empty agentVersionPins object for an org that never pinned', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{}} onSave={onSave} />);
+
+    await user.click(screen.getByTestId('auto-enrollment-require-approval'));
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ autoEnrollment: { enabled: true, requireApproval: true } });
+  });
+
+  it('does not materialise a locked partner value the org never stored', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        onSave={onSave}
+        defaults={{}}
+        locked={['defaults.autoEnrollment']}
+        effectiveDefaults={{ autoEnrollment: { enabled: false, requireApproval: false } }}
+      />,
+    );
+
+    await user.click(screen.getByTestId('save-defaults'));
+    expect('autoEnrollment' in onSave.mock.calls[0][0]).toBe(false);
+  });
+
+  it('labels an unset field as inherited and offers no reset', () => {
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{}} />);
+
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Inherited default');
+    expect(screen.queryByTestId('defaults-reset-agentUpdatePolicy')).toBeNull();
+  });
+
+  it('labels a stored override and resets it back to inherited on save', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{
+          agentUpdatePolicy: 'manual',
+          maintenanceWindow: 'Sun 02:00-04:00',
+          policyDefaults: { deviceCompliance: 'lenient', dataProtection: 'strict', accessControl: 'standard' },
+          autoEnrollment: { enabled: false, requireApproval: true },
+          deviceGroup: G1,
+        }}
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Set for this organization');
+    for (const field of ['agentUpdatePolicy', 'maintenanceWindow', 'policyDefaults', 'autoEnrollment']) {
+      await user.click(screen.getByTestId(`defaults-reset-${field}`));
+    }
+
+    // The controls fall back to the inherited values.
+    expect(screen.getByRole('combobox', { name: 'Agent update policy' })).toHaveValue('auto');
+    expect(screen.getByTestId('maintenance-mode-always')).toBeChecked();
+    expect(screen.getByTestId('auto-enrollment-enabled')).toBeChecked();
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Inherited default');
+
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0]).toEqual({ deviceGroup: G1 });
+  });
+
+  it('turns a field back into an override when it is edited after a reset', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{ agentUpdatePolicy: 'manual' }} onSave={onSave} />);
+
+    await user.click(screen.getByRole('button', { name: 'Reset Agent update policy to default' }));
+    const select = screen.getByRole('combobox', { name: 'Agent update policy' });
+    expect(select).toHaveValue('auto');
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Inherited default');
+    await user.selectOptions(select, 'manual');
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Set for this organization');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ agentUpdatePolicy: 'manual' });
+  });
+
+  it('drops a field that was edited and then reset on an org that never set it', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{}} onSave={onSave} />);
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent update policy' }), 'manual');
+    await user.click(screen.getByTestId('defaults-reset-agentUpdatePolicy'));
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({});
+  });
+
+  it('removes the enrollment overrides when they are set back to inherit', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{ defaultEnrollmentTtlMinutes: 1440, defaultEnrollmentDeviceCount: 5 }}
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByTestId('org-default-enrollment-ttl'), '');
+    await user.clear(screen.getByTestId('org-default-enrollment-device-count'));
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({});
+  });
+
+  it('keeps stored pins and keys this form does not edit, and still strips a stale cap', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{
+          agentVersionPins: { agent: '0.88.0' },
+          maxEnrollmentLinkTtlMinutes: 60,
+          // A key from a newer build this form does not know about.
+          ...({ futureKey: { a: 1 } } as Record<string, unknown>),
+        }}
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent update policy' }), 'manual');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({
+      agentVersionPins: { agent: '0.88.0' },
+      futureKey: { a: 1 },
+      agentUpdatePolicy: 'manual',
+    });
+  });
+
+  it('saves a valid window picked over an invalid stored one', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{ maintenanceWindow: '0000-2359' }} onSave={onSave} />);
+
+    await user.click(screen.getByTestId('maintenance-mode-window'));
+    await user.selectOptions(screen.getByTestId('maintenance-day'), 'Wed');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ maintenanceWindow: 'Wed 02:00-04:00' });
+  });
+
+  it.each([
+    ['policyDefaults', { deviceCompliance: 'lenient' }, { deviceCompliance: 'strict', dataProtection: 'strict', accessControl: 'strict' }],
+    ['agentUpdatePolicy', 'manual', 'auto'],
+  ] as const)('replaces an inert stored %s with the partner value when the partner locks it', async (field, orgValue, partnerValue) => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        onSave={onSave}
+        defaults={{ [field]: orgValue }}
+        locked={[`defaults.${field}`]}
+        effectiveDefaults={{ [field]: partnerValue }}
+      />,
+    );
+
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0]).toEqual({ [field]: partnerValue });
+  });
+
+  it('shows no inheritance control on a partner-locked field', () => {
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{ agentUpdatePolicy: 'manual' }}
+        locked={['defaults.agentUpdatePolicy']}
+        effectiveDefaults={{ agentUpdatePolicy: 'auto' }}
+      />,
+    );
+    expect(screen.queryByTestId('defaults-source-agentUpdatePolicy')).toBeNull();
+    expect(screen.queryByTestId('defaults-reset-agentUpdatePolicy')).toBeNull();
   });
 });

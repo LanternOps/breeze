@@ -48,7 +48,7 @@ import './setup';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   alerts,
@@ -62,6 +62,8 @@ import {
 import { evaluateWarrantyAlerts } from '../../services/warrantyAlertEvaluator';
 import { EVENT_LOG_DEFAULTS, getOrgEventLogRetentionDays } from '../../routes/agents/helpers';
 import { createOrganization, createPartner, createSite } from './db-utils';
+import { getTestDb } from './setup';
+import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -103,6 +105,7 @@ function agentBlindContext(orgId: string): DbAccessContext {
 }
 
 const createdPolicies: string[] = [];
+const createdPartnerGroups: string[] = [];
 const createdDevices: string[] = [];
 
 // Children before parents: the alert/warranty rows FK to `devices` with no
@@ -117,7 +120,11 @@ afterEach(async () => {
     for (const id of createdPolicies) {
       await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
     }
+    for (const id of createdPartnerGroups) {
+      await db.execute(sql`DELETE FROM device_groups WHERE id = ${id}::uuid`);
+    }
   });
+  createdPartnerGroups.length = 0;
   createdDevices.length = 0;
   createdPolicies.length = 0;
 });
@@ -426,5 +433,86 @@ describe('event-log retention honours partner-level assignments (#3963)', () => 
     const days = await withDbAccessContext(SYSTEM_CTX, () => getOrgEventLogRetentionDays(org.id));
 
     expect(days).toBe(EVENT_LOG_DEFAULTS.retentionDays);
+  });
+});
+
+
+describe('partner-owned device groups as config-policy assignment targets (#10521 W1)', () => {
+  async function seedPartnerGroup(partnerId: string) {
+    const id = randomUUID();
+    // D3: the DB is nullable in W1; the Drizzle orgId type flips in W2a.
+    await withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
+      INSERT INTO device_groups (id, partner_id, name, type)
+      VALUES (${id}::uuid, ${partnerId}::uuid, 'assignment target', 'dynamic')
+    `));
+    createdPartnerGroups.push(id);
+    return id;
+  }
+
+  async function insertGroupAssignment(policyId: string, groupId: string) {
+    return withDbAccessContext(SYSTEM_CTX, () => db.execute(sql`
+      INSERT INTO config_policy_assignments (config_policy_id, level, target_id)
+      VALUES (${policyId}::uuid, 'device_group', ${groupId}::uuid)
+      RETURNING id
+    `));
+  }
+
+  async function expectOwnerRejection(promise: Promise<unknown>) {
+    const error = await promise.then(() => null, (caught: unknown) => caught);
+    expect(pgErrorCode(error)).toBe('23503');
+    expect(pgErrorConstraint(error)).toBe('config_policy_assignments_target_owner_fk');
+  }
+
+  it('a partner-owned policy may target its own partner group (raw INSERT)', async () => {
+    const { partner } = await seedTenant();
+    const groupId = await seedPartnerGroup(partner.id);
+    const policyId = await seedWarrantyPolicy({ orgId: null, partnerId: partner.id }, true);
+    const rows = await insertGroupAssignment(policyId, groupId);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('an org-owned policy targeting a partner group → 23503 config_policy_assignments_target_owner_fk', async () => {
+    const { partner, org } = await seedTenant();
+    const groupId = await seedPartnerGroup(partner.id);
+    const policyId = await seedWarrantyPolicy({ orgId: org.id, partnerId: null }, true);
+    await expectOwnerRejection(insertGroupAssignment(policyId, groupId));
+  });
+
+  it("a policy targeting another partner's group → 23503", async () => {
+    const { partner } = await seedTenant();
+    const foreignPartner = await createPartner();
+    const groupId = await seedPartnerGroup(foreignPartner.id);
+    const policyId = await seedWarrantyPolicy({ orgId: null, partnerId: partner.id }, true);
+    await expectOwnerRejection(insertGroupAssignment(policyId, groupId));
+  });
+
+  it('breeze_partner_export_assignment_orgs returns the same org set for a partner-group assignment as for a partner-level assignment of the same policy', async () => {
+    const { partner, org } = await seedTenant();
+    const secondOrg = await createOrganization({ partnerId: partner.id });
+    const foreignPartner = await createPartner();
+    const foreignOrg = await createOrganization({ partnerId: foreignPartner.id });
+    const groupId = await seedPartnerGroup(partner.id);
+    const policyId = await seedWarrantyPolicy({ orgId: null, partnerId: partner.id }, true);
+    await insertGroupAssignment(policyId, groupId);
+    await assign(policyId, 'partner', partner.id);
+
+    // This internal helper is intentionally not executable by breeze_app.
+    // Use the privileged test connection, explicitly under system scope.
+    const rows = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+      return tx.execute<{ level: string; org_ids: string[] }>(sql`
+        SELECT row.level::text AS level,
+          public.breeze_partner_export_assignment_orgs(ARRAY[to_jsonb(row)]) AS org_ids
+        FROM config_policy_assignments row
+        WHERE row.config_policy_id = ${policyId}::uuid
+        ORDER BY row.level::text
+      `);
+    });
+    const expected = [org.id, secondOrg.id].sort();
+    expect(rows).toEqual([
+      { level: 'device_group', org_ids: expected },
+      { level: 'partner', org_ids: expected },
+    ]);
+    for (const row of rows) expect(row.org_ids).not.toContain(foreignOrg.id);
   });
 });

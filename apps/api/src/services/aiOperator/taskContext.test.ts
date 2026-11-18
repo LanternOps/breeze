@@ -1,6 +1,6 @@
 // apps/api/src/services/aiOperator/taskContext.test.ts
 import { describe, expect, it } from 'vitest';
-import { taskCheckpointSchema, type TaskCheckpoint, type TaskStepFinding } from '@breeze/shared';
+import { serviceRecoveryCheckpointSchema as taskCheckpointSchema, type ServiceRecoveryCheckpoint as TaskCheckpoint, type TaskStepFinding } from '@breeze/shared';
 import {
   TASK_CONTEXT_MAX_CHARS,
   TASK_CONTEXT_MAX_FINDINGS,

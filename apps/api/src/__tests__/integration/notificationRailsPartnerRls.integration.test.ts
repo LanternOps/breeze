@@ -455,8 +455,13 @@ describe('processAlertNotifications — partner-wide rail fan-out (#2130)', () =
     const escalationJobs = delayed.filter(
       (job) => job.data?.alertId === alertId && job.data?.escalationStep,
     );
-    expect(escalationJobs.length).toBe(1);
-    expect(escalationJobs[0]!.data.channelId).toBe(channelId);
+    // One channel send plus the occurrence's alert.escalated job (#10565).
+    const sendJobs = escalationJobs.filter((job) => job.data.type === 'send');
+    expect(sendJobs.length).toBe(1);
+    expect(sendJobs[0]!.data.channelId).toBe(channelId);
+    expect(escalationJobs.filter((job) => job.data.type === 'escalation-event').map((job) => job.data))
+      .toEqual([{ type: 'escalation-event', alertId, escalationStep: 1, escalationPolicyId: policy!.id }]);
+    expect(escalationJobs.length).toBe(2);
     for (const job of escalationJobs) {
       await job.remove();
     }

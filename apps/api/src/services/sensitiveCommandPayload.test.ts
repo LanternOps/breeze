@@ -147,6 +147,18 @@ describe('type-scoped terminal payload erasure (#8741 notify_user)', () => {
   });
 });
 
+describe('type-scoped terminal payload erasure (#8928 pam_request_notify)', () => {
+  it('erases the technician deny reason at terminal state, for pam_request_notify rows only', () => {
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.pam_request_notify).toEqual(['reason']);
+    // `reason` is an ordinary field on other types: never global, never encrypted.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('reason');
+    expect(hasSensitivePayload('pam_request_notify')).toBe(false);
+    const query = new PgDialect().sqlToQuery(terminalPayloadErasureSet().payload);
+    expect(query.params).toContain('pam_request_notify');
+    expect(query.params).toContain('reason');
+  });
+});
+
 describe('type-scoped terminal payload erasure (#8743 endpoint chat)', () => {
   it('strips the chat message object (body + sender) from chat_open/chat_message rows only', () => {
     expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_open).toEqual(['message']);
@@ -279,6 +291,23 @@ describe('storage destination credentials at rest', () => {
     expect(JSON.stringify(sealed)).not.toContain('synthetic-secret-value');
     expect(JSON.stringify(sealed)).not.toContain('AKIA-SYNTHETIC-ACCESS');
     expect(hasSensitivePayload('hyperv_restore')).toBe(true);
+  });
+
+  // #11858: the helper's vault_sync handler now reads providerConfig too.
+  it('seals an inline storage destination on a vault sync', () => {
+    const sealed = sealStorageCredentialsForPersistence(
+      'vault_sync',
+      { snapshotId: 's', provider: 's3', providerConfig },
+      ctx,
+    );
+    expect(sealed.providerConfig).toBeUndefined();
+    expect(typeof sealed.providerConfigEnvelope).toBe('string');
+    expect(JSON.stringify(sealed)).not.toContain('synthetic-secret-value');
+    expect(hasSensitivePayload('vault_sync')).toBe(true);
+
+    // What the route actually stores: a reference, which is never sealed.
+    const refOnly = { snapshotId: 's', provider: 'local', providerConfigRef: { configId: 'c', orgId: 'o' } };
+    expect(sealStorageCredentialsForPersistence('vault_sync', refOnly, ctx)).toBe(refOnly);
   });
 
   it('leaves other command types and payloads without a destination untouched', () => {

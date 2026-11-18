@@ -1,17 +1,26 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { scriptProposalPromoteSchema, scriptProposalRequestChangesSchema } from '@breeze/shared';
+import {
+  scriptProposalOverridePromoteSchema, scriptProposalOverrideRunSchema,
+  scriptProposalPromoteSchema, scriptProposalRequestChangesSchema,
+} from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import {
+  authMiddleware, requireInteractiveSession, requireMfa, requirePermission, requireScope, withAuthDbAccessContext,
+} from '../../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../../config/env';
 import { db } from '../../db';
 import { PERMISSIONS } from '../../services/permissions';
-import { writeAuditEventAsync } from '../../services/auditEvents';
+import { writeAuditEventAsync, writeAuditEventStrict } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { loadScriptProposalDetail } from '../../services/scriptProposals/detail';
 import { denyIntentForProposal, transitionProposal } from '../../services/scriptProposals';
 import { postProposalOutcomeToAuthor } from '../../services/scriptProposals/authorNotify';
 import { promoteProposalToLibrary } from '../../services/scriptProposals/promote';
+import { resolveStrictAcknowledgement } from '../../services/approvals/strictAcknowledgement';
+import {
+  reviewOverrideAuditEvent, reviewOverrideNote, runReviewFailedOverride,
+} from '../../services/scriptProposals/reviewOverride';
 import {
   loadLatestReview, loadProposalRequesterUserId, loadProposalRow,
 } from '../../services/scriptProposals/queries';
@@ -163,5 +172,116 @@ aiScriptProposalRoutes.post(
       details: { scriptId: result.scriptId, versionId: result.versionId, ownerScope: input.ownerScope },
     });
     return c.json({ scriptId: result.scriptId, versionId: result.versionId }, 201);
+  },
+);
+
+/**
+ * #10954: a person signs a `review_failed` proposal and runs it on its targets.
+ * The rule and everything it must not weaken: services/scriptProposals/reviewOverride.ts.
+ *
+ * Registered in selfManagedDbContextRoutes.ts: the rows must commit before any
+ * command is sent (#7103), so no request transaction may be held here.
+ */
+aiScriptProposalRoutes.post(
+  '/:id/override-run',
+  // First, and unconditional: an MCP key or OAuth grant carries its owner's user
+  // id and, with ENABLE_2FA off, passes the MFA gate. Denied before any lookup.
+  requireInteractiveSession(),
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
+  zValidator('param', idParam),
+  zValidator('json', scriptProposalOverrideRunSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const { acknowledgedPatterns } = c.req.valid('json');
+
+    const loaded = await withAuthDbAccessContext(auth, () => loadScriptProposalDetail(auth, id));
+    if (!loaded.ok) {
+      return loaded.reason === 'not_found' ? c.json({ error: 'not_found' }, 404) : c.json({ error: 'forbidden' }, 403);
+    }
+    const proposal = await loadProposalRow(id);
+    if (!proposal) return c.json({ error: 'not_found' }, 404);
+    if (proposal.status !== 'review_failed') return c.json({ error: 'proposal_not_review_failed' }, 409);
+    if (!loaded.dto.viewer.canOverrideRun) return c.json({ error: 'forbidden' }, 403);
+
+    const result = await runReviewFailedOverride({
+      auth,
+      proposal,
+      submittedAcknowledgements: acknowledgedPatterns,
+      writeStrictAudit: (event) => writeAuditEventStrict(c, event),
+      writeAudit: (event) => writeAuditEventAsync(c, event),
+    });
+    if (!result.ok) return c.json(result.body, result.status);
+    return c.json({ status: result.status, results: result.results });
+  },
+);
+
+/**
+ * #10954: a person signs a `review_failed` proposal into the library, in place of
+ * the verified run the normal /promote requires. The normal pair plus run
+ * permission, per the product decision on the issue.
+ */
+aiScriptProposalRoutes.post(
+  '/:id/override-promote',
+  requireInteractiveSession(),
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  requireMfa(),
+  zValidator('param', idParam),
+  zValidator('json', scriptProposalOverridePromoteSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const { acknowledgedPatterns: submitted, confirmNoPassingReview: _signedOff, ...input } = c.req.valid('json');
+
+    const loaded = await loadScriptProposalDetail(auth, id);
+    if (!loaded.ok) {
+      return loaded.reason === 'not_found' ? c.json({ error: 'not_found' }, 404) : c.json({ error: 'forbidden' }, 403);
+    }
+    const proposal = await loadProposalRow(id);
+    if (!proposal) return c.json({ error: 'not_found' }, 404);
+    if (proposal.status !== 'review_failed') return c.json({ error: 'proposal_not_review_failed' }, 409);
+    if (!loaded.dto.viewer.canOverrideSave) return c.json({ error: 'forbidden' }, 403);
+
+    const acknowledgement = await resolveStrictAcknowledgement({
+      auth,
+      proposal: { strictHits: proposal.strictHits ?? [], orgId: proposal.orgId },
+      submitted,
+    });
+    if (!acknowledgement.ok) {
+      const { ok: _ok, ...body } = acknowledgement;
+      return c.json(body, 422);
+    }
+
+    const review = await loadLatestReview(id, proposal.orgId);
+    const result = await promoteProposalToLibrary({
+      auth,
+      proposal,
+      review,
+      input,
+      override: {
+        acknowledgedPatterns: acknowledgement.acknowledged,
+        decisionNote: reviewOverrideNote(proposal.decisionNote),
+      },
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+
+    // The script is committed, and its version already names the signer. A
+    // failed write goes to the retry queue instead of reporting a failed save.
+    const event = reviewOverrideAuditEvent({
+      auth,
+      proposal,
+      decision: 'save_to_library',
+      acknowledgedPatterns: acknowledgement.acknowledged,
+      details: { scriptId: result.scriptId, versionId: result.versionId, ownerScope: input.ownerScope },
+    });
+    await writeAuditEventStrict(c, event).catch((err: unknown) => {
+      captureException(err instanceof Error ? err : new Error(String(err)), c, { area: 'script_proposal_review_override_audit' });
+      return writeAuditEventAsync(c, event);
+    });
+    return c.json({ scriptId: result.scriptId, versionId: result.versionId });
   },
 );

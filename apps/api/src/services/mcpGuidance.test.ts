@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { MCP_SERVER_INSTRUCTIONS, MCP_PROMPTS, listMcpPrompts, getMcpPrompt } from './mcpGuidance';
-import { BREEZE_AI_GUARDRAILS_CORE, BREEZE_MCP_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
+import { MCP_SERVER_INSTRUCTIONS, buildMcpServerInstructions, MCP_PROMPTS, listMcpPrompts, getMcpPrompt } from './mcpGuidance';
+import { BREEZE_AI_GUARDRAILS_CORE, BREEZE_MCP_GUARDRAILS_CORE, buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 
 describe('MCP_SERVER_INSTRUCTIONS', () => {
   it('orients the client on the tenant hierarchy and tool selection', () => {
@@ -36,6 +36,40 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
 
   it('points clients to the workflow prompts', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toMatch(/breeze-/);
+  });
+});
+
+describe('approval-aware instructions (B-W04 D-B34)', () => {
+  it('flag off equals the exported constants', () => {
+    expect(buildMcpServerInstructions(false)).toBe(MCP_SERVER_INSTRUCTIONS);
+    expect(buildMcpGuardrailsCore(false)).toBe(BREEZE_MCP_GUARDRAILS_CORE);
+  });
+
+  it('flag on describes pending approval and status polling', () => {
+    const on = buildMcpServerInstructions(true);
+    expect(on).toContain('get_action_status');
+    expect(on).toContain('pending_approval');
+    expect(on).toContain('outcome is uncertain');
+    expect(on).toContain('unattended execution');
+    expect(on).not.toContain('this connection has no approval prompt');
+    expect(on).not.toBe(MCP_SERVER_INSTRUCTIONS);
+    // the flag-off text does carry that phrase, so the negative above discriminates
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('this connection has no approval prompt');
+  });
+
+  it('flag on guardrails core carries the intents rules and the shared rules', () => {
+    const on = buildMcpGuardrailsCore(true);
+    expect(on).toContain('get_action_status');
+    expect(on).not.toContain('this connection has no approval prompt');
+    expect(on).not.toBe(BREEZE_MCP_GUARDRAILS_CORE);
+    const approvalRule = /^3[abc]?\. /;
+    for (const line of BREEZE_MCP_GUARDRAILS_CORE.split('\n').filter((l) => !approvalRule.test(l))) {
+      expect(on).toContain(line);
+    }
+  });
+
+  it('flag on server instructions embed the flag-on core', () => {
+    expect(buildMcpServerInstructions(true)).toContain(buildMcpGuardrailsCore(true));
   });
 });
 

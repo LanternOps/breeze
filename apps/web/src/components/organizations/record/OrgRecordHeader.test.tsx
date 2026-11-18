@@ -12,7 +12,14 @@ vi.mock('@/lib/featureFlags', async (orig) => ({
 vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
+  ),
+}));
 import OrgRecordHeader from './OrgRecordHeader';
+import { installAstroClientRouterStandIn } from '../../../__tests__/astroClientRouterStandIn';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
 
 const ORG: OrgRecordOrg = {
@@ -50,6 +57,15 @@ describe('OrgRecordHeader', () => {
   it('always states the status, including "active" (unlike the exception-only list pill)', () => {
     renderHeader();
     expect(screen.getByTestId('org-record-status').textContent).toBe('Active');
+  });
+
+  it('mounts the Talk-to-Wisp button with the organization as its own org (W08 Task 10)', () => {
+    renderHeader();
+    const button = screen.getByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
+    expect(button).toHaveAttribute('data-kind', 'organization');
+    expect(button).toHaveAttribute('data-id', 'org-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('renders a status the client does not know about rather than an empty pill', () => {
@@ -231,6 +247,30 @@ describe('OrgRecordHeader', () => {
       expect(screen.getByTestId(id).className, id).toMatch(/\bh-9\b/);
     }
     granted.clear();
+  });
+});
+
+describe('OrgRecordHeader - primary-contact links switch the tab (#9337)', () => {
+  it.each([
+    ['no primary at all', { contacts: { count: 0, primary: null } }],
+    ['site-level primaries only', { contacts: { count: 1, primary: null, sitePrimaries: [{ id: 'a', name: 'Sam', email: null, phone: null, siteId: 's', siteName: 'HQ' }] } }],
+  ])('%s: clicking fires hashchange to #contacts even with the Astro router claiming anchors', async (_n, patch) => {
+    const router = installAstroClientRouterStandIn();
+    window.location.hash = '';
+    try {
+      renderHeader({ summary: { ...SUMMARY, ...patch } as OrgSummary });
+      const changed = new Promise<string>((resolve) => {
+        window.addEventListener('hashchange', (e) => {
+          if ((e as HashChangeEvent).newURL.endsWith('#contacts')) resolve('ok');
+        }, { once: false });
+      });
+      await userEvent.click(screen.getByTestId('org-record-primary-contact-link'));
+      expect(window.location.hash).toBe('#contacts');
+      await expect(changed).resolves.toBe('ok');
+    } finally {
+      router.uninstall();
+      window.location.hash = '';
+    }
   });
 });
 

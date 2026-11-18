@@ -167,21 +167,72 @@ describe('RecordSignedAgreementDialog', () => {
     expect(sent.effectiveDate).toBe(picked);
   });
 
-  it('does not render an input for an unresolved AUTO variable (the server would ignore a typed value)', async () => {
+  it('quote-only auto variable without a signed copy: says to attach one and blocks submit (#9296)', async () => {
     templatesApi.listContractTemplates.mockResolvedValue(resp({ data: [{
       ...TEMPLATE,
-      latestVersion: { ...TEMPLATE.latestVersion, declaredVariables: [{ name: 'totals.monthly', kind: 'auto' }] },
+      latestVersion: { ...TEMPLATE.latestVersion, declaredVariables: [
+        { name: 'client.name', kind: 'auto' },
+        { name: 'quote.number', kind: 'auto' },
+      ] },
+    }] }));
+    renderDialog();
+    await pickTemplate();
+    fill();
+    const notice = await screen.findByTestId('agreements-record-needs-signed-copy');
+    expect(notice).toHaveTextContent('quote.number');
+    expect(notice).not.toHaveTextContent('client.name');
+    expect(notice).toHaveTextContent(/attach the signed copy/i);
+    // Nothing the tech could type would fix it — the server never takes a value for an auto variable.
+    expect(screen.queryByTestId('agreements-record-var-quote.number')).toBeNull();
+    expect(screen.getByTestId('agreements-record-file')).toBeRequired();
+    expect(screen.getByTestId('agreements-record-submit')).toBeDisabled();
+
+    // Attaching the signed copy is the way through: it is filed verbatim, nothing is rendered.
+    const file = new File(['%PDF'], 'msa.pdf', { type: 'application/pdf' });
+    fireEvent.change(screen.getByTestId('agreements-record-file'), { target: { files: [file] } });
+    expect(screen.queryByTestId('agreements-record-needs-signed-copy')).toBeNull();
+    expect(screen.getByTestId('agreements-record-submit')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('agreements-record-submit'));
+    await waitFor(() => expect(requestsApi.recordSignedAgreement).toHaveBeenCalledTimes(1));
+    expect(requestsApi.recordSignedAgreement.mock.calls[0]![0]).toMatchObject({ file, variableValues: {} });
+  });
+
+  it('a template with only quote-less auto variables needs no signed copy', async () => {
+    templatesApi.listContractTemplates.mockResolvedValue(resp({ data: [{
+      ...TEMPLATE,
+      latestVersion: { ...TEMPLATE.latestVersion, declaredVariables: [
+        { name: 'client.name', kind: 'auto' }, { name: 'dates.effective', kind: 'auto' },
+      ] },
+    }] }));
+    renderDialog();
+    await pickTemplate();
+    fill();
+    expect(screen.queryByTestId('agreements-record-needs-signed-copy')).toBeNull();
+    expect(screen.getByTestId('agreements-record-file')).not.toBeRequired();
+    expect(screen.getByTestId('agreements-record-submit')).toBeEnabled();
+  });
+
+  it('a 422 naming an AUTO variable says to attach a signed copy, not "provide a value" (#9296)', async () => {
+    // The dialog's pre-check missed it (e.g. the server's resolver moved on):
+    // there is still no input to offer, so the toast must point at the way through.
+    templatesApi.listContractTemplates.mockResolvedValue(resp({ data: [{
+      ...TEMPLATE,
+      latestVersion: { ...TEMPLATE.latestVersion, declaredVariables: [{ name: 'client.address', kind: 'auto' }] },
     }] }));
     requestsApi.recordSignedAgreement.mockResolvedValue(
-      resp({ error: 'Agreement variables unresolved: totals.monthly', code: 'AGREEMENT_VARIABLES_UNRESOLVED' }, 422),
+      resp({ error: 'Agreement variables unresolved: client.address', code: 'AGREEMENT_VARIABLES_UNRESOLVED' }, 422),
     );
     renderDialog();
     await pickTemplate();
     fill();
     fireEvent.click(screen.getByTestId('agreements-record-submit'));
-    await waitFor(() => expect(requestsApi.recordSignedAgreement).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByTestId('agreements-record-submit')).not.toBeDisabled());
-    expect(screen.queryByTestId('agreements-record-var-totals.monthly')).toBeNull();
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    const message = (showToast.mock.calls.at(-1)![0] as { message: string }).message;
+    expect(message).toMatch(/attach the signed copy/i);
+    expect(message).not.toMatch(/provide a value/i);
+    expect(screen.queryByTestId('agreements-record-var-client.address')).toBeNull();
+    expect(await screen.findByTestId('agreements-record-needs-signed-copy')).toHaveTextContent('client.address');
+    expect(screen.getByTestId('agreements-record-submit')).toBeDisabled();
   });
 
   it('renders the variables a 422 AGREEMENT_VARIABLES_UNRESOLVED names as required fields', async () => {

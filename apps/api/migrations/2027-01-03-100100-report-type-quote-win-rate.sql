@@ -1,0 +1,11 @@
+-- Business reports phase 2 W2 (#9830, feature #9828): the `quote_win_rate`
+-- business report type — win rate over quote revision lineages (decided-only
+-- headline with the open count beside it), per-currency quoted and won values,
+-- median days to win/loss.
+-- Generator: services/businessReports/quoteWinRateReport.ts.
+--
+-- Enum add ONLY, in its own file: a label added by ALTER TYPE cannot be used
+-- until the transaction that added it commits (precedent:
+-- 2026-11-26-100400-report-type-ai-usage-by-client.sql).
+-- No DML, so no breeze.scope election. Idempotent via IF NOT EXISTS.
+ALTER TYPE report_type ADD VALUE IF NOT EXISTS 'quote_win_rate';

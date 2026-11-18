@@ -144,3 +144,40 @@ describe('DeviceFilterToolbar — quick-chip overflow cue (#9037)', () => {
     }
   });
 });
+
+// "Add filter → New group…" used to open a separate create modal that made an
+// empty static group, applied no filter, and 400'd in All-organizations view
+// (#9865). It is now a link to the Device Groups page create flow.
+describe('DeviceFilterToolbar — New group shortcut (#9865)', () => {
+  it('links "New group…" to the Device Groups page create flow', () => {
+    render(
+      <DeviceFilterToolbar
+        value={null}
+        onChange={vi.fn()}
+        listFilters={{ search: '' }}
+        onListFiltersChange={vi.fn()}
+        createGroupHref="/devices/groups#create"
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('filter-more-button'));
+    const link = screen.getByTestId('filter-add-new-group');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/devices/groups#create');
+    expect(link).toHaveTextContent('New group…');
+  });
+
+  it('omits the shortcut when no create link is given', () => {
+    render(
+      <DeviceFilterToolbar
+        value={null}
+        onChange={vi.fn()}
+        listFilters={{ search: '' }}
+        onListFiltersChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('filter-more-button'));
+    expect(screen.queryByTestId('filter-add-new-group')).not.toBeInTheDocument();
+  });
+});

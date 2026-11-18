@@ -1,0 +1,506 @@
+import { createHash } from 'node:crypto';
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import {
+  type PortalAccessPolicyField,
+  type PortalAccessPolicyRowValues,
+  type PortalSignInCapabilities,
+} from '@breeze/shared';
+import { db, withDbTransactionIfHeld } from '../db';
+import { clientAiTenantMappings, organizations, portalAccessPolicies, portalUsers } from '../db/schema';
+import {
+  getPortalSignInCapabilities,
+  isSignInMethodAllowed,
+  listOrgVerifiedDomains,
+  pickedGoogleEnabled,
+  pickEffectivePortalAccessPolicy,
+  resolvePortalAccessPolicy,
+  toPortalAccessPolicyRowValues,
+} from './portalAccessPolicy';
+import { portalUserHasUsableIdentitySql } from './portalUserIdentities';
+
+/**
+ * `password_mode = sso_only` as a complete save flow (portal registration W4
+ * #11381, plan D12; spec §5.11, inv. 11).
+ *
+ * - {@link computeSsoOnlyFlips}: which orgs a policy save would move from
+ *   effective `allowed` to effective `sso_only`, with what it costs each one
+ *   (the preview; reads only, no lock).
+ * - {@link lockSsoOnlyImpact}: the same impact on the save's own transaction,
+ *   computed from the candidate account rows it has locked `FOR UPDATE`, with
+ *   the ids it may clear.
+ * - {@link ssoOnlyImpactDigest}: the acknowledgement the save must carry, so
+ *   neither a script nor a stale dialog clears hashes the MSP never saw.
+ * - {@link clearPasswordsForSsoOnly}: on the save's own transaction, drops the
+ *   hash and bumps the epoch of exactly the locked accounts that had a hash
+ *   AND an identity when the impact was taken.
+ * - {@link listSsoOnlyStranded}: the accounts with no identity, which keep their
+ *   hash and cannot sign in until they link or are re-invited.
+ *
+ * W8 (#11385, plan D3): "an identity" here means a USABLE one
+ * (`portalUserHasUsableIdentitySql`, `disabled_at IS NULL`). An account whose
+ * only identity was disabled by a directory has no credential under sso_only:
+ * it is counted and listed as stranded, and its hash is NEVER cleared (that
+ * would leave it no way back once the identity is restored or password sign-in
+ * returns). The SSO-invite route's own target check ({@link isSsoOnlyStranded}
+ * over the ANY-identity fact) still refuses such an account: an invite cannot
+ * bind a second identity of a reserved provider.
+ *
+ * Why the lock: a self-link inserts an identity (its FK check takes `FOR KEY
+ * SHARE` on the account row; accountResolution also locks the row first) and
+ * does not bump `auth_epoch`. Without the lock, a link committing between the
+ * impact and the clear would have its hash cleared although the MSP
+ * acknowledged that account as stranded. With it, such a link waits for the
+ * save to commit, and the rows written are the rows counted.
+ *
+ * Only a policy SAVE clears (portalAccessPolicyWrites.ts). A flip caused by a
+ * tenant proof or a deploy-time capability change clears nothing: W3's refusal
+ * at use is the control there (inv. 11), and the Entra sign-in sheds hashes
+ * lazily (D12).
+ *
+ * W7 (#11384, plan D6): Google counts as an SSO method only for an org with a
+ * currently verified email domain. That fact comes from W5's read API, which
+ * throws inside a request transaction, so it is read BEFORE the save's write
+ * transaction ({@link readSsoOnlyGoogleFacts}, or the org save's own domain
+ * read) and handed to {@link lockSsoOnlyImpact}; the preview reads it itself.
+ *
+ * Every read and write runs under the CALLER'S DB context, never a system one:
+ * the impact must be computed over exactly the rows the save can clear, and the
+ * clear must commit in the same transaction as the policy upsert. For a partner
+ * save that is every org the full-partner admin can reach (the partner-wide
+ * write gate, canManagePartnerWidePolicies, admits only `orgAccess = 'all'`):
+ * the partner's active/trial orgs. A suspended org is outside that context, so
+ * it is neither counted nor cleared; its accounts are still refused password
+ * sign-in at use, and shed their hash on their next Microsoft sign-in.
+ *
+ * No `status` / `browser_access` write: __tests__/portalAccountWriters.contract.test.ts
+ * classifies this file `no-state`.
+ */
+
+export interface SsoOnlyOrgImpact { orgId: string; orgName: string; passwordsToClear: number; strandedTotal: number }
+export interface StrandedPortalAccount { portalUserId: string; email: string; name: string | null; status: 'active' | 'invited' }
+
+export type SsoOnlyPolicyOwner =
+  | { kind: 'org'; orgId: string; partnerId: string }
+  | { kind: 'partner'; partnerId: string };
+
+/** `db` or a transaction handle (same shape as `IdentityExecutor`, services/portalUserIdentities.ts). */
+export type DbTx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+type PolicyPatch = Partial<PortalAccessPolicyRowValues>;
+
+/** The only fields that can move an effective `passwordMode`. Any other patch flips nothing. */
+const SSO_ONLY_INPUT_FIELDS: readonly PortalAccessPolicyField[] = ['entraEnabled', 'googleEnabled', 'passwordMode'];
+
+const BLANK_ROW: PortalAccessPolicyRowValues = Object.freeze<PortalAccessPolicyRowValues>({
+  entraEnabled: null,
+  googleEnabled: null,
+  passwordMode: null,
+  selfRegistrationMode: null,
+  ssoNewPersonMode: null,
+  ssoSessionMaxHours: null,
+});
+
+const STRANDED_LIST_LIMIT = 200;
+
+/** Ids per clear statement: one bind parameter each, far under Postgres's 65535. */
+const CLEAR_BATCH_SIZE = 5000;
+
+/** `undefined` = untouched; `null` = clear (inherit / built-in default). */
+function definedOnly(patch: PolicyPatch): PolicyPatch {
+  return Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as PolicyPatch;
+}
+
+/** Inputs for one org: its own row, whether its Entra tenant is proven (W4 D2), whether it has a verified domain (W7 D6). */
+export interface SsoOnlyFlipCandidate {
+  orgId: string;
+  orgName: string;
+  orgRow: PortalAccessPolicyRowValues | null;
+  entraTenantProven: boolean;
+  googleDomainVerified: boolean;
+}
+
+/**
+ * The orgs (of a save's scope) that have at least one currently verified email
+ * domain, for the orgs whose picked Google is on before or after the patch.
+ * Any org not in the set is judged with Google masked off (fail closed).
+ */
+export type SsoOnlyGoogleFacts = ReadonlySet<string>;
+
+/**
+ * Pure: the candidates whose effective passwordMode goes `allowed` → `sso_only`
+ * when `patch` lands on `owner`'s row. Picked before and after with each org's
+ * own facts, so an unproven org (Microsoft masked) or a deployment without the
+ * capability flips nothing — exactly what the resolver will do at use.
+ */
+export function selectSsoOnlyFlips(
+  owner: SsoOnlyPolicyOwner,
+  patch: PolicyPatch,
+  partnerRow: PortalAccessPolicyRowValues | null,
+  candidates: SsoOnlyFlipCandidate[],
+  caps: PortalSignInCapabilities,
+): SsoOnlyFlipCandidate[] {
+  const delta = definedOnly(patch);
+  return candidates.filter((c) => {
+    const facts = { entraTenantProven: c.entraTenantProven, googleDomainVerified: c.googleDomainVerified };
+    const before = pickEffectivePortalAccessPolicy(c.orgRow, partnerRow, caps, facts);
+    const after = owner.kind === 'org'
+      ? pickEffectivePortalAccessPolicy({ ...(c.orgRow ?? BLANK_ROW), ...delta }, partnerRow, caps, facts)
+      : pickEffectivePortalAccessPolicy(c.orgRow, { ...(partnerRow ?? BLANK_ROW), ...delta }, caps, facts);
+    return before.effective.passwordMode.value === 'allowed' && after.effective.passwordMode.value === 'sso_only';
+  });
+}
+
+/**
+ * Password-eligible, browser-granted, not disabled, and no external identity —
+ * the SSO-invite route's TARGET rule, over the caller's ANY-identity fact
+ * (`hasExternalIdentity`, portalUserHasIdentitySql): an identity-managed
+ * account, even one whose only identity is disabled, is never re-invited
+ * (msp_sso_invite refuses it as identity-managed). {@link strandedWhere} (the
+ * list and the counts) uses the usable fact instead (W8 D3).
+ */
+export function isSsoOnlyStranded(facts: {
+  status: string;
+  browserAccess: string;
+  authMethod: string;
+  hasExternalIdentity: boolean;
+}): boolean {
+  return (facts.status === 'active' || facts.status === 'invited')
+    && facts.browserAccess === 'granted'
+    && facts.authMethod === 'password'
+    && !facts.hasExternalIdentity;
+}
+
+/**
+ * The stranded accounts over the outer `portal_users` row: active or invited,
+ * browser-granted, password-eligible, and no USABLE identity (W8 D3: a
+ * disabled identity is no way to sign in).
+ */
+function strandedWhere(): SQL {
+  return and(
+    inArray(portalUsers.status, ['active', 'invited']),
+    eq(portalUsers.browserAccess, 'granted'),
+    eq(portalUsers.authMethod, 'password'),
+    sql`not ${portalUserHasUsableIdentitySql()}`,
+  )!;
+}
+
+/**
+ * The accounts a save clears: a hash to drop and a USABLE identity to sign in
+ * with instead. W8 D3: never an account whose only identity is disabled.
+ */
+function clearableWhere(): SQL {
+  return and(isNotNull(portalUsers.passwordHash), portalUserHasUsableIdentitySql())!;
+}
+
+/**
+ * Every row that {@link clearableWhere} or {@link strandedWhere} can count,
+ * whatever its identity: any row with a hash, and every active/invited,
+ * browser-granted, password-eligible row. Identity-blind on purpose, so a
+ * link cannot move a row into or out of the save's lock set.
+ */
+function impactCandidateWhere(): SQL {
+  return or(
+    isNotNull(portalUsers.passwordHash),
+    and(
+      inArray(portalUsers.status, ['active', 'invited']),
+      eq(portalUsers.browserAccess, 'granted'),
+      eq(portalUsers.authMethod, 'password'),
+    ),
+  )!;
+}
+
+interface FlippedOrg { orgId: string; orgName: string }
+interface OrgCounts { passwordsToClear: number; strandedTotal: number }
+
+/** The impacts, sorted by name, then id; an org with no counted rows reports zeros. */
+function toImpacts(flipped: FlippedOrg[], countsByOrg: Map<string, OrgCounts>): SsoOnlyOrgImpact[] {
+  return flipped
+    .map((f) => ({
+      orgId: f.orgId,
+      orgName: f.orgName,
+      passwordsToClear: countsByOrg.get(f.orgId)?.passwordsToClear ?? 0,
+      strandedTotal: countsByOrg.get(f.orgId)?.strandedTotal ?? 0,
+    }))
+    .sort((a, b) => a.orgName.localeCompare(b.orgName) || compareIds(a.orgId, b.orgId));
+}
+
+/**
+ * Orgs whose effective passwordMode goes allowed → sso_only if `patch` is
+ * applied to `owner` (picked before/after with each org's facts), with the
+ * number of hashes the save would clear and the number of stranded accounts.
+ * Sorted by name, then id. Runs under the caller's context (see the header).
+ *
+ * The preview: no lock. The save recomputes it with {@link lockSsoOnlyImpact},
+ * which counts the same predicates over the rows it locked.
+ */
+export async function computeSsoOnlyFlips(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<SsoOnlyOrgImpact[]> {
+  // The preview holds no write transaction: it reads the Google facts itself (W7 D6).
+  const flipped = await selectFlippedOrgs(owner, patch, null);
+  if (flipped.length === 0) return [];
+
+  const counts = await db.select({
+    orgId: portalUsers.orgId,
+    passwordsToClear: sql<number>`(count(*) filter (where ${clearableWhere()}))::int`,
+    strandedTotal: sql<number>`(count(*) filter (where ${strandedWhere()}))::int`,
+  }).from(portalUsers)
+    .where(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)))
+    .groupBy(portalUsers.orgId);
+  return toImpacts(flipped, new Map(counts.map((c): [string, OrgCounts] => [c.orgId, {
+    passwordsToClear: Number(c.passwordsToClear),
+    strandedTotal: Number(c.strandedTotal),
+  }])));
+}
+
+export interface LockedSsoOnlyImpact {
+  /** Same shape and order as {@link computeSsoOnlyFlips}; the digest is taken over these. */
+  flips: SsoOnlyOrgImpact[];
+  /** The locked rows that had a hash and an identity: exactly what the save may clear. */
+  clearableUserIds: string[];
+}
+
+/**
+ * The save's impact (D12), on the caller's transaction, from rows it holds:
+ *  1. lock every candidate row of the flipped orgs ({@link impactCandidateWhere})
+ *     `FOR UPDATE`, ordered by id so concurrent saves lock in one order. Only
+ *     those rows, never the table;
+ *  2. in a SEPARATE statement, read hash and identity for them. Under READ
+ *     COMMITTED it takes a fresh snapshot, so a link that committed while step 1
+ *     waited is seen; a link that starts later waits on the lock until the save
+ *     commits (its identity insert's FK check needs `FOR KEY SHARE` on the row);
+ *  3. count only locked rows (one inserted after step 1 was never seen).
+ *
+ * The caller compares the digest of `flips` with the acknowledgement, then
+ * hands `clearableUserIds` to {@link clearPasswordsForSsoOnly}. A refusal rolls
+ * the caller's savepoint back, which releases the locks.
+ *
+ * `googleFacts` (W7 D6) were read BEFORE this transaction (W5's read API
+ * cannot run inside it): {@link readSsoOnlyGoogleFacts}, or the org save's own
+ * verified-domain read.
+ */
+export async function lockSsoOnlyImpact(
+  owner: SsoOnlyPolicyOwner,
+  patch: PolicyPatch,
+  googleFacts: SsoOnlyGoogleFacts,
+): Promise<LockedSsoOnlyImpact> {
+  const flipped = await selectFlippedOrgs(owner, patch, googleFacts);
+  if (flipped.length === 0) return { flips: [], clearableUserIds: [] };
+
+  const candidates = and(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)), impactCandidateWhere());
+  const locked = await db.select({ id: portalUsers.id })
+    .from(portalUsers)
+    .where(candidates)
+    .orderBy(asc(portalUsers.id))
+    .for('update');
+
+  const countsByOrg = new Map<string, OrgCounts>();
+  const clearableUserIds: string[] = [];
+  if (locked.length > 0) {
+    const lockedIds = new Set(locked.map((r) => r.id));
+    const facts = await db.select({
+      id: portalUsers.id,
+      orgId: portalUsers.orgId,
+      clearable: sql<boolean>`${clearableWhere()}`,
+      stranded: sql<boolean>`${strandedWhere()}`,
+    }).from(portalUsers)
+      .where(candidates)
+      .orderBy(asc(portalUsers.id));
+    for (const f of facts) {
+      if (!lockedIds.has(f.id)) continue;
+      const counts = countsByOrg.get(f.orgId) ?? { passwordsToClear: 0, strandedTotal: 0 };
+      if (f.clearable) {
+        counts.passwordsToClear += 1;
+        clearableUserIds.push(f.id);
+      }
+      if (f.stranded) counts.strandedTotal += 1;
+      countsByOrg.set(f.orgId, counts);
+    }
+  }
+  return { flips: toImpacts(flipped, countsByOrg), clearableUserIds };
+}
+
+interface FlipInputs {
+  orgs: Array<{ id: string; name: string }>;
+  partnerRow: PortalAccessPolicyRowValues | null;
+  orgRowById: Map<string, PortalAccessPolicyRowValues>;
+}
+
+/** The orgs in `owner`'s scope with their own rows and the partner default, under the caller's context. */
+async function loadFlipInputs(owner: SsoOnlyPolicyOwner): Promise<FlipInputs> {
+  const orgs = await db.select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(owner.kind === 'org'
+      ? eq(organizations.id, owner.orgId)
+      : and(eq(organizations.partnerId, owner.partnerId), isNull(organizations.deletedAt)));
+  if (orgs.length === 0) return { orgs, partnerRow: null, orgRowById: new Map() };
+  const orgIds = orgs.map((o) => o.id);
+
+  // Every org override in scope plus the partner default, in one read.
+  const policyRows = await db.select({
+    orgId: portalAccessPolicies.orgId,
+    partnerId: portalAccessPolicies.partnerId,
+    entraEnabled: portalAccessPolicies.entraEnabled,
+    googleEnabled: portalAccessPolicies.googleEnabled,
+    passwordMode: portalAccessPolicies.passwordMode,
+    selfRegistrationMode: portalAccessPolicies.selfRegistrationMode,
+    ssoNewPersonMode: portalAccessPolicies.ssoNewPersonMode,
+    ssoSessionMaxHours: portalAccessPolicies.ssoSessionMaxHours,
+  }).from(portalAccessPolicies)
+    .where(or(
+      inArray(portalAccessPolicies.orgId, orgIds),
+      and(isNull(portalAccessPolicies.orgId), eq(portalAccessPolicies.partnerId, owner.partnerId)),
+    ));
+  const partnerRaw = policyRows.find((r) => r.orgId === null && r.partnerId === owner.partnerId);
+  const partnerRow = partnerRaw ? toPortalAccessPolicyRowValues(partnerRaw) : null;
+  const orgRowById = new Map(policyRows.filter((r) => r.orgId !== null)
+    .map((r): [string, PortalAccessPolicyRowValues] => [r.orgId as string, toPortalAccessPolicyRowValues(r)]));
+  return { orgs, partnerRow, orgRowById };
+}
+
+/**
+ * W7 D6: one W5 read per org whose picked Google is on before or after `delta`
+ * lands on `owner`, sequentially (never a Promise.all of reads). A W5 failure
+ * propagates: it never reads as "no domain", which would mask Google off.
+ */
+async function readGoogleFactsFor(owner: SsoOnlyPolicyOwner, delta: PolicyPatch, inputs: FlipInputs): Promise<Set<string>> {
+  const verified = new Set<string>();
+  for (const o of inputs.orgs) {
+    const orgRow = inputs.orgRowById.get(o.id) ?? null;
+    const before = pickedGoogleEnabled(orgRow, inputs.partnerRow);
+    const after = owner.kind === 'org'
+      ? pickedGoogleEnabled({ ...(orgRow ?? BLANK_ROW), ...delta }, inputs.partnerRow)
+      : pickedGoogleEnabled(orgRow, { ...(inputs.partnerRow ?? BLANK_ROW), ...delta });
+    if (!before && !after) continue;
+    if ((await listOrgVerifiedDomains(o.id)).length > 0) verified.add(o.id);
+  }
+  return verified;
+}
+
+/**
+ * The Google facts a save of `patch` on `owner` is judged with (W7 D6), for
+ * {@link lockSsoOnlyImpact}. Call it BEFORE the write transaction, under the
+ * caller's request context (W5's read runs through runOutsideDbContext). Empty
+ * when the patch cannot move a password mode or the deployment cannot run Google.
+ */
+export async function readSsoOnlyGoogleFacts(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<SsoOnlyGoogleFacts> {
+  const delta = definedOnly(patch);
+  if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return new Set();
+  if (!getPortalSignInCapabilities().google) return new Set();
+  const inputs = await loadFlipInputs(owner);
+  return readGoogleFactsFor(owner, delta, inputs);
+}
+
+/**
+ * The orgs a save of `patch` on `owner` moves from effective `allowed` to
+ * effective `sso_only`, with their names. Shared by the preview and the save.
+ * `googleFacts` null: read them here (the preview only; never inside a write
+ * transaction).
+ */
+async function selectFlippedOrgs(
+  owner: SsoOnlyPolicyOwner,
+  patch: PolicyPatch,
+  googleFacts: SsoOnlyGoogleFacts | null,
+): Promise<FlippedOrg[]> {
+  const delta = definedOnly(patch);
+  if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return [];
+  const caps = getPortalSignInCapabilities();
+  // Neither SSO method can run here: nothing can become effectively sso_only.
+  if (!caps.entra && !caps.google) return [];
+
+  const inputs = await loadFlipInputs(owner);
+  const { orgs, partnerRow, orgRowById } = inputs;
+  if (orgs.length === 0) return [];
+  const orgIds = orgs.map((o) => o.id);
+
+  const proven = await db.select({ orgId: clientAiTenantMappings.orgId })
+    .from(clientAiTenantMappings)
+    .where(and(inArray(clientAiTenantMappings.orgId, orgIds), isNotNull(clientAiTenantMappings.provenAt)));
+  const provenOrgIds = new Set(proven.map((p) => p.orgId));
+  const google = googleFacts ?? (caps.google ? await readGoogleFactsFor(owner, delta, inputs) : new Set<string>());
+
+  return selectSsoOnlyFlips(owner, delta, partnerRow, orgs.map((o) => ({
+    orgId: o.id,
+    orgName: o.name,
+    orgRow: orgRowById.get(o.id) ?? null,
+    entraTenantProven: provenOrgIds.has(o.id),
+    googleDomainVerified: google.has(o.id),
+  })), caps).map((f) => ({ orgId: f.orgId, orgName: f.orgName }));
+}
+
+function compareIds(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/** status IN (active, invited), browser granted, password-eligible, no usable identity (W8 D3). */
+export async function listSsoOnlyStranded(
+  orgId: string,
+  limit: number = STRANDED_LIST_LIMIT,
+): Promise<{ items: StrandedPortalAccount[]; total: number }> {
+  const where = and(eq(portalUsers.orgId, orgId), strandedWhere());
+  const items = await db.select({
+    portalUserId: portalUsers.id,
+    email: portalUsers.email,
+    name: portalUsers.name,
+    status: portalUsers.status,
+  }).from(portalUsers)
+    .where(where)
+    .orderBy(asc(portalUsers.email), asc(portalUsers.id))
+    .limit(limit);
+  const [count] = await db.select({ total: sql<number>`count(*)::int` }).from(portalUsers).where(where);
+  return {
+    items: items.map((i) => ({ ...i, status: i.status as StrandedPortalAccount['status'] })),
+    total: Number(count?.total ?? 0),
+  };
+}
+
+/**
+ * On the caller's transaction: password_hash = NULL, auth_epoch + 1 WHERE
+ * id = ANY(portalUserIds), the `clearableUserIds` of {@link lockSsoOnlyImpact}
+ * on that same transaction. Nothing is re-selected: the rows are still locked,
+ * so the rows written are the rows the acknowledged impact counted.
+ * The epoch bump kills password sessions and outstanding reset/invite tokens
+ * (inv. 11); the caller purges the cached sessions after commit (cleanup).
+ */
+export async function clearPasswordsForSsoOnly(
+  tx: DbTx,
+  input: { portalUserIds: string[] },
+): Promise<{ clearedUserIds: string[] }> {
+  const clearedUserIds: string[] = [];
+  const now = new Date();
+  for (let i = 0; i < input.portalUserIds.length; i += CLEAR_BATCH_SIZE) {
+    const cleared = await tx.update(portalUsers)
+      .set({ passwordHash: null, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: now })
+      .where(inArray(portalUsers.id, input.portalUserIds.slice(i, i + CLEAR_BATCH_SIZE)))
+      .returning({ id: portalUsers.id });
+    clearedUserIds.push(...cleared.map((r) => r.id));
+  }
+  return { clearedUserIds };
+}
+
+/** sha256 hex over the flips sorted by orgId as `${orgId}:${passwordsToClear}:${strandedTotal}` lines (D12). */
+export function ssoOnlyImpactDigest(flips: SsoOnlyOrgImpact[]): string {
+  const lines = [...flips]
+    .sort((a, b) => compareIds(a.orgId, b.orgId))
+    .map((f) => `${f.orgId}:${f.passwordsToClear}:${f.strandedTotal}`);
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+/** The sign-in methods an invite email offers. */
+export type InviteSignInMethods = { microsoft: boolean; google: boolean; password: boolean };
+
+/**
+ * Which sign-in methods an invite email offers (spec §5.5, W7 D12): Microsoft
+ * and Google each when effective for the org, a password when password sign-in
+ * is allowed. Google is effective only while the org has a verified domain
+ * (W7 D6): the resolver reads W5 outside the request transaction itself. Read
+ * in a savepoint of the held context, so a caller that catches a failure here
+ * leaves its own transaction usable (#11203).
+ */
+export async function resolveInviteSignInMethods(orgId: string): Promise<InviteSignInMethods> {
+  const policy = await withDbTransactionIfHeld(() => resolvePortalAccessPolicy(orgId));
+  return {
+    microsoft: isSignInMethodAllowed(policy, 'entra'),
+    google: isSignInMethodAllowed(policy, 'google'),
+    password: isSignInMethodAllowed(policy, 'password'),
+  };
+}

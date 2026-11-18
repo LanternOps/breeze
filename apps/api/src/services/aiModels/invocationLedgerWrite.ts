@@ -8,6 +8,7 @@
 import type { AiSurface, OfferingOptions, PromptProfile } from '@breeze/shared';
 import { db } from '../../db';
 import { aiInvocations } from '../../db/schema';
+import type { AiInvocationModelRole } from '../../db/schema/aiInvocations';
 import { NO_CARD_CHARGE, type InvocationCharge } from '../aiChargeback/chargeTerms';
 import type { FailoverCause } from './failover';
 import type { RateSnapshot, TokenComponents } from './pricing';
@@ -19,6 +20,8 @@ export interface NewInvocation {
   userId?: string | null;
   sessionId?: string | null;
   agentRunId?: string | null;
+  /** W5 (#5220): the flow run an `ai` step call belongs to. */
+  flowRunId?: string | null;
   sourceRef?: string | null;
   offeringId?: string | null;
   connectionId?: string | null;
@@ -31,6 +34,8 @@ export interface NewInvocation {
   stopReason?: string | null;
   refusalCategory?: string | null;
   fallbackUsed?: boolean;
+  /** #10413: why this row's model ran; absent on a pending settlement written before the column (→ NULL). */
+  modelRole?: AiInvocationModelRole | null;
   /** W09 (#7607): the offering routed to before failover (null on hop 0, or when it no longer exists). */
   failoverFromOfferingId?: string | null;
   /** W09: candidates passed over before the serving one (0 = no failover). */
@@ -54,6 +59,10 @@ export interface NewInvocation {
   promptVariant?: string | null;
   /** W11: when the turn was first settled. A string after the pending-settlement JSON round trip. */
   occurredAt?: Date | string | null;
+  /** #11395: the resolved tool profile the call ran under; null = no tool exposure (or before W03). */
+  toolProfile?: string | null;
+  /** #11395: that exposure's fingerprint ('full' for the identity exposure). */
+  toolExposureFingerprint?: string | null;
 }
 
 export async function recordInvocation(row: NewInvocation): Promise<string> {
@@ -70,6 +79,7 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     userId: row.userId ?? null,
     sessionId: row.sessionId ?? null,
     agentRunId: row.agentRunId ?? null,
+    flowRunId: row.flowRunId ?? null,
     sourceRef: row.sourceRef ?? null,
     offeringId: row.offeringId ?? null,
     connectionId: row.connectionId ?? null,
@@ -82,6 +92,7 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     stopReason: row.stopReason ?? null,
     refusalCategory: row.refusalCategory ?? null,
     fallbackUsed: row.fallbackUsed ?? false,
+    modelRole: row.modelRole ?? null,
     failoverFromOfferingId: row.failoverFromOfferingId ?? null,
     failoverHop: row.failoverHop ?? 0,
     failoverCause: row.failoverCause ?? null,
@@ -105,6 +116,8 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     promptProfile: row.promptProfile ?? null,
     promptVariant: row.promptVariant ?? null,
     occurredAt: row.occurredAt ? new Date(row.occurredAt) : null,
+    toolProfile: row.toolProfile ?? null,
+    toolExposureFingerprint: row.toolExposureFingerprint ?? null,
   }).returning({ id: aiInvocations.id });
   return inserted!.id;
 }

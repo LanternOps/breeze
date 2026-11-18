@@ -247,8 +247,8 @@ describe('dynamic device group membership materialization', () => {
     // learned the group's UUID could insert a row naming that group as long as
     // it stamped its OWN org_id — quarantined (org A could never read it), but
     // structurally legal, and a cross-org device move produced exactly that
-    // shape through ordinary supported use. `device_group_memberships_group_org_fk`
-    // ((group_id, org_id) -> device_groups(id, org_id)) now rejects it outright,
+    // shape through ordinary supported use. `device_group_memberships_group_owner_check`
+    // now checks the group owner at COMMIT and rejects it outright,
     // so the row never lands at all rather than landing unreadable.
     const foreignStamped = await withDbAccessContext(foreignContext, async () =>
       db.insert(deviceGroupMemberships).values({
@@ -260,9 +260,9 @@ describe('dynamic device group membership materialization', () => {
     ).then(() => null, (err: Error) => err);
     expect(
       foreignStamped,
-      'a membership naming another org\'s group must be rejected by the composite FK, not merely quarantined (#3182)',
+      'a membership naming another org\'s group must be rejected by the deferred owner trigger, not merely quarantined (#3182)',
     ).toBeInstanceOf(Error);
-    expect(JSON.stringify(foreignStamped)).toContain('device_group_memberships_group_org_fk');
+    expect(JSON.stringify(foreignStamped)).toContain('device_group_memberships_group_owner_check');
 
     const visibleToOwner = await withDbAccessContext(
       {

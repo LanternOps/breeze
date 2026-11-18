@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDR_PROVIDER_KEYS, getEdrProvider, isEdrProviderKey, listEdrProviders } from './registry';
-import { EDR_PROVIDER_LABELS } from './providerKeys';
+import { EDR_INSTALLER_PROVIDER_KEYS, EDR_PROVIDER_LABELS } from './providerKeys';
 
 describe('edr provider registry', () => {
   it('throws on an unknown key, including inherited object keys', () => {
@@ -15,12 +15,22 @@ describe('edr provider registry', () => {
       expect(a.hostAllowlist.length).toBeGreaterThan(0);
       expect(a.capabilities.actions.length === 0 || typeof a.performAction === 'function').toBe(true);
       expect(a.capabilities.detectionDelivery === 'poll' || typeof a.verifyWebhook === 'function').toBe(true);
-      expect(a.capabilities.installer === 'none' || typeof a.getInstaller === 'function').toBe(true);
+      expect(typeof a.fetchInstallerMaterial === 'function').toBe(a.capabilities.installer !== 'none');
+      expect(typeof a.buildInstaller === 'function').toBe(a.capabilities.installer !== 'none');
+      expect((a.installerHostAllowlist?.length ?? 0) > 0).toBe(a.capabilities.installer !== 'none');
+      // A5: the re-read status model needs its read hook, and only that model has one.
+      expect(typeof a.rereadDetectionStatus === 'function').toBe(a.capabilities.detectionStatusModel === 'reread_open_on_inventory');
     }
   });
 
+  it('EDR_INSTALLER_PROVIDER_KEYS is exactly the adapters that can supply an installer', () => {
+    expect([...EDR_INSTALLER_PROVIDER_KEYS]).toEqual(
+      listEdrProviders().filter((a) => a.capabilities.installer !== 'none').map((a) => a.key),
+    );
+  });
+
   it('registry keys are the pinned set and each adapter reports its own key', () => {
-    expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender']);
+    expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender', 'emsisoft']);
     for (const k of EDR_PROVIDER_KEYS) expect(getEdrProvider(k).key).toBe(k);
   });
 
@@ -30,5 +40,9 @@ describe('edr provider registry', () => {
 
   it('declares the incidents operation class budget', () => {
     expect(getEdrProvider('bitdefender').capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
+  });
+
+  it('emsisoft declares no connection-wide incidents budget (its incidents are per workspace; scheduler.ts:22-27 assumes one call per run)', () => {
+    expect(getEdrProvider('emsisoft').capabilities.operationBudgets?.incidents).toBeUndefined();
   });
 });

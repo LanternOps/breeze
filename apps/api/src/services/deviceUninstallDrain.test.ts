@@ -20,6 +20,28 @@ vi.mock('../db', () => ({
   },
 }));
 
+// #9719: the cancel goes through cancelDeviceCommands (UPDATE + per-type hooks;
+// covered by commandCancelPropagation.bulk.test.ts). This recorder keeps the
+// UPDATE visible to the rig below and records the call for the hook assertion.
+const cancelDeviceCommandsMock = vi.fn();
+vi.mock('./commandCancelPropagation', async () => {
+  const schema = await import('../db/schema');
+  return {
+    cancelDeviceCommands: async (args: {
+      where: unknown;
+      result: Record<string, unknown>;
+      executor: { update: (t: unknown) => any };
+    }) => {
+      cancelDeviceCommandsMock(args);
+      return args.executor
+        .update(schema.deviceCommands)
+        .set({ status: 'cancelled', completedAt: new Date(), result: args.result })
+        .where(args.where)
+        .returning();
+    },
+  };
+});
+
 const ERASURE_MARKER = { __erased: true };
 vi.mock('./sensitiveCommandPayload', () => ({
   terminalPayloadErasureSet: vi.fn(() => ({ payload: ERASURE_MARKER })),
@@ -472,7 +494,13 @@ function rigReleaseTx(strippedRows: Array<{ id: string; status: string; uninstal
               };
             }
             cancelUpdateLog.push({ values, where });
-            return Promise.resolve([]);
+            return {
+              returning: vi.fn(async () =>
+                strippedRows
+                  .filter((r) => r.status === 'pending' && (r.uninstallReasons ?? []).length === 0)
+                  .map((r) => ({ id: r.id, type: 'self_uninstall', payload: null })),
+              ),
+            };
           }),
         })),
       };
@@ -578,8 +606,12 @@ describe('releaseDeviceRemoveReason', () => {
     expect(cancel.values.status).toBe('cancelled');
     expect(cancel.values.completedAt).toBeInstanceOf(Date);
     expect(cancel.values.result).toEqual({ reason: 'device_restored' });
-    // Every terminal write must spread terminalPayloadErasureSet().
-    expect(cancel.values.payload).toEqual({ __erased: true });
+    // #9719: routed through the shared helper (which owns the payload erasure,
+    // asserted in commandCancelPropagation.bulk.test.ts) so the per-type hooks
+    // run, inside the CALLER's transaction.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { reason: 'device_restored' }, executor: tx }),
+    );
 
     const whereBuilt = sqlOf(cancel.where);
     expect(whereBuilt.params).toContain('cmd-1');
@@ -595,7 +627,7 @@ describe('releaseDeviceRemoveReason', () => {
 
     expect(result).toEqual({ cancelled: 1, retainedOtherOwner: 1, alreadyDispatched: 0 });
     expect(cancelUpdateLog).toHaveLength(1);
-    expect(sqlOf(cancelUpdateLog[0]!.where).params).toEqual(['cmd-1']);
+    expect(sqlOf(cancelUpdateLog[0]!.where).params).toEqual(['cmd-1', 'pending']);
   });
 });
 

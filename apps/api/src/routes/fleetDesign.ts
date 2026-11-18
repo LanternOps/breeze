@@ -36,28 +36,24 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
 import {
   enableFleetDesignerSchema,
   fleetDesignApprovalSchema,
   triggerFleetDesignRunSchema,
-  type FleetDesignReportSummary,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { db } from '../db';
-import { reportRuns, reports, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { applyFleetDesign } from '../services/fleetDesign/apply';
 import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
+import { listFleetDesigns } from '../services/fleetDesign/listing';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
 import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
 import { DesignerEnableError, describeDesignerSetup, enableDesigner } from '../services/fleetDesign/designerSetup';
-import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
-import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
+import { launchFleetDesignRun } from '../services/fleetDesign/runLaunch';
+import { loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 
@@ -149,26 +145,6 @@ function mapApplyError(c: Context, err: unknown) {
   throw err;
 }
 
-/**
- * Counts sections out of a stored `FleetDesignReportSummary` for the list/
- * detail projections below. Every field on the summary is optional
- * (persisted jsonb, old snapshots must still render) — an incomplete or
- * pre-outcome row projects to zero counts rather than throwing.
- */
-function sectionCounts(summary: FleetDesignReportSummary | null | undefined) {
-  const sections = summary?.fleetDesign?.outcome?.sections;
-  const watchCount = sections?.monitoring.reduce((n, m) => n + m.watches.length, 0) ?? 0;
-  const ruleCount = sections?.monitoring.reduce((n, m) => n + m.alertRules.length, 0) ?? 0;
-  return {
-    functionCount: sections?.functions.length ?? 0,
-    watchCount,
-    ruleCount,
-    evidenceTruncated: summary?.fleetDesign?.evidenceTruncated ?? false,
-    generatedAt: summary?.fleetDesign?.generatedAt ?? null,
-    runId: summary?.fleetDesign?.runId ?? null,
-  };
-}
-
 // Triggering a Fleet Design run is at least as consequential as any other
 // autonomous agent trigger, so it carries the same write-permission + MFA
 // gates as `POST /ai/agents/:id/runs`.
@@ -182,33 +158,16 @@ fleetDesignRoutes.post(
     const auth = c.get('auth');
     const { orgId, siteId } = c.req.valid('json');
 
+    // A human pressing "run now" twice means twice — same posture as the
+    // device manual-trigger route's dedupe key.
+    const result = await launchFleetDesignRun(auth, { orgId, ...(siteId ? { siteId } : {}) }, `design-manual-${randomUUID()}`);
+
     // 404, not 403: a cross-tenant probe must read identically to a typo'd
     // org id (same posture `loadFleetDesignReport` documents for report ids).
-    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'not_found' }, 404);
+    if (!result.ok && result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
+    if (!result.ok && result.code === 'NO_DESIGNER_AGENT') return c.json({ error: 'no_designer_agent' }, 404);
 
-    if (siteId) {
-      const [site] = await db
-        .select({ id: sites.id })
-        .from(sites)
-        .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
-        .limit(1);
-      if (!site) return c.json({ error: 'not_found' }, 404);
-    }
-
-    const resolved = await resolveEffectiveAgent(auth, orgId, 'designer');
-    if (!resolved) return c.json({ error: 'no_designer_agent' }, 404);
-
-    const result = await createAndEnqueueAgentRun({
-      orgId,
-      kind: 'designer',
-      triggerKind: 'manual',
-      deviceId: null,
-      profile: 'design',
-      // A human pressing "run now" twice means twice — same posture as the
-      // device manual-trigger route's dedupe key.
-      dedupeKey: `design-manual-${randomUUID()}`,
-      triggerRef: { requestedByUserId: auth.user.id, agentId: resolved.agentId, siteId: siteId ?? null },
-    });
+    const enqueueFailed = result.ok && result.enqueueFailed;
 
     // Every outcome is audited: createAndEnqueueAgentRun writes no audit row
     // of its own, so this is the only record of which human asked for a
@@ -217,21 +176,29 @@ fleetDesignRoutes.post(
       orgId,
       action: 'ai_fleet_design.run.manual_trigger',
       resourceType: 'ai_agent',
-      resourceId: resolved.agentId,
+      resourceId: result.agentId,
       details: {
         siteId: siteId ?? null,
-        ...(result.created ? { runId: result.run.id } : { skipped: result.skipped }),
+        ...(result.ok
+          ? (enqueueFailed ? { skipped: 'enqueue_failed', runId: result.runId } : { runId: result.runId })
+          : { skipped: result.skipped }),
       },
-      result: result.created ? 'success' : 'failure',
+      result: result.ok && !enqueueFailed ? 'success' : 'failure',
     });
+
+    // The run row exists but BullMQ never took it (already marked
+    // failed/enqueue_failed). Not a 202, and no runId the queue does not hold.
+    if (enqueueFailed) {
+      return c.json({ error: 'The design run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
+    }
 
     // A declined admission is not an error — the caller asked for a design and
     // the admission rules said not now (mode off, cap reached, budget). It is
     // also not a success: `success: false` is exactly the HTTP-200 failure
     // shape the web's runAction detector reads (apps/web/src/lib/apiError.ts),
     // so a "Run now" button can never toast "queued" for a run that never was.
-    if (!result.created) return c.json({ success: false, skipped: result.skipped }, 200);
-    return c.json({ runId: result.run.id }, 202);
+    if (!result.ok) return c.json({ success: false, skipped: result.skipped }, 200);
+    return c.json({ runId: result.runId }, 202);
   },
 );
 
@@ -298,44 +265,7 @@ fleetDesignRoutes.post(
 
 fleetDesignRoutes.get('/', scopes, requireAiRead, async (c) => {
   const auth = c.get('auth');
-  const queryOrgId = c.req.query('orgId');
-
-  if (queryOrgId && !auth.canAccessOrg(queryOrgId)) return c.json({ items: [] });
-
-  const conditions = [eq(reports.type, FLEET_DESIGN_REPORT_TYPE), eq(reportRuns.status, 'completed')];
-  const orgCond = auth.orgCondition(reports.orgId);
-  if (orgCond) conditions.push(orgCond);
-  if (queryOrgId) conditions.push(eq(reports.orgId, queryOrgId));
-
-  const rows = await db
-    .select({
-      reportRunId: reportRuns.id,
-      reportId: reports.id,
-      orgId: reports.orgId,
-      summary: reportRuns.result,
-    })
-    .from(reportRuns)
-    .innerJoin(reports, eq(reportRuns.reportId, reports.id))
-    .where(and(...conditions))
-    .orderBy(desc(reportRuns.completedAt))
-    .limit(100);
-
-  return c.json({
-    items: rows.map((row) => {
-      const counts = sectionCounts((row.summary as { summary?: FleetDesignReportSummary } | null)?.summary);
-      return {
-        reportRunId: row.reportRunId,
-        reportId: row.reportId,
-        orgId: row.orgId,
-        generatedAt: counts.generatedAt,
-        runId: counts.runId,
-        functionCount: counts.functionCount,
-        watchCount: counts.watchCount,
-        ruleCount: counts.ruleCount,
-        evidenceTruncated: counts.evidenceTruncated,
-      };
-    }),
-  });
+  return c.json({ items: await listFleetDesigns(auth, c.req.query('orgId')) });
 });
 
 fleetDesignRoutes.get('/:reportRunId', scopes, requireAiRead, async (c) => {

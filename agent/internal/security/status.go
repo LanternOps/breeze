@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // ErrNotSupported is returned when platform-specific operations are unavailable.
@@ -40,6 +41,9 @@ type AVProduct struct {
 // failed, so the API stores "unknown" instead of a fabricated false that fires
 // the antivirus not_protected/realtime_disabled checks (#7965). A genuine false
 // is still sent.
+//
+// FirewallStatus is "enabled", "disabled" or "unsupported", and is omitted when
+// the read failed. FirewallStatusReason says why a host is unsupported (#10909).
 type SecurityStatus struct {
 	DeviceID                       string      `json:"deviceId"`
 	DeviceName                     string      `json:"deviceName"`
@@ -54,6 +58,8 @@ type SecurityStatus struct {
 	RealTimeProtection             *bool       `json:"realTimeProtection,omitempty"`
 	ThreatCount                    int         `json:"threatCount"`
 	FirewallEnabled                *bool       `json:"firewallEnabled,omitempty"`
+	FirewallStatus                 string      `json:"firewallStatus,omitempty"`
+	FirewallStatusReason           string      `json:"firewallStatusReason,omitempty"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
 	EncryptionDetails              any         `json:"encryptionDetails,omitempty"`
 	LocalAdminSummary              any         `json:"localAdminSummary,omitempty"`
@@ -128,6 +134,10 @@ func providerFromName(name string) string {
 		return "emsisoft"
 	case strings.Contains(lower, "webroot"):
 		return "webroot"
+	// Trend Micro Apex One / OfficeScan / Worry-Free / Vision One (#8171).
+	// "trend" alone is too common, so require the vendor name.
+	case strings.Contains(lower, "trend micro"), strings.Contains(lower, "trendmicro"):
+		return "trend_micro"
 	// CylancePROTECT was rebranded Aurora Endpoint Defense, but Windows Security
 	// Center still registers it as "CylancePROTECT" (#9178).
 	case strings.Contains(lower, "cylance"):
@@ -231,6 +241,9 @@ func latestScanTime(defenderStatus DefenderStatus) string {
 }
 
 func encryptionString(enabled bool, detectErr error) string {
+	if errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return "unsupported"
+	}
 	if detectErr != nil {
 		return "unknown"
 	}
@@ -238,6 +251,20 @@ func encryptionString(enabled bool, detectErr error) string {
 		return "encrypted"
 	}
 	return "unencrypted"
+}
+
+// applyEncryptionPosture records the encryption read on status and returns
+// the error CollectStatus should report, if any. No BitLocker on this host is
+// a state ("unsupported"), not a collection failure (#10902).
+func applyEncryptionPosture(status *SecurityStatus, enabled bool, details map[string]any, detectErr error) error {
+	status.EncryptionStatus = encryptionString(enabled, detectErr)
+	if details != nil {
+		status.EncryptionDetails = details
+	}
+	if detectErr == nil || errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return nil
+	}
+	return detectErr
 }
 
 func boolPtr(value bool) *bool {
@@ -602,18 +629,82 @@ func floatFromAny(value any) (float64, bool) {
 	return 0, false
 }
 
+// BitLocker enum values as Get-BitLockerVolume reports them. Windows
+// PowerShell 5.1's ConvertTo-Json serialises enums as their integer value
+// (-EnumsAsStrings is PowerShell 6+), so the raw JSON can carry 6 rather than
+// "XtsAes128" (#9608). Numbering and names follow the BitLocker module's
+// enums, so an integer maps to the same name the [string] cast emits.
+var (
+	bitLockerEncryptionMethodNames = map[int]string{
+		0: "None",
+		1: "Aes128Diffuser",
+		2: "Aes256Diffuser",
+		3: "Aes128",
+		4: "Aes256",
+		5: "Hardware",
+		6: "XtsAes128",
+		7: "XtsAes256",
+	}
+	bitLockerVolumeStatusNames = map[int]string{
+		0: "FullyDecrypted",
+		1: "FullyEncrypted",
+		2: "EncryptionInProgress",
+		3: "DecryptionInProgress",
+		4: "EncryptionSuspended",
+		5: "DecryptionSuspended",
+		6: "FullyEncryptedWipeInProgress",
+		7: "FullyEncryptedWipeSuspended",
+	}
+	bitLockerProtectionStatusNames = map[int]string{
+		0: "Off",
+		1: "On",
+		2: "Unknown",
+	}
+)
+
+// bitLockerEnumName returns the enum name for a BitLocker field that may
+// arrive as a name, an integer, or a stringified integer. An integer outside
+// the table becomes "Unknown" rather than leaking a bare number into the UI.
+// A JSON bool (some callers coerce ProtectionStatus) maps to On/Off. Empty
+// or absent input returns "".
+func bitLockerEnumName(value any, names map[int]string) string {
+	if b, ok := value.(bool); ok {
+		if b {
+			return "On"
+		}
+		return "Off"
+	}
+	raw, ok := stringFromAny(value)
+	if !ok {
+		return ""
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return raw
+	}
+	if name, known := names[n]; known {
+		return name
+	}
+	return "Unknown"
+}
+
+// bitLockerVolumesPS casts the enum properties to [string] so Windows
+// PowerShell 5.1 emits their names; parseBitLockerVolumes still accepts the
+// integer form (#9608).
+const bitLockerVolumesPS = `Get-BitLockerVolume | Select-Object MountPoint,@{n='ProtectionStatus';e={[string]$_.ProtectionStatus}},@{n='EncryptionMethod';e={[string]$_.EncryptionMethod}},@{n='VolumeStatus';e={[string]$_.VolumeStatus}},EncryptionPercentage | ConvertTo-Json -Compress`
+
 func collectEncryptionDetailsWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus,EncryptionMethod,VolumeStatus,EncryptionPercentage | ConvertTo-Json -Compress",
-	)
+	if bitLockerNotInstalled() {
+		return nil, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(10*time.Second, bitLockerVolumesPS)
 	if err != nil {
 		return nil, err
 	}
+	return parseBitLockerVolumes(output)
+}
+
+func parseBitLockerVolumes(output string) (map[string]any, error) {
 	parsed, err := parseJSONValue(output)
 	if err != nil {
 		return nil, err
@@ -623,19 +714,13 @@ func collectEncryptionDetailsWindows() (map[string]any, error) {
 	volumes := make([]map[string]any, 0, len(rawVolumes))
 	for _, item := range rawVolumes {
 		mountPoint, _ := stringFromAny(item["MountPoint"])
-		method, _ := stringFromAny(item["EncryptionMethod"])
+		method := bitLockerEnumName(item["EncryptionMethod"], bitLockerEncryptionMethodNames)
 		if method == "" {
-			method = "bitlocker"
+			method = "unknown"
 		}
-		volumeStatus, _ := stringFromAny(item["VolumeStatus"])
-
-		protected := false
-		if value, ok := boolFromAny(item["ProtectionStatus"]); ok {
-			protected = value
-		} else if value, ok := stringFromAny(item["ProtectionStatus"]); ok {
-			normalized := strings.ToLower(strings.TrimSpace(value))
-			protected = normalized == "on" || normalized == "protected" || normalized == "1"
-		}
+		volumeStatus := bitLockerEnumName(item["VolumeStatus"], bitLockerVolumeStatusNames)
+		protection := strings.ToLower(bitLockerEnumName(item["ProtectionStatus"], bitLockerProtectionStatusNames))
+		protected := protection == "on" || protection == "protected" || protection == "true"
 
 		entry := map[string]any{
 			"mount":     mountPoint,
@@ -705,54 +790,6 @@ func collectEncryptionDetails() (map[string]any, error) {
 	default:
 		return nil, ErrNotSupported
 	}
-}
-
-func collectLocalAdminSummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Get-LocalGroupMember -Group 'Administrators' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-
-	members := toObjectSlice(parsed)
-	accounts := make([]map[string]any, 0, len(members))
-	for _, member := range members {
-		username, _ := stringFromAny(member["Name"])
-		if username == "" {
-			continue
-		}
-		sid, _ := stringFromAny(member["SID"])
-		isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
-			strings.EqualFold(username, "Administrator")
-		entry := map[string]any{
-			"username":   username,
-			"isBuiltIn":  isBuiltIn,
-			"enabled":    true,
-			"objectType": member["ObjectClass"],
-		}
-		if isBuiltIn {
-			entry["defaultAccount"] = true
-		}
-		accounts = append(accounts, entry)
-	}
-
-	return map[string]any{
-		"source":            "windows_local_group",
-		"adminCount":        len(accounts),
-		"localAccountCount": len(accounts),
-		"accounts":          accounts,
-	}, nil
 }
 
 func collectLocalAdminSummaryDarwin() (map[string]any, error) {
@@ -853,31 +890,6 @@ func collectLocalAdminSummary() (map[string]any, error) {
 	default:
 		return nil, ErrNotSupported
 	}
-}
-
-func collectPasswordPolicySummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"$p=Get-CimInstance -ClassName Win32_AccountPolicy; [pscustomobject]@{minLength=[int]$p.MinPasswordLength;maxAgeDays=[int]$p.MaxPasswordAge.TotalDays;lockoutThreshold=[int]$p.LockoutThreshold;historyCount=[int]$p.PasswordHistorySize} | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-	record, ok := parsed.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected windows password policy payload")
-	}
-	record["source"] = "win32_account_policy"
-	return record, nil
 }
 
 func parsePwPolicyDarwin(output string) map[string]any {
@@ -1017,7 +1029,7 @@ func collectPasswordPolicySummary() (map[string]any, error) {
 }
 
 // collectPasswordPolicySummaryForStatus is the security-status tick's read:
-// cached on Windows, where the probe is a PowerShell spawn (#9267).
+// cached on Windows, where the probe spawns secedit.exe (#9267, #9597).
 func collectPasswordPolicySummaryForStatus(goos string) (map[string]any, error) {
 	if goos == "windows" {
 		return collectPasswordPolicySummaryWindowsCached()
@@ -1177,18 +1189,13 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.RealTimeProtection = avRealTimeProtectionState(realTime, avCollected, avFailed)
 
 	firewallEnabled, fwErr := GetFirewallStatus()
-	if fwErr != nil {
-		errs = append(errs, fwErr)
+	if err := applyFirewallPosture(&status, firewallEnabled, fwErr); err != nil {
+		errs = append(errs, err)
 	}
-	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
-	if encErr != nil {
-		errs = append(errs, encErr)
-	}
-	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
-	if encDetails != nil {
-		status.EncryptionDetails = encDetails
+	if err := applyEncryptionPosture(&status, encryptionEnabled, encDetails, encErr); err != nil {
+		errs = append(errs, err)
 	}
 
 	if localAdmins, err := collectLocalAdminSummary(); err == nil {
@@ -1260,28 +1267,29 @@ func getFirewallStatusWindows() (bool, error) {
 	return false, nil
 }
 
+// runFirewallCommand is a seam so the darwin firewall order is testable off-macOS.
+var runFirewallCommand = runCommand
+
 func getFirewallStatusDarwin() (bool, error) {
-	// Prefer locale-invariant numeric check via defaults read.
-	// globalstate: 0=off, 1=on, 2=on (essential services only).
-	output, err := runCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
-	if err == nil {
-		switch strings.TrimSpace(output) {
-		case "1", "2":
-			return true, nil
-		case "0":
-			return false, nil
+	// macOS 15+ dropped the com.apple.alf defaults domain, so spawning
+	// defaults there only fails (#10911).
+	if major, known := macOSMajorVersion(); !known || major < 15 {
+		// Locale-invariant numeric check: 0=off, 1=on, 2=on (essential services only).
+		output, err := runFirewallCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
+		if err == nil {
+			switch strings.TrimSpace(output) {
+			case "1", "2":
+				return true, nil
+			case "0":
+				return false, nil
+			}
 		}
 	}
 
-	// Fallback: socketfilterfw text output (locale-dependent, English-only match).
-	output, err = runCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+	output, err := runFirewallCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err == nil {
-		lower := strings.ToLower(output)
-		if strings.Contains(lower, "enabled") {
-			return true, nil
-		}
-		if strings.Contains(lower, "disabled") {
-			return false, nil
+		if enabled, ok := parseSocketfilterfwState(output); ok {
+			return enabled, nil
 		}
 	}
 
@@ -1304,7 +1312,7 @@ func firewallStatusFromCommand(timeout time.Duration, name string, args ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", false, false
@@ -1349,44 +1357,6 @@ func interpretFirewallState(tool, state string) (enabled bool, known bool) {
 		}
 	}
 	return false, false
-}
-
-func getFirewallStatusLinux() (bool, error) {
-	if hasCommand("ufw") {
-		output, err := runCommand(5*time.Second, "ufw", "status")
-		if err == nil {
-			if enabled, known := interpretFirewallState("ufw", output); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	// firewall-cmd / systemctl probe a different daemon (firewalld) than ufw.
-	// On a host where ufw is the ACTIVE firewall but firewalld is installed
-	// + masked (a common Ubuntu/Debian shape), `firewall-cmd --state` exits
-	// non-zero and prints "not running" or a D-Bus failure on stdout. The
-	// previous version trusted that text regardless of exit code, which
-	// silently reported the host as firewall=disabled — strictly worse than
-	// the WARN it replaced because FirewallEnabled feeds security posture
-	// (status.go's posture computation). We now only trust a recognized state
-	// when the tool ALSO exited 0; non-zero exit → unknown → fall through.
-	if hasCommand("firewall-cmd") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "firewall-cmd", "--state"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("firewall-cmd", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	if hasCommand("systemctl") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", "firewalld"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("systemctl", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	return false, fmt.Errorf("unable to determine firewall status")
 }
 
 // collectEncryptionPosture returns the headline encryption state and the
@@ -1437,8 +1407,13 @@ func getEncryptionStatusFor(goos string) (bool, error) {
 	}
 }
 
+const bitLockerSystemDriveStatusPS = "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus"
+
 func getEncryptionStatusWindows() (bool, error) {
-	output, err := runCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus")
+	if bitLockerNotInstalled() {
+		return false, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(8*time.Second, bitLockerSystemDriveStatusPS)
 	if err != nil {
 		return false, err
 	}
@@ -1506,7 +1481,7 @@ func runCommand(timeout time.Duration, name string, args ...string) (string, err
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("command timed out: %s", name)

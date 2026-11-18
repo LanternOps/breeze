@@ -27,6 +27,17 @@ func NewPatchManager(providers ...PatchProvider) *PatchManager {
 	}
 }
 
+// SetFeatureUpdatePolicy hands the ring's Windows feature-release decision to
+// every provider that filters on it (FeatureUpdatePolicySetter). Providers
+// without the method are left alone.
+func (m *PatchManager) SetFeatureUpdatePolicy(policy FeatureUpdatePolicy) {
+	for _, provider := range m.providers {
+		if setter, ok := provider.(FeatureUpdatePolicySetter); ok {
+			setter.SetFeatureUpdatePolicy(policy)
+		}
+	}
+}
+
 // Scan aggregates available patches from all providers.
 func (m *PatchManager) Scan() ([]AvailablePatch, error) {
 	patches, _, err := m.ScanWithCoverage()

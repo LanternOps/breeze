@@ -23,7 +23,7 @@ vi.mock('../../services/portal/serviceReadModel', () => ({ serviceTile: vi.fn() 
 
 import { tickets } from '../../db/schema';
 import { portalDashboardRoutes } from './dashboard';
-import { portalTicketOwnership } from './ticketOwnership';
+import { portalTicketReadAccess } from './ticketReadAccess';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const LOGIN = '22222222-2222-4222-8222-222222222222';
@@ -88,7 +88,8 @@ it.each([
     eq(tickets.orgId, ORG),
     isNull(tickets.deletedAt),
     inArray(tickets.status, ['new', 'open', 'pending', 'on_hold']),
-    portalTicketOwnership(user),
+    // #8972 D1(b): own tickets + survivors of merged ones, never a tombstone.
+    and(portalTicketReadAccess(user), isNull(tickets.mergedIntoTicketId))!,
   )!));
 });
 

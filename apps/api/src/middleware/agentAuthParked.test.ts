@@ -51,9 +51,15 @@ describe('isParkedAllowedAgentPath', () => {
     expect(isParkedAllowedAgentPath(segments(path), AGENT)).toBe(false);
   });
 
-  it('is a positive list of exactly the rotation and lifecycle actions', () => {
+  it('is a positive list of exactly the rotation, lifecycle and reattach (#8318) actions', () => {
     expect([...PARKED_ALLOWED_ACTIONS].sort()).toEqual(
-      ['commands', 'heartbeat', 'rotate-token', 'uninstall-intent'],
+      ['commands', 'heartbeat', 'rebind', 'rotate-token', 'uninstall-intent'],
     );
+  });
+
+  it('allows phase 1 of a reattach, but no nested path under it (#8318 §6.3)', () => {
+    expect(isParkedAllowedAgentPath(segments(`/api/v1/agents/${AGENT}/rebind`), AGENT)).toBe(true);
+    expect(isParkedAllowedAgentPath(segments(`/api/v1/agents/${AGENT}/rebind/extra`), AGENT)).toBe(false);
+    expect(isParkedAllowedAgentPath(segments(`/api/v1/agents/${AGENT}/rebind-confirm`), AGENT)).toBe(false);
   });
 });

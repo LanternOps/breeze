@@ -269,11 +269,13 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false, off
         </div>
       ) : data.length === 0 ? (
         // #9029: say there is nothing to plot instead of drawing blank axes and
-        // a legend; same height as the chart so the layout does not jump.
+        // a legend. The full tab keeps the chart height so the layout does not
+        // jump; the compact Overview card reserves less — an offline device's
+        // overview is otherwise mostly a dashed rectangle.
         <div
           data-testid="device-performance-empty"
           className={`flex flex-col items-center justify-center gap-1 rounded-md border border-dashed text-center text-sm text-muted-foreground ${
-            compact ? 'mt-4 h-56' : 'mt-6 h-80'
+            compact ? 'mt-4 h-36' : 'mt-6 h-80'
           }`}
         >
           <p className="font-medium text-foreground">

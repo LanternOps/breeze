@@ -9,7 +9,9 @@
  */
 
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { MFA_REQUIRED_CODE, MFA_REQUIRED_TOOL_MESSAGE } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
+import { FLEET_HEALTH_ACTIONS } from './aiToolSchemasAlertTriage';
 import { listReliabilityDevices, summarizeReliabilityDevices, type ReliabilityListItem } from './reliabilityScoring';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
@@ -21,6 +23,7 @@ import {
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { filterToDeviceScope, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { runFleetHealthAction } from './aiToolsReliabilityTriage';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -28,6 +31,9 @@ type AiToolTier = 1 | 2 | 3 | 4;
 // fits the chat budget uncompacted (aiToolsUserRisk.outputShape.test.ts).
 const FLEET_HEALTH_DEFAULT_LIMIT = 15;
 const FLEET_HEALTH_MAX_LIMIT = 100;
+// #6734: getUserRiskDetail loads at most the latest 100 events.
+const USER_RISK_EVENTS_DEFAULT = 10;
+const USER_RISK_EVENTS_MAX = 100;
 
 /**
  * topIssues (a jsonb list per device) is opt-in; its size is always reported.
@@ -65,13 +71,20 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'fleet device reliability, uptime, crashes, hangs, hardware and service failures',
     alwaysLoad: true,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_fleet_health',
-      description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics; the summary covers every matching device, not just the page. Per-device topIssues are opt-in (includeTopIssues).',
+      description: 'Device reliability scores, worst first, with uptime, crash and failure metrics; the summary covers every matching device. topIssues are opt-in. Actions: list (default),history,offenders (deviceId),evaluation,org_summary (orgId).',
       input_schema: {
         type: 'object' as const,
         properties: {
-          orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+          action: { type: 'string', enum: [...FLEET_HEALTH_ACTIONS], description: 'list (default) | history | offenders | evaluation | org_summary' },
+          deviceId: { type: 'string', description: 'history/offenders: device UUID' },
+          days: { type: 'number', description: 'history (default 90) / offenders (default 30): lookback days, 1-365' },
+          topN: { type: 'number', description: 'offenders: rows per category (default 5, max 20)' },
+          atRiskMaxScore: { type: 'number', description: 'evaluation: at-risk score ceiling (default 70)' },
+          labelWindowDays: { type: 'number', description: 'evaluation: feedback window in days (default 90)' },
+          orgId: { type: 'string', description: 'Optional org UUID (must be accessible); required for org_summary' },
           siteId: { type: 'string', description: 'Optional site UUID' },
           scoreRange: { type: 'string', enum: ['critical', 'poor', 'fair', 'good'], description: 'Score range filter' },
           trendDirection: { type: 'string', enum: ['improving', 'stable', 'degrading'], description: 'Trend direction filter' },
@@ -83,6 +96,10 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       try {
+        // W07 (#6777): history / offenders / evaluation / org_summary; the default list falls through.
+        const triage = await runFleetHealthAction(input, auth);
+        if (triage !== null) return triage;
+
         if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
           return JSON.stringify({ error: 'Access denied to this organization' });
         }
@@ -250,12 +267,14 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'user risk profile, score factors, trend history and risk events',
     definition: {
       name: 'get_user_risk_detail',
-      description: 'Fetch a single user risk profile including latest score, factors, trend history, and risk-impacting events.',
+      description: 'Fetch a single user risk profile including latest score, factors, trend history, and the most recent risk-impacting events (recentEventCount counts up to the latest 100). Event details only with includeDetails.',
       input_schema: {
         type: 'object' as const,
         properties: {
           userId: { type: 'string', description: 'User UUID' },
-          orgId: { type: 'string', description: 'Organization UUID for disambiguation' }
+          orgId: { type: 'string', description: 'Organization UUID for disambiguation' },
+          limit: { type: 'number', description: `Max recent events (default ${USER_RISK_EVENTS_DEFAULT}, max ${USER_RISK_EVENTS_MAX})` },
+          includeDetails: { type: 'boolean', description: "Include each event's details payload (default false)" }
         },
         required: ['userId']
       }
@@ -280,7 +299,20 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ message: 'No user risk data available for this user' });
       }
 
-      return JSON.stringify({ userRisk: detail });
+      // The service loads up to the latest 100 events, each with a free-form
+      // `details` jsonb; trim to the requested count and keep details opt-in.
+      const requested = Math.trunc(Number(input.limit));
+      const limit = Math.min(Number.isFinite(requested) && requested > 0 ? requested : USER_RISK_EVENTS_DEFAULT, USER_RISK_EVENTS_MAX);
+      const includeDetails = input.includeDetails === true;
+      return JSON.stringify({
+        userRisk: {
+          ...detail,
+          recentEventCount: detail.recentEvents.length,
+          recentEvents: detail.recentEvents
+            .slice(0, limit)
+            .map(({ details, ...event }) => (includeDetails ? { ...event, details } : event)),
+        },
+      });
     }
   });
 
@@ -311,8 +343,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       // requireMfa(); Tier 2 means it auto-executes, so the MFA and site-ceiling
       // proofs have to be re-established here or the AI/MCP path is a bypass.
       // Checked before input validation, matching the HTTP route's ordering.
+      // Deliberately stricter than mfaGatedToolError: an ai_agent / flow
+      // principal (no MFA claim) is refused too, as before — this Tier 2 write
+      // has no upstream approval to stand in for the factor.
       if (!hasSatisfiedMfa(auth)) {
-        return JSON.stringify({ error: 'MFA required' });
+        return JSON.stringify({ error: MFA_REQUIRED_TOOL_MESSAGE, code: MFA_REQUIRED_CODE });
       }
 
       if (typeof input.userId !== 'string' || !input.userId) {

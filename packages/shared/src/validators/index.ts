@@ -1,5 +1,7 @@
 import { CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { z } from 'zod';
+import { utf16Max } from './unitLength';
+import { applicationProvidersSchema } from './eventLogProviders';
 import {
   ACTOR_TYPES,
   AUDIT_RESULTS,
@@ -26,13 +28,22 @@ export * from './businessEmail';
 export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
+export * from './securityLimits';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
+export * from './ringFeatureUpdates';
 export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
+export * from './containmentPolicy';
+export * from './oemUpdatesPolicy';
+export * from './wakeOnLanInlineSettings';
+export * from './wakeStatus';
 export * from './securityAgents';
+export * from './devicePathFloor';
+export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';
+export * from './mfaRecoveryCode';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
@@ -50,8 +61,10 @@ export * from './aiApprovalSettings';
 export * from './softwareDetection';
 export * from './softwareExitCodes';
 export * from './softwareDownloadPolicy';
+export * from './softwareVersionInstallSpec';
 export * from './systemCleanup';
 export * from './psa';
+export * from './psaAlertTicketing';
 export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
@@ -371,11 +384,15 @@ export const agentEnrollSchema = z.object({
     cpuCores: z.number().optional(),
     ramTotalMb: z.number().optional(),
     serialNumber: z.string().optional(),
+    productSku: z.string().optional(),
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
     motherboardProduct: z.string().optional(),
-    motherboardVersion: z.string().optional()
+    motherboardVersion: z.string().optional(),
+    // SMBIOS system UUID (#8318). Lenient: a malformed value is dropped, never
+    // a validation failure; the API normalizes it again before storing.
+    systemUuid: z.string().max(128).optional().catch(undefined)
   }).optional()
 });
 
@@ -613,12 +630,25 @@ const patchSourceValueSchema = z.enum([
  */
 const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 
+/**
+ * Patch sources an app rule may target. 'linux' (#9370) names an apt/dnf
+ * package; the agent installs Linux updates one package at a time
+ * (`apt-get install --only-upgrade <pkg>`, `dnf update <pkg>`), so a package
+ * the approval evaluator drops is never handed to the package manager.
+ */
+export const APP_RULE_SOURCES = ['third_party', 'custom', 'linux'] as const;
+
+// Lengths below are UTF-16 code units (an astral char counts twice), via the
+// shared `utf16Max` check. zod <=4.5 measured `.max()` this way; zod >=4.6
+// counts code points. The ring app-rules backfill migration (2026-12-26-230000)
+// emulates the UTF-16 rule in SQL, so it is pinned explicitly rather than left
+// to the zod version (#9976).
 export const policyAppRuleSchema = z.object({
-  source: z.enum(['third_party', 'custom']),
-  packageId: z.string().min(1).max(256),
-  displayName: z.string().max(255).optional(),
+  source: z.enum(APP_RULE_SOURCES),
+  packageId: z.string().min(1).check(utf16Max(256, 'Too long: expected <=256 characters')),
+  displayName: z.string().check(utf16Max(255, 'Too long: expected <=255 characters')).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).max(64).optional(),
+  pinnedVersion: z.string().min(1).check(utf16Max(64, 'Too long: expected <=64 characters')).optional(),
 }).superRefine((data, ctx) => {
   if (data.action === 'pin' && !data.pinnedVersion) {
     ctx.addIssue({
@@ -635,14 +665,30 @@ export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 const APP_RULE_THIRD_PARTY_BUCKET: readonly string[] = ['third_party', 'custom'];
 
 /**
+ * Package-manager prefixes the agent puts on Linux patch ids: the patch
+ * manager reports `apt:<name>` / `yum:<name>` (dnf hosts use the yum
+ * provider; 'dnf:' is accepted for hand-typed rules).
+ */
+const LINUX_PROVIDER_PREFIX = /^(?:apt|yum|dnf):/i;
+
+/** A Linux patch's package name without the agent's `apt:`/`yum:` prefix (#9370). */
+export function linuxPackageName(packageId: string): string {
+  return packageId.replace(LINUX_PROVIDER_PREFIX, '');
+}
+
+/**
  * Canonical app-rule identity: 'third_party' and 'custom' collapse to one
- * 'third_party' bucket, packageId is lowercased. The single implementation —
- * apps/api patchApprovalEvaluator.appRuleKey delegates here so the validator's
- * uniqueness check and the evaluator's lookup cannot disagree.
+ * 'third_party' bucket, packageId is lowercased. In the 'linux' bucket the
+ * package-manager prefix is dropped, so a rule for `docker-ce` matches the
+ * `apt:docker-ce` / `yum:docker-ce` id a Linux patch carries (#9370). The
+ * single implementation — apps/api patchApprovalEvaluator.appRuleKey and the
+ * web rule editor delegate here so the validator's uniqueness check and the
+ * evaluator's lookup cannot disagree.
  */
 export function canonicalAppRuleKey(source: string, packageId: string): string {
   const bucket = APP_RULE_THIRD_PARTY_BUCKET.includes(source) ? 'third_party' : source;
-  return `${bucket}|${packageId.toLowerCase()}`;
+  const id = packageId.toLowerCase();
+  return `${bucket}|${bucket === 'linux' ? linuxPackageName(id) : id}`;
 }
 
 /**
@@ -918,6 +964,7 @@ export * from './timeSync';
 export * from './workloads';
 
 export const eventLogInlineSettingsSchema = z.object({
+  applicationProviders: applicationProvidersSchema,
   retentionDays: z.number().int().min(7).max(365).default(30),
   maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
   collectCategories: z.array(z.enum(['security', 'hardware', 'application', 'system'])).min(1).default(['security', 'hardware', 'application', 'system']),
@@ -1053,6 +1100,8 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
+export * from './aiOperatorIdentity';
+export * from './aiOperatorOnboarding';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
@@ -1076,10 +1125,14 @@ export * from './scriptParameterDefinitions';
 // ============================================
 
 export * from './tickets';
+export * from './alertExternalRefs';
 export * from './ticketForms';
+export * from './serviceCatalog';
 export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
+// Portal registration W3 (#11380): access policy patch/view + access-request decide body.
+export * from './portalAccessPolicy';
 export * from './ticketConfig';
 export * from './retiredLabourPricing';
 export * from './retiredAiModelFields';
@@ -1221,6 +1274,9 @@ export {
 // carries no initialisation-order hazard.
 export * from './monitors';
 
+// Alert lifecycle defaults (partner → org → monitor; spec 2026-10-29-alert-rearm-lifecycle §6).
+export * from './alertLifecycle';
+
 // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
 export * from './toolSources';
 
@@ -1301,6 +1357,20 @@ export const MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/
 
 export const MAINTENANCE_RECURRENCES = ['once', 'daily', 'weekly', 'monthly'] as const;
 
+/**
+ * #9574: the weekday a `weekly` window opens on, in the window's timezone.
+ * Same vocabulary as `patchInlineSettingsSchema.scheduleDayOfWeek`. Index
+ * order matches `Date#getUTCDay()` (0 = Sunday), which the evaluator relies on.
+ */
+export const MAINTENANCE_DAYS_OF_WEEK = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+export type MaintenanceDayOfWeek = (typeof MAINTENANCE_DAYS_OF_WEEK)[number];
+/**
+ * #9574: the day a `monthly` window opens on. 1–31; in a month with fewer
+ * days the window opens on that month's last day, so 31 means "the last day
+ * of every month" and no month is skipped.
+ */
+export const MAINTENANCE_DAY_OF_MONTH_MAX = 31;
+
 /** True when `value` is a time-of-day a recurring window can be anchored to. */
 function isRecurringWindowAnchor(value: string): boolean {
   if (MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return false;
@@ -1331,6 +1401,11 @@ export const maintenanceInlineSettingsSchema = z
     // 30 = the config_policy_maintenance_settings.window_start varchar width;
     // a longer value would otherwise reach Postgres and raise 22001 as a 500.
     windowStart: z.string().max(30).nullish(),
+    // #9574: read only by `weekly` / `monthly` respectively, but stored for
+    // every recurrence so switching cadence back keeps the admin's choice. The
+    // defaults are the days the evaluator pinned before these fields existed.
+    dayOfWeek: z.enum(MAINTENANCE_DAYS_OF_WEEK).default('sun'),
+    dayOfMonth: z.number().int().min(1).max(MAINTENANCE_DAY_OF_MONTH_MAX).default(1),
     // 72h ceiling matches the documented AI-tool contract; the floor is 1
     // because a zero/negative duration yields a window that never opens.
     durationHours: z.number().int().min(1).max(72).default(2),
@@ -1405,9 +1480,27 @@ export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
 export * from './flows';
+export * from './businessCalendars';
+export * from './ticketRouting';
 export * from './trustCenter';
 export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
 export * from './trustCenterContent';
 export * from './trustCenterTemplate';
 export * from './trustCenterEmbed';
+export * from './launchPurchaseSelection';
+export * from './signupIntent';
+export * from './wispConcerns';
+export * from './wispCheckIns';
+export * from './wispNudgePreferences';
+export * from './wispSpecialists';
+export * from './wispStandingInstruction';
+export * from './wisp';
+export * from './flowRuns';
+export * from './flowBudgets';
+export * from './flowWebhooks';
+export * from './flowConversions';
+export * from './networkIsolation';
+export * from './oemUpdates';
+export * from './unitLength';
+export * from './migrationWindows';

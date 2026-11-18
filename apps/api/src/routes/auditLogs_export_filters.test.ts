@@ -14,7 +14,11 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 const queryWheres: unknown[] = [];
-const authState = vi.hoisted(() => ({ scope: 'organization' as string, partnerId: null as string | null }));
+const authState = vi.hoisted(() => ({
+  scope: 'organization' as string,
+  partnerId: null as string | null,
+  orgId: '11111111-1111-4111-8111-111111111111' as string | null
+}));
 
 vi.mock('../db', () => {
   const chain: any = {
@@ -43,7 +47,7 @@ vi.mock('../db/schema', () => ({
     action: 'action', actorEmail: 'actorEmail', resourceType: 'resourceType',
     resourceName: 'resourceName', details: 'details'
   },
-  users: { id: 'id', name: 'name' },
+  users: { id: 'id', name: 'name', email: 'email' },
   devices: { agentId: 'agentId', hostname: 'hostname', displayName: 'displayName', siteId: 'siteId' }
 }));
 
@@ -56,7 +60,7 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com' },
       scope: authState.scope,
       partnerId: authState.partnerId,
-      orgId: '11111111-1111-4111-8111-111111111111',
+      orgId: authState.orgId,
       accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
       canAccessOrg: (id: string) => id === '11111111-1111-4111-8111-111111111111',
       // Non-empty sentinel so the tenant predicate is visible in the rendered WHERE.
@@ -84,6 +88,7 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     queryWheres.length = 0;
     authState.scope = 'organization';
     authState.partnerId = null;
+    authState.orgId = ORG_A;
     const { auditLogRoutes } = await import('./auditLogs');
     app = new Hono();
     app.route('/audit-logs', auditLogRoutes);
@@ -100,7 +105,9 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     ['search', 'q=needle', '/audit-logs/search'],
     ['all combined', 'from=2026-10-01T00:00:00.000Z&to=2026-10-09T00:00:00.000Z&action=device&resource=dev&user=riley&q=needle', '/audit-logs/search'],
     ['excludeActions', 'excludeActions=agent.heartbeat,agent.sessions.submit&q=x', '/audit-logs/search'],
-    ['pinned org', `orgId=${ORG_A}&action=device`, '/audit-logs']
+    ['pinned org', `orgId=${ORG_A}&action=device`, '/audit-logs'],
+    ['userId (#9671)', 'userId=33333333-3333-4333-8333-333333333333', '/audit-logs'],
+    ['userId + search (#9671)', 'userId=33333333-3333-4333-8333-333333333333&q=needle', '/audit-logs/search']
   ];
 
   it.each(cases)('export WHERE equals the list WHERE for %s', async (_name, qs, listPath) => {
@@ -132,7 +139,46 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     const withUser = render(lastWhere());
     expect(withUser).not.toBe(base);
     expect(withUser).toContain(uid);
-    expect(withUser).toContain('%device%');
+    expect(withUser).toContain('device.%');
+  });
+
+  it('list ?userId= matches actor_id inside the tenant scope (#9671)', async () => {
+    const uid = '33333333-3333-4333-8333-333333333333';
+    await app.request('/audit-logs');
+    const base = render(lastWhere());
+    queryWheres.length = 0;
+    const res = await app.request(`/audit-logs?userId=${uid}`);
+    expect(res.status).toBe(200);
+    const { sql: text, params } = JSON.parse(render(lastWhere()));
+    expect(render(lastWhere())).not.toBe(base);
+    // The mocked schema columns are plain strings, so they render as params:
+    // the predicate is `actorId = <uid>`.
+    expect(text).toMatch(/\$\d+ = \$\d+/);
+    expect(params[params.indexOf(uid) - 1]).toBe('actorId');
+    // Narrows, never replaces, the accessible-org predicate.
+    expect(text).toContain('accessible_orgs_sentinel');
+  });
+
+  it('list ?userId= with skipCount=true still takes the filtered path, not the unfiltered fast path (#9671)', async () => {
+    const uid = '33333333-3333-4333-8333-333333333333';
+    const res = await app.request(`/audit-logs/logs?userId=${uid}&skipCount=true&limit=5`);
+    expect(res.status).toBe(200);
+    expect(queryWheres).toHaveLength(1);
+    expect(JSON.parse(render(lastWhere())).params).toContain(uid);
+  });
+
+  it('list ?userId= is identity-only: a non-uuid is rejected, not text-matched (#9671)', async () => {
+    const res = await app.request('/audit-logs?userId=dana@example.com');
+    expect(res.status).toBe(400);
+  });
+
+  it('?user= text also matches the joined user email, so email-less command rows are found (#9671)', async () => {
+    await app.request('/audit-logs?user=dana@example.com');
+    const { sql: text, params } = JSON.parse(render(lastWhere()));
+    // actor_email, users.email and users.name (mocked columns render as params).
+    expect(params.filter((p: unknown) => p === '%dana@example.com%').length).toBe(3);
+    expect(params).toEqual(expect.arrayContaining(['actorEmail', 'email', 'name']));
+    expect(text).toContain('ilike');
   });
 
   it('rejects a pinned org the caller cannot access, like the list (403)', async () => {
@@ -150,7 +196,7 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     expect(text).toContain('ilike');
     expect(text, text).toMatch(/not.*\bin\b/);
     expect(text).toContain('accessible_orgs_sentinel');
-    for (const p of ['%dev%', '%res%', '%riley%', '%needle%', 'agent.heartbeat']) {
+    for (const p of ['dev', 'dev.%', 'res%', '%riley%', '%needle%', 'agent.heartbeat']) {
       expect(params).toContain(p);
     }
     expect(params.some((p: unknown) => typeof p === 'string' && p.startsWith('2026-10-01'))).toBe(true);
@@ -203,18 +249,23 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
   it.each(['/audit-logs', '/audit-logs/export'])('%s splits comma-separated action/resource into OR terms (#8975)', async (path) => {
     await app.request(`${path}?action=update,create&resource=device,script`);
     const { sql: text, params } = JSON.parse(render(lastWhere()));
-    for (const p of ['%update%', '%create%', '%device%', '%script%']) expect(params).toContain(p);
-    expect(params).not.toContain('%update,create%');
-    expect(params).not.toContain('%device,script%');
+    // #9672: action terms match as a dotted-code prefix (exact or `term.%`),
+    // resource terms as a resource_type prefix - never as a substring.
+    for (const p of ['update', 'update.%', 'create', 'create.%', 'device%', 'script%']) expect(params).toContain(p);
+    expect(params).not.toContain('%update%');
+    expect(params).not.toContain('update,create');
+    expect(params).not.toContain('device,script%');
     expect(text).toContain(' or ');
   });
 
   it('trims terms, escapes each term, and keeps the OR group ANDed with other filters (#8975)', async () => {
     await app.request('/audit-logs?user=x&action=a_b, c%25');
     const { sql: text, params } = JSON.parse(render(lastWhere()));
-    expect(params).toContain('%a\\_b%');
-    expect(params).toContain('%c\\%%');
-    expect(text).toMatch(/\(\$\d+ ilike \$\d+ or \$\d+ ilike \$\d+\)/i);
+    expect(params).toContain('a\\_b');
+    expect(params).toContain('a\\_b.%');
+    expect(params).toContain('c\\%');
+    expect(params).toContain('c\\%.%');
+    expect(text).toContain(' or ');
   });
 
   it.each(['/audit-logs', '/audit-logs/export'])('%s fails closed when the filter has no usable terms (#8975)', async (path) => {
@@ -223,5 +274,31 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     queryWheres.length = 0;
     await app.request(`${path}?resource=,,`);
     expect(render(lastWhere())).toContain('false');
+  });
+
+  // #9672: the export audit row belongs in the exported client's own trail.
+  describe('export audit row org (#9672)', () => {
+    const lastExportAudit = async () => {
+      const { writeRouteAudit } = await import('../services/auditEvents');
+      const calls = vi.mocked(writeRouteAudit).mock.calls;
+      return calls[calls.length - 1]![1] as { orgId?: string | null };
+    };
+
+    it('uses the pinned, accessible org when the caller has no org of their own', async () => {
+      authState.orgId = null;
+      authState.scope = 'partner';
+      authState.partnerId = 'partner-1';
+      const res = await app.request(`/audit-logs/export?orgId=${ORG_A}`);
+      expect(res.status).toBe(200);
+      expect((await lastExportAudit()).orgId).toBe(ORG_A);
+    });
+
+    it('keeps the partner-level row (no org) when no org is targeted', async () => {
+      authState.orgId = null;
+      authState.scope = 'partner';
+      authState.partnerId = 'partner-1';
+      await app.request('/audit-logs/export');
+      expect((await lastExportAudit()).orgId ?? null).toBeNull();
+    });
   });
 });

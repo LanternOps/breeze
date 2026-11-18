@@ -212,3 +212,64 @@ describe('CustomFieldsPage — field key help (issue #4198)', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
   });
 });
+
+describe('CustomFieldsPage dropdown choice value auto-fill (#9677)', () => {
+  beforeEach(() => {
+    mockedFetchWithAuth.mockReset();
+    mockedFetchWithAuth.mockResolvedValue(jsonResponse({ data: [] }));
+  });
+
+  it('keeps Value tracking the Label across keystrokes until Value is edited', async () => {
+    render(<CustomFieldsPage />);
+    await waitFor(() => expect(mockedFetchWithAuth).toHaveBeenCalled());
+    fireEvent.click(await screen.findByTestId('custom-field-add'));
+    fireEvent.click(screen.getByRole('button', { name: /^Dropdown/ }));
+    fireEvent.click(screen.getByText('Add Choice'));
+    const label = screen.getByPlaceholderText('Label');
+    const value = screen.getByPlaceholderText('Value') as HTMLInputElement;
+    fireEvent.change(label, { target: { value: 'S' } });
+    fireEvent.change(label, { target: { value: 'Standard' } });
+    expect(value.value).toBe('standard');
+    fireEvent.change(value, { target: { value: 'std' } });
+    fireEvent.change(label, { target: { value: 'Standard Plus' } });
+    expect(value.value).toBe('std');
+  });
+
+  it('keeps saved choice Values on Label edit and sends no valueTouched in the PATCH body', async () => {
+    mockedFetchWithAuth.mockResolvedValue(
+      jsonResponse({
+        data: [
+          customField({
+            type: 'dropdown',
+            options: { choices: [{ label: 'Standard', value: 's' }, { label: 'Gold', value: 'gold' }] }
+          })
+        ]
+      })
+    );
+    render(<CustomFieldsPage />);
+    fireEvent.click(await screen.findByTitle('Edit'));
+
+    const labels = screen.getAllByPlaceholderText('Label');
+    const values = screen.getAllByPlaceholderText('Value') as HTMLInputElement[];
+    fireEvent.change(labels[0], { target: { value: 'Standard Plus' } });
+    expect(values[0].value).toBe('s');
+
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: { id: 'f1' } }));
+    mockedFetchWithAuth.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    fireEvent.click(screen.getByTestId('custom-field-submit'));
+
+    await waitFor(() => {
+      expect(
+        mockedFetchWithAuth.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'PATCH')
+      ).toBeDefined();
+    });
+    const patch = mockedFetchWithAuth.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH'
+    )!;
+    const body = JSON.parse(String((patch[1] as RequestInit).body));
+    expect(body.options.choices).toEqual([
+      { label: 'Standard Plus', value: 's' },
+      { label: 'Gold', value: 'gold' }
+    ]);
+  });
+});

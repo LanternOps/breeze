@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { parseSignupIntentParams, signupIntentHandoffQuery, type SignupIntent } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import PartnerRegisterForm from './PartnerRegisterForm';
 import StatusIcon from './StatusIcon';
 import { apiRegisterPartner, restoreAccessTokenFromCookieDetailed, useAuthStore } from '../../stores/auth';
 import { useRegistrationGate } from '../../stores/featuresStore';
 import { navigateTo } from '../../lib/navigation';
+import { fetchSignupOffer, type SignupOffer } from '../../lib/signupOffer';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -23,6 +25,25 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [errorAction, setErrorAction] = useState<{ url: string; label: string }>();
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  // What this signup is for. Unknown or malformed values fall back to the
+  // cloud intent; there is no error state for a bad link.
+  const [handoff, setHandoff] = useState<{ intent: SignupIntent; explicit: boolean } | null>(null);
+  const [offer, setOffer] = useState<SignupOffer | null>(null);
+  const signupIntent = handoff?.intent ?? { intent: 'cloud' as const };
+  const billingPlansUrl = `/billing/plans?${signupIntentHandoffQuery(signupIntent)}`;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setHandoff({ intent: parseSignupIntentParams(params), explicit: params.has('intent') || params.has('offer') || params.has('catalog') });
+  }, []);
+
+  // The quote comes from billing only. A failed lookup shows no price and
+  // never blocks registration.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSignupOffer().then((quote) => { if (!cancelled) setOffer(quote); });
+    return () => { cancelled = true; };
+  }, []);
 
   // Sweep paper cut #1: this is a bare Astro page reached by a full-page
   // navigation, so an already-signed-in visitor arrives with a persisted
@@ -42,13 +63,13 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [alreadySignedIn, setAlreadySignedIn] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !handoff) return;
     let cancelled = false;
     void restoreAccessTokenFromCookieDetailed().then((outcome) => {
       if (cancelled) return;
       if (outcome === 'restored') {
         setAlreadySignedIn(true);
-        void navigateTo('/dashboard', { replace: true });
+        void navigateTo(handoff.explicit ? billingPlansUrl : '/dashboard', { replace: true });
         return;
       }
       // Only a definitive refusal clears the persisted flag. 'throttled'
@@ -62,10 +83,9 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       setSessionChecked(true);
     });
     return () => { cancelled = true; };
-    // Intentionally runs once per mount: `isAuthenticated` flipping to false
-    // is this effect's OWN result on the stale-flag branch and must not
-    // re-arm it.
-  }, []);
+    // Resolve only after the handoff is parsed; a stale-auth eviction must not
+    // re-arm this check. The intent is a hint passed to normal billing auth.
+  }, [handoff]);
 
   // Runtime registration gate (#1308). The server enforces ENABLE_REGISTRATION
   // on /auth/register-partner; this mirrors it client-side so the form isn't
@@ -75,10 +95,10 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   // already-signed-in check above has resolved.
   const { enabled: registrationEnabled, loaded: gateLoaded } = useRegistrationGate(sessionChecked);
   useEffect(() => {
-    if (sessionChecked && gateLoaded && !registrationEnabled) {
-      void navigateTo('/login?reason=registration-disabled');
+    if (handoff && sessionChecked && gateLoaded && !registrationEnabled) {
+      void navigateTo(`/login?reason=registration-disabled&next=${encodeURIComponent(billingPlansUrl)}`);
     }
-  }, [sessionChecked, gateLoaded, registrationEnabled]);
+  }, [handoff, billingPlansUrl, sessionChecked, gateLoaded, registrationEnabled]);
 
   const handleRegister = async (values: {
     companyName: string;
@@ -95,7 +115,8 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       values.companyName,
       values.email,
       values.password,
-      values.name
+      values.name,
+      signupIntent
     );
 
     if (!result.success) {
@@ -114,6 +135,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
     setLoading(false);
   };
 
+  if (!handoff) return null;
   // Until the already-signed-in check resolves, or once it finds a real
   // session (the effect above is redirecting to the dashboard), render
   // nothing rather than flashing the registration form.
@@ -143,7 +165,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
           </p>
         </div>
         <a
-          href="/login"
+          href={`/login?next=${encodeURIComponent(billingPlansUrl)}`}
           className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
         >
           {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
@@ -158,6 +180,8 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       errorMessage={error}
       errorAction={errorAction}
       loading={loading}
+      signupIntent={signupIntent}
+      offer={offer}
     />
   );
 }

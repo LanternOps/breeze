@@ -14,6 +14,8 @@ vi.mock('../db', () => {
     db: {
       select: vi.fn(() => chain),
     },
+    withDbTransaction: (fn: () => unknown) => fn(),
+    withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   };
 });
 

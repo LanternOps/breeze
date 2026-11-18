@@ -3,7 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The module pulls in the command queue and the policy resolver; both drag DB /
 // websocket import chains into a DB-less unit run, so they are mocked and the
 // behaviour under test is the delay resolution and the dispatch shape.
-vi.mock('./commandQueue', () => ({ queueCommandForExecution: vi.fn() }));
+vi.mock('./commandQueue', () => ({
+  queueCommandForExecution: vi.fn(),
+  queueCommandForExecutionWithSystemPrecheck: vi.fn(),
+}));
 vi.mock('./featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: vi.fn(),
   resolvePatchConfigForDevice: vi.fn(),
@@ -26,7 +29,7 @@ import {
   resolveRebootDeferralSettings,
   rebootPromptTextFrom,
 } from './patchRebootHandler';
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { checkDeviceMaintenanceWindow, resolvePatchConfigForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
 
@@ -192,11 +195,104 @@ describe('executeReboot', () => {
     const res = await executeReboot('dev-1', 'reason', { delayMinutes: 15 });
     expect(res).toEqual({ success: false, error: 'Device is offline, cannot execute command' });
   });
+
+  // #11065 W04: a vendor update run's reboot says where it came from, and is
+  // queued from outside any DB context, committed before the socket push.
+  it('carries the caller\'s source and commits before delivery when asked', async () => {
+    vi.mocked(queueCommandForExecutionWithSystemPrecheck).mockResolvedValue({ command: { id: 'c-1' } } as never);
+    const res = await executeReboot('dev-1', 'Vendor updates need a restart', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      expectedOrgId: 'org-9',
+      source: 'oem_updates',
+      commitBeforeDelivery: true,
+    });
+    expect(res).toEqual({ success: true, delayMinutes: 15 });
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionWithSystemPrecheck).toHaveBeenCalledWith(
+      'dev-1',
+      'schedule_reboot',
+      expect.objectContaining({ source: 'oem_updates', delayMinutes: 15, reason: 'Vendor updates need a restart' }),
+      { expectedOrgId: 'org-9' },
+    );
+  });
+
+  it('refuses to commit before delivery without the org it is for', async () => {
+    const res = await executeReboot('dev-1', 'reason', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      commitBeforeDelivery: true,
+    } as never);
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================
 // #3207 — end-user reboot deferral
 // ============================================================================
+
+// #11065 W06 — deadlineAction: 'hold' (overnight vendor-update reboot)
+describe('executeReboot deadlineAction (#11065)', () => {
+  const windowEndsAt = new Date(Date.now() + 3 * 60 * 60_000);
+
+  it('sends no deadlineAction key when the caller did not ask for one', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({ rebootDelayMinutes: 15 } as never);
+    await executeReboot('dev-1', 'reason', { windowEndsAt });
+    expect(payloadOf()).not.toHaveProperty('deadlineAction');
+  });
+
+  it('hold sends the action and makes the deadline the window close', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      windowEndsAt,
+      deadlineAction: 'hold',
+    });
+    expect(res).toEqual({ success: true, delayMinutes: 15 });
+    const payload = payloadOf();
+    expect(payload.deadlineAction).toBe('hold');
+    // With deferral off a forced reboot's deadline is the scheduled time; a held
+    // one's is the close, so a late timer inside the window still restarts.
+    expect(payload.deadline).toBe(windowEndsAt.toISOString());
+  });
+
+  it('hold keeps the policy deferral budget and the deadline stays the window close', async () => {
+    // A budget far smaller than the window: computeRebootDeadline alone would put
+    // the deadline at now + 15 + 5 minutes. Hold must use the close itself.
+    const deferral = { allowDeferral: true, maxDeferrals: 1, deferralMinutes: 5 };
+    await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15, deferral, promptText: {}, windowEndsAt, deadlineAction: 'hold',
+    });
+    const payload = payloadOf();
+    expect(payload).toMatchObject({ allowDeferral: true, maxDeferrals: 1, deferralMinutes: 5 });
+    expect(payload.deadline).toBe(windowEndsAt.toISOString());
+  });
+
+  it('refuses a hold without a window close, and queues nothing', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 15, deferral: DEFERRAL_OFF, promptText: {}, deadlineAction: 'hold',
+    });
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hold whose restart would begin after the window closes', async () => {
+    const res = await executeReboot('dev-1', 'Vendor updates', {
+      delayMinutes: 60,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      windowEndsAt: new Date(Date.now() + 10 * 60_000),
+      deadlineAction: 'hold',
+    });
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
 
 function payloadOf(): Record<string, unknown> {
   const call = vi.mocked(queueCommandForExecution).mock.calls[0];

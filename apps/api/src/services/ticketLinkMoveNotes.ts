@@ -4,6 +4,8 @@ import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessCon
 import { ticketComments, tickets } from '../db/schema';
 import { emitTicketEvent } from './ticketEvents';
 import { captureException } from './sentry';
+import { lockTicketForWrite } from './ticketRowLock';
+import { isMergedTombstone } from './ticketMerge/errors';
 
 /**
  * A `ticket_links` row an org mover deleted (#7900 W02), as returned by its
@@ -128,8 +130,11 @@ export async function noteTicketLinksRemovedByOrgMove(removed: readonly RemovedT
       const otherNumber = other ? (other.internalNumber ?? other.ticketNumber) : note.otherTicketId;
       const label = ticketLinkLabel(note.linkType, note.direction).replace(/_/g, ' ');
       try {
-        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          db.insert(ticketComments).values({
+        await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          // #8972 W0: the ticket row lock, then the note, in this note's own transaction.
+          // #8972 W1: a merged tombstone gets no note (it keeps no links).
+          if (isMergedTombstone(await lockTicketForWrite(db, note.ticketId))) return;
+          return db.insert(ticketComments).values({
             ticketId: note.ticketId,
             userId: null,
             authorName: null,
@@ -140,7 +145,8 @@ export async function noteTicketLinksRemovedByOrgMove(removed: readonly RemovedT
             content: `Removed link "${label} ${otherNumber}" because of an organization move`,
             isPublic: false,
             oldValue: note.otherTicketId,
-          })));
+          });
+        }));
         await emitTicketEvent({
           type: 'ticket.link_removed',
           ticketId: note.ticketId,

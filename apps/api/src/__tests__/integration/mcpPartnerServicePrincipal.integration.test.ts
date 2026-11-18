@@ -389,6 +389,34 @@ describe('partner service principal key on MCP: fail closed', () => {
     expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
   });
 
+  it('a principal that also carries Partner API write scopes is denied when its owner is reduced to a read-only role or cut to no org access', async () => {
+    const scopes = ['ai:read', 'ai:write', 'tickets:write', 'organizations:write'];
+    const reduced = await partnerFixture(scopes);
+    expect((await mcp(reduced.key.rawKey, 'tools/list')).status).toBe(200);
+    await getTestDb().delete(rolePermissions).where(eq(rolePermissions.roleId, reduced.role.id));
+    await grantRolePermissions(reduced.role.id, READ_ONLY_ROLE_PERMS);
+    await clearPermissionCache(reduced.owner.id);
+    expect((await mcp(reduced.key.rawKey, 'tools/list')).status).toBe(401);
+
+    const cut = await partnerFixture(scopes);
+    expect((await mcp(cut.key.rawKey, 'tools/list')).status).toBe(200);
+    await getTestDb().update(partnerUsers)
+      .set({ orgAccess: 'none', orgIds: [] })
+      .where(eq(partnerUsers.id, cut.membership.id));
+    await clearPermissionCache(cut.owner.id);
+    expect((await mcp(cut.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
+  it('refuses a principal owned by a platform admin who is not a partner member', async () => {
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const platformAdmin = await createUser({ partnerId: partner.id, orgId: null, status: 'active', email: `platform-${randomUUID()}@example.test` });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, platformAdmin.id));
+    const principal = await insertPrincipal({ partnerId: partner.id, ownerId: platformAdmin.id, scopes: ['ai:read'] });
+    const key = await insertKey({ partnerId: partner.id, principalId: principal.id, createdBy: platformAdmin.id });
+    expect((await mcp(key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
   it('sees an owner demotion on the next request even when the permission cache was never invalidated', async () => {
     const p = await partnerFixture(ALL_MCP_SCOPES);
     // Warm the owner's cached permissions in this process.

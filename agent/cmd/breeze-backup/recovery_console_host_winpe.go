@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/breeze-rmm/agent/internal/backup/hosttool"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backup/windisks"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // winPEProbe is the slice of rebuild.WinSystem the WinPE console host needs.
@@ -89,10 +89,10 @@ func newWinPEConsoleHost(ws winPEProbe, exeDir string) consoleHost {
 			if err != nil {
 				return err
 			}
-			return exec.Command(exe, args...).Run()
+			return procspawn.Command(exe, args...).Run()
 		},
 		Shell: func() error {
-			c := exec.Command(hosttool.SystemTool("cmd.exe"))
+			c := procspawn.Command(hosttool.SystemTool("cmd.exe"))
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 			return c.Run()
 		},

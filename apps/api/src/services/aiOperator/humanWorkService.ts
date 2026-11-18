@@ -45,6 +45,8 @@ import { createTaskTarget } from './targetService';
 import { appendTaskEvent } from './eventService';
 import { markStepWaiting, openStep } from './stepService';
 import { enqueueTaskOutbox } from './taskOutbox';
+import { lockTicketForWrite } from '../ticketRowLock';
+import { assertTicketNotMerged, isMergedTombstone } from '../ticketMerge/errors';
 
 /** Mirrors `ticket_checklist_items.label` varchar(500). */
 const MAX_ITEM_LABEL_CHARS = 500;
@@ -231,6 +233,8 @@ export async function openHumanWorkStep(
 
   const now = input.now ?? new Date();
   const { ticketId } = await ensureTaskTicket(dbh, input.task);
+  // #8972 W0: ticket first, before the MAX(position) read and the item writes.
+  assertTicketNotMerged(await lockTicketForWrite(dbh, ticketId));
 
   // Append at the end of the ticket's list, same rule as addChecklistItem
   // (ticketChecklistService.ts). Duplicated rather than imported: the import
@@ -641,6 +645,11 @@ export async function sendHumanWorkReminders(now: Date = new Date()): Promise<nu
         .limit(HUMAN_WORK_REMINDER_SCAN_LIMIT);
 
       for (const row of overdue) {
+        // #8972 W0: ticket first. The reminder comment below reaches the ticket
+        // anyway (FK + feed trigger); taking it before the step stamp keeps
+        // this sweep in the order moveTicketOrg uses (ticket, then the step).
+        // #8972 W1: a merged tombstone is skipped (its checklist moved to the survivor).
+        if (isMergedTombstone(await lockTicketForWrite(db, row.ticketId))) continue;
         // The stamp is a guarded UPDATE: a concurrent reconciler tick that
         // selected the same row loses here and skips the side-effects, so two
         // ticks cannot both post the comment.

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
@@ -155,12 +157,14 @@ for (const [label, detector, required, result, passes] of [
       encoding: 'utf8',
       env: {
         ...process.env, ...passingResults, IS_PR: 'true',
-        // These three non-`_RESULT` classifier outputs are not covered by
+        // These non-`_RESULT` classifier outputs are not covered by
         // `passingResults` (auto-discovered only from `*_RESULT:` env lines),
         // but ci-success's fail-closed gates require them to be exactly
         // 'true'/'false' or the whole check goes red regardless of the
         // mobile-specific fixture below.
         AGENT_CHANGED: 'true',
+        AGENT_CODE_CHANGED: 'true',
+        PATH_READERS_CHANGED: 'true',
         APP_CHANGED: 'true',
         // Every per-area flag true (same fail-closed tri-state as AGENT_CHANGED).
         API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
@@ -173,3 +177,36 @@ for (const [label, detector, required, result, passes] of [
     assert.equal(execution.status, passes ? 0 : 1, execution.stdout + execution.stderr);
   });
 }
+
+// W05 (#10749): the nightly `schedule` run is the thin queue's full backstop, so it
+// compiles iOS. The job's `mobile:` output stays byte-for-byte what the pinned CI
+// Gate parses (ci-gate.mjs MOBILE_OUTPUT): any other text makes a gate pinned
+// before the change require the iOS build for every queue entry. So the schedule
+// is forced through the steps. paths-filter has no base to diff on a schedule
+// (it throws without one), so it and its base step are skipped, and the closure
+// step runs with no base sha, which it already reads as `changed=true`.
+test('the nightly schedule compiles iOS without changing the output line the CI Gate pins', () => {
+  assert.match(changes, /^ {6}mobile: \$\{\{ github\.event_name == 'workflow_dispatch' \|\| steps\.changes\.outputs\.mobile == 'true' \|\| steps\.lockfile\.outputs\.changed == 'true' \}\}$/mu);
+  const step = (name) => {
+    const body = changes.match(new RegExp(`- name: ${name}\\n([\\s\\S]*?)(?=\\n {6}- name: |$(?![\\s\\S]))`, 'u'))?.[1];
+    assert.ok(body, `Missing step ${name}`);
+    return body;
+  };
+  assert.match(step('Resolve the diff base'), /^ {8}if: github\.event_name != 'schedule'$/mu);
+  assert.match(step('Detect mobile build inputs'), /^ {8}if: github\.event_name != 'schedule'$/mu);
+  const closure = step('Compare the mobile dependency closure');
+  assert.match(closure, /^ {8}if: steps\.changes\.outputs\.lockfile == 'true' \|\| github\.event_name == 'schedule'$/mu);
+  // Run the closure step's own shell the way a schedule does: no base sha.
+  const script = closure.split('        run: |\n')[1].split('\n')
+    .filter((line) => line.startsWith(' '.repeat(10))).map((line) => line.slice(10)).join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'mobile-nightly-'));
+  try {
+    const output = join(dir, 'out');
+    const run = spawnSync('bash', ['-c', script], { encoding: 'utf8', cwd: dir,
+      env: { PATH: process.env.PATH, BASE_SHA: '', GITHUB_EVENT_NAME: 'schedule', GITHUB_OUTPUT: output, RUNNER_TEMP: dir } });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(readFileSync(output, 'utf8'), 'changed=true\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

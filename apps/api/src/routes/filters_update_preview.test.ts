@@ -352,6 +352,33 @@ describe('filter routes', () => {
       );
     });
 
+    // #9933: the dynamic-group builder previews through this endpoint and asks
+    // for removed devices to be left out; every other caller (device list
+    // "show removed", targeting pickers) keeps today's population.
+    it('passes excludeDecommissioned through to the engine only when the body asks for it', async () => {
+      const conditions = { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] };
+      const post = (body: Record<string, unknown>) => app.request(`/filters/preview?orgId=${ORG_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ conditions, ...body })
+      });
+
+      expect((await post({ excludeDecommissioned: true })).status).toBe(200);
+      expect(evaluateFilterWithPreview).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID, excludeDecommissioned: true })
+      );
+
+      expect((await post({})).status).toBe(200);
+      expect(vi.mocked(evaluateFilterWithPreview).mock.lastCall?.[1]?.excludeDecommissioned).toBeFalsy();
+
+      expect((await post({ excludeDecommissioned: true, idsOnly: true })).status).toBe(200);
+      expect(evaluateFilter).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orgId: ORG_ID, excludeDecommissioned: true })
+      );
+    });
+
     it('rejects a pinned ?orgId= the caller cannot access with 403', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {

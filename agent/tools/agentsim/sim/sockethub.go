@@ -2,6 +2,7 @@ package sim
 
 import (
 	"sync"
+	"time"
 
 	gws "github.com/gorilla/websocket"
 )
@@ -10,17 +11,17 @@ import (
 // drop-sockets action can close every one at once. A nil hub is a no-op.
 type socketHub struct {
 	mu    sync.Mutex
-	conns map[*gws.Conn]struct{}
+	conns map[*gws.Conn]*wsSession
 }
 
-func newSocketHub() *socketHub { return &socketHub{conns: map[*gws.Conn]struct{}{}} }
+func newSocketHub() *socketHub { return &socketHub{conns: map[*gws.Conn]*wsSession{}} }
 
-func (h *socketHub) add(c *gws.Conn) {
+func (h *socketHub) add(c *gws.Conn, s *wsSession) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.conns[c] = struct{}{}
+	h.conns[c] = s
 	h.mu.Unlock()
 }
 
@@ -44,20 +45,39 @@ func (h *socketHub) Len() int {
 }
 
 // CloseAll closes every live socket (snapshot under the lock, close outside
-// it) and returns how many it closed. Each agent sees an established drop and
-// redials at once, as the real agent does today.
-func (h *socketHub) CloseAll() int {
+// it) and returns how many it closed. Each agent sees a client-side drop with
+// no close frame and waits the pacer's abnormal-close delay before redialling.
+func (h *socketHub) CloseAll() int { return h.closeAll(nil) }
+
+// Drain stands in for a draining API instance: every live session gets a
+// drain hint of within, then its socket is closed as a server going away
+// (code 1001, not local). Returns how many it closed.
+func (h *socketHub) Drain(within time.Duration) int {
+	return h.closeAll(func(s *wsSession) {
+		s.setDrain(within)
+		s.simClose.Store(closeGoingAway)
+	})
+}
+
+func (h *socketHub) closeAll(prep func(*wsSession)) int {
 	if h == nil {
 		return 0
 	}
+	type pair struct {
+		c *gws.Conn
+		s *wsSession
+	}
 	h.mu.Lock()
-	snap := make([]*gws.Conn, 0, len(h.conns))
-	for c := range h.conns {
-		snap = append(snap, c)
+	snap := make([]pair, 0, len(h.conns))
+	for c, s := range h.conns {
+		snap = append(snap, pair{c, s})
 	}
 	h.mu.Unlock()
-	for _, c := range snap {
-		_ = c.Close()
+	for _, p := range snap {
+		if prep != nil && p.s != nil {
+			prep(p.s)
+		}
+		_ = p.c.Close()
 	}
 	return len(snap)
 }

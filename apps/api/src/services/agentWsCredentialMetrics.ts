@@ -12,8 +12,13 @@
 import { Counter } from 'prom-client';
 import { metricsRegistry } from './metricsRegistry';
 
-export type AgentWsCredentialRecheckResult = 'authorized' | 'denied' | 'unknown';
-export type AgentWsCredentialCloseReason = 'denied' | 'unverified_grace_expired' | 'revoked';
+export type AgentWsCredentialRecheckResult = 'authorized' | 'denied' | 'identity_changed' | 'unknown';
+/**
+ * `identity_changed` (#8318 §6.4, F5) is a reconnect (4040), not a credential
+ * failure: the device moved org/site under a live socket. Its own label keeps
+ * it out of the `denied` series an alert on credential denials watches.
+ */
+export type AgentWsCredentialCloseReason = 'denied' | 'unverified_grace_expired' | 'revoked' | 'identity_changed';
 
 export const AGENT_WS_CREDENTIAL_RECHECK_METRIC = 'breeze_agent_ws_credential_recheck_total';
 export const AGENT_WS_CLOSED_METRIC = 'breeze_agent_ws_closed_total';
@@ -41,8 +46,8 @@ const closedTotal: Counter<'reason'> =
   });
 
 // Pre-seed every series at 0 so rate()/alerts see a zero, not an absent series.
-for (const result of ['authorized', 'denied', 'unknown'] as const) recheckTotal.inc({ result }, 0);
-for (const reason of ['denied', 'unverified_grace_expired', 'revoked'] as const) closedTotal.inc({ reason }, 0);
+for (const result of ['authorized', 'denied', 'identity_changed', 'unknown'] as const) recheckTotal.inc({ result }, 0);
+for (const reason of ['denied', 'unverified_grace_expired', 'revoked', 'identity_changed'] as const) closedTotal.inc({ reason }, 0);
 
 export function recordAgentWsCredentialRecheck(result: AgentWsCredentialRecheckResult): void {
   recheckTotal.inc({ result });

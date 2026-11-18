@@ -204,6 +204,7 @@ export async function enqueueBackupDispatch(
   orgId: string,
   deviceId: string,
   meta: QueueActorMeta = SYSTEM_DISPATCH_META,
+  options: { catchUpUntil?: string } = {},
 ): Promise<string> {
   const queue = getBackupQueue();
   // Site-ceiling gate contract §3: snapshot the config's CURRENT
@@ -224,6 +225,7 @@ export async function enqueueBackupDispatch(
     orgId,
     deviceId,
     configGeneration: configRow?.approvalGeneration,
+    ...(options.catchUpUntil ? { catchUpUntil: options.catchUpUntil } : {}),
   }, meta));
   const job = await queue.add(
     'dispatch-backup',
@@ -281,6 +283,64 @@ export async function enqueueBackupDispatchCapabilityWait(
   return job.id!;
 }
 
+/**
+ * How long after an agent connects its catch-up dispatch runs. Lets a flapping
+ * agent settle, the presence lease land and the first heartbeat report the
+ * backup helper.
+ */
+const BACKUP_CATCH_UP_DISPATCH_DELAY_MS = 15_000;
+
+/** BullMQ id of the dispatch an agent connect queues for a waiting job (#11013). */
+function catchUpQueueJobId(jobId: string): string {
+  return `backup-dispatch-${jobId}-catch-up`;
+}
+
+/**
+ * Queue the dispatch of a job that waited for its device (#11013).
+ *
+ * One stable id per job is the debounce: a connect while this dispatch is still
+ * queued or running is a BullMQ no-op. The id has to free as soon as the
+ * dispatch finishes, because a flapping agent can leave the job waiting again
+ * and a retained finished job would silently swallow the next connect. So,
+ * unlike every other dispatch, it is not kept after it finishes. The row claim
+ * in prepareBackupDispatchTargets is what guarantees a single send.
+ */
+export async function enqueueBackupCatchUpDispatch(row: {
+  jobId: string;
+  configId: string;
+  orgId: string;
+  deviceId: string;
+  catchUpUntil: Date;
+  /** The generation stamped on the row when the job started waiting. */
+  configGeneration?: number;
+}): Promise<string> {
+  const queue = getBackupQueue();
+  // NOT re-read from backup_configs: a fresh read would bless an edit made
+  // while the job waited, which site-ceiling gate contract §3 must fail closed.
+  const payload = backupQueueJobDataSchema.parse(withQueueMeta({
+    type: 'dispatch-backup' as const,
+    jobId: row.jobId,
+    configId: row.configId,
+    orgId: row.orgId,
+    deviceId: row.deviceId,
+    configGeneration: row.configGeneration,
+    catchUpUntil: row.catchUpUntil.toISOString(),
+    catchUpDispatch: true as const,
+  }, SYSTEM_DISPATCH_META));
+  const job = await queue.add(
+    'dispatch-backup',
+    payload,
+    {
+      jobId: catchUpQueueJobId(row.jobId),
+      delay: BACKUP_CATCH_UP_DISPATCH_DELAY_MS,
+      ...DISPATCH_JOB_OPTIONS,
+      removeOnComplete: true,
+      removeOnFail: true,
+    }
+  );
+  return job.id!;
+}
+
 export async function enqueueBackupResults(
   jobId: string,
   orgId: string,
@@ -314,12 +374,13 @@ export async function enqueueBackupResults(
 /**
  * Remove a backup's dispatch that has not started yet. A dispatch waiting for
  * the device's helper report lives under a re-queue id instead of the
- * original (enqueueBackupDispatchCapabilityWait), so every such id is looked
- * up too; at most one of them is ever still queued.
+ * original (enqueueBackupDispatchCapabilityWait), and a job that waited for its
+ * device under a catch-up id, so each of those is looked up too; at most one of
+ * them is ever still queued.
  */
 export async function removeQueuedBackupDispatch(jobId: string): Promise<boolean> {
   const queue = getBackupQueue();
-  const ids = [`backup-dispatch-${jobId}`];
+  const ids = [`backup-dispatch-${jobId}`, catchUpQueueJobId(jobId)];
   for (let attempt = 1; attempt <= BACKUP_CAPABILITY_WAIT_MAX_ATTEMPTS; attempt++) {
     ids.push(capabilityWaitQueueJobId(jobId, attempt));
   }

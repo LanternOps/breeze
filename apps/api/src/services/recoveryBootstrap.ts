@@ -149,6 +149,33 @@ export function buildRecoveryDownloadDescriptor(args: {
   };
 }
 
+/**
+ * #7081 R19: refusal for a recovery bootstrap that cannot serve the snapshot's
+ * key root. A `prefixed_flat` snapshot's objects live under `<prefix>/`,
+ * which only the API's token-mode download (`bootstrap.download`: logical
+ * paths, mapped through the snapshot's recorded root) resolves; the helper's
+ * direct mode reads bare logical keys from the bucket and would miss them.
+ */
+export const RECOVERY_REQUIRES_TOKEN_MODE = {
+  error: 'recovery_requires_token_mode',
+  code: 'recovery_requires_token_mode',
+  message: 'This snapshot uses a key prefix and can only be recovered with token-mode download. Update the recovery media.',
+} as const;
+
+/**
+ * Whether a built bootstrap may be returned for a snapshot with this recorded
+ * key layout: every layout but `legacy_flat` (an unreadable one included)
+ * requires the token-mode download descriptor. The builder issues one for
+ * every snapshot today, so this guards against a regression, not a live path.
+ */
+export function bootstrapServesKeyLayout(
+  keyLayout: unknown,
+  payload: { bootstrap: { download: unknown } },
+): boolean {
+  if (keyLayout === 'legacy_flat') return true;
+  return payload.bootstrap.download != null;
+}
+
 export async function expireUnusedRecoveryTokens(): Promise<void> {
   // System-scoped on purpose (D9): this is a housekeeping sweep of expired
   // tokens across ALL orgs, and its most important callers are the public,
@@ -227,6 +254,7 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
       systemStateManifest: backupSnapshots.systemStateManifest,
       isIncremental: backupSnapshots.isIncremental,
       storageIdentity: backupSnapshots.storageIdentity,
+      keyLayout: backupSnapshots.keyLayout,
     })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.id, snapshotDbId))
@@ -236,19 +264,22 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
 
   const metadata = asRecord(snapshot.metadata);
   let configId = snapshot.configId ?? getStringValue(metadata, 'configId');
+  let configSource: 'snapshot' | 'job' | 'metadata' = snapshot.configId ? 'snapshot' : 'metadata';
   if (!configId && snapshot.jobId) {
     const [job] = await db
       .select({ configId: backupJobs.configId })
       .from(backupJobs)
-      .where(eq(backupJobs.id, snapshot.jobId))
+      .where(and(eq(backupJobs.id, snapshot.jobId), eq(backupJobs.orgId, snapshot.orgId)))
       .limit(1);
     configId = job?.configId ?? null;
+    configSource = 'job';
   }
 
   if (!configId) {
     return {
       snapshot,
       config: null,
+      localConfigId: undefined as string | undefined,
       providerType:
         getStringValue(metadata, 'provider') ||
         getStringValue(metadata, 'providerType') ||
@@ -279,6 +310,7 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
   return {
     snapshot,
     config: config ?? null,
+    localConfigId: config && config.orgId === snapshot.orgId && configSource !== 'metadata' ? config.id : undefined,
     providerType:
       config?.provider ||
       getStringValue(metadata, 'provider') ||

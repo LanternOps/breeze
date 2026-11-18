@@ -1,0 +1,22 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id}?$select=signInSessionsValidFromDateTime and POST /users/{id}/revokeSignInSessions",
+  "_notes": "The contract test requests the effect at 2026-09-17T10:00:00Z; the probe compares signInSessionsValidFromDateTime with that instant at whole-second precision.",
+  "toolName": "m365_revoke_sessions",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "signInSessionsValidFromDateTime": "2026-09-17T10:00:00Z" } }
+  },
+  "preUnsatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "signInSessionsValidFromDateTime": "2026-03-02T08:15:00Z" } }
+  },
+  "writeOk": {
+    "write:m365.user.revoke_sessions": { "ok": true, "result": { "success": true, "action": "m365.user.revoke_sessions", "userId": "00000000-0000-4000-8000-0000000a0001" } }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "signInSessionsValidFromDateTime": "2026-09-17T10:00:03Z" } }
+  },
+  "writeRefusal": {
+    "write:m365.user.revoke_sessions": { "ok": false, "code": "graph_throttled", "message": "Microsoft Graph is throttling requests for this tenant. Try again shortly." }
+  }
+}

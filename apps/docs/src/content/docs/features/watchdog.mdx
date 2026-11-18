@@ -33,6 +33,8 @@ When a check fails, the watchdog transitions through escalating states — from 
 The agent records its last successful heartbeat to a state file on disk, and also reports it to the watchdog over IPC. The freshness check uses **whichever of the two is more recent**.
 
 This matters on endpoints where antivirus or endpoint-security software blocks writes to the agent's data directory. There, the state file is missing or frozen while the agent is demonstrably healthy and still checking in — a blocked *writer*, not a dead agent. Because the live IPC value outranks a stale file, the watchdog will not restart an agent that is still reporting in. Similarly, IPC connectivity counts **any** message received from the agent as evidence of life, not just a reply to the watchdog's own ping, so an agent busy with heavy collection work is not mistaken for a hung one.
+
+From agent 0.124.0, a heartbeat the server answered with **429, 502, 503 or 504** (for example a 503 with `Retry-After` from admission control during an overload) also counts as evidence of life. The agent reached the server and was told to wait, so a restart would not help; the watchdog leaves it running instead of restarting a healthy agent against a busy server.
 :::
 
 ---
@@ -128,6 +130,18 @@ Failover keeps the device manageable even when the agent process is completely d
 <Aside type="tip">
   If a device shows `watchdog_status: failover` in the dashboard, it means the agent on that device has crashed and could not be automatically recovered. Use the **Restart Agent** action from the device detail page — the watchdog will receive and execute this command.
 </Aside>
+
+### Restarting the agent from the device page
+
+**Restart agent** is in the device page's action menu. It asks the watchdog, not the agent, to restart the agent, so it works when the agent itself has stopped responding.
+
+1. Open the device and choose **Restart agent** from the actions menu.
+2. The confirmation names the host and shows when the watchdog last reported. If the watchdog has not reported in the last 10 minutes, or never has, the dialog says the request will be refused.
+3. Confirm with MFA. Breeze queues the request and says it was *requested*; the watchdog picks it up on its next poll, usually within about 30 seconds.
+
+Only one restart can be waiting per device. The action needs the `devices:recover_agent` permission; the upgrade to v0.125.0 grants it to the built-in roles that hold `devices:execute` (Org Admin, Org Technician and Partner Technician; Partner Admin has every permission). Add it to custom roles that should use the action. Each request is recorded in the device's event log and the audit log. It is not offered for decommissioned devices.
+
+The watchdog reports only while it is in **Failover**, so on a device whose agent is healthy the request is refused with "Watchdog is not reporting". That is expected: the action is for an agent that has stopped.
 
 ---
 

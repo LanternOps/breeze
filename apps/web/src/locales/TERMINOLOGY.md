@@ -21,6 +21,12 @@ template variables (`{{name}}`), and code values remain unchanged.
 | agreement template (legal doc attached to a quote) | modelo de acordo | plantilla de acuerdo | modèle de convention | modèle d'entente | Vereinbarungsvorlage | modello di accordo |
 | signed agreement (frozen, customer-signed instance) | acordo assinado | acuerdo firmado | convention signée | entente signée | unterzeichnete Vereinbarung | accordo firmato |
 | smoke test | teste de verificação | prueba de verificación | test de vérification | test de vérification | Smoke-Test | smoke test |
+| recipe (an AI Operator workflow in the Recipe Library) | receita | receta | recette | recette | Rezept | ricetta |
+| checklist item (ticket checklist) | item do checklist | elemento de la lista de verificación | élément de la liste de contrôle | élément de la liste de vérification | Checklisten-Punkt | voce della checklist |
+| onboarding (bringing a new person's accounts online) | admissão | alta | intégration | intégration | Onboarding | inserimento |
+| temporary password | senha temporária | contraseña temporal | mot de passe temporaire | mot de passe temporaire | temporäres Passwort | password temporanea |
+| organizational unit (Google Workspace OU) | unidade organizacional | unidad organizativa | unité d'organisation | unité organisationnelle | Organisationseinheit | unità organizzativa |
+| licence seat | assento de licença | puesto de licencia | siège de licence | siège de licence | Lizenzplatz | posto licenza |
 
 ## Context rules
 
@@ -48,3 +54,7 @@ template variables (`{{name}}`), and code values remain unchanged.
 - A contract's `Internal notes` (the `notes` field) are staff-only and never printed on
   an invoice or shown to the customer (#9347). Translate "internal" as internal to the
   MSP, never as "private to the customer".
+- `Recipe` (an AI Operator workflow in the Recipe Library) and `checklist item` (an item on a
+  ticket checklist) are listed in the table above. tr-TR is not in the table: use `tarif` for
+  recipe and `kontrol listesi öğesi` for checklist item.
+- `Onboarding` (bringing a new person's accounts online), `temporary password`, `organizational unit` (Google Workspace OU) and `licence seat` are listed in the table above. tr-TR is not in the table: use `işe giriş işlemleri` for onboarding, `geçici şifre` for temporary password, `kuruluş birimi` for organizational unit (Google's own term) and `lisans hakkı` for licence seat. Never translate onboarding with a word meaning hiring or recruiting.

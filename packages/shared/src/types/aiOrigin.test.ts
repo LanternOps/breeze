@@ -7,9 +7,13 @@ import {
 } from './aiOrigin';
 
 describe('AiOriginRef', () => {
-  it('is a closed two-value vocabulary', () => {
-    expect([...AI_INITIATOR_KINDS]).toEqual(['ai_assistant', 'ai_agent']);
+  it('is a closed three-value vocabulary', () => {
+    // `flow` (tool catalog W04, #5219, Open Decision 16): a published flow's
+    // run decided the work. Pinned to the pg enum in
+    // apps/api/src/db/schema/aiInitiator.test.ts.
+    expect([...AI_INITIATOR_KINDS]).toEqual(['ai_assistant', 'ai_agent', 'flow']);
     expect(isAiInitiatorKind('ai_agent')).toBe(true);
+    expect(isAiInitiatorKind('flow')).toBe(true);
     expect(isAiInitiatorKind('automation')).toBe(false);
     expect(isAiInitiatorKind(null)).toBe(false);
   });
@@ -17,6 +21,12 @@ describe('AiOriginRef', () => {
   it('round-trips through the persisted column shape', () => {
     const origin = { kind: 'ai_agent' as const, sessionId: 's1', agentRunId: 'r1' };
     expect(deserializeAiOrigin(serializeAiOrigin(origin))).toEqual(origin);
+  });
+
+  it('round-trips the flow kind (the run id rides on requesting_flow_run_id, not an ai_origin column)', () => {
+    const serialized = serializeAiOrigin({ kind: 'flow', flowRunId: 'fr1' });
+    expect(serialized).toEqual({ aiOriginKind: 'flow', aiOriginSessionId: null, aiOriginAgentRunId: null });
+    expect(deserializeAiOrigin(serialized)).toEqual({ kind: 'flow' });
   });
 
   it('serializes an absent origin to three nulls, never to a human default', () => {

@@ -154,8 +154,9 @@ export function todayISO(asOf: Date = new Date()): string {
  * pointer is period k's START (advance) or END (arrears, so the period in
  * progress is k-1). addMonthsClamped(nextBillingAt, -interval) would mis-derive
  * month-end starts. This is the PURE candidate; the caller must still walk it past
- * periods that are already claimed (advancePastClaimed) — a pause -> resume resets
- * an advance pointer onto a claimed period.
+ * periods that are already claimed (advancePastClaimed) — before #9509 a pause ->
+ * resume reset an advance pointer onto a claimed period, and a contract stuck that
+ * way keeps it until its next billing run moves it (pointerPastClaimed).
  */
 export function firstUnclaimedPeriodStart(c: {
   status: string; startDate: string; intervalMonths: number;
@@ -179,6 +180,28 @@ export function advancePastClaimed(
     start = computePeriod(startDate, intervalMonths, idx).periodStart;
   }
   return start;
+}
+
+/**
+ * #9509: the billing pointer for `candidateIdx`, moved past the contract's
+ * latest claimed period so it never targets a period the ledger already holds.
+ * A pointer parked on a claimed period makes every run return `already_billed`
+ * without advancing, so the contract silently stops billing.
+ *
+ * `latestClaimedStart` is MAX(contract_billing_periods.period_start) for the
+ * contract (null when nothing is claimed). Claims behind the candidate are left
+ * alone, so a resume still never back-bills the paused gap. One jump, no loop:
+ * the result is bounded by periodIndexFor's own guard.
+ */
+export function pointerPastClaimed(input: {
+  startDate: string; intervalMonths: number; billingTiming: BillingTiming;
+  candidateIdx: number; latestClaimedStart: string | null;
+}): string {
+  const { startDate, intervalMonths, billingTiming, latestClaimedStart } = input;
+  const idx = latestClaimedStart === null
+    ? input.candidateIdx
+    : Math.max(input.candidateIdx, periodIndexFor(startDate, intervalMonths, latestClaimedStart) + 1);
+  return nextBillingDate({ startDate, intervalMonths, billingTiming, periodIndex: idx });
 }
 
 /** True when asOf is in [endDate - noticeDays, endDate). */

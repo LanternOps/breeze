@@ -160,7 +160,7 @@ describe('script result → exit-code alert wiring (#6690)', () => {
       .mockReturnValueOnce(updateReturning([]))
       .mockReturnValueOnce(updateReturning([executionRow]));
     await commandResultHandlers.script!(scriptInput({ status: 'completed', exitCode: 0 }));
-    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed' });
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed', completedAt: expect.any(Date), lateResult: false });
     expect(callOrder.indexOf('execution-update')).toBeLessThan(callOrder.indexOf('fix-outcome'));
   });
 
@@ -173,7 +173,7 @@ describe('script result → exit-code alert wiring (#6690)', () => {
       cancelledByCommandId: '99999999-9999-4999-8999-999999999999',
     }));
     expect(advanceMock).toHaveBeenCalledTimes(1);
-    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'cancelled' });
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'cancelled', completedAt: expect.any(Date), lateResult: false });
   });
 
   it('keeps the REAL outcome (not cancelled) for a cancel marker whose confirm CAS misses', async () => {
@@ -186,7 +186,7 @@ describe('script result → exit-code alert wiring (#6690)', () => {
       cancelled: true,
       cancelledByCommandId: '99999999-9999-4999-8999-999999999999',
     }));
-    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed' });
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed', completedAt: expect.any(Date), lateResult: false });
   });
 
   it.each([
@@ -198,7 +198,7 @@ describe('script result → exit-code alert wiring (#6690)', () => {
       .mockReturnValueOnce(updateReturning([]))
       .mockReturnValueOnce(updateReturning([executionRow]));
     await commandResultHandlers.script!(scriptInput(result));
-    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: expected });
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: expected, completedAt: expect.any(Date), lateResult: false });
   });
 
   it('does not evaluate when no execution row transitioned', async () => {

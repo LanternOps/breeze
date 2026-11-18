@@ -127,6 +127,39 @@ describe('state routes', () => {
       expect(body.count).toBe(1);
     });
 
+    it('drops credential-store registry values (SAM / SECURITY) before persistence (#11976)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, agentId: AGENT_ID }]),
+          }),
+        }),
+      } as any);
+      const values = vi.fn().mockReturnValue({ onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        insert: vi.fn().mockReturnValue({ values }),
+      }));
+
+      const res = await app.request(`/agents/${AGENT_ID}/registry-state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: [
+            { registryPath: 'HKLM\\SOFTWARE\\Test', valueName: 'Version', valueData: '1.0.0' },
+            { registryPath: 'HKEY_LOCAL_MACHINE\\SECURITY\\Policy\\Secrets\\X', valueName: 'CurrVal', valueData: 'secret' },
+            { registryPath: 'hklm/sam/sam', valueName: 'F', valueData: 'deadbeef' },
+          ],
+          replace: true,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).count).toBe(1);
+      const rows = values.mock.calls[0]![0] as Array<{ registryPath: string }>;
+      expect(rows.map((r) => r.registryPath)).toEqual(['HKLM\\SOFTWARE\\Test']);
+    });
+
     it('should return 404 when device not found', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

@@ -19,6 +19,8 @@ const { returningMock, whereMock, setMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  // No context held in a unit run: the savepoint helper just runs fn.
+  withDbTransactionIfHeld: <T>(fn: () => Promise<T>) => fn(),
   db: {
     update: vi.fn(() => ({
       set: setMock.mockImplementation(() => ({
@@ -39,16 +41,28 @@ vi.mock('../db/schema', () => ({
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
+    endReason: 'remoteSessions.endReason',
   },
 }));
 
 import {
+  __resetEndReasonFallbackWarningForTest,
   buildStopDesktopCommand,
   commitDesktopTerminalIntent,
   confirmDesktopTerminalIntent,
   parseDesktopStopCommandId,
   terminalIntentSet,
 } from './remoteDesktopTerminalIntent';
+
+/** A postgres.js CHECK violation as Drizzle wraps it (SQLSTATE on the cause). */
+function checkViolation(constraint: string): Error {
+  return Object.assign(new Error('Failed query: update "remote_sessions" ...'), {
+    cause: Object.assign(new Error(`new row for relation "remote_sessions" violates check constraint "${constraint}"`), {
+      code: '23514',
+      constraint_name: constraint,
+    }),
+  });
+}
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -66,7 +80,7 @@ function sqlText(value: unknown): string {
 describe('terminalIntentSet', () => {
   it('bumps the shared generation, records it as terminal, and sets the phase — on top of the caller columns', () => {
     const endedAt = new Date('2026-09-12T00:00:00Z');
-    const set = terminalIntentSet({ status: 'disconnected', endedAt }, 'pending');
+    const set = terminalIntentSet({ status: 'disconnected', endedAt, endReason: 'operator_ended' }, 'pending');
 
     expect(set.status).toBe('disconnected');
     expect(set.endedAt).toBe(endedAt);
@@ -80,12 +94,27 @@ describe('terminalIntentSet', () => {
   });
 
   it('writes confirmed directly when the endpoint is the source of the terminal fact', () => {
-    const set = terminalIntentSet({ status: 'failed', endedAt: new Date() }, 'confirmed');
+    const set = terminalIntentSet({ status: 'failed', endedAt: new Date(), endReason: 'start_failed' }, 'confirmed');
     expect(set.terminationPhase).toBe('confirmed');
   });
 
+  it('#11839: records the end reason, keeping one already on the row (first reason wins)', () => {
+    const set = terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'never_connected' }, 'pending');
+    const text = sqlText(set.endReason);
+    // COALESCE(existing, new): an 'ended_by_user' recorded while the row was
+    // still live survives the terminal write that follows it.
+    expect(text).toMatch(/^COALESCE\(remoteSessions\.endReason, never_connected\)$/);
+  });
+
+  it('#11839: refuses an end reason outside the closed set (the CHECK would reject it at runtime)', () => {
+    expect(() => terminalIntentSet(
+      { status: 'disconnected', endedAt: new Date(), endReason: 'lease_expired' as never },
+      'pending',
+    )).toThrow(/end reason/i);
+  });
+
   it('refuses a non-terminal status: the contract is for terminal writers only', () => {
-    expect(() => terminalIntentSet({ status: 'active' as never, endedAt: new Date() }, 'pending')).toThrow(/terminal/i);
+    expect(() => terminalIntentSet({ status: 'active' as never, endedAt: new Date(), endReason: 'operator_ended' }, 'pending')).toThrow(/terminal/i);
   });
 });
 
@@ -130,7 +159,7 @@ describe('commitDesktopTerminalIntent', () => {
   it('commits through the shared set clause and returns the terminal generation as a bigint', async () => {
     const result = await commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     });
     expect(result).toMatchObject({ ok: true, terminalGeneration: 5n, row: { id: SESSION_ID, type: 'desktop' } });
@@ -143,7 +172,7 @@ describe('commitDesktopTerminalIntent', () => {
     returningMock.mockResolvedValue([]);
     await expect(commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     })).resolves.toEqual({ ok: false, reason: 'not_live' });
   });
@@ -152,10 +181,62 @@ describe('commitDesktopTerminalIntent', () => {
     returningMock.mockResolvedValue([{ id: SESSION_ID, type: 'desktop', deviceId: DEVICE_ID, terminalGeneration: '9007199254740993', terminationPhase: 'pending', status: 'disconnected' }]);
     const result = await commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     });
     expect(result).toMatchObject({ ok: true, terminalGeneration: 9007199254740993n });
+  });
+});
+
+describe('#11839: an unmigrated end-reason CHECK never stops a session ending', () => {
+  const ROW = { id: SESSION_ID, type: 'desktop', deviceId: DEVICE_ID, terminalGeneration: 5n, terminationPhase: 'pending', status: 'disconnected' };
+  const WRITE = { status: 'disconnected' as const, endedAt: new Date(), endReason: 'operator_ended' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetEndReasonFallbackWarningForTest();
+  });
+
+  it('retries once without the end reason when remote_sessions_end_reason_check refuses it, and warns once per process', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    returningMock
+      .mockRejectedValueOnce(checkViolation('remote_sessions_end_reason_check'))
+      .mockResolvedValueOnce([ROW])
+      .mockRejectedValueOnce(checkViolation('remote_sessions_end_reason_check'))
+      .mockResolvedValueOnce([ROW]);
+
+    const first = await commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' });
+    expect(first).toMatchObject({ ok: true, terminalGeneration: 5n });
+    expect(setMock).toHaveBeenCalledTimes(2);
+    const labelled = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    const retried = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(sqlText(labelled.endReason)).toContain('COALESCE');
+    // The retry still ends the session (same terminal columns and fence), it
+    // just leaves end_reason alone.
+    expect('endReason' in retried).toBe(false);
+    expect(retried.status).toBe('disconnected');
+    expect(sqlText(retried.terminalGeneration)).toContain('+ 1');
+
+    await commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('2027-01-24-220000-remote-sessions-end-reason-widen.sql');
+    // The ALS flag does not leak: a set clause built afterwards carries the reason.
+    expect(terminalIntentSet(WRITE, 'pending').endReason).toBeDefined();
+    warn.mockRestore();
+  });
+
+  it('does not retry a CHECK violation on any other constraint', async () => {
+    returningMock.mockRejectedValueOnce(checkViolation('remote_sessions_termination_fence_check'));
+    await expect(commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' }))
+      .rejects.toThrow(/Failed query/);
+    expect(setMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a failure that is not a CHECK violation', async () => {
+    returningMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { cause: { code: '40P01' } }));
+    await expect(commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' }))
+      .rejects.toThrow('boom');
+    expect(setMock).toHaveBeenCalledTimes(1);
   });
 });
 

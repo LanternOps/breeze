@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 const permState = vi.hoisted(() => ({ canUseAi: true }));
@@ -16,27 +16,35 @@ vi.mock('@/lib/permissions', () => ({
 
 import AiChatSidebar from './AiChatSidebar';
 import { useAiStore } from '@/stores/aiStore';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 vi.mock('@/stores/aiStore', () => ({ useAiStore: vi.fn() }));
 // Children pull in streaming/fetch concerns irrelevant to the shell test.
 vi.mock('./AiChatMessages', () => ({ default: () => null }));
-vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
-vi.mock('./AiCostIndicator', () => ({ default: () => null }));
+vi.mock('./AiCostIndicator', () => ({ default: () => <div data-testid="ai-cost-indicator-stub" /> }));
+// #9840 W4: History renders the shared list; its source is tested in its own
+// file and with the real stores in AiChatSidebar.history.test.tsx.
+vi.mock('./useAiConversationSource', () => ({
+  MIN_SEARCH_CHARS: 2,
+  useAiConversationSource: () => ({ items: [], query: '', setQuery: () => undefined, isLoading: false, isSearching: false, error: null }),
+}));
 
 const noop = vi.fn();
 const baseState = {
   toggle: noop, close: noop, messages: [], isStreaming: false, isLoading: false,
   error: null, pageContext: null, pendingApproval: null, pendingPlan: null,
   activePlan: null, approvalMode: 'manual', isPaused: false, sessionId: null,
-  showHistory: false, sessions: [], searchResults: [], isSearching: false,
+  showHistory: false, sessions: [], composerDraft: '', composerFocusRequest: 0, setComposerDraft: noop,
   sendMessage: noop, approveExecution: noop, approvePlan: noop, abortPlan: noop,
   pauseAi: noop, createSession: noop, closeSession: noop, clearError: noop,
   toggleHistory: noop, loadSessions: noop, loadSession: noop,
-  searchConversations: noop, switchSession: noop, interruptResponse: noop,
+  switchSession: noop, interruptResponse: noop,
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
+  // #9840 W3: the Open in Breeze AI control reads both.
+  topologySiteId: null, wisp: null,
 };
 
 // #1419: the off-canvas shell stays mounted (transition:persist); collapsed it
@@ -76,6 +84,37 @@ describe('AiChatSidebar shadow', () => {
   });
 });
 
+// #10107: the open panel was `fixed top-0 h-full`, so it covered the right end
+// of the app header (h-16): the bell, theme and account menu sat under it and
+// a click on them landed on the panel. The panel and its small-screen backdrop
+// must start below the header so the header stays usable while the panel is open.
+describe('AiChatSidebar leaves the app header uncovered (#10107)', () => {
+  const classesOf = (testId: string) => screen.getByTestId(testId).className.split(/\s+/);
+
+  it('docks the open panel below the header, not over it', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    const classes = classesOf('ai-chat-sidebar');
+    expect(classes).toEqual(expect.arrayContaining(['fixed', 'top-16', 'bottom-0', 'right-0']));
+    expect(classes).not.toContain('top-0');
+    expect(classes).not.toContain('h-full');
+  });
+
+  it('never overflows a viewport narrower than the panel', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    expect(classesOf('ai-chat-sidebar')).toContain('max-w-full');
+  });
+
+  it('starts the small-screen backdrop below the header too', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    const classes = classesOf('ai-chat-sidebar-backdrop');
+    expect(classes).toEqual(expect.arrayContaining(['fixed', 'top-16', 'bottom-0', 'lg:hidden']));
+    expect(classes).not.toContain('inset-0');
+  });
+});
+
 describe('AiChatSidebar permission gate (#6396)', () => {
   it('renders nothing when the user lacks ai_sessions:use', () => {
     permState.canUseAi = false;
@@ -105,5 +144,296 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
     } finally {
       useAiModelPickerStore.setState({ load: original });
     }
+  });
+
+  describe('credits exhausted banner (#9450)', () => {
+    const exhausted = { ...baseState, isOpen: true, error: 'You are out of AI credits. Purchase more credits to continue.', errorCode: 'credits_exhausted' };
+    const setHosted = (billing: boolean) =>
+      useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+    it('offers a Buy credits link to the billing credits page on hosted', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Buy credits' })).toHaveAttribute('href', '/billing/credits');
+    });
+
+    it('shows the error but no Buy credits link when billing is not configured (self-hosted)', () => {
+      setHosted(false);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
+
+    it('does not offer Buy credits for other errors', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue({ ...exhausted, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
+  });
+
+  // #9428
+  describe('try again banner', () => {
+    const retryTarget = { sessionId: 's1', content: 'hi', code: 'timeout', detail: null, mode: 'retry', error: 'Timed out' };
+
+    it('retries the failed turn from the banner', () => {
+      const retryLastTurn = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn, retryTarget, error: 'Timed out', errorCode: 'timeout',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-error-retry'));
+      expect(retryLastTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers no retry while a topology site is bound', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn: vi.fn(), retryTarget, error: 'Timed out', errorCode: 'timeout',
+        topologySiteId: 'site-1',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-error-retry')).toBeNull();
+    });
+  });
+
+  // #11609
+  describe('session closed elsewhere banner', () => {
+    it('offers a new session when the refusal is session_closed, and starts one on click', () => {
+      const createSession = vi.fn();
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, createSession,
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-session-closed-new-session'));
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer a plain session while Wisp is bound (the thread rolls on its own grant)', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true,
+        wisp: { grantId: 'grant-1' },
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+
+    it('does not offer it for other errors', () => {
+      vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+  });
+});
+
+// #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),
+// so the handler must not compare against lowercase "a" only.
+describe('AiChatSidebar keyboard shortcut (#9613)', () => {
+  function setup() {
+    permState.canUseAi = true;
+    const toggle = vi.fn();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, toggle, isOpen: false });
+    render(<AiChatSidebar />);
+    return toggle;
+  }
+
+  it.each([
+    ['Ctrl+Shift+A (key "A")', { key: 'A', ctrlKey: true, shiftKey: true }],
+    ['Cmd+Shift+A (key "A")', { key: 'A', metaKey: true, shiftKey: true }],
+    ['Ctrl+Shift+a (key "a")', { key: 'a', ctrlKey: true, shiftKey: true }],
+  ])('toggles on %s', (_label, init) => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { ...init, cancelable: true }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not toggle without Shift or without a modifier', () => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
+    expect(toggle).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
+// suites cover them; this pins where the sidebar mounts them. W05 (#10136)
+// removed the "Turn on Wisp" toggle: the grant decides the voice
+// (AiChatSidebar.wispHome.test.tsx covers the lookup).
+const wispStub = vi.hoisted(() => ({
+  header: null as null | Record<string, unknown>,
+  attachments: [] as Array<{ id: string; label: string; bytes: number; expiresAt: string }>,
+}));
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: Record<string, unknown> & { wideningAvailable: boolean; orgName: string | null }) => {
+    wispStub.header = p;
+    return (
+      <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''}>
+        {p.paneActions as React.ReactNode}
+        {p.closeAction as React.ReactNode}
+      </div>
+    );
+  },
+}));
+vi.mock('./WispThreadAttachments', () => ({
+  default: (p: { showTitle?: boolean }) => <div data-testid="wisp-attachments-stub" data-show-title={String(p.showTitle)} />,
+}));
+vi.mock('./useWispThreadAttachmentList', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./useWispThreadAttachmentList')>()),
+  useWispThreadAttachmentList: () => ({ items: wispStub.attachments, loaded: true, loadFailed: false, reload: async () => {} }),
+}));
+
+describe('AiChatSidebar Wisp mode (W04)', () => {
+  const wisp = {
+    grantId: 'g-1', threadId: 't-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active',
+    expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
+  };
+
+  it('without Wisp mode the header says Breeze AI and offers no Wisp toggle', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-toggle')).toBeNull();
+    expect(screen.queryByText('Turn on Wisp')).toBeNull();
+  });
+
+  it('the compact WispThreadHeader is the whole pane header in Wisp mode: History and Close move into its Row A', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    const header = screen.getByTestId('wisp-header-stub');
+    expect(header).toHaveAttribute('data-widening', 'true');
+    expect(header).toContainElement(screen.getByTestId('ai-chat-history-toggle'));
+    expect(header).toContainElement(screen.getByTestId('ai-chat-close'));
+    expect(screen.queryByText('Breeze AI')).toBeNull();
+    expect(wispStub.header?.usageEnabled).toBe(true);
+  });
+
+  it('no AiCostIndicator under a Wisp header (its numbers live in the spend popover); a plain chat keeps it', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    const { unmount } = render(<AiChatSidebar />);
+    expect(screen.queryByTestId('ai-cost-indicator-stub')).toBeNull();
+    unmount();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-cost-indicator-stub')).toBeInTheDocument();
+  });
+
+  it('Flag moves into the Wisp overflow menu, and only once there is a conversation to flag', () => {
+    const flagSession = vi.fn();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp, sessionId: 's-1', flagSession });
+    const { unmount } = render(<AiChatSidebar />);
+    const items = wispStub.header?.paneMenuItems as Array<{ label: string; testId?: string; onSelect?: () => void }>;
+    expect(items.map((i) => i.label)).toEqual(['Flag conversation for review']);
+    items[0]!.onSelect!();
+    expect(flagSession).toHaveBeenCalledTimes(1);
+    unmount();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp, sessionId: null });
+    render(<AiChatSidebar />);
+    expect(wispStub.header?.paneMenuItems).toEqual([]);
+  });
+
+  it('the thread attachments open from a paperclip in the composer, not a disclosure row', () => {
+    wispStub.attachments = [{ id: '1', label: 'Invoice mail', bytes: 10, expiresAt: '2026-12-01T00:00:00Z' }];
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: { ...wisp, focusOrgId: 'org-a' } });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
+    const clip = screen.getByTestId('wisp-attachments-toggle');
+    expect(clip.compareDocumentPosition(screen.getByTestId('ai-chat-input')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('wisp-attachments-count')).toHaveTextContent('1');
+    expect(screen.queryByTestId('wisp-attachments-stub')).toBeNull();
+    fireEvent.click(clip);
+    expect(screen.getByTestId('wisp-attachments-stub')).toHaveAttribute('data-show-title', 'false');
+    wispStub.attachments = [];
+  });
+
+  it('a plain chat has no paperclip', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-attachments-toggle')).toBeNull();
+  });
+});
+
+describe('AiChatSidebar error banner reads in both themes', () => {
+  it('pairs light reds with dark ones instead of dark-theme reds on a light panel', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, error: 'Rate limit exceeded', errorCode: null });
+    render(<AiChatSidebar />);
+    const text = screen.getByText('Rate limit exceeded');
+    expect(text.className).toContain('text-red-700');
+    expect(text.className).toContain('dark:text-red-400');
+    // AiErrorBanner (#9428) stacks the headline and its detail in a column inside the banner.
+    const banner = text.parentElement!.parentElement as HTMLElement;
+    expect(banner.className).toContain('bg-red-50');
+    expect(banner.className).toContain('dark:bg-red-900/20');
+    expect(banner.className).not.toMatch(/(^|\s)bg-red-900\/20(\s|$)/);
+  });
+});
+
+// #9840 W5: the E2E (e2e-tests/tests/ai-move-conversation.spec.ts) drives the
+// header by data-testid only. Each id must sit on the control it names.
+describe('AiChatSidebar header test ids (#9840 W5)', () => {
+  it('History, New and Close carry their ids and their own handlers', () => {
+    const toggleHistory = vi.fn();
+    const close = vi.fn();
+    const closeSession = vi.fn(async () => undefined);
+    vi.mocked(useAiStore).mockReturnValue({
+      ...baseState, isOpen: true, sessionId: 's-1', toggleHistory, close, closeSession,
+    });
+    render(<AiChatSidebar />);
+    fireEvent.click(screen.getByTestId('ai-chat-history-toggle'));
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('ai-chat-close'));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('New is absent without a bound session; History and Close are always there', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-history-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-new-conversation')).toBeNull();
+  });
+});
+
+// W04 X3: exercise the sidebar-to-composer wiring with the real input.
+describe('AiChatSidebar external composer focus', () => {
+  it('focuses ai-chat-input when composerFocusRequest is bumped', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    const { rerender } = render(<AiChatSidebar />);
+    const input = screen.getByTestId('ai-chat-input');
+    const close = screen.getByTestId('ai-chat-close');
+    close.focus();
+    expect(input).not.toHaveFocus();
+
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, composerFocusRequest: 1 });
+    rerender(<AiChatSidebar />);
+    expect(input).toHaveFocus();
+
+    close.focus();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, composerFocusRequest: 2 });
+    rerender(<AiChatSidebar />);
+    expect(input).toHaveFocus();
+  });
+});
+
+// #9429: the notification bell sits in the panel header (its states are tested
+// in AiNotifyToggle.test.tsx; a stub here keeps the shell test free of the
+// Notification API and the auth store).
+vi.mock('./AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
+describe('AiChatSidebar notification bell (#9429)', () => {
+  it('mounts the bell in the header, with or without a bound session', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    const { rerender } = render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: 's1' });
+    rerender(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
   });
 });

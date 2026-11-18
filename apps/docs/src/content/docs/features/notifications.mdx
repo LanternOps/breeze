@@ -347,20 +347,40 @@ Removes all notifications for the current user.
 
 Breeze checks every 15 minutes whether its connections still work, and opens a
 connection health incident when one breaks. Incidents appear in the
-**Connection Health** panel on **Integrations**, as in-app notices, and in the
-daily digest below. They clear on their own once the connection works again.
+**Connection health** panel on **Integrations** -- each with a **Fix** link to
+the connection that needs attention, and a **Recently resolved** list
+underneath -- as in-app notices, and in the daily digest below. They clear on
+their own once the connection works again.
 
 Most integrations record their own failures (a failed sync, a revoked
-authorization). Breeze also watches for connections that fail without saying so:
+authorization): Huntress, SentinelOne, Pax8, UniFi, backup providers, EDR,
+accounting, DNS filtering, Microsoft 365 connections and tenant sync, ticket
+mailboxes and the TD SYNNEX price file all report into the same panel,
+alongside the outbound webhook and Google Workspace checks below. The other TD
+SYNNEX connections (EC Express and Digital Bridge) are not watched: they have
+no scheduled sync, so there is nothing to go stale. Breeze also watches for
+connections that fail without saying so:
 
 - **Outbound webhooks.** A webhook opens an incident when a delivery uses up all
   its retries and no later delivery has succeeded. Deliveries that were dropped
   because the webhook was edited or disabled do not count. The incident clears
   after the next successful delivery, or when the webhook is disabled.
-- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi and backup provider
-  connections open a **Sync stalled** incident when there has been no
+- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi, backup provider, EDR
+  and DNS filtering connections, ticket mailboxes, and Microsoft 365 tenant sync
+  when it is enabled, open a **Sync stalled** incident when there has been no
   successful sync for three sync intervals (at least an hour). This catches a
-  sync that is stuck or no longer scheduled.
+  sync that is stuck or no longer scheduled. For EDR, either the inventory or
+  the detections sync can stall the connection. For a ticket mailbox, it means
+  no completed mail check in an hour; a quiet inbox does not count as stalled.
+  QuickBooks and Xero stall when Breeze has not completed a payment
+  reconciliation for an hour, as long as pulling or pushing payments is turned
+  on for the connection. Xero is allowed three days, because Breeze
+  deliberately pauses background reconciliation while a tenant's daily Xero
+  call allowance is nearly used up.
+- **TD SYNNEX price file.** The price file runs nightly. It opens a **Sync
+  stalled** incident when no nightly run has finished for three days and the
+  connection has not been saved, tested or started a sync in that time. A run
+  that fails opens **Sync failed** instead.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide
@@ -370,10 +390,31 @@ authorization). Breeze also watches for connections that fail without saying so:
 - **OAuth apps that keep retrying.** When an MCP or OAuth app's grant was
   revoked and the app keeps presenting its old token, the incident says how many
   failed refreshes it made today.
+- **Backup destinations.** A backup destination opens one incident for its
+  organization when the devices that back up to it fail for a reason Breeze can
+  tie to the destination: it refused access, the bucket or its data is missing,
+  it rejected the request time, or storage operations kept failing. Two failing
+  devices open it. When only one device has a recent success or destination
+  failure (the others are offline or failing for other reasons), one refusal or
+  missing bucket opens it, or two failed runs in a row. When most failing
+  devices agree the destination refused access or is missing, the incident is
+  **Destination refused access** or **Destination not found** and opens at
+  once; otherwise it is **Destination failing** and opens when the next check
+  still sees it. The notice says how many devices are failing, since when, and
+  what to check, and its **Fix** link opens the backup profiles where you can
+  run **Test connection**. It goes to the users who can manage backups (backup
+  write permission) for that organization: the MSP's staff, and the
+  organization's own admins when customer admin notices are on (below). The
+  incident clears after two checks in a row find no device still failing and
+  successful backups from two devices (or the only device with recent results)
+  since the last failure, or at once when the destination is disabled or
+  deleted. A device that is offline or failing for another reason neither opens
+  nor clears it. See
+  [Backup troubleshooting](/backup/troubleshooting/#one-destination-failing-for-several-devices).
 
-Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, and OAuth
-grant revocations, are checked within about a minute rather than at the next
-15-minute check.
+Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, backup
+job results, and OAuth grant revocations, are checked within about a minute
+rather than at the next 15-minute check.
 
 Platform administrators can see whether the checks themselves are running under
 **Admin → System → Connections**: the last run of the incident reconciler, the
@@ -384,13 +425,18 @@ last run of the daily digest, and each check's last success.
 ## Connection Health Digest Email
 
 When an integration, sync or OAuth grant breaks, the people who can fix it get an
-in-app notice. They also get a **daily digest email** at 08:00 in the partner's
-timezone. The digest lists the connections that are still broken, grouped by
+in-app notice. They also get a **daily digest email** between 08:00 and 11:59
+in the partner's timezone (an hourly job sends it at its first run inside that
+window). The digest lists the connections that are still broken, grouped by
 organization with partner-wide connections first. It also lists the ones that
 recovered since that person's last digest.
 
 - **One email a day at most**, however many organizations are affected. If there
   is nothing to report, no email is sent.
+- **The first digest after upgrading to v0.124.0 covers what is already
+  broken.** Incidents that were open before the upgrade, including ones opened
+  under v0.123.0, are included once, so expect a one-time burst of emails to
+  everyone who can fix them.
 - **Long-running problems fade.** A connection appears every day for its first
   seven days broken, and after that only in the Monday digest.
 - **Recipients are checked when the email is sent.** Someone who has lost the
@@ -420,12 +466,16 @@ My Account, and the next digest carries a fresh link.
 Notices and the digest go to MSP staff only by default. Staff who can fix a broken connection are always notified. You can also let the admins of your customer organizations hear about their own organization's connections.
 
 - **Off by default.** Nothing changes for customers until you turn it on.
-- **Where to set it.** Open the **Integrations** page and use the **Health notifications** card. Set a partner default (this needs full partner access, `orgAccess` set to all) and, if you want, a per-organization override of **Inherit**, **On** or **Off** for the organization selected in the organization switcher.
-- **Who is notified.** When the setting is on, users in the customer organization whose organization role grants the permission to repair the connection (typically `organizations:write`) receive the in-app notice and the daily digest for their own organization's connections.
+- **Where to set it.** Open the **Integrations** page and use the **Health notifications** card. Set a partner default (this needs a partner admin with access to all organizations) and, if you want, a per-organization override of **Inherit**, **On** or **Off** for the organization selected in the organization switcher.
+- **Who is notified.** When the setting is on, admins in the customer organization who can edit the organization receive the in-app notice and the daily digest for their own organization's connections.
 - **Partner-wide connections stay private.** Partner-wide connections never reach customer admins.
 - **Sender.** Customer digests are sent from the partner's sending identity (the partner email lane), not from the platform sender.
 - **Customers cannot change it.** Customer admins cannot turn the setting on or off themselves.
 - **Changes apply going forward.** A change takes effect on the next notice or digest. Notices already delivered are not retracted.
+
+<Aside type="caution" title="Known gap in v0.124.0">
+  A customer admin who holds only the built-in **Org Admin** role does not receive every kind of incident notice -- some kinds reach only roles that can edit the organization. Tracked as #9268.
+</Aside>
 
 ---
 
@@ -481,7 +531,7 @@ Open **Alerts > Delivery > Escalation policies** to create, edit, or delete a po
 
 Steps notify channels, users in-app, or both, with at least one target per step. Use 1..10 steps, integer delays of 1..10080 minutes, repeat intervals of 1..1440 minutes and 1..10 additional sends, with at most 50 total occurrences. Optional `renotify: { everyMinutes, maxTimes }` repeats a step at that interval; `maxTimes` is the number of additional sends after its first notification.
 
-Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise the winning routing/default row's escalation applies, then none. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs.
+Escalation resolves independently of the initial channel list: an explicit monitor escalation wins unless Notify is **Inbox only**; otherwise the winning routing/default row's escalation applies, then none. An empty default channel list can therefore mean inbox now and escalation later. Acknowledging or resolving the alert cancels pending escalation jobs. Each step that fires for a still-active alert publishes one `alert.escalated` event, which webhooks can subscribe to.
 
 ```json
 {
@@ -502,6 +552,14 @@ An automation's `send_notification` action targets its configured channel explic
 ### AI and MCP
 
 Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, remove an optional org default with `delete_routing` to inherit again (the partner default is permanent), and list/create/update/delete escalation policies using the same bounded schemas and caller-aware user validation as the web/API. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
+
+### Upgrade note: v0.127.0 sends notifications for every alert
+
+<Aside type="caution" title="Expect more notifications after upgrading to v0.127.0">
+Before v0.127.0, most monitor, rule and system alerts (patch jobs, maintenance reboots, policy and configuration compliance, backup, EDR, warranty, network monitors, script exit codes and others) appeared on the Alerts page, but their notifications were not sent on any channel: in-app, email, SMS, Slack, Teams, PagerDuty, Pushover or webhooks, and their escalation policies did not run. From v0.127.0 every alert follows the routing on this page.
+
+Before or right after you upgrade, review your routing rows, each monitor's **Notify** setting and your escalation policies. SMS costs money, and on-call staff can be paged for alerts that were quiet before. Only alerts raised after the upgrade send notifications; earlier alerts are not replayed.
+</Aside>
 
 ### Upgrade note: explicit defaults
 

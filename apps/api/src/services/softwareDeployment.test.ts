@@ -74,6 +74,8 @@ vi.mock('../db', () => ({
   // routes/scripts.test.ts and tenantVariableResolution.test.ts.
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbTransaction: <T>(fn: () => T): T => fn(),
+  withDbTransactionIfHeld: <T>(fn: () => T): T => fn(),
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -134,6 +136,8 @@ import {
   dispatchSoftwareInstallToDevice,
 } from './softwareDeployment';
 import { resolveEdrInstaller } from './edrInstallerResolver';
+import { buildInstallScriptPayload } from './installScriptPayload';
+import { MIN_AGENT_VERSION_INSTALL_SCRIPTS } from './softwareInstallAgentSupport';
 import { getPresignedUrl } from './s3Storage';
 import { inArray } from 'drizzle-orm';
 import {
@@ -992,7 +996,11 @@ describe('createSoftwareDeployment', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(result.message).toBe('All target devices failed installer variable resolution');
+    // #10307: every device failed for the same reason, so the toast names it.
+    expect(result.message).toBe(
+      'All target devices failed installer variable resolution: ' +
+        'Software deployment templates cannot use secret variable(s) {{var.alpha_secret}}, {{var.zeta_secret}}',
+    );
     expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
     // One failure row per device, all carrying the same sorted key list.
     const failureWrites = updateSetCalls.filter((c) => c.status === 'failed');
@@ -1048,6 +1056,87 @@ describe('createSoftwareDeployment', () => {
     const payload = dispatchDeviceCommandMock.mock.calls[0]![0].payload;
     expect(payload.downloadUrl).toBe('https://edr.example/agent.exe');
     expect(payload.silentInstallArgs).toBe('/SILENT /TOKEN=abc');
+  });
+
+  describe('framework EDR providers (#8170)', () => {
+    const LINK = 'https://download.example.test/setupdownloader_synthetic.exe';
+    const version = {
+      id: 'ver-fw',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: '{edr_installer_url}',
+      checksum: 'a'.repeat(64),
+      originalFileName: 'GravityZoneInstaller.exe',
+      fileType: 'msi',
+      silentInstallArgs: '{edr_installer_args}',
+      version: 'latest',
+    };
+    const deploy = () => createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-fw',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+    const arrange = (integrationProvider: string, resolves = true) => {
+      selectMock.mockReturnValueOnce(sel([version])).mockReturnValueOnce(sel([{ id: 'cat-1', orgId: null, name: 'Agent', integrationProvider }]));
+      if (resolves) selectMock.mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1' }]));
+      insertMock.mockReturnValueOnce(insWithReturning([{ id: 'dep-fw', orgId: 'org-1' }])).mockReturnValueOnce(ins());
+    };
+
+    it('the resolver overrides the file name, file type and checksum, and the payload names the provider', async () => {
+      resolveEdrMock.mockResolvedValueOnce({
+        downloadUrl: LINK,
+        silentInstallArgs: '/bdparams /silent',
+        fileName: 'setupdownloader_synthetic.exe',
+        fileType: 'exe',
+        checksum: null,
+      });
+      arrange('bitdefender');
+      const result = await deploy();
+      expect(result.status).toBe('pending');
+      expect(resolveEdrMock).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'bitdefender', orgId: 'org-1' }));
+      expect(dispatchDeviceCommandMock.mock.calls[0]![0].payload).toMatchObject({
+        downloadUrl: LINK,
+        silentInstallArgs: '/bdparams /silent',
+        fileName: 'setupdownloader_synthetic.exe',
+        fileType: 'exe',
+        checksum: null,
+        integrationProvider: 'bitdefender',
+      });
+    });
+
+    it.each(['emsisoft', 'not-a-provider'])('%s has no installer path: every result fails closed, nothing is dispatched', async (provider) => {
+      resolveEdrMock.mockClear();
+      arrange(provider, false);
+      const failWhere = vi.fn().mockResolvedValue(undefined);
+      const failSet = vi.fn().mockReturnValue({ where: failWhere });
+      updateMock.mockReturnValue({ set: failSet });
+      const result = await deploy();
+      expect(result.status).toBe('failed');
+      expect(result.message).toBe(`Unsupported integration provider: ${provider}`);
+      expect(failSet).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed', errorMessage: `Unsupported integration provider: ${provider}`,
+      }));
+      expect(resolveEdrMock).not.toHaveBeenCalled();
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('a Huntress payload keeps the version file name, type and checksum, and gains no key', async () => {
+      resolveEdrMock.mockResolvedValueOnce({ downloadUrl: LINK, silentInstallArgs: '/S' });
+      selectMock
+        .mockReturnValueOnce(sel([{ ...version, fileType: 'exe', originalFileName: 'HuntressInstaller.exe' }]))
+        .mockReturnValueOnce(sel([{ id: 'cat-1', orgId: null, name: 'Huntress', integrationProvider: 'huntress' }]))
+        .mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1' }]));
+      insertMock.mockReturnValueOnce(insWithReturning([{ id: 'dep-fw', orgId: 'org-1' }])).mockReturnValueOnce(ins());
+      await deploy();
+      const payload = dispatchDeviceCommandMock.mock.calls[0]![0].payload;
+      expect(payload).toMatchObject({
+        fileName: 'HuntressInstaller.exe', fileType: 'exe', checksum: 'a'.repeat(64),
+      });
+      expect(payload).not.toHaveProperty('integrationProvider');
+    });
   });
 
   it('fails the whole EDR deployment (no dispatch) when the resolver returns an error', async () => {
@@ -2513,5 +2602,348 @@ describe('createSoftwareDeployment — policy origin (#5505 W03)', () => {
     // Explicit null, not undefined: an undefined would let the column default,
     // which is the same value here but a different contract.
     expect(insertedValues[1]!.softwarePolicyId).toBeNull();
+  });
+});
+
+describe('buildAndDispatchSoftwareInstalls — install scripts, zip and agent gates (#6958)', () => {
+  const catalogItem = { name: 'DNS Client', integrationProvider: null };
+  const OLD = '0.124.0';
+  const NEW = MIN_AGENT_VERSION_INSTALL_SCRIPTS;
+  const baseVersion = {
+    downloadUrl: 'https://dl/pkg.exe',
+    s3Key: null,
+    checksum: 'a'.repeat(64),
+    originalFileName: 'pkg.exe',
+    fileType: 'exe',
+    silentInstallArgs: '/S' as string | null,
+    version: '1.0.0',
+    detectionRules: null as unknown,
+    supportedOs: ['windows'] as unknown,
+    installScriptsEnabled: false,
+    preInstallScript: null as string | null,
+    postInstallScript: null as string | null,
+  };
+  const winDevice = (id: string, agentVersion: string | null) => ({
+    id,
+    agentId: `agent-${id}`,
+    siteId: 'site-1',
+    hostname: `WKS-${id}`,
+    customFields: {},
+    osType: 'windows',
+    agentVersion,
+  });
+
+  function run(versionRecord: typeof baseVersion, deviceIds: string[]) {
+    return buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-scripts',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds,
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+      deploymentResultIdsByDevice: new Map(deviceIds.map((id) => [id, `result-${id}`])),
+    });
+  }
+
+  /** The devices query, then (when a template uses `{{`) org, sites and tenant vars. */
+  function mockDeviceReads(devices: unknown[], vars?: unknown[]) {
+    selectMock.mockReturnValueOnce(sel(devices));
+    if (vars) {
+      selectMock
+        .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
+        .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]))
+        .mockReturnValueOnce(selJoin(vars));
+    }
+  }
+  const varRow = (key: string, value: string, isSecret = false) => ({
+    id: `tv-${key}`, key, value, isSecret, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1',
+  });
+  const dispatchedPayload = (i = 0) => dispatchDeviceCommandMock.mock.calls[i]![0].payload as Record<string, unknown>;
+
+  beforeEach(() => {
+    dispatchDeviceCommandMock.mockReset();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    dispatchDeviceCommandMock.mockImplementation(async ({ deviceId }: { deviceId: string }) => ({
+      ok: true,
+      command: { id: `cmd-${deviceId}`, status: 'pending' },
+      delivery: 'delivered',
+      deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+    }));
+    effectivePolicyMock.mockResolvedValue({ approvedPrivateOrigins: [] });
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+  });
+
+  it('(e) an old agent fails with agent_update_required and gets NO command; a new agent in the same deployment is dispatched', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'Write-Output done' },
+      ['dev-old', 'dev-new'],
+    );
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-new']);
+    expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
+    expect(dispatchDeviceCommandMock.mock.calls[0]![0].deviceId).toBe('dev-new');
+    const failures = updateSetCalls.filter((c) => c.status === 'failed');
+    expect(failures).toHaveLength(1);
+    expect(String(failures[0]!.errorMessage)).toBe(`agent_update_required (minimum agent ${NEW})`);
+    expect(result.deviceResults.find((r) => r.deviceId === 'dev-old')).toMatchObject({ status: 'failed' });
+  });
+
+  it('(e) every device too old → the batch reports failed', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-dev', 'dev-1729000000')]);
+    const result = await run({ ...baseVersion, installScriptsEnabled: true, preInstallScript: 'x' }, ['dev-old', 'dev-dev']);
+    expect(result.status).toBe('failed');
+    expect(result.message).toMatch(/agent_update_required/);
+    expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('(f) a new agent receives postInstallScript === buildInstallScriptPayload(...).payload', async () => {
+    const content = 'Copy-Item "{{install.dir}}\\ctrld.exe" C:\\ControlD; C:\\ControlD\\ctrld.exe start --cd-org {{var.controld_code}}';
+    mockDeviceReads([winDevice('dev-new', NEW)], [varRow('controld_code', '<provisioning-code>')]);
+    await run({ ...baseVersion, installScriptsEnabled: true, postInstallScript: content }, ['dev-new']);
+
+    const expected = buildInstallScriptPayload(content, 'windows', {
+      org: { id: 'org-1', name: 'Acme' },
+      site: { id: 'site-1', name: 'HQ' },
+      device: { hostname: 'WKS-dev-new', customFields: {} },
+      vars: { controld_code: '<provisioning-code>' },
+    });
+    expect(expected.ok).toBe(true);
+    expect(dispatchedPayload().postInstallScript).toEqual(expected.ok ? expected.payload : null);
+    expect(dispatchedPayload().preInstallScript).toBeUndefined();
+    expect(JSON.stringify(dispatchedPayload().postInstallScript)).toContain('{{var_controld_code}}');
+  });
+
+  it('(g) a stored script with installScriptsEnabled:false is dormant: no script keys, no gate', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD)]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: false, preInstallScript: 'evil', postInstallScript: 'evil' },
+      ['dev-old'],
+    );
+    expect(result.dispatchedDeviceIds).toEqual(['dev-old']);
+    expect(dispatchedPayload()).not.toHaveProperty('preInstallScript');
+    expect(dispatchedPayload()).not.toHaveProperty('postInstallScript');
+  });
+
+  it('(h) an old agent gets service_running stripped from an exe version and is still dispatched', async () => {
+    const fileExists = { type: 'file_exists', path: 'C:\\App\\app.exe' };
+    const serviceRunning = { type: 'service_running', serviceName: 'app' };
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)]);
+    await run({ ...baseVersion, detectionRules: [fileExists, serviceRunning] }, ['dev-old', 'dev-new']);
+
+    expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(2);
+    expect(dispatchedPayload(0).detectionRules).toEqual([fileExists]);
+    expect(dispatchedPayload(1).detectionRules).toEqual([fileExists, serviceRunning]);
+  });
+
+  it('(h) only service_running + old agent → no detectionRules key at all', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD)]);
+    await run({ ...baseVersion, detectionRules: [{ type: 'service_running', serviceName: 'app' }] }, ['dev-old']);
+    expect(dispatchedPayload()).not.toHaveProperty('detectionRules');
+  });
+
+  it('(i) a secret variable referenced only in a script fails every device with the template-secret message', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)], [varRow('api_key', 'sekrit', true)]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'run --key {{var.api_key}}' },
+      ['dev-new'],
+    );
+    expect(result.status).toBe('failed');
+    expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    const failures = updateSetCalls.filter((c) => c.status === 'failed');
+    expect(failures[0]?.errorMessage).toBe('Software deployment templates cannot use secret variable(s) {{var.api_key}}');
+    expect(JSON.stringify({ result, updateSetCalls })).not.toContain('sekrit');
+  });
+
+  it('(j) an unresolved script token fails the device with the installer-variable message', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)], []);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },
+      ['dev-new'],
+    );
+    expect(result.status).toBe('failed');
+    expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    expect(updateSetCalls.find((c) => c.status === 'failed')?.errorMessage).toBe(
+      'Could not resolve installer variable(s): {{var.missing}}',
+    );
+  });
+
+  it('(j2) the batch message names the variable failure when it is every device\'s only reason (#10307)', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)], []);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },
+      ['dev-new'],
+    );
+    expect(result.message).toBe(
+      'All target devices failed installer variable resolution: Could not resolve installer variable(s): {{var.missing}}',
+    );
+  });
+
+  it('(j3) the batch message stays generic when devices failed variable resolution for different reasons (#10307)', async () => {
+    mockDeviceReads(
+      [
+        { ...winDevice('dev-a', NEW), customFields: { alpha: 'x' } },
+        { ...winDevice('dev-b', NEW), customFields: { beta: 'y' } },
+      ],
+      [],
+    );
+    const result = await run(
+      {
+        ...baseVersion,
+        installScriptsEnabled: true,
+        preInstallScript: 'echo {{device.customField.alpha}} {{device.customField.beta}}',
+      },
+      ['dev-a', 'dev-b'],
+    );
+    const reasons = updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage);
+    // Precondition: two devices, two DIFFERENT variable reasons.
+    expect(new Set(reasons).size).toBe(2);
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+  });
+
+  it('(j3b) a dispatch failure keeps the batch message from naming the variable reason (#10307)', async () => {
+    mockDeviceReads(
+      [
+        { ...winDevice('dev-a', NEW), customFields: {} },
+        { ...winDevice('dev-b', NEW), customFields: { alpha: 'x' } },
+      ],
+      [],
+    );
+    dispatchDeviceCommandMock.mockRejectedValueOnce(new Error('queue down'));
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{device.customField.alpha}}' },
+      ['dev-a', 'dev-b'],
+    );
+    const reasons = updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage);
+    // Precondition: one variable failure and one dispatch failure.
+    expect(reasons).toEqual(
+      expect.arrayContaining(['Could not resolve installer variable(s): {{device.customField.alpha}}', 'queue down']),
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+  });
+
+  it('(j4) the batch message stays generic when a variable failure is mixed with another gate (#10307)', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)], []);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },
+      ['dev-old', 'dev-new'],
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+  });
+
+  it('(k) scripts are substituted even when downloadUrl and args contain no {{ (the template shortcut must not skip them)', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)], []);
+    await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'Write-Output {{device.hostname}} {{install.file}}' },
+      ['dev-new'],
+    );
+    expect(dispatchedPayload().postInstallScript).toEqual({
+      language: 'powershell',
+      content: 'Write-Output {{device_hostname}} {{install_file}}',
+      parameters: { device_hostname: 'WKS-dev-new' },
+      timeoutSeconds: 600,
+    });
+    expect(dispatchedPayload().downloadUrl).toBe('https://dl/pkg.exe');
+  });
+
+  it('(k) a script with no tokens at all is still sent (and reads no variable context)', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)]);
+    await run({ ...baseVersion, installScriptsEnabled: true, preInstallScript: 'Write-Output pre' }, ['dev-new']);
+    expect(dispatchedPayload().preInstallScript).toMatchObject({ language: 'powershell', content: 'Write-Output pre', parameters: {} });
+    expect(selectMock).toHaveBeenCalledTimes(1); // the devices query only
+  });
+
+  it('(l) a version with no enabled scripts and no zip sends exactly the pre-#6958 payload keys, to an old or a new agent', async () => {
+    const legacyKeys = [
+      'checksum', 'deploymentId', 'downloadPolicy', 'downloadUrl', 'fileName', 'fileType',
+      'forceReinstall', 'retryCount', 'silentInstallArgs', 'softwareName', 'version',
+    ];
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW), winDevice('dev-none', null)]);
+    await run(baseVersion, ['dev-old', 'dev-new', 'dev-none']);
+    expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 3; i++) expect(Object.keys(dispatchedPayload(i)).sort()).toEqual(legacyKeys);
+  });
+
+  it('a zip version is gated like scripts and dispatched with fileType zip to a new agent', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)]);
+    const result = await run(
+      {
+        ...baseVersion,
+        fileType: 'zip',
+        originalFileName: 'client.zip',
+        silentInstallArgs: null,
+        installScriptsEnabled: true,
+        postInstallScript: 'Write-Output install',
+      },
+      ['dev-old', 'dev-new'],
+    );
+    expect(result.dispatchedDeviceIds).toEqual(['dev-new']);
+    expect(dispatchedPayload()).toMatchObject({ fileType: 'zip', fileName: 'client.zip' });
+    expect(updateSetCalls.find((c) => c.status === 'failed')?.errorMessage).toMatch(/^agent_update_required/);
+  });
+
+  it('every device on the wrong OS → the batch message names the OS, not an agent update', async () => {
+    mockDeviceReads([{ ...winDevice('dev-mac', NEW), osType: 'macos' }, { ...winDevice('dev-null', NEW), osType: null }]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'Write-Output hi' },
+      ['dev-mac', 'dev-null'],
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe("No target device runs this version's supported OS (windows)");
+    expect(updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage)).toEqual([
+      'Install scripts on this version target windows; this device runs macos',
+      'Install scripts on this version target windows; this device runs an unknown OS',
+    ]);
+  });
+
+  it('every device too old → the batch message is the agent-update reason', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD)]);
+    const result = await run({ ...baseVersion, installScriptsEnabled: true, postInstallScript: 'x' }, ['dev-old']);
+    expect(result.message).toBe(`No target device runs a new enough agent: agent_update_required (minimum agent ${NEW})`);
+  });
+
+  it('a failed gate write for one device does not abort the fan-out for the rest', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)]);
+    updateMock.mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn().mockRejectedValue(new Error('statement timeout')) })),
+    }));
+    const result = await run({ ...baseVersion, installScriptsEnabled: true, postInstallScript: 'x' }, ['dev-old', 'dev-new']);
+    expect(result.dispatchedDeviceIds).toEqual(['dev-new']);
+    expect(result.deviceResults.find((r) => r.deviceId === 'dev-old')).toMatchObject({ status: 'failed' });
+  });
+
+  it('matches the version OS case-insensitively (the chunked-upload UI stores "Windows")', async () => {
+    mockDeviceReads([winDevice('dev-win', NEW)]);
+    const result = await run(
+      { ...baseVersion, supportedOs: ['Windows'], installScriptsEnabled: true, postInstallScript: 'Write-Output hi' },
+      ['dev-win'],
+    );
+    expect(result.dispatchedDeviceIds).toEqual(['dev-win']);
+    expect(dispatchedPayload().postInstallScript).toMatchObject({ language: 'powershell' });
+  });
+
+  it("a script-bearing version fails a device whose OS is not the version's one supported OS", async () => {
+    mockDeviceReads([{ ...winDevice('dev-mac', NEW), osType: 'macos' }, winDevice('dev-win', NEW)]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'Write-Output hi' },
+      ['dev-mac', 'dev-win'],
+    );
+    expect(result.dispatchedDeviceIds).toEqual(['dev-win']);
+    expect(updateSetCalls.find((c) => c.status === 'failed')?.errorMessage).toBe(
+      'Install scripts on this version target windows; this device runs macos',
+    );
   });
 });

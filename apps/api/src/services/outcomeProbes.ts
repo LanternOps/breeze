@@ -26,6 +26,7 @@ export interface AlertRecoveryReading {
   status: 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
   resolvedAt: Date | null;
   resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
   resolutionReason: string | null;
 }
 
@@ -35,6 +36,7 @@ export async function readAlertRecovery(alertId: string): Promise<AlertRecoveryR
       status: alerts.status,
       resolvedAt: alerts.resolvedAt,
       resolvedBy: alerts.resolvedBy,
+      resolvedByPrincipalId: alerts.resolvedByPrincipalId,
       resolutionReason: alerts.resolutionReason,
     })
     .from(alerts)

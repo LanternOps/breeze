@@ -1,3 +1,8 @@
 ---
-return Astro.redirect('/organizations', 301);
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import SitesPage from '../../../components/settings/SitesPage';
 ---
+
+<DashboardLayout titleKey="titles.settingsSites">
+  <SitesPage client:load />
+</DashboardLayout>

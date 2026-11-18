@@ -21,6 +21,8 @@ import {
   putBytes,
 } from '../../services/ticketAttachmentStorage';
 import { getScopedTicketOr404 } from './tickets';
+import { lockTicketForWrite } from '../../services/ticketRowLock';
+import { isMergedTombstone, TicketMergedError } from '../../services/ticketMerge/errors';
 import { captureException } from '../../services/sentry';
 import { contentDispositionFor, sanitizeAttachmentFilename } from '../../services/attachmentFilename';
 
@@ -50,6 +52,24 @@ function fail(
   message: string,
 ): Response {
   return c.json({ error: message, code }, status);
+}
+
+/**
+ * #8972 W0: lock the ticket, then re-check it on the locked row with the
+ * answers the unlocked read gave: gone or moved to another org since the read
+ * → 404 (the row would otherwise be stamped with the old org after a mover
+ * rewrote the ticket's children), deleted meanwhile → 409.
+ */
+async function lockTicketForAttach(
+  c: { json: (b: unknown, s: number) => Response },
+  ticket: { id: string; orgId: string },
+): Promise<Response | null> {
+  const locked = await lockTicketForWrite(db, ticket.id);
+  if (!locked || locked.orgId !== ticket.orgId) return fail(c, 404, 'TICKET_NOT_FOUND', 'Ticket not found');
+  if (locked.deletedAt) return fail(c, 409, 'TICKET_DELETED', 'Cannot attach files to a deleted ticket');
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED).
+  if (isMergedTombstone(locked)) return c.json(new TicketMergedError(locked.id, locked.mergedIntoTicketId!).toBody(), 409);
+  return null;
 }
 
 
@@ -148,6 +168,28 @@ ticketAttachmentRoutes.post(
       throw err;
     }
 
+    // Compensating delete. It must NEVER mask the original fault — the
+    // deleteBinary docstring in s3Storage states the same contract.
+    const discardStored = async () => {
+      try {
+        await deleteBytes({
+          storageBackend: stored.backend,
+          storageKey: stored.storageKey,
+          data: stored.data,
+        });
+      } catch (cleanupErr) {
+        captureException(cleanupErr);
+      }
+    };
+
+    // #8972 W0: ticket row lock before the row, taken AFTER the storage write
+    // so the lock is never held across the upload (the compensating delete on
+    // a refused or failed insert does run under it).
+    const refused = await lockTicketForAttach(c, ticket);
+    if (refused) {
+      await discardStored();
+      return refused;
+    }
     let row;
     try {
       const inserted = await db
@@ -169,17 +211,7 @@ ticketAttachmentRoutes.post(
         .returning(ATTACHMENT_META_COLUMNS);
       row = inserted[0]!;
     } catch (err) {
-      // Compensating delete. It must NEVER mask the original fault — the
-      // deleteBinary docstring in s3Storage states the same contract.
-      try {
-        await deleteBytes({
-          storageBackend: stored.backend,
-          storageKey: stored.storageKey,
-          data: stored.data,
-        });
-      } catch (cleanupErr) {
-        captureException(cleanupErr);
-      }
+      await discardStored();
       throw err;
     }
 
@@ -263,6 +295,10 @@ ticketAttachmentRoutes.post(
       return fail(c, 404, 'ARTIFACT_NOT_FOUND', 'No such artifact is available to this organization');
     }
 
+    // #8972 W0: ticket first, re-checked on the locked row (the artifact's org
+    // was matched against the org read above).
+    const refused = await lockTicketForAttach(c, ticket);
+    if (refused) return refused;
     const [row] = await db
       .insert(ticketAttachments)
       .values({
@@ -471,6 +507,12 @@ ticketAttachmentRoutes.delete(
     if (!isOwn && !canManage) {
       return fail(c, 403, 'ATTACHMENT_NOT_DELETABLE', "Deleting another user's attachment requires ticket management permission");
     }
+    // #8972 W1: a merged tombstone is read-only. Refused BEFORE the object
+    // delete: once the bytes are gone the row must go too, so the locked step
+    // below cannot refuse (a merge moves attachments by row, keeping the id).
+    if (ticket.mergedIntoTicketId) {
+      return c.json(new TicketMergedError(ticket.id, ticket.mergedIntoTicketId).toBody(), 409);
+    }
 
     // Object BEFORE row: reversed, a failed object delete would leave bytes in
     // the bucket with no row left to find them by — the same reasoning as the
@@ -482,6 +524,8 @@ ticketAttachmentRoutes.delete(
       captureException(err);
       return fail(c, 503, 'STORAGE_UNAVAILABLE', 'Attachment storage is unavailable — try again shortly');
     }
+    // #8972 W0: ticket first; after the object delete, so no lock spans storage I/O.
+    await lockTicketForWrite(db, ticket.id);
     await db.delete(ticketAttachments).where(eq(ticketAttachments.id, attachmentId));
 
     await createAuditLogAsync({

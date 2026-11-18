@@ -20,6 +20,8 @@ vi.mock('../db/schema', () => ({
     totalSize: 'backupJobs.totalSize',
     fileCount: 'backupJobs.fileCount',
     totalFiles: 'backupJobs.totalFiles',
+    verifiedSize: 'backupJobs.verifiedSize',
+    verifiedFiles: 'backupJobs.verifiedFiles',
     lastProgressAt: 'backupJobs.lastProgressAt',
     lastKeepaliveAt: 'backupJobs.lastKeepaliveAt',
     startedAt: 'backupJobs.startedAt',
@@ -136,6 +138,80 @@ describe('applyBackupProgress', () => {
     const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.lastKeepaliveAt).toBeInstanceOf(Date);
     expect(setArg).not.toHaveProperty('lastProgressAt');
+  });
+
+  describe('#11014: resume/dedupe check counters count as progress', () => {
+    function apply(progress: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' }]) as any
+      );
+      vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+      return applyBackupProgress({ agentId: 'agent-1', commandId: JOB_UUID, progress });
+    }
+    const setArg = () => vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0];
+
+    it.each([
+      {
+        name: 'a resume pass with nothing uploaded yet',
+        progress: { phase: 'uploading', current: 0, total: 5000, filesDone: 0, filesTotal: 10, verifiedFiles: 3, verifiedBytes: 1500 },
+        wantSize: 1500,
+        wantFiles: 3,
+      },
+      {
+        name: 'verified counters alone',
+        progress: { verifiedFiles: 1, verifiedBytes: 0 },
+        wantSize: 0,
+        wantFiles: 1,
+      },
+    ])('stores the counters and lets their increase advance lastProgressAt: $name', async ({ progress, wantSize, wantFiles }) => {
+      expect(await apply(progress)).toEqual({ applied: true });
+      const set = setArg();
+      expect(set.verifiedSize).toBe(wantSize);
+      expect(set.verifiedFiles).toBe(wantFiles);
+      // Compared against the stored counters by the database, like bytes/files.
+      const progressSql = JSON.stringify(set.lastProgressAt);
+      expect(progressSql).toContain('backupJobs.verifiedSize');
+      expect(progressSql).toContain('backupJobs.verifiedFiles');
+      expect(progressSql).toContain('ELSE');
+    });
+
+    it('leaves the stored counters alone when an older agent omits them', async () => {
+      await apply({ current: 10, total: 20, filesDone: 1, filesTotal: 2 });
+      const set = setArg();
+      expect(set).not.toHaveProperty('verifiedSize');
+      expect(set).not.toHaveProperty('verifiedFiles');
+      expect(JSON.stringify(set.lastProgressAt)).not.toContain('verified');
+    });
+
+    // Same rule as an unusable snapshotId: a bad optional field must not cost
+    // the bytes/files/liveness that keep the job alive.
+    it.each([
+      { name: 'negative bytes', bad: { verifiedBytes: -1 } },
+      { name: 'fractional bytes (bigint column)', bad: { verifiedBytes: 1.5 } },
+      { name: 'fractional files (integer column)', bad: { verifiedFiles: 1.5 } },
+      { name: 'files beyond the integer column', bad: { verifiedFiles: 2_147_483_648 } },
+      { name: 'wrong type', bad: { verifiedBytes: 'lots' } },
+    ])('drops only unusable verified counters, never the rest: $name', async ({ bad }) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await apply({ current: 10, total: 20, filesDone: 1, ...bad })).toEqual({ applied: true });
+      const set = setArg();
+      expect(set.transferredSize).toBe(10);
+      expect(set.fileCount).toBe(1);
+      expect(set.lastKeepaliveAt).toBeInstanceOf(Date);
+      expect(set).not.toHaveProperty('verifiedSize');
+      expect(set).not.toHaveProperty('verifiedFiles');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('verified'));
+      warn.mockRestore();
+    });
+
+    it('a bad verified counter does not excuse malformed load-bearing fields', async () => {
+      const result = await applyBackupProgress({
+        agentId: 'agent-1',
+        commandId: JOB_UUID,
+        progress: { current: -5, verifiedBytes: -1 },
+      });
+      expect(result).toEqual({ applied: false, reason: 'invalid-payload' });
+    });
   });
 
   it('rejects a progress message from a non-owning agent', async () => {

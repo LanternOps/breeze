@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { alerts, alertRules, alertTemplates, devices, offlineTransitionEffects as effects, type OfflineEffect } from '../db/schema';
 import { alertRuleOwnershipConditionForOrg, getApplicableRules } from './alertService';
+import { createLifecycleLoader, hasMalformedLegacyCooldownOverride } from './alertLifecycle/resolve';
 import { interpolateTemplate } from './alertConditions';
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { getRedisConnection } from './redis';
@@ -49,6 +50,7 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
         and(eq(alertRules.targetType, 'device'), eq(alertRules.targetId, device.id)),
       )));
     const plans: OfflineRulePlan[] = [];
+    const loadLifecycle = createLifecycleLoader();
     for (const { rule, template } of rules) {
       const overrides = rule.overrideSettings as Record<string, unknown> | null;
       const conditions = overrides?.conditions ?? template.conditions;
@@ -57,7 +59,10 @@ export async function expandOfflineAlertPlan(effect: OfflineEffect): Promise<str
         ruleId: rule.id, name: rule.name, templateId: template.id,
         conditions, severity: (overrides?.severity as OfflineRulePlan['severity']) ?? template.severity,
         titleTemplate: template.titleTemplate, messageTemplate: template.messageTemplate,
-        cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+        // Throwing here would fail the whole plan and starve this rule's siblings.
+        cooldownMinutes: hasMalformedLegacyCooldownOverride(rule)
+          ? null
+          : (await loadLifecycle({ rule, template, deviceOrgId: device.orgId })).cooldownMinutes,
       });
     }
     // Reuse effective monitor resolution, including disabled attachments,
@@ -136,7 +141,8 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
   const payload = effect.payload;
   if (payload.type !== 'alert-rule') throw new Error('Expected alert rule');
   const { observation, rule } = payload;
-  if (!Number.isInteger(rule.cooldownMinutes) || rule.cooldownMinutes < 0 || rule.cooldownMinutes > 10080) {
+  const { cooldownMinutes } = rule;
+  if (cooldownMinutes === null || !Number.isInteger(cooldownMinutes) || cooldownMinutes < 0 || cooldownMinutes > 10080) {
     throw new Error('Invalid offline alert cooldown');
   }
   const children: string[] = [];
@@ -170,7 +176,7 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
     const flapping = durable.flapping || redis?.flapping === true;
     const multiplier = Math.max(durable.multiplier, redis?.multiplier ?? 1);
     const occurredAt = new Date().toISOString();
-    const cooldownUntil = new Date(new Date(occurredAt).getTime() + rule.cooldownMinutes * multiplier * 60_000);
+    const cooldownUntil = new Date(new Date(occurredAt).getTime() + cooldownMinutes * multiplier * 60_000);
     const alertId = flapping ? null : offlineEffectId(effect.transitionId, 'alert', rule.ruleId);
     if (alertId) {
       const context = {
@@ -181,13 +187,14 @@ export async function admitOfflineAlertRule(effect: OfflineEffect): Promise<stri
       const title = interpolateTemplate(rule.titleTemplate, context);
       const message = interpolateTemplate(rule.messageTemplate, context);
       const [inserted] = await db.insert(alerts).values({
+        ownerKind: 'device',
         id: alertId, ruleId: rule.ruleId,
         ...(rule.monitorId ? { monitorId: rule.monitorId } : {}),
         configPolicyId: null, configItemName: null,
         deviceId: device.id, orgId: device.orgId, severity: rule.severity, title, message,
         status: 'active', triggeredAt: new Date(occurredAt),
         context: { ...context, conditionsMet: prepared.conditionsMet, conditionsNotMet: prepared.conditionsNotMet,
-          cooldownMinutes: rule.cooldownMinutes, templateId: rule.templateId },
+          cooldownMinutes, templateId: rule.templateId },
       }).onConflictDoNothing().returning({ id: alerts.id });
       // Existing stable alert identity means this observation already admitted it,
       // even if it is now resolved; never reconstruct consequences from current config.

@@ -13,6 +13,9 @@ import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches, scriptTags, scriptToTags, scriptVersions } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
+import { portalUsers, portalUserIdentities } from '../../db/schema/portal';
+import { portalDirectoryActions, portalDirectoryRuns } from '../../db/schema/portalDirectory';
+import { portalScimTokens } from '../../db/schema/portalScim';
 import {
   coveredCommands,
   predicateCoversOrgAxis,
@@ -87,6 +90,8 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // NOTE: device_commands is the canonical prior example (agent WS path, system-
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
+  'billing_device_snapshots', // Billing-owned daily capacity evidence. Forced owner-only RLS; no core tenant role can read/write, even with a forged partner context.
+  'billing_capacity_changes', // Billing-owned notice/payment operation ledger. Forced owner-only RLS, revoked from breeze_app; only authenticated billing service exposes the owning partner's summary.
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'container_image_upstream_cache', // Workload image currency W05 (#8194, spec §9.3): global cache of what PUBLIC registries serve per registry/repository:tag — no tenant column by design (fleet-wide dedup, D13). Forced RLS, single system-only policy, NO permissive SELECT (keys are derived from what tenants run). Written only by the imageCurrencyWorker for anonymous lookups that succeeded; private/failed results land only on the tenant's own device_workloads rows. No org_id/device_id, so no cascade, merge or export registration applies.
   'pam_epoch_transfer_config', // PAM ownership epochs W6 (#8208): one-row deployment switch the device-move guard trusts over the forgeable breeze.* GUCs. No tenant column. Forced RLS, single system-only policy, AND no breeze_app privilege at all (migration + ensureAppRole.ts REVOKE ALL) — a breeze_app session can claim system scope, so the grant, not RLS, is the barrier. Read only through SECURITY DEFINER breeze_pam_epoch_transfer_enabled(); written only by the table owner. No org_id/device_id, so no cascade, merge or export registration.
@@ -135,9 +140,15 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
 // after app-layer authorization.
 const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  // Event org for erasure/merge/export; read authority is the parent webhook's owner.
+  'webhook_deliveries',
   // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
   // org_id names an org the window may import into, not the row's tenant.
   'migration_window_orgs',
+  // ticket_import_org_maps (#8313 W4): partner-axis (PARTNER_TENANT_TABLES);
+  // its org_id is the Breeze org a source org imports into, not the row's
+  // tenant.
+  'ticket_import_org_maps',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
@@ -198,6 +209,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
   // real assertion for this table's policy shape.
   'ticket_form_org_links',
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): same shape as
+  // ticket_form_org_links — its own org_id is the ALLOWLISTED org for a
+  // partner-wide ticket_routing_rules row, not the tenancy axis; its policies
+  // join through the parent rule (PARENT_FK_JOIN_POLICY_TABLES).
+  'ticket_routing_rule_org_links',
   // backup_provider_customers (#6008 W01): partner-axis (Shape 3) carrying a
   // denormalized NULLABLE org_id — the MAPPING TARGET, not the tenancy axis.
   // An unmapped customer has org_id NULL and must stay visible to the partner
@@ -222,6 +238,16 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // Cross-partner forge proof: gmailInboundToTicket.integration.test.ts (composite
   // FK rejects an org owned by a different partner).
   'ticket_mailbox_connections',
+  // Wisp W02 (#9908): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the grant's SCOPE (NULL = partner-wide), bound to the partner by the
+  // composite (org_id, partner_id) FK, not the tenancy axis. Functional forge
+  // proof: wispGrantsRls.integration.test.ts.
+  'wisp_grants',
+  // Wisp W04 (#9910): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the attached session's org, bound to the partner by the composite
+  // (org_id, partner_id) FK — not the tenancy axis. Forge proof:
+  // wispThreadsRls.integration.test.ts.
+  'wisp_thread_sessions',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -277,6 +303,20 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // same policy shape as time_entries. No org_id / device_id by design, so it
   // appears in no other registration list.
   ['time_suggestion_decisions', 'partner_id'],
+  // partner_entitlements (Partner Entitlements W1, Wisp W01 #9907): shape 3,
+  // no org_id — partner-axis only, so this is its ONLY registration list.
+  ['partner_entitlements', 'partner_id'],
+  // ai_memory_blocks (Wisp W03 #9909): partner-axis anchor (tenant_partner_id)
+  // with owner sub-axes — owner_kind user | org | partner, each owner bound to
+  // the anchor by a DEFERRABLE composite FK (users / organizations (id,
+  // partner_id), ON DELETE CASCADE). RLS branches on owner_kind; the partner
+  // branch is breeze_has_partner_access(tenant_partner_id). Private memory, not
+  // config, so no partner-wide SELECT branch. No `org_id` column (it is
+  // `owner_org_id`), so the org cascade/merge/export engines — which key on a
+  // literal `org_id` — cannot see it: org/user/partner erasure removes rows by
+  // FK cascade instead (w00 A9). This is its ONLY registration list.
+  // Functional proof: aiMemoryBlocksRls.integration.test.ts.
+  ['ai_memory_blocks', 'tenant_partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
   ['pax8_integrations', 'partner_id'],
@@ -342,6 +382,19 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // migrationWindowsRls.integration.test.ts.
   ['migration_windows', 'partner_id'],
   ['migration_window_orgs', 'partner_id'],
+  // Ticket import framework (#8313 W4, 2027-01-20-100000): a connected
+  // source, its org and category maps, its runs, its ticket ledger and the run
+  // report's issue rows. Partner-axis, no org owner: an import spans orgs and
+  // is a partner-admin action. Policy: breeze_current_scope()='system' OR
+  // breeze_has_partner_access(partner_id). ticket_import_org_maps also carries
+  // a non-tenancy org_id and is in ORG_AXIS_POLICY_EXCLUDED_TABLES. Functional
+  // forge: ticketImportRls.integration.test.ts.
+  ['ticket_import_sources', 'partner_id'],
+  ['ticket_import_org_maps', 'partner_id'],
+  ['ticket_import_category_maps', 'partner_id'],
+  ['ticket_import_runs', 'partner_id'],
+  ['ticket_import_items', 'partner_id'],
+  ['ticket_import_run_issues', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is
@@ -433,6 +486,18 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // scope on top of the partner-axis policy asserted here.
   // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
   ['device_pool_assignment_events', 'partner_id'],
+  // #8318 wave 1b (reattach, spec §4.3/§4.4). Both partner-axis (Shape 3) with
+  // no org_id column — source/target org ids are authorization snapshots, not
+  // tenancy keys — so no cascade / export / merge registration; the intents'
+  // device FKs cascade, the ledger's device ids are FK-less snapshots.
+  // Both: RESTRICTIVE writes system-only (every writer runs in system scope),
+  // RESTRICTIVE reads narrowed to rows whose target org (and real source org)
+  // the caller can access. device_reattach_intents: source_parked is derived
+  // by a SECURITY DEFINER trigger. device_reattachments: append-only (UPDATE
+  // trigger).
+  // Functional proof: deviceReattachIntentsRls.integration.test.ts.
+  ['device_reattach_intents', 'partner_id'],
+  ['device_reattachments', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
@@ -493,12 +558,41 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // merge registration; cascadeDeletePartner's partner_id sweep erases it.
   // Functional forge proof: trustPageTemplatesPartnerRls.integration.test.ts.
   ['trust_page_templates', 'partner_id'],
+  // Wisp W02 (#9908): delegation grants + their append-only revisions. Shape 3
+  // plus ownership constraints (self-only INSERT, admin tighten/revoke-only
+  // trigger). Forge proof: wispGrantsRls.integration.test.ts.
+  ['wisp_grants', 'partner_id'],
+  ['wisp_grant_revisions', 'partner_id'],
+  // Wisp W04 (#9910): one durable thread per grant + its session links. Shape
+  // 3, one FOR ALL policy each (system OR breeze_has_partner_access(partner_id)).
+  // wisp_thread_sessions also carries a non-tenancy org_id and is in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). The sibling
+  // wisp_thread_attachments is shape 1 (auto-discovered, not listed here).
+  // Forge proof: wispThreadsRls.integration.test.ts.
+  ['wisp_threads', 'partner_id'],
+  ['wisp_thread_sessions', 'partner_id'],
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1):
+  // wisp_nudge_preferences is user-axis inside a partner — its FOR ALL policy is
+  // `system OR (user_id = breeze_current_user_id() AND breeze_has_partner_access(partner_id))`
+  // plus an additive SELECT-only partner read branch; also in USER_ID_SCOPED_TABLES.
+  // wisp_partner_nudge_settings is plain shape 3. No org_id on either → no
+  // cascade/merge/export registration. Forge proof: wispNudgePreferencesRls.integration.test.ts.
+  ['wisp_nudge_preferences', 'partner_id'],
+  ['wisp_partner_nudge_settings', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // webhooks_one_owner_chk, 2027-01-13-100000-webhooks-partner-ownership.sql:
+  // no partner-wide SELECT branch per OD1. Functional proof: webhooksPartnerRls.
+  'webhooks',
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'service_catalogs',
   'service_catalog_items',
   'billing_payment_settings',
@@ -589,6 +683,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // 2026-12-20-200100. Functional forge proof:
   // ticketApprovalSettingsPartnerRls.integration.test.ts.
   'ticket_approval_settings',
+  // portal_access_policies (W3 #11380): portal sign-in policy, org override XOR
+  // partner default; both partner-wide SELECT branches ship in its migration.
+  // Functional forge proof: portalAccessPoliciesPartnerRls.integration.test.ts.
+  'portal_access_policies',
   // tool_sources / tool_source_tools (Tool catalog W01, #5215 / #5216, spec
   // 2026-09-07 §5): a registration of an external MCP server is org-scoped
   // (org_id set) OR partner-wide (partner_id set, org_id NULL — one MSP
@@ -608,7 +706,39 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
   // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
   // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  // Its run tables flow_runs / flow_run_steps (W04, #5219) are deliberately
+  // NOT here: they are shape 1 (org_id NOT NULL, breeze_has_org_access only —
+  // plan Open Decision 1), so org-tenant auto-discovery covers them.
   'flows',
+  // flow_versions (Tool Catalog W04, #5219): org_id XOR partner_id
+  // publications of a flow, 2027-01-06-130000-flow-runs.sql
+  // (flow_versions_one_owner_chk; owner copied from the parent flow by the
+  // deferred flow_versions_owner_guard_trg). The flows_isolation predicate
+  // verbatim plus the flow_versions_partner_wide_select branch. Functional
+  // cross-partner forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger and the
+  // automation-wide occurrence claims copy the automations/flows shape — org_id
+  // XOR partner_id, the flows_isolation predicate verbatim plus the
+  // *_partner_wide_select branch; owner pair kept equal to the automation's by
+  // deferred owner-guard constraint triggers.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config table plus three children that DENORMALISE the owner
+  // pair from their parent (owner-guard constraint triggers, like
+  // tool_source_tools), all four with the partner-wide SELECT branch in the
+  // creating migration. Functional forge proof:
+  // businessCalendarsPartnerRls.integration.test.ts.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000): org_id XOR partner_id
+  // config table with the partner-wide SELECT branch and the org-member SELECT
+  // branch in the creating migration. Functional forge proof:
+  // ticketRoutingRulesPartnerRls.integration.test.ts.
+  'ticket_routing_rules',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -619,6 +749,41 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // connection_health_incidents_org_partner_fk ties org_id to partner_id.
   // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
   'connection_health_incidents',
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_webhook_deliveries and
+  // flow_usage_counters copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-wide flow, NOT org XOR partner, so
+  // absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES. Neither has a
+  // breeze_current_partner_id() read branch: deliveries and counters are
+  // partner-private (an org token must never see a partner-wide flow's rows).
+  // Functional forge proof: flowWebhooksRls.integration.test.ts (Task A8).
+  'flow_webhook_deliveries',
+  'flow_usage_counters',
+  // Wisp W05a (#9911, w00 A30): wisp_concerns, wisp_concern_recipients and
+  // wisp_watches copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-level concern / partner-wide watch,
+  // NOT org XOR partner, so absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES and with
+  // no breeze_current_partner_id() read branch (an org token must never see a
+  // partner-level row). Composite FKs *_org_partner_fk tie org_id to
+  // partner_id. Functional forge proof: wispConcernsRls.integration.test.ts.
+  'wisp_concerns',
+  'wisp_concern_recipients',
+  'wisp_watches',
+  // Wisp W08a (#9914): wisp_thread_links is the same shape — partner_id
+  // always set, org_id NULL for a partner-level link (user, org-less
+  // organization, partner-scoped run/task), no breeze_current_partner_id()
+  // read branch. Functional forge proof:
+  // wispThreadLinksRls.integration.test.ts.
+  'wisp_thread_links',
+  // Wisp companion W02a (#10212): wisp_thread_posts is the same shape —
+  // partner_id always set, org_id NULL for a partner-level post (brief,
+  // digest, org-less concern), no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispThreadPostsRls.integration.test.ts.
+  'wisp_thread_posts',
+  // Wisp check-in timers W01 (#10992): wisp_check_ins is the same shape —
+  // partner_id always set, org_id NULL for a check-in on a partner-level
+  // thread, no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispCheckInsRls.integration.test.ts.
+  'wisp_check_ins',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
@@ -882,6 +1047,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // reportsPartnerRls.integration.test.ts. Deliberately NOT in
   // XOR_OWNERSHIP_DUAL_AXIS_TABLES — see the exclusion note there.
   'reports',
+  // #11412 W01 (origin #9246): software_upload_sessions mirrors the owner of
+  // the catalog row it uploads into — org_id XOR partner_id
+  // (software_upload_sessions_one_owner_chk, 2027-01-22-211500). Deliberately
+  // NOT in XOR_OWNERSHIP_DUAL_AXIS_TABLES: an in-flight partner upload is
+  // partner-private, so it carries no partner-wide SELECT branch (plan D3, the
+  // reports/webhooks precedent). The org_id column keeps org-tenant
+  // auto-discovery asserting the org branch; the partner branch, forge, XOR
+  // and cascade proof is softwareUploadSessionsPartnerRls.integration.test.ts.
+  'software_upload_sessions',
   // #4247: report_runs mirrors its parent — org_id XOR partner_id
   // (report_runs_one_owner_chk), pinned to the parent's owner by DEFERRABLE
   // composite FKs, one direct FOR ALL owner policy (no parent EXISTS join).
@@ -909,7 +1083,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // read, so reports must never carry one. Its partner branch is proven
 // functionally by reportsPartnerRls.integration.test.ts instead. The same
 // holds for its runs, `report_runs` (#4247, reportRunsOwnerRls).
+//
+// `webhooks` (#10531) also has an XOR CHECK but carries partner-private
+// cross-org plumbing: URL, secret, headers and cross-org delivery history.
+// OD1 forbids org sessions reading partner webhooks; the SELECT branch would
+// violate that boundary. Functional proof: webhooksPartnerRls.integration.test.ts.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'billing_payment_settings',
   'caller_verification_policies',
   // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its
@@ -946,6 +1130,9 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // ticket_approval_settings_one_owner_chk, 2026-12-20-200100 (#4617). Its
   // partner-wide SELECT branch ships in the same migration.
   'ticket_approval_settings',
+  // portal_access_policies_one_owner_chk, 2027-01-22-231500 (W3 #11380). Its
+  // partner-wide SELECT branches ship in the same migration.
+  'portal_access_policies',
   // tool_sources_one_owner_chk / tool_source_tools_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-193500 (#5216).
   // Both partner-wide SELECT branches ship in that same migration, so neither
@@ -955,6 +1142,25 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
   // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
   'flows',
+  // flow_versions_one_owner_chk, 2027-01-06-130000-flow-runs.sql (#5219); its
+  // partner-wide SELECT branch (flow_versions_partner_wide_select) ships in the
+  // same file. Forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
+  // flow_automation_conversions_one_owner_chk / automation_occurrence_claims_one_owner_chk,
+  // 2027-01-09-100000-flow-automation-conversions.sql (#5221); both partner-wide
+  // SELECT branches ship in the same file.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
+  // business_calendars_one_owner_chk and the three children's *_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
+  // All four partner-wide SELECT branches ship in the same file.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
+  // ticket_routing_rules_one_owner_chk, 2027-01-04-120000 (#8883 W5); its
+  // partner-wide SELECT branch ships in the same file.
+  'ticket_routing_rules',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',
@@ -1040,6 +1246,7 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
   'deployment_results',
   'patch_job_results',
   'patch_rollbacks',
+  'software_compliance_status',
 ]);
 
 // Tables that reach their tenant through a PARENT FK (no device_id, no
@@ -1154,6 +1361,11 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access(parent.org_id) join would be WRONG because the
   // parent's org_id is NULL for the partner-wide forms this table scopes.
   ['ticket_form_org_links', ['ticket_forms']],
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): org allowlist
+  // for partner-wide ticket_routing_rules, same parent-join shape as
+  // ticket_form_org_links, plus a SELECT-only branch admitting any link whose
+  // parent rule the caller can read (the create-path allowlist read).
+  ['ticket_routing_rule_org_links', ['ticket_routing_rules']],
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and
@@ -1252,6 +1464,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // connectionHealthDigest.integration.test.ts.
   'user_email_optouts',
   'connection_health_digest_deliveries',
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1): the
+  // user's own nudge preferences; also in PARTNER_TENANT_TABLES (the same FOR
+  // ALL policy ANDs breeze_has_partner_access). Behavioural proof:
+  // wispNudgePreferencesRls.integration.test.ts.
+  'wisp_nudge_preferences',
 ]);
 
 // Tables WITHOUT their own org_id whose permissive policies may admit rows by
@@ -1268,6 +1485,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 // see 'every child table without org_id checks its parent org wherever a policy
 // admits by user identity' below.
 const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
+  'ai_memory_blocks', // Wisp W03: the user branch admits only owner_kind='user' rows, whose owner_org_id is NULL by CHECK (no org parent) — the technician's own private memory; org facts are org-owned rows gated by breeze_has_org_access.
   'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
   'authenticator_devices', // the user's own approver device keys.
   'connection_health_digest_deliveries', // the user's own digest delivery receipts: date, status and bare incident ids (no FK, no org content).
@@ -1282,6 +1500,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.
+  'wisp_nudge_preferences', // Wisp W06a: the user's own nudge channel / quiet-hour / brief preferences (user_id PK, no org reference); the user branch also ANDs breeze_has_partner_access(partner_id).
 ]);
 
 // Platform bookkeeping tables that hold no tenant data and are not a tenancy
@@ -1307,7 +1526,6 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
   // column / catalog facts that a reviewer needs, nothing more.
   ['device_software', 'device_id-keyed inventory rows, no RLS; candidate shape 5 (device-join) or denormalised org_id.'],
   ['mobile_sessions', 'user_id / refresh-token session rows, no RLS; candidate shape 6 (breeze_current_user_id). Deferred in 2026-04-11-bucket-c-dead-cleanup-rls.sql.'],
-  ['software_compliance_status', 'device_id + policy_id rows, no RLS; candidate shape 5 (device-join).'],
   ['agent_versions', 'Global agent release reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
   ['cis_check_catalog', 'Global CIS benchmark check catalog; RLS OFF, so its 3 system-only write policies are inert; candidate INTENTIONAL_UNSCOPED after review.'],
   ['patches', 'Global patch reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
@@ -1328,11 +1546,10 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
 // classified into a real bucket (see the D5 failure message), not parked
 // here. Both constants are asserted by 'the unreviewed classification debt
 // bucket only shrinks' below.
-const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 11;
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 10;
 const UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'device_software',
   'mobile_sessions',
-  'software_compliance_status',
   'agent_versions',
   'cis_check_catalog',
   'patches',
@@ -5006,6 +5223,255 @@ describe('fleet evidence RLS — direct-org auto-discovery (Shape 1)', () => {
       expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
     },
   );
+});
+
+/**
+ * Portal registration W8 (#11385, plan D12): portal_directory_runs and
+ * portal_directory_actions are shape 1 (direct org_id). Auto-discovery already
+ * covers them; this block pins forced RLS + four-command coverage by name and
+ * proves cross-org invisibility as breeze_app, so a dropped policy or a table
+ * moved into an allowlist reds here by name.
+ */
+describe('portal directory deprovisioning RLS (shape 1, W8)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let orgAId = '';
+  let orgBId = '';
+  let runAId = '';
+  let actionAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (orgAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Portal Directory Partner ${runSuffix}`, slug: `rls-portal-dir-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active',
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for portal directory RLS');
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal Directory Org A', slug: `rls-pdir-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal Directory Org B', slug: `rls-pdir-b-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for portal directory RLS');
+      orgAId = orgA.id; orgBId = orgB.id;
+
+      const [account] = await db.insert(portalUsers).values({
+        orgId: orgAId, email: `pdir-${runSuffix}@rls.example.com`, authMethod: 'google', status: 'active', browserAccess: 'granted',
+      }).returning({ id: portalUsers.id });
+      const [identity] = await db.insert(portalUserIdentities).values({
+        orgId: orgAId, portalUserId: account!.id, provider: 'google', issuer: 'https://accounts.google.com',
+        subject: `pdir-sub-${runSuffix}`, linkedVia: 'jit',
+      }).returning({ id: portalUserIdentities.id });
+      const [run] = await db.insert(portalDirectoryRuns).values({
+        orgId: orgAId, source: 'google', chainKey: `${orgAId}:conn`, snapshotKey: `conn-${runSuffix}:2027-01-24`,
+        snapshotAt: new Date(), outcome: 'evaluated', mode: 'report', disposition: 'reported',
+      }).returning({ id: portalDirectoryRuns.id });
+      const [action] = await db.insert(portalDirectoryActions).values({
+        orgId: orgAId, runId: run!.id, identityId: identity!.id, portalUserId: account!.id,
+        provider: 'google', reason: 'suspended', effect: 'identity', status: 'reported',
+      }).returning({ id: portalDirectoryActions.id });
+      runAId = run!.id;
+      actionAId = action!.id;
+    });
+  }
+
+  it.each(['portal_directory_runs', 'portal_directory_actions'])(
+    '%s is direct-org and has forced four-command policy coverage',
+    async (tableName) => {
+      expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+      expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+      expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+      const rows = (await db.execute(sql`
+        SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+               ARRAY(
+                 SELECT DISTINCT p.cmd
+                 FROM pg_policies p
+                 WHERE p.schemaname = 'public'
+                   AND p.tablename = ${tableName}
+                   AND (
+                     COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                     OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                   )
+                 ORDER BY 1
+               ) AS covered_cmds
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ${tableName}
+      `)) as unknown as Array<{ rls_on: boolean; rls_forced: boolean; covered_cmds: string[] }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rls_on).toBe(true);
+      expect(rows[0]?.rls_forced).toBe(true);
+      expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)("both tables are invisible across orgs as breeze_app (org B cannot see org A's run or action)", async () => {
+    await ensureFixtures();
+    const asB = await withDbAccessContext(orgContext(orgBId), async () => ({
+      runs: await db.select({ id: portalDirectoryRuns.id }).from(portalDirectoryRuns).where(eq(portalDirectoryRuns.id, runAId)),
+      actions: await db.select({ id: portalDirectoryActions.id }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    }));
+    expect(asB.runs).toHaveLength(0);
+    expect(asB.actions).toHaveLength(0);
+    const asA = await withDbAccessContext(orgContext(orgAId), async () => ({
+      runs: await db.select({ id: portalDirectoryRuns.id }).from(portalDirectoryRuns).where(eq(portalDirectoryRuns.id, runAId)),
+      actions: await db.select({ id: portalDirectoryActions.id }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    }));
+    expect(asA.runs).toHaveLength(1);
+    expect(asA.actions).toHaveLength(1);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B INSERT of a run carrying org A's org_id is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(portalDirectoryRuns).values({
+          orgId: orgAId, source: 'entra', snapshotKey: `forged-${runSuffix}`, snapshotAt: new Date(),
+          outcome: 'skipped', reason: 'tenant_not_proven', mode: 'report', disposition: 'none',
+        }),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "portal_directory_runs"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B UPDATE/DELETE on org A's action affect 0 rows", async () => {
+    await ensureFixtures();
+    const result = await withDbAccessContext(orgContext(orgBId), async () => ({
+      updated: await db.update(portalDirectoryActions).set({ skipReason: 'forged' })
+        .where(eq(portalDirectoryActions.id, actionAId)).returning({ id: portalDirectoryActions.id }),
+      deleted: await db.delete(portalDirectoryActions)
+        .where(eq(portalDirectoryActions.id, actionAId)).returning({ id: portalDirectoryActions.id }),
+    }));
+    expect(result.updated).toHaveLength(0);
+    expect(result.deleted).toHaveLength(0);
+    const [row] = await withSystemDbAccessContext(async () =>
+      db.select({ skipReason: portalDirectoryActions.skipReason }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    );
+    expect(row).toEqual({ skipReason: null });
+  });
+});
+
+/**
+ * Portal registration W9 (#11386, plan D1): portal_scim_tokens is shape 1
+ * (direct org_id). Auto-discovery covers it; this block pins forced RLS +
+ * four-command coverage by name and proves cross-org invisibility as
+ * breeze_app — a SCIM credential of org A must never be readable, forgeable or
+ * revocable from org B's context.
+ */
+describe('portal SCIM tokens RLS (shape 1, W9)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  const TENANT = '11111111-2222-4333-8444-555555555555';
+  let orgAId = '';
+  let orgBId = '';
+  let tokenAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (orgAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Portal SCIM Partner ${runSuffix}`, slug: `rls-portal-scim-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active',
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for portal SCIM RLS');
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal SCIM Org A', slug: `rls-pscim-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal SCIM Org B', slug: `rls-pscim-b-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for portal SCIM RLS');
+      orgAId = orgA.id; orgBId = orgB.id;
+      const [token] = await db.insert(portalScimTokens).values({
+        orgId: orgAId, entraTenantId: TENANT, label: 'Entra', secretHash: 'a'.repeat(64), secretHint: 'abcd',
+      }).returning({ id: portalScimTokens.id });
+      tokenAId = token!.id;
+    });
+  }
+
+  it('portal_scim_tokens is direct-org and has forced four-command policy coverage', async () => {
+    const tableName = 'portal_scim_tokens';
+    expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+    expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+    expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+    expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+    expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+    const rows = (await db.execute(sql`
+      SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+             ARRAY(
+               SELECT DISTINCT p.cmd
+               FROM pg_policies p
+               WHERE p.schemaname = 'public'
+                 AND p.tablename = ${tableName}
+                 AND (
+                   COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                   OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                 )
+               ORDER BY 1
+             ) AS covered_cmds
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ${tableName}
+    `)) as unknown as Array<{ rls_on: boolean; rls_forced: boolean; covered_cmds: string[] }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rls_on).toBe(true);
+    expect(rows[0]?.rls_forced).toBe(true);
+    expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot see org A's token; org A can", async () => {
+    await ensureFixtures();
+    const asB = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: portalScimTokens.id }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)));
+    expect(asB).toHaveLength(0);
+    const asA = await withDbAccessContext(orgContext(orgAId), async () =>
+      db.select({ id: portalScimTokens.id }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)));
+    expect(asA).toHaveLength(1);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B INSERT of a token carrying org A's org_id is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(portalScimTokens).values({
+          orgId: orgAId, entraTenantId: TENANT, label: 'forged', secretHash: 'b'.repeat(64), secretHint: 'efgh',
+        }),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "portal_scim_tokens"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B UPDATE (revoke) / DELETE of org A's token affect 0 rows", async () => {
+    await ensureFixtures();
+    const result = await withDbAccessContext(orgContext(orgBId), async () => ({
+      updated: await db.update(portalScimTokens).set({ revokedAt: new Date() })
+        .where(eq(portalScimTokens.id, tokenAId)).returning({ id: portalScimTokens.id }),
+      deleted: await db.delete(portalScimTokens)
+        .where(eq(portalScimTokens.id, tokenAId)).returning({ id: portalScimTokens.id }),
+    }));
+    expect(result.updated).toHaveLength(0);
+    expect(result.deleted).toHaveLength(0);
+    const [row] = await withSystemDbAccessContext(async () =>
+      db.select({ revokedAt: portalScimTokens.revokedAt }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)),
+    );
+    expect(row).toEqual({ revokedAt: null });
+  });
 });
 
 /**

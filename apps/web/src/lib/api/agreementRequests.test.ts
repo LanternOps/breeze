@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 
-import { recordSignedAgreement } from './agreementRequests';
+import {
+  recordSignedAgreement, listAgreementRequests, createAgreementRequest, updateAgreementRequest,
+  deleteAgreementRequest, previewAgreementRequest, sendAgreementRequest, getAgreementRequestLink,
+  voidAgreementRequest,
+} from './agreementRequests';
 
 describe('recordSignedAgreement', () => {
   beforeEach(() => {
@@ -53,5 +57,53 @@ describe('recordSignedAgreement', () => {
     for (const k of ['contractId', 'label', 'signerEmail', 'effectiveDate', 'file']) {
       expect(fd.has(k)).toBe(false);
     }
+  });
+});
+
+describe('send-for-signature wrappers (#9075 W2c)', () => {
+  beforeEach(() => {
+    fetchWithAuth.mockReset();
+    fetchWithAuth.mockResolvedValue({ ok: true, status: 200 });
+  });
+
+  it('lists with only the filters that are set', async () => {
+    await listAgreementRequests({ status: 'pending', orgId: 'o1' });
+    const url = fetchWithAuth.mock.calls[0]![0] as string;
+    expect(url.startsWith('/contracts/agreement-requests?')).toBe(true);
+    const p = new URLSearchParams(url.split('?')[1]);
+    expect(p.get('status')).toBe('pending');
+    expect(p.get('orgId')).toBe('o1');
+    expect(p.has('contractId')).toBe(false);
+    await listAgreementRequests();
+    expect(fetchWithAuth.mock.calls[1]![0]).toBe('/contracts/agreement-requests');
+  });
+
+  it('creates, patches and deletes drafts with JSON bodies', async () => {
+    await createAgreementRequest({ orgId: 'o1', templateId: 't1', recipients: ['a@b.co'] });
+    expect(fetchWithAuth.mock.calls[0]![0]).toBe('/contracts/agreement-requests');
+    expect(fetchWithAuth.mock.calls[0]![1].method).toBe('POST');
+    expect(JSON.parse(fetchWithAuth.mock.calls[0]![1].body)).toEqual({ orgId: 'o1', templateId: 't1', recipients: ['a@b.co'] });
+    await updateAgreementRequest('r1', { variableValues: { x: 'y' } });
+    expect(fetchWithAuth.mock.calls[1]![0]).toBe('/contracts/agreement-requests/r1');
+    expect(fetchWithAuth.mock.calls[1]![1].method).toBe('PATCH');
+    await deleteAgreementRequest('r1');
+    expect(fetchWithAuth.mock.calls[2]![1].method).toBe('DELETE');
+  });
+
+  it('hits preview, send, link and void paths', async () => {
+    await previewAgreementRequest('r1');
+    await sendAgreementRequest('r1');
+    await getAgreementRequestLink('r1');
+    await voidAgreementRequest('r1', '  because ');
+    await voidAgreementRequest('r1');
+    expect(fetchWithAuth.mock.calls.map((c) => c[0])).toEqual([
+      '/contracts/agreement-requests/r1/preview',
+      '/contracts/agreement-requests/r1/send',
+      '/contracts/agreement-requests/r1/link',
+      '/contracts/agreement-requests/r1/void',
+      '/contracts/agreement-requests/r1/void',
+    ]);
+    expect(JSON.parse(fetchWithAuth.mock.calls[3]![1].body)).toEqual({ reason: 'because' });
+    expect(JSON.parse(fetchWithAuth.mock.calls[4]![1].body)).toEqual({});
   });
 });

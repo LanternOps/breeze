@@ -36,6 +36,14 @@ Breeze supports three categories of integrations, each served by a dedicated set
 
 ---
 
+## Connection Health
+
+The **Connection health** panel at the top of **Integrations** (v0.124.0+) lists every connection that is currently broken -- a failed sync, a revoked authorization, a webhook whose retries ran out, a Google Workspace service account that Google no longer accepts -- each with a **Fix** link to the place where it is repaired, and a **Recently resolved** list underneath. Breeze checks connections every 15 minutes and clears an incident on its own once the connection works again. The people who can fix an incident also get an in-app notice and a daily digest email.
+
+The **Health notifications** card on the same page decides whether the admins of a customer organization also hear about their own organization's connections: off by default, with a partner default and a per-organization override. The checks, the digest and the opt-outs are described under [Connection Health Checks](/features/notifications/#connection-health-checks).
+
+---
+
 ## Communication Integrations
 
 Communication integrations push notifications from Breeze into your team's messaging platform. Each provider is configured with a POST request containing the webhook URL and any provider-specific settings.
@@ -80,21 +88,25 @@ Communication integrations push notifications from Breeze into your team's messa
   </TabItem>
 </Tabs>
 
-Each provider endpoint accepts an optional `"test": true` flag in the request body. When present, the API queues a test notification to the configured webhook. Note that the configuration is saved to the in-memory store before the test is executed, so sending `"test": true` does persist the settings for the lifetime of the current API process.
+Each provider endpoint accepts an optional `"test": true` flag in the request body. Note that the configuration is saved to the in-memory store before the test is executed, so sending `"test": true` does persist the settings for the lifetime of the current API process.
+
+For **Discord**, a test posts one message to the configured webhook and the response reports what Discord answered. The webhook must be a Discord webhook URL (`https://discord.com/api/webhooks/<id>/<token>`, also `discordapp.com` and the `ptb.`/`canary.` hosts). If the UI sends back the masked value, the saved webhook is used.
 
 ```bash
-POST /integrations/slack
+POST /integrations/discord
 {
-  "webhookUrl": "https://hooks.slack.com/services/T00/B00/xxxx",
+  "webhookUrl": "https://discord.com/api/webhooks/...",
   "test": true
 }
 ```
 
-Response:
+| Response | Meaning |
+|---|---|
+| `200 { "success": true, "message": "Discord test notification sent." }` | Discord accepted the message |
+| `400 { "success": false, "error": "..." }` | No webhook URL, not a Discord webhook URL, a destination the URL guard refuses, or Discord rejected the webhook (HTTP 401/403/404) |
+| `502 { "success": false, "error": "..." }` | Discord could not be reached, rate-limited the request, or returned another error |
 
-```json
-{ "success": true, "message": "slack test notification queued." }
-```
+**Slack** and **Teams** settings on this page hold no deliverable destination, so a test returns `422 { "success": false, "error": "..." }` instead of reporting success. To deliver alerts to Slack or Teams, add a Slack or Teams notification channel under **Settings > Notification Channels** and test it there.
 
 ### Retrieving Communication Settings
 
@@ -360,7 +372,7 @@ TD SYNNEX provides live product price and availability you can import straight i
 
 ## UniFi Network
 
-UniFi is a **partner-level**, strictly read-only integration that discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view, so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. Configure it on the **UniFi** tab of the Integrations page, either through Ubiquiti's cloud (**Site Manager**), optionally paired with on-site deep telemetry agents, or fully **self-hosted** with a Breeze agent talking directly to your on-prem controller and no Ubiquiti cloud account at all.
+UniFi is a **partner-level**, strictly read-only integration that discovers your Ubiquiti network fleet across the customer sites your connection can see and reconciles it into Breeze's unified network view, so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. Configure it on the **UniFi** tab of the Integrations page, either through Ubiquiti's cloud (**Site Manager**), optionally paired with on-site deep telemetry agents, or fully **self-hosted** with a Breeze agent talking directly to your on-prem controller and no Ubiquiti cloud account at all.
 
 The full connection walkthrough for both modes, deep telemetry, and what Breeze pulls from UniFi is documented on its own page: see [UniFi Network Integration](/features/unifi-integration/).
 
@@ -372,11 +384,11 @@ Every integration type provides a test endpoint. Testing verifies that the confi
 
 ### Communication Test
 
-Pass `"test": true` in the provider configuration body:
+Pass `"test": true` in the provider configuration body. Only Discord can be tested here; see [Communication Integrations](#communication-integrations) for the responses.
 
 ```bash
-POST /integrations/slack
-{ "webhookUrl": "https://hooks.slack.com/...", "test": true }
+POST /integrations/discord
+{ "webhookUrl": "https://discord.com/api/webhooks/...", "test": true }
 ```
 
 ### Monitoring Test

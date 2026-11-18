@@ -74,6 +74,10 @@ export type TicketEvent = TicketEventEnvelope & (
   // move commits). No notification fan-out today (ticketNotifyWorker no-op).
   | { type: 'ticket.link_added'; payload: { linkId: string; linkType: TicketLinkType; otherTicketId: string; direction: 'outgoing' | 'incoming' } }
   | { type: 'ticket.link_removed'; payload: { linkType: TicketLinkType; otherTicketId: string; reason: 'user' | 'org_move' } }
+  // Ticket merge (#8972, spec §3.7). The envelope's ticketId is the SURVIVOR.
+  // The notify worker tells the survivor's assignee (unless they merged it)
+  // and, when `notifyRequester`, emails the source's requester once.
+  | { type: 'ticket.merged'; payload: { sourceTicketId: string; targetTicketId: string; notifyRequester: boolean } }
 );
 
 export type TicketEventType = TicketEvent['type'];

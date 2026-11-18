@@ -157,6 +157,7 @@ async function writeProjection(
   now: Date,
 ): Promise<void> {
   await tx
+    // own-device-row-allowlisted: device-function-projection
     .update(devices)
     .set({ ...projection, updatedAt: now })
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));

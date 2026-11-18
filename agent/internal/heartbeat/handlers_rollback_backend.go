@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/helper"
 	rollbackstate "github.com/breeze-rmm/agent/internal/rollback"
 	"github.com/breeze-rmm/agent/internal/updater"
@@ -22,6 +23,9 @@ type agentRollbackBackend struct {
 	journalPath     string
 	currentVersions func() map[rollbackstate.Component]string
 	mutationLease   *updater.ProcessMutationLease
+	// powerAdmission is the flash guard admission for the swap and the restart
+	// after it. It has the same lifetime as mutationLease.
+	powerAdmission func()
 }
 
 func (b *agentRollbackBackend) verifyLiveVersions(d rollbackstate.Directive) error {
@@ -41,6 +45,10 @@ func (b *agentRollbackBackend) releaseMutationLease() {
 	if b.mutationLease != nil {
 		b.mutationLease.Release()
 		b.mutationLease = nil
+	}
+	if b.powerAdmission != nil {
+		b.powerAdmission()
+		b.powerAdmission = nil
 	}
 }
 
@@ -80,6 +88,12 @@ func (b *agentRollbackBackend) Swap(_ context.Context, d rollbackstate.Directive
 		return updater.ErrProcessMutationInProgress
 	}
 	b.mutationLease = lease
+	done, err := flashguard.Default().AdmitPowerAction("rollback_swap")
+	if err != nil {
+		b.releaseMutationLease()
+		return err
+	}
+	b.powerAdmission = done
 	if err := b.verifyLiveVersions(d); err != nil {
 		b.releaseMutationLease()
 		return err

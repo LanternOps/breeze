@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { externalTicketUrlSchema, ticketTypeSchema } from '@breeze/shared';
 import { MigrationWindowError } from '../migrationWindows';
+import { REFUSED_CONTROL_CHAR_CLASS } from './refusedControlChars';
 
 /**
  * One source ticket, already converted into Breeze's model (#8313; spec
@@ -18,12 +19,32 @@ import { MigrationWindowError } from '../migrationWindows';
  * so a module that reused per-ticket comment ids ("article 1") would see later
  * tickets' comments skipped as already imported.
  */
-const CONTROL_CHARS = /^[^\u0000-\u0008\u000B\u000C\u000E-\u001F]*$/u;
+// The refused C0 controls (refusedControlChars.ts, the one definition, which
+// importText.ts strips for the modules).
+const CONTROL_CHARS = new RegExp(`^[^${REFUSED_CONTROL_CHAR_CLASS}]*$`, 'u');
 const text = (max: number) => z.string().max(max).regex(CONTROL_CHARS, 'control characters are not allowed');
 const instant = z.date().refine((d) => Number.isFinite(d.getTime()), 'invalid date');
 
 export const IMPORTED_TICKET_SOURCES = ['email', 'portal', 'manual', 'api'] as const;
 export const IMPORTED_TICKET_FINAL_STATUSES = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] as const;
+
+/**
+ * One source file of a comment (#8313 W1; spec 2026-10-19 §4, §5.3 item 1).
+ * `sourceId` is the source's attachment id, the resume key per principal
+ * (ticket_attachments_import_source_uq), unique across the whole source like
+ * the comment ids. `filename` is the source's name; the writer sanitizes it
+ * (sanitizeAttachmentFilename) rather than refusing the ticket over it.
+ * `declaredBytes` is the size the source reports: over the 10 MiB cap or
+ * zero, the file is skipped without being fetched. `inline` marks an image
+ * the source showed inside the body (decision 4); the writer stores it like
+ * any other file of its comment.
+ */
+const importedAttachmentSchema = z.object({
+  sourceId: z.string().trim().min(1).max(255),
+  filename: z.string().max(1024),
+  declaredBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  inline: z.boolean(),
+}).strict();
 
 const importedCommentSchema = z.object({
   sourceId: z.string().trim().min(1).max(255),
@@ -35,6 +56,9 @@ const importedCommentSchema = z.object({
     email: z.string().email().max(320).optional(),
   }).strict(),
   content: text(200_000),
+  // No per-comment cap, as in the import claim (§4.3.1): a historic email
+  // keeps every file. The writer reserves at most 100 per transaction.
+  attachments: z.array(importedAttachmentSchema).optional(),
 }).strict();
 
 export const importedTicketSchema = z.object({
@@ -54,9 +78,24 @@ export const importedTicketSchema = z.object({
   // default for the source (defaultTicketTypeForSource), with no provenance.
   ticketType: ticketTypeSchema.optional(),
   source: z.enum(IMPORTED_TICKET_SOURCES),
+  // A contact of the ticket's org, or a display-only name with an optional
+  // email: a source customer may have no address (Zammad, Z15), and
+  // tickets.submitter_email is nullable (spec 2026-10-19 §5.3 item 2). The
+  // third variant (W4b, §5.3 item 6, §5.13) asks the writer to resolve the
+  // requester to a contact in the header transaction, creating it when the org
+  // has none with that email; a module sends it only when its "create missing
+  // requester contacts" option is on. `sourceUserKey` is the source person's
+  // stable key, the external id of the contact's import link.
   requester: z.union([
     z.object({ contactId: z.string().uuid() }).strict(),
-    z.object({ name: text(255).trim().min(1), email: z.string().email().max(255) }).strict(),
+    z.object({ name: text(255).trim().min(1), email: z.string().email().max(255).optional() }).strict(),
+    z.object({
+      createContact: z.object({
+        name: text(255).trim().min(1).optional(),
+        email: z.string().email().max(255),
+        sourceUserKey: z.string().trim().min(1).max(255).regex(CONTROL_CHARS, 'control characters are not allowed'),
+      }).strict(),
+    }).strict(),
   ]),
   assigneeUserId: z.string().uuid().nullable().optional(),
   finalStatus: z.enum(IMPORTED_TICKET_FINAL_STATUSES),
@@ -73,6 +112,14 @@ export const importedTicketSchema = z.object({
 
 export type ImportedTicket = z.infer<typeof importedTicketSchema>;
 export type ImportedComment = ImportedTicket['comments'][number];
+export type ImportedAttachment = NonNullable<ImportedComment['attachments']>[number];
+export type ImportedRequester = ImportedTicket['requester'];
+/** The third requester variant (W4b): resolve to a contact, creating it when none matches. */
+export type ImportedContactRequest = Extract<ImportedRequester, { createContact: unknown }>['createContact'];
+
+export function requestsContact(requester: ImportedRequester): requester is { createContact: ImportedContactRequest } {
+  return 'createContact' in requester;
+}
 
 function invalid(message: string, details?: Record<string, unknown>): MigrationWindowError {
   return new MigrationWindowError('MIGRATION_IMPORT_INVALID', message, 400, details);
@@ -111,6 +158,13 @@ export function parseImportedTicket(input: unknown, now: Date = new Date()): Imp
   for (const comment of ticket.comments) {
     if (seen.has(comment.sourceId)) throw invalid('Comment source ids must be unique within a ticket', { sourceId: comment.sourceId });
     seen.add(comment.sourceId);
+  }
+  const files = new Set<string>();
+  for (const attachment of ticket.comments.flatMap((c) => c.attachments ?? [])) {
+    if (files.has(attachment.sourceId)) {
+      throw invalid('Attachment source ids must be unique within a ticket', { sourceId: attachment.sourceId });
+    }
+    files.add(attachment.sourceId);
   }
   return ticket;
 }

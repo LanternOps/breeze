@@ -35,60 +35,60 @@
 
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   createOperatorTaskSchema,
+  deviceTargetedTaskFieldsSchema,
+  operatorTaskDraftSchema,
   operatorTaskListQuerySchema,
-  type AiOperatorTaskDto,
-  type AiOperatorTaskListItemDto,
+  selfInheritanceField,
+  SELF_INHERITANCE_MESSAGE,
+  type CreateOperatorTaskInput,
+  type IdentityOffboardingInput,
+  type IdentityOnboardingInput,
+  type AiOperatorIdentityTaskDraftDto,
+  type AiOperatorIdentityOnboardingTaskDraftDto,
+  type AiOperatorOnboardingDraftEffectDto,
+  type AiOperatorWorkflowDto,
 } from '@breeze/shared';
-import { zValidator } from '../lib/validation';
+import { formatZodError, zValidator } from '../lib/validation';
 import { db } from '../db';
+import { contacts, devices, sites } from '../db/schema';
+import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
+import { aiOperatorTasksEnabled } from '../config/env';
+import { admitTask, recipeEnabled } from '../services/aiOperator/taskService';
+import { launchServiceRecoveryTask } from '../services/aiOperator/serviceRecoveryLaunch';
+import { canMutateOrgWideGovernance } from '../services/siteCeilingAccess';
 import {
-  aiAgentRuns,
-  aiOperatorOperations,
-  aiOperatorTaskEvents,
-  aiOperatorTaskSteps,
-  aiOperatorTaskTargetAccounts,
-  aiOperatorTaskTargets,
-  aiOperatorTasks,
-  devices,
-} from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
-import { admitServiceRecoveryTask } from '../services/aiOperator/taskService';
+  RECIPE_AGENT_KINDS,
+  computeRecipeReadiness,
+  listWorkflowReadiness,
+  toWorkflowDto,
+  type RecipeReadiness,
+} from '../services/aiOperator/recipeReadiness';
+import {
+  IDENTITY_OFFBOARDING_EFFECT_TOOLS,
+  IDENTITY_OFFBOARDING_WORKFLOW_KEY,
+  buildIdentityOffboardingManualWork,
+} from '../services/aiOperator/recipes/identityOffboarding';
+import {
+  IDENTITY_ONBOARDING_WORKFLOW_KEY,
+  buildIdentityOnboardingCreatePlan,
+  buildIdentityOnboardingManualWork,
+  buildIdentityOnboardingProvisionPlan,
+  buildManualCreateGoogleItem,
+  capOnboardingManualWork,
+  type IdentityOnboardingCreateFacts,
+} from '../services/aiOperator/recipes/identityOnboarding';
+import { readOnboardingDraftFacts } from '../services/aiOperator/identityProvisioning';
+import { normalizeContactEmail } from '../services/contacts/crud';
+import type { AnyRecipeDefinition, PlannedEffect } from '../services/aiOperator/recipes/types';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import {
-  mapOperatorTask,
-  mapOperatorTaskListItem,
-  type OperatorEventRowInput,
-  type OperatorOperationRowInput,
-  type OperatorRunLinkRowInput,
-  type OperatorStepRowInput,
-  type OperatorTargetAccountRowInput,
-  type OperatorTargetRowInput,
-  type OperatorTaskRowInput,
-} from '../services/aiOperator/taskReadService';
-import {
-  buildOperatorTasksKeysetPredicate,
-  decodeOperatorTasksCursor,
-  encodeOperatorTasksCursor,
-  operatorTasksCursorFromRow,
-} from '../services/aiOperator/operatorTasksListCursor';
-import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
-
-/**
- * The agent kind an operator task is delegated to. The effective agent is
- * resolved per (org, kind), so admission has to name one: task runs are later
- * admitted against the task's frozen `agentKind` (`taskCoordinator`) on the
- * default full profile. The service-recovery recipe is an investigate-and-
- * remediate workflow, which is the triage agent's lane; a `designer` never
- * runs on the full profile (`ownership_mismatch`). Before #7015 the route
- * took any enabled row regardless of kind.
- */
-const OPERATOR_TASK_AGENT_KIND = 'triage' as const;
+import { findVisibleTask, listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { releaseTaskAccountReservations } from '../services/aiOperator/accountReservations';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const aiOperatorTasksRoutes = new Hono();
 aiOperatorTasksRoutes.use('*', authMiddleware);
@@ -113,65 +113,16 @@ function uuidParam(c: Context, name: string): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-const TASK_ROW_COLUMNS = {
-  id: aiOperatorTasks.id,
-  orgId: aiOperatorTasks.orgId,
-  agentId: aiOperatorTasks.agentId,
-  // Frozen at admission (spec §11.3) — NOT a live join to `ai_agents`. See
-  // `AiOperatorTaskDto.agent`'s docstring in `@breeze/shared` for why these
-  // two columns live directly on `ai_operator_tasks` and are never null.
-  agentKind: aiOperatorTasks.agentKind,
-  agentName: aiOperatorTasks.agentName,
-  workflowKey: aiOperatorTasks.workflowKey,
-  workflowVersion: aiOperatorTasks.workflowVersion,
-  mode: aiOperatorTasks.mode,
-  originKind: aiOperatorTasks.originKind,
-  objective: aiOperatorTasks.objective,
-  deviceId: aiOperatorTasks.deviceId,
-  targetLabel: aiOperatorTasks.targetLabel,
-  targetDetachedAt: aiOperatorTasks.targetDetachedAt,
-  targetDetachedReason: aiOperatorTasks.targetDetachedReason,
-  state: aiOperatorTasks.state,
-  phase: aiOperatorTasks.phase,
-  waitReason: aiOperatorTasks.waitReason,
-  waitDependencyKind: aiOperatorTasks.waitDependencyKind,
-  waitDependencyId: aiOperatorTasks.waitDependencyId,
-  revision: aiOperatorTasks.revision,
-  attemptOrdinal: aiOperatorTasks.attemptOrdinal,
-  currentStepKey: aiOperatorTasks.currentStepKey,
-  deadlineAt: aiOperatorTasks.deadlineAt,
-  nextWakeAt: aiOperatorTasks.nextWakeAt,
-  outcome: aiOperatorTasks.outcome,
-  outcomeDetail: aiOperatorTasks.outcomeDetail,
-  handoffSummary: aiOperatorTasks.handoffSummary,
-  accountingRootTaskId: aiOperatorTasks.accountingRootTaskId,
-  successorOfTaskId: aiOperatorTasks.successorOfTaskId,
-  createdAt: aiOperatorTasks.createdAt,
-  updatedAt: aiOperatorTasks.updatedAt,
-} as const;
-
-/**
- * Site-restriction predicate shared by list and detail: a task with no
- * device target is never site-gated (there is nothing to check); a task with
- * a device target is visible only when that device's site is in the caller's
- * allowlist. `undefined` allowlist means unrestricted (org/partner/system
- * scope, or an organization-scope caller with no site restriction) — mirrors
- * `auth.canAccessSite`'s own `if (!allowedSiteIds) return true` contract
- * (`middleware/auth.ts`'s `siteAccessCheck`).
- */
-function siteVisibilityCondition(allowedSiteIds: string[] | undefined): SQL | undefined {
-  if (!allowedSiteIds) return undefined;
-  return or(
-    isNull(aiOperatorTasks.deviceId),
-    allowedSiteIds.length > 0 ? inArray(devices.siteId, allowedSiteIds) : sql`false`,
-  );
-}
 
 /**
  * `POST /api/v1/ai/operator/tasks` — the only door that creates a task
  * (#5205 W08, #5246; spec §12's `POST /tasks` row).
  *
- * ORDER OF CHECKS IS THE CONTRACT, not a style choice:
+ * ORDER OF CHECKS IS THE CONTRACT, not a style choice. For a device-targeted
+ * recipe, steps 2-5 run in `launchServiceRecoveryTask`
+ * (services/aiOperator/serviceRecoveryLaunch.ts, W16 #6786), which the
+ * `create_operator_task` AI tool also calls; this route maps its codes to the
+ * statuses named below.
  *
  *  1. `.strict()` body (400). Spec §12: "Requests cannot supply a principal,
  *     effective policy, approval result, or trusted continuation token." A
@@ -184,9 +135,10 @@ function siteVisibilityCondition(allowedSiteIds: string[] | undefined): SQL | un
  *     for devices a read cannot see.
  *  4. Readiness recompute (422). Spec §12: "Recompute readiness on launch...
  *     A cached catalog or draft is never authority." Flags and recipe version
- *     are re-read here even though `admitServiceRecoveryTask` checks the flags
- *     again — the second check is the one that actually gates the insert; this
- *     one exists to produce an ACTIONABLE reason instead of a bare refusal.
+ *     are re-read before admission even though `admitServiceRecoveryTask`
+ *     checks the flags again — the second check is the one that actually gates
+ *     the insert; the first exists to produce an ACTIONABLE reason instead of a
+ *     bare refusal.
  *  5. Admission, which is idempotent on `clientIdempotencyKey` and enforces
  *     the task-wide policy ceilings (#6590) — including the pending cap,
  *     which it answers as `pending_cap_reached` and this route turns into
@@ -213,137 +165,64 @@ aiOperatorTasksRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    // (2) Explicit org from the body. `canAccessOrg` is the same closure the
-    // org-scoping predicate is built from, so this cannot drift from what a
-    // read would allow. 404 rather than 403: confirming the org exists is
-    // itself a cross-tenant disclosure.
-    if (!auth.canAccessOrg(body.orgId)) {
-      return c.json({ error: 'Device not found' }, 404);
+    // R2a: `identity_onboarding` sends no device and its own inputs. It takes
+    // its own path after the org check, before the shipped device-field parse.
+    if (body.recipeKey === IDENTITY_ONBOARDING_WORKFLOW_KEY) {
+      if (!auth.canAccessOrg(body.orgId)) return c.json({ error: 'Organization not found' }, 404);
+      return admitIdentityOnboardingFromRoute(c, body);
     }
 
-    // (3) Resolve the target under the caller's own visibility. Note this
-    // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
-    // which runs as system — so the device must be visible to the caller
-    // before any system-scoped work happens on their behalf.
-    const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
-      .from(devices)
-      .where(and(eq(devices.id, body.deviceId), eq(devices.orgId, body.orgId)))
-      .limit(1);
-    // A site-restricted caller may not delegate against a device outside their
-    // sites. Same non-enumerating 404 as the W07 detail route.
-    if (!device || (auth.canAccessSite && !auth.canAccessSite(device.siteId))) {
-      return c.json({ error: 'Device not found' }, 404);
+    // `deviceId` and `inputs` are loose on the wire since R1a (a contact-
+    // targeted recipe sends no device and its own inputs). Every other key
+    // gets the shipped shapes back, with the shipped 400 body, and before the
+    // org check — the order the shipped validator middleware ran them in.
+    const isContactTargeted = body.recipeKey === IDENTITY_OFFBOARDING_WORKFLOW_KEY;
+    const deviceFields = isContactTargeted
+      ? null
+      : deviceTargetedTaskFieldsSchema.safeParse({ deviceId: body.deviceId, inputs: body.inputs });
+    if (deviceFields && !deviceFields.success) {
+      return c.json(formatZodError(deviceFields.error), 400);
     }
 
-    // (4) Readiness, recomputed now.
-    if (!aiOperatorTasksEnabled()) {
-      return c.json({
-        error: 'AI Operator tasks are not enabled for this deployment',
-        code: 'OPERATOR_TASKS_DISABLED',
-      }, 422);
-    }
-    if (!aiOperatorServiceRecoveryEnabled()) {
-      return c.json({
-        error: 'The service recovery workflow is not enabled for this deployment',
-        code: 'OPERATOR_RECIPE_DISABLED',
-      }, 422);
-    }
-    // Two different answers to the caller (Recipe Library spec §6.1):
-    //  - an unknown key is a malformed request — no such workflow exists at
-    //    any version, so the response names the ones that do (400);
-    //  - a known key at an unreleased version is a stale client that reviewed
-    //    a workflow this deployment has moved past (422 — spec §12's
-    //    "422 for unsupported workflow/criteria/setup", and the shipped
-    //    behaviour this route already had).
-    const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
-    if (!resolution.ok && resolution.reason === 'unknown_recipe') {
-      return c.json({
-        error: resolution.detail,
-        code: 'OPERATOR_UNKNOWN_RECIPE',
-        supportedRecipeKeys: [...RECIPE_KEYS],
-      }, 400);
-    }
-    if (!resolution.ok) {
-      return c.json({
-        error: resolution.detail,
-        code: 'OPERATOR_RECIPE_VERSION_MISMATCH',
-      }, 422);
-    }
-    const recipe = resolution.recipe;
-
-    // The SERVER picks the agent (spec §5.1 — the request cannot name a
-    // principal): the org's EFFECTIVE agent of the operator kind, resolved
-    // the same way run admission resolves it (#7015). That is always the
-    // partner baseline's id; an org-owned row of the kind is an override
-    // merged onto the baseline's policy, never an agent of its own. Pinning
-    // the override made every run of the task skip `ownership_mismatch`
-    // (`runService`: `task.agentId !== resolved.agentId`) and made admission
-    // ignore the org's tightened task limits. No baseline, or an effective
-    // agent that is disabled (by the partner, the org override, or the AI
-    // agents kill switch), means no run could ever be admitted — refuse now
-    // rather than admit a task that can only stall.
-    const effectiveAgent = await resolveEffectiveAgent(auth, body.orgId, OPERATOR_TASK_AGENT_KIND);
-    const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
-    if (!agent) {
-      return c.json({
-        error: 'No enabled AI agent is available for this organization. '
-          + 'Enable an agent in Settings → AI Agents before delegating a task.',
-        code: 'OPERATOR_NO_AGENT',
-      }, 422);
+    // A contact-targeted recipe (R1a) takes its own path after the org check;
+    // every other key (service_recovery and an unknown one alike) is admitted
+    // by the shared operation, which runs the org check first itself.
+    if (isContactTargeted || !deviceFields) {
+      // 404 rather than 403: confirming the org exists is itself a
+      // cross-tenant disclosure.
+      if (!auth.canAccessOrg(body.orgId)) {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      return admitIdentityOffboardingFromRoute(c, body);
     }
 
-    // (5) Admit. The requester's authorized ceiling is what was just checked
-    // above (org + site + write permission + MFA); `requesterUserId` records
-    // WHOSE ceiling it is, which is what spec §5.1's "loss of that access
-    // pauses delegated execution" is later evaluated against.
-    const result = await admitServiceRecoveryTask({
+    // (2)–(5): org access, device + site access, readiness, the server-picked
+    // agent and admission, in that order (W16 #6786: the same operation the
+    // `create_operator_task` AI tool calls, so the tool cannot ask for less).
+    const result = await launchServiceRecoveryTask(auth, {
       orgId: body.orgId,
-      agentId: agent.id,
-      // The RESOLVED pair. Admission re-resolves it — the two checks are not
-      // redundant: this route is not the only admission caller, and admission
-      // is the layer that writes the row.
-      workflowKey: recipe.key,
-      workflowVersion: recipe.version,
-      objective: `Restore the ${body.inputs.serviceName} service on ${device.hostname ?? body.deviceId}`,
-      // Provenance, not authority (spec §5.1: origins are explicit and never
-      // silently converted). A delegate from alert detail is origin 'alert';
-      // everything else through this route is a manual delegation.
-      originKind: body.sourceKind === 'alert' ? 'alert' : 'manual',
-      requesterUserId: auth.user?.id ?? null,
-      recipeInput: {
-        deviceId: body.deviceId,
-        serviceName: body.inputs.serviceName,
-        // The alert is the recurrence signal the verification criterion needs
-        // (W06: with no alertId the best achievable outcome is
-        // `investigation_complete`, never `verified_resolved`).
-        triggeringAlertId: body.sourceKind === 'alert' ? body.sourceId ?? null : null,
-      },
+      recipeKey: body.recipeKey,
+      recipeVersion: body.recipeVersion,
+      deviceId: deviceFields.data.deviceId,
+      serviceName: deviceFields.data.inputs.serviceName,
+      ...(body.sourceKind === 'alert' ? { sourceKind: 'alert' as const, sourceId: body.sourceId } : {}),
       clientIdempotencyKey: body.clientIdempotencyKey,
     });
 
     if (!result.ok) {
-      // Every refusal here is a readiness/scope problem, not a client format
-      // error: 422 per spec §12 ("422 for unsupported workflow/criteria/
-      // setup"), except the two target refusals, which stay non-enumerating.
-      if (result.refusal === 'device_not_in_org') {
-        return c.json({ error: 'Device not found' }, 404);
-      }
-      if (result.refusal === 'pending_cap_reached') {
-        return c.json({
-          error: `${result.detail}. Wait for tasks to finish, or stop ones that are no longer needed, `
-            + 'before delegating more.',
-          code: 'OPERATOR_PENDING_CAP_REACHED',
-        }, 429);
-      }
-      if (result.refusal === 'unknown_recipe') {
-        return c.json({
-          error: result.detail,
-          code: 'OPERATOR_UNKNOWN_RECIPE',
-          supportedRecipeKeys: [...RECIPE_KEYS],
-        }, 400);
-      }
-      return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+      // Every refusal is a readiness/scope problem, not a client format error:
+      // 422 per spec §12, except the non-enumerating target refusal (404), the
+      // visible pending cap (429) and an unknown workflow (400, naming the
+      // ones that exist).
+      if (result.code === 'NOT_FOUND') return c.json({ error: 'Device not found' }, 404);
+      const status = result.code === 'OPERATOR_PENDING_CAP_REACHED' ? 429
+        : result.code === 'OPERATOR_UNKNOWN_RECIPE' ? 400
+          : 422;
+      return c.json({
+        error: result.detail,
+        code: result.code,
+        ...(result.supportedRecipeKeys ? { supportedRecipeKeys: result.supportedRecipeKeys } : {}),
+      }, status);
     }
 
     // A replay is a success, not a conflict: the caller asked for a task with
@@ -356,7 +235,8 @@ aiOperatorTasksRoutes.post(
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible
  * orgs admitted, newest-created first. Optional `deviceId`/`state` filters
- * per spec §12's `GET /tasks` contract.
+ * per spec §12's `GET /tasks` contract, plus an optional `orgId` that narrows
+ * to one accessible org (#10112).
  *
  * Sorted by `created_at`, not `updated_at` (review fix, PR #5254) — see
  * `operatorTasksListCursor.ts`'s header for why a keyset needs an immutable
@@ -370,60 +250,20 @@ aiOperatorTasksRoutes.get(
   zValidator('query', operatorTaskListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { cursor: cursorToken, limit, deviceId, state } = c.req.valid('query');
+    const { cursor: cursorToken, limit, deviceId, state, orgId } = c.req.valid('query');
 
-    const cursor = decodeOperatorTasksCursor(cursorToken);
-    if (cursorToken && !cursor) {
-      return c.json({ error: 'Invalid or malformed cursor' }, 400);
+    // Optional single-org filter (#10112) — same contract as `GET /ai/agents/runs`.
+    // `fetchWithAuth` injects `?orgId=<selected>` whenever the org switcher has
+    // one org selected; the schema used to strip it, so the switcher (and the
+    // Wisp entity picker's Tasks tab) never narrowed this list. It must name an
+    // org the caller can already see: the filter narrows, never widens.
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
-    const conditions: (SQL | undefined)[] = [
-      auth.orgCondition(aiOperatorTasks.orgId),
-      siteVisibilityCondition(auth.allowedSiteIds),
-    ];
-    if (deviceId) conditions.push(eq(aiOperatorTasks.deviceId, deviceId));
-    if (state) conditions.push(eq(aiOperatorTasks.state, state));
-    if (cursor) conditions.push(buildOperatorTasksKeysetPredicate(cursor));
-
-    // Peek one extra row past `limit` to detect "is there a next page" —
-    // mirrors `GET /ai/agents/runs`'s cursor-mode convention.
-    let query = db
-      .select({
-        ...TASK_ROW_COLUMNS,
-        // Full microsecond-precision text of createdAt, for the cursor only —
-        // see OperatorTasksCursor.c's docstring for why a JS Date must never
-        // seed this.
-        createdAtRaw: sql<string>`to_char(${aiOperatorTasks.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
-      })
-      .from(aiOperatorTasks)
-      .$dynamic();
-
-    // LEFT-join `devices` only when the caller is actually site-restricted
-    // (review fix, PR #5254) — an unrestricted caller's `siteVisibilityCondition`
-    // is `undefined` and contributes no predicate, so forcing the join into
-    // every plan regardless bought nothing but a second FORCE-RLS table in
-    // every unrestricted list query.
-    if (auth.allowedSiteIds !== undefined) {
-      query = query.leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id));
-    }
-
-    const rows = await query
-      .where(and(...conditions))
-      .orderBy(desc(aiOperatorTasks.createdAt), desc(aiOperatorTasks.id))
-      .limit(limit + 1);
-
-    let nextCursor: string | null = null;
-    let pageRows = rows;
-    if (rows.length > limit) {
-      pageRows = rows.slice(0, limit);
-      const last = pageRows[pageRows.length - 1];
-      if (last) nextCursor = encodeOperatorTasksCursor(operatorTasksCursorFromRow(last));
-    }
-
-    const data: AiOperatorTaskListItemDto[] = pageRows.map((row) =>
-      mapOperatorTaskListItem(row as OperatorTaskRowInput),
-    );
-    return c.json({ data, nextCursor });
+    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state, orgId });
+    if (!result.ok) return c.json({ error: 'Invalid or malformed cursor' }, 400);
+    return c.json({ data: result.data, nextCursor: result.nextCursor });
   },
 );
 
@@ -441,155 +281,644 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
   if (!taskId) return c.json({ error: 'Task not found' }, 404);
 
   const auth = c.get('auth');
-  const [task] = await db
-    .select(TASK_ROW_COLUMNS)
-    .from(aiOperatorTasks)
-    // LEFT — present only to evaluate the site-visibility predicate below.
-    .leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id))
-    .where(
-      and(
-        eq(aiOperatorTasks.id, taskId),
-        auth.orgCondition(aiOperatorTasks.orgId),
-        siteVisibilityCondition(auth.allowedSiteIds),
-      ),
-    )
-    .limit(1);
-  if (!task) return c.json({ error: 'Task not found' }, 404);
-
-  const [operationRows, runRows, targetRows, accountRows, stepRows, eventRows] = await Promise.all([
-    db
-      .select({
-        operationKey: aiOperatorOperations.operationKey,
-        attemptOrdinal: aiOperatorOperations.attemptOrdinal,
-        intentId: aiOperatorOperations.intentId,
-        dispatchState: aiOperatorOperations.dispatchState,
-        resultState: aiOperatorOperations.resultState,
-        executionRefKind: aiOperatorOperations.executionRefKind,
-        executionRefId: aiOperatorOperations.executionRefId,
-        dispatchedAt: aiOperatorOperations.dispatchedAt,
-        resultAt: aiOperatorOperations.resultAt,
-      })
-      .from(aiOperatorOperations)
-      // org_id repeated in the predicate as defence-in-depth beside RLS,
-      // matching `GET /runs/:runId`'s posture — RLS is the real boundary
-      // (breeze_current_scope() defaults to 'none', so a contextless read
-      // already returns nothing), but the unit-test path mocks the db with
-      // no RLS at all.
-      .where(and(eq(aiOperatorOperations.taskId, task.id), eq(aiOperatorOperations.orgId, task.orgId)))
-      .orderBy(aiOperatorOperations.operationKey, aiOperatorOperations.attemptOrdinal)
-      // Defence-in-depth cap (review fix, PR #5254): nothing produces real
-      // volume yet (the coordinator is W08), but an unbounded array here
-      // would be a real cost once a heavily-retried task exists.
-      .limit(500),
-    db
-      .select({
-        id: aiAgentRuns.id,
-        status: aiAgentRuns.status,
-        taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
-        promptVersion: aiAgentRuns.promptVersion,
-        resolvedModel: aiAgentRuns.resolvedModel,
-      })
-      .from(aiAgentRuns)
-      // A device-less task IS visible to a site-restricted caller (see
-      // `siteVisibilityCondition`), but its linked runs carry their OWN
-      // device target, which the task's null site says nothing about. Reuse
-      // the run-scope predicate from `routes/aiAgents.ts` so this projection
-      // can never disclose a run against a device outside the caller's sites.
-      .where(and(
-        eq(aiAgentRuns.taskId, task.id),
-        eq(aiAgentRuns.orgId, task.orgId),
-        runSiteScopeCondition(auth),
-      ))
-      .orderBy(desc(aiAgentRuns.queuedAt))
-      .limit(500),
-    // Wave E2 (#6167): the task graph. Every read repeats task_id AND org_id
-    // beside RLS (same defence-in-depth posture as the two above) and carries
-    // the same 500-row cap. Each projection NAMES its columns: a bare
-    // `select()` would pull a step's `checkpoint` jsonb into the handler,
-    // where only the mapper would stand between it and the response.
-    db
-      .select({
-        id: aiOperatorTaskTargets.id,
-        targetKind: aiOperatorTaskTargets.targetKind,
-        deviceId: aiOperatorTaskTargets.deviceId,
-        ticketId: aiOperatorTaskTargets.ticketId,
-        contactId: aiOperatorTaskTargets.contactId,
-        targetLabel: aiOperatorTaskTargets.targetLabel,
-        targetOrdinal: aiOperatorTaskTargets.targetOrdinal,
-        state: aiOperatorTaskTargets.state,
-        detachedAt: aiOperatorTaskTargets.detachedAt,
-        detachedReason: aiOperatorTaskTargets.detachedReason,
-      })
-      .from(aiOperatorTaskTargets)
-      .where(and(eq(aiOperatorTaskTargets.taskId, task.id), eq(aiOperatorTaskTargets.orgId, task.orgId)))
-      .orderBy(aiOperatorTaskTargets.targetOrdinal)
-      .limit(500),
-    db
-      .select({
-        targetId: aiOperatorTaskTargetAccounts.targetId,
-        provider: aiOperatorTaskTargetAccounts.provider,
-        m365ConnectionId: aiOperatorTaskTargetAccounts.m365ConnectionId,
-        googleConnectionId: aiOperatorTaskTargetAccounts.googleConnectionId,
-        externalId: aiOperatorTaskTargetAccounts.externalId,
-        principalLabel: aiOperatorTaskTargetAccounts.principalLabel,
-      })
-      .from(aiOperatorTaskTargetAccounts)
-      .where(and(
-        eq(aiOperatorTaskTargetAccounts.taskId, task.id),
-        eq(aiOperatorTaskTargetAccounts.orgId, task.orgId),
-      ))
-      .limit(500),
-    db
-      .select({
-        id: aiOperatorTaskSteps.id,
-        stepKey: aiOperatorTaskSteps.stepKey,
-        stepKind: aiOperatorTaskSteps.stepKind,
-        targetId: aiOperatorTaskSteps.targetId,
-        attemptOrdinal: aiOperatorTaskSteps.attemptOrdinal,
-        state: aiOperatorTaskSteps.state,
-        planRevision: aiOperatorTaskSteps.planRevision,
-        expectedCriterion: aiOperatorTaskSteps.expectedCriterion,
-        dependencyKind: aiOperatorTaskSteps.dependencyKind,
-        dependencyId: aiOperatorTaskSteps.dependencyId,
-        detail: aiOperatorTaskSteps.detail,
-        startedAt: aiOperatorTaskSteps.startedAt,
-        settledAt: aiOperatorTaskSteps.settledAt,
-        // NOT checkpoint — see the comment above.
-      })
-      .from(aiOperatorTaskSteps)
-      .where(and(eq(aiOperatorTaskSteps.taskId, task.id), eq(aiOperatorTaskSteps.orgId, task.orgId)))
-      .orderBy(aiOperatorTaskSteps.attemptOrdinal, aiOperatorTaskSteps.startedAt)
-      .limit(500),
-    db
-      .select({
-        id: aiOperatorTaskEvents.id,
-        transitionSeq: aiOperatorTaskEvents.transitionSeq,
-        eventType: aiOperatorTaskEvents.eventType,
-        actorKind: aiOperatorTaskEvents.actorKind,
-        actorUserId: aiOperatorTaskEvents.actorUserId,
-        stepKey: aiOperatorTaskEvents.stepKey,
-        targetId: aiOperatorTaskEvents.targetId,
-        detail: aiOperatorTaskEvents.detail,
-        createdAt: aiOperatorTaskEvents.createdAt,
-      })
-      .from(aiOperatorTaskEvents)
-      .where(and(eq(aiOperatorTaskEvents.taskId, task.id), eq(aiOperatorTaskEvents.orgId, task.orgId)))
-      // Newest first in SQL, re-sorted ascending by the mapper: the LIMIT has
-      // to keep the MOST RECENT 500 events of a long-running task, not the
-      // oldest 500 — a 14-day identity task can exceed 500 events, and
-      // showing only its first ones would hide what it is doing now.
-      .orderBy(desc(aiOperatorTaskEvents.transitionSeq))
-      .limit(500),
-  ]);
-
-  const dto: AiOperatorTaskDto = mapOperatorTask(
-    task as OperatorTaskRowInput,
-    operationRows as OperatorOperationRowInput[],
-    runRows as OperatorRunLinkRowInput[],
-    targetRows as OperatorTargetRowInput[],
-    accountRows as OperatorTargetAccountRowInput[],
-    stepRows as OperatorStepRowInput[],
-    eventRows as OperatorEventRowInput[],
-  );
-  return c.json({ data: dto });
+  const data = await loadOperatorTaskDetail(auth, taskId);
+  if (!data) return c.json({ error: 'Task not found' }, 404);
+  return c.json({ data });
 });
+
+// ---------------------------------------------------------------------------
+// W06 R1b (G2): the plan a task proposed, read-only
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Recipe Library (W06 R1a): the Library, drafts, and contact-targeted admission
+// ---------------------------------------------------------------------------
+
+/** Effect tools each offboarding toggle can produce — the draft's outline, never a plan. */
+const IDENTITY_TOGGLE_TOOLS: Readonly<Record<keyof IdentityOffboardingInput['effects'], readonly string[]>> = Object.freeze({
+  autoReply: ['google_set_vacation', 'm365_set_auto_reply'],
+  forwarding: ['google_set_forwarding'],
+  mailDelegate: ['google_add_mail_delegate'],
+  removeGroups: ['google_remove_from_group', 'm365_remove_from_group'],
+  removeLicenses: ['google_remove_license', 'm365_remove_license'],
+  wipeMobile: ['google_account_wipe_mobile_device', 'm365_retire_intune_device'],
+  revokeSessions: ['google_signout', 'm365_revoke_sessions'],
+  disableAccount: ['google_suspend_user', 'm365_disable_user'],
+});
+
+type ContactRow = { id: string; name: string | null; email: string | null };
+
+/**
+ * The person leaving named as their own inheritor, once the person is a
+ * resolved contact (#10076). The input validator catches an inheritor equal to
+ * the named `contactId`; only a resolved row shows a hint that resolves to the
+ * inheritor, or a `forwardTo` that is the person's own address. Same 400 shape
+ * as the validator's, with the reason as the error so the form can show it.
+ */
+function selfInheritanceRefusal(input: IdentityOffboardingInput, person: ContactRow) {
+  const field = selfInheritanceField(input, { contactId: person.id, email: person.email });
+  return field
+    ? { error: SELF_INHERITANCE_MESSAGE, code: 'INVALID_INPUT', issues: [{ path: field, message: SELF_INHERITANCE_MESSAGE }] }
+    : null;
+}
+
+/**
+ * Who the caller means, READ-ONLY, in the caller's own (RLS-scoped) db
+ * context, org-predicated. A substring name match is fine HERE: it only
+ * produces candidates for a human to pick from. Admission itself resolves
+ * exactly or refuses.
+ */
+async function draftPerson(orgId: string, input: IdentityOffboardingInput): Promise<{ resolved: ContactRow | null; candidates: ContactRow[] }> {
+  const cols = { id: contacts.id, name: contacts.name, email: contacts.email };
+  if (input.contactId) {
+    const [row] = await db.select(cols).from(contacts)
+      .where(and(eq(contacts.orgId, orgId), eq(contacts.id, input.contactId))).limit(1);
+    return { resolved: row ?? null, candidates: [] };
+  }
+  const hint = (input.personHint ?? '').trim();
+  const asEmail = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(hint) ? hint.toLowerCase() : null;
+  const rows = asEmail
+    ? await db.select(cols).from(contacts).where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${asEmail}`)).limit(10)
+    : await db.select(cols).from(contacts)
+      .where(and(eq(contacts.orgId, orgId), sql`${contacts.name} ILIKE ${`%${hint.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`}`))
+      .limit(10);
+  // The candidate list is a substring search, but "resolved" uses the SAME
+  // rule admission does (`identifyTaskPerson`): a unique email match, or a
+  // unique exact (trimmed, case-insensitive) full-name match. Anything looser
+  // would preview a person that POST /tasks then refuses as ambiguous.
+  const exact = asEmail ? rows : rows.filter((r) => (r.name ?? '').trim().toLowerCase() === hint.toLowerCase());
+  return { resolved: exact.length === 1 ? exact[0]! : null, candidates: rows };
+}
+
+/**
+ * `POST /tasks` for `identity_offboarding` — same posture as the device path:
+ * `.strict()` body, org access (non-enumerating 404), readiness recomputed,
+ * the SERVER picks the agent, admission is idempotent.
+ *
+ * Extra gates for a contact-targeted recipe:
+ *  - a site-restricted caller is refused: a directory account has no per-site
+ *    slice, so this is org-wide governance (the requester gate would pause
+ *    the task at its first effect anyway — refuse now, not after approval);
+ *  - the named contact and every selected device must be visible to the
+ *    caller in their own db context before system-scoped admission runs.
+ */
+async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperatorTaskInput) {
+  const auth = c.get('auth');
+  // Offboarding changes a person's directory accounts: on top of
+  // ai_agents:write it needs the organization write permission the contact
+  // routes use. The permissions were resolved by requireAiWrite above.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (body.deviceId !== undefined || body.sourceKind !== undefined) {
+    return c.json({
+      error: 'This workflow takes its devices in inputs.deviceIds and accepts no deviceId or source citation.',
+      code: 'INVALID_INPUT',
+    }, 400);
+  }
+  if (!aiOperatorTasksEnabled()) {
+    return c.json({ error: 'AI Operator tasks are not enabled for this deployment', code: 'OPERATOR_TASKS_DISABLED' }, 422);
+  }
+  if (!recipeEnabled(body.recipeKey)) {
+    return c.json({ error: 'The offboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+  const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+  if (!resolution.ok) {
+    return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+  }
+  const recipe = resolution.recipe;
+  const parsed = recipe.inputSchema.safeParse(body.inputs);
+  if (!parsed.success) {
+    return c.json({
+      error: 'Invalid workflow inputs',
+      code: 'INVALID_INPUT',
+      issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    }, 400);
+  }
+  const input = parsed.data as IdentityOffboardingInput;
+
+  let label = input.personHint ?? 'a departing person';
+  if (input.contactId) {
+    const [row] = await db.select({ id: contacts.id, name: contacts.name, email: contacts.email }).from(contacts)
+      .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, input.contactId))).limit(1);
+    // Non-enumerating: the same answer whether it exists elsewhere or nowhere.
+    if (!row) return c.json({ error: 'Contact not found' }, 404);
+    const selfInheritance = selfInheritanceRefusal(input, row);
+    if (selfInheritance) return c.json(selfInheritance, 400);
+    label = row.name ?? row.email ?? label;
+  }
+  if (input.deviceIds.length > 0) {
+    const rows = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
+      .where(and(eq(devices.orgId, body.orgId), inArray(devices.id, input.deviceIds)));
+    const visible = rows.filter((d) => !auth.canAccessSite || auth.canAccessSite(d.siteId));
+    if (visible.length !== new Set(input.deviceIds).size) return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const kind = RECIPE_AGENT_KINDS[recipe.key];
+  const effectiveAgent = kind ? await resolveEffectiveAgent(auth, body.orgId, kind) : null;
+  const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
+  if (!agent) {
+    return c.json({
+      error: 'No enabled helpdesk AI agent is available for this organization. '
+        + 'Enable one in Settings → AI Agents before starting an offboarding.',
+      code: 'OPERATOR_NO_AGENT',
+    }, 422);
+  }
+
+  const result = await admitTask({
+    orgId: body.orgId,
+    agentId: agent.id,
+    workflowKey: recipe.key,
+    workflowVersion: recipe.version,
+    objective: `Offboard ${label}`.slice(0, 4000),
+    originKind: 'manual',
+    requesterUserId: auth.user?.id ?? null,
+    recipeInput: input,
+    clientIdempotencyKey: body.clientIdempotencyKey,
+  });
+  if (!result.ok) {
+    switch (result.refusal) {
+      case 'contact_not_in_org': return c.json({ error: 'Contact not found' }, 404);
+      case 'device_not_in_org': return c.json({ error: 'Device not found' }, 404);
+      case 'duplicate_live_task':
+        return c.json({
+          error: 'An offboarding task is already running for this person.',
+          code: 'OPERATOR_DUPLICATE_LIVE_TASK',
+          taskId: result.existingTaskId ?? null,
+        }, 409);
+      // #9981: another task holds one of the person's provider accounts. The
+      // detail names the account, the task and why it is still held.
+      case 'account_reserved':
+        return c.json({ error: result.detail, code: 'OPERATOR_ACCOUNT_RESERVED', taskId: result.existingTaskId ?? null }, 409);
+      case 'pending_cap_reached':
+        return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
+      case 'unknown_recipe':
+        return c.json({ error: result.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+      default:
+        return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+    }
+  }
+  return c.json({ taskId: result.taskId, replayed: result.replayed }, 202);
+}
+
+/**
+ * `GET /api/v1/ai/operator/workflows` — the Library (spec §4.1, §12).
+ *
+ * Readiness is computed from ROWS on every call. Spec §12: "Recompute
+ * readiness on launch and before dispatch. A cached catalog or draft is never
+ * authority." There is deliberately no ETag and no cache header.
+ */
+aiOperatorTasksRoutes.get(
+  '/workflows',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ orgId: z.string().guid() }).strict()),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId } = c.req.valid('query');
+    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Organization not found' }, 404);
+    const readiness = await listWorkflowReadiness(orgId, auth);
+    return c.json({ data: readiness.map(toWorkflowDto) });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/tasks/:id/account-reservations/release` (#9981).
+ *
+ * A task reserves every provider account it acts on, and a task that ended
+ * `unknown_effect` keeps them: an action it sent may still land. The
+ * reconciler releases them once the operation settles; when it never will
+ * (a result that stays `unknown`), a person who checked the provider releases
+ * them here. Terminal tasks only — a live task is still acting, and the way
+ * to free its accounts is to stop it.
+ *
+ * Same gates as starting an offboarding (it re-opens the accounts to one):
+ * `ai_agents:write` + MFA, `organizations:write`, no site ceiling, and the
+ * task visible to the caller (non-enumerating 404). Audited.
+ */
+const releaseReservationsSchema = z.object({ note: z.string().trim().max(1000).optional() }).strict();
+
+aiOperatorTasksRoutes.post(
+  '/tasks/:id/account-reservations/release',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', releaseReservationsSchema),
+  async (c) => {
+    const taskId = uuidParam(c, 'id');
+    if (!taskId) return c.json({ error: 'Task not found' }, 404);
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+      return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+    }
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Provider accounts are organization-wide; site-restricted users cannot release them.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    const task = await findVisibleTask(auth, taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const note = c.req.valid('json').note || null;
+    const result = await releaseTaskAccountReservations({
+      orgId: task.orgId, taskId: task.id, userId: auth.user?.id ?? null, note,
+    });
+    if (!result.ok) {
+      switch (result.reason) {
+        case 'task_live':
+          return c.json({
+            error: 'This task is still running. Stop it to release the accounts it holds.',
+            code: 'OPERATOR_TASK_LIVE',
+          }, 409);
+        case 'task_not_found':
+          return c.json({ error: 'Task not found' }, 404);
+        default: {
+          const unhandled: never = result.reason;
+          throw new Error(`unhandled release refusal ${String(unhandled)}`);
+        }
+      }
+    }
+    writeRouteAudit(c, {
+      orgId: task.orgId,
+      action: 'ai_operator.account_reservations.release',
+      resourceType: 'ai_operator_task',
+      resourceId: task.id,
+      details: { released: result.released, ...(note ? { note } : {}) },
+    });
+    return c.json({ released: result.released });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/task-drafts` — interpret and validate, execute
+ * nothing (spec §12: "returns typed reviewed proposal, no operational
+ * execution"). It resolves the recipe, parses the inputs, resolves the person
+ * READ-ONLY (it never creates a contact — a draft that created customer
+ * records would not be a draft), recomputes readiness, and returns the effect
+ * tools the plan WOULD use and the human-work items it would generate. It
+ * writes nothing. The plan itself is built at `discover`, from live provider
+ * reads, after a person confirms the identity.
+ */
+aiOperatorTasksRoutes.post(
+  '/task-drafts',
+  scopes,
+  requireAiWrite,
+  // A draft can return contact names and addresses: the same read permission
+  // the contact routes require.
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  zValidator('json', operatorTaskDraftSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    if (!auth.canAccessOrg(body.orgId)) return c.json({ error: 'Organization not found' }, 404);
+    const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+    if (!resolution.ok && resolution.reason === 'unknown_recipe') {
+      return c.json({ error: resolution.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+    }
+    if (!resolution.ok) return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+    const recipe = resolution.recipe;
+
+    const rawInput = body.deviceId !== undefined ? { ...body.inputs, deviceId: body.deviceId } : body.inputs;
+    const parsed = recipe.inputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      return c.json({
+        error: 'Invalid workflow inputs',
+        code: 'INVALID_INPUT',
+        issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      }, 400);
+    }
+
+    const all = await listWorkflowReadiness(body.orgId, auth);
+    const readiness = all.find((r) => r.recipeKey === recipe.key)
+      ?? computeRecipeReadiness(recipe, { orgId: body.orgId, m365: null, google: null, agent: null, flagEnabled: false });
+    const workflow = toWorkflowDto(readiness);
+    if (recipe.key === IDENTITY_ONBOARDING_WORKFLOW_KEY) {
+      return draftIdentityOnboardingFromRoute(c, {
+        orgId: body.orgId, recipe, input: parsed.data as IdentityOnboardingInput, readiness, workflow,
+      });
+    }
+    if (recipe.key !== IDENTITY_OFFBOARDING_WORKFLOW_KEY) {
+      return c.json({ data: { recipeKey: recipe.key, recipeVersion: recipe.version, input: parsed.data, workflow } });
+    }
+
+    // Same gates as admission, BEFORE any contact is read: offboarding is
+    // org-wide identity governance, and a disabled recipe drafts nothing.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    if (!recipeEnabled(recipe.key)) {
+      return c.json({ error: 'The offboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+    }
+    const input = parsed.data as IdentityOffboardingInput;
+    if (!input.contactId && (input.personHint ?? '').trim().length < 2) {
+      return c.json({ error: 'Name the person with at least two characters, or choose a contact.', code: 'INVALID_INPUT' }, 400);
+    }
+    const person = await draftPerson(body.orgId, input);
+    const selfInheritance = person.resolved ? selfInheritanceRefusal(input, person.resolved) : null;
+    if (selfInheritance) return c.json(selfInheritance, 400);
+    const degraded = new Set(readiness.degradedEffects);
+    const plannedEffectTools = (Object.keys(IDENTITY_TOGGLE_TOOLS) as Array<keyof typeof IDENTITY_TOGGLE_TOOLS>)
+      .filter((toggle) => input.effects[toggle])
+      .flatMap((toggle) => IDENTITY_TOGGLE_TOOLS[toggle])
+      .filter((tool) => !(tool === 'm365_remove_license' && input.keepMailbox))
+      .filter((tool) => IDENTITY_OFFBOARDING_EFFECT_TOOLS.includes(tool as never));
+    const label = person.resolved?.name ?? person.resolved?.email ?? input.personHint ?? 'the departing person';
+    // Device items name the host, not the id (QA sweep 2026-10-24): the same
+    // org-scoped lookup POST /tasks uses, read-only, unknown ids fall back to the id.
+    const deviceLabels: Record<string, string> = {};
+    if (input.deviceIds.length > 0) {
+      const rows = await db.select({ id: devices.id, hostname: devices.hostname, siteId: devices.siteId }).from(devices)
+        .where(and(eq(devices.orgId, body.orgId), inArray(devices.id, input.deviceIds)));
+      for (const d of rows) {
+        if (auth.canAccessSite && !auth.canAccessSite(d.siteId)) continue;
+        if (d.hostname) deviceLabels[d.id] = d.hostname;
+      }
+    }
+    const manualWork = buildIdentityOffboardingManualWork(input, {
+      google: { present: readiness.capabilityReadiness['google.workspace.connection'] === true },
+      m365: { present: readiness.capabilityReadiness['m365.connection'] === true },
+      targets: { contactTargetId: 'draft', contactLabel: label, deviceLabels },
+      degradedTools: [...degraded],
+    }, readiness.capabilityReadiness, []).map((i) => ({ key: i.key, label: i.label, detail: i.detail, origin: i.origin }));
+
+    return c.json({
+      data: {
+        recipeKey: recipe.key,
+        recipeVersion: recipe.version,
+        input,
+        workflow,
+        person: {
+          resolved: person.resolved,
+          // Candidates for a human to pick from, never a resolution.
+          candidates: person.resolved ? [] : person.candidates,
+        },
+        plannedEffectTools: plannedEffectTools.filter((t) => !degraded.has(t)),
+        degradedEffectTools: plannedEffectTools.filter((t) => degraded.has(t)),
+        manualWork,
+      } satisfies AiOperatorIdentityTaskDraftDto,
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// W07 R2a (Task 14; Amendment G6, G7, G9): identity_onboarding through the
+// shipped routes. Appended — nothing above changes behaviour for another key.
+// ---------------------------------------------------------------------------
+
+/** Never leaves the server: the draft's facts need a contact target id, and there is no contact. */
+const DRAFT_CONTACT_TARGET_ID = '00000000-0000-0000-0000-000000000000';
+/**
+ * Never leaves the server either: the account a stage-1 create would produce
+ * has no id yet. M365 accounts are addressed by an Entra object id (a GUID),
+ * so the placeholder is the nil GUID; the preview hides `userIdentifier`.
+ */
+const DRAFT_PENDING_M365_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
+const DRAFT_PENDING_GOOGLE_ACCOUNT_ID = 'pending-account';
+/** Arguments that name the account or audit the call; the preview states the account through `principalLabel`. */
+const DRAFT_HIDDEN_ARGUMENTS: ReadonlySet<string> = new Set(['userIdentifier', 'userEmail', 'reason']);
+
+function draftEffect(effect: PlannedEffect, input: IdentityOnboardingInput): AiOperatorOnboardingDraftEffectDto {
+  const provider = effect.provider === 'google' ? 'google' : 'm365';
+  const principalLabel = provider === 'google' ? input.google?.primaryEmail ?? '' : input.m365?.userPrincipalName ?? '';
+  return {
+    ordinal: effect.ordinal,
+    toolName: effect.toolName,
+    provider,
+    principalLabel,
+    arguments: Object.fromEntries(Object.entries(effect.canonicalArguments).filter(([k]) => !DRAFT_HIDDEN_ARGUMENTS.has(k))),
+  };
+}
+
+/**
+ * `POST /task-drafts` for `identity_onboarding` (G7). After the SAME two gates
+ * as offboarding (org-wide governance, recipe flag), and only then, it runs
+ * `readOnboardingDraftFacts`: at most one `m365.user.get`, one
+ * `m365.org.skus.list` and one Google `users.get`, every failure a flag. It
+ * resolves no contact and writes nothing.
+ *
+ * Both previews come from the recipe's OWN builders over draft facts, so the
+ * draft cannot preview what `discover` would refuse on the same reads. The
+ * draft reads no group, so each requested group is described as unknown
+ * (planned, as an unknown-role group is at discover), and the provision
+ * preview says it is provisional in its name. A provider whose name is not
+ * strictly free gets no account and so no provisioning, as at stage 2.
+ */
+async function draftIdentityOnboardingFromRoute(c: Context, args: {
+  orgId: string;
+  recipe: Pick<AnyRecipeDefinition, 'key' | 'version'>;
+  input: IdentityOnboardingInput;
+  readiness: RecipeReadiness;
+  workflow: AiOperatorWorkflowDto;
+}) {
+  const auth = c.get('auth');
+  const { orgId, recipe, input, readiness, workflow } = args;
+  // The shared draft route only requires organizations:read, but this branch
+  // does live directory lookups by a caller-supplied name: admission's own
+  // gates (organizations:write + MFA) apply before any provider read.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!hasSatisfiedMfa(auth)) {
+    return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+  }
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Onboarding creates organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (!recipeEnabled(recipe.key)) {
+    return c.json({ error: 'The onboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+
+  const reads = await readOnboardingDraftFacts({ orgId, input });
+  const facts: IdentityOnboardingCreateFacts = {
+    stage: 'create',
+    targets: { contactTargetId: DRAFT_CONTACT_TARGET_ID, contactLabel: input.displayName.slice(0, 512) },
+    collisions: reads.collisions,
+    seats: reads.seats,
+    groups: {
+      m365: (input.m365?.groupIds ?? []).map((id) => ({ id, name: null, dynamic: null, roleAssignable: null })),
+      google: (input.google?.groupEmails ?? []).map((email) => ({ email, name: null, modelAfterRole: null })),
+    },
+    modelAfter: null,
+    degradedTools: [...readiness.degradedEffects],
+    capabilityReadiness: { ...readiness.capabilityReadiness },
+    flags: reads.flags.map((f) => ({ code: f.code, subject: f.subject, detail: f.detail })),
+    truncated: [],
+  };
+  const m365Free = reads.collisions.m365?.upnTaken === false;
+  const googleFree = reads.collisions.google?.emailTaken === false;
+  const provisionFacts = {
+    ...facts,
+    stage: 'provision' as const,
+    accounts: {
+      m365: m365Free && input.m365 ? { externalId: DRAFT_PENDING_M365_ACCOUNT_ID, principalLabel: input.m365.userPrincipalName } : null,
+      google: googleFree && input.google ? { externalId: DRAFT_PENDING_GOOGLE_ACCOUNT_ID, principalLabel: input.google.primaryEmail } : null,
+    },
+  };
+
+  // A collision is a fact the reads found, not a read failure: a flag, never an error.
+  const flags = reads.flags.map((f) => ({ code: f.code, subject: f.subject, detail: f.detail }));
+  if (input.m365 && reads.collisions.m365?.upnTaken === true) {
+    flags.push({ code: 'upn_collision', subject: input.m365.userPrincipalName,
+      detail: 'A Microsoft 365 account already holds this sign-in name, so Breeze would not create one.' });
+  }
+  if (input.google && reads.collisions.google?.emailTaken === true) {
+    flags.push({ code: 'email_collision', subject: input.google.primaryEmail,
+      detail: 'A Google Workspace user already holds this address, so Breeze would not provision Google.' });
+  }
+
+  const googleItem = buildManualCreateGoogleItem(input, facts);
+  const manualWork = capOnboardingManualWork([
+    ...(googleItem ? [googleItem] : []),
+    ...buildIdentityOnboardingManualWork(input, facts, readiness.capabilityReadiness, []),
+  ]).map((i) => ({ key: i.key, label: i.label, detail: i.detail, origin: i.origin }));
+
+  return c.json({
+    data: {
+      recipeKey: recipe.key,
+      recipeVersion: recipe.version,
+      input,
+      workflow,
+      createPlanPreview: buildIdentityOnboardingCreatePlan(input, facts).map((e) => draftEffect(e, input)),
+      provisionPlanPreview: buildIdentityOnboardingProvisionPlan(input, provisionFacts).map((e) => draftEffect(e, input)),
+      flags,
+      manualWork,
+    } satisfies AiOperatorIdentityOnboardingTaskDraftDto,
+  });
+}
+
+/**
+ * `POST /tasks` for `identity_onboarding`, with the offboarding path's
+ * posture: organizations:write, org-wide governance, no device or source
+ * citation, readiness re-read, every referenced contact and site visible to
+ * the caller in their own db context, the SERVER picks the agent, admission
+ * idempotent. Admission CREATES the contact (Task 10), so a person who
+ * already has one is a conflict for a human: 409 naming the existing contact.
+ */
+async function admitIdentityOnboardingFromRoute(c: Context, body: CreateOperatorTaskInput) {
+  const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Onboarding creates organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (body.deviceId !== undefined || body.sourceKind !== undefined) {
+    return c.json({ error: 'This workflow takes no deviceId and no source citation.', code: 'INVALID_INPUT' }, 400);
+  }
+  if (!aiOperatorTasksEnabled()) {
+    return c.json({ error: 'AI Operator tasks are not enabled for this deployment', code: 'OPERATOR_TASKS_DISABLED' }, 422);
+  }
+  if (!recipeEnabled(body.recipeKey)) {
+    return c.json({ error: 'The onboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+  const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+  if (!resolution.ok) {
+    return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+  }
+  const recipe = resolution.recipe;
+  const parsed = recipe.inputSchema.safeParse(body.inputs);
+  if (!parsed.success) {
+    return c.json({
+      error: 'Invalid workflow inputs',
+      code: 'INVALID_INPUT',
+      issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    }, 400);
+  }
+  const input = parsed.data as IdentityOnboardingInput;
+
+  // Non-enumerating: the same 404 whether a referenced row is another org's or nobody's.
+  for (const contactId of [input.managerContactId, input.modelAfterContactId]) {
+    if (contactId === null) continue;
+    const [row] = await db.select({ id: contacts.id }).from(contacts)
+      .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, contactId))).limit(1);
+    if (!row) return c.json({ error: 'Contact not found' }, 404);
+  }
+  if (input.siteId !== null) {
+    const [site] = await db.select({ id: sites.id }).from(sites)
+      .where(and(eq(sites.orgId, body.orgId), eq(sites.id, input.siteId))).limit(1);
+    if (!site || (auth.canAccessSite && !auth.canAccessSite(site.id))) return c.json({ error: 'Site not found' }, 404);
+  }
+
+  const kind = RECIPE_AGENT_KINDS[recipe.key];
+  const effectiveAgent = kind ? await resolveEffectiveAgent(auth, body.orgId, kind) : null;
+  const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
+  if (!agent) {
+    return c.json({
+      error: 'No enabled helpdesk AI agent is available for this organization. '
+        + 'Enable one in Settings → AI Agents before starting an onboarding.',
+      code: 'OPERATOR_NO_AGENT',
+    }, 422);
+  }
+
+  const result = await admitTask({
+    orgId: body.orgId,
+    agentId: agent.id,
+    workflowKey: recipe.key,
+    workflowVersion: recipe.version,
+    objective: `Onboard ${input.displayName}`.slice(0, 4000),
+    originKind: 'manual',
+    requesterUserId: auth.user?.id ?? null,
+    recipeInput: input,
+    clientIdempotencyKey: body.clientIdempotencyKey,
+  });
+  if (!result.ok) {
+    switch (result.refusal) {
+      case 'contact_already_exists': {
+        // Admission's refusal carries no id; re-read it on the CALLER's
+        // context with admission's rule (one match; none for a shared
+        // mailbox), so the body can only name a contact the caller can see.
+        const email = normalizeContactEmail(input.m365?.userPrincipalName ?? input.google?.primaryEmail ?? null);
+        const rows = email === null ? [] : await db.select({ id: contacts.id }).from(contacts)
+          .where(and(eq(contacts.orgId, body.orgId), sql`lower(${contacts.email}) = ${email}`)).limit(2);
+        return c.json({
+          error: 'A contact already uses this person\'s address: this onboarding may already be started, '
+            + 'or the address belongs to someone else.',
+          code: 'OPERATOR_CONTACT_ALREADY_EXISTS',
+          existingContactId: rows.length === 1 ? rows[0]!.id : null,
+        }, 409);
+      }
+      case 'start_at_beyond_deadline': {
+        const deadlineDays = Math.floor(recipe.bounds.deadlineMs / (24 * 60 * 60 * 1000));
+        return c.json({
+          error: `The start date is after this task's ${deadlineDays}-day deadline. `
+            + `Pick a start date within ${deadlineDays} days, or start the onboarding nearer to it.`,
+          code: 'START_AT_BEYOND_DEADLINE',
+          deadlineDays,
+        }, 422);
+      }
+      case 'contact_not_in_org': return c.json({ error: 'Contact not found' }, 404);
+      case 'duplicate_live_task':
+        return c.json({
+          error: 'An onboarding task is already running for this person.',
+          code: 'OPERATOR_DUPLICATE_LIVE_TASK',
+          taskId: result.existingTaskId ?? null,
+        }, 409);
+      case 'pending_cap_reached':
+        return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
+      case 'unknown_recipe':
+        return c.json({ error: result.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+      default:
+        return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+    }
+  }
+  return c.json({ taskId: result.taskId, replayed: result.replayed }, 202);
+}

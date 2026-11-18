@@ -109,9 +109,10 @@ async function readPeriods(contractId: string) {
 async function readGeneratedLines(contractId: string) {
   const periods = await readPeriods(contractId);
   const invoiceId = periods[0]?.invoiceId;
-  if (!invoiceId) return { invoiceId: null as string | null, lines: [] as Array<{ description: string; quantity: string; unitPrice: string; lineTotal: string; taxable: boolean }> };
+  if (!invoiceId) return { invoiceId: null as string | null, lines: [] as Array<{ name: string | null; description: string | null; quantity: string; unitPrice: string; lineTotal: string; taxable: boolean }> };
   const lines = await withSystemDbAccessContext(() => db
     .select({
+      name: invoiceLines.name,
       description: invoiceLines.description,
       quantity: invoiceLines.quantity,
       unitPrice: invoiceLines.unitPrice,
@@ -185,7 +186,8 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
     // live device count. Hand-priced flat line: qty 1 at its stamped price.
     expect(lines, assertionMessage('sweep-generated invoice', 'EUR', 'invoice_lines count', 2, lines.length)).toHaveLength(2);
     const perDevice = lines.find((l) => l.description === 'Managed endpoint');
-    const flat = lines.find((l) => l.description === 'Service desk retainer');
+    // #9664: a non-catalog line's text is its name; the catalog line keeps its text as the blurb.
+    const flat = lines.find((l) => l.name === 'Service desk retainer');
     expect(Number(perDevice?.unitPrice), assertionMessage('catalog line pricing', 'EUR', 'invoice_lines.unit_price', 49.99, perDevice?.unitPrice)).toBe(49.99);
     expect(Number(perDevice?.quantity), assertionMessage('per_device quantity resolution', 'EUR', 'invoice_lines.quantity', 2, perDevice?.quantity)).toBe(2);
     expect(perDevice?.lineTotal, assertionMessage('catalog line total', 'EUR', 'invoice_lines.line_total', roundToCurrency(99.98, 'EUR'), perDevice?.lineTotal)).toBe(roundToCurrency(99.98, 'EUR'));

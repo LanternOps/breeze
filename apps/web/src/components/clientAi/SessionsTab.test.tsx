@@ -79,7 +79,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
-function mockApi() {
+function mockApi(listRow: Record<string, unknown> = LIST_ROW, detail: unknown = DETAIL) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
     if (url === '/client-ai/admin/orgs' && !init?.method) {
@@ -89,12 +89,12 @@ function mockApi() {
     }
     if (url.startsWith('/client-ai/admin/sessions?') && !init?.method) {
       return makeJsonResponse({
-        data: [LIST_ROW],
+        data: [listRow],
         pagination: { total: 1, limit: 50, offset: 0 },
       });
     }
     if (url === `/client-ai/admin/sessions/${SESSION_ID}` && !init?.method) {
-      return makeJsonResponse(DETAIL);
+      return makeJsonResponse(detail);
     }
     if (url === `/client-ai/admin/sessions/${SESSION_ID}/flag` && init?.method === 'POST') {
       return makeJsonResponse({ success: true });
@@ -126,6 +126,38 @@ describe('SessionsTab', () => {
     expect(screen.getByTestId('ai-office-redaction-creditCard').textContent).toContain('×1');
     expect(screen.getByTestId('ai-office-tool-exec-t1')).toBeInTheDocument();
     expect(screen.getByText('B2:B4')).toBeInTheDocument();
+  });
+
+  it('shows a platform-refused tool call as stopped, never as applied (#10411)', async () => {
+    mockApi();
+    const refusedExec = {
+      ...DETAIL.toolExecutions[0],
+      id: 't-refused',
+      status: 'refused',
+      approvedAt: null,
+      errorMessage: 'Rate limit exceeded for write_range',
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/client-ai/admin/sessions/${SESSION_ID}`) {
+        return makeJsonResponse({ ...DETAIL, toolExecutions: [refusedExec] });
+      }
+      if (url.startsWith('/client-ai/admin/sessions?')) {
+        return makeJsonResponse({ data: [LIST_ROW], pagination: { total: 1, limit: 50, offset: 0 } });
+      }
+      return makeJsonResponse({ data: [{ orgId: ORG_ID, orgName: 'Contoso Accounting' }] });
+    });
+    render(<SessionsTab />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`ai-office-session-row-${SESSION_ID}`)).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByTestId(`ai-office-session-row-${SESSION_ID}`));
+    await waitFor(() => expect(screen.getByTestId('ai-office-tool-exec-t-refused')).toBeInTheDocument());
+
+    const card = screen.getByTestId('ai-office-tool-exec-t-refused');
+    expect(card.textContent).toMatch(/stopped/i);
+    expect(card.textContent).not.toMatch(/refused/i);
+    expect(card.textContent).not.toMatch(/applied/i);
   });
 
   it('flags a session with a reason (exact POST payload)', async () => {
@@ -201,6 +233,38 @@ describe('SessionsTab', () => {
         String(u).startsWith('/client-ai/admin/sessions?')
       );
       expect(String(listCalls[listCalls.length - 1]![0])).toContain('flagged=true');
+    });
+  });
+
+  describe('transcript removed by retention (#4342 W4)', () => {
+    const PURGED_AT = '2027-02-01T03:15:00Z';
+    const purgedRow = { ...LIST_ROW, title: null, transcriptPurgedAt: PURGED_AT };
+    const purgedDetail = {
+      session: { ...DETAIL.session, title: null, transcriptPurgedAt: PURGED_AT },
+      messages: [],
+      toolExecutions: [],
+    };
+
+    it('labels the list row and shows the dated banner instead of "no messages"', async () => {
+      mockApi(purgedRow, purgedDetail);
+      render(<SessionsTab />);
+      const row = await screen.findByTestId(`ai-office-session-row-${SESSION_ID}`);
+      expect(row).toHaveTextContent('Removed by retention');
+      fireEvent.click(row);
+      const banner = await screen.findByTestId('ai-office-session-transcript-purged');
+      expect(banner).toHaveTextContent(/Transcript removed by retention on/);
+      expect(banner).toHaveTextContent(/2027/);
+      expect(screen.queryByText('No messages stored for this session.')).toBeNull();
+    });
+
+    it('renders unchanged when transcriptPurgedAt is null', async () => {
+      mockApi({ ...LIST_ROW, transcriptPurgedAt: null }, { ...DETAIL, session: { ...DETAIL.session, transcriptPurgedAt: null } });
+      render(<SessionsTab />);
+      const row = await screen.findByTestId(`ai-office-session-row-${SESSION_ID}`);
+      expect(row).not.toHaveTextContent('Removed by retention');
+      fireEvent.click(row);
+      await screen.findByTestId('ai-office-redaction-creditCard');
+      expect(screen.queryByTestId('ai-office-session-transcript-purged')).toBeNull();
     });
   });
 });

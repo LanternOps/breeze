@@ -245,6 +245,11 @@ vi.mock('./intentApprovers', () => ({
       .includes(toolName),
 }));
 
+const partnerAxisState = vi.hoisted(() => ({ required: vi.fn(async (): Promise<boolean> => true) }));
+vi.mock('./partnerAxisApprover', () => ({
+  intentRequiresPartnerAxisApprover: partnerAxisState.required,
+}));
+
 vi.mock('../../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
@@ -639,6 +644,64 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent: partner-axis approvers for a partner-wide intent', () => {
+  const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000b1';
+  const scheduleDelete = () => baseInput({
+    toolName: 'manage_ai_agent_schedules',
+    input: { action: 'delete', scheduleId: SCHEDULE_ID },
+    idempotencyKey: 'key-schedule-delete',
+  });
+
+  beforeEach(() => {
+    partnerAxisState.required.mockReset();
+    partnerAxisState.required.mockResolvedValue(true);
+    // A schedule delete carries a mandatory digest; without one the raise refuses before the insert.
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'f'.repeat(64) });
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+  });
+
+  it('asks the resolver for the partner axis, and the stored summary says so', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-baseline' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(partnerAxisState.required).toHaveBeenCalledWith({
+      actionName: 'manage_ai_agent_schedules',
+      arguments: { action: 'delete', scheduleId: SCHEDULE_ID },
+      orgId: ORG_ID,
+    });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ requirePartnerAxis: true }),
+    );
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).toContain('This needs a partner-level approver.');
+  });
+
+  it("an override delete keeps today's approver set and summary", async () => {
+    partnerAxisState.required.mockResolvedValue(false);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-override' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).not.toContain('partner-level');
+  });
+
+  it('never consults the predicate for an action outside the registry', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-other' }),
+    ).catch(() => undefined);
+
+    expect(partnerAxisState.required).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+  });
+});
 
 describe('createActionIntent — org-wide governance fan-out filter', () => {
   const govInput = () => baseInput({
@@ -2199,6 +2262,77 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     );
   });
 
+  // Network-isolation W13 (#10101, ai.mdx "Approving your own request when you
+  // are the only approver"): the AI release of a containment is four-eyes, and
+  // a sole operator keeps the WebAuthn self-approval fallback — one
+  // requester-owned row carrying the pinned episode digest. (Real
+  // selfApprovalPolicy and pinnedEffectPolicy; the decide-time assurance gate is
+  // tool-agnostic.)
+  describe('release_containment (W13 #10101)', () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    const fourEyes = {
+      tier: 3, allowed: true, requiresApproval: true,
+      description: 'Release network isolation', approvalScope: 'four_eyes',
+    } as const;
+
+    it('a sole operator gets one requester-owned row carrying the pinned episode digest', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-solo', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-solo' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-solo',
+      }));
+
+      expect(snapshot.status).toBe('pending_approval');
+      expect(snapshot.requesterApprovalRequestId).toBe('approval-release-solo');
+      expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+        actionName: 'release_containment', approvalScope: 'four_eyes', effectDigest: 'f'.repeat(64),
+      });
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+      );
+    });
+
+    it('with another eligible approver, the requester cannot self-approve: the row goes to the second person', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-pair', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-pair' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-pair',
+      }));
+
+      expect(snapshot.requesterApprovalRequestId).toBeNull();
+      const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+      expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1]);
+    });
+
+    it.each(['missing_arg', 'target_absent'] as const)(
+      'refuses to create the approval when the episode cannot be pinned (%s)', async (reason) => {
+        guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+        // Everything else would succeed: the refusal is the mandatory pin alone.
+        intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-release-${reason}`, actionName: 'release_containment' }));
+        dbState.insertApprovalRequestsResults.push([{ id: `approval-release-${reason}` }]);
+
+        await expect(createActionIntent(makeAuth(), baseInput({
+          toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
+        }))).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
+        expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+      });
+  });
+
   it('persists approvalScope and classificationVersion on the inserted row', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({
       tier: 3,
@@ -2275,6 +2409,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
@@ -2299,6 +2434,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
@@ -2315,7 +2451,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db, { intentOrgId: ORG_ID });
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
     // `not_applicable` is the expected, correct case — it must NOT pollute the
     // unpinned signal.
@@ -2779,6 +2915,50 @@ describe('waitForIntentDecision', () => {
     const result = await waitForIntentDecision('missing-intent', 5000);
     expect(result).toBe('pending_approval');
   });
+
+  // #12098: a decision made during the last sleep (after the last poll)
+  // used to come back as pending_approval.
+  it('reads once more when the time runs out, returning a decision made during the last sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      // Polls at t=0 and t=500, then the 750 ms sleep outlasts the 1200 ms
+      // budget: the third read is the closing one.
+      dbState.selectActionIntentsResults.push(
+        [{ status: 'pending_approval' }],
+        [{ status: 'pending_approval' }],
+        [{ status: 'approved' }],
+      );
+      const promise = waitForIntentDecision('intent-1', 1200);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(promise).resolves.toBe('approved');
+      expect(dbState.selectActionIntentsResults).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the one closing read on a zero budget', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'rejected' }]);
+    await expect(waitForIntentDecision('intent-1', 0)).resolves.toBe('rejected');
+    expect(dbState.selectActionIntentsResults).toHaveLength(0);
+  });
+
+  it('skips the closing read when the wait is settled during a sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      dbState.selectActionIntentsResults.push([{ status: 'pending_approval' }], [{ status: 'approved' }]);
+      const promise = waitForIntentDecision('intent-1', 5000, controller.signal);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toBe('pending_approval');
+      // The queued second read was never taken.
+      expect(dbState.selectActionIntentsResults).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3004,6 +3184,30 @@ describe('buildImpactSummary (#5106)', () => {
       input: { deviceId: 'd1', commandType: 'definitely_not_a_command' },
       guardrailDescription: 'Execute a system command on a device.',
       expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'Pax8 submit impact names the company, line outcomes, price, and terminal cancellation',
+      toolName: 'manage_pax8_orders',
+      input: { action: 'submit', expectedCompany: { name: 'Fixture Company', pax8CompanyId: 'company-1' },
+        expectedLines: [{ action: 'cancel', productName: 'Fixture Seats', pax8ProductId: 'product-1',
+          fromQuantity: '7.00', quantity: '0', unitCost: '8.00', currency: 'USD', billingTerm: 'Monthly',
+          commitmentTerm: 'Annual', cancellationFeeApplied: true }] },
+      guardrailDescription: 'Generic Pax8 management description.',
+      expected: "Place a real, billable Pax8 order that cannot be undone for Fixture Company (company-1): 0 new subscriptions, 0 quantity changes, 1 cancellations. Cost is estimated at Pax8's current rate, re-checked before sending. CANCEL (terminal) Fixture Seats [product-1]: 7.00 → 0, 8.00 USD per seat / Monthly, commitment Annual, cancellation fee applies",
+    },
+    {
+      name: 'manage_invoices void gets plain-language impact (#9657)',
+      toolName: 'manage_invoices',
+      input: { action: 'void' },
+      guardrailDescription: 'Manage invoices.',
+      expected: 'Voids the invoice. It will no longer be payable.',
+    },
+    {
+      name: 'remediate_vulnerability does not surface the model-facing description (#9657)',
+      toolName: 'remediate_vulnerability',
+      input: {},
+      guardrailDescription: 'x',
+      expected: 'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',
@@ -3315,6 +3519,18 @@ describe('createActionIntent caller verification (#6354 W05)', () => {
       expect(callerState.requireCallerVerification).not.toHaveBeenCalled();
       expectNothingMinted();
     });
+
+    it('B-W04: an mcp_api live row filed by a DIFFERENT origin credential is an idempotency_conflict', async () => {
+      arrangeApproval();
+      dbState.selectActionIntentsResults.push([replayRow({
+        source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-B',
+      })]);
+      await expect(createActionIntent(
+        makeAuth({ principal: { kind: 'api_key', apiKeyId: 'key-A' } }),
+        protInput('m365_disable_user', { source: 'mcp_api' }),
+      )).rejects.toMatchObject({ name: 'ActionIntentError', code: 'idempotency_conflict' });
+      expectNothingMinted();
+    });
   });
 
   it('non-protected tools never resolve a caller target or call the gate, and pin nothing', async () => {
@@ -3330,5 +3546,190 @@ describe('createActionIntent caller verification (#6354 W05)', () => {
     expect(dbState.insertedActionIntentValues[0]).toMatchObject({
       targetEntraTenantId: null, targetEntraOid: null, targetConnectionRef: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-W04 (#6158, D-B27/D-B28): MCP-origin intents
+// ---------------------------------------------------------------------------
+describe('createActionIntent — mcp_api origin (B-W04)', () => {
+  const KEY_A = { kind: 'api_key', apiKeyId: 'key-A' };
+  const mcpInput = (over: Partial<CreateActionIntentInput> = {}) => baseInput({
+    source: 'mcp_api', idempotencyKey: 'mcp:v1:abc', ...over,
+  });
+  const fourEyes = () => guardrailMock.checkGuardrails.mockReturnValue({
+    tier: 3, allowed: true, requiresApproval: true, description: 'Run a script', approvalScope: 'four_eyes',
+  });
+  const supervised = () => guardrailMock.checkGuardrails.mockReturnValue({
+    tier: 3, allowed: true, requiresApproval: true, description: 'Run a script', approvalScope: 'supervised',
+  });
+  const liveMcpRow = (over: Record<string, unknown> = {}) => makeIntentRow({
+    id: 'intent-live-mcp', source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-A',
+    idempotencyKey: 'mcp:v1:abc', ...over,
+  });
+
+  it('mcp_api replay with a different origin principal → idempotency_conflict', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow({ originPrincipalId: 'key-B' })]);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput()))
+      .rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  it('mcp_api replay with a different requester → idempotency_conflict', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow({ requestedByUserId: APPROVER_2 })]);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput()))
+      .rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  it('mcp_api replay with the same origin returns the live intent and does not re-notify', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: APPROVER_1 }]);
+    const snap = await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(snap.id).toBe('intent-live-mcp');
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(pushState.getUserPushTokens).not.toHaveBeenCalled();
+  });
+
+  it('correlationId is stored for an mcp_api intent and ignored for chat', async () => {
+    const CORR = '6f2b7c1e-1d2a-4c3b-9e8f-0a1b2c3d4e5f';
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-mcp' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-mcp' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ correlationId: CORR }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-key', correlationId: CORR }));
+    const [mcp, chat] = dbState.insertedActionIntentValues;
+    expect(mcp!.correlationId).toBe(CORR);
+    expect(chat!.correlationId).not.toBe(CORR);
+    expect(mcp!.originPrincipalKind).toBe('api_key');
+    expect(mcp!.originPrincipalId).toBe('key-A');
+  });
+
+  // #9758: an OAuth-originated MCP intent records the auth_epoch its filing
+  // call was verified at, so release can refuse after a password change.
+  it('stores originAuthEpoch on an oauth_grant mcp_api intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-oauth' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-oauth' }]);
+    await createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: 5 }),
+    );
+    const [row] = dbState.insertedActionIntentValues;
+    expect(row!.originPrincipalKind).toBe('oauth_grant');
+    expect(row!.originAuthEpoch).toBe(5);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['not an integer', 1.5],
+  ])('refuses an oauth_grant mcp_api intent whose auth epoch is %s, before insert', async (_label, epoch) => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    await expect(createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: epoch }),
+    )).rejects.toMatchObject({ code: 'principal_not_supported' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('never stores originAuthEpoch on an api_key mcp_api intent or a chat intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-key' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-key' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ originAuthEpoch: 5 }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-epoch' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-epoch' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-epoch', originAuthEpoch: 5 }));
+    const [key, chat] = dbState.insertedActionIntentValues;
+    expect(key!.originAuthEpoch).toBeNull();
+    expect(chat!.originAuthEpoch).toBeNull();
+  });
+
+  it('supervised mcp_api intent notifies its requester (headless: nobody watches a chat pane)', async () => {
+    supervised();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-sup' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(notifyState.createNotification).toHaveBeenCalled();
+  });
+
+  it('supervised chat intent still does not notify; a user-session mcp_api intent keeps that rule too', async () => {
+    supervised();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-sup' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'k-chat-sup' }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-op-sup' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-op-sup' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'k-op-sup', source: 'mcp_api' }));
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('four_eyes mcp_api intent notifies its approvers (regression)', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-4e' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-4e' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput());
+    expect(notifyState.createNotification).toHaveBeenCalled();
+  });
+
+  it('beforeInsert (churn charge) runs when a new row is about to be inserted', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]); // pre-insert live lookup: none
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-charge' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-charge' }]);
+    const beforeInsert = vi.fn(async () => undefined);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert }));
+    expect(beforeInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('beforeInsert is NOT charged for a replay of a live intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]); // pre-insert live lookup: hit
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([liveMcpRow()]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: APPROVER_1 }]);
+    const beforeInsert = vi.fn(async () => undefined);
+    const snap = await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert }));
+    expect(snap.id).toBe('intent-live-mcp');
+    expect(beforeInsert).not.toHaveBeenCalled();
+  });
+
+  it('at the live cap the churn budget is not charged (advisory pre-check)', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]); // no live replay
+    dbState.selectActionIntentsResults.push([{ n: 2 }]); // live count for this origin
+    const beforeInsert = vi.fn(async () => undefined);
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert, maxLiveForOrigin: 2 })))
+      .rejects.toMatchObject({ code: 'too_many_pending_actions' });
+    expect(beforeInsert).not.toHaveBeenCalled();
+  });
+
+  it('a beforeInsert refusal propagates and nothing is inserted', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.selectActionIntentsResults.push([]);
+    const beforeInsert = vi.fn(async () => { throw new ActionIntentError('slow down', 'rate_limited'); });
+    await expect(createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ beforeInsert })))
+      .rejects.toMatchObject({ code: 'rate_limited' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 });

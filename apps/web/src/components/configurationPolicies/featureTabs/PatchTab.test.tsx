@@ -186,6 +186,32 @@ describe('PatchTab', () => {
     expect(screen.queryByTestId('app-rules-add')).toBeNull();
   });
 
+  // #9565: the dropdown rendered "[2] Broad — Production (7d hold)" — an
+  // unexplained bracketed rollout order and a label unlike the ring's name
+  // everywhere else. Options are now the ring's name; the order and hold are
+  // spelled out for the selected ring below the select.
+  it('labels ring options with the ring name only and explains order and hold for the selection', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data: [
+          { id: 'ring-2', name: 'Broad — Production', ringOrder: 2, deferralDays: 7, gracePeriodHours: 4 },
+        ],
+      }),
+    } as unknown as Response);
+
+    render(<PatchTab {...baseProps} />);
+    const option = await screen.findByRole('option', { name: 'Broad — Production' });
+    expect(option.textContent).toBe('Broad — Production');
+    expect(screen.queryByTestId('approval-ring-details')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('approval-ring-select'), { target: { value: 'ring-2' } });
+    const details = screen.getByTestId('approval-ring-details');
+    expect(details).toHaveTextContent(/rollout order 2/i);
+    expect(details).toHaveTextContent(/7-day hold/i);
+  });
+
   it('says the linked ring owns approval, or that approval is manual without one', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -490,6 +516,26 @@ describe('PatchTab', () => {
       expect(postCall?.[0]).toBe('/update-rings');
     });
 
+    // #9565: the inline "New ring" editor defaults the rollout order to one
+    // past the highest existing ring, like the /patches page.
+    it('defaults a new ring to the next rollout order after the loaded rings', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            { id: 'ring-1', name: 'Pilot', enabled: true, ringOrder: 1, deferralDays: 0, gracePeriodHours: 4 },
+            { id: 'ring-3', name: 'Broad', enabled: true, ringOrder: 3, deferralDays: 7, gracePeriodHours: 4 },
+          ],
+        }),
+      } as unknown as Response);
+
+      render(<PatchTab {...baseProps} />);
+      await screen.findByRole('option', { name: 'Pilot' });
+      fireEvent.click(screen.getByRole('button', { name: /new ring/i }));
+      expect((screen.getByLabelText(/rollout order/i) as HTMLInputElement).value).toBe('4');
+    });
+
     it('surfaces an error when inline ring create fails', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {
         if (opts?.method === 'POST') {
@@ -678,6 +724,22 @@ describe('PatchTab', () => {
       );
       await screen.findByText('Approval Ring');
       expect(screen.queryByTestId('patch-reboot-prompt-title')).toBeNull();
+      expect(screen.queryByTestId('reboot-prompt-preview')).toBeNull();
+    });
+
+    // #10190 W05: the card preview follows the fields as they are edited.
+    it('previews the restart card from the fields being edited', async () => {
+      render(<PatchTab {...baseProps} />);
+      const preview = await screen.findByTestId('reboot-prompt-preview');
+      expect(preview).toBeInTheDocument();
+      expect(screen.getByTestId('reboot-preview-restart-now')).toHaveTextContent('Restart now');
+      expect(screen.queryByTestId('reboot-preview-postpone')).toBeNull();
+
+      fireEvent.change(screen.getByTestId('patch-reboot-prompt-button'), { target: { value: 'Restart right away' } });
+      expect(screen.getByTestId('reboot-preview-restart-now')).toHaveTextContent('Restart right away');
+
+      fireEvent.click(screen.getByTestId('patch-reboot-allow-deferral-toggle'));
+      expect(screen.getByTestId('reboot-preview-postpone')).toHaveTextContent(/^Postpone until /);
     });
   });
 });

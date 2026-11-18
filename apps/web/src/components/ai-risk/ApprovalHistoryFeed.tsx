@@ -59,6 +59,11 @@ const STATUS_BADGE: Record<
     icon: XCircle,
     className: "bg-red-500/15 text-red-700 border-red-500/30",
   },
+  // #10411: the platform refused the call before it ran — never "pending".
+  refused: {
+    icon: XCircle,
+    className: "bg-slate-500/15 text-slate-700 border-slate-500/30",
+  },
   pending: {
     icon: Clock,
     className: "bg-amber-500/15 text-amber-700 border-amber-500/30",
@@ -160,7 +165,10 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${badge.className}`}
                       >
                         <BadgeIcon className="h-3 w-3" />
-                        {exec.status}
+                        {t(
+                          /* i18n-dynamic */ `aiRiskApprovalHistoryFeed.status.${exec.status}`,
+                          { defaultValue: exec.status },
+                        )}
                       </span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">

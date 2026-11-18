@@ -74,7 +74,7 @@ describe('EDR action chokepoints', () => {
     expect(aiFiles.length).toBeGreaterThan(10);
     const offenders = aiFiles.filter((f) => {
       const s = read(f);
-      return /edrProviders\/(?:registry|bitdefender|actionStatus)/.test(s) || /\bperformAction\b|\bgetEdrProvider\b/.test(s);
+      return /edrProviders\/(?:registry|actionStatus|[a-z0-9]+\/(?:adapter|client))\b/.test(s) || /\bperformAction\b|\bgetEdrProvider\b/.test(s);
     });
     expect(offenders).toEqual([]);
   });
@@ -87,7 +87,7 @@ describe('EDR action chokepoints', () => {
     ];
     for (const f of pushFiles) expect(API_FILES).toContain(f);
     // No action door, no adapter write, no detection persistence, no vendor client.
-    const forbidden = /edrProviders\/(?:actions|actionStatus|persist)\b|dispatchEdrAction|\bperformAction\b|\bpersistDetections\b|bitdefender\/client\b|\.insert\s*\(|INSERT\s+INTO|\bedr_detections\b|\bedr_actions\b/;
+    const forbidden = /edrProviders\/(?:actions|actionStatus|persist)\b|dispatchEdrAction|\bperformAction\b|\bpersistDetections\b|[a-z0-9]+\/client\b|\.insert\s*\(|INSERT\s+INTO|\bedr_detections\b|\bedr_actions\b/;
     expect(pushFiles.filter((f) => forbidden.test(read(f)))).toEqual([]);
   });
 

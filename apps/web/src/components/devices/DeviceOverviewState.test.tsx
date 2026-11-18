@@ -16,7 +16,7 @@ describe('DeviceOverviewState (#9029)', () => {
     vi.mocked(fetchWithAuth).mockReset();
   });
 
-  it('says how long an offline device has been gone and lists its open alerts with severity', async () => {
+  it('leaves the offline line to the header pill and lists the open alerts with severity', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(
       jsonResponse({
         data: [
@@ -37,7 +37,8 @@ describe('DeviceOverviewState (#9029)', () => {
       />,
     );
     const block = screen.getByTestId('device-overview-state');
-    expect(block).toHaveTextContent('Offline · last seen 25 minutes ago');
+    // The header pill already says "Offline · last seen …"; the card must not echo it.
+    expect(block).not.toHaveTextContent(/offline/i);
     expect(fetchWithAuth).toHaveBeenCalledWith('/devices/dev-1/alerts?status=active&limit=3');
     const alert = await screen.findByTestId('device-overview-alert-a1');
     expect(alert).toHaveTextContent('Disk almost full');

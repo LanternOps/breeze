@@ -133,3 +133,30 @@ describe('organizationOrderBy — tolerating a stored order that is not clean', 
     expect(organizationOrderBy(undefined)).toEqual([organizations.createdAt, organizations.id]);
   });
 });
+
+// #9528 — the name-level list served to a partner caller without
+// organizations:read. The projection has to be in the SELECT list of the
+// statement itself (not stripped from full rows after the fetch), and the
+// population/order/pagination must be identical to the full list's.
+describe('buildOrganizationListQuery — name-level projection', () => {
+  const columns = {
+    id: organizations.id,
+    name: organizations.name,
+    slug: organizations.slug,
+    status: organizations.status,
+  };
+
+  it('selects exactly id, name, slug and status', () => {
+    const { sql: text } = buildOrganizationListQuery({ conditions, limit: 2, offset: 2, columns }).toSQL();
+    const selectList = text.slice(text.indexOf('select ') + 'select '.length, text.indexOf(' from '));
+    expect(selectList).toBe('"id", "name", "slug", "status"');
+  });
+
+  it('keeps the same WHERE, preferred ORDER BY and LIMIT/OFFSET as the full-row query', () => {
+    const named = buildOrganizationListQuery({ conditions, limit: 2, offset: 2, preferredOrder: [ORG_B], columns }).toSQL();
+    const full = buildOrganizationListQuery({ conditions, limit: 2, offset: 2, preferredOrder: [ORG_B] }).toSQL();
+    const tail = (s: string) => s.slice(s.indexOf(' from '));
+    expect(tail(named.sql)).toBe(tail(full.sql));
+    expect(named.params).toEqual(full.params);
+  });
+});

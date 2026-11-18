@@ -457,6 +457,8 @@ describe('applyFleetDesign — step 5 (role corrections)', () => {
     expect(roleUpdate!.set).toMatchObject({ deviceRole: 'server', deviceRoleSource: 'ai' });
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
       itemRef: 'roleCorrections:d1', itemKind: 'role_correction', step: 5,
+      // What rollback's "still ours" check reads.
+      createdRefs: { deviceRole: 'server' },
       beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' },
     }), transactionState.tx);
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.role.ai_correction' }));

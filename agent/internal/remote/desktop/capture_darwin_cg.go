@@ -43,8 +43,14 @@ int initCaptureCG(int displayIndex) {
     uint32_t displayCount = 0;
 
     CGError err = CGGetActiveDisplayList(maxDisplays, displays, &displayCount);
-    if (err != kCGErrorSuccess || displayCount == 0) {
+    if (err != kCGErrorSuccess) {
         return 1; // failed to get display list
+    }
+    // Zero active displays: nothing attached, or attached but asleep
+    // (#10874). Reported as code 11, like ScreenCaptureKit, not as a
+    // display-list failure.
+    if (displayCount == 0) {
+        return 11;
     }
 
     uint32_t idx = (uint32_t)displayIndex;

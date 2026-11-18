@@ -44,7 +44,7 @@ describe('partner export resource classification', () => {
 });
 
 import { RESOURCE_CLASSIFICATION as CLASSIFICATION_FOR_CONTRACT } from './exportSafety.classification';
-import { partnerAlertExportRecordSchema } from './schemas';
+import { partnerAlertExportRecordSchema, partnerOrganizationExportRecordSchema } from './schemas';
 
 describe('classification completeness contract', () => {
   // Fully-populated projection samples: every array non-empty, every nullable set,
@@ -58,6 +58,13 @@ describe('classification completeness contract', () => {
     // Derived from the emitted DTO contract (strict schema, every key always
     // present), so a renamed/removed protected field fails this test.
     alerts: Object.keys(partnerAlertExportRecordSchema.shape),
+    // Top-level keys plus every externalLinks[] element key, derived from the
+    // strict record schema so a renamed link field fails here too.
+    organizations: [
+      ...Object.keys(partnerOrganizationExportRecordSchema.shape),
+      ...Object.keys(partnerOrganizationExportRecordSchema.shape.externalLinks.element.shape)
+        .map((key) => `externalLinks[].${key}`),
+    ],
   };
 
   it('every exception key corresponds to a real emitted path', () => {

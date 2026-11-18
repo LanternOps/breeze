@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { expectDefaultPageFits, fixtureRow } from './aiToolOutputBudget.testkit';
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

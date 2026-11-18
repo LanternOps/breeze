@@ -1,0 +1,14 @@
+{"Time":"2026-10-30T08:44:11.917454-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/internal/qmain"}
+{"Time":"2026-10-30T08:44:12.025018-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestFlaky"}
+{"Time":"2026-10-30T08:44:12.025112-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestFlaky","Output":"=== RUN   TestFlaky\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025163-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestFlaky","Output":"    q_test.go:18: flaky assertion\n","OutputType":"error"}
+{"Time":"2026-10-30T08:44:12.025177-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestFlaky","Output":"--- FAIL: TestFlaky (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025182-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestFlaky","Elapsed":0}
+{"Time":"2026-10-30T08:44:12.025188-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestOther"}
+{"Time":"2026-10-30T08:44:12.025193-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestOther","Output":"=== RUN   TestOther\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025198-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestOther","Output":"--- PASS: TestOther (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025203-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/internal/qmain","Test":"TestOther","Elapsed":0}
+{"Time":"2026-10-30T08:44:12.025208-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025212-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Output":"leak check: 1 goroutine still running after tests\n"}
+{"Time":"2026-10-30T08:44:12.025911-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qmain","Output":"FAIL\tgithub.com/breeze-rmm/agent/internal/qmain\t0.108s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:12.025954-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qmain","Elapsed":0.108}

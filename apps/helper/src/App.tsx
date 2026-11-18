@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 import { useChatStore } from './stores/chatStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import AppShell from './components/shell/AppShell';
+import { productName, useT, useUiContext } from './i18n/uiContext';
 
 function UsernamePrompt({ osUsername }: { osUsername?: string }) {
   const setUsername = useChatStore((s) => s.setUsername);
+  const t = useT();
+  const ctx = useUiContext();
+  const { welcomeTitle, welcomeMessage, companyName } = ctx.branding;
   const [name, setName] = useState(osUsername ?? '');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -16,14 +20,18 @@ function UsernamePrompt({ osUsername }: { osUsername?: string }) {
   return (
     <div className="helper-container helper-center">
       <div className="helper-username-prompt">
-        <p className="helper-username-title">Welcome to Breeze Helper</p>
-        <p className="helper-username-subtitle">What's your name?</p>
+        <p className="helper-username-title">
+          {welcomeTitle ?? t('onboarding.welcome', { name: productName(ctx) })}
+        </p>
+        {welcomeMessage && <p className="helper-username-subtitle">{welcomeMessage}</p>}
+        {companyName && <p className="helper-username-subtitle">{t('onboarding.providedBy', { company: companyName })}</p>}
+        <p className="helper-username-subtitle">{t('onboarding.namePrompt')}</p>
         <form onSubmit={handleSubmit} className="helper-username-form">
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Enter your name"
+            placeholder={t('onboarding.namePlaceholder')}
             className="helper-username-input"
             autoFocus
           />
@@ -32,7 +40,7 @@ function UsernamePrompt({ osUsername }: { osUsername?: string }) {
             disabled={!name.trim()}
             className="helper-btn helper-btn-send"
           >
-            Continue
+            {t('onboarding.continue')}
           </button>
         </form>
       </div>
@@ -49,6 +57,7 @@ export default function App() {
     initialize,
   } = useChatStore();
 
+  const t = useT();
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
   const probeWorkspace = useWorkspaceStore((s) => s.probe);
 
@@ -69,7 +78,7 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <span className="helper-spinner" />
-        <p>Connecting to Breeze…</p>
+        <p>{t('connection.connecting')}</p>
       </div>
     );
   }
@@ -78,7 +87,7 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <span className="helper-spinner" />
-        <p>Connecting to the Breeze agent…</p>
+        <p>{t('connection.waitingForAgent')}</p>
       </div>
     );
   }
@@ -87,9 +96,9 @@ export default function App() {
     return (
       <div className="helper-container helper-center">
         <div className="helper-error-banner">
-          <p>{connectionError || 'Failed to connect'}</p>
+          <p>{connectionError || t('connection.failed')}</p>
           <button onClick={initialize} className="helper-btn">
-            Retry
+            {t('connection.retry')}
           </button>
         </div>
       </div>
@@ -99,9 +108,9 @@ export default function App() {
   if (connectionState === 'disconnected') {
     return (
       <div className="helper-container helper-center">
-        <p>Not connected</p>
+        <p>{t('connection.notConnected')}</p>
         <button onClick={initialize} className="helper-btn">
-          Connect
+          {t('connection.connect')}
         </button>
       </div>
     );

@@ -184,6 +184,9 @@ func TestClassifyZenityExit(t *testing.T) {
 		{"zenity missing", -1, false, "", dialogUnavailable},
 		{"crash", 139, true, "", dialogUnavailable},
 		{"killed", -1, true, "", dialogUnavailable},
+		// An option this zenity does not know (e.g. --default-cancel on a very
+		// old build) ends option parsing with exit(-1): no dialog, not a Deny.
+		{"unknown option", 255, true, "This option is not available. Please see --help for all possible usages.", dialogUnavailable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -203,6 +206,7 @@ func TestClassifyOsascriptResult(t *testing.T) {
 	}{
 		{"allow", "button returned:Allow, gave up:false", false, dialogAllowed},
 		{"deny is a user cancel", "execution error: User canceled. (-128)", true, dialogDenied},
+		{"deny reported as a button is still a denial", "button returned:Deny, gave up:false", false, dialogDenied},
 		{"expired", "button returned:, gave up:true", false, dialogExpired},
 		{"no window server is not an expiry", "execution error: No user interaction allowed. (-1713)", true, dialogUnavailable},
 		{"osascript missing", "", true, dialogUnavailable},

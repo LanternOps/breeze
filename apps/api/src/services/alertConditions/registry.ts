@@ -5,12 +5,13 @@
  * a type (and optional aliases) and provides evaluate + validate methods.
  */
 
-import type { ConditionResult } from './types';
+import type { ConditionEvalContext, ConditionResult } from './types';
 
 export interface ConditionHandler {
   type: string;
   aliases?: string[];
-  evaluate(condition: unknown, deviceId: string): Promise<ConditionResult>;
+  evidence?: boolean;
+  evaluate(condition: unknown, deviceId: string, ctx?: ConditionEvalContext): Promise<ConditionResult>;
   validate(condition: unknown, path: string): string[];
 }
 
@@ -30,7 +31,7 @@ class ConditionRegistry {
     return this.handlers.get(type);
   }
 
-  async evaluate(condition: unknown & { type: string }, deviceId: string): Promise<ConditionResult> {
+  async evaluate(condition: unknown & { type: string }, deviceId: string, ctx?: ConditionEvalContext): Promise<ConditionResult> {
     const cond = condition as { type: string };
     const handler = this.handlers.get(cond.type);
     if (!handler) {
@@ -39,7 +40,9 @@ class ConditionRegistry {
         description: `Unknown condition type: ${cond.type}`
       };
     }
-    return handler.evaluate(condition, deviceId);
+    return handler.evidence === true
+      ? handler.evaluate(condition, deviceId, ctx)
+      : handler.evaluate(condition, deviceId);
   }
 
   validate(condition: unknown & { type: string }, path: string): string[] {

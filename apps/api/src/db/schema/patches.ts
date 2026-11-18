@@ -173,6 +173,10 @@ export const patchPolicies = pgTable('patch_policies', {
   // Per-app block/pin rules (#8184), validated by ringAppRulesSchema.
   // CHECK patch_policies_app_rules_array_chk (array) lives in the migration.
   appRules: jsonb('app_rules').notNull().default([]),
+  // Windows feature-release policy (block | allow | pin), validated by
+  // ringFeatureUpdatesSchema. CHECK patch_policies_feature_updates_object_chk
+  // (object) lives in the migration. Default block = pre-control behaviour.
+  featureUpdates: jsonb('feature_updates').notNull().default({ mode: 'block' }),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -237,6 +241,16 @@ export const devicePatches = pgTable('device_patches', {
   // never disagree. Constrained by device_patches_reported_severity_source_chk.
   reportedSeveritySource: varchar('reported_severity_source', { length: 16 }),
   reportedCategory: text('reported_category'),
+  // What this device says the update is (#11073): driver, firmware, quality,
+  // feature, definition or other. Per device on purpose: it decides what Breeze
+  // patch jobs leave to a vendor lane, so it can never live on the shared row.
+  // NULL (older agents, other providers) is never left to a lane. Constrained by
+  // device_patches_reported_update_type_chk.
+  reportedUpdateType: varchar('reported_update_type', { length: 16 }),
+  // The vendor lane whose own update this is (#11073): dell, surface, hp or lenovo.
+  // A lane only delivers its vendor's updates, so NULL (an Intel driver on a Surface,
+  // say) is never left to one. Constrained by device_patches_reported_update_owner_chk.
+  reportedUpdateOwner: varchar('reported_update_owner', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -312,7 +326,10 @@ export const patchJobResults = pgTable('patch_job_results', {
   // #4223: latest attempt per (device, patch) for the patch list / device
   // patches install-failure overlay (services/patchInstallFailures.ts).
   devicePatchCreatedIdx: index('idx_patch_job_results_device_patch_created')
-    .on(table.deviceId, table.patchId, table.createdAt)
+    .on(table.deviceId, table.patchId, table.createdAt),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the age scan
+  // over every status (jobs/historyRetention/patchAndPosture.ts).
+  createdIdx: index('patch_job_results_created_idx').on(table.createdAt)
 }));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
@@ -327,23 +344,6 @@ export const patchRollbacks = pgTable('patch_rollbacks', {
   output: text('output'),
   errorMessage: text('error_message'),
   initiatedBy: uuid('initiated_by').references(() => users.id, { onDelete: 'set null' }),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
-
-export const patchComplianceSnapshots = pgTable('patch_compliance_snapshots', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
-  ringId: uuid('ring_id').references(() => patchPolicies.id),
-  snapshotDate: date('snapshot_date').notNull(),
-  totalDevices: integer('total_devices').notNull().default(0),
-  compliantDevices: integer('compliant_devices').notNull().default(0),
-  nonCompliantDevices: integer('non_compliant_devices').notNull().default(0),
-  criticalMissing: integer('critical_missing').notNull().default(0),
-  importantMissing: integer('important_missing').notNull().default(0),
-  patchesPendingApproval: integer('patches_pending_approval').notNull().default(0),
-  patchesInstalled24h: integer('patches_installed_24h').notNull().default(0),
-  failedInstalls24h: integer('failed_installs_24h').notNull().default(0),
-  detailsByCategory: jsonb('details_by_category').notNull().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 

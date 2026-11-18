@@ -6,7 +6,8 @@ import '@/lib/i18n';
 import HelpTooltip from '../shared/HelpTooltip';
 import { SeverityBadge } from './SeverityBadge';
 import { KevBadge } from './KevBadge';
-import { RISK_EXPLANATION } from './vulnExplanations';
+import { PATCH_EXPLANATION, RISK_EXPLANATION } from './vulnExplanations';
+import { groupPatchState } from './patchState';
 import { VulnEmptyState, type VulnEmptyVariant } from './VulnEmptyState';
 import { densityTableClasses, readDensity, subscribeDensity, type Density } from '../../lib/density';
 import {
@@ -89,16 +90,27 @@ export function SoftwareGroupTable({
   // Skeleton only on empty loads (first paint / after an error retry). A
   // filter-change refetch keeps the previous rows on screen instead of flashing.
   const showSkeleton = loading && items.length === 0;
-  const patchLabel = (g: SoftwareGroup): string =>
-    g.patchReadyFindingCount > 0
-      ? t('softwareGroupTable.patch.ready', { ready: g.patchReadyDeviceCount, total: g.deviceCount, count: g.patchReadyDeviceCount })
-      : '—';
-
   // #7071: null = some CVE has no known fix version, so the honest advice is "latest".
   const targetLabel = (g: SoftwareGroup): string =>
     g.targetVersion
       ? t('softwareGroupTable.target.version', { version: g.targetVersion })
       : t('softwareGroupTable.target.latest');
+
+  // #9533: one answer to "is there a patch?" shared with the By-CVE lens and
+  // the "Patch ready" tile. Ready leads with the device split and keeps the
+  // target as context; a vendor fix with no Ready managed patch leads with the
+  // update advice; nothing known is a bare "—".
+  const patchCell = (g: SoftwareGroup): { primary: string; target: string | null } => {
+    const state = groupPatchState(g);
+    if (state === 'ready') {
+      return {
+        primary: t('softwareGroupTable.patch.ready', { ready: g.patchReadyDeviceCount, total: g.deviceCount, count: g.patchReadyDeviceCount }),
+        target: targetLabel(g),
+      };
+    }
+    if (state === 'update') return { primary: targetLabel(g), target: null };
+    return { primary: '—', target: null };
+  };
 
   const table = useMemo(
     () => (
@@ -116,7 +128,12 @@ export function SoftwareGroupTable({
               </span>
             </th>
             <th className="px-4 py-3">{t('softwareGroupTable.table.devices')}</th>
-            <th className="px-4 py-3">{t('softwareGroupTable.table.patch')}</th>
+            <th className="px-4 py-3">
+              <span className="inline-flex items-center gap-1">
+                {t('softwareGroupTable.table.patch')}
+                <HelpTooltip side="bottom" ariaLabel={t('softwareGroupTable.help.patchAria')} text={PATCH_EXPLANATION} />
+              </span>
+            </th>
           </tr>
         </thead>
         {showSkeleton ? (
@@ -173,14 +190,8 @@ export function SoftwareGroupTable({
                   <span className="block font-medium tabular-nums">{t('softwareGroupTable.devices', { count: g.deviceCount })}</span>
                   <span className="block text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
                 </td>
-                <td className="px-4 py-3 text-sm">
-                  <span className="block">{patchLabel(g)}</span>
-                  <span
-                    data-testid={`software-group-target-${g.groupKey}`}
-                    className="block text-xs text-muted-foreground"
-                  >
-                    {targetLabel(g)}
-                  </span>
+                <td className="px-4 py-3 text-sm" data-testid={`software-group-patch-${g.groupKey}`}>
+                  <PatchCellContent cell={patchCell(g)} targetTestId={`software-group-target-${g.groupKey}`} />
                 </td>
               </tr>
             ))}
@@ -231,8 +242,7 @@ export function SoftwareGroupTable({
                   <span className="ml-1.5 text-xs text-muted-foreground tabular-nums">{t('softwareGroupTable.cves', { count: g.cveCount })}</span>
                 </CardField>
                 <CardField label={t('softwareGroupTable.table.patch')}>
-                  <span className="block text-sm">{patchLabel(g)}</span>
-                  <span className="block text-xs text-muted-foreground">{targetLabel(g)}</span>
+                  <PatchCellContent cell={patchCell(g)} title={PATCH_EXPLANATION} />
                 </CardField>
               </div>
             </DataCard>
@@ -280,6 +290,19 @@ export function SoftwareGroupTable({
         </p>
       )}
     </div>
+  );
+}
+
+function PatchCellContent({ cell, targetTestId, title }: { cell: { primary: string; target: string | null }; targetTestId?: string; title?: string }) {
+  return (
+    <>
+      <span className="block text-sm" title={title}>{cell.primary}</span>
+      {cell.target && (
+        <span data-testid={targetTestId} className="block text-xs text-muted-foreground">
+          {cell.target}
+        </span>
+      )}
+    </>
   );
 }
 

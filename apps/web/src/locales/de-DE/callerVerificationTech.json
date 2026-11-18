@@ -207,7 +207,7 @@
     "title": "Anruferüberprüfung erforderlich",
     "tier": "Diese Aktion erfordert eine Überprüfung der Stufe {{tier}}.",
     "verify": "Anrufer überprüfen",
-    "verifiedRetry": "Anrufer überprüft. Bitten Sie den Assistenten, es erneut zu versuchen.",
+    "verifiedRetry": "Anrufer verifiziert. Bitten Sie Breeze AI, es erneut zu versuchen.",
     "reasons": {
       "no_fresh_verification": "Der Anrufer wurde in letzter Zeit nicht überprüft.",
       "grant_consumed": "Die letzte Überprüfung wurde bereits für eine andere Aktion verwendet.",

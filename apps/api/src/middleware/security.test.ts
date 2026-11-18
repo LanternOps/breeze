@@ -34,6 +34,16 @@ describe('securityMiddleware', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
     });
 
+    it("sameOriginFrameWhen swaps only frame-ancestors to 'self' on matching paths (#10192)", async () => {
+      const app = createApp({ cspReportUri: 'https://report.example.com/csp', sameOriginFrameWhen: (p) => p === '/test' });
+      const framed = (await app.request('/test')).headers.get('Content-Security-Policy') ?? '';
+      const denied = (await app.request('/health')).headers.get('Content-Security-Policy') ?? '';
+      expect(framed).toContain("frame-ancestors 'self'");
+      expect(framed).not.toContain("frame-ancestors 'none'");
+      expect(denied).toContain("frame-ancestors 'none'");
+      expect(framed.replace("frame-ancestors 'self'", "frame-ancestors 'none'")).toBe(denied);
+    });
+
     it('includes report-uri when cspReportUri is set', async () => {
       const app = createApp({ cspReportUri: 'https://report.example.com/csp' });
       const res = await app.request('/test');
@@ -525,5 +535,206 @@ describe('securityMiddleware skipHeadersWhen', () => {
     app.get('/', (c) => c.text('ok'));
     expect((await app.request('/', { headers: { host: 'tunnel.test' } })).headers.get('content-security-policy')).toBeNull();
     expect((await app.request('/', { headers: { host: 'app.test' } })).headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+});
+
+// #9700: portal/web SSR reaches the API over the plain-HTTP compose network at
+// http://api:3001. Under FORCE_HTTPS that hop resolved to scheme `http` with a
+// non-canonical Host and got 400 FORCE_HTTPS_NON_CANONICAL_HOST. The exemption
+// keys on the TCP socket peer (unspoofable at L7) AND the Host, and never on a
+// forwarded header — so a spoofed `Host: api:3001` from outside still fails.
+describe('FORCE_HTTPS internal service exemption (#9700)', () => {
+  const CADDY_IP = '172.31.0.10';
+  const PORTAL_IP = '172.31.0.5';
+  const opts = {
+    forceHttps: 'true',
+    publicApiUrl: 'https://api.example.com',
+    internalServiceCidrs: '172.31.0.0/24',
+    internalApiHosts: 'api:3001',
+  };
+  const originalCidrs = process.env.TRUSTED_PROXY_CIDRS;
+  const originalInternalCidrs = process.env.INTERNAL_SERVICE_CIDRS;
+  const originalInternalHosts = process.env.INTERNAL_API_HOSTS;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // The bundled Caddy is the only trusted proxy, as in docker-compose.yml.
+    process.env.TRUSTED_PROXY_CIDRS = `${CADDY_IP}/32`;
+    delete process.env.INTERNAL_SERVICE_CIDRS;
+    delete process.env.INTERNAL_API_HOSTS;
+    _resetForceHttpsRedirectWarnStateForTests();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    const restore = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    restore('TRUSTED_PROXY_CIDRS', originalCidrs);
+    restore('INTERNAL_SERVICE_CIDRS', originalInternalCidrs);
+    restore('INTERNAL_API_HOSTS', originalInternalHosts);
+    warnSpy.mockRestore();
+    _resetForceHttpsRedirectWarnStateForTests();
+  });
+
+  function fromPeer(remoteAddress: string | undefined) {
+    return remoteAddress === undefined ? {} : { incoming: { socket: { remoteAddress } } };
+  }
+
+  function request(
+    app: Hono,
+    host: string,
+    peer: string | undefined,
+    extraHeaders: Record<string, string> = {},
+  ) {
+    return app.request(`http://${host}/test`, { headers: { host, ...extraHeaders } }, fromPeer(peer));
+  }
+
+  it('lets a portal SSR call to the internal host through', async () => {
+    const res = await request(createApp(opts), 'api:3001', PORTAL_IP);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok');
+  });
+
+  it('still applies the security headers to an exempted request', async () => {
+    const res = await request(createApp(opts), 'api:3001', PORTAL_IP);
+    expect(res.headers.get('Content-Security-Policy')).toContain("default-src 'self'");
+  });
+
+  it('ignores browser forwarded headers relayed by the SSR caller (untrusted peer)', async () => {
+    const res = await request(createApp(opts), 'api:3001', PORTAL_IP, {
+      'x-forwarded-proto': 'http',
+      'x-forwarded-host': 'portal.example.com',
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an IPv4-mapped IPv6 socket peer inside the internal range', async () => {
+    const res = await request(createApp(opts), 'api:3001', `::ffff:${PORTAL_IP}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('matches the internal host case-insensitively', async () => {
+    const res = await request(createApp(opts), 'API:3001', PORTAL_IP);
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a spoofed internal Host from an external socket peer', async () => {
+    const res = await request(createApp(opts), 'api:3001', '203.0.113.9');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'FORCE_HTTPS_NON_CANONICAL_HOST' });
+  });
+
+  it('rejects a spoofed internal Host relayed by the trusted proxy, even though Caddy sits inside the internal range', async () => {
+    const res = await request(createApp(opts), 'api:3001', CADDY_IP, { 'x-forwarded-proto': 'http' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an internal peer that names a host outside the internal host list', async () => {
+    const res = await request(createApp(opts), 'evil.example.net', PORTAL_IP);
+    expect(res.status).toBe(400);
+  });
+
+  it('requires the configured port, not just the hostname', async () => {
+    const res = await request(createApp(opts), 'api', PORTAL_IP);
+    expect(res.status).toBe(400);
+  });
+
+  it('still 308s an internal peer that addresses the canonical public host', async () => {
+    const res = await request(createApp(opts), 'api.example.com', PORTAL_IP);
+    expect(res.status).toBe(308);
+    expect(res.headers.get('Location')).toBe('https://api.example.com/test');
+  });
+
+  it('fails closed when there is no socket peer to check', async () => {
+    const res = await request(createApp(opts), 'api:3001', undefined);
+    expect(res.status).toBe(400);
+  });
+
+  it('is disabled when no internal service CIDRs are configured', async () => {
+    const res = await request(
+      createApp({ forceHttps: 'true', publicApiUrl: 'https://api.example.com' }),
+      'api:3001',
+      PORTAL_IP,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('reads INTERNAL_SERVICE_CIDRS from the environment, with api:3001 as the default internal host', async () => {
+    process.env.INTERNAL_SERVICE_CIDRS = '172.31.0.0/24';
+    const app = createApp({ forceHttps: 'true', publicApiUrl: 'https://api.example.com' });
+    expect((await request(app, 'api:3001', PORTAL_IP)).status).toBe(200);
+    expect((await request(app, 'api:3001', '203.0.113.9')).status).toBe(400);
+  });
+
+  it('reads INTERNAL_API_HOSTS from the environment as a comma-separated list', async () => {
+    process.env.INTERNAL_SERVICE_CIDRS = '172.31.0.0/24';
+    process.env.INTERNAL_API_HOSTS = 'breeze-api:3001, api:3001';
+    const app = createApp({ forceHttps: 'true', publicApiUrl: 'https://api.example.com' });
+    expect((await request(app, 'breeze-api:3001', PORTAL_IP)).status).toBe(200);
+    expect((await request(app, 'api:3001', PORTAL_IP)).status).toBe(200);
+  });
+
+  it('ignores a CIDR that matches every address', async () => {
+    const res = await request(
+      createApp({ ...opts, internalServiceCidrs: '0.0.0.0/0' }),
+      'api:3001',
+      '203.0.113.9',
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('ignores a range that is wider than the private block its base address sits in', async () => {
+    // 10.0.0.0/1 starts in 10/8 but spans 0.0.0.0-127.255.255.255 (public space).
+    const res = await request(
+      createApp({ ...opts, internalServiceCidrs: '10.0.0.0/1' }),
+      'api:3001',
+      '93.184.216.34',
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['172.31.1.5', '10.0.0.5'])('rejects a private peer outside the configured range (%s)', async (peer) => {
+    const res = await request(createApp(opts), 'api:3001', peer);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a spoofed internal Host from the trusted proxy in IPv4-mapped form', async () => {
+    const res = await request(createApp(opts), 'api:3001', `::ffff:${CADDY_IP}`, { 'x-forwarded-proto': 'http' });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['api:3001@evil.example.net', 'api:3001/x', 'api:30011', 'api.:3001'])(
+    'rejects an internal peer whose Host only resembles the internal host (%s)',
+    async (host) => {
+      const app = createApp(opts);
+      const res = await app.request('http://api.example.com/test', { headers: { host } }, fromPeer(PORTAL_IP));
+      expect(res.status).toBe(400);
+    },
+  );
+
+  it('keeps the valid entries when INTERNAL_SERVICE_CIDRS also holds invalid or public ones', async () => {
+    process.env.INTERNAL_SERVICE_CIDRS = 'garbage, 0.0.0.0/0, 10.0.0.0/1, 172.31.0.0/24';
+    const app = createApp({ forceHttps: 'true', publicApiUrl: 'https://api.example.com' });
+    expect((await request(app, 'api:3001', PORTAL_IP)).status).toBe(200);
+    expect((await request(app, 'api:3001', '93.184.216.34')).status).toBe(400);
+  });
+
+  // Defence in depth for a STALE TRUSTED_PROXY_CIDRS: if the proxy's address
+  // drifts out of the trusted list but stays in the subnet, its relayed
+  // internet traffic must still never qualify. Proxies append a client-IP
+  // header; the SSR callers never send one.
+  it.each(['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'])(
+    'rejects an internal-range peer that relays a client IP via %s (proxy-shaped)',
+    async (header) => {
+      const res = await request(createApp(opts), 'api:3001', '172.31.0.20', { [header]: '203.0.113.9' });
+      expect(res.status).toBe(400);
+    },
+  );
+
+  it('does not log a misconfiguration warning for an exempted internal call', async () => {
+    await request(createApp(opts), 'api:3001', PORTAL_IP, { 'x-forwarded-proto': 'http' });
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

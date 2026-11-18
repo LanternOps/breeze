@@ -10,6 +10,8 @@
 // Falling back to `new Error(obj)` produces `[object Object]` in the UI;
 // this function picks the most readable rendering of whatever we got.
 
+import { DISPLAY_ACRONYMS } from './displayAcronyms';
+
 type ZodIssue = { message?: string; path?: Array<string | number> };
 
 function joinZodIssues(issues: unknown): string | null {
@@ -23,14 +25,6 @@ function joinZodIssues(issues: unknown): string | null {
     .filter((m): m is string => m !== null);
   return messages.length > 0 ? messages.join('; ') : null;
 }
-
-// Words that read wrong when sentence-cased ("Slack webhook url").
-const FIELD_ACRONYMS: Record<string, string> = {
-  ai: 'AI', api: 'API', cidr: 'CIDR', cve: 'CVE', dns: 'DNS', html: 'HTML', http: 'HTTP',
-  https: 'HTTPS', id: 'ID', ids: 'IDs', ip: 'IP', ips: 'IPs', json: 'JSON', mfa: 'MFA', os: 'OS',
-  rpo: 'RPO', rto: 'RTO', sms: 'SMS', smtp: 'SMTP', ssh: 'SSH', ssl: 'SSL', sso: 'SSO', tls: 'TLS',
-  totp: 'TOTP', ttl: 'TTL', uri: 'URI', url: 'URL', urls: 'URLs', vpn: 'VPN',
-};
 
 /**
  * Turns a zod field path from the API's validation 400
@@ -55,7 +49,7 @@ export function humanizeFieldPath(path: string): string {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .split(/[\s_-]+/)
     .filter((w) => w.length > 0)
-    .map((w) => FIELD_ACRONYMS[w.toLowerCase()] ?? w.toLowerCase());
+    .map((w) => DISPLAY_ACRONYMS[w.toLowerCase()] ?? w.toLowerCase());
   if (words.length === 0) return path;
   words[0] = words[0].charAt(0).toUpperCase() + words[0].slice(1);
   return words.join(' ');
@@ -92,12 +86,29 @@ function joinZodFlatten(value: unknown, rawPaths = false): string | null {
     }
   }
   if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
+    // Readable mode groups by the humanized label (#9533): every entry of an
+    // array field has its own dotted path (`ids.0`, `ids.1`), and two bad ids
+    // rendered "IDs: Invalid UUID; IDs: Invalid UUID". One label per field,
+    // each distinct message once, in first-seen order.
+    const byLabel = new Map<string, { field: string; messages: string[] }>();
     for (const [field, messages] of Object.entries(fieldErrors as Record<string, unknown>)) {
       if (!Array.isArray(messages)) continue;
       const valid = messages.filter((m): m is string => typeof m === 'string' && m.length > 0);
       if (valid.length === 0) continue;
-      const joined = valid.join('; ');
-      parts.push(rawPaths ? `${field}: ${joined}` : labelFieldMessage(field, joined));
+      if (rawPaths) {
+        parts.push(`${field}: ${valid.join('; ')}`);
+        continue;
+      }
+      const label = humanizeFieldPath(field);
+      const entry = byLabel.get(label);
+      if (!entry) {
+        byLabel.set(label, { field, messages: [...new Set(valid)] });
+        continue;
+      }
+      for (const m of valid) if (!entry.messages.includes(m)) entry.messages.push(m);
+    }
+    for (const { field, messages } of byLabel.values()) {
+      parts.push(labelFieldMessage(field, messages.join('; ')));
     }
   }
   return parts.length > 0 ? parts.join('; ') : null;

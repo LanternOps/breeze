@@ -1,9 +1,10 @@
 import { RESTORE_POINT_PAYLOAD_KEY, SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db } from '../db';
+import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction, withDbTransactionIfHeld } from '../db';
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import {
   deviceCommands,
   scriptExecutions,
@@ -26,6 +27,7 @@ import { getBullMQConnection } from '../services/redis';
 import {
   getCommandTimeoutMs,
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
+  BACKUP_STALL_TIMEOUT_MS,
   EXCLUDED_COMMAND_TYPES,
   SCRIPT_GRACE_BUFFER_MS,
 } from '../services/commandTimeouts';
@@ -33,10 +35,19 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
+import { failVaultSyncWithoutResult } from '../services/vaultSyncPersistence';
+import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
-import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
+import { runTerminalWrite, terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
+import { catchUpExpiryReason } from './backupCatchUp';
+import {
+  noteDatabaseReadOnly,
+  noteReadOnlyProbeUnreadable,
+  noteSignalRecordingFailure,
+  noteSignalRecordingHealthy,
+} from './backupSignalRecording';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
@@ -91,10 +102,11 @@ const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 // Software deployment (`deployment_results`) stale thresholds — §1.5 of the
 // 2026-07-28 software-deployment-visibility plan. Exported for tests.
 //
-// Tier 1 (delivered but silent): 55 min sits above the agent's own hard
-// ceilings (15 min download + 30 min install,
-// agent/internal/remote/tools/software_install.go:22-26), so the server only
-// declares a timeout after the agent's ceilings have provably lapsed.
+// Tier 1 (delivered but silent): 75 min sits above the agent's worst-case
+// budget: download 15 + installer 30 (software_install.go) + two install
+// scripts 2×10 (#6958; agent-side enforcement lands with the agent PR) +
+// detection settle window 1 = 66 min, plus margin. The server only declares a
+// timeout after the agent's ceilings have provably lapsed.
 // Lives in @breeze/shared (#3578) so the web deployment view's "no update from
 // the agent" hint quotes the same number this reaper enforces.
 export const SOFTWARE_INSTALL_TIMEOUT_MS = SOFTWARE_INSTALL_SERVER_TIMEOUT_MS;
@@ -105,13 +117,14 @@ const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = REMOTE_SESSION_ACTIVE_MAX_AGE_MS; // 24 hours (zombie safety net)
 
 // Backup job orphan/stall reconciliation thresholds.
-const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent went silent
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = BACKUP_JOB_ABSOLUTE_TIMEOUT_MS; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
 
 // #2798 no-transfer rule: the agent is alive (keepalive fresh) but neither
-// bytes nor files have advanced. Helpers before v0.118.0 report counters only
+// bytes nor files have advanced — nor, since #11014, the verified counters a
+// resume or dedupe check pass reports (applyBackupProgress folds all of them
+// into last_progress_at). Helpers before v0.118.0 report counters only
 // when a whole FILE completes, so a single large file legitimately shows zero
 // advance for its entire upload. The window is therefore sized from the bytes
 // still to go, not a flat timer: the file in flight is at most
@@ -132,8 +145,8 @@ export const BACKUP_NO_TRANSFER_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const BACKUP_NO_TRANSFER_FLOOR_RATE_BYTES_PER_SEC = 512 * 1024; // ~4 Mbit/s
 
 /**
- * How long a live backup may go without any byte/file advance before the
- * reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
+ * How long a live backup may go without any byte/file/verified advance before
+ * the reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
  */
 export function backupNoTransferWindowMs(
   totalSize: number | null | undefined,
@@ -337,6 +350,51 @@ export async function propagateTimedOutDeviceCommand(params: {
       );
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #11905 — a vault_sync that never answers leaves its vault `pending`
+  // forever otherwise: the Sync route marks it pending before queueing, and
+  // only an agent result moved it on. This covers both clocks and a delivery
+  // refusal (expired by the refresher, failed here on the delivery clock).
+  // Contained like the blocks above, in a savepoint for the manual
+  // mark-timed-out route's request transaction (see the containment block).
+  if (params.commandType === CommandTypes.VAULT_SYNC) {
+    try {
+      await withDbTransactionIfHeld(() =>
+        failVaultSyncWithoutResult({ commandId, payload, reason: errorMsg, completedAt }));
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to record the vault sync outcome for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #9662 — an execute_containment command the server stopped waiting for
+  // leaves its incident action `in_progress` forever otherwise; nothing else
+  // ever revisits it. Recorded as a server timeout, which a late real agent
+  // result may still repair. Contained like the blocks above: a failure must
+  // not skip the DR reconcile — and, because the manual mark-timed-out route
+  // calls this inside its request transaction, it runs in a real savepoint so
+  // a caught SQL fault does not leave that transaction aborted.
+  // Delivery failure cannot prove absence. Legacy AI actions without an episode
+  // still require the generic finalizer to stop waiting for a terminal transport row.
+  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT || params.commandType === CommandTypes.RELEASE_CONTAINMENT) {
+    const finalize = async () => {
+      const episode = (payload?.actionType === 'network_isolation' || params.commandType === CommandTypes.RELEASE_CONTAINMENT)
+        ? await (await import('../services/networkIsolation/episodeStore')).findEpisodeByCommand(db, commandId) : null;
+      if (episode) {
+        const { journalIsolationEvent } = await import('../services/networkIsolation/reconcile');
+        await journalIsolationEvent(db, episode, 'isolate_command_timed_out', completedAt);
+        console.warn('[isolation] command timed out; heartbeat intent retained', { commandId, deviceId: episode.deviceId, isolationId: episode.id });
+      } else if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+        await finalizeContainmentAction({ commandId, payload, outcome: { kind: 'timeout', error: errorMsg }, completedAt });
+      }
+    };
+    try {
+      await (hasDbAccessContext() ? withDbTransaction(finalize) : finalize());
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to finalize the containment action for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
@@ -1401,29 +1459,33 @@ async function reapStaleRemoteSessions(): Promise<number> {
   const pendingCutoff = new Date(Date.now() - REMOTE_SESSION_PENDING_TIMEOUT_MS);
   const activeCutoff = new Date(Date.now() - REMOTE_SESSION_ACTIVE_TIMEOUT_MS);
 
-  // Pending/connecting sessions older than 10 minutes
-  const pendingResult = await db
+  // Pending/connecting sessions with no start attempt in 10 minutes. Not keyed on
+  // created_at: a live session re-offering is `connecting` on its original row
+  // (#11149).
+  const pendingResult = await runTerminalWrite(() => db
     .update(remoteSessions)
     .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: connection was never established',
+      endReason: 'never_connected',
     }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.status, ['pending', 'connecting']),
-        lt(remoteSessions.createdAt, pendingCutoff),
+        lt(remoteSessions.lastStartAttemptAt, pendingCutoff),
       ),
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
 
   // Zombie active sessions older than 24 hours
-  const activeResult = await db
+  const activeResult = await runTerminalWrite(() => db
     .update(remoteSessions)
     .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: exceeded maximum session duration',
+      endReason: 'max_duration',
     }, 'pending'))
     .where(
       and(
@@ -1432,7 +1494,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
         isNotNull(remoteSessions.startedAt),
       ),
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
 
   // Revoke viewer tokens for every session we just force-disconnected so a
   // lingering (up to 2h) viewer token can't resurrect it via /viewer/offer (#5).
@@ -1560,12 +1622,15 @@ async function failBackupJobForTimedOutCommand(
  *
  * Two clocks (#2798): liveness = lastKeepaliveAt (any agent signal; falls
  * back to lastProgressAt for rows written before the column existed), and
- * progress = lastProgressAt (bytes or files actually advanced).
+ * progress = lastProgressAt (bytes or files actually advanced, or — #11014 —
+ * the agent's verified counters: files/bytes it finished checking during a
+ * resume or dedupe pass, which can run for hours before the first upload;
+ * see applyBackupProgress).
  *
  * A `running` job is reaped when ANY of:
  *  A (silent):   liveness is set and stale past BACKUP_STALL_TIMEOUT_MS
  *  B (offline):  the owning device is offline (see isDeviceOfflineForReap)
- *                AND coalesce(liveness, startedAt) is stale past
+ *                AND coalesce(liveness, startedAt, createdAt) is stale past
  *                BACKUP_OFFLINE_GRACE_MS
  *  D (no transfer): liveness is fresh but coalesce(lastProgressAt,
  *                startedAt, createdAt) is stale past backupNoTransferWindowMs
@@ -1573,15 +1638,79 @@ async function failBackupJobForTimedOutCommand(
  *  C (absolute): no signal was ever reported (legacy agent) and
  *                startedAt is stale past BACKUP_ABSOLUTE_TIMEOUT_MS
  *
- * A `pending` job is reaped when createdAt is stale past
- * BACKUP_PENDING_TIMEOUT_MS (dispatch never completed).
+ * A `pending` job is reaped when coalesce(startedAt, createdAt) is stale past
+ * BACKUP_PENDING_TIMEOUT_MS (dispatch never completed), unless a catch-up is
+ * still waiting (catchUpUntil in the future) or its liveness is within
+ * BACKUP_STALL_TIMEOUT_MS.
+ *
+ * Silence is counted only inside the signal-recording window (#11766, see
+ * backupSignalRecording.ts): the A, B, D and pending-liveness clocks start at
+ * the later of the recorded signal and the window start, because a signal the
+ * server could not write (database read-only or unreachable, API down) is not
+ * evidence the agent stopped. Each rule still needs its full limit inside the
+ * window (15 min for A and pending, 10 min for B, the no-transfer window for
+ * D). C is a total-duration cap, not a silence clock, and is unchanged.
  *
  * Per reaped running job on an online device: best-effort
  * queueBackupStopCommand so a live-but-silent agent stops uploading.
  */
 export async function reapStaleBackupJobs(): Promise<number> {
   const now = Date.now();
+  try {
+    if (await databaseRefusesWrites()) {
+      if (noteDatabaseReadOnly()) {
+        console.warn(
+          '[StaleCommandReaper] Database is read-only: agent backup signals cannot be recorded, so no backup job ' +
+          'is judged stale until it accepts writes again and each silence limit has run inside the recorded window',
+        );
+      }
+      return 0;
+    }
+    return await reapStaleBackupJobsInWindow(now, noteSignalRecordingHealthy(now));
+  } catch (err) {
+    // A pass the database could not serve (unreachable, read-only, out of
+    // disk) means keepalive writes were failing too, so silence up to here is
+    // not counted. Any other error is a reaper bug: it still fails the domain
+    // (logged and reported by runStaleCommandReaperCycle) but must not hold
+    // every backup reap behind a window that never ages. When the database
+    // context cannot even be opened, this catch never runs: the cycle notes
+    // that case (runStaleCommandReaperCycle).
+    noteSignalRecordingFailure(err);
+    throw err;
+  }
+}
+
+/**
+ * True when this transaction cannot write: managed Postgres sets
+ * default_transaction_read_only when its disk fills, and a replica in recovery
+ * is read-only. Keepalive writes fail the same way, so the reaper must not
+ * read the resulting silence as dead agents (#11766).
+ */
+async function databaseRefusesWrites(): Promise<boolean> {
+  const result = await db.execute<{ read_only: boolean }>(
+    sql`SELECT (current_setting('transaction_read_only') = 'on' OR pg_is_in_recovery()) AS read_only`,
+  );
+  const rows: unknown = Array.isArray(result) ? result : (result as { rows?: unknown } | undefined)?.rows;
+  const first = Array.isArray(rows) ? (rows[0] as { read_only?: unknown } | undefined) : undefined;
+  if (typeof first?.read_only !== 'boolean') {
+    // Fail open (the pre-#11766 behaviour), but loudly: a driver or shape
+    // change here silently turns the outage protection off.
+    if (noteReadOnlyProbeUnreadable()) {
+      const message = '[StaleCommandReaper] Read-only probe returned an unexpected result; treating the database as writable';
+      console.error(message, result);
+      captureException(new Error(message));
+    }
+    return false;
+  }
+  return first.read_only;
+}
+
+async function reapStaleBackupJobsInWindow(now: number, windowStart: number): Promise<number> {
   let reaped = 0;
+  // A silence clock starts at the later of its recorded signal and the
+  // signal-recording window's start: time the server could not record a
+  // signal is not counted as the agent's silence (#11766).
+  const countedFrom = (ref: Date): number => Math.max(ref.getTime(), windowStart);
 
   // Conservative SQL pre-filter on the loosest (smallest) of the three
   // running-job thresholds; precise per-row logic below picks the actual
@@ -1637,12 +1766,20 @@ export async function reapStaleBackupJobs(): Promise<number> {
     const noTransferWindowMs = backupNoTransferWindowMs(job.totalSize, job.transferredSize);
 
     let errorMsg: string | null = null;
-    if (liveness && now - liveness.getTime() > BACKUP_STALL_TIMEOUT_MS) {
-      errorMsg = 'Backup stalled: no progress reported for 15 minutes';
-    } else if (deviceOffline && now - livenessRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
+    if (liveness && now - countedFrom(liveness) > BACKUP_STALL_TIMEOUT_MS) {
+      // Rule A measures agent signal (keepalives), not progress — progress
+      // has rule D. Say which signal was missing and since when (#11766).
+      const discounted = windowStart > liveness.getTime()
+        ? `, and none in the ${formatWindow(now - windowStart)} since the server could record signals again`
+        : '';
+      errorMsg = `Backup stalled: no agent signal since ${liveness.toISOString()}${discounted} (limit ${formatWindow(BACKUP_STALL_TIMEOUT_MS)})`;
+    } else if (deviceOffline && now - countedFrom(livenessRef) > BACKUP_OFFLINE_GRACE_MS) {
       errorMsg = 'Device went offline during backup';
-    } else if (liveness && now - transferRef.getTime() > noTransferWindowMs) {
-      errorMsg = `Backup stalled: no data transferred for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
+    } else if (liveness && now - countedFrom(transferRef) > noTransferWindowMs) {
+      const discounted = windowStart > transferRef.getTime()
+        ? `${formatWindow(now - windowStart)} since the server could record signals again; `
+        : '';
+      errorMsg = `Backup stalled: no data transferred or verified for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (${discounted}limit ${formatWindow(noTransferWindowMs)})`;
     } else if (!liveness && now - livenessRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
       // No progress signal ever (legacy agent) OR a zombie with no started_at —
       // reap on the absolute cap against progressRef (started_at ?? createdAt).
@@ -1679,6 +1816,8 @@ export async function reapStaleBackupJobs(): Promise<number> {
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
       lastKeepaliveAt: backupJobs.lastKeepaliveAt,
+      startedAt: backupJobs.startedAt,
+      catchUpUntil: backupJobs.catchUpUntil,
       deviceStatus: devices.status,
       deviceLastSeenAt: devices.lastSeenAt,
       deviceBackupVersion: devices.backupVersion,
@@ -1688,7 +1827,12 @@ export async function reapStaleBackupJobs(): Promise<number> {
     .where(
       and(
         eq(backupJobs.status, 'pending'),
-        lt(backupJobs.createdAt, pendingCutoff),
+        // #11013: a pending job's started_at is set only by the claim of a job
+        // that waited for its device, whose clock starts there, not at the
+        // schedule. A job still waiting is left out until its window lapses, so
+        // waiting rows cannot use up this run's MAX_REAP_PER_RUN.
+        sql`COALESCE(${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${pendingCutoff.toISOString()}`,
+        sql`(${backupJobs.catchUpUntil} IS NULL OR ${backupJobs.catchUpUntil} <= ${new Date(now).toISOString()})`,
         sql`(COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) IS NULL OR COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) < ${pendingProgressCutoff.toISOString()})`,
       ),
     )
@@ -1696,10 +1840,40 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
   for (const job of pendingCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
-    if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
-    // A pending job still being kept alive by recent pings is not dead.
+    if (now - (job.startedAt ?? job.createdAt).getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+
+    // #11013: never sent, so there is no late result to recognise and nothing on
+    // the helper to stop. Settled with the exact reason reporting keys on.
+    if (job.catchUpUntil) {
+      if (job.catchUpUntil.getTime() > now) continue;
+      const failedAt = new Date();
+      const expired = await db
+        .update(backupJobs)
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          updatedAt: failedAt,
+          errorLog: catchUpExpiryReason(job.deviceLastSeenAt, job.createdAt),
+        })
+        .where(and(
+          eq(backupJobs.id, job.id),
+          eq(backupJobs.status, 'pending'),
+          // Still waiting and still lapsed: never a row a catch-up claimed.
+          isNotNull(backupJobs.catchUpUntil),
+          lte(backupJobs.catchUpUntil, new Date(now)),
+        ))
+        .returning({ id: backupJobs.id });
+      if (expired.length > 0) reaped++;
+      continue;
+    }
+
+    // A pending job still being kept alive by recent pings is not dead. Nor
+    // is one the server has not been able to hear for a full stall window
+    // (#11766): its acknowledgement may have been sent while signals could
+    // not be recorded.
     const pendingLiveness = job.lastKeepaliveAt ?? job.lastProgressAt ?? null;
-    if (pendingLiveness && now - pendingLiveness.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
+    const pendingSilenceFrom = Math.max(pendingLiveness?.getTime() ?? 0, windowStart);
+    if (now - pendingSilenceFrom < BACKUP_STALL_TIMEOUT_MS) continue;
 
     const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
     if (!wasReaped) continue;
@@ -1730,6 +1904,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
   if (reaped > 0) {
     console.log(`[StaleCommandReaper] Reaped ${reaped} stale/orphaned backup jobs`);
+    // #11772: reaped jobs can change a destination's verdict. One nudge per
+    // cycle, after commit; it coalesces per kind and never throws.
+    runAfterDbContextCommit('backupDestinationHealth.nudge', () => nudgeConnectionHealth('backup_destination'));
   }
 
   return reaped;
@@ -1802,9 +1979,9 @@ export const REAPER_DOMAINS = [
 /**
  * One reaper pass over every domain. Shared by the BullMQ worker and the
  * Redis-less fallback below, so the two can never reap different things.
- * Throws only when EVERY domain failed.
+ * Throws only when EVERY domain failed. Exported for tests.
  */
-async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
+export async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
   const domains = REAPER_DOMAINS;
@@ -1815,6 +1992,13 @@ async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
     try {
       results[name] = await runWithSystemDbAccess(fn);
     } catch (err) {
+      // #11766: when the database is unreachable, the system context (pool
+      // slot, BEGIN, RLS setup queries) fails before reapStaleBackupJobs runs,
+      // so its own catch never sees the error. Close the signal-recording
+      // window here, or the first cycle after a long outage fails every
+      // running backup for silence the server could not record. An error the
+      // backup pass already noted is counted once.
+      if (name === 'backupJobs') noteSignalRecordingFailure(err);
       console.error(`[StaleCommandReaper] Error reaping ${name}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
       results[name] = -1;

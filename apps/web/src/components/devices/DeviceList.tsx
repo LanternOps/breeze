@@ -27,6 +27,8 @@ import {
   BatteryWarning,
   Plug,
   Link2,
+  MapPin,
+  Download,
 } from "lucide-react";
 import type {
   BatteryStatus,
@@ -37,12 +39,24 @@ import type {
   HardwareHealth,
 } from "@breeze/shared";
 import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
+import {
+  DiskUsageBars,
+  displayedDisks,
+  diskUsageSortValue,
+  readDiskUsageScope,
+  writeDiskUsageScope,
+  type DeviceDiskUsage,
+  type DiskUsageScope,
+} from "./diskUsage";
 import ComponentStatePill from "./hardware/ComponentStatePill";
+import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
+import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
 } from "./mergedListFilter";
-import ConnectDesktopButton from "../remote/ConnectDesktopButton";
+import ConnectDesktopButton, { type RemoteToolOption } from "../remote/ConnectDesktopButton";
 // Single source of truth for "can this device still accept a queued command?".
 // Hoisted out of this file (#2465): the bulk bar in DevicesPage needs the SAME
 // rule, and re-deriving it per surface is exactly how the false "must be online"
@@ -50,6 +64,10 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  BULK_GROUP_MEMBERSHIP_CAP,
+  BULK_SITE_MOVE_CAP,
+  bulkGroupMembershipBlock,
+  bulkMoveSiteBlock,
   classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
@@ -79,6 +97,7 @@ import {
 } from "./pageSizePreference";
 import {
   COLUMN_IDS,
+  COLUMN_LABELS,
   DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
@@ -93,6 +112,7 @@ import {
   writeVisibleCustomFieldKeys,
 } from "./customFieldColumnVisibility";
 import { useCustomFieldDefinitionsStore } from "../../stores/customFieldDefinitions";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 import {
   densityTableClasses,
   readDensity,
@@ -119,7 +139,15 @@ import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
 import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
 import { readSortFromHash, writeSortToHash } from "./deviceListSort";
-import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
+import {
+  DeviceAttentionPills,
+  loadDeviceAttentionCounts,
+  useDeviceAttentionCounts,
+} from "./deviceAttentionCounts";
+import { buildDevicesCsv, devicesCsvFilename, type AttentionExportValue } from "./deviceCsvExport";
+import { downloadBlob } from "../../lib/downloadBlob";
+import { showToast } from "../shared/Toast";
+import { helperInstallIssueKey, helperInstalledDespiteIssue } from "./promptRenderer";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -142,6 +170,25 @@ export type DeviceStatus =
    */
   | "unknown";
 export type OSType = "windows" | "macos" | "linux";
+/** Stored device_warranty.status values (#9863). */
+export type WarrantyStatus = "active" | "expiring" | "expired" | "unknown" | "subscription_active";
+
+/**
+ * Server-decided Wake-on-LAN button availability (#10838). The client only
+ * honours an explicit `show: false`; an absent field (older API) keeps Wake.
+ */
+export type WakeAvailability = {
+  show: boolean;
+  mode: "none" | "verified" | "always" | "unknown";
+  state: string;
+  testWakeAllowed: boolean;
+  flaggedTimeouts: boolean;
+};
+
+/** Wake is offered unless the server said otherwise. */
+export function wakeAllowedByServer(device: { wakeAvailability?: WakeAvailability }): boolean {
+  return device.wakeAvailability?.show !== false;
+}
 
 /**
  * Presentation-level discriminator for the unified Devices list (#1322, #4622).
@@ -218,6 +265,20 @@ export type Device = {
   helperVersion?: string | null;
   /** Agent-reported Breeze Assist install problem (#6925); null/absent = none. */
   helperInstallIssue?: string | null;
+  /**
+   * Active control-plane block kind (#8868): a network filter, captive portal
+   * or untrusted TLS interceptor answers in place of the server. null/absent =
+   * none. The detail (filter host, issuer) is on the device page only.
+   */
+  controlPlaneBlockKind?: string | null;
+  /**
+   * Set (server time of the last report) when the device has not reported
+   * since its block was last asserted: the pill renders in a muted
+   * "last known" form. null/absent = the block is current.
+   */
+  controlPlaneBlockLastKnownAt?: string | null;
+  /** Server-decided Wake button availability (#10838); absent on older APIs. */
+  wakeAvailability?: WakeAvailability;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
    * #2288). The opt-in Server column renders only its hostname. Any current
@@ -296,6 +357,12 @@ export type Device = {
    */
   possibleReplacementOfDeviceId?: string | null;
   /**
+   * When this record last took over a reinstalled machine (#8318,
+   * `devices.last_reattached_at`): drives the "Reinstalled on <date>" badge on
+   * the device page. Null/absent for a record never reattached.
+   */
+  lastReattachedAt?: string | null;
+  /**
    * What became of the agent-uninstall this device's Remove queued (#3987).
    *
    * Present ONLY on the `GET /devices/:id` detail payload, and only ever
@@ -320,6 +387,13 @@ export type Device = {
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
+   * #10922 — detail endpoint only: the third-party tools this device can be
+   * opened with, and which one the Connect button's primary click launches.
+   * Empty unless the caller holds remote:access.
+   */
+  remoteAccessProviders?: RemoteToolOption[];
+  remoteAccessDefaultProviderId?: string | null;
+  /**
    * Server-detected asymmetry: timestamp at which the API stopped
    * receiving main-agent heartbeats while the watchdog is still
    * reporting in. Set by the heartbeat handler (#851 / Layer C).
@@ -340,17 +414,22 @@ export type Device = {
    * agent" request (#9234); null means it has never reported.
    */
   watchdogLastSeen?: string | null;
+  disks?: DeviceDiskUsage[];
   hardware?: {
     cpuModel?: string;
     cpuCores?: number;
     ramTotalMb?: number;
     diskTotalGb?: number;
     /**
-     * device_hardware.serial_number, when the API sends it. Read by the
+     * device_hardware.serial_number from the list API. Read by the
      * opt-in Serial column (#4622 W04) so an agent row's serial can sit
      * beside a manual asset's `serialNumber` in the same column.
      */
     serialNumber?: string;
+    /** device_hardware.product_sku (#9593); the opt-in Product Number column. */
+    productSku?: string;
+    /** device_hardware.model (#11332), as reported; the opt-in Model column. */
+    model?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -369,6 +448,13 @@ export type Device = {
    */
   hardwareHealth?: HardwareHealth | null;
   hardwareHealthSummary?: Record<string, number> | null;
+  /**
+   * Warranty column (#9863): device_warranty end date (bare YYYY-MM-DD) and
+   * its stored status — the same value the device's Warranty card shows.
+   * Both null when the device has no warranty record; the column dashes.
+   */
+  warrantyEndDate?: string | null;
+  warrantyStatus?: WarrantyStatus | null;
   /**
    * Current-state power/battery snapshot (#2142). null/undefined = no data
    * reported yet (old agent or network device) → the Power column renders a
@@ -468,6 +554,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "cores",
   "ramTotal",
   "diskTotal",
+  "diskUsage",
   "agentVersion",
   "watchdogVersion",
   "helperVersion",
@@ -479,6 +566,10 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "desktopAccess",
   "reliability",
   "hardwareHealth",
+  // #9863 — the list joins device_warranty on the device subject only.
+  "warranty",
+  "productSku",
+  "hardwareModel",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -488,6 +579,8 @@ type DeviceListProps = {
   devices: Device[];
   orgs?: { id: string; name: string }[];
   sites?: { id: string; name: string }[];
+  // Still accepted by callers but unused: the device-group filter lives in the
+  // chip bar, and group creation lives on the Device Groups page (#9865).
   groups?: {
     id: string;
     name: string;
@@ -497,9 +590,6 @@ type DeviceListProps = {
   // Still accepted by callers, but the device-group filter now lives in the
   // chip bar (server-resolved), so DeviceList no longer filters by membership.
   groupMembershipMap?: Map<string, Set<string>>;
-  onCreateGroup?: () => void;
-  autoSelectGroupId?: string | null;
-  onAutoSelectConsumed?: () => void;
   timezone?: string;
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
@@ -512,6 +602,8 @@ type DeviceListProps = {
   // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
+  onWarrantyRequiredChange?: (required: boolean) => void;
+  onDiskUsageColumnVisibilityChange?: (visible: boolean) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -748,7 +840,7 @@ function serverHost(raw: string | null | undefined): string | null {
 // `null` means "renders as a dash" — those rows sort last in BOTH
 // directions so blanks never bury the real data. Strings compare with
 // numeric collation (host-2 < host-10, agent 0.9.x < 0.10.x).
-const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
+const sortValue: Record<Exclude<ColumnId, "diskUsage">, (d: Device) => string | number | null> = {
   hostname: (d) => d.displayName || d.hostname,
   // Unified-list columns (#1322, #4622): sort by the same value the cell
   // renders so header sort stays consistent with every other column (#1284
@@ -843,6 +935,11 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // < "warning" would otherwise put the worst rows in the middle).
   hardwareHealth: (d) =>
     d.hardwareHealth ? HARDWARE_HEALTH_RANK[d.hardwareHealth] : null,
+  // Chronological by end date (#9863); no warranty record sorts blanks-last.
+  warranty: (d) =>
+    (d.deviceClass ?? "agent") === "agent" && d.warrantyEndDate
+      ? parseDateOnly(d.warrantyEndDate).getTime() || null
+      : null,
   // Sort by the first badge's provider label — active VPNs sort ahead of
   // running-but-disconnected ones because vpnList orders them first. Devices
   // with no VPN at all sort blanks-last (null) to match the dash the cell
@@ -856,6 +953,8 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     const cls = d.deviceClass ?? "agent";
     return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
   },
+  productSku: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.productSku || null : null),
+  hardwareModel: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.model || null : null),
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
@@ -863,11 +962,11 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     (d.deviceClass ?? "agent") === "network" ? (d.source ?? null) : null,
 };
 
+// Ids per export wave = 5 attention-counts requests (100 ids each) in flight.
+const ATTENTION_EXPORT_WAVE = 500;
+
 export default function DeviceList({
   devices,
-  groups = [],
-  autoSelectGroupId,
-  onAutoSelectConsumed,
   timezone,
   onSelect,
   onAction,
@@ -884,6 +983,8 @@ export default function DeviceList({
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
+  onWarrantyRequiredChange,
+  onDiskUsageColumnVisibilityChange,
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
@@ -895,6 +996,10 @@ export default function DeviceList({
   const { can } = usePermissions();
   const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
+  // UX gate; PATCH /devices/:id and POST /devices/bulk/site (#9796) both require devices.write (+ MFA).
+  const canMoveSite = can("devices", "write");
+  // UX gate; POST /device-groups/:id/devices and .../devices/remove (#9866) require devices.write (+ MFA).
+  const canEditGroupMembership = can("devices", "write");
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
   // Use provided timezone or browser default
@@ -933,9 +1038,24 @@ export default function DeviceList({
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility(columnPreset)),
   );
+  const warrantyVisible = visibleColumns.has('warranty');
+  useEffect(() => {
+    onWarrantyRequiredChange?.(warrantyVisible);
+  }, [warrantyVisible, onWarrantyRequiredChange]);
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );
+  const hasAgentRows = useMemo(
+    () =>
+      (!networkDevicesEnabled && !devices.some((d) => (d.deviceClass ?? "agent") === "manual")) ||
+      devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
+    [networkDevicesEnabled, devices],
+  );
+  const diskUsageVisible = hasAgentRows && visibleColumns.has("diskUsage");
+  useEffect(() => {
+    onDiskUsageColumnVisibilityChange?.(diskUsageVisible);
+  }, [diskUsageVisible, onDiskUsageColumnVisibilityChange]);
+  const [diskUsageScope, setDiskUsageScope] = useState<DiskUsageScope>(readDiskUsageScope);
   // Custom field columns (#6594) — additive, NOT part of ColumnId/COLUMN_IDS
   // (see customFieldColumnVisibility.ts for why). Definitions come from the
   // same store the advanced filter picker uses; visibility is a separate,
@@ -1100,15 +1220,6 @@ export default function DeviceList({
     setVisibleColumns(new Set(cols.filter((c) => c.visible).map((c) => c.id)));
   };
 
-  // Notify the parent that a freshly-created group has been handled. The group
-  // filter itself now lives in the chip bar (server-resolved), so there is no
-  // local group selection to toggle here — just consume the one-shot signal.
-  useEffect(() => {
-    if (autoSelectGroupId && groups.some((g) => g.id === autoSelectGroupId)) {
-      onAutoSelectConsumed?.();
-    }
-  }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
-
   // Reset to page 1 whenever a list-local narrowing changes (device search,
   // the VPN facet, the server-resolved id set). The page-level class segment
   // hands in a new `devices` array instead; a data refresh does too, and must
@@ -1212,9 +1323,11 @@ export default function DeviceList({
     }
   }, [vpnFilter, availableVpnProviders]);
 
+  const activeSortField = sortField === "diskUsage" && !diskUsageVisible ? null : sortField;
+
   const handleSort = (field: ColumnId) => {
     const direction: SortDirection =
-      sortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
+      activeSortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
     setSortField(field);
     setSortDirection(direction);
     if (sortInHash) writeSortToHash({ field, direction });
@@ -1230,9 +1343,21 @@ export default function DeviceList({
     // key across the whole union: the same `displayName || hostname` the Device
     // column sorts on, with `id` as a stable tiebreaker so client-side
     // pagination is deterministic (a row can't hop pages between renders).
-    if (!sortField) return sortByDisplayName(filteredDevices);
+    if (!activeSortField) return sortByDisplayName(filteredDevices);
 
-    const value = sortValue[sortField];
+    let value: (device: Device) => string | number | null;
+    if (activeSortField === "diskUsage") {
+      // Compute the key once for each device; the comparator runs repeatedly.
+      const diskValues = new Map(filteredDevices.map((device) => [
+        device,
+        (device.deviceClass ?? "agent") === "agent"
+          ? diskUsageSortValue(device.disks, diskUsageScope, device.os)
+          : null,
+      ]));
+      value = (device) => diskValues.get(device) ?? null;
+    } else {
+      value = sortValue[activeSortField];
+    }
     const dir = sortDirection === "desc" ? -1 : 1;
 
     return [...filteredDevices].sort((a, b) => {
@@ -1248,7 +1373,7 @@ export default function DeviceList({
           : nameCollator.compare(String(av), String(bv));
       return dir * cmp;
     });
-  }, [filteredDevices, sortField, sortDirection]);
+  }, [filteredDevices, activeSortField, sortDirection, diskUsageScope]);
 
   const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
 
@@ -1348,6 +1473,29 @@ export default function DeviceList({
   // funnel in DevicesPage still refuses network/manual rows, this just says
   // so before the click instead of after.
   const agentOnlyDisabled = filterBlocked || selectedAgentCount === 0;
+  // Bulk "Move to site" (#9796): agents only, one org, at most the API cap.
+  // Disabled with a VISIBLE reason (not just a title) for the same touch /
+  // keyboard reasons as actionGateHint; never chunked past the cap.
+  const moveSiteBlock = useMemo(() => bulkMoveSiteBlock(selectedDevices), [selectedDevices]);
+  const moveSiteBlockReason =
+    moveSiteBlock === "mixed_org"
+      ? t("deviceList.moveSiteMixedOrgs")
+      : moveSiteBlock === "over_cap"
+        ? t("deviceList.moveSiteOverCap", { count: BULK_SITE_MOVE_CAP })
+        : moveSiteBlock === "no_agents"
+          ? t("deviceList.agentOnlyBulkAction")
+          : undefined;
+  // Bulk "Add to group" / "Remove from group" (#9866): same one-org agent rule
+  // as Move to site, its own cap; one visible reason under both items.
+  const groupBlock = useMemo(() => bulkGroupMembershipBlock(selectedDevices), [selectedDevices]);
+  const groupBlockReason =
+    groupBlock === "mixed_org"
+      ? t("deviceList.moveSiteMixedOrgs")
+      : groupBlock === "over_cap"
+        ? t("deviceList.groupMembershipOverCap", { count: BULK_GROUP_MEMBERSHIP_CAP })
+        : groupBlock === "no_agents"
+          ? t("deviceList.agentOnlyBulkAction")
+          : undefined;
   const agentOnlyTitle = agentOnlyDisabled
     ? t("deviceList.agentOnlyBulkAction")
     : undefined;
@@ -1433,12 +1581,6 @@ export default function DeviceList({
   // view has no use for Class/Type). The manual arm carries no feature flag
   // (independent of PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST), so `hasManualRows`
   // is never gated on `networkDevicesEnabled`.
-  const hasAgentRows = useMemo(
-    () =>
-      (!networkDevicesEnabled && !devices.some((d) => (d.deviceClass ?? "agent") === "manual")) ||
-      devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
-    [networkDevicesEnabled, devices],
-  );
   const hasNetworkRows = useMemo(
     () =>
       networkDevicesEnabled &&
@@ -1495,6 +1637,70 @@ export default function DeviceList({
     attentionIds,
     renderedColumns.includes("attention"),
   );
+
+  // #9726 Export CSV. Scope: the checked rows when any are checked, else EVERY
+  // device the current view matches (sortedDevices = all filters applied, in
+  // the drawn order, before paging — the page size only controls what is
+  // drawn). Columns: exactly what is drawn, in drawn order.
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const exportInFlight = useRef(false);
+  const handleExportCsv = async () => {
+    if (exportInFlight.current) return;
+    exportInFlight.current = true;
+    setExportingCsv(true);
+    try {
+      const rows =
+        selectedIds.size > 0
+          ? sortedDevices.filter((d) => selectedIds.has(d.id))
+          : sortedDevices;
+      let attention: Map<string, AttentionExportValue> | undefined;
+      let attentionFailed = false;
+      if (renderedColumns.includes("attention")) {
+        // Same loader + 100-id batching the column uses; only agent rows have
+        // counts, and only a rendered column pays for the request.
+        const ids = rows
+          .filter((d) => (d.deviceClass ?? "agent") === "agent")
+          .map((d) => d.id);
+        // Bounded fan-out: the loader fires every 100-id request of one call at
+        // once, so feed it a few requests' worth of ids at a time instead of
+        // ~100 simultaneous requests on a 10k-device fleet.
+        attention = new Map<string, AttentionExportValue>();
+        for (let i = 0; i < ids.length; i += ATTENTION_EXPORT_WAVE) {
+          const wave = ids.slice(i, i + ATTENTION_EXPORT_WAVE);
+          const { counts, failed } = await loadDeviceAttentionCounts(wave);
+          if (failed.size > 0) attentionFailed = true;
+          for (const id of wave) {
+            attention.set(id, failed.has(id) ? "failed" : (counts[id] ?? null));
+          }
+        }
+      }
+      const csv = buildDevicesCsv({
+        devices: rows,
+        columns: renderedColumns,
+        diskUsageScope,
+        customFieldDefs: visibleCustomFieldDefs,
+        statusLabel: (d) => t(/* i18n-dynamic */ statusFullLabelKeys[d.status]),
+        attention,
+      });
+      downloadBlob(
+        new Blob([csv], { type: "text/csv;charset=utf-8" }),
+        devicesCsvFilename(),
+      );
+      if (attentionFailed) {
+        showToast({
+          type: "warning",
+          message: t("deviceList.exportCsvAttentionPartial"),
+          duration: 8000,
+        });
+      }
+    } catch (err) {
+      console.error("[devices] CSV export failed", err);
+      showToast({ type: "error", message: t("deviceList.exportCsvFailed") });
+    } finally {
+      exportInFlight.current = false;
+      setExportingCsv(false);
+    }
+  };
 
   // sortHeader factors out the repeated header pattern for sortable
   // columns to keep the column-defs table below readable. The column id
@@ -1660,13 +1866,39 @@ export default function DeviceList({
   // so don't imply 0/blank.
   const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
     (device.deviceClass ?? "agent") !== "agent" ? dash : node;
-  // Static keys per known code (#6925); a code from a newer agent falls back.
-  const helperInstallIssueTooltip = (issue: string): string =>
-    issue === "awaiting_server_offer"
-      ? t("deviceList.helperInstallIssueTooltip.awaitingServerOffer")
-      : issue === "install_abandoned"
-        ? t("deviceList.helperInstallIssueTooltip.installAbandoned")
-        : t("deviceList.helperInstallIssueTooltip.unknown");
+  // Static keys per known code (#6925, #10183, #10185); a code from a newer
+  // agent falls back.
+  const helperInstallIssueTooltip = (issue: string): string => {
+    switch (helperInstallIssueKey(issue)) {
+      case "awaitingServerOffer":
+        return t("deviceList.helperInstallIssueTooltip.awaitingServerOffer");
+      case "installAbandoned":
+        return t("deviceList.helperInstallIssueTooltip.installAbandoned");
+      case "webview2Outdated":
+        return t("deviceList.helperInstallIssueTooltip.webview2Outdated");
+      case "crashLoop":
+        return t("deviceList.helperInstallIssueTooltip.crashLoop");
+      case "unmanagedInstall":
+        return t("deviceList.helperInstallIssueTooltip.unmanagedInstall");
+      default:
+        return t("deviceList.helperInstallIssueTooltip.unknown");
+    }
+  };
+  // Assist on disk but not run by the agent (#10183, #10185) is not "Not installed".
+  // #8868 — closed-enum kind from the list row; an unknown kind from a newer
+  // API still gets the generic network-filter label.
+  const controlPlaneBlockLabel = (kind: string): string => {
+    switch (kind) {
+      case "untrusted_certificate":
+        return t("deviceList.controlPlaneBlockBadgeCertificate");
+      default:
+        return t("deviceList.controlPlaneBlockBadge");
+    }
+  };
+  const helperInstallIssueLabel = (issue: string): string =>
+    helperInstalledDespiteIssue(issue)
+      ? t("deviceList.helperUnavailable")
+      : t("deviceList.helperNotInstalled");
   const columnDefs: Record<
     ColumnId,
     { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }
@@ -1934,6 +2166,8 @@ export default function DeviceList({
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
           "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30";
+        const mutedPillClass =
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground border-muted";
         const secondary: Array<{ key: string; node: React.ReactNode }> = [];
         if (
           isAgentUpdateStuck({
@@ -1995,7 +2229,29 @@ export default function DeviceList({
                 title={helperInstallIssueTooltip(device.helperInstallIssue)}
                 className={pillClass}
               >
-                {t("deviceList.helperNotInstalled")}
+                {helperInstallIssueLabel(device.helperInstallIssue)}
+              </span>
+            ),
+          });
+        }
+        if (device.controlPlaneBlockKind) {
+          const lastKnownAt = device.controlPlaneBlockLastKnownAt ?? null;
+          secondary.push({
+            key: "cpblock",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-control-plane-block`}
+                data-last-known={lastKnownAt ? "true" : undefined}
+                title={
+                  lastKnownAt
+                    ? t("deviceList.controlPlaneBlockLastKnownTooltip", {
+                        time: formatDateTime(lastKnownAt, { dateStyle: "medium", timeStyle: "short" }),
+                      })
+                    : undefined
+                }
+                className={lastKnownAt ? mutedPillClass : pillClass}
+              >
+                {controlPlaneBlockLabel(device.controlPlaneBlockKind)}
               </span>
             ),
           });
@@ -2018,8 +2274,13 @@ export default function DeviceList({
           stuck: t("deviceList.updateStuck"),
           "agent-silent": t("deviceList.agentSilent"),
           duplicate: t("deviceList.possibleDuplicate"),
-          helper: t("deviceList.helperNotInstalled"),
+          helper: device.helperInstallIssue
+            ? helperInstallIssueLabel(device.helperInstallIssue)
+            : t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
+          cpblock: device.controlPlaneBlockKind
+            ? controlPlaneBlockLabel(device.controlPlaneBlockKind)
+            : t("deviceList.controlPlaneBlockBadge"),
         };
         const [topSecondary, ...restSecondary] = secondary;
         return (
@@ -2236,6 +2497,22 @@ export default function DeviceList({
         </td>
       ),
     },
+    diskUsage: {
+      header: () => sortHeader("diskUsage", t("deviceList.diskUsage"), t("deviceList.sortByDiskUsage")),
+      cell: (device) => {
+        const disks = displayedDisks(device.disks, diskUsageScope, device.os);
+        const osVolumeUnknown = diskUsageScope === "os" && device.os === "windows"
+          && device.disks?.length && !device.disks.some((disk) => disk?.isOsVolume === true);
+        const missing = osVolumeUnknown
+          ? <span title={t("deviceList.osDiskUsageUnavailable")}>{dash}</span>
+          : dash;
+        return (
+          <td key="diskUsage" data-testid={`device-${device.id}-disk-usage`} className="px-3 py-3 text-sm">
+            {agentCell(device, disks.length > 0 ? <DiskUsageBars disks={disks} /> : missing)}
+          </td>
+        );
+      },
+    },
     diskTotal: {
       header: () => sortHeader("diskTotal", "Disk", "Sort by total disk", true),
       cell: (device) => (
@@ -2370,14 +2647,15 @@ export default function DeviceList({
         >
           {agentCell(device, fmtOptionalVersion(device.helperVersion))}
           {/* #6925: Assist is enabled but not installed — without this the
-              cell shows the same dash as a device with Assist turned off. */}
+              cell shows the same dash as a device with Assist turned off.
+              #10183/#10185: or installed but not run by the agent. */}
           {device.helperInstallIssue ? (
             <span
               data-testid={`device-${device.id}-helper-install-issue`}
               title={helperInstallIssueTooltip(device.helperInstallIssue)}
               className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
             >
-              {t("deviceList.helperNotInstalled")}
+              {helperInstallIssueLabel(device.helperInstallIssue)}
             </span>
           ) : null}
         </td>
@@ -2620,6 +2898,40 @@ export default function DeviceList({
         </td>
       ),
     },
+    warranty: {
+      header: () => sortHeader("warranty", COLUMN_LABELS.warranty, "Sort by warranty end date"),
+      cell: (device) => {
+        const badge = device.warrantyStatus ? WARRANTY_STATUS_BADGE[device.warrantyStatus] : null;
+        return (
+          <td
+            key="warranty"
+            className="px-3 py-3 text-sm whitespace-nowrap"
+            data-testid={`device-${device.id}-warranty`}
+          >
+            {agentCell(
+              device,
+              device.warrantyEndDate || badge ? (
+                <span className="inline-flex items-center gap-2">
+                  {device.warrantyEndDate && (
+                    <span className="tabular-nums">{formatDateOnly(device.warrantyEndDate)}</span>
+                  )}
+                  {badge && (
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badge.color}`}
+                      data-testid={`device-${device.id}-warranty-status`}
+                    >
+                      {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${badge.label}`)}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                dash
+              ),
+            )}
+          </td>
+        );
+      },
+    },
     vpn: {
       header: () => sortHeader("vpn", "VPN", "Sort by VPN provider"),
       cell: (device) => {
@@ -2686,7 +2998,7 @@ export default function DeviceList({
       },
     },
     // Manual-asset inventory columns (#4622 W04). `serial` is shared with
-    // agent rows (device_hardware.serial_number, once the API sends it);
+    // agent rows (device_hardware.serial_number);
     // `assetTag`/`location` exist only for a manual asset.
     serial: {
       header: () => sortHeader("serial", t("deviceList.tableColumns.serial"), t("deviceList.sortBy.serial")),
@@ -2694,8 +3006,31 @@ export default function DeviceList({
         const cls = device.deviceClass ?? "agent";
         const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
         return (
-          <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+          <td key="serial" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    productSku: {
+      header: () => sortHeader("productSku", t("deviceList.tableColumns.productSku"), t("deviceList.sortBy.productSku")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.productSku : null;
+        return (
+          <td key="productSku" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-product-sku`}>
             {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    // #11332 - SMBIOS model shown exactly as reported (no derived label).
+    hardwareModel: {
+      header: () => sortHeader("hardwareModel", t("deviceList.tableColumns.hardwareModel"), t("deviceList.sortBy.hardwareModel")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.model : null;
+        return (
+          <td key="hardwareModel" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-model`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
           </td>
         );
       },
@@ -2730,8 +3065,13 @@ export default function DeviceList({
   // sortValue are keyed by the closed ColumnId union, and threading a
   // per-org dynamic key through them is the same exhaustive-Record problem
   // this design sidesteps.
-  const formatCustomFieldValue = (value: unknown): React.ReactNode => {
+  const formatCustomFieldValue = (
+    def: (typeof visibleCustomFieldDefs)[number],
+    value: unknown,
+  ): React.ReactNode => {
     if (value === null || value === undefined || value === "") return dash;
+    const choiceLabel = dropdownChoiceLabel(def, value);
+    if (choiceLabel !== undefined) return choiceLabel;
     if (typeof value === "boolean") return value ? t("common:labels.yes") : t("common:labels.no");
     if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : dash;
     return String(value);
@@ -2749,7 +3089,7 @@ export default function DeviceList({
         className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground"
         data-testid={`device-${device.id}-custom-${def.fieldKey}`}
       >
-        <span className="block truncate">{formatCustomFieldValue(value)}</span>
+        <span className="block truncate">{formatCustomFieldValue(def, value)}</span>
       </td>
     );
   };
@@ -2876,6 +3216,25 @@ export default function DeviceList({
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
                 subscribeDensity below. */}
+            {renderedColumns.includes("diskUsage") && (
+              <label className="flex items-center gap-2 text-sm">
+                <span>{t("deviceList.diskUsage")}</span>
+                <select
+                  data-testid="disk-usage-scope"
+                  aria-label={t("deviceList.diskUsageScope")}
+                  className="h-8 rounded-md border bg-background px-2 text-sm"
+                  value={diskUsageScope}
+                  onChange={(event) => {
+                    const scope = event.target.value as DiskUsageScope;
+                    setDiskUsageScope(scope);
+                    writeDiskUsageScope(scope);
+                  }}
+                >
+                  <option value="all">{t("deviceList.allDisks")}</option>
+                  <option value="os">{t("deviceList.osDiskOnly")}</option>
+                </select>
+              </label>
+            )}
             <ColumnChooser
               columnOrder={columnOrder}
               visibleColumns={visibleColumns}
@@ -2888,6 +3247,20 @@ export default function DeviceList({
               visibleCustomFieldKeys={visibleCustomFieldKeys}
               onToggleCustomField={toggleCustomFieldColumn}
             />
+            <button
+              type="button"
+              data-testid="device-list-export-csv"
+              onClick={() => void handleExportCsv()}
+              disabled={exportingCsv || sortedDevices.length === 0}
+              className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {exportingCsv
+                ? t("deviceList.exportingCsv")
+                : selectedIds.size > 0
+                  ? t("deviceList.exportCsvSelected", { count: selectedIds.size })
+                  : t("deviceList.exportCsv")}
+            </button>
             {headerActions}
             {/* A per-page picker only earns its slot when some page size could
                 split the list; below the smallest option it is a dead control
@@ -3027,6 +3400,65 @@ export default function DeviceList({
                   {t("deviceList.disableMaintenance")}
                   {agentOnlySuffix}
                 </button>
+                {canMoveSite && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-move-site"
+                      onClick={() => handleBulkAction("move-site")}
+                      disabled={filterBlocked || moveSiteBlock !== null}
+                      aria-describedby={moveSiteBlock ? "devices-bulk-move-site-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.moveSelectedToSite")}
+                      {agentOnlySuffix}
+                    </button>
+                    {moveSiteBlockReason && (
+                      <p
+                        id="devices-bulk-move-site-disabled-reason"
+                        data-testid="devices-bulk-move-site-disabled-reason"
+                        className="px-4 pb-2 text-xs text-muted-foreground"
+                      >
+                        {moveSiteBlockReason}
+                      </p>
+                    )}
+                  </>
+                )}
+                {canEditGroupMembership && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-add-to-group"
+                      onClick={() => handleBulkAction("add-to-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.addToGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-remove-from-group"
+                      onClick={() => handleBulkAction("remove-from-group")}
+                      disabled={filterBlocked || groupBlock !== null}
+                      aria-describedby={groupBlock ? "devices-bulk-group-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.removeFromGroup")}
+                      {agentOnlySuffix}
+                    </button>
+                    {groupBlockReason && (
+                      <p
+                        id="devices-bulk-group-disabled-reason"
+                        data-testid="devices-bulk-group-disabled-reason"
+                        className="px-4 pb-2 text-xs text-muted-foreground"
+                      >
+                        {groupBlockReason}
+                      </p>
+                    )}
+                  </>
+                )}
                 <hr className="my-1" />
                 {canWake && (
                 <button
@@ -3141,6 +3573,7 @@ export default function DeviceList({
                   checked={allSelected}
                   disabled={filterBlocked}
                   aria-label={t("deviceList.selectAllDevicesOnThisPage")}
+                  data-testid="device-list-select-all"
                   ref={(el) => {
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
@@ -3288,6 +3721,7 @@ export default function DeviceList({
                           disabled={filterBlocked}
                           checked={selectedIds.has(device.id)}
                           aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
+                          data-testid={`device-${device.id}-select`}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) =>
                             handleSelectOne(device.id, e.target.checked)
@@ -3488,7 +3922,7 @@ export default function DeviceList({
                                     <RotateCcw className="h-4 w-4" />
                                     {t("deviceList.reboot")}{" "}
                                   </button>
-                                  {canWake && device.status === "offline" && (
+                                  {canWake && device.status === "offline" && wakeAllowedByServer(device) && (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -3515,6 +3949,24 @@ export default function DeviceList({
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
                                   </button>
+                                  {/* #9796: a site move is a DB write, not an
+                                      agent command — not gated on status (the
+                                      API refuses none). Agent rows only: this
+                                      menu never renders for network/manual. */}
+                                  {canMoveSite && (
+                                    <button
+                                      type="button"
+                                      data-testid="device-row-move-site"
+                                      onClick={() => {
+                                        onAction?.("move-site", device);
+                                        setRowMenuOpenId(null);
+                                      }}
+                                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                    >
+                                      <MapPin className="h-4 w-4" />
+                                      {t("deviceList.moveToSite")}
+                                    </button>
+                                  )}
                                   {/* #4936: maintenance mode was reachable only
                                       through Bulk Actions, so acting on ONE
                                       device meant ticking its checkbox and

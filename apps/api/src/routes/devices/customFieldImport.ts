@@ -19,6 +19,7 @@ import {
 import { writeCustomFieldValueImportAudits } from '../../services/customFields/import/audit';
 import {
   DEFAULT_IMPORT_SYSTEM,
+  IMPORT_SYSTEMS,
   MAX_IMPORT_ROWS,
   MAX_IMPORT_VALUES,
   type MappingTarget,
@@ -202,8 +203,13 @@ function rowsSchema<T extends z.ZodTypeAny>(row: T) {
 
 const importOptionFields = {
   partnerId: z.string().guid().optional(),
-  /** Free-form on the wire (see IMPORT_SYSTEMS); recorded in the audit trail. */
-  externalSystem: z.string().min(1).max(64).default(DEFAULT_IMPORT_SYSTEM),
+  /**
+   * The source RMM the operator chose. Restricted to IMPORT_SYSTEMS; it is the
+   * default link namespace for rows that map no per-row "Source system" column
+   * (see `withBatchSystem`) and is also recorded in the audit trail. A row's own
+   * `externalSystem` stays free-form.
+   */
+  externalSystem: z.enum(IMPORT_SYSTEMS).default(DEFAULT_IMPORT_SYSTEM),
   /** Verbatim from the contacts importer, including the default. */
   mode: z.enum(['skip', 'update']).default('skip'),
   /** Decision 7: an operator opt-in, off by default. */
@@ -254,6 +260,15 @@ function resolveValueImportContext(
   };
 }
 
+/**
+ * The batch source is the default link namespace for rows that name none, so
+ * preview, commit and re-runs all derive the same (system, externalId) key.
+ * Done here, once, so the resolver and link writer stay row-driven (#9678).
+ */
+function withBatchSystem<R extends { externalSystem?: string | null }>(rows: R[], system: string): R[] {
+  return rows.map((r) => (r.externalSystem?.trim() ? r : { ...r, externalSystem: system }));
+}
+
 customFieldImportRoutes.post(
   '/custom-fields/import/preview',
   authMiddleware,
@@ -271,7 +286,7 @@ customFieldImportRoutes.post(
     const ctx = resolveValueImportContext(auth, c.get('permissions') as UserPermissions | undefined, body);
     if ('error' in ctx) return c.json({ error: ctx.error }, ctx.status);
 
-    return c.json({ rows: await previewDeviceCustomFieldImport(body.rows, ctx) });
+    return c.json({ rows: await previewDeviceCustomFieldImport(withBatchSystem(body.rows, body.externalSystem), ctx) });
   },
 );
 
@@ -288,7 +303,7 @@ customFieldImportRoutes.post(
     const ctx = resolveValueImportContext(auth, c.get('permissions') as UserPermissions | undefined, body);
     if ('error' in ctx) return c.json({ error: ctx.error }, ctx.status);
 
-    const summary = await commitDeviceCustomFieldImport(body.rows, ctx, { userId: auth.user?.id ?? null });
+    const summary = await commitDeviceCustomFieldImport(withBatchSystem(body.rows, body.externalSystem), ctx, { userId: auth.user?.id ?? null });
 
     // The service has no Hono context, so the route fans the audits out from
     // the summary.

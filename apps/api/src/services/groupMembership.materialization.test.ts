@@ -23,8 +23,11 @@
  *     every membership row it writes.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
+  mockExecute,
+  mockExtractFields,
   mockSelect,
   mockInsert,
   mockDelete,
@@ -34,6 +37,8 @@ const {
   mockGetCurrentDbAccessContext,
   mockSchedulePeripheralPolicyDevice,
 } = vi.hoisted(() => ({
+  mockExecute: vi.fn(),
+  mockExtractFields: vi.fn(),
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockDelete: vi.fn(),
@@ -49,7 +54,9 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => work(),
   db: {
+    execute: mockExecute,
     select: mockSelect,
     insert: mockInsert,
     update: mockUpdate,
@@ -72,6 +79,7 @@ vi.mock('../db/schema', () => ({
   deviceGroupMemberships: {
     groupId: 'membership.groupId',
     deviceId: 'membership.deviceId',
+    orgId: 'membership.orgId',
     isPinned: 'membership.isPinned',
   },
   groupMembershipLog: {},
@@ -80,7 +88,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('./filterEngine', () => ({
   deviceMatchesFilter: vi.fn(),
   evaluateFilter: mockEvaluateFilter,
-  extractFieldsFromFilter: vi.fn().mockReturnValue([]),
+  extractFieldsFromFilter: mockExtractFields,
 }));
 
 import { evaluateGroupMembership } from './groupMembership';
@@ -115,6 +123,9 @@ let insertedRows: unknown[][];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSelect.mockReset();
+  mockExtractFields.mockReturnValue([]);
+  mockExecute.mockResolvedValue([]);
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   insertedRows = [];
   mockInsert.mockImplementation(() => ({
@@ -165,6 +176,8 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       .mockReturnValueOnce(limitChain([groupRow()]))       // group lookup
       .mockReturnValueOnce(whereChain([]))                  // resolver memberships
       .mockReturnValueOnce(whereChain([]))                  // current memberships
+      // still in the org after export admission
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }, { id: 'dev-2' }, { id: 'dev-3' }]))
       .mockReturnValueOnce(whereChain([{ count: 0 }]));     // post-write verification
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1', 'dev-2', 'dev-3'],
@@ -189,6 +202,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       .mockReturnValueOnce(limitChain([groupRow()]))
       .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }, { id: 'dev-2' }]))
       .mockReturnValueOnce(whereChain([{ count: 2 }]));
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1', 'dev-2'],
@@ -215,6 +229,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       .mockReturnValueOnce(limitChain([groupRow()]))
       .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
       .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }]))
       .mockReturnValueOnce(whereChain([{ count: 2 }])); // pinned-1 + dev-1
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1'],
@@ -233,6 +248,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       .mockReturnValueOnce(limitChain([groupRow()]))
       .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }, { id: 'dev-2' }, { id: 'dev-3' }]))
       .mockReturnValueOnce(whereChain([{ count: 3 }]));
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1', 'dev-2', 'dev-3'],
@@ -252,5 +268,77 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       action: 'added',
       reason: 'filter_match',
     });
+  });
+});
+
+
+describe('sweep org-group export admission', () => {
+  it('backfills the group row before export admission and takes export admission before membership writes', async () => {
+    mockExtractFields.mockReturnValue(['hostname']);
+    mockSelect.mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([])).mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }]))
+      .mockReturnValueOnce(whereChain([{ count: 1 }]));
+    mockEvaluateFilter.mockResolvedValue({ deviceIds: ['dev-1'], totalCount: 1 });
+
+    await evaluateGroupMembership('group-1');
+
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    const statement = mockExecute.mock.calls[0]?.[0];
+    expect(new PgDialect().sqlToQuery(statement)).toMatchObject({
+      sql: expect.stringContaining('breeze_partner_export_lock_orgs_exclusive'), params: ['org-a'],
+    });
+    expect(mockUpdate.mock.invocationCallOrder[0]).toBeLessThan(mockExecute.mock.invocationCallOrder[0] ?? 0);
+    expect(mockExecute.mock.invocationCallOrder[0]).toBeLessThan(mockInsert.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('does not acquire export admission or write memberships for a zero diff', async () => {
+    mockSelect.mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'dev-1', isPinned: false }]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'dev-1', isPinned: false }]));
+    mockEvaluateFilter.mockResolvedValue({ deviceIds: ['dev-1'], totalCount: 1 });
+    await evaluateGroupMembership('group-1');
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('drops inserts for devices that moved while waiting for export admission', async () => {
+    mockSelect.mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([])).mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([]));
+    mockEvaluateFilter.mockResolvedValue({ deviceIds: ['moved-device'], totalCount: 1 });
+    const result = await evaluateGroupMembership('group-1');
+    expect(result.added).toBe(0);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes export admission before deletion and scopes deletion to the org', async () => {
+    mockSelect.mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'dev-1', isPinned: false }]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'dev-1', isPinned: false }]))
+      .mockReturnValueOnce(whereChain([{ count: 0 }]));
+    mockEvaluateFilter.mockResolvedValue({ deviceIds: [], totalCount: 0 });
+    const where = vi.fn().mockResolvedValue(undefined);
+    mockDelete.mockReturnValue({ where });
+    await evaluateGroupMembership('group-1');
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecute.mock.invocationCallOrder[0]).toBeLessThan(mockDelete.mock.invocationCallOrder[0] ?? 0);
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0]);
+    expect(query.params).toContain('membership.orgId');
+    expect(query.params).toContain('org-a');
+  });
+
+  it('the group create/update routes take export admission before membership writes too', async () => {
+    mockSelect.mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([])).mockReturnValueOnce(whereChain([]))
+      .mockReturnValueOnce(whereChain([{ id: 'dev-1' }]))
+      .mockReturnValueOnce(whereChain([{ count: 1 }]));
+    mockEvaluateFilter.mockResolvedValue({ deviceIds: ['dev-1'], totalCount: 1 });
+    await evaluateGroupMembership('group-1');
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecute.mock.invocationCallOrder[0]).toBeLessThan(mockInsert.mock.invocationCallOrder[0] ?? 0);
+    expect(insertedRows[0]).toHaveLength(1);
   });
 });

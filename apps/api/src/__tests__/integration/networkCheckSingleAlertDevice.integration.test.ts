@@ -380,6 +380,10 @@ it('public legacy adoption reaches the offline alert device through the real sch
   worker.on('error', error => failures.push(error));
   worker.on('failed', (_job, error) => failures.push(error));
   const readAlerts = () => system(() => db.select().from(alerts).where(eq(alerts.orgId, org.id)));
+  // #10859 staggers evaluate-device jobs across a 50 s window; this test waits
+  // for the queue to drain, so it runs the sweep unstaggered.
+  const previousStagger = process.env.ALERT_WORKER_STAGGER_WINDOW_MS;
+  process.env.ALERT_WORKER_STAGGER_WINDOW_MS = '0';
   try {
     await worker.waitUntilReady();
     // Exercise scheduling, not a direct evaluation of the offline device.
@@ -397,6 +401,8 @@ it('public legacy adoption reaches the offline alert device through the real sch
     })]);
     expect(failures).toEqual([]);
   } finally {
+    if (previousStagger === undefined) delete process.env.ALERT_WORKER_STAGGER_WINDOW_MS;
+    else process.env.ALERT_WORKER_STAGGER_WINDOW_MS = previousStagger;
     try { await worker.close(); } finally { await shutdownAlertWorkers(); }
   }
 }, 60000);

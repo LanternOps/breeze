@@ -242,7 +242,7 @@ Streams. Forwarding still cannot save a session when the owner dies.
 |---|---|---|
 | `agentCommandAwait` pending (`:43`) | local | W2d pub/sub by `commandId` |
 | `orphanedResultExpectations` (`agentWs.ts:562`) | recorded on the sending instance, which is the owner | Correct by construction under W2. Durability is optional: they are lost on a restart today too |
-| AI streaming sessions (`streamingSessionManager.ts:787`) | local | Record the owner slot in Redis; route stream reconnects by slot, the same way as W3 [I: check the resume path] |
+| AI streaming sessions (`streamingSessionManager.ts:787`) | local | Record the owner slot in Redis; route stream reconnects by slot, the same way as W3 [I: check the resume path]. `GET /ai/sessions/:id/stream` (attach, #9427) reads the same in-process session; route it by owner slot together with `/messages`. Until then, `unavailable` is the honest answer on a non-owner instance |
 | `incidentJobs` `running` flags | local overlap guard; the cross-process winner is DB-claimed (`SKIP LOCKED`) [V] | No change |
 | Topology `setInterval` loops (`jobs/topology*.ts`) | timers on every process that runs them | Audit each tick for a DB claim or advisory lock. Where there is none, move it to a BullMQ repeatable job or a Redis-locked leader |
 | `tenantLifecycle` disconnect (`:75-85`) | local only | W2b `disconnectWhere`, fanned out |

@@ -230,9 +230,12 @@ describe('scheduled patch jobs honour the assignment role/OS filter (#8442)', ()
     expect(filteredJobs).toHaveLength(1);
     expect(targetIds(filteredJobs[0]!)).toEqual([linuxServer]);
 
+    // Both policies sit at org level with priority 0, so the earlier-created
+    // (filtered) one wins the linux server (#9632, closest wins, then priority,
+    // then age) and the unfiltered policy keeps every role it alone reaches.
     const unfilteredJobs = await jobsForPolicy(unfiltered.policyId);
     expect(unfilteredJobs).toHaveLength(1);
-    expect(targetIds(unfilteredJobs[0]!)).toEqual([linuxServer, winServer, winWorkstation].sort());
+    expect(targetIds(unfilteredJobs[0]!)).toEqual([winServer, winWorkstation].sort());
   });
 });
 

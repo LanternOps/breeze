@@ -4,6 +4,10 @@ import '@/lib/i18n';
 import { Plus, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { ActionError, runAction } from '@/lib/runAction';
+import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 type KnownGuest = {
   id: string;
@@ -14,7 +18,13 @@ type KnownGuest = {
 };
 
 const macRegex = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
+const toLogin = () => { void navigateTo('/login', { replace: true }); };
 
+/**
+ * Partner-wide known guests (MAC list). List kind (spec §3.1): each row's add
+ * and remove save on their own through runAction, which toasts the outcome.
+ * Remove asks first (#9950): a removed MAC stops auto-approving at every org.
+ */
 export default function KnownGuestsSettings() {
   const { t } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
@@ -25,6 +35,8 @@ export default function KnownGuestsSettings() {
   const [label, setLabel] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<KnownGuest | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const fetchGuests = useCallback(async () => {
     setLoading(true);
@@ -52,41 +64,51 @@ export default function KnownGuestsSettings() {
     setSaving(true);
     setError(null);
     try {
-      const response = await fetchWithAuth('/partner/known-guests', {
-        method: 'POST',
-        body: JSON.stringify({ macAddress: mac, label: label.trim(), notes: notes.trim() || undefined })
+      await runAction({
+        request: () => fetchWithAuth('/partner/known-guests', {
+          method: 'POST',
+          body: JSON.stringify({ macAddress: mac, label: label.trim(), notes: notes.trim() || undefined }),
+        }),
+        successMessage: t('partnerSettingsPage.knownGuests.added'),
+        errorFallback: t('knownGuestsSettings.errors.add'),
+        onUnauthorized: toLogin,
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        setError(data?.error ?? t('knownGuestsSettings.errors.add'));
-      } else {
-        setMac(''); setLabel(''); setNotes('');
-        await fetchGuests();
-      }
-    } catch {
-      setError(t('knownGuestsSettings.errors.add'));
+      setMac(''); setLabel(''); setNotes('');
+      await fetchGuests();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('knownGuestsSettings.errors.add') });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleRemove = async (id: string) => {
+  // The dialog stays open (and Confirm retryable) on failure; runAction has
+  // already toasted why.
+  const handleConfirmRemove = async () => {
+    const guest = pendingRemove;
+    if (!guest) return;
+    setRemoving(true);
     try {
-      const response = await fetchWithAuth(`/partner/known-guests/${id}`, { method: 'DELETE' });
-      if (!response.ok) {
-        setError(t('knownGuestsSettings.errors.remove'));
-        return;
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/partner/known-guests/${guest.id}`, { method: 'DELETE' }),
+        successMessage: t('partnerSettingsPage.knownGuests.removed'),
+        errorFallback: t('knownGuestsSettings.errors.remove'),
+        onUnauthorized: toLogin,
+      });
+      setPendingRemove(null);
       await fetchGuests();
-    } catch {
-      setError(t('knownGuestsSettings.errors.remove'));
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('knownGuestsSettings.errors.remove') });
+    } finally {
+      setRemoving(false);
     }
   };
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <h2 className="text-lg font-semibold">{t('knownGuestsSettings.title')}</h2>
-      <p className="text-sm text-muted-foreground mt-1">
+      <p className="max-w-prose text-sm text-muted-foreground">
         {t('knownGuestsSettings.description')}
       </p>
 
@@ -94,9 +116,11 @@ export default function KnownGuestsSettings() {
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
       )}
 
-      <form onSubmit={handleAdd} className="mt-4 flex flex-wrap gap-3">
+      <form onSubmit={(e) => void handleAdd(e)} className="mt-4 flex flex-wrap gap-3">
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.macAddress')}
+          data-testid="known-guests-mac"
           placeholder={t('knownGuestsSettings.placeholders.mac')}
           value={mac}
           onChange={e => setMac(e.target.value)}
@@ -104,6 +128,8 @@ export default function KnownGuestsSettings() {
         />
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.label')}
+          data-testid="known-guests-label"
           placeholder={t('knownGuestsSettings.placeholders.label')}
           value={label}
           onChange={e => setLabel(e.target.value)}
@@ -111,6 +137,7 @@ export default function KnownGuestsSettings() {
         />
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.notes')}
           placeholder={t('knownGuestsSettings.placeholders.notes')}
           value={notes}
           onChange={e => setNotes(e.target.value)}
@@ -118,6 +145,7 @@ export default function KnownGuestsSettings() {
         />
         <button
           type="submit"
+          data-testid="known-guests-add"
           disabled={saving}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
@@ -142,14 +170,15 @@ export default function KnownGuestsSettings() {
             ) : guests.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('knownGuestsSettings.empty')}</td></tr>
             ) : guests.map(guest => (
-              <tr key={guest.id} className="hover:bg-muted/40">
+              <tr key={guest.id} className="hover:bg-muted/40" data-testid={`known-guests-row-${guest.macAddress}`}>
                 <td className="px-4 py-3 font-mono text-sm">{guest.macAddress}</td>
                 <td className="px-4 py-3 text-sm">{guest.label}</td>
                 <td className="px-4 py-3 text-sm text-muted-foreground">{guest.notes ?? '\u2014'}</td>
                 <td className="px-4 py-3 text-right">
                   <button
                     type="button"
-                    onClick={() => handleRemove(guest.id)}
+                    onClick={() => setPendingRemove(guest)}
+                    data-testid={`known-guests-remove-${guest.macAddress}`}
                     className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 ml-auto"
                     title={t('common:actions.remove')}
                   >
@@ -161,6 +190,19 @@ export default function KnownGuestsSettings() {
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        onClose={() => { if (!removing) setPendingRemove(null); }}
+        onConfirm={() => void handleConfirmRemove()}
+        title={t('knownGuestsSettings.removeConfirm.title')}
+        message={pendingRemove
+          ? t('knownGuestsSettings.removeConfirm.message', { label: pendingRemove.label, mac: pendingRemove.macAddress })
+          : ''}
+        confirmLabel={t('common:actions.remove')}
+        isLoading={removing}
+        confirmTestId="known-guests-remove-confirm"
+      />
     </div>
   );
 }

@@ -501,6 +501,18 @@ describe('partner reconstruction resource watermarks', () => {
     expect(rows).toEqual([{ orgId: targetOrg.id }]);
   });
 
+  runDb('product number: the live device-inventory export projects product_sku (#9593)', async () => {
+    const fixture = await seedDevice();
+    await getTestDb().insert(deviceHardware).values({
+      deviceId: fixture.deviceId, orgId: fixture.orgId, productSku: '5S3F8EA#ABB',
+    });
+    const response = await exportApp(fixture.partnerId, fixture.orgId).request('/device-inventory');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json() as { data: Array<Record<string, any>> };
+    const record = body.data.find((row) => row.deviceId === fixture.deviceId)!;
+    expect(record.hardware.system).toEqual({ productSku: '5S3F8EA#ABB' });
+  });
+
   runDb('memory modules: the live device-inventory export projects slots and the summary', async () => {
     const fixture = await seedDevice();
     const db = getTestDb();

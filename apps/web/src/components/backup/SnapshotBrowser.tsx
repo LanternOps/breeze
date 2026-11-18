@@ -11,13 +11,22 @@ import {
   FolderOpen,
   History,
   RefreshCw,
+  Search,
 } from 'lucide-react';
 import { cn, marginLeftPxClass } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import HashLink from '../shared/HashLink';
 import { buildRestoreHash } from './restoreHash';
-import { formatNumber } from '@/lib/i18n/format';
+import SnapshotIntegrityBadge, { snapshotIntegrityTone } from './SnapshotIntegrityBadge';
+import {
+  LARGE_FOLDER_SELECTION_THRESHOLD,
+  folderCheckState,
+  selectedFolderFileTotal,
+} from './folderSelection';
+import { formatBytes } from './backupDashboardHelpers';
+import SnapshotIndexNotice from './SnapshotIndexNotice';
+import { indexNoticeKind, parseSnapshotIndexView, useSnapshotIndexState } from './snapshotIndexState';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -55,11 +64,10 @@ type Snapshot = {
   requestedImmutabilityEnforcement: 'application' | 'provider' | null;
   immutabilityFallbackReason: string | null;
   retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
+  // GET /backup/snapshots; absent on an older API.
+  integrityStatus?: string | null;
   bareMetalRestorable?: boolean | null;
   bareMetalReasons?: string[] | null;
-  // Set from GET /snapshots/:id/browse: the snapshot recorded files but has no
-  // file index to list them from (not "still processing").
-  manifestUnavailable?: boolean;
 };
 
 type SnapshotTreeItem = {
@@ -68,6 +76,8 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Directories: indexed files beneath it (#9628). */
+  fileCount?: number;
 };
 
 // #8230: the browse endpoint returns ONE directory level per request, paged by
@@ -79,6 +89,30 @@ type DirState = {
 };
 
 const ROOT_DIR = '/';
+
+type SearchHit = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  sizeBytes?: number;
+};
+type SearchStatus = 'idle' | 'loading' | 'ready' | 'timeout' | 'error';
+
+const SEARCH_DEBOUNCE_MS = 300;
+const SEARCH_MIN_CHARS = 2;
+
+function searchUrl(snapshotId: string, q: string, cursor?: string | null): string {
+  const params = [`q=${encodeURIComponent(q)}`];
+  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  return `/backup/snapshots/${snapshotId}/search?${params.join('&')}`;
+}
+
+/** The API answers 503 `index_query_timeout` when an index query ran too long (#11026). */
+async function isIndexQueryTimeout(response: Response): Promise<boolean> {
+  if (response.status !== 503) return false;
+  const body = await response.json().catch(() => null);
+  return body?.code === 'index_query_timeout';
+}
 
 function browseUrl(snapshotId: string, dir: string, cursor?: string | null): string {
   const params: string[] = [];
@@ -97,15 +131,6 @@ function snapshotOptionLabel(snapshot: Snapshot): string {
   return parts.join(' — ');
 }
 
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return '-';
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / (1024 ** exponent);
-  const precision = value >= 10 || exponent === 0 ? 0 : 1;
-  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[exponent]}`;
-}
 
 function formatDateTime(value: string | null | undefined): string {
   return formatUserDateTime(value, {
@@ -120,6 +145,11 @@ function formatDateTime(value: string | null | undefined): string {
 
 export default function SnapshotBrowser() {
   const { t } = useTranslation('backup');
+  // <option> text cannot hold the badge element, so the picker spells the status out.
+  const integrityLabel = (status?: string | null): string | null => {
+    const tone = snapshotIntegrityTone(status);
+    return tone ? t(/* i18n-dynamic */ `snapshotIntegrityBadge.${tone}`) : null;
+  };
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -137,6 +167,33 @@ export default function SnapshotBrowser() {
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string>();
   const [actionError, setActionError] = useState<string>();
+  // #11026 search. `searchInput` is what is typed; `searchQuery` is the debounced
+  // value that is actually sent. `searchSeq` orders requests so a slow answer for
+  // an older query can never overwrite a newer one.
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
+  const [searchCursor, setSearchCursor] = useState<string | null>(null);
+  const [searchStatus, setSearchStatus] = useState<SearchStatus>('idle');
+  const [searchLoadingMore, setSearchLoadingMore] = useState(false);
+  const [searchRefresh, setSearchRefresh] = useState(0);
+  const searchSeq = useRef(0);
+  // The directory whose last browse timed out (#11026), so the tree can offer a retry.
+  const [browseTimeoutDir, setBrowseTimeoutDir] = useState<string | null>(null);
+
+  // #11026: while the file list is being built nothing is cached that is worth
+  // keeping, so its arrival starts the tree again from the root.
+  const { view: indexView, reportView: reportIndexView, retry: retryIndex, retrying: retryingIndex } = useSnapshotIndexState({
+    snapshotId: selectedSnapshotId,
+    onReady: () => {
+      browseEpoch.current += 1;
+      setDirs({});
+      setExpanded(new Set([ROOT_DIR]));
+      setSelectedFolder(ROOT_DIR);
+      void loadDir(ROOT_DIR);
+      setSearchRefresh((n) => n + 1);
+    },
+  });
 
   const fetchSnapshots = useCallback(async () => {
     try {
@@ -177,10 +234,24 @@ export default function SnapshotBrowser() {
     try {
       const response = await fetchWithAuth(browseUrl(selectedSnapshotId, dir, cursor));
       if (!response.ok) {
+        if (await isIndexQueryTimeout(response)) {
+          if (epoch !== browseEpoch.current) return;
+          setDirs((prev) => {
+            const existing = prev[dir];
+            if (!existing || existing.items.length === 0) {
+              const { [dir]: _dropped, ...rest } = prev;
+              return rest;
+            }
+            return { ...prev, [dir]: { ...existing, loading: false } };
+          });
+          setBrowseTimeoutDir(dir);
+          return;
+        }
         throw new Error('Failed to browse snapshot');
       }
       const payload = await response.json();
       if (epoch !== browseEpoch.current) return;
+      setBrowseTimeoutDir(null);
       const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
       setDirs((prev) => ({
         ...prev,
@@ -190,13 +261,7 @@ export default function SnapshotBrowser() {
           loading: false,
         },
       }));
-      if (dir === ROOT_DIR && !cursor) {
-        setSnapshots((prev) => prev.map((snapshot) => (
-          snapshot.id === selectedSnapshotId
-            ? { ...snapshot, manifestUnavailable: payload?.manifestUnavailable === true }
-            : snapshot
-        )));
-      }
+      if (dir === ROOT_DIR && !cursor) reportIndexView(parseSnapshotIndexView(payload));
     } catch (err) {
       if (epoch !== browseEpoch.current) return;
       // A first-page failure must leave the directory "not loaded" so
@@ -212,7 +277,7 @@ export default function SnapshotBrowser() {
       });
       setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
     }
-  }, [selectedSnapshotId]);
+  }, [selectedSnapshotId, reportIndexView]);
 
   // Reset + load the root level whenever the snapshot changes.
   useEffect(() => {
@@ -221,8 +286,63 @@ export default function SnapshotBrowser() {
     setExpanded(new Set([ROOT_DIR]));
     setSelectedFolder(ROOT_DIR);
     setSelectedFiles(new Set());
+    setBrowseTimeoutDir(null);
     if (selectedSnapshotId) void loadDir(ROOT_DIR);
   }, [selectedSnapshotId, loadDir]);
+
+  // Debounce typing; only a trimmed length of 2+ is ever sent (as typed).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery(searchInput.trim().length >= SEARCH_MIN_CHARS ? searchInput : '');
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const runSearch = useCallback(async (cursor?: string | null) => {
+    if (!selectedSnapshotId || !searchQuery) return;
+    const seq = ++searchSeq.current;
+    if (cursor) setSearchLoadingMore(true);
+    else {
+      setSearchStatus('loading');
+      setSearchHits([]);
+      setSearchCursor(null);
+    }
+    try {
+      const response = await fetchWithAuth(searchUrl(selectedSnapshotId, searchQuery, cursor));
+      if (!response.ok) {
+        const timedOut = await isIndexQueryTimeout(response);
+        if (seq !== searchSeq.current) return;
+        setSearchStatus(timedOut ? 'timeout' : 'error');
+        if (!timedOut) setError('Failed to search snapshot');
+        return;
+      }
+      const payload = await response.json();
+      if (seq !== searchSeq.current) return;
+      const hits = Array.isArray(payload?.data) ? payload.data as SearchHit[] : [];
+      setSearchHits((prev) => (cursor ? [...prev, ...hits] : hits));
+      setSearchCursor(typeof payload?.nextCursor === 'string' ? payload.nextCursor : null);
+      reportIndexView(parseSnapshotIndexView(payload));
+      setSearchStatus('ready');
+    } catch (err) {
+      if (seq !== searchSeq.current) return;
+      setSearchStatus('error');
+      setError(err instanceof Error ? err.message : 'Failed to search snapshot');
+    } finally {
+      if (seq === searchSeq.current) setSearchLoadingMore(false);
+    }
+  }, [selectedSnapshotId, searchQuery, reportIndexView]);
+
+  useEffect(() => {
+    if (!searchQuery) {
+      searchSeq.current += 1; // drop anything still in flight
+      setSearchStatus('idle');
+      setSearchHits([]);
+      setSearchCursor(null);
+      setSearchLoadingMore(false);
+      return;
+    }
+    void runSearch();
+  }, [runSearch, searchRefresh, searchQuery]);
 
   const ensureDirLoaded = (dir: string) => {
     if (!dirs[dir]) void loadDir(dir);
@@ -334,11 +454,35 @@ export default function SnapshotBrowser() {
       .map((item) => ({
         id: item.path,
         name: item.name,
-        size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
-        modified: item.modifiedAt,
+        size: typeof item.sizeBytes === 'number' ? formatBytes(item.sizeBytes, '-') : undefined,
+        modified: item.modifiedAt ? formatDateTime(item.modifiedAt) : undefined,
       })),
     [dirs, selectedFolder]
   );
+  const visibleFolders = useMemo(
+    () => (dirs[selectedFolder]?.items ?? []).filter((item) => item.type === 'directory'),
+    [dirs, selectedFolder]
+  );
+  const folderCounts = useRef(new Map<string, number>());
+  // Selecting a folder stores its tree path; the API expands it to the indexed
+  // files beneath it when the restore is created (#9628).
+  const toggleFolder = (item: SnapshotTreeItem) => {
+    const count = item.fileCount ?? 0;
+    folderCounts.current.set(item.path, count);
+    const state = folderCheckState(item.path, selectedFiles);
+    // Covered by a selected ancestor folder: uncheck that one instead.
+    if (state === 'checked' && !selectedFiles.has(item.path)) return;
+    if (state !== 'checked' && count > 0) {
+      const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
+      if (
+        total > LARGE_FOLDER_SELECTION_THRESHOLD &&
+        !window.confirm(t('snapshotBrowser.confirmLargeFolderSelection', { count: total }))
+      ) {
+        return;
+      }
+    }
+    toggleFile(item.path);
+  };
   const rootLoaded = dirs[ROOT_DIR] !== undefined && !dirs[ROOT_DIR]!.loading;
   const rootEmpty = rootLoaded && dirs[ROOT_DIR]!.items.length === 0;
 
@@ -490,6 +634,7 @@ export default function SnapshotBrowser() {
               {snapshots.map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
                   {snapshotOptionLabel(snapshot)}
+                  {integrityLabel(snapshot.integrityStatus) ? ` — ${integrityLabel(snapshot.integrityStatus)}` : ''}
                 </option>
               ))}
             </select>
@@ -507,6 +652,7 @@ export default function SnapshotBrowser() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
+                <SnapshotIntegrityBadge status={selectedSnapshot.integrityStatus} />
                 {selectedSnapshot.deviceName && (
                   <span data-testid="snapshot-device-name" className="text-sm text-muted-foreground">
                     {selectedSnapshot.deviceName}
@@ -558,7 +704,7 @@ export default function SnapshotBrowser() {
                     <Database className="h-3.5 w-3.5" />
                     {t('snapshotBrowser.snapshotDetails')} </div>
                   <div className="mt-2 space-y-1 text-sm text-foreground">
-                    <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                    <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes, '-')}</div>
                     <div>{t('snapshotBrowser.files')} {selectedSnapshot.fileCount ?? '-'}</div>
                     <div data-testid="snapshot-location" className="break-all">
                       {t('snapshotBrowser.location')}{' '}
@@ -701,6 +847,19 @@ export default function SnapshotBrowser() {
           <div className="rounded-md border bg-muted/10 p-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('snapshotBrowser.fileTree')}</h3>
             <div className="mt-3 space-y-1 text-sm">
+              {browseTimeoutDir !== null && (
+                <div data-testid="snapshot-browse-timeout" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800">
+                  <p>{t('snapshotBrowser.browseTimeout')}</p>
+                  <button
+                    type="button"
+                    data-testid="snapshot-browse-timeout-retry"
+                    onClick={() => void loadDir(browseTimeoutDir)}
+                    className="mt-1 font-medium text-primary hover:underline"
+                  >
+                    {t('snapshotBrowser.tryAgain')}
+                  </button>
+                </div>
+              )}
               {rootLoaded && !rootEmpty ? (
                 renderTree(null)
               ) : (
@@ -711,6 +870,99 @@ export default function SnapshotBrowser() {
           </div>
 
           <div className="space-y-4">
+            <div className="space-y-1">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="search"
+                  data-testid="snapshot-search-input"
+                  value={searchInput}
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  placeholder={t('snapshotBrowser.searchPlaceholder')}
+                  aria-label={t('snapshotBrowser.searchPlaceholder')}
+                  className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm"
+                />
+              </div>
+              {searchInput.trim().length > 0 && searchInput.trim().length < SEARCH_MIN_CHARS && (
+                <p className="text-xs text-muted-foreground">{t('snapshotBrowser.searchMinLength')}</p>
+              )}
+            </div>
+
+            {searchQuery ? (
+              <div className="space-y-3">
+                {searchStatus === 'loading' && (
+                  <p className="text-xs text-muted-foreground">{t('snapshotBrowser.searchLoading')}</p>
+                )}
+                {searchStatus === 'timeout' && (
+                  <div data-testid="snapshot-search-timeout" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800">
+                    <p>{t('snapshotBrowser.searchTimeout')}</p>
+                    <button
+                      type="button"
+                      data-testid="snapshot-search-timeout-retry"
+                      onClick={() => void runSearch()}
+                      className="mt-1 text-xs font-medium text-primary hover:underline"
+                    >
+                      {t('snapshotBrowser.tryAgain')}
+                    </button>
+                  </div>
+                )}
+                {searchStatus === 'ready' && indexNoticeKind(indexView) && (
+                  <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />
+                  </div>
+                )}
+                {searchStatus === 'ready' && !indexNoticeKind(indexView) && searchHits.length === 0 && (
+                  <div data-testid="snapshot-search-empty" className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    {t('snapshotBrowser.searchEmpty')}
+                  </div>
+                )}
+                {searchHits.length > 0 && (
+                  <ul data-testid="snapshot-search-results" className="divide-y divide-border rounded-lg border">
+                    {searchHits.map((hit) => (
+                      <li key={hit.path} className="flex items-center gap-3 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={selectedFiles.has(hit.path)}
+                          onChange={() => toggleFile(hit.path)}
+                          aria-label={`Select ${hit.name}`}
+                          className="h-4 w-4"
+                        />
+                        {/* A folder hit is a directory entry, e.g. an empty folder (#11235). */}
+                        {hit.type === 'directory'
+                          ? <Folder data-testid="snapshot-search-hit-folder" className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          : <FileText data-testid="snapshot-search-hit-file" className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-foreground">{hit.name}</div>
+                          <div className="break-all text-xs text-muted-foreground">{hit.path}</div>
+                        </div>
+                        {typeof hit.sizeBytes === 'number' && (
+                          <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(hit.sizeBytes, '-')}</span>
+                        )}
+                        <HashLink
+                          hash={buildRestoreHash(restoreLinkSnapshotId, [hit.path])}
+                          data-testid="snapshot-search-restore-link"
+                          className="shrink-0 text-xs font-medium text-primary underline-offset-2 hover:underline"
+                        >
+                          {t('snapshotBrowser.searchRestoreFile')}
+                        </HashLink>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {searchCursor && searchStatus === 'ready' && (
+                  <button
+                    type="button"
+                    data-testid="snapshot-search-more"
+                    disabled={searchLoadingMore}
+                    onClick={() => void runSearch(searchCursor)}
+                    className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    {t('snapshotBrowser.searchLoadMore')}
+                  </button>
+                )}
+              </div>
+            ) : (
+            <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-muted-foreground">
                 <span className="font-semibold text-foreground">{t('snapshotBrowser.path')}</span>
@@ -748,6 +1000,43 @@ export default function SnapshotBrowser() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
+                  {visibleFolders.map((folder) => (
+                    <tr key={`d:${folder.path}`} className="text-sm text-foreground">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={folderCheckState(folder.path, selectedFiles) === 'checked'}
+                          ref={(el) => {
+                            if (el) el.indeterminate = folderCheckState(folder.path, selectedFiles) === 'partial';
+                          }}
+                          // Covered by a selected parent folder: uncheck that one instead.
+                          disabled={folderCheckState(folder.path, selectedFiles) === 'checked' && !selectedFiles.has(folder.path)}
+                          onChange={() => toggleFolder(folder)}
+                          aria-label={t('snapshotBrowser.selectFolder', { name: folder.name })}
+                          className="h-4 w-4"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            ensureDirLoaded(folder.path);
+                            setSelectedFolder(folder.path);
+                          }}
+                          className="flex items-center gap-2 font-medium hover:underline"
+                        >
+                          <Folder className="h-4 w-4 text-muted-foreground" />
+                          {folder.name}/
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {typeof folder.fileCount === 'number'
+                          ? t('snapshotBrowser.folderFileCount', { count: folder.fileCount })
+                          : ''}
+                      </td>
+                      <td className="px-4 py-3" />
+                    </tr>
+                  ))}
                   {visibleFiles.map((file) => (
                     <tr key={file.id} className="text-sm text-foreground">
                       <td className="px-4 py-3">
@@ -783,14 +1072,18 @@ export default function SnapshotBrowser() {
               </button>
             )}
 
-            {visibleFiles.length === 0 && !dirs[selectedFolder]?.loading && (
+            {visibleFiles.length === 0 && visibleFolders.length === 0 && !dirs[selectedFolder]?.loading && browseTimeoutDir === null && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                {!rootEmpty && rootLoaded
+                {snapshots.length === 0
+                  ? t('snapshotBrowser.noSnapshotsYetFilesAppearHere')
+                  : !rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'
-                  : selectedSnapshot?.manifestUnavailable
-                    ? t('snapshotBrowser.fileIndexUnavailable')
+                  : indexNoticeKind(indexView)
+                    ? <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />
                     : 'No files in this snapshot. The backup may still be processing.'}
               </div>
+            )}
+            </>
             )}
           </div>
         </div>

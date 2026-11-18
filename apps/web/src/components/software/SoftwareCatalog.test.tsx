@@ -6,7 +6,11 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) }
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: unknown) => unknown) => selector({ tokens: null, user: undefined }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 const showToast = vi.fn();
@@ -35,7 +39,11 @@ vi.mock('./DeploymentWizard', () => ({
   ),
 }));
 vi.mock('./SoftwareVersionManager', () => ({
-  default: ({ catalogId }: { catalogId: string }) => <div data-testid="version-manager-probe">versions:{catalogId}</div>,
+  default: ({ catalogId, builtinReadOnly }: { catalogId: string; builtinReadOnly?: boolean }) => (
+    <div data-testid="version-manager-probe" data-builtin-readonly={String(Boolean(builtinReadOnly))}>
+      versions:{catalogId}
+    </div>
+  ),
 }));
 vi.mock('./DeploymentList', () => ({
   default: (props: { onSelectDeployment?: (id: string) => void }) => (
@@ -61,6 +69,15 @@ vi.mock('./DeploymentProgress', () => ({
   ),
 }));
 
+// #6958 PR D: the built-in packages panel renders for partner scope only.
+const ownerScope = vi.hoisted(() => ({ isPartnerScope: false }));
+vi.mock('../../hooks/useDefaultOwnerScope', () => ({
+  useDefaultOwnerScope: () => ({
+    isPartnerScope: ownerScope.isPartnerScope,
+    defaultOwnerScope: 'organization',
+  }),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -80,6 +97,21 @@ const ITEM = {
   description: 'A test package',
   createdAt: '2026-06-14T00:00:00Z'
 };
+
+describe('SoftwareCatalog scope note (#12053)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it('says the library is for deploying and is not the list of apps Breeze keeps current', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    render(<SoftwareCatalog />);
+    const note = await screen.findByTestId('software-library-scope-note');
+    expect(note).toHaveTextContent(/not a list of software Breeze keeps up to date/i);
+    expect(note).toHaveTextContent(/patch sources/i);
+  });
+});
 
 describe('SoftwareCatalog category filter select accessible name (#7156)', () => {
   beforeEach(() => {
@@ -149,6 +181,65 @@ describe('SoftwareCatalog package-manager badges', () => {
     await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
 
     expect(screen.queryByTestId('package-manager-badges')).not.toBeInTheDocument();
+  });
+});
+
+describe('SoftwareCatalog source filter (#12052)', () => {
+  const WINGET = { ...ITEM, id: 'w', name: 'WingetApp', versionCount: 0, methodKinds: ['winget'] };
+  const BREW = { ...ITEM, id: 'b', name: 'BrewApp', versionCount: 0, methodKinds: ['homebrew_cask'] };
+  const FILE = { ...ITEM, id: 'f', name: 'InstallerApp', versionCount: 2, methodKinds: [] };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+    window.location.hash = '';
+  });
+
+  it('filters the library by source and records it in the URL hash', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET, BREW, FILE] }));
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('WingetApp')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'winget' },
+    });
+
+    expect(screen.getByText('WingetApp')).toBeInTheDocument();
+    expect(screen.queryByText('BrewApp')).not.toBeInTheDocument();
+    expect(screen.queryByText('InstallerApp')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('#catalog&source=winget');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'installer' },
+    });
+    expect(screen.getByText('InstallerApp')).toBeInTheDocument();
+    expect(screen.queryByText('WingetApp')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'all' },
+    });
+    expect(screen.getByText('BrewApp')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#catalog');
+  });
+
+  it('applies a source carried in the hash on first load', async () => {
+    window.location.hash = '#catalog&source=brew';
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET, BREW, FILE] }));
+    render(<SoftwareCatalog />);
+
+    await waitFor(() => expect(screen.getByText('BrewApp')).toBeInTheDocument());
+    expect(screen.queryByText('WingetApp')).not.toBeInTheDocument();
+  });
+
+  it('only offers sources that exist in the library', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET] }));
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('WingetApp')).toBeInTheDocument());
+
+    const options = Array.from(
+      screen.getByRole('combobox', { name: 'Source' }).querySelectorAll('option'),
+    ).map((o) => o.getAttribute('value'));
+    expect(options).toEqual(['all', 'winget']);
   });
 });
 
@@ -499,5 +590,113 @@ describe('SoftwareCatalog deployments tab (hash-driven)', () => {
       'progress:dep-42',
     );
     expect(window.location.hash).toBe('#deployment=dep-42');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6958 PR D: Breeze-pinned DNS built-ins (builtin_package_key rows).
+// ---------------------------------------------------------------------------
+const KEYED_ITEM = {
+  id: 'cat-ctrld',
+  orgId: null,
+  partnerId: 'partner-1',
+  builtinPackageKey: 'controld_windows',
+  name: 'Control D (Windows)',
+  vendor: 'Control D',
+  category: 'security',
+  description: '',
+  createdAt: '2026-10-24T00:00:00Z',
+  versionCount: 1,
+};
+const BUILTIN_ROWS = [
+  {
+    key: 'controld_windows',
+    name: 'Control D (Windows)',
+    vendor: 'Control D',
+    os: 'windows',
+    version: '1.5.8',
+    fileType: 'zip',
+    requiredVars: ['controld_provisioning_code'],
+    uninstallCommand: 'C:\\ControlD\\ctrld.exe uninstall',
+    catalogId: 'cat-ctrld',
+    archived: false,
+  },
+];
+
+function routeKeyed(items: unknown[]) {
+  fetchMock.mockImplementation((url: string) => {
+    if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: items }));
+    if (url === '/software/builtin-packages') return Promise.resolve(jsonResponse({ data: BUILTIN_ROWS }));
+    return Promise.resolve(jsonResponse({ data: null }));
+  });
+}
+
+describe('SoftwareCatalog DNS built-ins (#6958)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+    ownerScope.isPartnerScope = false;
+    window.location.hash = '';
+  });
+
+  it('partner scope: renders the Built-in packages panel above the grid', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-packages-panel')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/software/builtin-packages');
+  });
+
+  it('org scope: no panel and no built-in packages fetch', async () => {
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+    expect(screen.queryByTestId('builtin-packages-panel')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('/software/builtin-packages');
+  });
+
+  it('a keyed card wears the Built-in pill and no ownership badge', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    const card = await screen.findByTestId('catalog-card-cat-ctrld');
+    expect(card.textContent).toContain('Built-in');
+    expect(card.querySelector('[data-testid="scope-badge"]')).toBeNull();
+  });
+
+  it('the keyed detail shows required variables and the uninstall command, with no Delete', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    const detail = await screen.findByTestId('builtin-catalog-detail');
+    await waitFor(() => expect(detail.textContent).toContain('controld_provisioning_code'));
+    expect(detail.textContent).toContain('C:\\ControlD\\ctrld.exe uninstall');
+    expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
+  });
+
+  it('the keyed Versions tab opens the version manager read-only', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Versions' }));
+    expect(await screen.findByTestId('version-manager-probe')).toHaveAttribute('data-builtin-readonly', 'true');
+  });
+
+  it('a plain package still opens the version manager editable', async () => {
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByText('TestApp'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Versions' }));
+    expect(await screen.findByTestId('version-manager-probe')).toHaveAttribute('data-builtin-readonly', 'false');
+  });
+
+  it('"In catalog" in the panel opens that card', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('builtin-package-in-catalog-controld_windows'));
+    expect(await screen.findByTestId('builtin-catalog-detail')).toBeInTheDocument();
   });
 });

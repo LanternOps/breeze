@@ -31,7 +31,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
-vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail' }));
+vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail', renderPageContextToolBlocks: () => '', resolveToolIndexMode: () => 'lazy' }));
 vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({
   getActiveDeviceContext: vi.fn().mockResolvedValue(null),

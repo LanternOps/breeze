@@ -1,3 +1,8 @@
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -75,7 +80,7 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
-import { resolveDeploymentTargets } from './deploymentTargetResolver';
+import { resolveDeploymentTargets, resolveDeploymentTargetsWithWarnings } from './deploymentTargetResolver';
 import { db } from '../db';
 
 // A second chain-mock helper that returns a FIXED value regardless of the
@@ -97,7 +102,17 @@ function chainMockWith(value: unknown) {
 }
 
 describe('resolveDeploymentTargets', () => {
+  it('warns and excludes requested partner-owned groups instead of silently resolving zero targets', async () => {
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([GROUP_ID_1]);
+    const result = await resolveDeploymentTargetsWithWarnings({ orgId: ORG_ID, targetConfig: { type: 'groups', groupIds: [GROUP_ID_1] } });
+    expect(result.deviceIds).toEqual([]);
+    expect(result.warnings).toEqual([expect.stringContaining('Partner-wide device groups can only be targeted by partner configuration policies')]);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([GROUP_ID_1]);
+  });
+
   beforeEach(() => {
+    vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
     vi.clearAllMocks();
     mockSelectResult = [];
     mockEvaluateFilter.mockReset();

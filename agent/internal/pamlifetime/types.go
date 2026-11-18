@@ -45,6 +45,24 @@ type ApplyCommand struct {
 	ExpiresAt              time.Time `json:"expiresAt"`
 	ServerTime             time.Time `json:"serverTime"`
 	MaxRemainingLifetimeMS int64     `json:"maxRemainingLifetimeMs"`
+	// DecidedBy (#10190 W07) is display-only: who approved, as the server's
+	// technician_identity_level allows (never an email). It is not part of
+	// the bound digest. Sent only to agents that report
+	// pamUserNotifyProtocolVersion >= 2 (this payload is decoded strictly).
+	DecidedBy *DecidedBy `json:"decidedBy,omitempty"`
+}
+
+// DecidedBy names who decided an elevation request, for the end user.
+type DecidedBy struct {
+	TechnicianName *string `json:"technicianName"`
+}
+
+// Technician is the name, or "" when none was sent.
+func (d *DecidedBy) Technician() string {
+	if d == nil || d.TechnicianName == nil {
+		return ""
+	}
+	return *d.TechnicianName
 }
 
 type CleanupCommand struct {
@@ -84,6 +102,27 @@ type Result struct {
 	FailureCode     string         `json:"failureCode,omitempty"`
 	Evidence        ResultEvidence `json:"evidence"`
 }
+
+// DeclineChecker answers whether an apply for a request must be refused
+// because of the end user's answer on the device (#8971): declined, still
+// undecided, or the decision record is untrusted. code is the failure code to
+// report. Implemented by pamdecline.Store; must not block.
+type DeclineChecker interface {
+	Check(requestID string) (refuse bool, code string)
+}
+
+// DeclineCheckerSetter is how the heartbeat hands a manager its
+// DeclineChecker. It sits beside the frozen Manager interface rather than in
+// it.
+type DeclineCheckerSetter interface {
+	SetDeclineChecker(DeclineChecker)
+}
+
+// Every platform's NewManager must take the decline check (#8971): without
+// it, pam_apply_v2 refuses every apply. This file has no build tag, so the
+// build fails on any GOOS whose manager lacks SetDeclineChecker. The function
+// is never called.
+var _ = func() DeclineCheckerSetter { return NewManager(nil) }
 
 type Manager interface {
 	Apply(context.Context, ApplyCommand) Result

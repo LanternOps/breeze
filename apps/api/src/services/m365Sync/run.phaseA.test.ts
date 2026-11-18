@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { dbMocks } = vi.hoisted(() => ({
-  dbMocks: { rows: [] as unknown[][], selectCalls: 0, depth: 0, maxDepthAtSelect: 0, updates: [] as unknown[] },
+  dbMocks: {
+    rows: [] as unknown[][], selectCalls: 0, depth: 0, maxDepthAtSelect: 0, updates: [] as unknown[],
+    executes: [] as unknown[],
+  },
 }));
 
 vi.mock('../../db', () => ({
@@ -11,6 +14,8 @@ vi.mock('../../db', () => ({
         then: (res: (v: unknown) => unknown) => Promise.resolve(dbMocks.rows.shift() ?? []).then(res) };
       return chain; },
     update: () => ({ set: () => ({ where: () => { dbMocks.updates.push(true); return Promise.resolve(); } }) }),
+    // The signin_events watermark read (domains/signinEvents.ts).
+    execute: (query: unknown) => { dbMocks.executes.push(query); return Promise.resolve([{ watermark: null }]); },
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     dbMocks.depth += 1; try { return await fn(); } finally { dbMocks.depth -= 1; }
@@ -18,6 +23,7 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { assertStillFenced, loadSyncRunContext, releaseLease } from './run';
 
 const JOB = {
@@ -93,6 +99,19 @@ describe('loadSyncRunContext (Phase A, spec §5.3)', () => {
     dbMocks.rows = [[{ ...stateRow({ lastSuccessAt: lastSuccess }), ...connRow() }], []];
     const ctx = await loadSyncRunContext(JOB) as { state: { lastSuccessAt: Date | null } };
     expect(ctx.state.lastSuccessAt).toEqual(lastSuccess);
+  });
+
+  it('#9394: anchors the signin_events watermark to the last COMPLETED walk', async () => {
+    const lastComplete = new Date('2026-09-07T03:00:00.000Z');
+    dbMocks.executes = [];
+    dbMocks.rows = [[{ ...stateRow({ lastCompleteSnapshotAt: lastComplete }), ...connRow() }]];
+    const ctx = await loadSyncRunContext({ ...JOB, domain: 'signin_events' }, new Date('2026-09-08T12:00:00.000Z')) as {
+      state: { signinEventsWindow: { since: string; until: string } | null };
+    };
+    expect(ctx.state.signinEventsWindow).not.toBeNull();
+    expect(dbMocks.executes).toHaveLength(1);
+    const { params } = new PgDialect().sqlToQuery(dbMocks.executes[0] as never);
+    expect(params).toContain(lastComplete.toISOString());
   });
 
   it('does NOT read the entity hash map when it fenced — one wasted 25k-row scan per late job', async () => {

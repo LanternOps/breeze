@@ -26,7 +26,7 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { db } from '../db';
 import { circuits as circuitsTable, topologyInterfaces } from '../db/schema';
-import { PERMISSIONS, getUserPermissions, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { requireTopologySiteAccess, TopologyError } from '../services/topology/access';
 import {
@@ -53,6 +53,7 @@ import {
   type CircuitSiteScope,
 } from '../services/circuits';
 import type { Context } from 'hono';
+import { resolveCallerPermissions, resolveCallerSiteScope } from './sitePermissionScope';
 
 export const circuitRoutes = new Hono();
 
@@ -62,43 +63,10 @@ const requireDevicesRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, 
 const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 const scopes = requireScope('organization', 'partner', 'system');
 
-/** The caller's live permissions, resolved the same way the topology routes do. */
-async function resolvePermissions(c: Context): Promise<UserPermissions> {
-  const auth = c.get('auth') as AuthContext;
-  let permissions = c.get('permissions') as UserPermissions | undefined;
-  if (!permissions) {
-    permissions = (await getUserPermissions(auth.user.id, {
-      partnerId: auth.partnerId ?? undefined,
-      orgId: auth.orgId ?? undefined,
-      scope: auth.scope,
-    })) ?? undefined;
-  }
-  if (!permissions) throw new TopologyError('topology_permission_denied', 403, 'Topology permission denied');
-  return permissions;
-}
-
-/**
- * The sites the caller may reach: the token ceiling (`auth.allowedSiteIds`)
- * intersected with the live permission allowlist (`permissions.allowedSiteIds`).
- * `null` is unrestricted; a malformed allowlist fails closed to no sites.
- */
-async function resolveSiteScope(c: Context): Promise<CircuitSiteScope> {
-  const auth = c.get('auth') as AuthContext;
-  const permissions = await resolvePermissions(c);
-  const lists = [auth.allowedSiteIds, permissions.allowedSiteIds].filter((l) => l !== undefined);
-  if (lists.length === 0) return { allowedSiteIds: null };
-  let allowed: string[] | null = null;
-  for (const list of lists) {
-    const ids: string[] = Array.isArray(list) ? list : [];
-    allowed = allowed === null ? [...ids] : allowed.filter((id) => ids.includes(id));
-  }
-  return { allowedSiteIds: allowed };
-}
-
 /** Topology write access to one site, using the same boundary as the topology routes. */
 async function assertTopologySiteWrite(c: Context, siteId: string): Promise<void> {
   const auth = c.get('auth') as AuthContext;
-  const permissions = await resolvePermissions(c);
+  const permissions = await resolveCallerPermissions(c);
   await requireTopologySiteAccess(auth, permissions, siteId, 'write');
 }
 
@@ -121,7 +89,7 @@ async function assertCircuitSitesWritable(c: Context, siteIds: string[]): Promis
 /** Loads a circuit only when the caller may see it; otherwise it is reported as not found. */
 async function loadVisibleCircuit(c: Context, id: string): Promise<{ circuit: CircuitDto; scope: CircuitSiteScope } | null> {
   const auth = c.get('auth') as AuthContext;
-  const scope = await resolveSiteScope(c);
+  const scope = await resolveCallerSiteScope(c);
   const circuit = await getCircuitDto(id);
   if (!circuit || !auth.canAccessOrg(circuit.orgId) || !canSeeCircuit(circuit, scope)) return null;
   return { circuit, scope };
@@ -136,7 +104,7 @@ function handleError(c: Context, err: unknown) {
 circuitRoutes.get('/', scopes, requireDevicesRead, zValidator('query', circuitListQuerySchema), async (c) => {
   try {
     const auth = c.get('auth') as AuthContext;
-    const scope = await resolveSiteScope(c);
+    const scope = await resolveCallerSiteScope(c);
     const { limit, cursor } = c.req.valid('query');
     const page = await listCircuitDtos({ orgCondition: auth.orgCondition(circuitsTable.orgId), scope, limit, cursor });
     return c.json({ data: page.items, nextCursor: page.nextCursor });
@@ -153,7 +121,7 @@ circuitRoutes.post('/', scopes, requireDevicesWrite, requireMfa(), zValidator('j
     if (!orgId) return c.json({ error: 'orgId is required to create a circuit for this scope' }, 400);
     if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
     // A new circuit has no sites, so a restricted caller could not see it afterwards (spec 7.2).
-    const scope = await resolveSiteScope(c);
+    const scope = await resolveCallerSiteScope(c);
     if (scope.allowedSiteIds !== null) throw new CircuitError('Circuit write not permitted', 'CIRCUIT_SITE_FORBIDDEN', 403);
     const dto = await createCircuit(orgId, body);
     writeRouteAudit(c, { orgId, action: 'circuit.create', resourceType: 'circuit', resourceId: dto.id, resourceName: dto.cid, details: { after: dto } });

@@ -1,8 +1,9 @@
 import addressparser from 'nodemailer/lib/addressparser/index.js';
-import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketEmailInbound, tickets, users } from '../../db/schema';
 import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
+import { parseMailboxes, parseSingleMailbox } from './addressParse';
 
 // Per-partner ticket display number, e.g. T-2026-0001.
 export const TICKET_TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
@@ -65,6 +66,39 @@ const MATCH_COLS = {
   submitterEmail: tickets.submitterEmail
 };
 
+/**
+ * #8972 (spec §3.8): the tickets a reply's signal names, each resolved through
+ * `merged_into_ticket_id` (one hop; merge compresses paths). The live and
+ * closed filters then apply to the RESOLVED ticket, so a reply addressed to a
+ * merged source — closed, as every tombstone is — lands on its survivor rather
+ * than spawning a continuation from the tombstone. `signal` is the
+ * header-or-token predicate on the alias `t`; partner scoping is mandatory on
+ * both sides (spec §6 layer 1).
+ */
+function resolvedThroughMerges(partnerId: string, signal: ReturnType<typeof sql>) {
+  return sql`${tickets.id} IN (
+    SELECT COALESCE(t.merged_into_ticket_id, t.id) FROM tickets t
+     WHERE t.partner_id = ${partnerId}::uuid AND t.deleted_at IS NULL AND (${signal}))`;
+}
+
+const sqlList = (values: readonly string[]) => sql.join(values.map((v) => sql`${v}`), sql`, `);
+
+/** Tombstones merged into `ticketId` (their requesters and inbound history still count, §3.8). */
+async function mergedTombstonesOf(ticketId: string): Promise<MatchedTicket[]> {
+  return (await db.select(MATCH_COLS).from(tickets).where(eq(tickets.mergedIntoTicketId, ticketId))) as MatchedTicket[];
+}
+
+/** senderIsBoundToTicket for the match OR any tombstone merged into it (same org by the composite FK). */
+async function senderIsBoundToTicketOrMerged(from: string, ticket: MatchedTicket, sender: SenderResolver): Promise<boolean> {
+  if (await senderIsBoundToTicket(from, ticket, sender)) return true;
+  for (const tomb of await mergedTombstonesOf(ticket.id)) {
+    // The binding rules (incl. the current-org check) are judged against the
+    // tombstone's requester, in the SURVIVOR's org.
+    if (await senderIsBoundToTicket(from, { ...tomb, orgId: ticket.orgId }, sender)) return true;
+  }
+  return false;
+}
+
 // Lazy, memoized sender-identity lookups, provided by the caller. Only the
 // UNAUTHENTICATED inbound-email path supplies one (see senderIsBoundToTicket);
 // authenticated callers (Office add-in: a partner-scoped tech) omit it and get
@@ -122,29 +156,44 @@ export async function senderIsBoundToTicket(
 // Header identifiers also reach CC'd colleagues, forwarded participants, and
 // technicians using mail clients. Only previously accepted mail on THIS ticket
 // establishes participation; quarantined/failed mail cannot authorize its sender.
-async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): Promise<boolean> {
+//
+// A Mailgun row written before inbound mail was attributed to the From address
+// recorded the SMTP envelope sender as fromAddress. Such a row is recognisable:
+// its stored form (raw.from) is the From header, and its first mailbox differs
+// from fromAddress (rows written since record that mailbox). Neither its From
+// header nor its Cc list was the authenticated identity, so a sender named only
+// there must also be on a domain mapped to the ticket's organization.
+async function senderIsThreadParticipant(from: string, ticket: MatchedTicket, sender: SenderResolver): Promise<boolean> {
   const normalizedFrom = from.trim().toLowerCase();
   if (!normalizedFrom || !ticket.partnerId) return false;
+  // #8972: the retained inbound history of tombstones merged into this ticket
+  // counts too (it stays on the tombstone, spec §3.3).
+  const threadTicketIds = [ticket.id, ...(await mergedTombstonesOf(ticket.id)).map((t) => t.id)];
   const priorMessages = await db.select({
     fromAddress: ticketEmailInbound.fromAddress,
     raw: ticketEmailInbound.raw
   }).from(ticketEmailInbound).where(and(
-    eq(ticketEmailInbound.ticketId, ticket.id),
+    threadTicketIds.length === 1 ? eq(ticketEmailInbound.ticketId, ticket.id) : inArray(ticketEmailInbound.ticketId, threadTicketIds),
     eq(ticketEmailInbound.partnerId, ticket.partnerId),
     inArray(ticketEmailInbound.parseStatus, ['matched', 'created'])
   ));
+  const senderInTicketOrg = async () => (await sender.domainOrg())?.orgId === ticket.orgId;
   for (const message of priorMessages) {
-    if (message.fromAddress?.trim().toLowerCase() === normalizedFrom) return true;
+    const recorded = message.fromAddress?.trim().toLowerCase();
+    if (recorded === normalizedFrom) return true;
     const raw = message.raw as Record<string, unknown> | null;
+    const headerFrom = typeof raw?.from === 'string' ? raw.from : null;
+    const envelopeAttributed = headerFrom !== null && parseMailboxes(headerFrom)[0]?.address !== recorded;
+    const namedByFromHeader = envelopeAttributed && parseSingleMailbox(headerFrom)?.address === normalizedFrom;
     // Mailgun retains the original form fields; Graph retains structured CCs.
-    for (const cc of [raw?.Cc, raw?.cc]) {
-      if (typeof cc === 'string' && addressparser(cc, { flatten: true })
-        .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom)) return true;
-    }
-    if (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
-      const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
-      return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
-    })) return true;
+    const namedByCc = [raw?.Cc, raw?.cc].some((cc) => typeof cc === 'string' && addressparser(cc, { flatten: true })
+      .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom))
+      || (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
+        const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
+        return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
+      }));
+    if (!envelopeAttributed && namedByCc) return true;
+    if (envelopeAttributed && (namedByFromHeader || namedByCc) && await senderInTicketOrg()) return true;
   }
   if (!ticket.assignedTo) return false;
   const [tech] = await db.select({ id: users.id }).from(users).where(and(
@@ -197,11 +246,10 @@ export async function findTicketInPartner(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
         isNull(tickets.deletedAt), // never thread a reply onto a soft-deleted ticket
-        or(
-          inArray(tickets.emailThreadKey, candidateKeys),
-          inArray(tickets.emailMessageId, candidateKeys),
-          ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
-        )
+        // #8972: the matched row resolved through merged_into_ticket_id first.
+        resolvedThroughMerges(partnerId, sql`t.email_thread_key IN (${sqlList(candidateKeys)})
+          OR t.email_message_id IN (${sqlList(candidateKeys)})
+          ${linkTicketIds.length > 0 ? sql`OR t.id IN (${sqlList(linkTicketIds)})` : sql``}`)
       ));
     // Hold the same requester-reassignment lock as the subject-token path.
     const rows = sender
@@ -209,8 +257,8 @@ export async function findTicketInPartner(
       : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
-        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+      if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row, sender))) return null;
       return row;
     }
   }
@@ -225,7 +273,8 @@ export async function findTicketInPartner(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
-        or(inArray(tickets.internalNumber, tokens), inArray(tickets.ticketNumber, tokens))
+        // #8972: a merged source's token resolves to its survivor first.
+        resolvedThroughMerges(partnerId, sql`t.internal_number IN (${sqlList(tokens)}) OR t.ticket_number IN (${sqlList(tokens)})`)
       ));
     // Inbound sender authorization and the eventual append/reopen must
     // linearize with requester reassignment. The worker holds this transaction
@@ -237,8 +286,9 @@ export async function findTicketInPartner(
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
       // The token is enumerable, so when the caller is unauthenticated (a sender
-      // resolver is supplied) require proof that this sender belongs to the ticket.
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      // resolver is supplied) require proof that this sender belongs to the ticket
+      // (or to a ticket merged into it, whose token this may be).
+      if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))) return null;
       return row;
     }
   }
@@ -276,10 +326,12 @@ export async function findClosedTicketInPartner(
         // reply that has already matched (and appended to) a live continuation ALSO
         // re-match the closed original on every subsequent reply, which is exactly
         // the fork this function exists to prevent.
-        or(
-          inArray(tickets.emailThreadKey, candidateKeys),
-          ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
-        )
+        // #8972: resolved through merged_into_ticket_id first, and never a
+        // tombstone itself — a reply to a merged source continues from its
+        // (closed) survivor, or not at all when the survivor is live.
+        isNull(tickets.mergedIntoTicketId),
+        resolvedThroughMerges(partnerId, sql`t.email_thread_key IN (${sqlList(candidateKeys)})
+          ${linkTicketIds.length > 0 ? sql`OR t.id IN (${sqlList(linkTicketIds)})` : sql``}`)
       ));
     // Hold the same requester-reassignment lock as the subject-token path.
     const rows = sender
@@ -287,8 +339,8 @@ export async function findClosedTicketInPartner(
       : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
-        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+      if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row, sender))) return null;
       return row;
     }
   }
@@ -302,7 +354,8 @@ export async function findClosedTicketInPartner(
         eq(tickets.partnerId, partnerId),
         eq(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
-        or(inArray(tickets.internalNumber, tokens), inArray(tickets.ticketNumber, tokens))
+        isNull(tickets.mergedIntoTicketId),
+        resolvedThroughMerges(partnerId, sql`t.internal_number IN (${sqlList(tokens)}) OR t.ticket_number IN (${sqlList(tokens)})`)
       ));
     const rows = sender
       ? await query.for('update').limit(1)
@@ -311,7 +364,7 @@ export async function findClosedTicketInPartner(
     if (row) {
       // The token is enumerable, so when the caller is unauthenticated (a sender
       // resolver is supplied) require proof that this sender belongs to the ticket.
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))) return null;
       return row;
     }
   }

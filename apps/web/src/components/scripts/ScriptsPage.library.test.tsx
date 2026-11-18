@@ -27,6 +27,32 @@ const script = {
   createdAt: '2026-09-16T00:00:00Z', updatedAt: '2026-09-16T00:00:00Z', origin: 'human'
 };
 
+// #9563 — LAST RUN read `lastRun`, a field GET /scripts never returned, so
+// every row said "Never" even for scripts with completed runs. The API now
+// returns `lastRunAt`; this renders the real ScriptList (not mocked here).
+describe('ScriptsPage LAST RUN column', () => {
+  it('renders the latest run time from lastRunAt and "Never" for a script that never ran', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    state.scope = 'organization';
+    state.currentOrgId = 'org-a';
+    vi.mocked(fetchWithAuth).mockImplementation(async (input) => new Response(JSON.stringify({
+      data: String(input).startsWith('/scripts?')
+        ? [
+          { ...script, id: 'ran', name: 'Ran script', lastRunAt: twoHoursAgo },
+          { ...script, id: 'never', name: 'Never ran', lastRunAt: null },
+        ]
+        : [],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    render(<ScriptsPage />);
+
+    const ranRow = await screen.findByTestId('script-row-ran');
+    expect(ranRow).toHaveTextContent('2h ago');
+    expect(ranRow).not.toHaveTextContent('Never');
+    expect(screen.getByTestId('script-row-never')).toHaveTextContent('Never');
+  });
+});
+
 describe('ScriptsPage built-in provenance', () => {
   it('opens the existing library instead of filtering tenant scripts to an empty list', async () => {
     vi.mocked(fetchWithAuth).mockImplementation(async (input) => {

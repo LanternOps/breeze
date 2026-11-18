@@ -10,12 +10,12 @@ import {
   softwarePolicies,
   type SecurityAgentCoverageState,
   type SecurityAgentDeviceStatus,
-  type SoftwarePolicyViolation,
 } from '../../db/schema';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from '../softwarePolicyService';
 import {
   alertTransition,
   classifyOrgCoverage,
+  installViewFromComplianceRow,
   normalizeHostname,
   type CoverageAlertKind,
   type CoverageDecision,
@@ -29,7 +29,7 @@ import {
   SECURITY_AGENT_COVERAGE_ALERT_SOURCE,
   type CoverageAlertDeps,
 } from './coverageAlerts';
-import { vendorForIntegrationProvider, type VendorKey } from './securityAgentVendors';
+import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors';
 import { getVendorEndpointSource, loadPartnerDeviceHostnames } from './vendorEndpointSources';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
@@ -115,20 +115,31 @@ export async function reconcileOrgCoverage(
       .flatMap((rules) => (rules.software ?? []).map((rule) => rule.catalogId))
       .filter((id): id is string => typeof id === 'string' && id.length > 0)));
     const catalogs = catalogIds.length === 0 ? [] : await db
-      .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider })
+      .select({
+        id: softwareCatalog.id,
+        integrationProvider: softwareCatalog.integrationProvider,
+        builtinPackageKey: softwareCatalog.builtinPackageKey,
+      })
       .from(softwareCatalog)
       .where(inArray(softwareCatalog.id, catalogIds));
-    const vendorByCatalog = new Map(catalogs.map((c) => [c.id, vendorForIntegrationProvider(c.integrationProvider)] as const));
+    // EDR integration rows AND built-in (tenant-variable) rows: a DNS vendor's
+    // status rows must not read as "policy has no rule for this vendor" and be
+    // pruned every run.
+    const vendorByCatalog = new Map(catalogs.map((c) => [c.id, vendorForCatalogPackage(c)?.vendor ?? null] as const));
 
-    // policyId → vendor → catalogId, for active managed policies only.
-    const vendorCatalogByPolicy = new Map<string, Map<VendorKey, string>>();
+    // policyId → vendor → its rule catalogIds (several for a per-OS vendor),
+    // for active managed policies only.
+    const vendorCatalogByPolicy = new Map<string, Map<VendorKey, string[]>>();
     const armedByPolicy = new Map<string, boolean>();
     for (const policy of policies) {
       if (!policy.isActive || !policy.managedByLinkId) continue;
-      const byVendor = new Map<VendorKey, string>();
+      const byVendor = new Map<VendorKey, string[]>();
       for (const rule of rulesByPolicy.get(policy.id)?.software ?? []) {
         const vendor = rule.catalogId ? vendorByCatalog.get(rule.catalogId) : null;
-        if (vendor && rule.catalogId && !byVendor.has(vendor)) byVendor.set(vendor, rule.catalogId);
+        if (!vendor || !rule.catalogId) continue;
+        const ids = byVendor.get(vendor);
+        if (ids) ids.push(rule.catalogId);
+        else byVendor.set(vendor, [rule.catalogId]);
       }
       vendorCatalogByPolicy.set(policy.id, byVendor);
       armedByPolicy.set(policy.id, evaluateSoftwarePolicyArming(policy, 'install').armed);
@@ -170,15 +181,14 @@ export async function reconcileOrgCoverage(
       const inputs: DeviceCoverageInput[] = reconcilable.map((row) => {
         const info = deviceById.get(row.deviceId!)!;
         plan.deviceNames.set(info.id, info.displayName ?? info.hostname ?? null);
-        const catalogId = vendorCatalogByPolicy.get(row.policyId!)!.get(vendor)!;
+        const vendorCatalogIds = vendorCatalogByPolicy.get(row.policyId!)!.get(vendor)!;
         const status = complianceByKey.get(`${row.policyId}|${row.deviceId}`);
-        const missing = (status?.violations as SoftwarePolicyViolation[] | null | undefined)
-          ?.some((v) => v.type === 'missing' && v.rule?.catalogId === catalogId);
         return {
           deviceId: info.id,
           orgId: info.orgId,
           hostnames: [normalizeHostname(info.hostname), normalizeHostname(info.displayName)].filter((h): h is string => !!h),
-          install: !status ? 'unknown' : missing ? 'missing' : 'installed',
+          // A lone service_unverified is a telemetry gap, not an install (#6958 E).
+          install: installViewFromComplianceRow(status, vendorCatalogIds),
           installRemediationStatus: status?.installRemediationStatus ?? null,
           installArmed: armedByPolicy.get(row.policyId!) ?? false,
         };

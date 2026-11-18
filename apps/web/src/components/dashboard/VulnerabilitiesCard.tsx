@@ -4,6 +4,7 @@ import { getErrorMessage } from '@/lib/errorMessages';
 import { useTranslation } from 'react-i18next';
 import { formatNumber } from '@/lib/i18n/format';
 import { fleetPresence } from './fleetPresence';
+import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { DeviceStats, VulnerabilityStats } from './types';
 
@@ -44,9 +45,9 @@ export default function VulnerabilitiesCard({
   if (vulns.error && !vulns.data) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-vulnerabilities-card">
-        <a href="/vulnerabilities" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="vuln.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.vuln.title')}
-        </a>
+        </DashboardMetric>
         <p className="mt-3 text-xs text-muted-foreground">{getErrorMessage(vulns.error)}</p>
       </div>
     );
@@ -105,12 +106,14 @@ export default function VulnerabilitiesCard({
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-vulnerabilities-card">
       <div className="mb-3 flex items-center justify-between">
-        <a href="/vulnerabilities" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="vuln.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.vuln.title')}
-        </a>
+        </DashboardMetric>
         {!noFindings && (
           <span className="text-xs tabular-nums text-muted-foreground">
-            {t('dashboard.vuln.totalOpen', { count: data.totalFindings })}
+            <DashboardMetric metric="vuln.openFindings">
+              {t('dashboard.vuln.totalOpen', { count: data.openFindings })}
+            </DashboardMetric>
           </span>
         )}
       </div>
@@ -128,7 +131,7 @@ export default function VulnerabilitiesCard({
               {t('dashboard.vuln.criticalOpen')}
             </dt>
             <dd className={cn('text-sm font-semibold tabular-nums', data.criticalOpen > 0 && 'text-destructive')}>
-              {formatNumber(data.criticalOpen)}
+              <DashboardMetric metric="vuln.criticalOpen">{formatNumber(data.criticalOpen)}</DashboardMetric>
             </dd>
           </div>
 
@@ -141,9 +144,13 @@ export default function VulnerabilitiesCard({
               {t('dashboard.vuln.kev')}
             </dt>
             <dd className="text-sm tabular-nums text-muted-foreground">
-              {t('dashboard.vuln.kevCves', { count: data.kevCveCount })}
+              <DashboardMetric metric="vuln.kevCves">
+                {t('dashboard.vuln.kevCves', { count: data.kevCveCount })}
+              </DashboardMetric>
               {' · '}
-              {t('dashboard.vuln.kevDevices', { count: data.kevDeviceCount })}
+              <DashboardMetric metric="vuln.kevDevices">
+                {t('dashboard.vuln.kevDevices', { count: data.kevDeviceCount })}
+              </DashboardMetric>
             </dd>
           </div>
 
@@ -152,9 +159,25 @@ export default function VulnerabilitiesCard({
               <span className="h-2 w-2 rounded-full bg-success" aria-hidden="true" />
               {t('dashboard.vuln.patchReady')}
             </dt>
-            <dd className="text-sm font-semibold tabular-nums">{formatNumber(data.patchReadyFindingCount)}</dd>
+            <dd className="text-sm font-semibold tabular-nums">
+              <DashboardMetric metric="vuln.patchReady">{formatNumber(data.patchReadyFindingCount)}</DashboardMetric>
+            </dd>
           </div>
         </dl>
+      )}
+
+      {!noFindings && (data.openFindings > 0 || data.criticalOpen > 0 || data.patchReadyFindingCount > 0) && (
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+          {data.openFindings > 0 && (
+            <DashboardMetric metric="vuln.viewOpen">{t('dashboard.vuln.viewOpen')}</DashboardMetric>
+          )}
+          {data.criticalOpen > 0 && (
+            <DashboardMetric metric="vuln.viewCritical">{t('dashboard.vuln.viewCritical')}</DashboardMetric>
+          )}
+          {data.patchReadyFindingCount > 0 && (
+            <DashboardMetric metric="vuln.viewPatchReady">{t('dashboard.vuln.viewPatchReady')}</DashboardMetric>
+          )}
+        </div>
       )}
     </div>
   );

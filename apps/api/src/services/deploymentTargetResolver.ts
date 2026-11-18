@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DeploymentTargetConfig as SharedDeploymentTargetConfig, FilterConditionGroup } from '@breeze/shared';
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import { deviceGroupMemberships, deviceGroups, devices } from '../db/schema';
 import { evaluateFilter } from './filterEngine';
 import {
@@ -65,9 +66,13 @@ export async function resolveDeploymentTargetsWithWarnings(
       const requestedIds = targetConfig.groupIds ?? [];
       if (requestedIds.length === 0) return { deviceIds: [], warnings: [] };
 
-      const { allowedGroupIds, refusedGroups } = await filterOutExecutionRefusedGroups(orgId, requestedIds);
+      const partnerGroupIds = await findPartnerOwnedGroupIds(requestedIds);
+      const partnerGroupWarnings = partnerGroupIds.length > 0 ? [partnerGroupTargetRefusal(partnerGroupIds).error] : [];
+      const orgGroupIds = requestedIds.filter((id) => !partnerGroupIds.includes(id));
+      if (orgGroupIds.length === 0) return { deviceIds: [], warnings: partnerGroupWarnings };
+      const { allowedGroupIds, refusedGroups } = await filterOutExecutionRefusedGroups(orgId, orgGroupIds);
       if (allowedGroupIds.length === 0) {
-        return { deviceIds: [], warnings: warningsForRefusedExecutionGroups(refusedGroups) };
+        return { deviceIds: [], warnings: [...partnerGroupWarnings, ...warningsForRefusedExecutionGroups(refusedGroups)] };
       }
 
       const rows = await db
@@ -85,7 +90,7 @@ export async function resolveDeploymentTargetsWithWarnings(
 
       return {
         deviceIds: [...new Set(rows.map((row) => row.deviceId))],
-        warnings: warningsForRefusedExecutionGroups(refusedGroups),
+        warnings: [...partnerGroupWarnings, ...warningsForRefusedExecutionGroups(refusedGroups)],
       };
     }
 

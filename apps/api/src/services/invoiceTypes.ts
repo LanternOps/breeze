@@ -29,7 +29,14 @@ export type InvoiceServiceErrorCode =
   // 503 from a transition (reset/pay/void), 409 from a producer that was
   // asked to mint another session while the revocation is in flight.
   | 'STRIPE_REVOCATION_PENDING'
+  /** 409 — #3803 item 8: a Checkout producer refused a balance the invoice
+   *  currency cannot express (legacy zero-decimal rows such as JPY '1000.50').
+   *  Any Stripe amount would over-charge or strand a residue; recordPayment
+   *  accepts only the exact payoff against it. */
+  | 'BALANCE_NOT_REPRESENTABLE'
   | 'PARTNER_UNRESOLVABLE'
+  // Partner billing master switch is off (services/billingEnabled.ts).
+  | 'BILLING_DISABLED'
   | 'ORG_DENIED'
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
@@ -79,6 +86,10 @@ export type InvoiceServiceErrorCode =
   | 'SOURCE_ALREADY_BILLED'
   /** 409 — #4617: a draft's source time is now held for customer approval; it cannot be invoiced until released. */
   | 'SOURCE_AWAITING_APPROVAL'
+  /** 409 — #8970: a draft's time entry is held for a block of hours (inside a
+   *  hold window, contractHourBlockHolds.ts); the period close bills it, so the
+   *  draft cannot bill it hourly. Carries `details.heldEntryIds`. */
+  | 'SOURCE_HELD_FOR_HOUR_BLOCK'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
   // org) when re-validated under lock at issue time.
   | 'SOURCE_NOT_FOUND'
@@ -86,6 +97,9 @@ export type InvoiceServiceErrorCode =
   // unexpected row count — impossible while the locks are held, so a 500.
   | 'CONCURRENT_MODIFICATION'
   | 'OVERPAYMENT'
+  // #3803: a manual payment's idempotency key already names a DIFFERENT
+  // payment on this invoice (409; the identical retry is answered as a replay).
+  | 'IDEMPOTENCY_KEY_REUSED'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
   | 'COLLECTION_IN_PROGRESS'

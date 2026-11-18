@@ -23,6 +23,7 @@ vi.mock('../middleware/auth', () => ({
 // services/permissions imports ../db; keep the pool out of the unit run.
 vi.mock('../db', () => ({ db: { select: vi.fn(), selectDistinct: vi.fn() } }));
 vi.mock('../services/serviceManagement', () => ({ getServiceManagementMode: vi.fn() }));
+vi.mock('../services/billingEnabled', () => ({ isBillingEnabledForPartner: vi.fn().mockResolvedValue(true) }));
 // W01's resolution and base aggregates are not under test here.
 vi.mock('../services/orgAccountReadiness', () => ({ resolveAcceptedOrgs: vi.fn(), loadAccountReadiness: vi.fn() }));
 // The W03 loaders are mocked at their modules; the extras composer runs for real.
@@ -33,6 +34,7 @@ vi.mock('../services/orgAccountReadinessIntegrations', async (importOriginal) =>
 vi.mock('../services/orgAccountReadinessCommercial', () => ({ loadActiveContractCounts: vi.fn(), loadBackupReadiness: vi.fn() }));
 
 import { getServiceManagementMode } from '../services/serviceManagement';
+import { isBillingEnabledForPartner } from '../services/billingEnabled';
 import { loadAccountReadiness, resolveAcceptedOrgs } from '../services/orgAccountReadiness';
 import { loadIntegrationReadiness } from '../services/orgAccountReadinessIntegrations';
 import { loadActiveContractCounts, loadBackupReadiness } from '../services/orgAccountReadinessCommercial';
@@ -104,20 +106,25 @@ describe('GET /orgs/account-readiness — W03 gates', () => {
     expect(loadIntegrationReadiness).toHaveBeenCalledWith(expect.objectContaining({ grants: { accounting: true, pax8: true } }));
   });
 
-  it('contracts: needs contracts:read AND native mode', async () => {
+  it('contracts: needs contracts:read AND billing_enabled (not the service-management mode)', async () => {
     let body = await call([...BASE_GRANTS, PERMISSIONS.CONTRACTS_READ]);
     expect(body.capabilities.contracts).toBe(true);
     expect(body.orgs[0].account.activeContracts).toBe(2);
 
     vi.mocked(getServiceManagementMode).mockResolvedValue('external');
     body = await call([...BASE_GRANTS, PERMISSIONS.CONTRACTS_READ]);
+    expect(body.capabilities.contracts).toBe(true);
+
+    vi.mocked(isBillingEnabledForPartner).mockResolvedValue(false);
+    body = await call([...BASE_GRANTS, PERMISSIONS.CONTRACTS_READ]);
     expect(body.capabilities.contracts).toBe(false);
     expect(body.orgs[0].account).not.toHaveProperty('activeContracts');
+    vi.mocked(isBillingEnabledForPartner).mockResolvedValue(true);
 
     vi.mocked(getServiceManagementMode).mockResolvedValue('native');
     body = await call(BASE_GRANTS);
     expect(body.capabilities.contracts).toBe(false);
-    expect(loadActiveContractCounts).toHaveBeenCalledTimes(1);
+    expect(loadActiveContractCounts).toHaveBeenCalledTimes(2);
   });
 
   it('backup: needs backup:read; both booleans land on setup', async () => {

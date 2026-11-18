@@ -16,6 +16,13 @@ import DeviceDrawer from "./DeviceDrawer";
 import { navigateTo } from "@/lib/navigation";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { ActionError, runAction } from "@/lib/runAction";
+import {
+  competitorList,
+  SOFTWARE_POLICY_WOULD_NOT_APPLY,
+  wouldNotApplyMessage,
+  type SoftwarePolicyCompetitor,
+} from "./softwarePolicyCompetitors";
 type VersionInfo = {
   version: string;
   count: number;
@@ -142,50 +149,58 @@ export default function SoftwareInventory({
     }
     setOffset(0);
   };
-  const handleApprove = async (name: string, vendor: string | null) => {
+  // Approve / Deny add the title to the org's Default Allowlist / Blocklist.
+  // #9635: the API refuses (409 SOFTWARE_POLICY_WOULD_NOT_APPLY) when that
+  // list would govern no device because another software policy wins them;
+  // runAction toasts the refusal, naming the winner. On success it may report
+  // policies the new default now takes precedence over.
+  const writeDefaultList = async (
+    action: "approve" | "deny",
+    name: string,
+    vendor: string | null,
+  ) => {
+    const listName = action === "approve" ? "Default Allowlist" : "Default Blocklist";
+    const failed =
+      action === "approve"
+        ? i18n.t("policies:software.softwareInventory.failedToApprove")
+        : i18n.t("policies:software.softwareInventory.failedToDeny");
     try {
-      const res = await fetchWithAuth("/software-inventory/approve", {
-        method: "POST",
-        body: JSON.stringify({
-          softwareName: name,
-          vendor: vendor || undefined,
-        }),
+      const result = await runAction<{ overrides?: SoftwarePolicyCompetitor[] }>({
+        request: () =>
+          fetchWithAuth(`/software-inventory/${action}`, {
+            method: "POST",
+            body: JSON.stringify({
+              softwareName: name,
+              vendor: vendor || undefined,
+            }),
+          }),
+        errorFallback: failed,
+        successMessage:
+          action === "approve"
+            ? `"${name}" added to allowlist`
+            : `"${name}" added to blocklist`,
+        friendly: (code, _message, body) =>
+          code === SOFTWARE_POLICY_WOULD_NOT_APPLY ? wouldNotApplyMessage(body) : undefined,
       });
-      if (!res.ok)
-        throw new Error(
-          i18n.t("policies:software.softwareInventory.failedToApprove"),
-        );
-      showToast({ type: "success", message: `"${name}" added to allowlist` });
+      if (result?.overrides && result.overrides.length > 0) {
+        showToast({
+          type: "warning",
+          message: i18n.t("policies:software.softwareInventory.nowOverridesPolicies", {
+            policy: listName,
+            names: competitorList(result.overrides),
+          }),
+        });
+      }
       await fetchData();
     } catch (err) {
-      showToast({
-        type: "error",
-        message: err instanceof Error ? err.message : "Failed to approve",
-      });
+      if (err instanceof ActionError) return; // runAction already toasted
+      showToast({ type: "error", message: err instanceof Error ? err.message : failed });
     }
   };
-  const handleDeny = async (name: string, vendor: string | null) => {
-    try {
-      const res = await fetchWithAuth("/software-inventory/deny", {
-        method: "POST",
-        body: JSON.stringify({
-          softwareName: name,
-          vendor: vendor || undefined,
-        }),
-      });
-      if (!res.ok)
-        throw new Error(
-          i18n.t("policies:software.softwareInventory.failedToDeny"),
-        );
-      showToast({ type: "success", message: `"${name}" added to blocklist` });
-      await fetchData();
-    } catch (err) {
-      showToast({
-        type: "error",
-        message: err instanceof Error ? err.message : "Failed to deny",
-      });
-    }
-  };
+  const handleApprove = (name: string, vendor: string | null) =>
+    writeDefaultList("approve", name, vendor);
+  const handleDeny = (name: string, vendor: string | null) =>
+    writeDefaultList("deny", name, vendor);
   const handleClear = async (name: string, vendor: string | null) => {
     try {
       const res = await fetchWithAuth("/software-inventory/clear", {
@@ -409,6 +424,7 @@ export default function SoftwareInventory({
                         <div className="relative flex justify-end">
                           <button
                             type="button"
+                            data-testid={`software-inventory-actions-${row.name}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               setActionMenu(
@@ -438,6 +454,7 @@ export default function SoftwareInventory({
                             >
                               <button
                                 type="button"
+                                data-testid="software-inventory-approve"
                                 onClick={() => {
                                   setActionMenu(null);
                                   handleApprove(row.name, row.vendor);
@@ -451,6 +468,7 @@ export default function SoftwareInventory({
                               </button>
                               <button
                                 type="button"
+                                data-testid="software-inventory-deny"
                                 onClick={() => {
                                   setActionMenu(null);
                                   handleDeny(row.name, row.vendor);

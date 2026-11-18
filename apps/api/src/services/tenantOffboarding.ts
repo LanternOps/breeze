@@ -47,7 +47,7 @@ import { getEmailService } from './email';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { escapeHtml, renderLayout } from './emailLayout';
 
-import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+import { cancelDeviceCommands } from './commandCancelPropagation';
 /**
  * Offboarding drain state (#2774).
  *
@@ -382,22 +382,19 @@ async function queueDrainUninstalls(
       return { devicesTargeted: 0, uninstallsQueued: 0, otherCommandsCancelled: 0 };
     }
 
-    const cancelled = await tx
-      .update(deviceCommands)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        result: { reason: UNINSTALL_REASON_TENANT_OFFBOARDING },
-        ...terminalPayloadErasureSet(),
-      })
-      .where(
-        and(
-          inArray(deviceCommands.deviceId, deviceIds),
-          ne(deviceCommands.type, 'self_uninstall'),
-          inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
-        )
-      )
-      .returning({ id: deviceCommands.id });
+    // Shared helper (#9719): UPDATE + per-type cancellation hooks, in this tx.
+    const cancelled = await cancelDeviceCommands({
+      executor: tx,
+      // A hook failure must not roll back the surrounding writes; it is
+      // isolated per command (savepoint), logged and sent to Sentry.
+      isolateFailures: true,
+            result: { reason: UNINSTALL_REASON_TENANT_OFFBOARDING },
+      where: and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        ne(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+      )!,
+    });
 
     const existing = await tx
       .select({
@@ -602,14 +599,9 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
     .map((row) => row.id);
   if (toCancelIds.length === 0) return 0;
 
-  const cancelled = await db
-    .update(deviceCommands)
-    .set({
-      status: 'cancelled',
-      completedAt: new Date(),
-      result: { reason },
-      ...terminalPayloadErasureSet(),
-    })
+  // Shared helper (#9719): UPDATE + per-type cancellation hooks.
+  const cancelled = await cancelDeviceCommands({
+    result: { reason },
     // Re-check status IN (pending, sent), matching the strip step above and
     // collectAndCancelOutstanding's cancel step below — defense-in-depth
     // symmetry. Not currently exploitable (the strip and this cancel run
@@ -619,13 +611,11 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
     // were exactly "a row's state moved between two writes that used to be
     // one." A future refactor that splits strip/cancel apart for batching
     // must not silently reopen that class of bug on this path only.
-    .where(
-      and(
-        inArray(deviceCommands.id, toCancelIds),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
-      )
-    )
-    .returning({ id: deviceCommands.id });
+    where: and(
+      inArray(deviceCommands.id, toCancelIds),
+      inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+    )!,
+  });
   return cancelled.length;
 }
 
@@ -1070,24 +1060,17 @@ async function collectAndCancelOutstanding(
       .map((row) => row.id);
 
     if (toCancelIds.length > 0) {
-      await db
-        .update(deviceCommands)
-        .set({
+      await cancelDeviceCommands({
+        result: {
           status: 'cancelled',
-          completedAt: new Date(),
-          result: {
-            status: 'cancelled',
-            reason: 'offboarding_window_closed',
-            error: 'Offboarding drain window closed: agent never confirmed the uninstall',
-          },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(
-          and(
-            inArray(deviceCommands.id, toCancelIds),
-            inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
-          )
-        );
+          reason: 'offboarding_window_closed',
+          error: 'Offboarding drain window closed: agent never confirmed the uninstall',
+        },
+        where: and(
+          inArray(deviceCommands.id, toCancelIds),
+          inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+        )!,
+      });
     }
   }
 

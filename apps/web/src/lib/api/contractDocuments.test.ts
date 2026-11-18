@@ -34,19 +34,26 @@ describe('listContractDocuments query building', () => {
 
   // The path is asserted here because the e2e PDF regex keys off it
   // (quote-contract-proposal.spec.ts:332) — renaming it silently reddens e2e only.
-  it('builds the PDF path under the unchanged contracts mount', () => {
-    expect(contractDocumentPdfPath('doc-1')).toBe('/contracts/contract-documents/doc-1/pdf');
+  it('builds the PDF path under the unchanged contracts mount, certified by default', () => {
+    expect(contractDocumentPdfPath('doc-1')).toBe('/contracts/contract-documents/doc-1/pdf?copy=certified');
+    expect(contractDocumentPdfPath('doc-1', 'original')).toBe('/contracts/contract-documents/doc-1/pdf?copy=original');
   });
 });
 
-describe('signedAgreementFilename (#8865 W1c)', () => {
-  it('names the download by the stored MIME, matching the API Content-Disposition', () => {
+describe('signedAgreementFilename (#9075 W2c)', () => {
+  it('names the certified copy as a PDF whatever the stored MIME', () => {
     expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/pdf' })).toBe('signed-agreement-doc-1.pdf');
-    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/png' })).toBe('signed-agreement-doc-1.png');
-    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/jpeg' })).toBe('signed-agreement-doc-1.jpg');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/png' })).toBe('signed-agreement-doc-1.pdf');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/png' }, 'certified')).toBe('signed-agreement-doc-1.pdf');
   });
 
-  it('falls back to .pdf for an unknown MIME', () => {
-    expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/octet-stream' })).toBe('signed-agreement-doc-1.pdf');
+  it('names the original copy by the stored MIME, matching the API Content-Disposition', () => {
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/pdf' }, 'original')).toBe('signed-agreement-doc-1-original.pdf');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/png' }, 'original')).toBe('signed-agreement-doc-1-original.png');
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'image/jpeg' }, 'original')).toBe('signed-agreement-doc-1-original.jpg');
+  });
+
+  it('falls back to .pdf for an unknown MIME on the original copy', () => {
+    expect(signedAgreementFilename({ id: 'doc-1', mime: 'application/octet-stream' }, 'original')).toBe('signed-agreement-doc-1-original.pdf');
   });
 });

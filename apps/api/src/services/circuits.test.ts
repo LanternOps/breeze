@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../db', () => ({ db: {} }));
+const dbMock = vi.hoisted(() => ({ whereArg: undefined as unknown, select: vi.fn() }));
+vi.mock('../db', () => ({ db: dbMock }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   CircuitError,
+  getCircuitDtosByIds,
   canSeeCircuit,
   circuitBodySchema,
   circuitDeleteSiteIds,
@@ -169,5 +172,17 @@ describe('circuit write sites (spec 7.2)', () => {
   it('requires the primary plus every served site to delete', () => {
     expect(circuitDeleteSiteIds(assigned(SITE_A, [SITE_B, SITE_C]))).toEqual([SITE_A, SITE_B, SITE_C]);
     expect(circuitDeleteSiteIds(dto())).toEqual([]);
+  });
+});
+
+describe('getCircuitDtosByIds', () => {
+  it('always applies the explicit org filter in the where clause', async () => {
+    dbMock.select.mockReturnValue({
+      from: () => ({ where: (w: unknown) => { dbMock.whereArg = w; return Promise.resolve([]); } }),
+    });
+    await getCircuitDtosByIds(['c1'], 'org-xyz');
+    const q = new PgDialect().sqlToQuery(dbMock.whereArg as never);
+    expect(q.sql).toContain('"org_id"');
+    expect(q.params).toContain('org-xyz');
   });
 });

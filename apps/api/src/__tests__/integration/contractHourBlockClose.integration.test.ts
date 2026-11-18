@@ -61,7 +61,10 @@ describe('closeHourBlockPeriods (real DB) #8181', () => {
     expect(r.closes[0]).toMatchObject({ consumedHours: 12.33, overageHours: 2.33 });
     expect(r.lines).toHaveLength(1);
     expect(r.lines[0]).toMatchObject({
-      description: 'Support hours — hours over block, 2026-07-01 – 2026-08-01',
+      // #9664: the period marker rides on the line's Name (title); a one-line
+      // block text leaves no blurb for the description.
+      name: 'Support hours — hours over block, 2026-07-01 – 2026-08-01',
+      description: null,
       quantity: '2.33', unitPrice: '150.00', lineTotal: '349.50',
       sourceType: 'contract', sourceId: f.blockLineId, sourceContractId: f.contractId,
       parentLineId: null, catalogItemId: null, taxable: true,

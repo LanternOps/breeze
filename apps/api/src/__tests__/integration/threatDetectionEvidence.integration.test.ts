@@ -23,13 +23,13 @@ import './setup';
 import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   devices, huntressAgents, huntressIncidents, huntressIntegrations, portalBranding,
-  reportRuns, reports, serviceDeliverableEvidence, serviceDeliverableOccurrences,
-  serviceDeliverables,
+  reportRuns, reports, s1Agents, s1Integrations, serviceDeliverableEvidence,
+  serviceDeliverableOccurrences, serviceDeliverables,
 } from '../../db/schema';
 import {
   assignUserToPartner, createOrganization, createPartner, createRole, createSite, createUser,
@@ -52,7 +52,13 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MANAGED_TYPE = 'threat_detection_review' as const;
 const DUE = '2026-10-31';
-const AS_OF = new Date('2026-10-31T05:18:00Z');
+// Every fixture in this file is pinned to October 2026, and the auto-evidence
+// path stamps `generatedAt` from the wall clock (`new Date()` in
+// deliverableAutoEvidence.ts), which also drives the 48h stale-sync check in
+// threatDetectionReport.ts. Pin `Date` to the due day so the suite reads the
+// same way on 2026-10-31 as it does years later; timers stay real so pg/redis
+// are untouched.
+const AS_OF = new Date(`${DUE}T05:18:00Z`);
 const system = <T>(fn: () => Promise<T>, label = 'threatDetectionEvidence.integration') =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
@@ -140,11 +146,32 @@ async function applyMonthlyTemplate(t: Tenant, orgIds: string[]): Promise<void> 
   }
 }
 
+const OCTOBER = {
+  periodStart: '2026-10-01',
+  periodEnd: '2026-10-31',
+  generatedAt: '2026-10-31T05:18:00.000Z',
+  deliverableId: randomUUID(),
+};
+
+function unrestrictedAuthority(t: Tenant) {
+  const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId: t.orgId };
+  return {
+    principalKind: 'user' as const,
+    principalUserId: t.techId,
+    scope,
+    capturedAt: new Date('2026-10-31T05:18:00Z'),
+    fingerprint: siteScopeFingerprint(scope),
+  };
+}
+
 function summaryOfRun(row: { result: unknown }): ThreatDetectionSummary {
   return (row.result as { summary: ThreatDetectionSummary }).summary;
 }
 
 describe('threat detection review evidence on real Postgres (#5784 W02)', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'], now: AS_OF }); });
+  afterEach(() => { vi.useRealTimers(); });
+
   runDb('1. a partner-wide template produces one artifact per org, against that org’s own definition', async () => {
     const t = await seedTenant();
     const integrationId = await seedIntegration(t.partnerId, new Date('2026-10-31T05:00:00Z'));
@@ -179,6 +206,11 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
       const summary = summaryOfRun(runs[0]!);
       expect(summary.incidents?.opened).toBe(1);
       expect(summary.agentCoverage?.huntressAgents).toBe(1);
+      // #12046: device coverage reconciles (the SentinelOne and EDR coverage
+      // queries ran against real Postgres and found nothing extra).
+      expect(summary.agentCoverage).toMatchObject({
+        breezeDevices: 1, devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 0, unmatchedAgents: 0,
+      });
       // The raw details jsonb never reaches the artifact.
       expect(JSON.stringify(runs[0]!.result)).not.toContain('do-not-render');
 
@@ -240,7 +272,9 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
 
     expect(summary.coverage?.periodStart).toBe(occ!.periodStart);
     expect(summary.coverage?.periodEnd).toBe(occ!.periodEnd);
-    // Generation happens ON the due day, so it precedes the end of the period.
+    // Generation happens ON the due day (the pinned clock), so it precedes the
+    // end of the period — and it is the clock, not the period, that produced it.
+    expect(summary.coverage?.generatedAt).toBe(AS_OF.toISOString());
     expect(Date.parse(summary.coverage!.generatedAt!))
       .toBeLessThan(Date.parse(`${occ!.periodEnd}T23:59:59.999Z`));
     // Only the in-period incident is counted, and the earliest held row is
@@ -303,6 +337,105 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
     expect(summary.coverage?.unattributableExcluded).toBe(2);
     expect(summary.dataGaps?.join(' ')).toMatch(/could not be attributed/i);
     expect(summary.dataGaps?.join(' ')).toMatch(/2/);
+  });
+
+  // #12046 follow-ups. Both run under SYSTEM scope on purpose: RLS is not in
+  // play there, so the only thing keeping another org's rows out is the
+  // report's own org and site predicates — the predicates these cases test.
+  runDb('6. a SentinelOne-only device counts as covered, and another org’s rows are excluded', async () => {
+    const t = await seedTenant();
+    const integrationId = await seedIntegration(t.partnerId, new Date('2026-10-31T05:00:00Z'));
+    const [s1] = await getTestDb().insert(s1Integrations).values({
+      partnerId: t.partnerId, name: 'S1', apiTokenEncrypted: 'enc', managementUrl: 'https://s1.example.invalid',
+    }).returning({ id: s1Integrations.id });
+
+    const huntressOnly = await seedDevice(t.orgId, 'td6-huntress');
+    const s1Only = await seedDevice(t.orgId, 'td6-sentinelone');
+    await seedDevice(t.orgId, 'td6-unprotected');
+    await getTestDb().insert(huntressAgents).values({
+      orgId: t.orgId, integrationId, huntressAgentId: `ha-${randomUUID().slice(0, 12)}`,
+      deviceId: huntressOnly, hostname: 'td6-huntress', status: 'online',
+    });
+    await getTestDb().insert(s1Agents).values({
+      orgId: t.orgId, integrationId: s1!.id, s1AgentId: `s1-${randomUUID().slice(0, 12)}`, deviceId: s1Only,
+    });
+    await seedIncident(t.orgId, integrationId, huntressOnly, { title: 'Own org detection' });
+
+    // The other org under the same partner: a device with every kind of
+    // agent, an unmatched Huntress agent, an offline one, and its own
+    // detections. None of it may reach this org's report.
+    const otherDevice = await seedDevice(t.otherOrgId, 'td6-other-org');
+    await getTestDb().insert(huntressAgents).values([
+      { orgId: t.otherOrgId, integrationId, huntressAgentId: `ha-${randomUUID().slice(0, 12)}`, deviceId: otherDevice, hostname: 'td6-other-org', status: 'online' },
+      { orgId: t.otherOrgId, integrationId, huntressAgentId: `ha-${randomUUID().slice(0, 12)}`, deviceId: null, hostname: 'td6-other-unmatched', status: 'offline' },
+    ]);
+    await getTestDb().insert(s1Agents).values({
+      orgId: t.otherOrgId, integrationId: s1!.id, s1AgentId: `s1-${randomUUID().slice(0, 12)}`, deviceId: otherDevice,
+    });
+    await seedIncident(t.otherOrgId, integrationId, otherDevice, { title: 'Other org detection' });
+    await seedIncident(t.otherOrgId, integrationId, null, { title: 'Other org unattributed' });
+    await seedIncident(t.otherOrgId, integrationId, otherDevice, {
+      title: 'Other org carried in', reportedAt: new Date('2026-08-01T00:00:00Z'),
+    });
+
+    const res = await system(() => generateThreatDetectionReport(
+      t.orgId, {}, unrestrictedAuthority(t), OCTOBER,
+    ));
+    const summary = res.summary as unknown as ThreatDetectionSummary;
+
+    expect(summary.agentCoverage).toMatchObject({
+      breezeDevices: 3,
+      huntressAgents: 1,
+      agentsOffline: 0,
+      // Huntress-only, kept for legacy readers: the SentinelOne device has none.
+      devicesWithoutAgent: 2,
+      // The SentinelOne-only device is covered; the unprotected one is not.
+      devicesWithDetectionAgent: 2,
+      devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['huntress', 'sentinelone'],
+      unmatchedAgents: 0,
+    });
+    expect(summary.incidents?.opened).toBe(1);
+    expect(summary.incidents?.carriedIn).toBe(0);
+    expect(summary.coverage?.unattributableExcluded).toBe(0);
+    const text = JSON.stringify(summary);
+    expect(text).toContain('Own org detection');
+    expect(text).not.toContain('Other org');
+    expect(text).not.toContain('td6-other');
+  });
+
+  runDb('7. SentinelOne with no Huntress connection fills the device tiles, labelled as SentinelOne-only', async () => {
+    const t = await seedTenant();
+    const [s1] = await getTestDb().insert(s1Integrations).values({
+      partnerId: t.partnerId, name: 'S1', apiTokenEncrypted: 'enc', managementUrl: 'https://s1.example.invalid',
+    }).returning({ id: s1Integrations.id });
+    const covered = await seedDevice(t.orgId, 'td7-sentinelone');
+    await seedDevice(t.orgId, 'td7-unprotected');
+    await getTestDb().insert(s1Agents).values({
+      orgId: t.orgId, integrationId: s1!.id, s1AgentId: `s1-${randomUUID().slice(0, 12)}`, deviceId: covered,
+    });
+    // Another org's SentinelOne device must not count here either.
+    const otherDevice = await seedDevice(t.otherOrgId, 'td7-other-org');
+    await getTestDb().insert(s1Agents).values({
+      orgId: t.otherOrgId, integrationId: s1!.id, s1AgentId: `s1-${randomUUID().slice(0, 12)}`, deviceId: otherDevice,
+    });
+
+    const res = await system(() => generateThreatDetectionReport(
+      t.orgId, {}, unrestrictedAuthority(t), OCTOBER,
+    ));
+    const summary = res.summary as unknown as ThreatDetectionSummary;
+
+    expect(summary.coverage?.sourceStatus).toBe('not_connected');
+    // Huntress was not measured: its counts stay null, never zero.
+    expect(summary.incidents?.opened).toBeNull();
+    expect(summary.agentCoverage?.huntressAgents).toBeNull();
+    expect(summary.agentCoverage?.agentsOffline).toBeNull();
+    expect(summary.agentCoverage).toMatchObject({
+      breezeDevices: 2,
+      devicesWithDetectionAgent: 1,
+      devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['sentinelone'],
+    });
   });
 
   runDb('4. OD-12: invisible until delivered, then rendered through the threat detection PDF arm', async () => {

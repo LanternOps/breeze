@@ -15,7 +15,15 @@ import (
 // caller used to get a bare context.DeadlineExceeded — indistinguishable from
 // a dead network. The server's answer must survive in the error chain, and
 // the context error must stay matchable for existing callers.
+//
+// W09 (#8148): with loop-level Retry-After on (the default) Do now returns the
+// answer at once instead of sleeping into the deadline
+// (TestDoReturnsRetryAtWhenHintOutlivesContext). This test pins the D10
+// off-switch path, which keeps the #8934 behaviour exactly.
 func TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter(t *testing.T) {
+	SetLoopRetryAfter(false)
+	t.Cleanup(func() { SetLoopRetryAfter(true) })
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -40,6 +48,11 @@ func TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter(t *testing.T) {
 	}
 	if rse.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("StatusCode = %d, want 503", rse.StatusCode)
+	}
+	// #9517: the hint survives the interrupted sleep, so a caller that
+	// retries on its own schedule can still wait as long as asked.
+	if rse.RetryAfter != 30*time.Second {
+		t.Fatalf("RetryAfter = %s, want 30s", rse.RetryAfter)
 	}
 }
 

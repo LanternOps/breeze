@@ -32,6 +32,10 @@ describe('parsePublishedPort', () => {
     expect(parsePublishedPort('0.0.0.0:54321\n')).toBe(54321);
   });
 
+  it('parses a loopback-bound port', () => {
+    expect(parsePublishedPort('127.0.0.1:54321\n')).toBe(54321);
+  });
+
   it('parses the IPv6 form, including when docker emits it first', () => {
     expect(parsePublishedPort('[::]:54321\n')).toBe(54321);
     expect(parsePublishedPort('[::]:54321\n0.0.0.0:54321\n')).toBe(54321);

@@ -96,9 +96,14 @@ dashboardRoutes.get(
     const defaultAccounts = parsedAdmins.reduce((sum, admin) => sum + admin.issueCounts.defaultAccounts, 0);
     const weakAccounts = parsedAdmins.reduce((sum, admin) => sum + admin.issueCounts.weakPasswords, 0);
 
-    const encryptedStatuses = statuses.filter((status) => status.encryptionStatus !== 'unencrypted');
-    const bitlockerEnabled = encryptedStatuses.filter((status) => status.os === 'windows').length;
-    const filevaultEnabled = encryptedStatuses.filter((status) => status.os === 'macos').length;
+    // "Enabled" means fully encrypted (#9643); partially encrypted machines are
+    // reported separately instead of inflating the enabled count.
+    const countEncryption = (os: string, state: 'encrypted' | 'partial') =>
+      statuses.filter((status) => status.os === os && status.encryptionStatus === state).length;
+    const bitlockerEnabled = countEncryption('windows', 'encrypted');
+    const bitlockerPartial = countEncryption('windows', 'partial');
+    const filevaultEnabled = countEncryption('macos', 'encrypted');
+    const filevaultPartial = countEncryption('macos', 'partial');
 
     const chartTrend = trendPoints.map((point) => ({
       timestamp: String(point.timestamp),
@@ -151,7 +156,9 @@ dashboardRoutes.get(
         firewallDisabled: fw.off,
         encryption: {
           bitlockerEnabled,
+          bitlockerPartial,
           filevaultEnabled,
+          filevaultPartial,
           total: statuses.length
         },
         passwordPolicyCompliance,
@@ -189,9 +196,13 @@ dashboardRoutes.get(
   '/score-breakdown',
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'read'),
+  zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const scope = resolveScopedOrgIds(auth);
+    // ?orgId= is the header org switcher's selection (#9639); it can only
+    // narrow within the caller's accessible orgs (403 otherwise).
+    const { orgId } = c.req.valid('query');
+    const scope = resolveScopedOrgIds(auth, orgId);
     if (scope.error) {
       return c.json({ error: scope.error.message }, scope.error.status);
     }

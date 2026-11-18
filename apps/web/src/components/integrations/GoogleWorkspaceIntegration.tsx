@@ -14,6 +14,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 type Connection = {
   connected: boolean;
@@ -174,21 +175,13 @@ export default function GoogleWorkspaceIntegration() {
   if (notEnabled) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Users className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold">
-              {t("googleWorkspaceIntegration.googleWorkspace")}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              {t(
-                "googleWorkspaceIntegration.connectAWorkspaceDomainSoTheAIAssistant",
-              )}
-            </p>
-          </div>
-        </div>
+        <IntegrationPanelHeader
+          icon={<Users className="h-4 w-4" />}
+          title={t("googleWorkspaceIntegration.googleWorkspace")}
+          description={t(
+            "googleWorkspaceIntegration.connectAWorkspaceDomainSoTheAIAssistant",
+          )}
+        />
         <div
           className="rounded-lg border bg-card p-6 text-sm text-muted-foreground"
           data-testid="google-workspace-not-enabled"
@@ -215,33 +208,27 @@ export default function GoogleWorkspaceIntegration() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Users className="h-5 w-5" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("googleWorkspaceIntegration.googleWorkspace")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "googleWorkspaceIntegration.connectAWorkspaceDomainSoTheAIAssistant2",
-            )}
-          </p>
-        </div>
-        {isConnected ? (
-          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
-            <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
-          </span>
-        ) : (
-          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-            <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
-          </span>
+      <IntegrationPanelHeader
+        icon={<Users className="h-4 w-4" />}
+        title={t("googleWorkspaceIntegration.googleWorkspace")}
+        description={t(
+          "googleWorkspaceIntegration.connectAWorkspaceDomainSoTheAIAssistant2",
         )}
-      </div>
+        actions={
+          isConnected ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
+              <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+              <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
+            </span>
+          )
+        }
+      />
 
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {loadError}
         </div>
       )}

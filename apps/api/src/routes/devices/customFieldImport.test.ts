@@ -287,6 +287,31 @@ describe('POST /devices/custom-fields/import{,/preview} — context handed to th
   });
 });
 
+describe('POST /devices/custom-fields/import{,/preview} — batch source system (#9678)', () => {
+  it.each(BOTH)('stamps the batch source onto rows that carry none (%s)', async (path) => {
+    await post(path, {
+      rows: [row({ externalId: 'a' }), row({ externalId: 'b', externalSystem: 'ninjaone' })],
+      externalSystem: 'datto_rmm',
+    });
+    const mock = path === PREVIEW ? previewMock : commitMock;
+    const rows = mock.mock.calls[0]![0];
+    expect(rows[0].externalSystem).toBe('datto_rmm');
+    // A mapped "Source system" column still wins for its own row.
+    expect(rows[1].externalSystem).toBe('ninjaone');
+  });
+
+  it.each(BOTH)('defaults to csv when no source is chosen (%s)', async (path) => {
+    await post(path, { rows: [row({ externalId: 'a' })] });
+    const mock = path === PREVIEW ? previewMock : commitMock;
+    expect(mock.mock.calls[0]![0][0].externalSystem).toBe('csv');
+  });
+
+  it.each(BOTH)('rejects a batch source outside the allowed set (%s)', async (path) => {
+    const res = await post(path, { rows: [row()], externalSystem: 'bogus_rmm' });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /devices/custom-fields/import — wire schema', () => {
   it('accepts a warranty mapping target', async () => {
     const res = await post(PREVIEW, {

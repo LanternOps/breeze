@@ -57,7 +57,7 @@ Acme Manufacturing,Detroit Plant
 Bright Dental,Main Clinic
 ```
 
-The easiest way to load it is the web UI: **Settings → Organizations → Bulk import** takes the CSV, lets you map columns, shows a per-row preview (create / matched / conflict), and commits. Scripted, the same preview → commit pair lives at `POST /orgs/import/preview` and `POST /orgs/import`. Both take JSON — the CSV is parsed on your side, the API never sees it — and accept up to **1,000 rows per request**. Rows sharing an `organization` value become one org with many sites; slugs are derived and de-duplicated for you.
+The easiest way to load it is the web UI: **Organizations › Bulk import** takes the CSV, lets you map columns, shows a per-row preview (New / Already linked / Name match / Deleted org match / Conflict), and commits. Scripted, the same preview → commit pair lives at `POST /orgs/import/preview` and `POST /orgs/import`. Both take JSON — the CSV is parsed on your side, the API never sees it — and accept up to **1,000 rows per request**. Rows sharing an `organization` value become one org with many sites; slugs are derived and de-duplicated for you.
 
 Preview annotates every row before anything is written:
 

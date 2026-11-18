@@ -15,12 +15,14 @@ vi.mock('../../services/stripeSessionRevocation', () => ({
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.9' }));
 vi.mock('../../db', () => ({
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }),
+    select: (...args: unknown[]) => { selectSpy(...args); return { from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }; },
   },
 }));
 
 const selectRows: { value: unknown[] } = { value: [] };
+const selectSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../services/invoiceTypes', () => ({
   InvoiceServiceError: class InvoiceServiceError extends Error {
     constructor(msg: string, public status = 400, public code?: string) { super(msg); }
@@ -56,6 +58,23 @@ describe('POST /invoices/:id/pay-link', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { url: 'https://checkout.stripe.com/c/pay/abc' } });
     expect(payLink).toHaveBeenCalledWith(ID, expect.objectContaining({ partnerId: 'p1' }));
+  });
+
+  it('maps BILLING_DISABLED from the service to the unified 404 body', async () => {
+    payLink.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+  });
+
+  it('does not read the invoice itself before the service checks access (no billing-state oracle)', async () => {
+    selectRows.value = [{ orgId: 'org-1' }];
+    payLink.mockResolvedValue({ url: 'https://checkout.stripe.com/c/pay/on' });
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(selectSpy).not.toHaveBeenCalled();
+    expect(payLink).toHaveBeenCalledTimes(1);
+    selectRows.value = [];
   });
 
   it('surfaces the currency-mismatch warning verbatim to the partner (warn-don\'t-block)', async () => {

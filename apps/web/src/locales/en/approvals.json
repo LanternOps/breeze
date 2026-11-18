@@ -14,10 +14,10 @@
   "targetDevice": "Target device: {{hostname}}",
   "batch": {
     "approveAll": "Approve all ({{count}})",
-    "declineAll": "Decline all ({{count}})",
+    "declineAll": "Deny all ({{count}})",
     "groupTitle": "{{count}} similar requests · {{tool}}",
     "moreHostnames": "+{{count}} more",
-    "denyConfirmSummary": "This declines {{count}} requests for {{org}}."
+    "denyConfirmSummary": "This denies {{count}} requests for {{org}}."
   },
   "filters": {
     "orgLabel": "Organization",
@@ -43,6 +43,7 @@
   },
   "denyPrompt": "Why are you denying this request? A reason is optional.",
   "denyReasonPlaceholder": "Optional — shared with the requester",
+  "denyReasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
   "confirmDeny": "Confirm denial",
   "cancel": "Cancel",
   "deny": "Deny",
@@ -68,6 +69,7 @@
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
     "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
+    "approverScopeRequired": "This approval affects every organization under the partner, so it needs a partner-level approver with access to all organizations.",
     "verificationFailed": "Verification was canceled or failed. Try again.",
     "alreadyDecided": "This request was already decided.",
     "expired": "This request expired before it could be decided.",
@@ -99,15 +101,16 @@
     "loading": "Loading recent approvals…",
     "error": "Unable to load recent approvals.",
     "retry": "Retry",
+    "decisionReasonLabel": "Reason from approver",
     "empty": "Nothing has finished recently.",
     "status": {
       "failed": "Failed",
-      "rejected": "Rejected",
+      "rejected": "Denied",
       "expired": "Expired",
       "cancelled": "Cancelled",
       "completed": "Completed",
       "denied": "Denied",
-      "refused": "Approval refused",
+      "refused": "Approved, then blocked",
       "approved": "Approved",
       "reported": "Reported",
       "unknown": "Unknown"
@@ -131,7 +134,7 @@
     "durationValue": "{{minutes}} minutes from approval",
     "purpose": "Purpose",
     "requestedBy": "Requested by",
-    "principalUser": "Breeze AI chat",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP API key",
     "principalOauth": "MCP OAuth connection",
     "paths": "Paths",
@@ -149,7 +152,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan for AI Operator task",
+    "title": "Plan for AI task",
     "summary_one": "{{count}} effect, plan revision {{revision}}",
     "summary_other": "{{count}} effects, plan revision {{revision}}",
     "groupBreeze": "Breeze devices",
@@ -160,5 +163,19 @@
     "orderNote": "Effects run in this order. Sign-in is disabled last, so stopping early never leaves mail unrouted.",
     "empty": "This plan contains no effects.",
     "invalid": "This plan could not be displayed in full. Do not approve it."
+  },
+  "intentStatus": {
+    "title": "Approval status",
+    "waitingForApprovers": "Waiting for approvers",
+    "notFound": "That approval could not be found.",
+    "status": {
+      "pending_approval": "Pending approval",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "rejected": "Denied",
+      "expired": "Expired",
+      "cancelled": "Cancelled"
+    }
   }
 }

@@ -73,6 +73,24 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BACKUP_LOCAL_ROOT', () => {
+    it('refuses to start a hosted deployment with API-side local backup storage configured', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).toThrow(/BACKUP_LOCAL_ROOT is not supported on a hosted deployment/);
+      });
+    });
+    it('accepts it on a self-hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('treats an empty value as unset on a hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732)', () => {
     const blob = { ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's', S3_BUCKET: 'b' };
     it('is off/valid when unset', () => {
@@ -348,6 +366,72 @@ describe('validateConfig', () => {
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
+    });
+  });
+
+  describe('Portal Entra app (portal registration W4)', () => {
+    const portalEntra = {
+      PORTAL_ENTRA_CLIENT_ID: '44444444-4444-4444-8444-444444444444',
+      PORTAL_ENTRA_CLIENT_SECRET: 'portal-entra-secret',
+    };
+
+    it('refuses boot when the app is configured with a malformed callback base', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_ENTRA_CALLBACK_BASE_URL/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the app is not configured', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_ENTRA_CLIENT_ID: '', PORTAL_ENTRA_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('Portal Google client (portal registration W7)', () => {
+    const portalGoogle = {
+      PORTAL_GOOGLE_CLIENT_ID: '123456789012-abcdefghijklmnop.apps.googleusercontent.com',
+      PORTAL_GOOGLE_CLIENT_SECRET: 'portal-google-secret',
+    };
+
+    it('refuses boot when the client is configured with a malformed callback base or client id', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CALLBACK_BASE_URL/);
+      });
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CLIENT_ID: 'not-a-google-client' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CLIENT_ID/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the client is not configured', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_GOOGLE_CLIENT_ID: '', PORTAL_GOOGLE_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('PORTAL_SELF_REGISTRATION_ENABLED (portal registration W6)', () => {
+    it('boots when unset, empty, true, 1, false or 0', () => {
+      // Unset is the base validEnv case every other test boots with.
+      for (const value of ['', 'true', '1', 'false', '0', 'TRUE', ' false ']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      }
+    });
+
+    it('refuses boot on any other value', () => {
+      for (const value of ['yes', 'off', '2']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).toThrow(/PORTAL_SELF_REGISTRATION_ENABLED/);
+        });
+      }
     });
   });
 
@@ -1313,6 +1397,86 @@ describe('validateConfig', () => {
       warnSpy.mockRestore();
     },
   );
+
+  // #8313 W1 review finding 6.
+  it.each(['2e9', '2GiB', '2_147_483_648', '12abc', '0'])(
+    'warns at boot, naming the variable, when TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j is not a plain positive integer',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('2147483648');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  // Portal registration W8 (#11385, plan D7): an unrecognised value reports only; say so at boot.
+  it.each(['yes', 'on', 'enforce', '2'])(
+    'warns at boot, naming the variable, when PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j is not true/1/false/0',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('report-only');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['true', '1', 'false', '0', '', ' TRUE '])('does not warn about PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
+  it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
+  // #8313 W4: the ticket import worker's knobs.
+  it.each([
+    ['TICKET_IMPORT_SLICE_MS', '5min'],
+    ['TICKET_IMPORT_LEASE_MS', '-1'],
+    ['TICKET_IMPORT_MAX_TICKET_BYTES', '256MiB'],
+    ['TICKET_IMPORT_MAX_TICKET_ARTICLES', '10k'],
+    ['TICKET_IMPORT_MAX_TICKET_READ_BYTES', '256MiB'],
+  ])('warns at boot when %s=%j is not a plain positive integer', (key, value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, [key]: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.filter((args) => String(args[0]).includes(key))).toHaveLength(1);
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('warns when the import lease cap is not below the worker concurrency, and not otherwise', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, TICKET_IMPORT_WORKER_CONCURRENCY: '3', TICKET_IMPORT_GLOBAL_CONCURRENCY: '3' }, () => {
+      validateConfig();
+      const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('TICKET_IMPORT_GLOBAL_CONCURRENCY'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('2 applies');
+    });
+    warnSpy.mockClear();
+    withEnv({ ...validEnv, TICKET_IMPORT_WORKER_CONCURRENCY: '4', TICKET_IMPORT_GLOBAL_CONCURRENCY: '3' }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('TICKET_IMPORT_'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
 
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
@@ -3039,6 +3203,66 @@ describe('validateConfig', () => {
     });
   });
 
+  // Wisp W02 (Wisp design §10): the deployment switch is hosted-only.
+  it('refuses BREEZE_WISP_ENABLED=true in production without IS_HOSTED=true', () => {
+    withEnv({ ...workspaceProdEnv, IS_HOSTED: 'false', BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires IS_HOSTED=true/);
+    });
+  });
+
+  it('accepts BREEZE_WISP_ENABLED=true in production when hosted', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses BREEZE_WISP_ENABLED=true in production with ENABLE_2FA=false (grants need step-up proof)', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true', ENABLE_2FA: 'false' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires ENABLE_2FA/);
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
+  // Vendor updates (#11065): the lab override opens closed firmware gates, so it
+  // never reaches production. A typo in the kill switch would silently not stop a lane.
+  it('refuses BREEZE_OEM_UPDATES_LAB_DEVICE_IDS under NODE_ENV=production', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production/);
+    });
+  });
+
+  it('allows BREEZE_OEM_UPDATES_LAB_DEVICE_IDS outside production', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
+    });
+  });
+
+  it('rejects a partner allowlist that parses to nothing: empty means every partner', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ' , ,' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST/);
+    });
+  });
+
+  it('rejects an unknown lane in BREEZE_OEM_UPDATES_DISABLED_LANES', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell,dels' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
+    });
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell, HP' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.
@@ -3528,6 +3752,110 @@ describe('MCP_STATELESS_ENABLED boolean guard', () => {
   });
 });
 
+describe('MCP Apps env guard (B-W05 #6159)', () => {
+  it('declares MCP_APPS_ENABLED in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_APPS_ENABLED');
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_APPS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_APPS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_APPS_ENABLED).toBe(value);
+    });
+  });
+});
+
+describe('MCP Tasks env guards (B-W06 #6160, D-B55)', () => {
+  const intKnobs = ['MCP_TASK_PENDING_POLL_INTERVAL_MS', 'MCP_TASK_POLL_INTERVAL_MS', 'MCP_TASK_TTL_GRACE_MS'];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TASKS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TASKS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_TASKS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: value, MCP_STATELESS_ENABLED: 'true' }, () => {
+      expect(validateConfig().MCP_TASKS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15000' }, () => {
+      expect(validateConfig()[knob as 'MCP_TASK_POLL_INTERVAL_MS']).toBe('15000');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+
+  const tasksWarnings = (env: Record<string, string>): string[] => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let calls: string[] = [];
+    withEnv({ ...validEnv, ...env }, () => {
+      expect(() => validateConfig()).not.toThrow();
+      calls = warnSpy.mock.calls.map((args) => args[0] as string).filter((msg) => msg.includes('MCP_TASKS_ENABLED'));
+    });
+    warnSpy.mockRestore();
+    return calls;
+  };
+  it('warns at boot when MCP_TASKS_ENABLED is on without MCP_STATELESS_ENABLED', () => {
+    const calls = tasksWarnings({ MCP_TASKS_ENABLED: 'true' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/MCP_STATELESS_ENABLED/);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'on', MCP_STATELESS_ENABLED: 'false' })).toHaveLength(1);
+  });
+  it('no warning when both are on, or Tasks are off', () => {
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'true', MCP_STATELESS_ENABLED: 'true' })).toHaveLength(0);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'false' })).toHaveLength(0);
+    expect(tasksWarnings({})).toHaveLength(0);
+  });
+});
+
+describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
+  const intKnobs = [
+    'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+    'MCP_INTENT_CREATES_PER_HOUR',
+    'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+    'MCP_APPROVAL_WAIT_MS',
+    'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+  ];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TIER3_INTENTS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TIER3_INTENTS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0'])('accepts MCP_TIER3_INTENTS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_TIER3_INTENTS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15' }, () => {
+      expect(validateConfig()[knob as 'MCP_APPROVAL_WAIT_MS']).toBe('15');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+});
+
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
   it('accepts an explicit false', () => {
     withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {
@@ -3860,6 +4188,50 @@ describe('FLOWS_ENABLED boolean guard', () => {
   });
 });
 
+describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOW_APPROVAL_TTL_HOURS');
+    expect(buildEnvParseInput({ FLOW_APPROVAL_TTL_HOURS: 'sentinel' }).FLOW_APPROVAL_TTL_HOURS).toBe('sentinel');
+  });
+
+  it.each(['1', '24', '168', ' 72 ', ''])('accepts %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0', '169', '-1', '2.5', 'day'])('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168/);
+    });
+  });
+});
+
+describe.each([
+  ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, ['1', '20', '500', ' 64 ', ''], ['0', '501', '-1', '2.5', 'lots']],
+  ['FLOW_RUN_RETENTION_DAYS', 7, 3650, ['7', '90', '3650', ' 30 ', ''], ['6', '0', '3651', '-1', '1.5', 'forever']],
+  ['FLOW_WEBHOOK_RATE_PER_MINUTE', 1, 6000, ['1', '120', '6000', ' 60 ', ''], ['0', '6001', '-1', '2.5', 'fast']],
+  ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 1, 365, ['1', '30', '365', ' 7 ', ''], ['0', '366', '-1', '1.5', 'forever']],
+  ['FLOW_FOREACH_MAX_PARALLEL', 1, 10, ['1', '5', '10', ' 3 ', ''], ['0', '11', '-1', '2.5', 'many']],
+] as const)('%s range guard (#5219 A8)', (key, min, max, accepted, refused) => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  it.each(accepted)('accepts %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(refused)('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).toThrow(new RegExp(`${key} must be an integer between ${min} and ${max}`));
+    });
+  });
+});
+
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');
@@ -4053,6 +4425,38 @@ describe('empty-string compose passthrough (#7640)', () => {
   it('still requires MCP_LLM_BASE_URL when provider is openai-compatible and the base URL is empty', () => {
     withEnv({ ...validEnv, IS_HOSTED: 'false', MCP_LLM_PROVIDER: 'openai-compatible', MCP_LLM_BASE_URL: '', MCP_LLM_MODEL: 'm' }, () => {
       expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL is required/);
+    });
+  });
+});
+
+// #9700: INTERNAL_SERVICE_CIDRS exempts the in-cluster plain-HTTP hop from
+// FORCE_HTTPS. It must name a private network — a public or all-addresses range
+// would let internet clients claim the internal exemption.
+describe('INTERNAL_SERVICE_CIDRS validation (#9700)', () => {
+  it('accepts the compose bridge subnet', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('accepts unset (exemption disabled)', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0.0.0.0/0', '::/0', '203.0.113.0/24', 'not-a-cidr', '172.31.0.0/99', '10.0.0.0/1', '172.16.0.0/8', 'fc00::/1'])(
+    'refuses %j',
+    (entry) => {
+      withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: `172.31.0.0/24,${entry}` }, () => {
+        expect(() => validateConfig()).toThrow(/INTERNAL_SERVICE_CIDRS/);
+      });
+    },
+  );
+
+  it('refuses an INTERNAL_API_HOSTS entry that is not a bare host[:port]', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24', INTERNAL_API_HOSTS: 'http://api:3001/x' }, () => {
+      expect(() => validateConfig()).toThrow(/INTERNAL_API_HOSTS/);
     });
   });
 });

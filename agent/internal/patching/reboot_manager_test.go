@@ -314,8 +314,8 @@ func TestCancelIsIdempotentAfterAborting(t *testing.T) {
 	if err := rm.Cancel(); err != nil {
 		t.Fatalf("first Cancel: %v", err)
 	}
-	if err := rm.Cancel(); err == nil {
-		t.Error("second Cancel returned nil, want an error — nothing was left scheduled")
+	if err := rm.Cancel(); !errors.Is(err, ErrNoRebootScheduled) {
+		t.Errorf("second Cancel = %v, want ErrNoRebootScheduled — nothing was left scheduled", err)
 	}
 	if aborts != 1 {
 		t.Errorf("abortOSReboot called %d times across two cancels, want 1", aborts)
@@ -324,8 +324,8 @@ func TestCancelIsIdempotentAfterAborting(t *testing.T) {
 
 func TestCancelWithNothingScheduled(t *testing.T) {
 	rm, _, _, _ := newTestManager(t, 3)
-	if err := rm.Cancel(); err == nil {
-		t.Fatal("Cancel with no reboot scheduled returned nil, want an error")
+	if err := rm.Cancel(); !errors.Is(err, ErrNoRebootScheduled) {
+		t.Fatalf("Cancel with no reboot scheduled = %v, want ErrNoRebootScheduled", err)
 	}
 }
 

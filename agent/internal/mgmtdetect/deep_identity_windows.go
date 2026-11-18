@@ -4,17 +4,18 @@ package mgmtdetect
 
 import (
 	"context"
-	"os/exec"
 	"time"
 
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func collectIdentityStatus() IdentityStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "dsregcmd", "/status")
+	cmd := procspawn.CommandContext(ctx, "dsregcmd", "/status")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Warn("dsregcmd failed, falling back to registry", "error", err.Error())

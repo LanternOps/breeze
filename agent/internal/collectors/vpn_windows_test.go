@@ -5,7 +5,11 @@ package collectors
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// vpnServiceTestTimeout is test-only: tolerates PowerShell cold start on CI.
+const vpnServiceTestTimeout = 90 * time.Second
 
 // TestWindowsVPNServiceQuery runs the real service query (#8763). It pins the
 // two things a pure test cannot: PowerShell exits 0 when the Zscaler drivers
@@ -14,7 +18,9 @@ import (
 // output really is "Name<TAB>DisplayName" for running services only.
 // Selected by name in .github/workflows/ci.yml (Windows collector job).
 func TestWindowsVPNServiceQuery(t *testing.T) {
-	out, err := windowsVPNServiceListing()
+	// This test exercises a real PowerShell on purpose; the short collector
+	// deadline flaked on cold hosted runners (#9814), so allow a generous one.
+	out, err := windowsVPNServiceListingWithTimeout(vpnServiceTestTimeout)
 	if err != nil {
 		t.Fatalf("service query failed (exit status must be 0 without Zscaler drivers): %v", err)
 	}

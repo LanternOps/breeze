@@ -395,6 +395,95 @@ describe('policyManagement routes', () => {
       expect(conditionText(rowsWhere)).toContain(SITE_ALLOWED);
     });
 
+    // #11976: a stored registry_check result from before the change carries
+    // the value the device reported. This route needs only devices:read, so it
+    // must not return that value from either branch.
+    const legacyRegistryRow = (overrides: Record<string, unknown>) => ({
+      id: 'comp-legacy', deviceId: 'device-1', status: 'non_compliant',
+      details: {
+        passed: false,
+        ruleResults: [{
+          ruleType: 'registry_check', passed: false, message: 'Registry value mismatch.',
+          data: { expectedValue: '1', actualValue: 'observed-0xBEEF', valueType: 'REG_SZ' },
+        }],
+      },
+      lastCheckedAt: new Date('2026-01-01'), remediationAttempts: 0, updatedAt: new Date('2026-01-01'),
+      deviceHostname: 'host-1', deviceStatus: 'online', deviceOsType: 'windows',
+      ...overrides,
+    });
+    const countQuery = () => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+      }),
+    } as any);
+    const rowsQuery = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+            }),
+          }),
+        }),
+      }),
+    } as any);
+    const expectNoObservedRegistryValue = async (res: Response) => {
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain('observed-0xBEEF');
+      expect(text).not.toContain('REG_SZ');
+      expect(JSON.parse(text).data[0].details.ruleResults[0].data).toEqual({ expectedValue: '1' });
+    };
+
+    it('never returns an observed registry value for a legacy policy (#11976)', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makePolicy()]) }),
+          }),
+        } as any)
+        .mockReturnValueOnce(countQuery())
+        .mockReturnValueOnce(rowsQuery([legacyRegistryRow({ policyId: POLICY_ID, configPolicyId: null, configItemName: null })]));
+
+      const res = await app.request(`/policies/${POLICY_ID}/compliance`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+      await expectNoObservedRegistryValue(res);
+    });
+
+    it('never returns an observed registry value for a configuration policy (#11976)', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, name: 'Configuration Policy', status: 'active' }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: 'feature-link-1' }]) }),
+        } as any)
+        .mockReturnValueOnce(countQuery())
+        .mockReturnValueOnce(rowsQuery([legacyRegistryRow({ policyId: null, configPolicyId: 'feature-link-1', configItemName: 'Lock' })]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request(`/policies/${POLICY_ID}/compliance`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+      });
+      await expectNoObservedRegistryValue(res);
+    });
+
     it('should return 404 for non-existent policy', async () => {
       // getPolicyWithOrgCheck returns null
       vi.mocked(db.select)

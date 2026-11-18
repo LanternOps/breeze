@@ -9,9 +9,13 @@
  * an INHERITED value apart from an org-set one, which the payload cannot say
  * on its own (it returns the merged result, never the raw org row).
  *
- * Keep `AI_BUDGET_DEFAULTS` in sync with `AI_BUDGET_DEFAULTS` in
- * `apps/api/src/services/effectiveSettings.ts` — it is the same contract.
+ * `AI_BUDGET_DEFAULTS` has one owner, `@breeze/shared`
+ * (`packages/shared/src/constants/aiBudgetDefaults.ts`), which the API merge
+ * imports too. It is re-exported here for existing importers; never copy it.
  */
+import { AI_BUDGET_DEFAULTS } from '@breeze/shared';
+
+export { AI_BUDGET_DEFAULTS };
 
 export const AI_BUDGET_FIELDS = [
   'enabled',
@@ -41,18 +45,6 @@ export interface EffectiveAiBudget {
   /** #6476 — raises every per-tool AI/MCP rate limit; integer 1–10. */
   toolRateLimitMultiplier: number;
 }
-
-export const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
-  enabled: true,
-  monthlyBudgetCents: null,
-  dailyBudgetCents: null,
-  maxTurnsPerSession: 50,
-  messagesPerMinutePerUser: 20,
-  messagesPerHourPerOrg: 200,
-  approvalMode: 'per_step',
-  alertThresholdPercents: [50, 80, 95],
-  toolRateLimitMultiplier: 1,
-};
 
 /** #6476 — bounds of `toolRateLimitMultiplier`; the API rejects anything outside. */
 export const TOOL_RATE_LIMIT_MULTIPLIER_MIN = 1;

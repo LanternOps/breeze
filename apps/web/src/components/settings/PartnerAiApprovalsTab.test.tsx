@@ -39,10 +39,34 @@ describe('PartnerAiApprovalsTab', () => {
     expect(Array.from(select.options).some((o) => o.value === '37')).toBe(true);
   });
 
-  it('shows the not-for-unattended-work note and the org-override note', () => {
+  it('shows the not-for-unattended-work note; the org-override model is the badge (#9790)', () => {
     render(<PartnerAiApprovalsTab data={{}} onChange={vi.fn()} />);
 
-    expect(screen.getByTestId('partner-ai-approvals-org-override-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('partner-ai-approvals-org-override-note')).toBeNull();
+    expect(screen.getByTestId('partner-settings-badge-aiApprovals.interactiveTimeoutMinutes')).toHaveTextContent('Org can override');
     expect(screen.getByTestId('partner-ai-approvals-not-unattended-note')).toBeInTheDocument();
+  });
+});
+
+describe('PartnerAiApprovalsTab — approval mode', () => {
+  it('edits aiBudgets.approvalMode, keeping the other budget fields', () => {
+    const onBudgetsChange = vi.fn();
+    render(
+      <PartnerAiApprovalsTab
+        data={{}}
+        onChange={vi.fn()}
+        budgets={{ maxTurnsPerSession: 10 }}
+        onBudgetsChange={onBudgetsChange}
+      />,
+    );
+
+    const select = screen.getByTestId('partner-ai-approvals-mode') as HTMLSelectElement;
+    expect(select.value).toBe('');
+
+    fireEvent.change(select, { target: { value: 'auto_approve' } });
+    expect(onBudgetsChange).toHaveBeenLastCalledWith({ maxTurnsPerSession: 10, approvalMode: 'auto_approve' });
+
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onBudgetsChange).toHaveBeenLastCalledWith({ maxTurnsPerSession: 10, approvalMode: undefined });
   });
 });

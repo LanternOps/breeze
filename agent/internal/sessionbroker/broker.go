@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -257,6 +258,11 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
+	// accounts overrides the platform account lookups (tests only).
+	accounts *accountDirectory
+	// lookupTimeout overrides accountLookupTimeout (tests only).
+	lookupTimeout time.Duration
+
 	// broadcastNotifyUndelivered counts broadcast notifications a helper
 	// answered with Delivered=false (#9266). See BroadcastNotification.
 	broadcastNotifyUndelivered atomic.Uint64
@@ -277,7 +283,10 @@ type Broker struct {
 	nextLifecycleObserverID uint64
 	consoleUser             string        // macOS: current console user ("loginwindow" at login screen)
 	backup                  *backupHelper // backup helper process and session
-	closed                  bool
+	// respawnBackupHelper overrides how a queued backup run's replacement
+	// helper is obtained (test seam). Nil in production.
+	respawnBackupHelper func() (*Session, error)
+	closed              bool
 
 	acceptMu               sync.Mutex
 	acceptStopped          bool
@@ -301,7 +310,12 @@ type Broker struct {
 	onMessage       MessageHandler
 	onSessionClosed SessionClosedHandler
 	onSessionAuthed SessionAuthenticatedHandler
+	promptSink      PromptSink          // prompt host (#10190); guarded by mu
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries; guarded by mu
+
+	// TCC skew rule (#10190 W04, tcc_notice.go); both guarded by mu.
+	tccNoticeGate    func() bool
+	tccStatusHandler func(s *Session, status ipc.TCCStatus)
 
 	// helperPathsFn overrides allowedHelperPaths (test seam). Nil in
 	// production, where the allowlist is derived from os.Executable().
@@ -340,6 +354,69 @@ type Broker struct {
 	// liveness probe (OpenProcess on Windows, indeterminate elsewhere).
 	nowFn               func() time.Time
 	helperKeyPIDAliveFn func(pid uint32) (alive, known bool)
+
+	// Linux per-session desktop helper (#12117). linuxDesktopTickets holds the
+	// single-use spawn tickets; linuxLogindLookup reads logind during
+	// admission (nil off Linux); selfExeHash (guarded by mu) is the SHA-256 of
+	// the daemon's own executable, recorded once at start, which an admitted
+	// desktop helper's binary must equal.
+	linuxDesktopTickets *linuxDesktopTickets
+	linuxLogindLookup   logindLookupFunc
+	selfExeHash         string
+	// linuxWaylandCaptureAuthorized is root's decision on whether a Linux
+	// desktop helper may claim capture. Always false until the capture backend
+	// ships behind its flag.
+	linuxWaylandCaptureAuthorized func() bool
+
+	// keepaliveIntervalOverride / keepaliveTimeoutOverride replace the
+	// package keepalive timing for this broker when nonzero. Tests set them
+	// before Listen, so a short schedule needs no write to package state
+	// that other brokers' keepalive goroutines read.
+	keepaliveIntervalOverride time.Duration
+	keepaliveTimeoutOverride  time.Duration
+	// keepaliveTicker, when non-nil, replaces time.NewTicker in runKeepalive.
+	// It returns the tick channel and a stop function. Tests use it to deliver
+	// ticks by hand against a fake session clock.
+	keepaliveTicker func(interval time.Duration) (<-chan time.Time, func())
+	// linuxDesktopFrameDeadlineOverride shortens the Linux desktop helper frame
+	// deadline for this broker when nonzero (tests only).
+	linuxDesktopFrameDeadlineOverride time.Duration
+
+	// Per-uid Linux desktop helper endpoints (#12117,
+	// linux_desktop_listener.go), guarded by linuxDesktopMu, which is never
+	// held while taking mu. linuxDesktopSocketDir, linuxDesktopDirOwner and
+	// linuxDesktopChown are set in New and overridden only by tests before
+	// use.
+	linuxDesktopMu        sync.Mutex
+	linuxDesktopListeners map[uint32]*linuxDesktopListener
+	linuxDesktopClosed    bool
+	linuxDesktopSocketDir string
+	linuxDesktopDirOwner  uint32
+	linuxDesktopChown     func(path string, uid uint32) error
+	// linuxDesktopOwnerOf reports the owner uid of an endpoint path entry;
+	// nil means fileIdentity. Tests use it to simulate a non-root owner.
+	linuxDesktopOwnerOf func(fs.FileInfo) (uint32, bool)
+}
+
+// keepaliveTiming is the ping interval and pong timeout for this broker.
+func (b *Broker) keepaliveTiming() (interval, timeout time.Duration) {
+	interval, timeout = keepalivePingInterval, keepaliveTimeout
+	if b.keepaliveIntervalOverride > 0 {
+		interval = b.keepaliveIntervalOverride
+	}
+	if b.keepaliveTimeoutOverride > 0 {
+		timeout = b.keepaliveTimeoutOverride
+	}
+	return interval, timeout
+}
+
+// newKeepaliveTicker starts the tick source for one runKeepalive loop.
+func (b *Broker) newKeepaliveTicker(interval time.Duration) (<-chan time.Time, func()) {
+	if b.keepaliveTicker != nil {
+		return b.keepaliveTicker(interval)
+	}
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
 }
 
 // helperKillRetentionTTL is the hard cap on how long a helper key stays owned
@@ -384,7 +461,17 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		goos:                   runtime.GOOS,
 		helperKeyRetention:     make(map[HelperKey]retainedHelperKey),
 		helperKeyRetentionTTL:  helperKillRetentionTTL,
+		linuxDesktopTickets:    newLinuxDesktopTickets(nil),
+		linuxLogindLookup:      defaultLinuxLogindLookup(),
+
+		linuxWaylandCaptureAuthorized: func() bool { return false },
+
+		linuxDesktopListeners: make(map[uint32]*linuxDesktopListener),
+		linuxDesktopSocketDir: defaultLinuxDesktopSocketDir,
+		linuxDesktopDirOwner:  uint32(os.Geteuid()),
+		linuxDesktopChown:     defaultLinuxDesktopChown,
 	}
+	b.selfExeHash = recordRunningBuildHash()
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
 	return b
@@ -795,6 +882,13 @@ func (b *Broker) acceptingStopped() bool {
 }
 
 func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
+	return b.startAcceptedConnectionFrom(conn, nil)
+}
+
+// startAcceptedConnectionFrom is startAcceptedConnection for a connection
+// accepted on origin, a per-uid Linux desktop endpoint (nil for the shared
+// socket). Both share the pre-auth and shutdown accounting.
+func (b *Broker) startAcceptedConnectionFrom(conn net.Conn, origin *linuxDesktopListener) bool {
 	b.acceptMu.Lock()
 	if b.acceptStopped {
 		b.acceptMu.Unlock()
@@ -806,7 +900,7 @@ func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
 	b.acceptMu.Unlock()
 	go func() {
 		defer b.finishPreAuth(conn)
-		b.handleConnection(conn)
+		b.handleConnection(conn, origin)
 	}()
 	return true
 }
@@ -909,6 +1003,10 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	}
 	b.acceptMu.Unlock()
 
+	// The per-uid Linux desktop endpoints stop accepting with the shared
+	// socket; acceptStopped is already set, so none can be reopened.
+	b.closeLinuxDesktopListenersForShutdown()
+
 	// Started before the drain wait rather than after it, so a well-behaved
 	// listener still closes concurrently with the handlers finishing.
 	listenerClosed := closeListenerAsync(listener)
@@ -953,14 +1051,24 @@ func closeListenerAsync(listener net.Listener) <-chan struct{} {
 	return closed
 }
 
-// SessionForUser returns the first active session for the given username.
+// SessionForUser returns the best session running as the named account: a
+// user-role helper when one is connected, otherwise another helper that
+// takes per-user work. The name is resolved to an account identity and
+// matched against each session's kernel-verified identity (see
+// account_identity.go); a name that resolves to no account selects nothing.
 func (b *Broker) SessionForUser(username string) *Session {
+	identity := b.accountIdentityForName(username)
+	if identity == "" {
+		return nil
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	goos := b.effectiveGOOS()
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.Username == username && s.HelperRole == ipc.HelperRoleUser {
+		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			if betterSession(s, best) {
 				best = s
 			}
@@ -971,7 +1079,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 	}
 
 	for _, s := range b.sessions {
-		if s.Username == username && betterSession(s, best) {
+		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1459,7 +1567,11 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 // of its own. A reply arriving after the wait has given up is dropped as
 // unsolicited at WARN again — the noise #9266 removed — so this is generous:
 // it costs one parked goroutine per helper per broadcast, and broadcasts are
-// rare (the reboot-warning ladder). A var only so tests can shorten it.
+// rare (the reboot-warning ladder). Session.SendNotification uses the same
+// bound for single-session notices (#10224): a notice that asks for the
+// fallback dialog is answered only when that dialog closes (60 s each, and the
+// helper queues them), so the generous wait covers it too. A var only so tests
+// can shorten it.
 var broadcastNotifyResultTimeout = 5 * time.Minute
 
 // awaitBroadcastNotifyResult consumes the reply a broadcast notification is
@@ -1499,6 +1611,22 @@ func (b *Broker) awaitBroadcastNotifyResult(s *Session, wait func(time.Duration)
 // — so two prompts raised inside the same millisecond, which two reminder rungs
 // or a rung and a retry easily are, would lose one answer.
 var notifyDecisionSeq atomic.Uint64
+
+// notifyDecisionReplyGrace is how long RequestNotificationDecision keeps
+// listening after the dialog's own countdown has run out (#10182).
+//
+// The helper is told to count down for the same window the broker waits, but
+// its countdown starts later: it has to receive the request, decode it and draw
+// the dialog first. So "the countdown expired with no click" always reached the
+// broker a little after a wait of exactly `timeout` had given up — the waiter
+// was gone and dispatchHelperMessage logged "dropping unsolicited or
+// unauthorized helper message type=notify_result" at WARN on every unanswered
+// prompt. A click in the dialog's last moments was discarded the same way, and
+// the reboot went ahead although the user had postponed it.
+//
+// The grace only costs time when the helper never answers at all (a wedged
+// helper on a live transport). A var only so tests can shorten it.
+var notifyDecisionReplyGrace = 10 * time.Second
 
 // RequestNotificationDecision sends an interactive notification to one
 // notify-scoped session per interactive Windows session and returns the first
@@ -1549,11 +1677,15 @@ func (b *Broker) RequestNotificationDecision(req ipc.NotifyRequest, timeout time
 		res ipc.NotifyResult
 		err error
 	}
+	// The dialog counts down `timeout` (req.TimeoutMs); the wait covers that plus
+	// the time its answer needs to get back. Read once, on the caller's
+	// goroutine, for the same reason BroadcastNotification reads its timeout.
+	wait := timeout + notifyDecisionReplyGrace
 	results := make(chan answer, len(sessions))
 	for _, s := range sessions {
 		go func(s *Session) {
 			id := fmt.Sprintf("notify-%s-%d", s.SessionID, notifyDecisionSeq.Add(1))
-			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, timeout)
+			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, wait)
 			if err != nil {
 				results <- answer{err: fmt.Errorf("session %s: %w", s.SessionID, err)}
 				return
@@ -1767,7 +1899,7 @@ func (b *Broker) FindUserSession(winSessionID string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && betterSession(s, best) {
+		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1780,7 +1912,7 @@ func (b *Broker) userHelperSessions() []*Session {
 
 	sessions := make([]*Session, 0, len(b.sessions))
 	for _, s := range b.sessions {
-		if s.HelperRole == ipc.HelperRoleUser {
+		if s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			sessions = append(sessions, s)
 		}
 	}
@@ -1793,7 +1925,7 @@ func (b *Broker) userHelperSessionForKey(sessionKey string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.HelperRole != ipc.HelperRoleUser {
+		if s.HelperRole != ipc.HelperRoleUser || isLinuxDesktopSession(s) {
 			continue
 		}
 		match := s.WinSessionID == sessionKey || s.IdentityKey == sessionKey
@@ -1927,6 +2059,42 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	var result ipc.PamDialogResult
 	if err := json.Unmarshal(resp.Payload, &result); err != nil {
 		return denyDismiss, fmt.Errorf("decode PAM dialog result: %w", err)
+	}
+	return result, nil
+}
+
+// ErrPamDialogCloseUnsupported is returned, before anything is sent, when the
+// helper did not advertise pam_close_dialog.
+var ErrPamDialogCloseUnsupported = errors.New("PAM helper does not support closing its elevation dialog")
+
+// ClosePamDialog asks the SYSTEM PAM helper to take down its own elevation
+// dialog for dialogID (the envelope id of the pam_request_dialog) and waits
+// for it to report the window gone (#10370). id is this command's own IPC id
+// and must differ from dialogID.
+func (b *Broker) ClosePamDialog(session *Session, id, dialogID string, timeout time.Duration) (ipc.PamCloseDialogResult, error) {
+	var zero ipc.PamCloseDialogResult
+	if session == nil {
+		return zero, fmt.Errorf("nil PAM helper session")
+	}
+	if session.HelperRole != ipc.HelperRoleSystem || !session.HasScope(ipc.ScopePam) {
+		return zero, fmt.Errorf("closing the PAM dialog requires a SYSTEM helper with %q scope", ipc.ScopePam)
+	}
+	if !session.SupportsPamDialogClose {
+		return zero, ErrPamDialogCloseUnsupported
+	}
+	if dialogID == "" || id == dialogID {
+		return zero, fmt.Errorf("PAM dialog close needs a dialog id and its own command id")
+	}
+	resp, err := b.SendCommandAndWait(session, id, ipc.TypePamCloseDialog, ipc.PamCloseDialog{DialogID: dialogID}, timeout)
+	if err != nil {
+		return zero, err
+	}
+	if resp.Error != "" {
+		return zero, fmt.Errorf("PAM dialog close helper error: %s", resp.Error)
+	}
+	var result ipc.PamCloseDialogResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return zero, fmt.Errorf("decode PAM dialog close result: %w", err)
 	}
 	return result, nil
 }
@@ -2146,6 +2314,7 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		if onClosed != nil {
 			onClosed(victim)
 		}
+		b.notifyPromptRendererDisconnected(victim)
 		for _, callback := range callbacks {
 			callback(victim)
 		}
@@ -2153,7 +2322,16 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 	return admitted
 }
 
-func (b *Broker) handleConnection(rawConn net.Conn) {
+// handleConnection authenticates one connection. origin is the per-uid
+// Linux desktop endpoint it arrived on, or nil for the shared socket.
+func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener) {
+	// A per-uid endpoint's handshake slot is released when the handshake
+	// ends, whichever way: at publication below, or on any early return.
+	endHandshake := func() {}
+	if origin != nil {
+		endHandshake = sync.OnceFunc(origin.endHandshake)
+	}
+	defer endHandshake()
 	if b.beforePreAuthRead != nil {
 		b.beforePreAuthRead()
 	}
@@ -2168,15 +2346,32 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	creds, err := ipc.GetPeerCredentials(rawConn)
 	if err != nil {
 		log.Warn("peer credential check failed", "error", err.Error())
+		if origin != nil {
+			// Nothing is said to a peer on a per-uid endpoint that has not
+			// been identified.
+			_ = rawConn.Close()
+			return
+		}
 		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeCredCheckFailed, err.Error(), false)
+		return
+	}
+	// A per-uid endpoint serves exactly one uid. The owner can chmod the
+	// socket, so the file mode is advisory: this kernel uid check, made
+	// before a single byte from the peer is read, is the control.
+	if origin != nil && creds.UID != origin.uid {
+		log.Warn("Linux desktop endpoint: peer uid does not own this endpoint; closing unread",
+			"endpointUID", origin.uid, "peerUID", creds.UID, "pid", creds.PID)
+		_ = rawConn.Close()
 		return
 	}
 
 	verifiedWinSessionID := peerWinSessionID(creds.PID)
 	baseIdentityKey := creds.IdentityKey()
 
-	// Wrap connection
+	// Wrap connection. Until the peer is admitted it may send one small auth
+	// request, so a hostile length header cannot make root allocate more.
 	conn := ipc.NewConn(rawConn)
+	conn.SetMaxRecvSize(preAuthMaxRecv)
 
 	// Step 2: Read auth request
 	// (Moved ahead of binary-path verification so the hash from the auth
@@ -2261,6 +2456,21 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			Permanent: true,
 		})
 		conn.Close()
+		return
+	}
+	// The per-uid endpoint admits only a ticketed Linux desktop helper, and
+	// the shared socket no ticket. Checked before admission, so a refused
+	// peer never burns a ticket.
+	if reason := linuxDesktopEndpointReject(b.effectiveGOOS(), origin != nil, helperRole, authReq); reason != "" {
+		log.Warn("helper refused by endpoint rule", "reason", reason, "role", helperRole,
+			"binaryKind", truncateUTF8(authReq.BinaryKind, 64), "uid", creds.UID, "pid", creds.PID,
+			"desktopEndpoint", origin != nil)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    reason,
+			Permanent: true,
+		})
+		_ = conn.Close()
 		return
 	}
 
@@ -2383,6 +2593,51 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	// Step 7b: Linux per-session desktop helper admission (#12117). Runs after
+	// the path and hash checks, so a peer that is not an agent build cannot
+	// burn a ticket, and before anything else is granted. A Linux desktop
+	// helper earns the desktop scope only through a spawn ticket; without one
+	// it is refused outright, never downgraded to the user helper grant.
+	var linuxDesktop *LinuxDesktopBinding
+	isLinuxDesktop, linuxReject := linuxDesktopAdmission(b.effectiveGOOS(), helperRole, authReq)
+	if linuxReject == "" && isLinuxDesktop {
+		binding, reason := b.admitLinuxDesktopHelper(creds.UID, peerHash, authReq)
+		if reason == "" {
+			linuxDesktop = &binding
+		}
+		linuxReject = reason
+	}
+	if linuxReject != "" {
+		// Never log the ticket itself, and only a well-formed session id: the
+		// peer is not admitted, so the field is untrusted text.
+		logindSession := "<invalid>"
+		if validLogindSessionID(authReq.LogindSessionID) {
+			logindSession = authReq.LogindSessionID
+		}
+		log.Warn("Linux desktop helper admission rejected",
+			"reason", linuxReject, "uid", creds.UID, "pid", creds.PID,
+			"role", helperRole, "logindSession", logindSession)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    linuxReject,
+			Permanent: true,
+		})
+		_ = conn.Close()
+		return
+	}
+
+	if origin != nil && linuxDesktop == nil {
+		// Unreachable while the endpoint rule holds; refuse rather than
+		// admit anything else through a per-uid endpoint.
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "this endpoint admits only a Linux desktop helper with a spawn ticket",
+			Permanent: true,
+		})
+		_ = conn.Close()
+		return
+	}
+
 	// Step 8: Reject duplicate session IDs
 	b.mu.RLock()
 	if _, exists := b.sessions[authReq.SessionID]; exists {
@@ -2459,7 +2714,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	var scopes []string
+	if linuxDesktop != nil {
+		// Exactly the desktop scope: no consent, prompt or messaging grant
+		// from the helper's advertisements.
+		scopes = append([]string(nil), linuxDesktopHelperScopes...)
+	} else {
+		scopes = b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	}
 	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
 	if err != nil {
 		log.Warn("failed to retain authenticated peer process handle", "pid", creds.PID, "error", err.Error())
@@ -2507,10 +2769,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Send auth response
+	// Darwin-only (AgentHandlesTCCNotice), so always false for a Linux
+	// desktop helper.
+	handlesTCCNotice := b.agentHandlesTCCNoticeFor(helperRole, authReq, scopes)
 	authResp := ipc.AuthResponse{
-		Accepted:      true,
-		SessionKey:    hex.EncodeToString(sessionKey),
-		AllowedScopes: scopes,
+		Accepted:              true,
+		SessionKey:            hex.EncodeToString(sessionKey),
+		AllowedScopes:         scopes,
+		AgentHandlesTCCNotice: handlesTCCNotice,
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
 		log.Warn("failed to send auth response", "error", err.Error())
@@ -2528,8 +2794,25 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Clear the handshake deadline
 	rawConn.SetDeadline(time.Time{})
 
-	// Create session
-	session := NewSession(conn, creds.UID, identityKey, authReq.Username, authReq.DisplayEnv, authReq.SessionID, scopes)
+	// Admitted: lift the pre-auth cap. A Linux desktop helper stays tightly
+	// bounded for the life of the connection; every other role returns to
+	// the protocol maximum it always had.
+	if linuxDesktop != nil {
+		conn.SetMaxRecvSize(linuxDesktopHelperMaxRecv)
+		frameDeadline := linuxDesktopHelperFrameDeadline
+		if b.linuxDesktopFrameDeadlineOverride > 0 {
+			frameDeadline = b.linuxDesktopFrameDeadlineOverride
+		}
+		conn.SetFrameDeadline(frameDeadline)
+	} else {
+		conn.SetMaxRecvSize(0)
+	}
+
+	// Create session. The account name comes from the verified peer
+	// identity, never from the auth request.
+	accountName := b.peerAccountName(baseIdentityKey)
+	session := NewSession(conn, creds.UID, identityKey, accountName, authReq.DisplayEnv, authReq.SessionID, scopes)
+	session.accountIdentity = baseIdentityKey
 	session.PID = int(creds.PID)
 	session.HelperRole = helperRole
 	session.BinaryKind = authReq.BinaryKind
@@ -2537,7 +2820,15 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	applyAuthAdvertisements(session, helperRole, authReq)
+	if linuxDesktop != nil {
+		// Only the UI locale is taken from a Linux desktop helper's
+		// advertisements; consent, PAM and prompt support grant nothing.
+		session.enableLinuxDesktopInbound(*linuxDesktop, b.linuxWaylandCaptureAuthorizer())
+		session.uiLocale = uiLocaleFromAuth(authReq)
+	} else {
+		applyAuthAdvertisements(session, helperRole, authReq)
+	}
+	session.agentHandlesTCCNotice.Store(handlesTCCNotice)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2571,10 +2862,24 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 		helperReservation = nil
 	} else {
+		// A session from a per-uid endpoint is recorded on it first, so
+		// closing the endpoint can find it; refused once the endpoint closed.
+		if origin != nil {
+			if !origin.addSession(session) {
+				log.Warn("Linux desktop endpoint closed during handshake; refusing session", "uid", origin.uid)
+				_ = conn.Close()
+				return
+			}
+			session.linuxDesktopOrigin = origin
+		}
 		if err := b.registerNonLifecycleSession(identityKey, helperRole, session, backupReservation); err != nil {
-			log.Warn("max connections exceeded at register (admit race)",
+			if origin != nil {
+				origin.removeSession(session)
+			}
+			log.Warn("helper session registration refused after handshake",
 				"identity", identityKey,
 				"sessionId", authReq.SessionID,
+				"error", err.Error(),
 			)
 			conn.Close()
 			return
@@ -2582,10 +2887,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	peerProcessPublished = true
 	b.finishPreAuth(rawConn)
+	endHandshake()
 
 	log.Info("user helper connected",
 		"identity", identityKey,
-		"username", authReq.Username,
+		"username", accountName,
+		"reportedUsername", authReq.Username,
 		"sessionId", authReq.SessionID,
 		"display", authReq.DisplayEnv,
 		"pid", creds.PID,
@@ -2599,6 +2906,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// handler remains asynchronous because it may perform slow IPC work.
 	b.fireLifecycleSessionAuthenticated(session)
 	go b.firePrimarySessionAuthenticated(session)
+	b.notifyPromptRendererConnected(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
@@ -2621,11 +2929,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 // exercisable without standing up a full IPC handshake.
 func (b *Broker) finishHelperSession(session *Session) {
 	b.removeSession(session)
+	if session.linuxDesktopOrigin != nil {
+		session.linuxDesktopOrigin.removeSession(session)
+	}
 	if session.HelperRole == backupipc.HelperRoleBackup {
 		// Report before clearing the session pointer: the report has to see
 		// that this session is the one that owns the in-flight run.
-		b.reportBackupHelperDeath(session)
+		redispatch := b.reportBackupHelperDeath(session)
 		b.ClearBackupSession(session)
+		// Queued runs go to a fresh helper only after the pointer is cleared,
+		// so the respawn cannot hand back the session that just ended. Off
+		// this goroutine: a spawn waits up to backupHelperSpawnTimeout.
+		if len(redispatch) > 0 {
+			go b.redispatchQueuedBackupRuns(session, redispatch)
+		}
 	}
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
@@ -2668,6 +2985,12 @@ func (b *Broker) removeSession(session *Session) {
 }
 
 func (b *Broker) closeSession(session *Session) error {
+	return b.closeSessionWithReason(session, "")
+}
+
+// closeSessionWithReason is closeSession that records reason as the session's
+// CloseReason when this call is the one that closes it (Session.CloseWithReason).
+func (b *Broker) closeSessionWithReason(session *Session, reason string) error {
 	b.mu.Lock()
 	removed := b.removeSessionMapsLocked(session)
 	if removed {
@@ -2677,11 +3000,12 @@ func (b *Broker) closeSession(session *Session) error {
 	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
-	closeErr := session.closeTransportAndPeer()
+	closeErr := session.closeTransportAndPeerWithReason(reason)
 	if removed {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
 		}
+		b.notifyPromptRendererDisconnected(session)
 		for _, callback := range callbacks {
 			callback(session)
 		}
@@ -2735,6 +3059,7 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
 		}
+		b.notifyPromptRendererDisconnected(session)
 		for _, callback := range callbacks {
 			callback(session)
 		}
@@ -2921,6 +3246,9 @@ func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos,
 	if role == ipc.HelperRoleAssist && authReq.SupportsChat {
 		scopes = append(scopes, ipc.ScopeChat)
 	}
+	// Prompt host (#10190): prompt / prompt_operator only for kinds this
+	// renderer advertised, filtered by role and copy class.
+	scopes = append(scopes, promptGrantFromAuth(role, authReq).scopes...)
 	return scopes
 }
 
@@ -2953,12 +3281,21 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
 	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
 	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
+	session.SupportsPamDialogClose = pamDialogCloseFromAuth(role, authReq)
+	applyPromptGrant(session, promptGrantFromAuth(role, authReq))
+	session.uiLocale = uiLocaleFromAuth(authReq)
 }
 
 // targetedPamDismissFromAuth reports whether the agent may send this helper a
 // targeted consent dismissal. Only SYSTEM helpers dismiss consent.exe at all.
 func targetedPamDismissFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
 	return role == ipc.HelperRoleSystem && authReq.SupportsTargetedPamDismiss
+}
+
+// pamDialogCloseFromAuth reports whether the agent may send this helper
+// pam_close_dialog (#10370). Only SYSTEM helpers show the PAM dialog.
+func pamDialogCloseFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
+	return role == ipc.HelperRoleSystem && authReq.SupportsPamDialogClose
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
@@ -3339,7 +3676,9 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
+				"denialVerdict", sanitized.DenialVerdict,
 			)
+			b.forwardTCCStatus(s, *sanitized)
 		}
 	case ipc.TypeDisconnect:
 		log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)
@@ -3388,11 +3727,17 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		if env.Type == backupipc.TypeBackupResult {
 			b.noteBackupRunResult(env)
 		}
+		// A queued run that reports any phase past "queued" has started, and
+		// is failed rather than re-sent if its helper session ends (#12193).
+		if env.Type == backupipc.TypeBackupProgress {
+			b.noteBackupRunProgress(env)
+		}
 		if b.onMessage != nil {
 			b.onMessage(s, env)
 		}
 	case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
-		ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult:
+		ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult,
+		ipc.TypeDesktopClipboardRead:
 		if !shouldForwardUnsolicitedHelperMessage(s, env) {
 			log.Warn("dropping unsolicited or unauthorized helper message",
 				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
@@ -3429,6 +3774,9 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		// Any authenticated helper may relay its own warn+ lines; the record
 		// is sanitized and rate-capped per session (#9266).
 		b.relayHelperLog(s, env)
+	case ipc.TypePromptPresented, ipc.TypePromptAction, ipc.TypePromptClosed:
+		// Prompt host (#10190): only from a session holding a prompt scope.
+		b.dispatchPromptMessage(s, env)
 	default:
 		log.Warn("unknown message type from helper, ignoring",
 			"type", env.Type, "identity", s.IdentityKey, "sessionId", s.SessionID)
@@ -3451,6 +3799,22 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 // TestKeepaliveToleratesSendFailuresBelowThreshold.
 const keepaliveMaxSendFailures = 3
 
+// keepaliveMaxLateTicks is how many consecutive late ticks, with no pong in
+// between, may skip the close decision. A late tick means the agent itself
+// was not running (system suspend, a whole-machine or process stall), so the
+// pong age it reads says nothing about the helper; the tick re-pings instead
+// of judging (#11044). The bound keeps a persistently starved agent from
+// shielding a genuinely wedged helper forever.
+const keepaliveMaxLateTicks = 4
+
+// keepaliveLateAfter is the tick gap past which runKeepalive treats a tick as
+// late: half an interval of slack over the ping cadence. With the production
+// 30 s / 45 s timing that is exactly the pong timeout, so any gap long enough
+// to time a pong out by itself is recognised as the agent's own absence.
+func keepaliveLateAfter(interval time.Duration) time.Duration {
+	return interval + interval/2
+}
+
 // runKeepalive pings the helper every keepalivePingInterval and closes the
 // session if no pong has arrived for keepaliveTimeout. Exits when the session
 // is closed by anything else (RecvLoop return, explicit Close, reaper, etc).
@@ -3461,31 +3825,77 @@ const keepaliveMaxSendFailures = 3
 // spuriously close a healthy session. Checking first means we only close
 // when the most recent pong we actually have is already too old — a
 // decision that is independent of this tick's outgoing ping.
+//
+// Agent absence is not helper silence (#11044). When a tick arrives late —
+// the machine slept, or the agent process or the whole machine stalled — the
+// pong age spans time the agent was not running, so the late tick never closes:
+// the helper may have been frozen alongside the agent, or its pong may be
+// sitting unread behind a stalled RecvLoop. It gets a fresh ping and one
+// on-time interval to answer, the same window an on-time helper gets, and the
+// next on-time tick judges it as usual. Before this, every helper session on a
+// device that slept for over 45 s was closed at resume, and a backup in flight
+// was failed as "backup helper exited unexpectedly".
 func (b *Broker) runKeepalive(session *Session) {
-	ticker := time.NewTicker(keepalivePingInterval)
-	defer ticker.Stop()
+	interval, timeout := b.keepaliveTiming()
+	lateAfter := keepaliveLateAfter(interval)
+	ticks, stopTicks := b.newKeepaliveTicker(interval)
+	defer stopTicks()
 
 	sendFailures := 0
+	lastTick := session.now()
+	// seenPong is the pong record as of the previous tick; a different
+	// pointer means a pong arrived since. lateTicks counts consecutive late
+	// ticks without one.
+	seenPong := session.lastPong()
+	lateTicks := 0
 	for {
 		select {
 		case <-session.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			if session.IsClosed() {
 				return
+			}
+
+			now := session.now()
+			gap := now.Sub(lastTick)
+			lastTick = now
+			if p := session.lastPong(); p != seenPong {
+				seenPong = p
+				lateTicks = 0
+			}
+			late := gap > lateAfter
+			if late {
+				lateTicks++
 			}
 
 			// Authoritative wedge check: the age here is the time since the
 			// most recently received pong (seeded to session creation time
 			// in NewSession), not the time since the ping we're about to
-			// send below.
-			if age := session.LastPongAge(); age > keepaliveTimeout {
+			// send below. A late tick defers the verdict (see above).
+			age := session.LastPongAge()
+			if age > timeout && late && lateTicks <= keepaliveMaxLateTicks {
+				// The one case the late-tick rule changes: the old loop
+				// would have closed here. Warn so it ships with the agent's
+				// logs, and a field close that follows can be read in context.
+				log.Warn("keepalive tick late, agent was not running; re-pinging instead of closing",
+					"sessionId", session.SessionID,
+					"identity", session.IdentityKey,
+					"gapMs", gap.Milliseconds(),
+					"pongAgeMs", age.Milliseconds(),
+					"lateAfterMs", lateAfter.Milliseconds(),
+					"consecutiveLate", lateTicks,
+				)
+			} else if age > timeout {
 				log.Warn("keepalive pong timeout, closing stranded session",
 					"sessionId", session.SessionID,
 					"identity", session.IdentityKey,
 					"ageMs", age.Milliseconds(),
+					"gapMs", gap.Milliseconds(),
+					"consecutiveLate", lateTicks,
 				)
-				if err := session.Close(); err != nil {
+				reason := fmt.Sprintf("keepalive timeout: no reply from the helper for %s", age.Round(time.Second))
+				if err := session.CloseWithReason(reason); err != nil {
 					log.Error("keepalive close returned error",
 						"sessionId", session.SessionID,
 						"error", err.Error(),
@@ -3511,7 +3921,8 @@ func (b *Broker) runKeepalive(session *Session) {
 						"identity", session.IdentityKey,
 						"consecutive", sendFailures,
 					)
-					if err := session.Close(); err != nil {
+					reason := fmt.Sprintf("keepalive pings to the helper failed %d times in a row", sendFailures)
+					if err := session.CloseWithReason(reason); err != nil {
 						log.Error("keepalive close returned error",
 							"sessionId", session.SessionID,
 							"error", err.Error(),
@@ -3617,7 +4028,7 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 	case ipc.TypeTrayAction:
 		return session.HasScope("tray")
 	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected, ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew,
-		ipc.TypeDesktopLocalICECandidate:
+		ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopClipboardRead:
 		return session.HasScope("desktop")
 	case ipc.TypeWatchdogCommandResult:
 		return session.HasScope("watchdog")
@@ -3625,6 +4036,8 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope(ipc.ScopeMessaging)
 	case ipc.TypeChatReply, ipc.TypeChatPresented:
 		return session.HasScope(ipc.ScopeChat)
+	case ipc.TypePromptPresented, ipc.TypePromptAction, ipc.TypePromptClosed:
+		return session.HasPromptScope()
 	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 		return false
 	default:
@@ -3652,6 +4065,13 @@ func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *i
 	}
 	if !session.HasScope("clipboard") {
 		sanitized.CanClipboard = false
+	}
+	// A Linux desktop helper's claims are an upper bound, never a grant: root
+	// decides whether capture is allowed (#12117).
+	if session.LinuxDesktop != nil {
+		sanitized.CanNotify, sanitized.CanTray, sanitized.CanClipboard = false, false, false
+		sanitized.CanCapture = sanitized.CanCapture &&
+			session.linuxCaptureAuthorized != nil && session.linuxCaptureAuthorized()
 	}
 	// Caller verification (#6354 W02) is rendered only by the Assist helper
 	// that also owns the consent prompt; a native helper never qualifies.

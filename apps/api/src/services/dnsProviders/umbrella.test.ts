@@ -218,10 +218,12 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
   /**
    * Queue a token, then the given activity pages, then the empty page that
    * ends the offset walk (an empty page — not a short one — is the documented
-   * end-of-collection signal; see the paging test below).
+   * end-of-collection signal; see the paging test below). The first non-empty
+   * page of a run is always followed by the one-record offset-cap probe
+   * (#10018), answered empty here: the window fits.
    */
-  function queueActivityPages(...pages: unknown[]) {
-    queueTokenThen(...pages, { data: [] });
+  function queueActivityPages(first: unknown, ...rest: unknown[]) {
+    queueTokenThen(first, { data: [] }, ...rest, { data: [] });
   }
 
   /** One `data[]` record in the next-gen Reports API shape. */
@@ -362,8 +364,8 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     const fullPage = Array.from({ length: 1000 }, (_, i) => activityRecord({ domain: `d${i}.example` }));
     queueTokenThen(
       { data: fullPage },
-      // A full first page triggers the offset-cap probe (#7207): an empty
-      // page at offset 10000 proves the window fits under Cisco's cap.
+      // A non-empty first page triggers the offset-cap probe (#7207, #10018):
+      // an empty page at offset 10000 proves the window fits under Cisco's cap.
       { data: [] },
       { data: [activityRecord({ domain: 'last.example' })] },
       { data: [] }

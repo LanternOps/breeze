@@ -33,6 +33,7 @@ vi.mock('./M365MailboxCard', () => ({ default: () => <div data-testid="m365-mail
 vi.mock('./GmailMailboxCard', () => ({ default: () => <div data-testid="gmail-mailbox-card" /> }));
 vi.mock('./CannedResponsesCard', () => ({ default: () => <div data-testid="stub-canned-responses-card" /> }));
 vi.mock('./TicketChecklistTemplatesPage', () => ({ default: () => <div data-testid="stub-ticket-checklist-templates-page" /> }));
+vi.mock('./TicketRoutingTab', () => ({ default: () => <div data-testid="stub-ticket-routing-tab" /> }));
 vi.mock('./TicketFormsCard', () => ({ default: () => <div data-testid="stub-ticket-forms-card" /> }));
 vi.mock('./TimeTrackingSettingsCard', () => ({ default: () => <div data-testid="stub-time-tracking-card" /> }));
 

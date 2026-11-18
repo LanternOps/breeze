@@ -119,6 +119,8 @@ const RUNTIME_KEYS = [
   // default (no host), so dropping it on a re-up would leave api unbootable.
   'TUNNEL_ORIGIN_TEMPLATE', 'TUNNEL_FRAME_ANCESTOR', 'TUNNEL_SITE_ADDRESS', 'TUNNEL_HOST_SUFFIX',
   'PUBLIC_PORTAL_URL',
+  // #9777 — public URLs pinned to the stack's caddy base URL (see pinWebAuthnForStack).
+  'PUBLIC_APP_URL', 'PUBLIC_API_URL', 'DASHBOARD_URL',
 ] as const;
 
 /**
@@ -203,6 +205,27 @@ export function setStackEnvValues(worktreePath: string, values: Record<string, s
 }
 
 /**
+ * #9777 — the public URLs for a local stack. BREEZE_DOMAIN is empty there, so
+ * compose would default these to `https://` / `https:///portal`, and every
+ * customer-facing link the API mints (quote accept, invoice mail, Stripe
+ * returns, portal invites) derives from them. Same shape as prod: no /api
+ * suffix, portal under /portal.
+ */
+export function localPublicUrls(baseUrl: string): Record<string, string> {
+  return {
+    PUBLIC_APP_URL: baseUrl,
+    PUBLIC_API_URL: baseUrl,
+    DASHBOARD_URL: baseUrl,
+    PUBLIC_PORTAL_URL: `${baseUrl}/portal`,
+  };
+}
+
+/** Put the local public URLs back (e.g. when tunnel host mode is torn down). Never blank them. */
+export function restoreLocalPublicUrls(worktreePath: string, baseUrl: string): void {
+  setStackEnvValues(worktreePath, localPublicUrls(baseUrl));
+}
+
+/**
  * #6443 — make passkeys work on this stack. The API verifies the browser origin
  * against WEBAUTHN_ORIGIN and the RP ID against WEBAUTHN_RP_ID, each falling
  * back to root-.env values that never describe a local stack on a random caddy
@@ -215,7 +238,13 @@ export function pinWebAuthnForStack(
   baseUrl: string,
   deps: { recreateApi: () => void; waitApiHealthy: () => void },
 ): boolean {
-  const wanted = { WEBAUTHN_ORIGIN: baseUrl, WEBAUTHN_RP_ID: new URL(baseUrl).hostname };
+  const wanted: Record<string, string> = {
+    WEBAUTHN_ORIGIN: baseUrl,
+    WEBAUTHN_RP_ID: new URL(baseUrl).hostname,
+    ...localPublicUrls(baseUrl),
+  };
+  // A Network Proxy tunnel stack (#8155) sets its own PUBLIC_PORTAL_URL; keep it.
+  if (readStackEnvValue(worktreePath, 'TUNNEL_ORIGIN_TEMPLATE')) delete wanted.PUBLIC_PORTAL_URL;
   const stale = Object.entries(wanted).some(([k, v]) => readStackEnvValue(worktreePath, k) !== v);
   if (!stale) return false;
   setStackEnvValues(worktreePath, wanted);

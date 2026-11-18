@@ -96,6 +96,10 @@ describe('llm_egress_events schema contracts', () => {
     for (const surface of [
       'one_shot_token_count',
       'one_shot_continuation_summary',
+      // #10390: re-issued in 2027-01-22-190100-wisp-threads-picture.sql.
+      'one_shot_wisp_thread_summary',
+      // #10428: re-issued in 2027-01-22-233400-wisp-standing-instruction-capture.sql.
+      'one_shot_wisp_instruction_extract',
     ] as unknown as LlmEgressSurface[]) {
       await withSystemDbAccessContext(() =>
         db.insert(llmEgressEvents).values({

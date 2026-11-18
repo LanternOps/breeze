@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { createTicketFormSchema, updateTicketFormSchema, ERROR_CODES } from '@breeze/shared';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { organizations, ticketForms } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -213,14 +213,16 @@ ticketFormRoutes.post(
     const normalizedVisibleOrgIds = normalizeVisibleOrgIds(payload.visibleOrgIds);
     if (payload.ownerScope === 'partner') {
       try {
-        await syncTicketFormOrgLinks(row.id, normalizedVisibleOrgIds, auth.partnerId!);
+        // Savepoint so a SQL failure in the sync rolls back and the cleanup
+        // delete below can still run (#11203).
+        await withDbTransaction(async () => syncTicketFormOrgLinks(row.id, normalizedVisibleOrgIds, auth.partnerId!));
       } catch (err) {
         // A failed sync (e.g. cross-partner org id) must not leave an
         // orphaned half-created form behind — delete it and surface the 400.
         // The rollback itself must not be allowed to throw and mask the
         // original TicketFormError with an unrelated 500.
         try {
-          await db.delete(ticketForms).where(eq(ticketForms.id, row.id));
+          await withDbTransaction(async () => db.delete(ticketForms).where(eq(ticketForms.id, row.id)));
         } catch (rollbackErr) {
           console.warn('[ticket-forms] rollback delete failed after syncTicketFormOrgLinks error', {
             formId: row.id,

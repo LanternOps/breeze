@@ -23,6 +23,18 @@ const interruptedCommandError = "agent restarted while command was running"
 // as results.
 const commandJournalDirName = "inflight"
 
+// interruptedResultBodies lets a command type supply the stdout of its
+// synthetic interrupted result. Registered in init() only; read-only after.
+var interruptedResultBodies = map[string]func(commandID string) (string, bool){}
+
+func interruptedResultBody(entry commandJournalEntry) (string, bool) {
+	fn, ok := interruptedResultBodies[entry.Type]
+	if !ok {
+		return "", false
+	}
+	return fn(entry.CommandID)
+}
+
 // commandJournalEntry is the on-disk record of one executing command.
 type commandJournalEntry struct {
 	CommandID string    `json:"commandId"`
@@ -265,7 +277,7 @@ func (j *commandJournal) Recover(outbox *backupResultOutbox) int {
 			_ = os.Remove(path)
 			continue
 		}
-		if !outbox.Enqueue(websocket.CommandResult{
+		synthetic := websocket.CommandResult{
 			Type:      "command_result",
 			CommandID: entry.CommandID,
 			Status:    "failed",
@@ -273,7 +285,13 @@ func (j *commandJournal) Recover(outbox *backupResultOutbox) int {
 			// zero would persist a false "exited 0".
 			ExitCode: 1,
 			Error:    interruptedCommandError,
-		}) {
+		}
+		// A command type that keeps its own durable record can say more than
+		// "interrupted" (oem_update_run: lane, tool and stage).
+		if body, ok := interruptedResultBody(entry); ok {
+			synthetic.Stdout = body
+		}
+		if !outbox.Enqueue(synthetic) {
 			continue
 		}
 		_ = os.Remove(path)

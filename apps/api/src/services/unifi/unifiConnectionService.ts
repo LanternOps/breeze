@@ -7,6 +7,7 @@ export type DbExecutor = {
   insert: (...args: any[]) => any;
   update: (...args: any[]) => any;
   delete: (...args: any[]) => any;
+  transaction: <T>(fn: (tx: DbExecutor) => Promise<T>) => Promise<T>;
 };
 
 // Closed status domain for a partner's UniFi connection (compile-time typo guard).

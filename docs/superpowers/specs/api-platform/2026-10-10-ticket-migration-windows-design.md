@@ -489,6 +489,8 @@ The "Imported" chip, the filter and the window pages come with the step 3 wizard
 
 ## 8. What steps 2 and 3 inherit
 
+> **Corrected by `2026-10-19-ticket-import-modules-design.md` §10:** the concurrency cap is a renewable per-partner lease (`reviewConcurrency.ts` is per org, with a 90 s TTL and no heartbeat); the wizard, as the principal's owner, opens windows, not the module; merged tickets are linked `duplicate_of` now that ticket links are on `main` (#8675).
+
 **Attachments (step 2)** extend the same mode:
 - `ticket_attachments.migration_window_id`;
 - writes go only to the S3 backend, and an import refuses to start on a deployment without object

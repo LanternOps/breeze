@@ -68,4 +68,15 @@ describe('TicketApprovalRail load states', () => {
     expect(await screen.findByTestId('ticket-approval-load-error')).toBeInTheDocument();
     expect(screen.getByTestId('ticket-budget-ceiling')).toBeInTheDocument();
   });
+
+  // #10073: on a merged tombstone the budget PATCH and the request POST 409.
+  it('read-only shows the budget but no save or request controls', async () => {
+    fetchWithAuth.mockResolvedValue(okRes());
+    render(<TicketApprovalRail ticketId="tk-1" readOnly />);
+    expect(await screen.findByTestId('ticket-budget-ceiling')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-budget-hours')).toHaveAttribute('readonly');
+    expect(screen.getByTestId('ticket-budget-amount')).toHaveAttribute('readonly');
+    expect(screen.queryByTestId('ticket-budget-save')).toBeNull();
+    expect(screen.queryByTestId('ticket-budget-request-toggle')).toBeNull();
+  });
 });

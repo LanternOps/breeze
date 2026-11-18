@@ -1,5 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { approveOutcomeToast, extractUacDetails, executableName, getApprovalCopy } from './approvalCopy';
+import {
+  approveOutcomeToast,
+  extractUacDetails,
+  executableName,
+  getApprovalCopy,
+  DENY_REASON_MAX_LENGTH,
+  DENY_REASON_SHOWN_TO_END_USER_HINT,
+  denyReasonShownToEndUser,
+} from './approvalCopy';
+
+describe('deny reason copy (#8928)', () => {
+  it('caps the deny reason at the server limit of 500 characters', () => {
+    expect(DENY_REASON_MAX_LENGTH).toBe(500);
+  });
+
+  it('tells the technician the reason is shown to the end user for uac_intercept only', () => {
+    expect(
+      denyReasonShownToEndUser({ actionToolName: 'uac_intercept', actionLabel: 'x', actionArguments: {} }),
+    ).toBe(true);
+    expect(
+      denyReasonShownToEndUser({ flowType: 'uac_intercept', actionToolName: 'other', actionLabel: 'x', actionArguments: {} }),
+    ).toBe(true);
+    expect(
+      denyReasonShownToEndUser({ actionToolName: 'm365_reset_password', actionLabel: 'x', actionArguments: {} }),
+    ).toBe(false);
+    expect(DENY_REASON_SHOWN_TO_END_USER_HINT).toMatch(/end user/i);
+  });
+});
 
 describe('extractUacDetails', () => {
   it('reads the elevation schema camelCase fields', () => {

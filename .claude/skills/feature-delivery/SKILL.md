@@ -33,9 +33,12 @@ Related skills, not repeated here: `feature-pipeline` (intake and gates),
 2. `claude agents` and `claude-dispatch ls` — other orchestrators' sessions count
    against the host. Cap **~8 heavy fixers** machine-wide (13 sonnet fixers → load 66;
    36 parallel tsc → load 48 + 6 GB swap). Load 2.5 with 3 live sessions = room for 5.
-3. `claude-dispatch pick` — which account profile `auto` will choose (a breezermm,
-   b lanternops, c olivetech, d pressless; skips ≥80% 5h). If it prints nothing, pass
-   `--account <letter>` explicitly; do not fall back to in-session Agent for waves.
+3. `claude-dispatch usage` — pick the account yourself and always pass
+   `--account <letter>`: b lanternops, c olivetech, d pressless (Max subscriptions;
+   burn the soonest-reset first, skip ≥80% 5h). **Never a** (breezermm — retired
+   2026-10-23, login expired) and **never e** (lanternops2 — API pay-per-token).
+   ~60 s after launch grep the session log for "Not logged in": a logged-out fixer
+   looks launched and writes nothing. Do not fall back to in-session Agent for waves.
 4. Re-verify the item is still open, unclaimed, and has no PR (`gh pr list --search
    "<N> in:title"`). Pools decay ~25% per 60 merges.
 5. Parallel fixers that add migrations each get a **distinct migration slot** in the
@@ -62,9 +65,40 @@ radius: **opus** for tenancy/RLS, auth, billing, agent-shipped Go, permission ga
 **sonnet** for everything else; never Fable for workers. Under an Opus outage, run
 sonnet with pre-decided design points and an abort clause (round 4, 09-03: 11/11).
 
+### Parallelism and cost (Todd, 2026-10-23: "do all that, exactly")
+
+Wave-level parallelism alone leaves the host mostly idle: a dependency chain runs one
+or two sessions at a time. Three levers, applied to every multi-wave feature from the
+plan stage onward:
+
+1. **Split long waves on the API / web / mobile seam.** A wave with more than ~8
+   tasks or any mix of `apps/api` and `apps/web`/`apps/mobile` work becomes two or
+   three sub-issues (`add_wave`, titles `W05a — …`, `W05b — …`) that run **in
+   parallel**, every part based on `main` and targeting `main` (never stacked). The
+   w00/orchestrator contracts are the oracle, so web/mobile parts build against the
+   API's interfaces with mocked `fetchWithAuth` before the API merges. The API part
+   owns `packages/shared`; a web/mobile part that needs an unmerged type copies the
+   file **verbatim** from the API branch (`git show origin/<api-branch>:<path>`) so
+   the later rebase resolves byte-identical. An engine-vs-services seam inside the API
+   (W05) works the same way: the second part cherry-picks the listed schema/service
+   SHAs first. The part landing last owns whole-wave verification.
+2. **In-wave fan-out.** The plan names PARALLEL GROUPS of file-disjoint tasks; the
+   fixer runs each group as concurrent subagents in one worktree. Concurrent subagents
+   never `git commit`; the fixer commits once per group. Groups run in order.
+3. **Sonnet for mechanical tasks only.** The session and every tenancy / auth /
+   permission / migration task stay Opus. The plan marks **Sonnet** tasks (locale
+   fan-out, page scaffolds, pure helpers, docs, DTO plumbing); they run on Sonnet
+   subagents with an Opus reviewer. Accounts b/c/d are Max subscriptions, so cost is
+   quota, not dollars; account e bills per token and account a is retired.
+
+Write the three levers into the plan doc (an "Execution split and parallelism"
+section per wave, the task allocation and groups spelled out) and into each brief.
+Example: Wisp (#9906) W04–W08.
+
 A brief is self-contained: absolute paths, the plan doc path, the wave's file
-ownership (parallel waves must be file-disjoint), the migration slot, the exact test
-commands, `Closes #<sub-issue>` in the PR body, and these three lines verbatim:
+ownership (parallel waves must be file-disjoint), the PARALLEL GROUPS and Sonnet task
+list from the plan, the migration slot, the exact test commands, `Closes #<sub-issue>`
+in the PR body, and these three lines verbatim:
 
 - "Open the PR, run `/pr-review-toolkit:review-pr`, post the review summary, STOP.
   Do not merge, do not close the issue."

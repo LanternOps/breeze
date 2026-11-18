@@ -67,6 +67,7 @@ const REACH_FILES = [
 /** file -> reason. Add only with a reason a reviewer can check. */
 const REACH_EXEMPT: Record<string, string> = {
   'services/autopay/paymentSettingsView.ts': 'Fee authorization gaps positively select customer organizations only; holding organizations cannot match.',
+  'jobs/peripheralJobs.ts': 'System reconciliation sweep, not a human org-reach computation: the org-status filter skips inactive tenants (#10362), and notParkedDeviceCondition() in the same where clause already excludes devices in the holding org.',
 };
 
 describe('holding org is outside every human org-reach computation', () => {

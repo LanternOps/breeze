@@ -1,10 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+
+// Keep spool files out of the repo's apps/api/data: the default spool dir derives from PATCH_REPORT_STORAGE_PATH.
+let spoolTmp: string;
+const prevPatchReportPath = process.env.PATCH_REPORT_STORAGE_PATH;
+beforeEach(() => {
+  spoolTmp = mkdtempSync(join(tmpdir(), 'breeze-spool-test-'));
+  process.env.PATCH_REPORT_STORAGE_PATH = join(spoolTmp, 'patch-reports');
+});
+afterEach(() => {
+  if (prevPatchReportPath === undefined) delete process.env.PATCH_REPORT_STORAGE_PATH;
+  else process.env.PATCH_REPORT_STORAGE_PATH = prevPatchReportPath;
+  rmSync(spoolTmp, { recursive: true, force: true });
+});
 
 // Proves a structural property: the manifest
 // network fetch must not run while a DB access context (a held pooled
 // connection / transaction) is open. `withSystemDbAccessContext` is
 // instrumented to track nesting depth instead of being a bare pass-through,
-// so `fetchManifestBytes` can assert on the depth at the moment it's called.
+// so `openManifest` can assert on the depth at the moment it's called.
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -27,9 +44,27 @@ const {
   contextDepth: { current: 0 },
 }));
 
+// The publish transaction first locks the snapshot row and re-reads the claim
+// (#11026 publish fence); answer it as the row this run claimed.
+function claimedAt(): unknown {
+  for (const result of [...updateMock.mock.results].reverse()) {
+    const set = (result.value as { set?: ReturnType<typeof vi.fn> })?.set;
+    const claim = set?.mock.calls.map((c) => c[0]).find((v) => v?.fileIndexStatus === 'hydrating');
+    if (claim) return claim.fileIndexHydratedAt;
+  }
+  return null;
+}
+function routeSelect(...args: unknown[]) {
+  const fields = args[0];
+  if (fields && typeof fields === 'object' && 'fileIndexHydratedAt' in fields && !('snapshotId' in fields)) {
+    return chainMock([{ fileIndexStatus: 'hydrating', fileIndexHydratedAt: claimedAt(), orgId: ORG_ID, deviceId: DEVICE_ID, metadata: {}, integrityStatus: null }]);
+  }
+  return selectMock(...(args as []));
+}
+
 vi.mock('../db', () => {
   const tx = {
-    select: (...args: unknown[]) => selectMock(...(args as [])),
+    select: (...args: unknown[]) => routeSelect(...args),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
@@ -92,7 +127,7 @@ beforeEach(() => {
   updateMock.mockImplementation(() => chainMock([snapshotRow({ fileIndexStatus: 'hydrating' })]));
   deleteMock.mockImplementation(() => chainMock([]));
   transactionMock.mockImplementation(async (cb: any) => cb({
-    select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock,
+    select: routeSelect, insert: insertMock, update: updateMock, delete: deleteMock,
   }));
   resolveSnapshotProviderConfigMock.mockResolvedValue({
     snapshot: snapshotRow(),
@@ -109,16 +144,16 @@ describe('hydrateSnapshotFileIndex manifest-fetch transaction scope', () => {
 
     let depthDuringFetch: number | null = null;
     const deps = {
-      fetchManifestBytes: vi.fn(async () => {
+      openManifest: vi.fn(async () => {
         depthDuringFetch = contextDepth.current;
-        return Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8');
+        return Readable.from([Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8')]);
       }),
     };
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
 
     expect(outcome.status).toBe('complete');
-    expect(deps.fetchManifestBytes).toHaveBeenCalledTimes(1);
+    expect(deps.openManifest).toHaveBeenCalledTimes(1);
     expect(depthDuringFetch).toBe(0);
   });
 
@@ -128,9 +163,9 @@ describe('hydrateSnapshotFileIndex manifest-fetch transaction scope', () => {
 
     const contextCallOrder: string[] = [];
     const deps = {
-      fetchManifestBytes: vi.fn(async () => {
+      openManifest: vi.fn(async () => {
         contextCallOrder.push('fetch');
-        return Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8');
+        return Readable.from([Buffer.from(JSON.stringify({ id: 'snap-current', files: [] }), 'utf8')]);
       }),
     };
 

@@ -1,8 +1,10 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { ticketExternalRefs, tickets } from '../db/schema';
 import { pgErrorConstraint } from '../utils/pgErrors';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 
 /**
  * A ticket's id/url in an external PSA/ITSM, namespaced by the partner service
@@ -74,12 +76,13 @@ export async function upsertTicketExternalRef(input: {
    */
   externalNumber?: string | null;
 }): Promise<TicketExternalRef> {
-  const [ticket] = await db
-    .select({ orgId: tickets.orgId })
-    .from(tickets)
-    .where(eq(tickets.id, input.ticketId))
-    .limit(1);
+  // #8972 W0: the ticket row lock IS the read — ticket first, then the ref,
+  // and outside the insert's savepoint (a unique violation rolls that back,
+  // which would release a lock taken inside it).
+  const ticket = await lockTicketForWrite(db, input.ticketId);
   if (!ticket) throw new Error(`ticket ${input.ticketId} is not visible to this context; authorize it before writing an external ref`);
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(ticket);
   try {
     const [row] = await db.transaction((tx) =>
       tx.insert(ticketExternalRefs)
@@ -99,6 +102,10 @@ export async function upsertTicketExternalRef(input: {
             externalId: input.externalId,
             externalUrl: input.externalUrl ?? null,
             ...(input.externalNumber !== undefined ? { externalNumber: input.externalNumber } : {}),
+            // A ref a merge moved (#10120) keeps its origin only while it
+            // names the same external id: a new one is written here directly.
+            originTicketId: sql`CASE WHEN ticket_external_refs.external_id = excluded.external_id
+                                     THEN ticket_external_refs.origin_ticket_id END`,
             updatedAt: new Date(),
           },
         })
@@ -121,6 +128,10 @@ export async function upsertTicketExternalRef(input: {
 
 /** Drop the principal's ref for a ticket (a PATCH with `externalTicketId: null`). */
 export async function clearTicketExternalRef(principalId: string, ticketId: string): Promise<void> {
+  // #8972 W0: ticket first. A ticket this context cannot lock leaves the
+  // DELETE to match nothing, exactly as before.
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
   await db.delete(ticketExternalRefs).where(and(
     eq(ticketExternalRefs.partnerServicePrincipalId, principalId),
     eq(ticketExternalRefs.ticketId, ticketId),

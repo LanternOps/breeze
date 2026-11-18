@@ -6,7 +6,7 @@ import { aiAgentRuns } from './aiAgents';
 import { ticketComments } from './portal';
 
 describe('ticketOutboxEventEnum', () => {
-  it('has exactly the six ticket lifecycle events', () => {
+  it('has exactly the seven ticket lifecycle events', () => {
     expect(ticketOutboxEventEnum).toEqual([
       'ticket.created',
       'ticket.status_changed',
@@ -14,6 +14,7 @@ describe('ticketOutboxEventEnum', () => {
       'ticket.assigned',
       'ticket.commented',
       'ticket.restored',
+      'ticket.merged',
     ]);
   });
 
@@ -21,7 +22,9 @@ describe('ticketOutboxEventEnum', () => {
     // Same pin-to-migration pattern as intentOutboxEventEnum
     // (actionIntents.test.ts) — a value added here but not in SQL becomes a
     // row that silently fails to insert.
-    const sqlPath = new URL('../../../migrations/2026-09-19-ai-agents-ticket-shadow.sql', import.meta.url);
+    // The NEWEST migration that redefines the CHECK (#8972 widened it for
+    // ticket.merged); the original is 2026-09-19-ai-agents-ticket-shadow.sql.
+    const sqlPath = new URL('../../../migrations/2027-01-04-110000-ticket-merge.sql', import.meta.url);
     const sql = readFileSync(sqlPath, 'utf8');
     const check = sql.slice(sql.indexOf('ticket_outbox_event_type_check'));
     for (const event of ticketOutboxEventEnum) {

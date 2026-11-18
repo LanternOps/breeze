@@ -6,12 +6,24 @@
  * filter) can name the provider keys without pulling the adapters' import
  * closure. `registry.ts` re-exports it and maps each key to its adapter.
  */
-export const EDR_PROVIDER_KEYS = ['bitdefender'] as const;
+export const EDR_PROVIDER_KEYS = ['bitdefender', 'emsisoft'] as const;
 
 export type EdrProviderKey = (typeof EDR_PROVIDER_KEYS)[number];
 
 export function isEdrProviderKey(key: string): key is EdrProviderKey {
   return (EDR_PROVIDER_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * The providers whose adapter can supply an installer. `registry.test.ts` pins
+ * this list to the adapters declaring `capabilities.installer !== 'none'`.
+ */
+export const EDR_INSTALLER_PROVIDER_KEYS = ['bitdefender'] as const;
+
+export type EdrInstallerProviderKey = (typeof EDR_INSTALLER_PROVIDER_KEYS)[number];
+
+export function isEdrInstallerProviderKey(key: string): key is EdrInstallerProviderKey {
+  return (EDR_INSTALLER_PROVIDER_KEYS as readonly string[]).includes(key);
 }
 
 /**
@@ -21,6 +33,7 @@ export function isEdrProviderKey(key: string): key is EdrProviderKey {
  */
 export const EDR_PROVIDER_LABELS: Record<EdrProviderKey, string> = {
   bitdefender: 'Bitdefender GravityZone',
+  emsisoft: 'Emsisoft',
 };
 
 export function edrProviderLabel(key: string): string {

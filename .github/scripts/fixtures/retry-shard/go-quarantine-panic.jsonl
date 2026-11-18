@@ -1,0 +1,22 @@
+{"Time":"2026-10-30T08:44:11.297923-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/internal/qpanic"}
+{"Time":"2026-10-30T08:44:11.76518-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky"}
+{"Time":"2026-10-30T08:44:11.765276-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"=== RUN   TestFlaky\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:11.765333-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"--- FAIL: TestFlaky (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:11.76776-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"panic: assignment to entry in nil map [recovered, repanicked]\n"}
+{"Time":"2026-10-30T08:44:11.767795-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\n"}
+{"Time":"2026-10-30T08:44:11.767809-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"goroutine 5 [running]:\n"}
+{"Time":"2026-10-30T08:44:11.767819-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"testing.tRunner.func1.2({0x1005da548, 0x100610fe0})\n"}
+{"Time":"2026-10-30T08:44:11.76783-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2123 +0x1a0\n"}
+{"Time":"2026-10-30T08:44:11.767837-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"testing.tRunner.func1()\n"}
+{"Time":"2026-10-30T08:44:11.767842-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2126 +0x2c8\n"}
+{"Time":"2026-10-30T08:44:11.76785-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"panic({0x1005da548?, 0x100610fe0?})\n"}
+{"Time":"2026-10-30T08:44:11.767855-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/runtime/panic.go:859 +0x120\n"}
+{"Time":"2026-10-30T08:44:11.767859-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"github.com/breeze-rmm/agent/internal/qpanic.TestFlaky(0x7103b7948248?)\n"}
+{"Time":"2026-10-30T08:44:11.767864-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/home/runner/work/breeze/breeze/agent/internal/qpanic/q_test.go:7 +0x34\n"}
+{"Time":"2026-10-30T08:44:11.76788-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"testing.tRunner(0x7103b7948248, 0x1005f73e8)\n"}
+{"Time":"2026-10-30T08:44:11.767884-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-10-30T08:44:11.767891-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-30T08:44:11.7679-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2258 +0x3b8\n"}
+{"Time":"2026-10-30T08:44:11.768363-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qpanic","Test":"TestFlaky","Elapsed":0}
+{"Time":"2026-10-30T08:44:11.768392-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qpanic","Output":"FAIL\tgithub.com/breeze-rmm/agent/internal/qpanic\t0.470s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:11.768425-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qpanic","Elapsed":0.471}

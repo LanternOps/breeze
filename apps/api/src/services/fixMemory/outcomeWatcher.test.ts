@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { rows, transitionMock } = vi.hoisted(() => ({ rows: [] as unknown[][], transitionMock: vi.fn() }));
+const { rows, transitionMock, ctxStack } = vi.hoisted(() => ({ rows: [] as unknown[][], transitionMock: vi.fn(), ctxStack: [] as string[] }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'limit', 'orderBy', 'update', 'set', 'returning']) chain[m] = vi.fn(() => chain);
@@ -8,7 +8,11 @@ vi.mock('../../db', () => {
   return { db: chain };
 });
 vi.mock('../outcomeProbes', () => ({
-  inSystemDbContext: (fn: () => unknown) => fn(),
+  // Tracks the open system transactions by label, so a test can see which one a read ran in.
+  inSystemDbContext: async (fn: () => unknown, label?: string) => {
+    ctxStack.push(label ?? 'unlabelled');
+    try { return await fn(); } finally { ctxStack.pop(); }
+  },
   readAlertRecovery: vi.fn(async () => null),
   probeTelemetryFreshness: vi.fn(),
   telemetryProbeFor: () => ({ table: 'device_metrics', column: 'cpu_percent' }),
@@ -19,6 +23,7 @@ vi.mock('./store', () => ({ transitionOutcome: transitionMock, fillOutcomeSignat
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { BreezeEvent } from '../eventBus';
 import { probeTelemetryFreshness, readAlertRecovery } from '../outcomeProbes';
+import { alertSignature } from './signatureLoader';
 import {
   advanceOutcome, decideAwaitingRecovery, decideHolding, decidePending, handleFixOutcomeEvent, readingFromAlert,
   readingFromCleanupRun, readingFromCommand, readingFromEpisode, recurrencePrefilter,
@@ -40,6 +45,19 @@ describe('decidePending', () => {
   });
   it('waits while the script is still running before the deadline', () => {
     expect(decidePending({ script: { status: 'running', exitCode: null }, deadlineAt: at(24), now: at(1) })).toBeNull();
+  });
+  it('measures the recovery deadline from when the script completed, not from the sweep (#7279)', () => {
+    // The sweeper only ran 3h after the script finished.
+    const t = decidePending({ script: { status: 'completed', exitCode: 0, completedAt: at(1) }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(25) });
+  });
+  it('never dates the recovery deadline from a completion time in the future (clock skew)', () => {
+    const t = decidePending({ script: { status: 'completed', exitCode: 0, completedAt: at(9) }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(28) });
+  });
+  it('falls back to the sweep time when the completion time is unknown', () => {
+    const t = decidePending({ script: { status: 'completed', exitCode: 0 }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(28) });
   });
   it.each(['failed', 'timeout'] as const)('a %s execution that was never delivered is inconclusive, not a failed attempt (I2)', (status) => {
     expect(decidePending({ script: { status, exitCode: null, neverDelivered: true }, deadlineAt: at(24), now: at(1) }))
@@ -69,6 +87,19 @@ describe('advanceOutcome pending → the sweeper tells an undelivered script fro
     expect(rows).toHaveLength(1); // the command row was never read
   });
 
+  it('a completed run read by the sweeper gets its recovery deadline from the execution completion time (#7279)', async () => {
+    rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'completed', exitCode: 0, startedAt: at(0), completedAt: at(1) }]);
+    expect(await advanceOutcome('o-p', { now: at(3) })).toBe('awaiting_recovery');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: at(25) });
+  });
+
+  it('a completed built-in command gets its recovery deadline from the command completion time (#7279)', async () => {
+    const builtin = { ...pending, scriptExecutionId: null, actionCommandId: 'c-9', actionCleanupRunId: null };
+    rows.push([builtin], [{ orgId: 'org-1' }], [{ status: 'completed', result: null, executedAt: at(0), completedAt: at(2) }]);
+    expect(await advanceOutcome('o-p', { now: at(3) })).toBe('awaiting_recovery');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: at(26) });
+  });
+
   it('failed with no started_at but no delivery-clock expiry (polling agent reported a failure) stays failed', async () => {
     rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'failed', exitCode: 1, startedAt: null }], []);
     expect(await advanceOutcome('o-p', { now: at(1) })).toBe('failed');
@@ -77,10 +108,11 @@ describe('advanceOutcome pending → the sweeper tells an undelivered script fro
 });
 
 describe('readingFromAlert (Review Focus 2)', () => {
-  const base = { resolvedAt: at(2), resolvedBy: null, resolutionReason: 'condition_cleared' };
+  const base = { resolvedAt: at(2), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' };
   it.each([
     [{ status: 'resolved', ...base }, { kind: 'recovered', at: at(2) }],
     [{ status: 'resolved', ...base, resolvedBy: 'user-1' }, { kind: 'cleared_other', reason: 'human_resolved' }],
+    [{ status: 'resolved', ...base, resolvedByPrincipalId: '11111111-1111-4111-8111-111111111111' }, { kind: 'cleared_other', reason: 'human_resolved' }],
     [{ status: 'resolved', ...base, resolutionReason: 'source_retired' }, { kind: 'cleared_other', reason: 'resolved_source_retired' }],
     [{ status: 'resolved', ...base, resolutionReason: 'expired' }, { kind: 'cleared_other', reason: 'resolved_expired' }],
     [{ status: 'resolved', ...base, resolutionReason: null }, { kind: 'cleared_other', reason: 'resolved_unspecified' }],
@@ -182,8 +214,18 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     scriptExecutionId: 'e-1', deadlineAt: at(24), createdAt: at(0),
   };
   const evt = { id: 'ev', type: 'alert.resolved', orgId: 'org-1', source: 's', priority: 'normal',
-    payload: { alertId: 'a-1', resolvedAt: at(2).toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
+    payload: { alertId: 'a-1', resolvedAt: at(2).toISOString(), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' },
     metadata: { timestamp: '' } } as unknown as BreezeEvent;
+
+  it('treats a principal resolve payload as human_resolved, never objective recovery', async () => {
+    rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
+    await handleFixOutcomeEvent({
+      ...evt,
+      payload: { ...evt.payload, resolvedByPrincipalId: '11111111-1111-4111-8111-111111111111' },
+    });
+    expect(transitionMock).toHaveBeenCalledTimes(1);
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'human_resolved' });
+  });
 
   it('duplicate alert.resolved delivery transitions once', async () => {
     // delivery 1: lookup ids -> outcome row -> device org
@@ -208,7 +250,7 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
     await handleFixOutcomeEvent({
       ...evt, type: 'script.failed',
-      payload: { alertId: 'a-1', executionId: 'e-1', status: 'failed', resolvedAt: at(2).toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
+      payload: { alertId: 'a-1', executionId: 'e-1', status: 'failed', resolvedAt: at(2).toISOString(), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' },
     } as unknown as BreezeEvent);
 
     rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
@@ -237,14 +279,14 @@ describe('advanceOutcome awaiting_recovery reads the execution start time (I3)',
   };
 
   it('an alert that cleared after dispatch but before the script started is inconclusive cleared_before_fix', async () => {
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(0.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(0.5), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
     rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
     expect(await advanceOutcome('o-a', { now: at(2) })).toBe('inconclusive');
     expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'cleared_before_fix' });
   });
 
   it('an alert that cleared after the script started starts the hold', async () => {
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(1.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(1.5), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
     rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
     expect(await advanceOutcome('o-a', { now: at(2) })).toBe('holding');
     expect(transitionMock.mock.calls[0]![1]).toMatchObject({ to: 'holding', recoveredAt: at(1.5) });
@@ -273,6 +315,48 @@ describe('scanRecurrence fails closed when unsignable (Review Focus 3 — fix ro
   });
 });
 
+describe('the recurrence scan runs outside the decide transaction (#7279)', () => {
+  beforeEach(() => { rows.length = 0; ctxStack.length = 0; transitionMock.mockReset().mockResolvedValue(true); vi.mocked(alertSignature).mockReset(); });
+
+  const holding = {
+    id: 'o-h', orgId: 'org-1', partnerId: 'p-1', deviceId: 'd-1', state: 'holding', countedAt: null,
+    signatureKey: 'k'.repeat(64), sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1', anomalyEpisodeId: null,
+    signatureFacets: { family: 'alert', condition: 'sourced:script_exit_code:s-1' }, scriptExecutionId: null,
+    deadlineAt: at(26), createdAt: at(0), recoveredAt: at(2), holdingUntil: at(26),
+  };
+  const page = (n: number, offset = 0) => Array.from({ length: n }, (_, i) => ({ id: `al-${offset + i}`, cursorAt: at(3).toISOString() }));
+
+  it('resolves every candidate in its own short system transaction, never inside the advance transaction', async () => {
+    const seenIn: string[][] = [];
+    vi.mocked(alertSignature).mockImplementation(async () => { seenIn.push([...ctxStack]); return null; });
+    // pass 1 (outcome, device org) → two scan pages (50 + 3 candidates) → pass 2 (outcome, device org).
+    rows.push([holding], [{ orgId: 'org-1' }], page(50), page(3, 50), [holding], [{ orgId: 'org-1' }]);
+
+    expect(await advanceOutcome('o-h', { now: at(5) })).toBe('holding');
+
+    expect(seenIn).toHaveLength(53);
+    for (const stack of seenIn) expect(stack).toEqual(['fixOutcomeWatcher.recurrencePage']);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('a recurrence found by the split scan decides the hold in the second pass', async () => {
+    vi.mocked(alertSignature).mockImplementation(async (id: string) => (id === 'al-2'
+      ? { signature: { key: 'k'.repeat(64) } } : null) as never);
+    rows.push([holding], [{ orgId: 'org-1' }], page(3), [holding], [{ orgId: 'org-1' }]);
+
+    expect(await advanceOutcome('o-h', { now: at(5) })).toBe('recurred');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'recurred', reason: 'same_signature_recurred' });
+  });
+
+  it('leaves the hold for the next sweep when the row changed under the scan', async () => {
+    vi.mocked(alertSignature).mockResolvedValue(null);
+    rows.push([holding], [{ orgId: 'org-1' }], page(1), [{ ...holding, recoveredAt: at(3) }], [{ orgId: 'org-1' }]);
+
+    expect(await advanceOutcome('o-h', { now: at(30) })).toBe('holding');
+    expect(transitionMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('holding -> verified re-checks the source (Review Focus 3 — fix round 1)', () => {
   beforeEach(() => {
     rows.length = 0;
@@ -289,10 +373,10 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
   });
 
   it('a reopened alert blocks verification even with fresh telemetry and no recurrence (fail closed)', async () => {
-    // fixOutcomes lookup, device-org lookup, empty recurrence-scan alert batch.
-    rows.push([holdingRow('o-3', 'a-3')], [{ orgId: 'org-1' }], []);
+    // pass 1 (outcome, device org), the empty recurrence-scan page, pass 2 (outcome, device org).
+    rows.push([holdingRow('o-3', 'a-3')], [{ orgId: 'org-1' }], [], [holdingRow('o-3', 'a-3')], [{ orgId: 'org-1' }]);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolutionReason: null });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: null });
 
     const result = await advanceOutcome('o-3', { now: at(30) });
 
@@ -301,9 +385,9 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
   });
 
   it('a source that is now closed some OTHER way (human resolve, dismiss) no longer confirms the hold (M1)', async () => {
-    rows.push([holdingRow('o-5', 'a-5')], [{ orgId: 'org-1' }], []);
+    rows.push([holdingRow('o-5', 'a-5')], [{ orgId: 'org-1' }], [], [holdingRow('o-5', 'a-5')], [{ orgId: 'org-1' }]);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(20), resolvedBy: 'user-1', resolutionReason: 'manual' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(20), resolvedBy: 'user-1', resolvedByPrincipalId: null, resolutionReason: 'manual' });
 
     const result = await advanceOutcome('o-5', { now: at(30) });
 
@@ -312,9 +396,9 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
   });
 
   it('verifies normally once the source re-check confirms it is still resolved', async () => {
-    rows.push([holdingRow('o-4', 'a-4')], [{ orgId: 'org-1' }], []);
+    rows.push([holdingRow('o-4', 'a-4')], [{ orgId: 'org-1' }], [], [holdingRow('o-4', 'a-4')], [{ orgId: 'org-1' }]);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(2), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(2), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
 
     const result = await advanceOutcome('o-4', { now: at(30) });
 

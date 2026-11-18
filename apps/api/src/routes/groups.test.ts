@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Membership writers take the org export lock first; it is a database call
+// this file's mocked db cannot run. Each writer's lock order is checked on
+// real Postgres by its own race in groupMembershipWriteOrder.integration.test.ts.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
+}));
+
 import { Hono } from 'hono';
 import { groupRoutes } from './groups';
 
@@ -44,7 +53,7 @@ vi.mock('../db', () => ({
       }))
     })),
     insert: vi.fn(() => ({
-      values: vi.fn(() => Promise.resolve())
+      values: vi.fn((rows: Array<{ deviceId: string }>) => ({ onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) }))
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -56,7 +65,10 @@ vi.mock('../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
     }))
-  }
+  },
+  // groupMembership schedules peripheral reconciliation after commit (#10521 W2b);
+  // there is no transaction here, so run it immediately.
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
 }));
 
 vi.mock('../db/schema', () => ({

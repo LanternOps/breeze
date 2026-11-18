@@ -4,6 +4,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { bulkTicketActionSchema, ERROR_CODES } from '@breeze/shared';
 import { assignTicket, changeTicketStatus, softDeleteTicket, getAssigneeForValidation, TicketServiceError } from '../../services/ticketService';
+import { TicketMergedError } from '../../services/ticketMerge/errors';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { actorFrom, getScopedTicketOr404 } from './tickets';
 
@@ -97,7 +98,12 @@ ticketsBulkRoutes.post(
         }
         results.updated++;
       } catch (err) {
-        if (err instanceof TicketServiceError) {
+        if (err instanceof TicketMergedError) {
+          // #8972: a merged tombstone is read-only — a skip, like any other
+          // per-ticket refusal, not a failure.
+          countSkip(err.code);
+          console.warn(`[tickets/bulk] Skipped ${body.action} for merged ticket ${ticketId} (merged into ${err.mergedIntoTicketId})`);
+        } else if (err instanceof TicketServiceError) {
           // FSM-invalid transition, CAS conflict, vanished ticket, or per-ticket
           // tenant validation — not currently actionable; mirrors alerts bulk's
           // "skipped" bucket, with the code surfaced via skippedReasons.

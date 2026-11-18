@@ -3,7 +3,10 @@ import { toolActionEnum } from './aiToolActions';
 import { TIER1_ACTIONS, TIER2_ACTIONS, TIER2_READONLY_ACTIONS, TIER3_ACTIONS, isReadOnlyResolution } from './aiGuardrails';
 
 export interface McpToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
-export interface McpToolPresentation { title: string; annotations: McpToolAnnotations; _meta: { 'app.breeze/domain': string } }
+/** B-W05 (#6159): a tool's MCP Apps pointer (`_meta.ui`); display-only views are model-visible only. */
+export type McpToolUiMeta = { resourceUri: string; visibility: ['model'] };
+// `ui` is merged in by tools/list for an MCP App's tool only; buildMcpToolPresentation never sets it.
+export interface McpToolPresentation { title: string; annotations: McpToolAnnotations; _meta: { 'app.breeze/domain': string; ui?: McpToolUiMeta } }
 
 const ACRONYMS = new Set(['m365', 's1', 'c2c', 'dns', 'cis', 'pam', 'dr', 'sla', 'vm', 'mssql', 'ip', 'os', 'psa', 'ui', 'api', 'id', 'usb', 'pprof']);
 

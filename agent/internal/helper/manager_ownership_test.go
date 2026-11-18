@@ -142,6 +142,9 @@ func TestApplyNonOwnerNeverMutatesMachineAssist(t *testing.T) {
 			if !mgr.nonOwnerNoticeLogged {
 				t.Fatal("non-owner should log once that it is leaving Assist alone")
 			}
+			if fileExists(filepath.Join(f.baseDir, ownershipFileName)) {
+				t.Fatal("non-owner wrote the machine-wide Assist ownership record")
+			}
 		})
 	}
 }
@@ -155,6 +158,7 @@ func TestApplyOwnerStillManagesMachineAssist(t *testing.T) {
 		f := newOwnershipFixture(t, true)
 		stubMachineSeams(t, &calls, f.binaryPath)
 		mgr := newOwnershipManager(t, f, &calls, WithMachineInstallOwner(true))
+		markAgentInstalled(t, mgr) // the agent removes only its own install (#10185)
 
 		mgr.Apply(&Settings{Enabled: false})
 

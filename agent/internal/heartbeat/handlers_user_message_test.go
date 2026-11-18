@@ -434,12 +434,11 @@ func TestAgentResendsOnlyStickyUnackedAfterHelperAuth(t *testing.T) {
 		}
 	}
 	h.endpointMessages.MarkTerminal("acked")
-	// Force "expiring" past its expiry without sleeping.
-	h.endpointMessages.mu.Lock()
-	m := h.endpointMessages.msgs["expiring"]
-	m.ExpiresAt = now.Add(-time.Second)
-	h.endpointMessages.msgs["expiring"] = m
-	h.endpointMessages.mu.Unlock()
+	// Force "expiring" past its expiry without sleeping: re-store it as of an
+	// hour ago with an expiry that has since passed.
+	if err := h.endpointMessages.PutFor(testShow("expiring", now.Add(-time.Second)), "", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 
 	h.replayEndpointMessages(assist.session)
 

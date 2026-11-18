@@ -21,8 +21,10 @@ import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import AlertDeviceInfo from './AlertDeviceInfo';
+import { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
+import { secureExternalTicketUrl } from '../../lib/secureExternalTicketUrl';
 import {
   anomalyDeepLinkHash,
   formatAnomalyConfidence,
@@ -33,16 +35,17 @@ import {
 } from './alertMlContext';
 import { fillDevicePlaceholders, type AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
+import { alertLifecycleLine } from './alertLifecycleLine';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 
-type Alert = {
+type Alert = AlertSubjectFields & {
   id: string;
   title: string;
   message: string;
   severity: AlertSeverity;
   status: AlertStatus;
-  deviceId: string;
+  deviceId: string | null;
   deviceName: string;
   /**
    * The alert's OWN org. W08 (#5246): the delegate action targets this org,
@@ -72,6 +75,15 @@ type Alert = {
   // Phase 2 wave P2-1 (alert verdicts), Task 15. Null when the alert has no
   // verdict yet (or the org has AI agents disabled).
   aiVerdict?: AlertAiVerdictSummaryDto | null;
+};
+
+type ExternalTicket = {
+  source: 'partner_api' | 'psa';
+  partnerServicePrincipalId: string | null;
+  externalId: string;
+  externalUrl: string | null;
+  externalNumber: string | null;
+  state?: string | null;
 };
 
 type LinkedTicket = {
@@ -109,6 +121,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
   const [linkedError, setLinkedError] = useState(false);
+  const [externalTickets, setExternalTickets] = useState<ExternalTicket[]>([]);
+  const [externalTicketsError, setExternalTicketsError] = useState(false);
+  const [externalTicketsRefresh, setExternalTicketsRefresh] = useState(0);
+  const [psaTicketPending, setPsaTicketPending] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
@@ -126,7 +142,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       }
 
       const data = await response.json();
-      const deviceName = data.device?.hostname || data.deviceName || stableT('alertDetailPage.unknownDevice');
+      const deviceName = isDeviceAlert({ ownerKind: data.ownerKind, deviceId: data.deviceId })
+        ? data.device?.hostname || data.deviceName || stableT('alertDetailPage.unknownDevice')
+        : data.subjectName || data.ownerLabel || stableT(data.ownerKind === 'topology_site' ? 'subject.topologySite' : 'subject.backupWorkload');
       // Map API response to component structure
       setAlert({
         ...data,
@@ -160,6 +178,44 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     fetchAlert();
     void fetchLinkedTickets();
   }, [fetchAlert, fetchLinkedTickets]);
+
+  useEffect(() => {
+    let current = true;
+    setExternalTickets([]);
+    setExternalTicketsError(false);
+    void (async () => {
+      try {
+        const response = await fetchWithAuth(`/alerts/${alertId}/external-tickets`);
+        if (!response.ok) throw new Error('External tickets read failed');
+        const body = await response.json();
+        if (current) setExternalTickets(body.data ?? []);
+      } catch {
+        if (current) setExternalTicketsError(true);
+      }
+    })();
+    return () => { current = false; };
+  }, [alertId, externalTicketsRefresh]);
+
+  const handleCreatePsaTicket = async () => {
+    if (psaTicketPending || serviceManagementMode !== 'external' || !can('tickets', 'write')) return;
+    setPsaTicketPending(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/alerts/${alertId}/psa-ticket`, { method: 'POST' }),
+        errorFallback: t('alertDetailPage.failedToCreatePsaTicket'),
+        successMessage: t('alertDetailPage.psaTicketRequested'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      setExternalTicketsRefresh(value => value + 1);
+    } catch (err) {
+      // A 409 can follow a committed admission (binding changed mid-request):
+      // reload the chip so whatever mapping exists becomes visible.
+      if (err instanceof ActionError && err.status === 409) setExternalTicketsRefresh(value => value + 1);
+      handleActionError(err, t('alertDetailPage.failedToCreatePsaTicket'));
+    } finally {
+      setPsaTicketPending(false);
+    }
+  };
 
   // Inject AI context when alert data is available
   const setPageContext = useAiStore((s) => s.setPageContext);
@@ -206,7 +262,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     try {
       setActionInProgress(true);
       await runAction({
-        request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, { method: 'POST' }),
+        request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, {
+          method: 'POST',
+          // Same body the alerts drawer sends. A bodyless POST still carries the
+          // JSON content type and the API validator rejects it as malformed (#9622).
+          body: JSON.stringify({ note: '' }),
+        }),
         errorFallback: t('alertDetailPage.failedToResolveAlert'),
         successMessage: t('alertDetailPage.alertResolved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
@@ -275,9 +336,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   }
 
   const StatusIcon = statusIcons[alert.status];
+  const lifecycleLine = alertLifecycleLine(t, alert.contextData);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="alert-detail-page">
       <Breadcrumbs items={[
         { label: t('alertDetailPage.alertsBreadcrumb'), href: '/alerts' },
         { label: alert.title || t('alertDetailPage.alertFallback') }
@@ -323,6 +385,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   />
                 )}
               </div>
+              {lifecycleLine && (
+                <p data-testid="alert-lifecycle-line" className="mt-2 text-sm text-muted-foreground">{lifecycleLine}</p>
+              )}
               {alert.aiVerdict && (
                 <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
               )}
@@ -340,16 +405,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
 
           {/* Actions */}
           <div className="flex gap-2">
-            {/* #5075 W04 — Service Management gate.
-                'off': the API refuses with a 409 (the backstop lives in
-                ticketService.createTicket), so this avoids offering a button
-                that cannot succeed.
-                'external': the API WOULD accept the create (it still writes the
-                Breeze-side shadow row), but the alert flow has no PSA-linking
-                step yet, so a ticket raised here would strand outside the
-                partner's system of record. Hidden until that ships — unlike the
-                org record's Tickets tab, which stays visible under external
-                because it lists those shadow rows. */}
+            {/* Service Management selects the partner's ticket system. */}
             {serviceManagementMode === 'native' && can('tickets', 'write') && (
               <button
                 type="button"
@@ -359,6 +415,18 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
               >
                 <Ticket className="mr-2 inline-block h-4 w-4" />
                 {t('alertDetailPage.createTicket')}
+              </button>
+            )}
+            {serviceManagementMode === 'external' && can('tickets', 'write') && (
+              <button
+                type="button"
+                data-testid="alert-create-psa-ticket"
+                onClick={() => void handleCreatePsaTicket()}
+                disabled={psaTicketPending}
+                className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <Ticket className="mr-2 inline-block h-4 w-4" />
+                {t('alertDetailPage.createPsaTicket')}
               </button>
             )}
             {can('alerts', 'acknowledge') && alert.status === 'active' && (
@@ -377,14 +445,14 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 the alert as its source so the verification criterion gets a
                 recurrence signal (without one, the best achievable outcome is
                 `investigation_complete`, never `verified_resolved`). */}
-            {(alert.status === 'active' || alert.status === 'acknowledged') && (
-              <DelegateToOperatorButton
+            {isDeviceAlert(alert) && (alert.status === 'active' || alert.status === 'acknowledged') && (
+              <span data-testid="alert-device-action"><DelegateToOperatorButton
                 orgId={alert.orgId}
                 deviceId={alert.deviceId}
                 deviceLabel={alert.deviceName}
                 source={{ kind: 'alert', id: alert.id }}
                 defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
-              />
+              /></span>
             )}
             {can('alerts', 'write') && (alert.status === 'active' || alert.status === 'acknowledged') && (
               <button
@@ -404,12 +472,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       {/* Alert Message */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <h3 className="text-sm font-semibold text-muted-foreground mb-2">{t('alertDetailPage.message')}</h3>
-        <p className="text-sm">{alert.message}</p>
+        <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm">{alert.message}</p>
       </div>
 
       <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId} />
 
-      {alert.anomalyContext && (
+      {isDeviceAlert(alert) && alert.anomalyContext && (
         <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.mlAnomalyEvidence')}</h3>
           <div className="grid gap-4 sm:grid-cols-3">
@@ -450,6 +518,39 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
         </div>
       )}
 
+      {(externalTickets.length > 0 || externalTicketsError) && (
+        <section data-testid="alert-external-tickets" aria-labelledby="alert-external-tickets-heading" className="space-y-2">
+          <h3 id="alert-external-tickets-heading" className="text-sm font-semibold">{t('alertDetailPage.externalTickets')}</h3>
+          {externalTicketsError ? (
+            <p data-testid="alert-external-tickets-error" className="text-sm text-muted-foreground">{t('alertDetailPage.externalTicketsFailedToLoad')}</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {externalTickets.map((ticket, index) => {
+                const href = secureExternalTicketUrl(ticket.externalUrl);
+                const label = ticket.externalNumber || ticket.externalId;
+                return (
+                  <li key={`${ticket.source}:${ticket.partnerServicePrincipalId}:${ticket.externalId}:${index}`} className="max-w-full">
+                    {href ? (
+                      <a data-testid="alert-external-ticket-link" href={href} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-primary hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <span className="break-all">{label}</span><ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      </a>
+                    ) : (
+                      <span data-testid="alert-external-ticket-label" className="inline-block max-w-full break-all rounded-md border px-3 py-1.5 text-sm">{label}</span>
+                    )}
+                    {ticket.source === 'psa' && ticket.state && (
+                      <span data-testid="alert-external-ticket-state" className="ml-2 text-xs text-muted-foreground">
+                        {t(/* i18n-dynamic */ `common:longTail.psa.PsaAlertTicketingActivity.states.${ticket.state}`, { defaultValue: ticket.state })}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      )}
+
       {/* Linked Tickets */}
       {(linkedTickets.length > 0 || linkedError) && (
         <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="alert-linked-tickets">
@@ -480,9 +581,10 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       <div className="grid gap-6 md:grid-cols-2">
         {/* Device Info */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{t('alertDetailPage.deviceInformation')}</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-4">{isDeviceAlert(alert) ? t('alertDetailPage.deviceInformation') : t('subject.label')}</h3>
           <div className="space-y-3">
             <AlertDeviceInfo
+              {...alert}
               deviceId={alert.deviceId}
               deviceName={alert.deviceName}
               ruleName={alert.ruleName}

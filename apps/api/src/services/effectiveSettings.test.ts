@@ -27,7 +27,15 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import { db } from '../db';
-import { assertNotLocked, getEffectiveAiBudget, getEffectiveOrgSettings } from './effectiveSettings';
+import { PARTNER_SETTINGS_CATALOG } from '@breeze/shared';
+import {
+  assertNotLocked,
+  CONDITIONAL_LOCK_IN_FORCE,
+  getEffectiveAiBudget,
+  getEffectiveOrgSettings,
+  resolveEffectiveAiBudgetFromRows,
+  resolveEffectiveCategorySettings,
+} from './effectiveSettings';
 
 /**
  * assertNotLocked issues two sequential reads, each shaped
@@ -49,7 +57,7 @@ function primeSelect(orgRows: unknown[], partnerRows: unknown[]) {
 /** Partner enforces `defaults.autoEnrollment` with everything switched off. */
 const PARTNER_AUTO_ENROLLMENT_OFF = {
   defaults: {
-    autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+    autoEnrollment: { enabled: false, requireApproval: false },
   },
 };
 
@@ -62,36 +70,57 @@ describe('assertNotLocked', () => {
     primeSelect([{ partnerId: 'partner-1' }], [{ settings: {} }]);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
+    ).resolves.toBeUndefined();
+  });
+
+  // #9617: the partner-level deviceGroup/alertThreshold/sendWelcome were retired.
+  // Legacy values a partner already stored must not lock the org's real group id
+  // or reject an old client that still re-sends sendWelcome.
+  it('ignores retired partner defaults (deviceGroup, alertThreshold, sendWelcome) when locking', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1' }],
+      [{ settings: { defaults: {
+        deviceGroup: 'Contractors',
+        alertThreshold: 'high',
+        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: true },
+      } } }],
+    );
+
+    await expect(
+      assertNotLocked('org-1', 'defaults', {
+        deviceGroup: '11111111-1111-4111-8111-111111111111',
+        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+      }),
     ).resolves.toBeUndefined();
   });
 
   it('rejects a locked field the org is actually changing', async () => {
     primeSelect(
       [{ partnerId: 'partner-1' }],
-      [{ settings: { defaults: { deviceGroup: 'Critical Infrastructure' } } }],
+      [{ settings: { defaults: { agentUpdatePolicy: 'auto' } } }],
     );
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
   it('names every diverging field in the 403 message', async () => {
     primeSelect(
       [{ partnerId: 'partner-1' }],
-      [{ settings: { defaults: { deviceGroup: 'Contractors', alertThreshold: 'high' } } }],
+      [{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: '24/7' } } }],
     );
 
     const err = await assertNotLocked('org-1', 'defaults', {
-      deviceGroup: 'Remote Staff',
-      alertThreshold: 'medium',
+      agentUpdatePolicy: 'manual',
+      maintenanceWindow: 'Sun 02:00-04:00',
     }).catch((e) => e as HTTPException);
 
     expect(err).toBeInstanceOf(HTTPException);
     expect((err as HTTPException).status).toBe(403);
-    expect((err as HTTPException).message).toContain('defaults.deviceGroup');
-    expect((err as HTTPException).message).toContain('defaults.alertThreshold');
+    expect((err as HTTPException).message).toContain('defaults.agentUpdatePolicy');
+    expect((err as HTTPException).message).toContain('defaults.maintenanceWindow');
   });
 
   // Issue #2752 — the core regression. The org settings editors PUT the whole
@@ -103,7 +132,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+        autoEnrollment: { enabled: false, requireApproval: false },
       }),
     ).resolves.toBeUndefined();
   });
@@ -115,9 +144,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
-        deviceGroup: 'Contractors',
-        alertThreshold: 'medium',
+        autoEnrollment: { enabled: false, requireApproval: false },
         agentUpdatePolicy: 'manual',
         maintenanceWindow: '24/7',
       }),
@@ -130,7 +157,7 @@ describe('assertNotLocked', () => {
     await expect(
       assertNotLocked('org-1', 'defaults', {
         // Same three booleans, declared in a different order.
-        autoEnrollment: { sendWelcome: false, enabled: false, requireApproval: false },
+        autoEnrollment: { enabled: false, requireApproval: false },
       }),
     ).resolves.toBeUndefined();
   });
@@ -140,7 +167,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: true, requireApproval: false, sendWelcome: false },
+        autoEnrollment: { enabled: true, requireApproval: false },
       }),
     ).rejects.toMatchObject({ status: 403 });
   });
@@ -148,10 +175,10 @@ describe('assertNotLocked', () => {
   // A partner value of `false`/`0`/`''` locks just as hard as a truthy one — the
   // guard keys on presence-plus-divergence, never on truthiness.
   it('treats a falsy partner value as enforced', async () => {
-    primeSelect([{ partnerId: 'partner-1' }], [{ settings: { defaults: { deviceGroup: '' } } }]);
+    primeSelect([{ partnerId: 'partner-1' }], [{ settings: { defaults: { agentUpdatePolicy: '' } } }]);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
@@ -175,7 +202,7 @@ describe('assertNotLocked', () => {
     primeSelect([], []);
 
     await expect(
-      assertNotLocked('missing-org', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('missing-org', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 404 });
   });
 
@@ -183,7 +210,7 @@ describe('assertNotLocked', () => {
     primeSelect([{ partnerId: 'partner-1' }], []);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 404 });
   });
 
@@ -352,6 +379,59 @@ describe('getEffectiveAiBudget alertThresholdPercents (#4388)', () => {
   });
 });
 
+// #9666: the partner AI Budgets tab now saves `aiBudgets` without `enabled`
+// when the partner leaves "AI for all organizations" not set. That shape must
+// leave each org's own AI switch in force and unlocked; only an explicit
+// partner `enabled` value overrides and locks it.
+describe('aiBudgets.enabled partner lock (#9666)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('partner caps without enabled keep the org switch and do not lock it', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { monthlyBudgetCents: 5000 } }),
+      mockOrgBudgetRow({ enabled: false }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(false);
+    expect(locked).toContain('aiBudgets.monthlyBudgetCents');
+    expect(locked).not.toContain('aiBudgets.enabled');
+  });
+
+  it('partner caps without enabled leave an org with AI on enabled at runtime', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { monthlyBudgetCents: 5000 } }),
+      mockOrgBudgetRow({ enabled: true }),
+    );
+    expect((await getEffectiveAiBudget('org1')).enabled).toBe(true);
+  });
+
+  it('an explicit partner enabled:false still wins and locks', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { enabled: false } }),
+      mockOrgBudgetRow({ enabled: true }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(false);
+    expect(locked).toContain('aiBudgets.enabled');
+  });
+
+  it('an explicit partner enabled:true wins over an org that turned AI off, and locks', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { enabled: true } }),
+      mockOrgBudgetRow({ enabled: false }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(true);
+    expect(locked).toContain('aiBudgets.enabled');
+  });
+});
+
 describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -439,5 +519,197 @@ describe('getEffectiveOrgSettings security.sessionTimeout clamp (#6111)', () => 
     );
     const { effective } = await getEffectiveOrgSettings('org1');
     expect(effective.security?.sessionTimeout).toBe(720);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure cores (#9170): the async resolvers above are thin loaders around these,
+// so the runtime and the partner settings inheritance read model share one
+// implementation. Each fixture is asserted on the core directly, then fed as
+// mocked DB rows through the async wrapper, which must return the same thing.
+// ---------------------------------------------------------------------------
+
+describe('resolveEffectiveAiBudgetFromRows (pure core, #9170)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const fixtures: {
+    name: string;
+    partnerAiBudgets: Record<string, unknown> | undefined;
+    orgRow: Record<string, unknown> | null;
+    expected: Record<string, unknown>;
+  }[] = [
+    { name: 'neither level sets anything', partnerAiBudgets: undefined, orgRow: null, expected: { maxTurnsPerSession: 50, monthlyBudgetCents: null } },
+    { name: 'the org row fills defaults', partnerAiBudgets: {}, orgRow: { maxTurnsPerSession: 12, monthlyBudgetCents: 500 }, expected: { maxTurnsPerSession: 12, monthlyBudgetCents: 500 } },
+    { name: 'the partner value wins over the org row', partnerAiBudgets: { maxTurnsPerSession: 7 }, orgRow: { maxTurnsPerSession: 12 }, expected: { maxTurnsPerSession: 7 } },
+    // A partner property present as null is a set value ("no cap") and wins;
+    // an absent one lets the org row through.
+    { name: 'a partner property present as null wins', partnerAiBudgets: { monthlyBudgetCents: null }, orgRow: { monthlyBudgetCents: 500 }, expected: { monthlyBudgetCents: null } },
+    { name: 'an absent partner property lets the org row through', partnerAiBudgets: { dailyBudgetCents: 9 }, orgRow: { monthlyBudgetCents: 500 }, expected: { monthlyBudgetCents: 500, dailyBudgetCents: 9 } },
+  ];
+
+  for (const f of fixtures) {
+    it(`${f.name}: core output`, () => {
+      expect(resolveEffectiveAiBudgetFromRows(f.partnerAiBudgets, f.orgRow)).toMatchObject(f.expected);
+    });
+
+    it(`${f.name}: the async wrapper returns the core output`, async () => {
+      primeSelectSeq(
+        mockOrg({ partnerId: 'p1' }),
+        mockPartnerSettings(f.partnerAiBudgets === undefined ? {} : { aiBudgets: f.partnerAiBudgets }),
+        f.orgRow ? [f.orgRow] : [],
+      );
+      expect(await getEffectiveAiBudget('org1')).toEqual(resolveEffectiveAiBudgetFromRows(f.partnerAiBudgets, f.orgRow));
+    });
+  }
+});
+
+describe('resolveEffectiveCategorySettings (pure core, #9170)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const fixtures: { name: string; partner: Record<string, unknown>; org: Record<string, unknown>; requireMfa: unknown; locked: boolean }[] = [
+    { name: 'neither level sets the field', partner: {}, org: {}, requireMfa: undefined, locked: false },
+    { name: 'the org value applies when the partner has not set it', partner: {}, org: { security: { requireMfa: true } }, requireMfa: true, locked: false },
+    { name: 'the partner value wins and locks', partner: { security: { requireMfa: false } }, org: { security: { requireMfa: true } }, requireMfa: false, locked: true },
+    { name: 'a partner key present as null still locks', partner: { security: { requireMfa: null } }, org: { security: { requireMfa: true } }, requireMfa: null, locked: true },
+  ];
+
+  for (const f of fixtures) {
+    it(`${f.name}: core output`, () => {
+      const result = resolveEffectiveCategorySettings(f.partner, f.org);
+      expect(result.effective.security?.requireMfa).toBe(f.requireMfa);
+      expect(result.locked.includes('security.requireMfa')).toBe(f.locked);
+    });
+
+    it(`${f.name}: the async wrapper returns the core output`, async () => {
+      primeSelectSeq([{ partnerId: 'p1', settings: f.org }], mockPartnerSettings(f.partner), []);
+      const { effective, locked } = await getEffectiveOrgSettings('org1');
+      const core = resolveEffectiveCategorySettings(f.partner, f.org);
+      expect({ ...effective, aiBudgets: undefined }).toEqual({ ...core.effective, aiBudgets: undefined });
+      expect(locked.filter((path) => !path.startsWith('aiBudgets.'))).toEqual(core.locked);
+    });
+  }
+});
+
+// #9762 — `locked` is derived from the partner settings catalog's kind, not
+// from "the partner stored a key". A partner value the org may override
+// (`overridable`) is reported in `partnerDefaults` instead, and a conditional
+// lock (Event Logs) is reported only while it is in force. `effective` is the
+// same partner-wins merge as before for every mode.
+describe('resolveEffectiveCategorySettings — locked[] by catalog kind (#9762)', () => {
+  const classify = (partner: Record<string, unknown>, org: Record<string, unknown> = {}) =>
+    resolveEffectiveCategorySettings(partner, org);
+
+  it('locks: a partner-set `locks` field is locked, not a partner default', () => {
+    const r = classify({ security: { requireMfa: true, sessionTimeout: 30 } });
+    expect(r.locked).toEqual(['security.requireMfa', 'security.sessionTimeout']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('locks: agentUpdatePolicy and maintenanceWindow stay locked', () => {
+    const r = classify({ defaults: { agentUpdatePolicy: 'manual', maintenanceWindow: 'Mon 01:00-02:00' } });
+    expect(r.locked).toEqual(['defaults.agentUpdatePolicy', 'defaults.maintenanceWindow']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('overridable: partner agent version pins are a default, not a lock', () => {
+    const r = classify(
+      { defaults: { agentVersionPins: { agent: '0.120.0' } } },
+      { defaults: { agentVersionPins: { agent: '0.121.0' } } },
+    );
+    expect(r.locked).toEqual([]);
+    expect(r.partnerDefaults).toEqual(['defaults.agentVersionPins']);
+    // `effective` is unchanged: still the partner-wins merge.
+    expect(r.effective.defaults?.agentVersionPins).toEqual({ agent: '0.120.0' });
+  });
+
+  it('overridable (cap qualifier): enrollment defaults are partner defaults; the partner-only cap stays locked', () => {
+    const r = classify({
+      defaults: { defaultEnrollmentTtlMinutes: 60, defaultEnrollmentDeviceCount: 5, maxEnrollmentLinkTtlMinutes: 120 },
+    });
+    expect(r.partnerDefaults).toEqual(['defaults.defaultEnrollmentTtlMinutes', 'defaults.defaultEnrollmentDeviceCount']);
+    expect(r.locked).toEqual(['defaults.maxEnrollmentLinkTtlMinutes']);
+  });
+
+  it('overridable: Pushover fill-blank defaults are partner defaults', () => {
+    const r = classify({
+      notifications: {
+        pushoverAppToken: 'sealed',
+        pushoverDefaultUser: 'sealed',
+        pushoverDefaultSound: 'pushover',
+        pushoverDefaultPriority: 1,
+      },
+    });
+    expect(r.locked).toEqual([]);
+    expect(r.partnerDefaults).toEqual([
+      'notifications.pushoverAppToken',
+      'notifications.pushoverDefaultUser',
+      'notifications.pushoverDefaultSound',
+      'notifications.pushoverDefaultPriority',
+    ]);
+  });
+
+  it('partnerOnly: a partner-only field the partner set is locked', () => {
+    const r = classify({ defaults: { maxEnrollmentLinkTtlMinutes: 30 } });
+    expect(r.locked).toEqual(['defaults.maxEnrollmentLinkTtlMinutes']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('unclassified: keeps the presence lock until a maintainer classifies it', () => {
+    const r = classify({
+      security: { minLength: 12, allowedMethods: { totp: true } },
+      defaults: { autoEnrollment: { enabled: false } },
+      branding: { primaryColor: '#000000' },
+    });
+    expect(r.locked).toEqual([
+      'security.minLength',
+      'security.allowedMethods',
+      'defaults.autoEnrollment',
+      'branding.primaryColor',
+    ]);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  it('uncatalogued: a partner key the catalog does not know keeps the presence lock', () => {
+    const r = classify({ notifications: { someLegacyKey: 'x' } });
+    expect(r.locked).toEqual(['notifications.someLegacyKey']);
+    expect(r.partnerDefaults).toEqual([]);
+  });
+
+  describe('conditional: Event Logs lock only while the partner destination is in force', () => {
+    it('enabled with a URL → every set Event Logs field is locked', () => {
+      const r = classify({ eventLogs: { enabled: true, elasticsearchUrl: 'https://es.example.com', indexPrefix: 'p' } });
+      expect(r.locked).toEqual(['eventLogs.enabled', 'eventLogs.elasticsearchUrl', 'eventLogs.indexPrefix']);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+
+    it('configured but disabled → nothing locked', () => {
+      const r = classify({ eventLogs: { enabled: false, elasticsearchUrl: 'https://es.example.com', indexPrefix: 'p' } });
+      expect(r.locked).toEqual([]);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+
+    it('enabled without a URL → nothing locked', () => {
+      const r = classify({ eventLogs: { enabled: true, indexPrefix: 'p' } });
+      expect(r.locked).toEqual([]);
+      expect(r.partnerDefaults).toEqual([]);
+    });
+  });
+
+  it('every conditional catalog lock has an in-force predicate', () => {
+    const conditional = PARTNER_SETTINGS_CATALOG.filter((e) => e.qualifier === 'conditional').map((e) => e.id);
+    expect(conditional.length).toBeGreaterThan(0);
+    expect(conditional.filter((id) => !(id in CONDITIONAL_LOCK_IN_FORCE))).toEqual([]);
+  });
+
+  it('getEffectiveOrgSettings returns the same locked/partnerDefaults split as the core', async () => {
+    const partner = { defaults: { agentVersionPins: { agent: '0.120.0' }, agentUpdatePolicy: 'manual' } };
+    primeSelectSeq([{ partnerId: 'p1', settings: {} }], mockPartnerSettings(partner), []);
+    const { locked, partnerDefaults } = await getEffectiveOrgSettings('org1');
+    expect(partnerDefaults).toEqual(['defaults.agentVersionPins']);
+    expect(locked).toEqual(['defaults.agentUpdatePolicy']);
   });
 });

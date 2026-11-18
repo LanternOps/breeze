@@ -12,6 +12,7 @@
         "low": "Baixos",
         "medium": "Médios"
       },
+      "customRangeIncomplete": "Escolha uma data de início e uma de término (início primeiro, no máximo 366 dias de diferença) para aplicar um período personalizado.",
       "dashboardOptions": {
         "capacity": "Planejamento de capacidade",
         "operations": "Visão geral de operações",
@@ -31,7 +32,8 @@
       "subtitle": "Insights sobre sua frota e seus serviços",
       "title": "Análises",
       "trend": {
-        "operationalHealth": "Saúde operacional"
+        "operationalHealth": "Saúde operacional",
+        "weekOf": "Semana de {{date}}"
       },
       "widgets": {
         "alertTable": {
@@ -40,7 +42,7 @@
           "title": "Estatísticas de alertas"
         },
         "capacity": {
-          "title": "Previsão de capacidade"
+          "title": "Previsão de capacidade de disco"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} políticas avaliadas",
@@ -61,7 +63,7 @@
           "title": "Sessões remotas"
         },
         "uptime": {
-          "label": "Disponibilidade da frota",
+          "label": "Online agora",
           "title": "Disponibilidade"
         }
       },
@@ -104,6 +106,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Crítico {{value}}",
+      "noData": "Nenhuma verificação de conformidade para avaliar",
       "warnValue": "Aviso {{value}}"
     },
     "queryBuilder": {
@@ -114,7 +117,8 @@
         "p95": "P95",
         "sum": "Soma"
       },
-      "description": "Configure métricas e agregação para o seu painel",
+      "coverageNote": "As consultas cobrem apenas os primeiros {{count}} dispositivos online. Dispositivos offline e o restante de uma frota maior não são incluídos.",
+      "description": "Escolha uma métrica e uma agregação para consultar seus dispositivos online",
       "errors": {
         "failedToExecuteQuery": "Falha ao executar consulta",
         "noDevicesSelected": "Nenhum dispositivo selecionado para a consulta"
@@ -150,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Últimos 30 dias",
       "downtime": "Indisponibilidade {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Janelas de manutenção excluídas",
+        "maintenanceSkipped": "Janelas de manutenção não excluídas: dispositivos demais para verificar",
+        "maintenanceUnavailable": "Janelas de manutenção não excluídas: status indisponível",
+        "none": "Nenhuma exclusão",
+        "title": "Exclusões",
+        "weekends": "Fins de semana excluídos"
+      },
       "incidents": "{{count}} incidentes",
+      "noDevices": "Nenhum dispositivo medido ainda",
       "status": {
         "atRisk": "Em risco",
         "breach": "Violação",
@@ -158,6 +171,34 @@
       },
       "targetUptime": "Meta de {{target}}% de disponibilidade",
       "title": "Conformidade de SLA"
+    },
+    "slaEmptyState": {
+      "create": "Criar definição de SLA",
+      "created": "Definição de SLA criada",
+      "description": "Uma definição de SLA define a meta de disponibilidade usada por esta aba para medir seus dispositivos. Crie uma para começar a acompanhar a conformidade.",
+      "errors": {
+        "create": "Não foi possível criar a definição de SLA"
+      },
+      "form": {
+        "cancel": "Cancelar",
+        "excludeMaintenance": "Excluir dispositivos em janela de manutenção",
+        "excludeWeekends": "Excluir fins de semana",
+        "measurementWindow": "Período de medição",
+        "name": "Nome",
+        "organization": "Organização",
+        "scopeNote": "Mede todos os dispositivos da organização.",
+        "selectOrganization": "Selecione uma organização",
+        "submit": "Criar",
+        "uptimeTarget": "Meta de disponibilidade (%)",
+        "uptimeTargetInvalid": "Informe um valor de 0 a 100.",
+        "windows": {
+          "daily": "Diário",
+          "monthly": "Mensal",
+          "weekly": "Semanal"
+        }
+      },
+      "noPermission": "Peça a um administrador com acesso ao gerenciamento de organizações para criar uma definição de SLA.",
+      "title": "Ainda não há definição de SLA"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtrar",
@@ -336,14 +377,18 @@
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR e renovações",
+        "quote_win_rate": "Taxa de ganho de orçamentos",
+        "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "threatDetection": {
-        "agents": "Endpoints com agente de detecção",
         "breezeDevices": "Dispositivos gerenciados pelo Breeze",
         "carriedIn": "Herdadas, ainda abertas",
         "coverage": "Limites deste relatório",
-        "devicesWithoutAgent": "Dispositivos gerenciados sem agente",
+        "devicesWithAgent": "Dispositivos gerenciados com agente de detecção",
+        "devicesWithoutAgent": "Dispositivos gerenciados sem agente de detecção",
         "notMeasured": "N/D",
         "opened": "Detecções registradas",
         "resolved": "Detecções resolvidas"
@@ -365,6 +410,29 @@
         "noncompliant": "Fora de conformidade",
         "notMeasured": "N/D",
         "staleEnrolments": "Inscrições desatualizadas"
+      },
+      "slaPerformance": {
+        "priority": "Prioridade",
+        "ticketsOpened": "Tickets abertos",
+        "firstResponse": "Primeira resposta",
+        "resolution": "Resolução",
+        "target": "Meta",
+        "measured": "Medidos",
+        "withinSla": "% dentro do SLA",
+        "median": "Mediana",
+        "mean": "Média",
+        "varies": "varia",
+        "breaches": "Violações",
+        "breachCount_one": "{{count}} violação",
+        "breachCount_other": "{{count}} violações",
+        "unavailable": "Não foi possível ler o resumo de SLA desta execução, por isso ele não pode ser exibido aqui. Gere o relatório novamente.",
+        "notes": "O que é medido",
+        "priorities": {
+          "urgent": "Urgente",
+          "high": "Alta",
+          "normal": "Normal",
+          "low": "Baixa"
+        }
       },
       "identityAccess": {
         "notMeasured": "N/D",
@@ -439,6 +507,10 @@
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR e renovações",
+        "quote_win_rate": "Taxa de ganho de orçamentos",
+        "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "runsTable": {
@@ -765,6 +837,7 @@
           "os": "SO",
           "owner": "Proprietario",
           "patch_level": "Nivel de patch",
+          "product_number": "Número do produto",
           "serial": "Número de série",
           "site": "Site",
           "status": "Status"
@@ -988,6 +1061,10 @@
         "technician_time_billability": "Tempo e faturabilidade do técnico",
         "ar_aging": "Envelhecimento de contas a receber",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR e renovações",
+        "quote_win_rate": "Taxa de ganho de orçamentos",
+        "client_profitability": "Lucratividade por cliente",
+        "ticket_sla_performance": "Desempenho de SLA",
         "backup_status": "Status do backup"
       },
       "schedules": {
@@ -1061,6 +1138,22 @@
           "name": "Uso de IA por cliente",
           "description": "Uso de IA da plataforma por cliente no período: solicitações, tokens, custo da Breeze, valor a cobrar conforme o perfil de faturamento do cliente e o que já foi faturado. O uso incluído e os modelos sem preço aparecem separados, nunca misturados."
         },
+        "mrr_renewals": {
+          "name": "MRR e renovações",
+          "description": "Receita recorrente mensal e anual dos contratos ativos, medida no dia em que o relatório é executado, com os contratos que renovam dentro do horizonte escolhido e o que realmente foi faturado como recorrente. Um conjunto de totais por moeda, sem conversão."
+        },
+        "quote_win_rate": {
+          "name": "Taxa de ganho de orçamentos",
+          "description": "A parcela dos orçamentos enviados que foram ganhos, contada por oportunidade, de modo que um orçamento revisado e reenviado conta uma só vez. A taxa principal considera apenas as oportunidades decididas, com a quantidade ainda em aberto ao lado. Os valores são antes dos impostos, um conjunto por moeda, sem conversão."
+        },
+        "ticket_sla_performance": {
+          "name": "Desempenho de SLA",
+          "description": "Tempos de resposta e resolução em relação ao SLA, prontos para o cliente, por prioridade e com as violações."
+        },
+        "client_profitability": {
+          "name": "Lucratividade por cliente",
+          "description": "Receita faturada por cliente no período, por fonte (recorrente, mão de obra, produtos, IA, outros), com as horas registradas e uma estimativa opcional do custo de mão de obra a partir de uma única taxa horária. Os valores que usam essa taxa são identificados como estimativas. Um conjunto de totais por moeda, nunca convertido."
+        },
         "backup_status": {
           "name": "Relatório de status de backup",
           "description": "Status de backup de cada dispositivo no Breeze e nos provedores de backup conectados, em um único instantâneo: categorias de cobertura, último backup bem-sucedido e um histórico de 28 dias por dispositivo."
@@ -1072,7 +1165,7 @@
       "groups": {
         "business": "Negócio",
         "general": "Geral",
-        "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+        "businessDescription": "Números do próprio negócio do MSP, não dos dispositivos dos clientes — apenas para a equipe."
       },
       "delivery": {
         "contactsLoading": "Carregando os contatos da organização…",
@@ -1186,6 +1279,52 @@
       "cancel": "Cancelar",
       "createReport": "Criar relatório"
     },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Este relatório é sempre medido no dia em que é executado. Não há período nem data de referência para definir.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organização",
+        "contract": "Contrato"
+      },
+      "renewalHorizon": "Horizonte de renovação",
+      "renewalHorizonOption": "Próximos {{days}} dias",
+      "renewalHorizonHelp": "Os contratos cujo prazo termina dentro desta janela são listados como renovações.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organização para todas as organizações, por autor para uma organização",
+      "groupByValues": {
+        "organization": "Organização",
+        "author": "Autor",
+        "currency": "Moeda"
+      },
+      "periodNote": "O período se aplica à data em que o orçamento foi enviado pela primeira vez. Um orçamento revisado e reenviado conta uma só vez, como uma oportunidade.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Incluir assuntos dos tickets",
+      "includeSubjectsHelp": "Os relatórios entregues ficam visíveis para todos os usuários do portal desta organização. Deixe desativado, a menos que todos os usuários possam ver o assunto de cada ticket.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Agrupar por",
+      "groupByDefault": "Padrão para o escopo do relatório",
+      "groupByValues": {
+        "organization": "Organização",
+        "source": "Fonte"
+      },
+      "groupByHelp": "Por padrão, agrupa por organização em um relatório de todas as organizações e por fonte em uma única organização.",
+      "laborEnabled": "Estimar o custo de mão de obra",
+      "laborAmount": "Custo de mão de obra por hora",
+      "laborCurrency": "Moeda",
+      "laborHelp": "Uma única taxa para todos os técnicos. Os valores que a usam são identificados como estimativas.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
     "ownerScope": {
       "legend": "O relatório abrange",
       "allOrganizations": "Todas as organizações",
@@ -1211,8 +1350,7 @@
         "series": "Um relatório por organização",
         "seriesHint": "Uma definição, com uma cópia separada para cada organização abrangida, enviada aos contatos dessa organização.",
         "combined": "Todas as organizações combinadas",
-        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe.",
-        "seriesUnavailableType": "Este tipo de relatório não pode ser enviado como um relatório por organização."
+        "combinedHint": "Um relatório combinado de todas as suas organizações, para a sua própria equipe."
       },
       "schedule": {
         "label": "Com que frequência a cópia de cada organização é enviada",

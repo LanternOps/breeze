@@ -191,7 +191,7 @@ export const discoveredAssets = pgTable('discovered_assets', {
   linkSource: discoveredAssetLinkSourceEnum('link_source'),
   // Durable unlink suppression (#3261) — set by manual unlink, cleared by a
   // subsequent manual link. See 2026-08-08-asset-link-suppression.sql for the
-  // full rationale (without this, the auto-linker re-links the same MAC/IP
+  // full rationale (without this, the auto-linker re-links the same MAC
   // match on the very next discovery scan).
   autoLinkSuppressedAt: timestamp('auto_link_suppressed_at', { withTimezone: true }),
   typeSource: discoveredAssetTypeSourceEnum('type_source').notNull().default('auto'),
@@ -342,7 +342,9 @@ export const networkChangeEvents = pgTable('network_change_events', {
   acknowledged: boolean('acknowledged').notNull().default(false),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
   acknowledgedAt: timestamp('acknowledged_at'),
-  alertId: uuid('alert_id').references(() => alerts.id),
+  // ON DELETE SET NULL (2027-01-23-102000, #4342 W3): history that outlives
+  // the alert, which closed-alert retention may delete.
+  alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow().notNull()

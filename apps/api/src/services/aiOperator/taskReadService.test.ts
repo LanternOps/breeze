@@ -119,6 +119,23 @@ function assertNoLeakedTripwireKeys(value: unknown): void {
 }
 
 describe('mapOperatorTaskListItem', () => {
+  it('projects wisp provenance from grant_id + grantor', () => {
+    const dto = mapOperatorTaskListItem(baseTaskRow({
+      grantId: 'grant-1', grantorUserId: 'user-1', grantorName: 'Todd', depth: 1, requestedByRunId: 'run-9',
+    }));
+    expect(dto.wisp).toEqual({
+      grantId: 'grant-1', grantorUserId: 'user-1', grantorName: 'Todd', depth: 1, requestedByRunId: 'run-9',
+    });
+    expect(mapOperatorTaskListItem(baseTaskRow({
+      grantId: 'grant-1', grantorUserId: 'user-1', grantorName: null, depth: 0, requestedByRunId: null,
+    })).wisp).toMatchObject({ grantorName: null, depth: 0, requestedByRunId: null });
+  });
+
+  it('wisp is null without a grant, or when the grant row is not visible', () => {
+    expect(mapOperatorTaskListItem(baseTaskRow()).wisp).toBeNull();
+    expect(mapOperatorTaskListItem(baseTaskRow({ grantId: 'grant-1', grantorUserId: null })).wisp).toBeNull();
+  });
+
   it('projects the frozen agent identity directly off the task row, never null', () => {
     const dto = mapOperatorTaskListItem(baseTaskRow());
     expect(dto.agent).toEqual({ id: 'agent-1', kind: 'triage', name: 'Triage Agent' });

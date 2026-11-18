@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../../layouts/DashboardLayout.astro';
+import WispThreadPage from '../../../../components/wisp/WispThreadPage';
+
+const { threadId } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.wispThread">
+  <WispThreadPage threadId={threadId!} client:load />
+</DashboardLayout>

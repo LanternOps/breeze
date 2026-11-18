@@ -1,20 +1,23 @@
 import { usePermissions } from '../../lib/permissions';
-import BillingOutcome, { type BillingOutcomeStamp } from '../time/BillingOutcome';
+import type { BillingOutcomeStamp } from '../time/BillingOutcome';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError, ActionError } from '../../lib/runAction';
+import { handleActionError, ActionError } from '../../lib/runAction';
 import { approvalFriendly } from '../../lib/ticketApproval';
 import { AwaitingApprovalChip, WriteOffHeldButton, isAwaitingApproval } from '../time/HeldEntryControls';
-import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged, deleteTimeEntryAction } from '../../lib/timerActions';
+import { startTimerAction, onTimerChanged, onBillingChanged, deleteTimeEntryAction } from '../../lib/timerActions';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import WorkTypeSelect from '../shared/WorkTypeSelect';
 import { formatMinutes } from '../../lib/timeFormat';
 import { sourceBadgeLabelKey } from '../time/timeEntrySource';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
+import TicketQuickTimeEntry from './TicketQuickTimeEntry';
 import { Trash2 } from 'lucide-react';
+import { billedLaborMinutes, laborHours } from '@breeze/shared';
+import { laborBreakdown } from '../time/laborBreakdown';
 
 /** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
 interface CurrencyAmount {
@@ -52,6 +55,9 @@ interface EntryRow {
   source?: string | null;
   /** #8133: an invoiced entry is not offered for deletion (the API refuses it). */
   billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
+  /** Snapshot rate + its currency; null while unrated. Absent on an older API. */
+  hourlyRate?: string | null;
+  currencyCode?: string | null;
 }
 
 /** #8133: localized copy for the API's refusals of a time-entry DELETE. */
@@ -70,8 +76,8 @@ function billedVsWorked(
   durationMinutes: number | null,
   billableMinutes: number | null | undefined
 ): string | null {
-  const worked = ((durationMinutes ?? 0) / 60).toFixed(2);
-  const billed = (((billableMinutes ?? durationMinutes) ?? 0) / 60).toFixed(2);
+  const worked = laborHours(durationMinutes ?? 0);
+  const billed = laborHours(billedLaborMinutes({ billableMinutes, durationMinutes }));
   if (worked === billed) return null;
   return t('ticketTimeBilling.billedVsWorked', { worked, billed });
 }
@@ -98,7 +104,17 @@ function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: s
   return amounts.map((a) => ({ code: a.currencyCode, amount: a.amount }));
 }
 
-export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
+export default function TicketTimeBilling({ ticketId, readOnly = false, embedded = false, onTotalMinutesChange }: {
+  ticketId: string;
+  /** Inside a titled Details section: no own rule or heading. */
+  embedded?: boolean;
+  /** Reports the logged total for the section summary once it loads. */
+  onTotalMinutesChange?: (minutes: number) => void;
+  /** #10073: the ticket is a merged tombstone. Every time write on it answers
+   *  409 TICKET_MERGED, so totals and entries stay visible and nothing that
+   *  writes is offered. The host shows the reason. */
+  readOnly?: boolean;
+}) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
   const canManageBilling = can('time_entries', 'manage_billing');
@@ -117,24 +133,15 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // ticket the user just left.
   useEffect(() => { setPendingDelete(null); }, [ticketId]);
   const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const onTotalRef = useRef(onTotalMinutesChange);
+  onTotalRef.current = onTotalMinutesChange;
+  const totalMinutes = summary?.time.totalMinutes;
+  useEffect(() => {
+    if (typeof totalMinutes === 'number') onTotalRef.current?.(totalMinutes);
+  }, [totalMinutes]);
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [minutes, setMinutes] = useState('');
-  const [description, setDescription] = useState('');
-  const [billableOverride, setBillableOverride] = useState<boolean | undefined>(undefined);
-  // #5321: the rate box shows the ticket's resolved default until the tech
-  // types over it, so a prefill still lands when the summary resolves after the
-  // panel is already open.
-  // THREE states, not two. `undefined` = the tech never touched the picker, so
-  // omit the field and let the server apply the ticket category's default.
-  // `null` = they explicitly chose "No work type", which must be SENT — sending
-  // nothing would re-apply the category default and make that option
-  // unreachable on any category that has one.
-  const [workTypeId, setWorkTypeId] = useState<string | null | undefined>(undefined);
   const [timerWorkTypeId, setTimerWorkTypeId] = useState<string | null | undefined>(undefined);
-  const [rate, setRate] = useState('');
-  const [rateDirty, setRateDirty] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [startingTimer, setStartingTimer] = useState(false);
   // Hard-mode approval gate (#8196): the start was refused with APPROVAL_REQUIRED.
   const [approvalBlocked, setApprovalBlocked] = useState(false);
@@ -173,38 +180,14 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   useEffect(() => {
     setApprovalBlocked(false);
     setQuickAddOpen(false);
-    setWorkTypeId(undefined);
     setTimerWorkTypeId(undefined);
-    setMinutes('');
-    setDescription('');
-    setBillableOverride(undefined);
-    setRate('');
-    setRateDirty(false);
   }, [ticketId]);
-
-  // Derived, not stored: an untouched box mirrors the ticket default the moment
-  // the summary lands; once the tech types, their value wins.
-  const billable = billableOverride ?? summary?.defaults?.isBillable ?? true;
-  const workTypeChanged = workTypeId !== undefined && workTypeId !== (summary?.defaults?.workTypeId ?? null);
-  const defaultRate = summary?.defaults?.hourlyRate ?? null;
-  const rateCurrency = summary?.defaults?.currencyCode ?? null;
-  const rateValue = rateDirty ? rate : (workTypeChanged ? '' : defaultRate ?? '');
-  // `<input type="number" min={0}>` does not stop a typed negative here — the
-  // submit is an onClick, not a form submit, so no constraint validation runs.
-  // Name the problem rather than letting the button be a dead no-op.
-  const typedRate = rateValue.trim();
-  const parsedRate = typedRate === '' ? undefined : Math.round(Number(typedRate) * 100) / 100;
-  const rateInvalid = parsedRate !== undefined && (!Number.isFinite(parsedRate) || parsedRate < 0);
-  // Billable + no rate is precisely the row invoice assembly refuses to bill
-  // (ALL_MISSING_RATE 409). Say it here, not three screens later. A bad rate is
-  // a different complaint — never show both.
-  const missingRate = !workTypeChanged && billable && typedRate === '' && summary?.defaults?.coverage !== 'included';
 
   const startTimer = (opts: { nonBillable?: boolean } = {}) => {
     // Guard against double-fire: a start request takes a beat server-side, and
     // overlapping starts race the one-running-timer unique index. Disabling the
     // button in flight keeps the happy path single-shot.
-    if (startingTimer) return;
+    if (startingTimer || readOnly) return;
     setStartingTimer(true);
     setApprovalBlocked(false);
     void startTimerAction(
@@ -227,7 +210,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
   // workbench feed and the header timer.
   const confirmDelete = async () => {
     const entry = pendingDelete;
-    if (!entry) return;
+    if (!entry || readOnly) return;
     setDeletingId(entry.id);
     try {
       await deleteTimeEntryAction(entry, {
@@ -247,60 +230,9 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     }
   };
 
-  const submitQuickAdd = async () => {
-    const mins = Math.round(Number(minutes));
-    if (!Number.isFinite(mins) || mins <= 0) return;
-    // Blank stays blank: omit hourlyRate so the server's org/category default
-    // still applies (unchanged behavior). A typed rate is sent at the minor-unit
-    // precision the API validator accepts (multipleOf 0.01). An invalid one is
-    // already named inline by `rateInvalid`, so returning here is not silent.
-    if (rateInvalid) return;
-    const rateNumber = parsedRate;
-    setBusy(true);
-    try {
-      const end = new Date();
-      const start = new Date(end.getTime() - mins * 60_000);
-      await runAction({
-        request: () =>
-          fetchWithAuth('/time-entries', {
-            method: 'POST',
-            body: JSON.stringify({
-              ticketId,
-              startedAt: start.toISOString(),
-              endedAt: end.toISOString(),
-              description: description || undefined,
-              ...(canManageBilling && billableOverride !== undefined ? { isBillable: billable } : {}),
-              // Untouched (undefined) omits the field so the server-side
-              // category default applies; an explicit "No work type" sends null.
-              ...(workTypeId !== undefined ? { workTypeId } : {}),
-              ...(canManageBilling && rateDirty && rateNumber !== undefined ? { hourlyRate: rateNumber } : {}),
-            }),
-          }),
-        errorFallback: t('ticketTimeBilling.toast.logFailed'),
-        successMessage: t('ticketTimeBilling.toast.logged'),
-      });
-      setQuickAddOpen(false);
-      setWorkTypeId(undefined);
-      setMinutes('');
-      setDescription('');
-      setRate('');
-      setRateDirty(false);
-      setBillableOverride(undefined);
-      await refresh();
-      // Notify the workbench feed (and other billing listeners) so the new
-      // time-entry line appears without a manual reload — mirrors the timer
-      // start/stop and parts-mutation paths.
-      broadcastBillingChanged();
-    } catch (err) {
-      handleActionError(err, t('ticketTimeBilling.toast.logFailedSentence'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <div className="mt-3 border-t pt-3" data-testid="ticket-time-billing">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketTimeBilling.title')}</p>
+    <div className={embedded ? undefined : 'mt-3 border-t pt-3'} data-testid="ticket-time-billing">
+      {!embedded && <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketTimeBilling.title')}</p>}
 
       {summary && (
         <dl className="mt-2 space-y-1">
@@ -314,7 +246,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           </div>
           {(summary.time.includedMinutes ?? 0) > 0 && (
             <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-included">
-              {t('ticketTimeBilling.includedMinutes', { hours: ((summary.time.includedMinutes ?? 0) / 60).toFixed(2) })}
+              {t('ticketTimeBilling.includedMinutes', { hours: laborHours(summary.time.includedMinutes ?? 0) })}
             </div>
           )}
           <div className="flex justify-between text-xs">
@@ -331,6 +263,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           {(summary.time.missingRateCount ?? 0) > 0 && (
             <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-missing-rate">
               {t('ticketTimeBilling.missingRateCount', { count: summary.time.missingRateCount })}
+            </div>
+          )}
+          {/* #9561: the amount above is a sum of per-entry figures, each billed
+              at its minutes rounded to 2-decimal hours × rate (by design). */}
+          {(summary.time.billableAmounts?.length ?? 0) > 0 && (
+            <div className="flex justify-end text-right text-[11px] text-muted-foreground" data-testid="ticket-billing-labor-rule">
+              {t('ticketTimeBilling.laborRule')}
             </div>
           )}
           <div className="flex justify-end">
@@ -350,13 +289,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
       <label className="mt-2 block text-[11px] text-muted-foreground">
         {t('workType.label')}
-        <WorkTypeSelect value={timerWorkTypeId === undefined ? summary?.defaults?.workTypeId ?? null : timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
+        <WorkTypeSelect value={timerWorkTypeId === undefined ? summary?.defaults?.workTypeId ?? null : timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer || readOnly} />
       </label>
       <div className="mt-2 flex gap-2">
         <button
           type="button"
           onClick={() => startTimer()}
-          disabled={startingTimer}
+          disabled={startingTimer || readOnly}
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-start-timer"
         >
@@ -365,15 +304,16 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         <button
           type="button"
           onClick={() => setQuickAddOpen((o) => !o)}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+          disabled={readOnly}
+          className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-quick-add-toggle"
         >
           {t('ticketTimeBilling.logTime')}
         </button>
       </div>
 
-      {approvalBlocked && (
-        <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900" role="alert" data-testid="ticket-billing-approval-required">
+      {approvalBlocked && !readOnly && (
+        <div className="mt-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-foreground" role="alert" data-testid="ticket-billing-approval-required">
           <p>{t('ticketApproval.errors.approvalRequired')}</p>
           {/* Only billing managers may start non-billable (the server enforces it),
               so a tech without the grant gets guidance, not a button that would 403. */}
@@ -382,7 +322,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               type="button"
               onClick={() => startTimer({ nonBillable: true })}
               disabled={startingTimer}
-              className="mt-1.5 rounded-md border border-amber-400 px-2 py-1 text-xs hover:bg-amber-100 disabled:opacity-50"
+              className="mt-1.5 rounded-md border border-warning/50 px-2 py-1 text-xs hover:bg-warning/20 disabled:opacity-50"
               data-testid="ticket-billing-start-non-billable"
             >
               {t('ticketApproval.timer.startNonBillable')}
@@ -391,88 +331,14 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         </div>
       )}
 
-      {quickAddOpen && (
-        <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-billing-quick-add">
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={minutes}
-            onChange={(e) => setMinutes(e.target.value)}
-            placeholder={t('ticketTimeBilling.minutes')}
-            aria-label={t('ticketTimeBilling.minutes')}
-            className="w-full rounded-md border bg-background px-2 py-1 text-xs"
-            data-testid="ticket-billing-quick-add-minutes"
+      {quickAddOpen && !readOnly && (
+        <div className="mt-2 rounded-md border bg-muted/30 p-2">
+          <TicketQuickTimeEntry
+            key={ticketId}
+            ticketId={ticketId}
+            defaults={summary?.defaults ?? null}
+            onLogged={async () => { setQuickAddOpen(false); await refresh(); }}
           />
-          <input
-            type="text"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder={t('ticketTimeBilling.descriptionPlaceholder')}
-            aria-label={t('common:labels.description')}
-            className="w-full rounded-md border bg-background px-2 py-1 text-xs"
-            data-testid="ticket-billing-quick-add-description"
-          />
-          <p className="mt-1 text-xs text-muted-foreground" data-testid="time-entry-note-invoice-cue">
-            {t('ticketTimeBilling.noteInvoiceCue')}
-          </p>
-          <label className="block text-[11px] text-muted-foreground">
-            {t('workType.label')}
-            <WorkTypeSelect value={workTypeId === undefined ? summary?.defaults?.workTypeId ?? null : workTypeId} onChange={setWorkTypeId} testId="ticket-billing-quick-add-work-type" disabled={busy} />
-          </label>
-          <BillingOutcome stamp={summary?.defaults} overrides={canManageBilling ? { ...(billableOverride !== undefined ? { isBillable: billableOverride } : {}), ...(rateDirty && parsedRate !== undefined && !rateInvalid ? { hourlyRate: String(parsedRate) } : {}) } : undefined} pending={workTypeChanged} testId="ticket-billing-quick-add-outcome" />
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              step={0.01}
-              readOnly={!canManageBilling}
-              value={rateValue}
-              onChange={(e) => { setRate(e.target.value); setRateDirty(true); }}
-              placeholder={t('ticketTimeBilling.rate')}
-              aria-label={rateCurrency
-                ? t('ticketTimeBilling.rateWithCurrency', { currency: rateCurrency })
-                : t('ticketTimeBilling.rate')}
-              className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
-              data-testid="ticket-billing-quick-add-rate"
-            />
-            {/* Persistent, not a placeholder: the box is prefilled in the common
-                case, and a placeholder would hide the currency exactly then. */}
-            {rateCurrency && (
-              <span className="shrink-0 text-[11px] text-muted-foreground" data-testid="ticket-billing-quick-add-rate-currency">
-                {rateCurrency}
-              </span>
-            )}
-          </div>
-          <label className="flex items-center gap-1.5 text-xs">
-            <input
-              type="checkbox"
-              checked={billable}
-              disabled={!canManageBilling}
-              onChange={(e) => setBillableOverride(e.target.checked)}
-              data-testid="ticket-billing-quick-add-billable"
-            />
-            {t('ticketTimeBilling.billable')}
-          </label>
-          {rateInvalid && (
-            <p className="text-[11px] text-destructive" data-testid="ticket-billing-quick-add-rate-invalid">
-              {t('ticketTimeBilling.rateInvalid')}
-            </p>
-          )}
-          {missingRate && (
-            <p className="text-[11px] text-amber-600 dark:text-amber-500" data-testid="ticket-billing-quick-add-no-rate">
-              {t('ticketTimeBilling.noRateWarning')}
-            </p>
-          )}
-          <button
-            type="button"
-            onClick={() => void submitQuickAdd()}
-            disabled={busy}
-            className="w-full rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-            data-testid="ticket-billing-quick-add-submit"
-          >
-            {busy ? t('common:states.saving') : t('common:actions.save')}
-          </button>
         </div>
       )}
 
@@ -487,7 +353,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                 {sourceBadgeLabelKey(entry.source) && (
                   <span
                     data-testid={`time-entry-source-${entry.id}`}
-                    className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px]"
+                    className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-xs"
                   >
                     {t(/* i18n-dynamic */ `common:${sourceBadgeLabelKey(entry.source)!}`)}
                   </span>
@@ -496,13 +362,18 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               <span className="shrink-0 text-right">
                 {entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes)}
                 {entry.endedAt != null && billedVsWorked(t, entry.durationMinutes, entry.billableMinutes) && (
-                  <span className="block text-[10px] text-muted-foreground" data-testid={`time-entry-billed-vs-worked-${entry.id}`}>
+                  <span className="block text-xs text-muted-foreground" data-testid={`time-entry-billed-vs-worked-${entry.id}`}>
                     {billedVsWorked(t, entry.durationMinutes, entry.billableMinutes)}
                   </span>
                 )}
+                {laborBreakdown(t, entry) && (
+                  <span className="block text-xs tabular-nums text-muted-foreground" data-testid={`ticket-billing-entry-labor-${entry.id}`}>
+                    {laborBreakdown(t, entry)}
+                  </span>
+                )}
               </span>
-              {isAwaitingApproval(entry) && <WriteOffHeldButton entryId={entry.id} className="shrink-0 !px-1.5 !py-0.5 !text-[11px]" />}
-              {canWriteTime && entry.billingStatus !== 'billed' && (
+              {isAwaitingApproval(entry) && !readOnly && <WriteOffHeldButton entryId={entry.id} className="shrink-0 !px-1.5 !py-0.5 !text-[11px]" />}
+              {canWriteTime && !readOnly && entry.billingStatus !== 'billed' && (
                 <button
                   type="button"
                   onClick={() => setPendingDelete(entry)}
@@ -528,8 +399,10 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         </ul>
       )}
 
+      {/* #10073: a confirm left open when the ticket turns read-only (merged
+          meanwhile) stops rendering; the delete would only 409. */}
       <ConfirmDialog
-        open={pendingDelete !== null}
+        open={pendingDelete !== null && !readOnly}
         onClose={() => { if (!deletingShown) setPendingDelete(null); }}
         onConfirm={() => void confirmDelete()}
         title={t('ticketTimeBilling.deleteConfirmTitle')}

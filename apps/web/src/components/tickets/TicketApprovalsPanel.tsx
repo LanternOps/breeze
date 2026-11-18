@@ -15,9 +15,9 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import RecordApprovalDialog from './RecordApprovalDialog';
 
 const STATUS_CLASS: Record<ApprovalStatus, string> = {
-  pending: 'bg-amber-100 text-amber-800',
-  approved: 'bg-green-100 text-green-700',
-  denied: 'bg-red-100 text-red-700',
+  pending: 'bg-warning/15 text-warning-ink',
+  approved: 'bg-success/15 text-success-ink',
+  denied: 'bg-destructive/15 text-destructive-ink',
   expired: 'bg-muted text-muted-foreground',
   cancelled: 'bg-muted text-muted-foreground',
 };
@@ -38,12 +38,14 @@ interface Props {
   summary: ApprovalSummary;
   /** Called after any mutation so the host reloads the summary and the time list. */
   onChanged: () => void;
+  /** #10073: a merged tombstone — every approval write 409s TICKET_MERGED. */
+  readOnly?: boolean;
 }
 
-export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
+export default function TicketApprovalsPanel({ summary, onChanged, readOnly = false }: Props) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
-  const canWrite = can('tickets', 'write');
+  const canWrite = can('tickets', 'write') && !readOnly;
   const canRecord = can('tickets', 'record_approval');
   const [cancelTarget, setCancelTarget] = useState<ApprovalRequest | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -124,10 +126,10 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
                 <span className="font-medium">
                   {r.trigger === 'budget' ? t('ticketApproval.request.triggerBudget') : t('ticketApproval.request.triggerAfterHours')}
                 </span>
-                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${STATUS_CLASS[r.status]}`} data-testid={`approval-status-${r.id}`}>
+                <span className={`rounded-full px-1.5 py-0.5 text-xs font-medium ${STATUS_CLASS[r.status]}`} data-testid={`approval-status-${r.id}`}>
                   {t(/* i18n-dynamic */ `ticketApproval.panel.status.${r.status}`)}
                 </span>
-                <span className="text-[10px] text-muted-foreground" data-testid={`approval-revision-${r.id}`}>
+                <span className="text-xs text-muted-foreground" data-testid={`approval-revision-${r.id}`}>
                   {t('ticketApproval.panel.revision', { n: r.revision })}
                 </span>
               </div>
@@ -149,7 +151,7 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
               {renderRecipients(t('ticketApproval.panel.approvers'), r.approverEmails, `approval-approvers-${r.id}`)}
               {renderRecipients(t('ticketApproval.panel.notified'), r.notifyEmails, `approval-notified-${r.id}`)}
               {pending && r.approverEmails.length === 0 && (
-                <p className="rounded bg-amber-50 px-1.5 py-1 text-amber-800" data-testid={`approval-no-approver-${r.id}`}>
+                <p className="rounded bg-warning/10 px-1.5 py-1 text-warning-ink" data-testid={`approval-no-approver-${r.id}`}>
                   {t('ticketApproval.panel.noApprover')}
                 </p>
               )}
@@ -210,8 +212,10 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
         })}
       </ul>
 
+      {/* #10073: canWrite folds in readOnly, so a dialog left open when the
+          ticket turns read-only (merged meanwhile) stops rendering. */}
       <ConfirmDialog
-        open={cancelTarget !== null}
+        open={cancelTarget !== null && canWrite}
         onClose={() => { if (!cancelling) setCancelTarget(null); }}
         onConfirm={() => void confirmCancel()}
         title={t('ticketApproval.panel.cancelConfirmTitle')}
@@ -222,7 +226,7 @@ export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
         confirmTestId="approval-cancel-confirm"
         dialogTestId="approval-cancel-dialog"
       />
-      {recordTarget && (
+      {recordTarget && canWrite && (
         <RecordApprovalDialog
           open
           request={recordTarget}

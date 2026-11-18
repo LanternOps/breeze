@@ -13,10 +13,10 @@
   "targetDevice": "Dispositivo de destino: {{hostname}}",
   "batch": {
     "approveAll": "Aprobar todo ({{count}})",
-    "declineAll": "Rechazar todo ({{count}})",
+    "declineAll": "Denegar todo ({{count}})",
     "groupTitle": "{{count}} solicitudes similares · {{tool}}",
     "moreHostnames": "+{{count}} más",
-    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+    "denyConfirmSummary": "Esto deniega {{count}} solicitudes de {{org}}."
   },
   "filters": {
     "orgLabel": "Organización",
@@ -42,6 +42,7 @@
   },
   "denyPrompt": "¿Por qué rechazas esta solicitud? El motivo es opcional.",
   "denyReasonPlaceholder": "Opcional: se comparte con quien lo solicitó",
+  "denyReasonShownToUserHint": "El usuario final ve esto en su notificación (primeros 500 caracteres).",
   "confirmDeny": "Confirmar rechazo",
   "cancel": "Cancelar",
   "deny": "Rechazar",
@@ -67,6 +68,7 @@
     "noApproverDevice": "Registra un dispositivo de aprobación en tu perfil y vuelve a intentarlo.",
     "notSoleApprover": "Otra persona autorizada debe decidir sobre esta solicitud.",
     "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, por lo que otra persona autorizada debe decidir sobre esta solicitud.",
+    "approverScopeRequired": "Esta aprobación afecta a todas las organizaciones del partner, así que requiere un aprobador a nivel de partner con acceso a todas las organizaciones.",
     "verificationFailed": "La verificación se canceló o falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",
     "expired": "Esta solicitud venció antes de que se pudiera decidir.",
@@ -98,15 +100,16 @@
     "loading": "Cargando aprobaciones recientes…",
     "error": "No se pudieron cargar las aprobaciones recientes.",
     "retry": "Reintentar",
+    "decisionReasonLabel": "Motivo del aprobador",
     "empty": "No ha finalizado nada recientemente.",
     "status": {
       "failed": "Falló",
-      "rejected": "Rechazada",
+      "rejected": "Denegada",
       "expired": "Expirada",
       "cancelled": "Cancelada",
       "completed": "Completada",
       "denied": "Denegada",
-      "refused": "Aprobación rechazada",
+      "refused": "Aprobada, luego bloqueada",
       "approved": "Aprobada",
       "reported": "Reportada",
       "unknown": "Desconocido"
@@ -131,7 +134,7 @@
     "durationValue": "{{minutes}} minutos desde la aprobación",
     "purpose": "Propósito",
     "requestedBy": "Solicitado por",
-    "principalUser": "Chat de IA de Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Clave de API de MCP",
     "principalOauth": "Conexión OAuth de MCP",
     "paths": "Rutas",
@@ -149,7 +152,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan para la tarea del operador de IA",
+    "title": "Plan para la tarea de IA",
     "summary_one": "{{count}} efecto, revisión {{revision}} del plan",
     "summary_other": "{{count}} efectos, revisión {{revision}} del plan",
     "groupBreeze": "Dispositivos de Breeze",
@@ -160,5 +163,19 @@
     "orderNote": "Los efectos se ejecutan en este orden. El inicio de sesión se deshabilita al final, así que detenerse antes nunca deja el correo sin enrutar.",
     "empty": "Este plan no contiene efectos.",
     "invalid": "No se pudo mostrar este plan completo. No lo apruebes."
+  },
+  "intentStatus": {
+    "title": "Estado de la aprobación",
+    "waitingForApprovers": "Esperando a los aprobadores",
+    "notFound": "No se encontró esa aprobación.",
+    "status": {
+      "pending_approval": "Aprobación pendiente",
+      "in_progress": "En curso",
+      "completed": "Completada",
+      "failed": "Fallida",
+      "rejected": "Denegado",
+      "expired": "Vencida",
+      "cancelled": "Cancelada"
+    }
   }
 }

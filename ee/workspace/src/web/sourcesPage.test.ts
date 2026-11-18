@@ -1,9 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EXTENSION_HOST_EVENT_NAME, type ExtensionHostEventV1 } from '@breeze/extension-web-sdk';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  EXTENSION_HOST_EVENT_NAME,
+  createExtensionHostApiV1,
+  type ExtensionHostEventV1,
+  type ExtensionHostTransport,
+} from '@breeze/extension-web-sdk';
 import { defineWorkspaceElements, WorkspaceSourcesPage } from './index';
 import { WORKSPACE_API_BASE } from './api';
 
 const ORG_ID = 'org-1';
+
+// The host API transport — what the web host's authenticated fetch receives.
+// Tests swap it per case; the GLOBAL fetch must never be used (#11922).
+let transport: Mock<ExtensionHostTransport> = vi.fn<ExtensionHostTransport>();
+const hostApi = createExtensionHostApiV1({
+  extensionName: 'workspace',
+  transport: (path, init) => transport(path, init),
+});
 
 function pageContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -44,9 +59,14 @@ function sourceRow(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-async function mountPage(context: Record<string, unknown> = pageContext()): Promise<WorkspaceSourcesPage> {
+async function mountPage(
+  context: Record<string, unknown> = pageContext(),
+  { withHostApi = true } = {},
+): Promise<WorkspaceSourcesPage> {
   const element = document.createElement('workspace-sources-page') as WorkspaceSourcesPage;
   document.body.append(element);
+  // Same order as ExtensionElementHost: host API first, then context.
+  if (withHostApi) element.hostApi = hostApi;
   element.context = context;
   await element.updateComplete;
   return element;
@@ -57,7 +77,8 @@ function shadowText(element: HTMLElement): string {
 }
 
 describe('workspace-sources-page', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: Mock<ExtensionHostTransport>;
+  let globalFetch: ReturnType<typeof vi.fn>;
   let hostEvents: ExtensionHostEventV1[];
   const captureEvent = (event: Event): void => {
     hostEvents.push((event as CustomEvent).detail as ExtensionHostEventV1);
@@ -65,24 +86,35 @@ describe('workspace-sources-page', () => {
 
   beforeEach(() => {
     defineWorkspaceElements();
-    fetchMock = vi.fn(async () => jsonResponse({ sources: [] }));
-    vi.stubGlobal('fetch', fetchMock);
+    fetchMock = vi.fn<ExtensionHostTransport>(async () => jsonResponse({ sources: [] }));
+    transport = fetchMock;
+    globalFetch = vi.fn(async () => jsonResponse({ error: 'Missing or invalid authorization header' }, 401));
+    vi.stubGlobal('fetch', globalFetch);
     hostEvents = [];
     document.addEventListener(EXTENSION_HOST_EVENT_NAME, captureEvent);
   });
 
   afterEach(() => {
+    expect(globalFetch).not.toHaveBeenCalled();
     document.removeEventListener(EXTENSION_HOST_EVENT_NAME, captureEvent);
     document.body.replaceChildren();
     vi.unstubAllGlobals();
   });
 
-  it('loads sources for the host organization context', async () => {
+  it('loads sources for the host organization context through the host API', async () => {
     await mountPage();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${WORKSPACE_API_BASE}sources?orgId=${ORG_ID}`);
-    expect(init.credentials).toBe('same-origin');
+    expect(init.method).toBe('GET');
+  });
+
+  it('without a host API, renders an error and sends no request (never a bare fetch)', async () => {
+    const element = await mountPage(pageContext(), { withHostApi: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const alert = element.shadowRoot?.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('Knowledge sources could not be loaded');
+    expect(alert?.textContent).not.toContain('not authorized');
   });
 
   it.each([
@@ -94,7 +126,7 @@ describe('workspace-sources-page', () => {
     const element = await mountPage(context as Record<string, unknown>);
     expect(fetchMock).not.toHaveBeenCalled();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('invalid host context');
+    expect(alert?.textContent).toContain('Knowledge received an invalid host context');
   });
 
   it('renders source rows as inert text, never as markup', async () => {
@@ -118,6 +150,8 @@ describe('workspace-sources-page', () => {
     const element = await mountPage();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('not authorized');
+    expect(alert?.textContent).toContain('Knowledge sources');
+    expect(alert?.textContent).not.toMatch(/workspace/i);
   });
 
   it('offers retry after a server error, and retry refetches', async () => {
@@ -278,10 +312,39 @@ describe('workspace-sources-page', () => {
     });
     const element = document.createElement('workspace-sources-page') as WorkspaceSourcesPage;
     document.body.append(element);
+    element.hostApi = hostApi;
     element.context = pageContext();
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal!.aborted).toBe(false);
     element.remove();
     expect(capturedSignal!.aborted).toBe(true);
+  });
+});
+
+describe('workspace-sources-page copy', () => {
+  it('renders the Knowledge sources heading', async () => {
+    defineWorkspaceElements();
+    transport = vi.fn<ExtensionHostTransport>(async () => jsonResponse({ sources: [] }));
+    const element = await mountPage();
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).toBe('Knowledge sources');
+    expect(shadowText(element)).not.toMatch(/workspace/i);
+  });
+
+  it('never says Workspace or Wisp', () => {
+    // vitest runs from the package root (ee/workspace); jsdom's import.meta.url is not a file URL.
+    for (const f of ['src/web/deviceIndex.ts', 'src/web/sourcesPage.ts', 'src/web/filingCard.ts', 'src/web/dashboard.ts', 'src/web/api.ts', 'manifest.json']) {
+      const lines = readFileSync(resolve(process.cwd(), f), 'utf8')
+        .split('\n')
+        .filter((l) => !/^\s*(\/\/|\*|\/\*|import )/.test(l));
+      // Quoted literals containing a space are user-visible copy; identifiers,
+      // paths and tag names have none and legitimately keep the workspace name.
+      const literals = [...lines.join('\n').matchAll(/(['"`])((?:\\.|(?!\1).)*)\1/g)]
+        .map((m) => m[2])
+        .filter((s) => s.includes(' ') && !/^workspace-[\w-]+:/.test(s)); // dev console prefixes are not UI copy
+      expect(literals.length).toBeGreaterThan(0);
+      for (const s of literals) {
+        expect(s, `${f}: ${s}`).not.toMatch(/workspace|wisp/i);
+      }
+    }
   });
 });

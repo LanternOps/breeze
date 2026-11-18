@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 func systemSettingsURLForPermission(permission string) (string, error) {
@@ -30,6 +32,14 @@ type tccLoopPolicy struct {
 	// non-capturing access check (desktop.CheckCaptureAccess, #8390). No
 	// permission check captures the screen any more.
 	reportRemoteDesktop bool
+	// remindPermissions lets the loop show its own Full Disk Access
+	// guidance (the first-run dialog, then reminder toasts). False only when
+	// the agent said it shows the permission notice itself (#10190 W04).
+	remindPermissions bool
+	// diagnoseDenial lets the loop attach TCCStatus.DenialVerdict (#10300).
+	// Only the desktop helper's status is kept by the broker, so only it
+	// pays for the diagnosis.
+	diagnoseDenial bool
 }
 
 // tccLoopPolicyFor gates the loop's prompts on the binary kind.
@@ -39,9 +49,69 @@ type tccLoopPolicy struct {
 // broker drops a TCC status from any session without the desktop scope, so
 // for every other kind a prompt would ask the user for something nothing
 // uses.
-func tccLoopPolicyFor(binaryKind string) tccLoopPolicy {
+//
+// agentHandlesNotice is this connection's AuthResponse.AgentHandlesTCCNotice
+// (see ShowsOwnTCCReminder): when set, the agent shows the permission notice
+// from this helper's tcc_status and the helper must not show its own too.
+func tccLoopPolicyFor(binaryKind string, agentHandlesNotice bool) tccLoopPolicy {
+	p := tccLoopPolicy{remindPermissions: !agentHandlesNotice}
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
-		return tccLoopPolicy{requestScreenRecording: true, promptAccessibility: true, reportRemoteDesktop: true}
+		p.requestScreenRecording, p.promptAccessibility, p.reportRemoteDesktop = true, true, true
+		p.diagnoseDenial = true
 	}
-	return tccLoopPolicy{}
+	return p
+}
+
+// ShowsOwnTCCReminder reports whether a helper shows its own macOS
+// permission reminder on a connection whose authentication returned resp
+// (#10190 W04 skew rule). An older agent omits the flag, so a new helper
+// keeps reminding; an older helper never reads it and always reminds, and
+// the agent never sets it for a helper whose live advertisement lacks
+// notice.info@1.
+func ShowsOwnTCCReminder(resp ipc.AuthResponse) bool {
+	return !resp.AgentHandlesTCCNotice
+}
+
+// tccDiagnoseFn explains a denial (#10300); a seam so tests need no TCC state.
+var tccDiagnoseFn = tccdiag.Run
+
+// attachDenialVerdict names the cause of a Screen Recording or Accessibility
+// denial in status. A grant, and macOS 26's unverified Screen Recording state
+// (preflight can misreport there, #8390), are not denials and cost nothing.
+// It returns the diagnosis, or nil when nothing is denied.
+func attachDenialVerdict(status *ipc.TCCStatus) *tccdiag.Diagnosis {
+	if status == nil {
+		return nil
+	}
+	services := tccdiag.DeniedServices(
+		status.ScreenRecordingState == desktop.CaptureAccessDenied.String(),
+		!status.Accessibility,
+	)
+	if len(services) == 0 {
+		return nil
+	}
+	d := tccDiagnoseFn(services)
+	status.DenialVerdict = string(d.Verdict)
+	return &d
+}
+
+// denialLog logs the TCC loop's diagnosis in full when its verdict changes.
+// Only the one-word verdict travels to the agent, so this line is where the
+// evidence behind a verdict reached after startup (or a changed one) lands.
+type denialLog struct{ last tccdiag.Verdict }
+
+// observe logs d when its verdict differs from the last one logged and
+// reports whether it did. A nil d (nothing denied) resets, so a later denial
+// is logged again.
+func (l *denialLog) observe(d *tccdiag.Diagnosis) bool {
+	if d == nil {
+		l.last = ""
+		return false
+	}
+	if d.Verdict == l.last {
+		return false
+	}
+	l.last = d.Verdict
+	log.Info("TCC denial diagnosis", d.LogAttrs()...)
+	return true
 }

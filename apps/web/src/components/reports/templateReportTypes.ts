@@ -18,6 +18,7 @@ export const TEMPLATE_OPTIONS_FORM_REPORT_TYPES: ReadonlySet<string> = new Set([
   'endpoint_management_review',
   'vulnerability_management',
   'identity_access_review',
+  'ticket_sla_performance',
 ]);
 
 export function hasTemplateOptionsForm(type: string | undefined): boolean {

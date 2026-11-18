@@ -23,7 +23,7 @@
  * exact bytes that reach the model.
  */
 
-import type { TaskCheckpoint, TaskStepFinding } from '@breeze/shared';
+import type { ServiceRecoveryCheckpoint, TaskStepFinding } from '@breeze/shared';
 
 /** Hard ceiling on the rendered block, mirroring spec §8.2's bounded-payload posture. */
 export const TASK_CONTEXT_MAX_CHARS = 8_000;
@@ -53,7 +53,11 @@ export function renderTaskCheckpointContext(args: {
   currentStepKey: string;
   attemptOrdinal: number;
   maxReasoningRuns: number;
-  checkpoint: TaskCheckpoint;
+  /**
+   * The `service_recovery` arm: this renderer states a device, a service and a
+   * `service_running` criterion, which only that arm carries (R1a-0).
+   */
+  checkpoint: ServiceRecoveryCheckpoint;
   targetLabel: string | null;
 }): string {
   const { checkpoint } = args;

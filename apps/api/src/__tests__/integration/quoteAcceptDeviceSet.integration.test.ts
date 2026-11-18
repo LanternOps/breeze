@@ -292,7 +292,7 @@ describe('#3205 W05 — deleted or forged references abort before writes', () =>
 
     const accepting = accept(quote.id);
     await started;
-    const deleting = withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId))
+    const deleting = withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }))
       .then(() => ({ settled: true, code: null as string | null }))
       .catch((err: { code?: string }) => ({ settled: true, code: err.code ?? null }));
     const whileCapturePaused = await Promise.race([

@@ -20,6 +20,7 @@ import {
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import {
   devices,
@@ -35,6 +36,7 @@ import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { sqlTextArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
@@ -46,7 +48,7 @@ import { getDeviceWorkloadsView } from './workloads/view';
 import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
-import { projectPublicDevice } from '../routes/devices/helpers';
+import { projectPublicDeviceForCaller } from '../routes/devices/helpers';
 import { readPlacement } from './assetPlacement';
 import {
   sanitizeUntrustedText,
@@ -59,6 +61,8 @@ import {
   createDeviceContext,
   resolveDeviceContext,
 } from './brainDeviceContext';
+import { unattendedNoteContentError, unattendedNoteExpiryDays } from './deviceNoteBounds';
+import { noteWriteCardFreeExpiryDays } from './aiNoteWrites';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -99,6 +103,8 @@ export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
   return conditions;
 }
 
+// Ordered by name, then id: names are not unique (an org and a partner-wide
+// definition may share one) and query_custom_fields pages this list.
 export async function readCustomFieldDefinitions(auth: AuthContext) {
   const conditions = customFieldDefinitionConditions(auth);
   return db
@@ -114,7 +120,7 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
     })
     .from(customFieldDefinitions)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(customFieldDefinitions.name);
+    .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 }
 
 // #5351 — per-slot memory inventory for get_device_details. A 4-socket
@@ -175,12 +181,16 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Filter by site UUID' },
           search: { type: 'string', description: 'Search by hostname or display name (partial match)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags (devices must have all specified tags)' },
-          ...pageParamSchema(25, 100),
+          // Default 20 (was 25): the 25-row budget-fixture page (DEVICE_ROW in
+          // aiToolsDevice.outputShape.test.ts) sat within ~100 chars of
+          // MAX_TOOL_RESULT_CHARS, leaving no room for the org fields a
+          // multi-org caller gets (#10408).
+          ...pageParamSchema(20, 100),
         }
       }
     },
     handler: async (input, auth) => {
-      const page = readPageArgs('query_devices', input, { defaultLimit: 25, maxLimit: 100 });
+      const page = readPageArgs('query_devices', input, { defaultLimit: 20, maxLimit: 100 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
@@ -231,6 +241,9 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const frozenDeviceIds = runFrozenDeviceIds(auth);
       if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
+      // #10408: a caller reaching several orgs gets each row's org, or it mixes
+      // customers (wrong-org narration, cross-org proposals the write path refuses).
+      const spansOrgs = readReachSpansOrgs(auth);
       const results = await db
         .select({
           id: devices.id,
@@ -242,7 +255,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           agentVersion: devices.agentVersion,
           lastSeenAt: devices.lastSeenAt,
           tags: devices.tags,
-          siteName: sites.name
+          siteName: sites.name,
+          ...(spansOrgs ? { orgId: devices.orgId, orgName: orgNameOf(devices.orgId) } : {}),
         })
         .from(devices)
         .leftJoin(sites, eq(devices.siteId, sites.id))
@@ -264,7 +278,14 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       const total = Number(countResult[0]?.count ?? 0);
 
-      return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
+      if (!spansOrgs) {
+        return JSON.stringify(pageEnvelope({ key: 'devices', items: results, limit, offset, fingerprint, total }));
+      }
+      const legend = splitOrgLegend(results as Array<(typeof results)[number] & { orgId: string; orgName: string | null }>);
+      return JSON.stringify({
+        ...pageEnvelope({ key: 'devices', items: legend.rows, limit, offset, fingerprint, total }),
+        organizations: legend.organizations,
+      });
     }
   });
 
@@ -309,7 +330,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           .where(eq(deviceMemoryModules.deviceId, deviceId))
           .orderBy(asc(deviceMemoryModules.slotIndex), asc(deviceMemoryModules.id)),
         // #8134: room / rack / rack unit / height U, or null when not recorded.
-        readPlacement('device', deviceId),
+        readPlacement('device', deviceId, device.orgId),
       ]);
 
       // Get site name
@@ -324,7 +345,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
-          ...projectPublicDevice(device),
+          ...(await projectPublicDeviceForCaller(device, auth)),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
@@ -658,12 +679,28 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'contextType', 'summary'],
       },
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const deviceId = input.deviceId as string;
       const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
       const summary = input.summary as string;
       const details = (input.details as Record<string, unknown>) ?? null;
-      const expiresInDays = input.expiresInDays as number | undefined;
+      // #12140 / #11986: a note no person approves is bounded in size and expiry
+      // here and in active notes per device by the service (one locked path,
+      // brainDeviceContext.ts). Both signals are pinned by server code, never
+      // by the model: the MCP / flow-step dispatch flag / a Wisp unattended-reads
+      // classification (unattended), and the chat gate's card-free flag.
+      const unattended = context?.unattendedNoteWrite === true
+        || context?.pinnedWispUnattendedRead?.kind === 'device_context';
+      const cardFree = context?.noteWriteCardFree === true;
+      if (unattended) {
+        const contentError = unattendedNoteContentError(input);
+        if (contentError) return JSON.stringify({ error: contentError });
+      }
+      const expiresInDays = unattended
+        ? unattendedNoteExpiryDays(input)
+        : cardFree
+          ? noteWriteCardFreeExpiryDays(input)
+          : input.expiresInDays as number | undefined;
 
       const expiresAt = expiresInDays
         ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
@@ -682,14 +719,18 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         summary,
         details,
         auth,
-        expiresAt
+        expiresAt,
+        unattended || cardFree
+          ? { ...(unattended && { unattended: true }), ...(cardFree && { cardFree: true }) }
+          : undefined
       );
 
       if ('error' in result) {
         return JSON.stringify({ error: result.error });
       }
 
-      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.`;
+      const expiry = unattended || cardFree ? ` It expires in ${expiresInDays} days.` : '';
+      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.${expiry}`;
     },
   });
 
@@ -759,6 +800,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_tags', action, auth);
+      if (mfaError) return mfaError;
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -815,11 +858,13 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           // `${tagsInput}::text[]` is spread by Drizzle into `($1, $2)::text[]`,
           // which Postgres rejects for every list length (#8297).
           const tagsArray = sql`ARRAY[${sql.join(tagsInput.map((tag) => sql`${tag}`), sql`, `)}]::text[]`;
+          // own-device-row-allowlisted: ai-tool-device-tags
           await db.execute(
             sql`UPDATE devices SET tags = (SELECT array_agg(DISTINCT t) FROM unnest(array_cat(tags, ${tagsArray})) t), updated_at = now() WHERE id = ${deviceId}`
           );
         } else {
           for (const tag of tagsInput) {
+            // own-device-row-allowlisted: ai-tool-device-tags
             await db.execute(
               sql`UPDATE devices SET tags = array_remove(tags, ${tag}), updated_at = now() WHERE id = ${deviceId}`
             );
@@ -865,7 +910,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_custom_fields',
-      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values.',
+      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values (values for the definitions on the returned page). Paged by definition: follow nextCursor while hasMore.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -874,18 +919,28 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
             enum: ['list_definitions', 'get_device_values'],
             description: 'Action: list_definitions to see available fields, get_device_values to see a device\'s field values'
           },
-          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' }
+          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' },
+          // Literals, not a module const: aiTools.ts calls registerDeviceTools inside
+          // an import cycle, before this module's top-level consts are initialised.
+          ...pageParamSchema(15, 100),
         },
         required: ['action']
       }
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const page = readPageArgs('query_custom_fields', input, { defaultLimit: 15, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      // Definitions are a small, name-ordered config list, read whole and paged here.
+      const definitionPage = <T>(all: T[]) => pageEnvelope({
+        key: 'definitions', items: all.slice(page.offset, page.offset + page.limit),
+        limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length,
+      });
 
       if (action === 'list_definitions') {
         const definitions = await readCustomFieldDefinitions(auth);
 
-        return JSON.stringify({ definitions, total: definitions.length });
+        return JSON.stringify(definitionPage(definitions));
       }
 
       if (action === 'get_device_values') {
@@ -910,13 +965,21 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           })
           .from(customFieldDefinitions)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(customFieldDefinitions.name);
+          .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 
+        // Values only for the definitions on this page — the value map is keyed
+        // by fieldKey and is as large as the definition list.
+        const envelope = definitionPage(definitions);
+        const values = (device.customFields ?? {}) as Record<string, unknown>;
+        const customFields: Record<string, unknown> = {};
+        for (const d of envelope.definitions as Array<{ fieldKey: string }>) {
+          if (Object.prototype.hasOwnProperty.call(values, d.fieldKey)) customFields[d.fieldKey] = values[d.fieldKey];
+        }
         return JSON.stringify({
           deviceId,
           hostname: device.hostname,
-          customFields: device.customFields ?? {},
-          definitions,
+          customFields,
+          ...envelope,
         });
       }
 

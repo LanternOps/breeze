@@ -175,6 +175,24 @@ describe('manage_alerts suppress — the winning caller', () => {
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
   });
 
+  // #10573: the AI tool and the REST routes share one producer and one payload.
+  it('publishes the shared payload with the requested duration', async () => {
+    updateReturns.push([{ id: alertRow.id }]);
+
+    await suppress({ suppressDuration: 5 });
+
+    const [type, orgId, payload, source, options] = publishEvent.mock.calls[0] as unknown[];
+    expect([type, orgId, source, options]).toEqual(['alert.suppressed', 'org-1', 'ai-tools', { userId: makeAuth().user.id }]);
+    expect(payload).toEqual({
+      alertId: alertRow.id,
+      ruleId: null,
+      deviceId: 'device-1',
+      suppressedBy: makeAuth().user.id,
+      suppressedUntil: expect.any(String),
+      durationHours: 5,
+    });
+  });
+
   it('still refuses a resolved alert at the pre-read', async () => {
     alertRow.status = 'resolved';
 

@@ -34,8 +34,10 @@ import {
   BMR_BOOTSTRAP_VERSION,
   BMR_MIN_HELPER_VERSION,
   asRecord,
+  bootstrapServesKeyLayout,
   buildAuthenticatedBootstrapPayload,
   expireUnusedRecoveryTokens,
+  RECOVERY_REQUIRES_TOKEN_MODE,
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
@@ -503,6 +505,9 @@ bmrRoutes.post(
   '/bmr/tokens',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  // A recovery token restores the snapshot's device: the same execute
+  // permission as every other restore lane (restore.ts, vmrestore.ts).
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', bmrCreateTokenSchema),
   async (c) => {
@@ -1494,6 +1499,29 @@ bmrPublicRoutes.post(
         fileIndex: negotiation.fileIndex,
         integrity,
       });
+
+      // #7081 R19: a prefixed snapshot is recoverable only through the
+      // token-mode download; never hand out a bootstrap without one. Checked
+      // on the built payload (the guard is against a builder regression), so
+      // the token is already authenticated here: the refusal is audited as
+      // its own event rather than as a failed authentication.
+      if (!bootstrapServesKeyLayout(snapshot.keyLayout, authenticatedPayload)) {
+        console.error('[bmr] refused a recovery bootstrap: the snapshot uses a key prefix and no token-mode download was issued', {
+          tokenId: row.id,
+          snapshotId: snapshot.snapshotId,
+          keyLayout: snapshot.keyLayout,
+        });
+        writeAuditEvent(c, {
+          orgId: row.orgId,
+          action: 'bmr.recovery.bootstrap_refused',
+          resourceType: 'recovery_token',
+          resourceId: row.id,
+          details: { snapshotId: row.snapshotId, reason: RECOVERY_REQUIRES_TOKEN_MODE.code },
+          result: 'failure',
+          errorMessage: RECOVERY_REQUIRES_TOKEN_MODE.message,
+        });
+        return c.json({ ...RECOVERY_REQUIRES_TOKEN_MODE }, 409);
+      }
 
       return c.json(authenticatedPayload);
     });

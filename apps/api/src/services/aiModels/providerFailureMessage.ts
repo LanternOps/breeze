@@ -5,6 +5,7 @@
  * raw provider output and is never shown. These strings are fixed text: no
  * provider body, host, or credential ever reaches them.
  */
+import type { AiStreamErrorCode } from '@breeze/shared/types/ai';
 import type { ProviderFailureCause } from './failover';
 
 export const PROVIDER_FAILURE_GENERIC_MESSAGE = 'The AI model could not complete this response. Try again.';
@@ -18,6 +19,25 @@ const CAUSE_TEXT: Readonly<Record<ProviderFailureCause, string>> = Object.freeze
 });
 
 /**
+ * #9534: who can fix a rejected key. The platform key is the server's own
+ * ANTHROPIC_API_KEY — nothing a partner user can change, so they are sent to
+ * their administrator. Every other connection carries a key a partner
+ * administrator configured for the model. Unknown owner keeps CAUSE_TEXT.
+ * (Before this, the turn showed the CLI's own "Invalid API key · Fix external
+ * API key", which pointed a hosted user at a BYO-key page that cannot fix a
+ * server credential.)
+ */
+const AUTH_FAILED_TEXT = Object.freeze({
+  platform: "The AI provider rejected the server's API key. Contact your administrator.",
+  partner: 'The AI provider rejected the API key configured for this model. An administrator can update it in the AI model settings.',
+});
+
+export interface ProviderFailureMessageOptions {
+  /** The turn ran on the platform connection (the server's own key). */
+  platformKey?: boolean;
+}
+
+/**
  * `cause` is the turn's TERMINAL provider failure cause
  * (`SdkTurnObservation.providerFailure` with `terminal: true`), or null. A
  * non-terminal cause is an `api_retry` the CLI may have recovered from, so it
@@ -27,11 +47,43 @@ const CAUSE_TEXT: Readonly<Record<ProviderFailureCause, string>> = Object.freeze
  * A terminal failure before any output cools the bound offering
  * (StreamingSessionManager.settleSdkTurn, W09 D5), so only then can the next
  * message resolve to a backup model. The wording never promises more than that.
+ *
+ * A rejected key with a known owner (`opts.platformKey`) is never told to "try
+ * again shortly": a bad key does not fix itself.
  */
-export function providerFailureMessage(cause: ProviderFailureCause | null, sawOutput: boolean): string {
+export function providerFailureMessage(
+  cause: ProviderFailureCause | null,
+  sawOutput: boolean,
+  opts: ProviderFailureMessageOptions = {},
+): string {
   if (!cause) return PROVIDER_FAILURE_GENERIC_MESSAGE;
+  const backup = sawOutput ? '' : ' If a backup model is configured, Breeze uses it in the meantime.';
+  if (cause === 'auth_failed' && opts.platformKey !== undefined) {
+    return (opts.platformKey ? AUTH_FAILED_TEXT.platform : AUTH_FAILED_TEXT.partner) + backup;
+  }
   const next = sawOutput
     ? ' Try again shortly.'
     : ' Try again shortly. If a backup model is configured, Breeze uses it while this one recovers.';
   return CAUSE_TEXT[cause] + next;
+}
+
+/**
+ * #9428: the machine code on a failed turn's `error` event, so a client can
+ * tell a failure "Try again" may fix (`provider_error`) from one it cannot.
+ * A context-window refusal wins: the same request would be refused again. A
+ * rate limit is not offered a retry (the client waits instead); a rejected key
+ * or an exhausted account needs an administrator. No terminal cause (an
+ * unclassified result, a crashed CLI) is a plain, retryable `provider_error`.
+ */
+export function providerFailureCode(
+  cause: ProviderFailureCause | null | undefined,
+  contextWindowExceeded: boolean,
+): Extract<AiStreamErrorCode, 'provider_error' | 'rate_limited' | 'provider_auth' | 'provider_quota' | 'context_window_exceeded'> {
+  if (contextWindowExceeded) return 'context_window_exceeded';
+  switch (cause) {
+    case 'rate_limited': return 'rate_limited';
+    case 'auth_failed': return 'provider_auth';
+    case 'quota_exhausted': return 'provider_quota';
+    default: return 'provider_error';
+  }
 }

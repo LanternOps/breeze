@@ -125,6 +125,13 @@ for the script-based fleet install.
     ```
   </TabItem>
   <TabItem label="Windows">
+    1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
+    2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
+
+    The copied command downloads the PowerShell installer from the API URL returned during onboarding. It checks for HTTP 200, disables redirects, and verifies that the first line defines `Install-BreezeAgent` before running the script. HTTPS relies on a certificate trusted by the target machine. Plain HTTP is supported for self-hosted LAN deployments, where the network must be trusted. The installer pins the download to one release version, verifies its SHA-256 checksum, checks Authenticode when available, and enforces the operating system requirement.
+
+    To enroll manually instead:
+
     ```powershell
     # Check the minimum supported OS before downloading anything
     $osv = [System.Environment]::OSVersion.Version
@@ -175,9 +182,9 @@ Instead of running manual enrollment commands, you can download a ready-to-run i
 
 <Steps>
 1. Open the **Add Device** dialog from the Devices page.
-2. Select **Download Installer** and choose **Windows MSI** or **macOS**.
+2. Stay on the **Download Installer** tab, choose the platform (**Windows (.msi)** or **macOS (.zip)**) and the **Site**.
 3. Set a **device count** to control how many devices can enroll with this installer.
-4. Run the installer on the target machine. The agent enrolls automatically with the correct organization and site -- no enrollment commands needed.
+4. Click **Download Installer** (or **Generate Link** to get a shareable download link), then run the installer on the target machine. The agent enrolls automatically with the correct organization and site -- no enrollment commands needed.
 </Steps>
 
 <Aside type="tip">
@@ -229,7 +236,7 @@ The installer parses this block at runtime using a regex search anywhere in the 
 There is no downloadable pre-configured installer for Linux, so the **Add Device** dialog's **CLI Commands** tab generates a copy-paste install command instead.
 
 <Steps>
-1. Open **Add Device** from the Devices page and switch to the **CLI Commands** tab (this is the default tab when Linux is the detected platform).
+1. Open **Add Device** from the Devices page and switch to the **CLI Commands** tab (the dialog opens on it by default when Linux is the detected platform).
 2. Pick the **Site** the new devices should join. Under **Step 1 — Copy your installation token**, set **Number of devices** and **Link expires in**, then click **Generate token**. Opening the tab does not create a key — nothing is minted until you click. Use **Generate new token** if you change any of the three afterwards; the line under the token names the site it enrolls into.
 3. Under **Step 2 — Run the install command**, copy the one-liner shown for the Linux/macOS tab. The command and its copy button appear only after a token exists; until then the box reads **Generate a token first**.
 4. Paste and run it on the target machine.
@@ -382,4 +389,8 @@ auth_token: "brz_..."
 
 <Aside type="danger">
   The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0644` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
+</Aside>
+
+<Aside type="note" title="Redirects and the server URL">
+  The agent, the watchdog and the helper processes send their token only to the `server_url` host and the configured backup server. A redirect on those requests is followed only to another path on the same host and port, or from `http://` to `https://` on the same host. A redirect to a different host (subdomains included), to another port on the same host, or from `https://` to `http://` is not followed; the request fails instead. If you move the API to a new hostname, update `server_url` or re-enroll the agents rather than redirecting the old hostname. Agent update files hosted on another origin, such as GitHub releases, are downloaded without the token.
 </Aside>

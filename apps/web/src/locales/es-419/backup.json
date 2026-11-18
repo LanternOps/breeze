@@ -41,6 +41,7 @@
     "stalledTooltip": "No se reciben datos desde hace {{minutes}} min",
     "filesProgress": "{{done}} / {{total}} archivos",
     "speedValue": "{{value}}/s",
+    "etaValue": "faltan unos {{value}}",
     "created": "Creado",
     "updated": "Actualizado",
     "files": "Archivos",
@@ -48,7 +49,6 @@
     "policyId": "ID de la política",
     "featureLinkId": "Enlace de característica ID",
     "errorLog": "Registro de errores",
-    "savings": "{{protected}} protegidos — {{uploaded}} subidos",
     "errorCount_one": "error {{count}}",
     "errorCount_other": "errores {{count}}",
     "failedCount_one": "{{count}} con error",
@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Uno o más escritores VSS no son estables. Revise los estados del escritor más reciente antes de la siguiente ejecución.",
     "vssUnprotectedVolumes": "Se leyó del volumen activo, no de una instantánea VSS: {{volumes}}. Los archivos en uso en estos volúmenes pueden haberse omitido o capturado en un estado inconsistente.",
     "lastBackupFailed": "La última copia de seguridad falló",
+    "lastBackupFailedWithCategory": "La última copia de seguridad falló: {{category}}",
     "lastBackupCompletedWithWarnings": "La última copia de seguridad se completó con advertencias",
     "lastBackupCompletedWithErrors": "La última copia de seguridad se completó con errores",
     "writer": "Escritor",
@@ -219,10 +220,30 @@
     "created2": "Creado",
     "expires2": "Vence",
     "protection2": "Protección",
+    "integrity": "Integridad",
     "hold": "Retener",
     "standard": "Estándar",
     "restorePointCount_one": "punto de restauración {{count}}",
-    "restorePointCount_other": "puntos de restauración {{count}}"
+    "restorePointCount_other": "puntos de restauración {{count}}",
+    "activePhase": {
+      "waiting_for_device": "Enviado al dispositivo, esperando a que comience",
+      "queued_on_device": "Esperando a que termine otro respaldo en este dispositivo",
+      "resuming": "Reanudando un respaldo interrumpido",
+      "scanning": "Analizando archivos",
+      "backing_up": "Respaldando"
+    },
+    "activeJobs": {
+      "title": "Respaldo en curso",
+      "processedOfTotal": "{{done}} de {{total}} procesados",
+      "processed": "{{done}} procesados",
+      "lastHeard": "Última señal del dispositivo: {{relative}}",
+      "mode": {
+        "file": "Respaldo de archivos",
+        "system_image": "Respaldo de imagen del sistema",
+        "mssql": "Respaldo de SQL Server",
+        "hyperv": "Respaldo de Hyper-V"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Cargando estado de la bóveda...",
@@ -487,6 +508,22 @@
     "selectASnapshot": "Seleccione una instantánea",
     "chooseTheRecoveryPointYouWantToRestore": "Elija el punto de recuperación desde el que desea restaurar.",
     "noSnapshotsAvailable": "No hay instantáneas disponibles.",
+    "device": "Dispositivo",
+    "selectADevice": "Seleccione un dispositivo",
+    "chooseTheDeviceToRestore": "Elija el dispositivo cuya copia de seguridad desea restaurar.",
+    "deviceOption_one": "{{device}} ({{count}} instantánea)",
+    "deviceOption_other": "{{device}} ({{count}} instantáneas)",
+    "unknownDevice": "Dispositivo desconocido",
+    "reviewDevice": "Dispositivo: {{device}}",
+    "snapshotNeedsSecondFactor": "Requiere segundo factor",
+    "secondFactorNote": "Este punto de restauración no está verificado. Al iniciar la restauración se te pedirá confirmar con tu segundo factor.",
+    "secondFactorNoteNotEnrolled": "Este punto de restauración no está verificado y no tienes un segundo factor configurado. Para iniciar la restauración se requiere uno.",
+    "secondFactorSetUp": "Configurar la autenticación de dos factores",
+    "commandDetails": "Detalles del comando",
+    "copyCommandId": "Copiar ID del comando",
+    "commandIdCopied": "ID del comando copiado",
+    "commandIdCopyFailed": "No se pudo copiar el ID del comando",
+    "carriedSnapshotUnavailable": "La instantánea con la que abrió el asistente ya no está disponible. Elija un dispositivo y una de sus instantáneas.",
     "selectRestoreType": "Seleccione el tipo de restauración",
     "fullRestoresEverythingSelectiveRestoresSpecificFiles": "Completamente restaura todo, selectivo restaura archivos específicos.",
     "fullRestore": "restauración completa",
@@ -529,9 +566,18 @@
     "noRestoreHistoryYet": "Aún no hay historial de restauración.",
     "files2": "Archivos:",
     "size": "Tamaño:",
-    "filesSelected_one": "{{count}} archivo seleccionado",
-    "filesSelected_other": "{{count}} archivos seleccionados",
-    "unknownDevice": "Dispositivo desconocido",
+    "filesSelected_one": "{{formatted}} archivo seleccionado",
+    "filesSelected_other": "{{formatted}} archivos seleccionados",
+    "folderFileCount_one": "{{formatted}} archivo",
+    "folderFileCount_other": "{{formatted}} archivos",
+    "allFilesFromSnapshot": "Todos los archivos de la instantánea",
+    "selectionFiles_one": "{{formatted}} archivo",
+    "selectionFiles_other": "{{formatted}} archivos",
+    "selectionFolders_one": "{{formatted}} carpeta",
+    "selectionFolders_other": "{{formatted}} carpetas",
+    "largeFolderSelectionTitle": "Selección grande",
+    "selectFolder": "Seleccionar carpeta {{name}}",
+    "confirmLargeFolderSelection": "Esta selección abarca unos {{formatted}} archivos y la restauración puede tardar. ¿Continuar?",
     "kindVm": "Restaurar como VM",
     "kindInstantBoot": "Arranque instantáneo",
     "kindSelective": "Restauración selectiva",
@@ -625,13 +671,30 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "La inmutabilidad impuesta por el proveedor no se puede liberar desde Breeze.",
     "fileTree": "Árbol de archivos",
     "noFileTreeAvailable": "No hay árbol de archivos disponible.",
-    "fileIndexUnavailable": "Esta instantánea contiene archivos, pero su índice de archivos no está disponible, por lo que no se pueden mostrar aquí.",
+    "fileIndexBuilding": "Preparando la lista de archivos de esta instantánea. Esto puede tardar unos minutos en copias de seguridad grandes.",
+    "fileIndexUnavailable": "La lista de archivos de esta instantánea no está disponible en este momento. Aún puedes restaurar toda la instantánea.",
+    "fileIndexIntegrityFailed": "Esta instantánea no superó la comprobación de integridad, por lo que no se pueden mostrar sus archivos.",
+    "fileIndexDeviceLocal": "Esta instantánea está almacenada en el dispositivo y Breeze todavía no puede leer su lista de archivos desde allí.",
+    "fileIndexRetry": "Intentar de nuevo",
+    "searchPlaceholder": "Buscar archivos en esta instantánea",
+    "searchEmpty": "Ningún archivo coincide",
+    "searchTimeout": "La búsqueda tardó demasiado. Inténtalo de nuevo.",
+    "browseTimeout": "Listar esta carpeta tardó demasiado. Inténtalo de nuevo.",
+    "searchLoadMore": "Cargar más",
+    "searchRestoreFile": "Restaurar este archivo",
+    "searchMinLength": "Escribe al menos 2 caracteres",
+    "searchLoading": "Buscando…",
     "path": "Ruta:",
     "useTheRestoreWorkflowToRecoverOrExport": "Utilice el flujo de trabajo de restauración para recuperar o exportar archivos de esta instantánea.",
     "select": "Seleccionar",
+    "folderFileCount_one": "{{count}} archivo",
+    "folderFileCount_other": "{{count}} archivos",
+    "selectFolder": "Seleccionar carpeta {{name}}",
+    "confirmLargeFolderSelection": "Esta selección abarca unos {{count}} archivos y la restauración puede tardar. ¿Continuar?",
     "name": "Nombre",
     "size2": "Tamaño",
-    "modified": "Modificado"
+    "modified": "Modificado",
+    "noSnapshotsYetFilesAppearHere": "Aún no hay instantáneas. Los archivos aparecerán aquí cuando se complete la primera copia de seguridad."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Revisar y confirmar",
@@ -1023,11 +1086,13 @@
     "statusTitle": "Estado",
     "recencyTitle": "Última copia de seguridad correcta",
     "coverage": "{{covered}} de {{total}} endpoints tienen una copia de seguridad reciente",
+    "definition": "«Reciente» significa una copia de seguridad exitosa en las últimas 48 horas. El estado de un dispositivo refleja su última ejecución, por lo que puede tener una copia reciente y aun así mostrar Crítico si esa ejecución falló.",
     "providerOnly": "{{value}} endpoints solo del proveedor",
     "m365Accounts": "{{value}} cuentas de Microsoft 365",
     "status": {
       "no_backups": "Sin copias de seguridad",
       "completed": "Completado",
+      "overdue": "Sin copia de seguridad reciente",
       "completed_with_errors": "Completado con errores",
       "in_progress": "En proceso",
       "unsuccessful": "Sin éxito",
@@ -1037,7 +1102,8 @@
       "over_quota": "Cuota superada",
       "no_selection": "Nada seleccionado",
       "not_started": "No iniciado",
-      "unknown": "Desconocido"
+      "unknown": "Desconocido",
+      "paused": "En pausa"
     },
     "recency": {
       "never": "Nunca",
@@ -1070,7 +1136,14 @@
       "used": "Usado",
       "history": "Últimos 28 días",
       "errors": "Errores",
+      "verifiedBootable": "Arranque verificado",
       "agent": "Agente"
+    },
+    "verifiedBootable": {
+      "passed": "Aprobado",
+      "failed": "Fallido",
+      "never_run": "Nunca ejecutado",
+      "not_applicable": "n/d"
     },
     "dataSource": {
       "files": "Archivos y carpetas",
@@ -1079,13 +1152,19 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Imagen de disco",
+      "m365_mail": "Correo de Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Correo de Google Workspace",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Unidades compartidas de Google",
       "other": "Otros"
     },
     "noObservation": "Sin observación",
+    "overdueLast": "Última: {{date}}",
     "openDevice": "Abrir dispositivo",
     "empty": "Ningún dispositivo coincide con estos filtros.",
     "loadMore": "Cargar más",
@@ -1095,13 +1174,19 @@
       "customer": "Cliente del proveedor",
       "lastSuccess": "Última copia de seguridad correcta",
       "lastSession": "Última sesión",
+      "bootCheck": "Última comprobación de arranque",
       "unlink": "Desvincular",
       "unlinkConfirm": "¿Desvincular este dispositivo del proveedor del dispositivo de Breeze? Permanece en el producto de copia de seguridad y se puede volver a vincular.",
       "unlinkedToast": "Dispositivo del proveedor desvinculado",
       "errorUnlink": "No se pudo desvincular el dispositivo del proveedor",
       "error": "No se pudo cargar el estado de la copia de seguridad externa",
       "alsoCheck": "Revise también las conexiones de copia de seguridad de terceros en Integraciones."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} cuentas SaaS",
+    "workloadBackup": "Respaldo de {{workload}}",
+    "sourceProvider": "Proveedores de respaldo"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "El estado del sistema se aplica con una reconstrucción bare-metal",
@@ -1139,5 +1224,109 @@
     "checking": "Comprobando",
     "unverified": "Sin verificar",
     "failed": "Falló la comprobación de integridad"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "Se omitió {{count}} punto de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "summary_other": "Se omitieron {{count}} puntos de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "showDetails": "Mostrar rutas omitidas"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Dispositivo sin conexión",
+      "hint": "El dispositivo perdió la conexión con Breeze durante la copia de seguridad. Manténgalo encendido y en línea durante toda la ventana de copia de seguridad."
+    },
+    "timeout": {
+      "label": "Detenida o con tiempo agotado",
+      "hint": "La copia de seguridad dejó de avanzar o superó su límite de tiempo. Las copias de seguridad muy grandes pueden necesitar más de una ventana. Revise la carga del dispositivo y el tamaño de la selección de copia de seguridad."
+    },
+    "storage": {
+      "label": "Problema de almacenamiento",
+      "hint": "Breeze no pudo escribir en el destino de la copia de seguridad, o la autorización de carga caducó. Pruebe la configuración de almacenamiento y revise sus credenciales y el espacio libre."
+    },
+    "agent": {
+      "label": "Problema del agente",
+      "hint": "El componente de copia de seguridad del dispositivo se detuvo de forma inesperada. Actualice el agente y vuelva a ejecutar la copia de seguridad. Si sigue ocurriendo, revise los registros del agente del dispositivo."
+    },
+    "configuration": {
+      "label": "Problema de configuración",
+      "hint": "No había nada válido para respaldar, o la configuración de copia de seguridad cambió mientras se iniciaba el trabajo. Revise el perfil de copia de seguridad del dispositivo."
+    },
+    "source_access": {
+      "label": "No se pudieron leer archivos",
+      "hint": "Algunos archivos estaban bloqueados, en uso o el agente no podía leerlos. Revise los archivos que se indican abajo y el estado de VSS."
+    },
+    "cancelled": {
+      "label": "Cancelada",
+      "hint": "Detenida por un usuario, o por Breeze, antes de terminar."
+    },
+    "unknown": {
+      "label": "Otro error",
+      "hint": "Breeze todavía no reconoce este error. El mensaje completo se muestra abajo."
+    },
+    "troubleshootingLink": "Guía de solución de problemas"
+  },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "El destino de la copia de seguridad rechazó la solicitud. Verifique que la clave de acceso sea válida y tenga permiso de escritura, la política del bucket y el estado de la cuenta de almacenamiento, y luego ejecute Probar conexión."
+    },
+    "storage_not_found": {
+      "hint": "El destino de la copia de seguridad indica que el bucket o sus objetos no existen. Verifique que el bucket siga existiendo y que ninguna regla de ciclo de vida elimine los datos de la copia."
+    },
+    "storage_clock_skew": {
+      "hint": "El destino de la copia de seguridad rechazó la hora de la solicitud, lo que comúnmente indica un reloj muy desfasado. Revise la fecha y la hora del dispositivo."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze no pudo completar una operación de almacenamiento con el destino. Por lo general es algo temporal o una incompatibilidad del proveedor. Si sigue ocurriendo, comuníquese con soporte."
+    },
+    "storage_session_expired": {
+      "hint": "La sesión de carga terminó antes de que finalizara la ejecución. La siguiente ejecución continúa desde donde se detuvo esta."
+    },
+    "helper_stopped": {
+      "hint": "El proceso de copia de seguridad del dispositivo se detuvo a mitad de la ejecución, comúnmente porque el dispositivo entró en suspensión, se reinició o se apagó. Manténgalo activo y encendido durante la ventana de copia de seguridad."
+    },
+    "run_cancelled_on_device": {
+      "hint": "La ejecución se interrumpió en el dispositivo, comúnmente por un reinicio o apagado."
+    },
+    "never_started": {
+      "hint": "El dispositivo nunca inició esta ejecución, por lo general porque otra copia de seguridad seguía en curso o el agente se estaba reiniciando."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze dejó de recibir señales del dispositivo durante la ejecución."
+    },
+    "destination": {
+      "title": "{{name}}: la última copia de seguridad falló en {{failing}} de {{total}} dispositivos",
+      "link": "Abrir perfiles de copia de seguridad para probar la conexión"
+    }
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Primera copia para este dispositivo y destino",
+    "base_expired": "La copia anterior había caducado según la retención",
+    "storage_identity_changed": "Cambió el destino de la copia",
+    "backup_type_mismatch": "La copia anterior era de otro tipo",
+    "base_job_not_completed": "Ninguna copia anterior terminó correctamente",
+    "base_retired": "La retención eliminó la copia anterior",
+    "base_retired_race": "La retención eliminó la copia anterior",
+    "base_deleted_race": "La retención eliminó la copia anterior",
+    "no_verified_base": "Ninguna copia anterior superó la verificación de integridad",
+    "key_root_changed": "Cambió la carpeta de destino (prefijo)",
+    "base_key_root_unreadable": "No se pudo leer la ubicación de almacenamiento de la copia anterior",
+    "invalid_destination_prefix": "El prefijo de destino no es válido",
+    "nothing_reused": "Había una copia anterior disponible, pero no se pudo reutilizar ningún archivo sin cambios",
+    "unrecorded": "Motivo no registrado (esta copia se ejecutó antes de que Breeze lo registrara)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} subidos · {{reused}} reutilizados",
+    "processedBeforeStopped": "{{processed}} procesados antes de detenerse",
+    "full": "Completa",
+    "heading": "Lo que almacenó esta ejecución",
+    "protected": "Protegidos",
+    "uploadedThisRun": "Subidos en esta ejecución",
+    "reusedFromEarlier": "Reutilizados de copias anteriores",
+    "backupType": "Tipo de copia",
+    "incremental": "Copia incremental",
+    "fullWithReason": "Completa: {{reason}}",
+    "explainer": "Solo se suben los archivos nuevos o modificados. Los archivos sin cambios se reutilizan de copias anteriores hechas por este dispositivo en el mismo destino.",
+    "learnMore": "Cómo funcionan las copias incrementales",
+    "resumedAt": "Esta ejecución reanudó una copia interrumpida el {{time}}."
   }
 }

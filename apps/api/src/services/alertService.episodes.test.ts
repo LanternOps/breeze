@@ -24,6 +24,7 @@ const {
   fireEscalationLatchMock,
   isCooldownActiveMock,
   isFlappingMock,
+  scheduleStagedAlertDispatchMock,
   callOrder,
 } = vi.hoisted(() => {
   const resultsQueue: unknown[][] = [];
@@ -79,9 +80,12 @@ const {
     fireEscalationLatchMock: vi.fn(),
     isCooldownActiveMock: vi.fn(),
     isFlappingMock: vi.fn(),
+    scheduleStagedAlertDispatchMock: vi.fn(),
   };
 });
 
+vi.mock('./alertLifecycle/resolve', async (importOriginal) =>
+  (await import('../testUtils/alertLifecycleMock')).legacyLifecycleModule(await importOriginal()));
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
@@ -97,7 +101,13 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: unknown) => ({ op: 'desc', col }),
 }));
 
-vi.mock('../db', () => ({ db: dbMock, withDbTransaction: async (fn: () => Promise<unknown>) => fn() }));
+vi.mock('../db', () => ({
+  db: dbMock,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
+  // #10859 — the evaluator scopes its own contexts; their boundaries are
+  // asserted in alertService.contextScoping.test.ts.
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('./alertSubjects', () => ({ evaluateSubjectAlerts: vi.fn(async () => 'ok') }));
 
 vi.mock('../db/schema', () => ({
@@ -145,9 +155,11 @@ vi.mock('./monitors/escalationLatch', () => ({
 }));
 
 vi.mock('./alertConditions', () => ({
+  evidenceLeafPaths: vi.fn(() => []),
   evaluateConditions: evaluateConditionsMock,
   evaluateAutoResolveConditions: vi.fn(),
   interpolateTemplate: vi.fn((template: string) => template),
+  withMetConditionDescriptions: vi.fn((context: Record<string, unknown>) => context),
 }));
 
 vi.mock('./alertCooldown', () => ({
@@ -166,6 +178,10 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(() => Promise.resolve('job-1')) }));
+// #10926 — create stages `alert.triggered` on the row and hands the id to the
+// outbox; the after-commit publish and its follow-ups are covered by
+// alertPublishAfterCommit.integration.test.ts.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: scheduleStagedAlertDispatchMock }));
 
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 import { evaluateSubjectAlerts } from './alertSubjects';
@@ -366,13 +382,15 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
     expect(linkEpisodeAlertMock).toHaveBeenCalledWith('episode-1', 'alert-1');
   });
 
-  it('keeps a published legacy alert when episode linking fails', async () => {
+  it('keeps a staged legacy alert when episode linking fails', async () => {
     pushSweepQueue({ triggered: true });
     linkEpisodeAlertMock.mockRejectedValueOnce(new Error('episode bookkeeping unavailable'));
 
     expect(await evaluateDeviceAlerts(DEVICE_ID)).toContain('alert-1');
     expect(insertedAlerts).toHaveLength(1);
     expect(linkEpisodeAlertMock).toHaveBeenCalledWith('episode-1', 'alert-1');
+    // The alert still goes to the outbox for announcement.
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
   });
 
   it('opens the episode even when createAlert returns null because of cooldown', async () => {

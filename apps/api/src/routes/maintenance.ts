@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -400,6 +401,8 @@ maintenanceRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(body.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
     // Resolve the ownership axis (#2131): partner-wide creation requires the
     // partner-wide capability; the default path stays org-owned.
@@ -548,6 +551,8 @@ maintenanceRoutes.patch(
     const auth = c.get('auth');
     const windowId = c.req.param('id')!;
     const updates = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(updates.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);

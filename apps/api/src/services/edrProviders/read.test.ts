@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import {
   buildEdrStatusSummary,
+  buildLegacyAgentCoverageQuery,
   buildListEdrDetectionsQuery,
   EdrReadError,
   SYNC_HEALTH_PARTNER_ONLY_NOTE,
@@ -16,6 +17,7 @@ const NOW = new Date('2026-10-12T12:00:00Z');
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
 
 const orgAuth = { scope: 'organization', orgId: ORG, canAccessOrg: (id: string) => id === ORG } as unknown as AuthContext;
+const NO_LEGACY = { orgIds: [] as string[], agents: 0 };
 const unrestricted = (auth: AuthContext = orgAuth): EdrReadScope => ({ auth, allowedDeviceIds: null, allowedSiteIds: null });
 
 function partnerInput(over: Partial<CoverageInput> = {}): CoverageInput {
@@ -25,7 +27,7 @@ function partnerInput(over: Partial<CoverageInput> = {}): CoverageInput {
     tenants: [{ connectionId: 'c1', orgId: ORG, lastDetectionSyncAt: minutesAgo(5), lastDetectionSyncStatus: 'success' }],
     endpoints: [{ provider: 'bitdefender', connectionId: 'c1', orgId: ORG, endpoints: 3, linkedEndpoints: 2, unhealthyEndpoints: 1 }],
     detections: [],
-    legacy: { sentinelOne: false, huntress: false },
+    legacy: { sentinelOne: NO_LEGACY, huntress: NO_LEGACY },
     now: NOW,
     ...over,
   };
@@ -70,9 +72,75 @@ describe('buildEdrStatusSummary — coverage disclosure (D6)', () => {
   });
 
   it('legacy S1 / Huntress coverage adds a pointer note to the legacy tools', () => {
-    const s = buildEdrStatusSummary(partnerInput({ legacy: { sentinelOne: true, huntress: true } }));
+    const s = buildEdrStatusSummary(partnerInput({ legacy: { sentinelOne: { orgIds: [ORG], agents: 1 }, huntress: { orgIds: [ORG], agents: 1 } } }));
     expect(s.coverage.notes.join(' ')).toMatch(/get_s1_threats/);
     expect(s.coverage.notes.join(' ')).toMatch(/get_huntress_incidents/);
+  });
+
+  describe('legacy integration coverage counts as EDR coverage (#10394)', () => {
+    const huntressOnly = (orgIds: string[], agents: number): Partial<CoverageInput> => ({
+      connections: [], tenants: [], endpoints: [],
+      legacy: { sentinelOne: NO_LEGACY, huntress: { orgIds, agents } },
+    });
+
+    it('partner scope, Huntress integration and no provider connection: no "no provider" note, orgs counted, integration listed', () => {
+      const s = buildEdrStatusSummary(partnerInput(huntressOnly([ORG, OTHER_ORG], 135)));
+      expect(s.coverage.notes.join(' ')).not.toMatch(/No active EDR provider connection/);
+      expect(s.coverage.orgsWithEdr).toBe(2);
+      expect(s.integrations).toEqual([{ integration: 'huntress', label: 'Huntress (integration)', orgs: 2, agents: 135 }]);
+      // The provider detection list still does not carry Huntress incidents,
+      // so an empty list there is not "clean" — partial stays true.
+      expect(s.coverage.partial).toBe(true);
+      expect(s.coverage.notes.join(' ')).toMatch(/Huntress integration/);
+      expect(s.coverage.notes.join(' ')).toMatch(/get_huntress_incidents/);
+      // Framework providers stay framework-only (the web "Other EDR" tab keys off them).
+      expect(s.providers).toEqual([]);
+    });
+
+    it('partner scope with neither a connection nor an integration keeps the "no provider" note', () => {
+      const s = buildEdrStatusSummary(partnerInput(huntressOnly([], 0)));
+      expect(s.coverage.notes.join(' ')).toMatch(/No active EDR provider connection/);
+      expect(s.coverage.orgsWithEdr).toBe(0);
+      expect(s.integrations).toEqual([]);
+    });
+
+    it('SentinelOne integration counts the same way', () => {
+      const s = buildEdrStatusSummary(partnerInput({
+        connections: [], tenants: [], endpoints: [],
+        legacy: { sentinelOne: { orgIds: [ORG], agents: 7 }, huntress: NO_LEGACY },
+      }));
+      expect(s.coverage.notes.join(' ')).not.toMatch(/No active EDR provider connection/);
+      expect(s.coverage.notes.join(' ')).toMatch(/comes from the SentinelOne integration, not an EDR provider connection/);
+      expect(s.coverage.orgsWithEdr).toBe(1);
+      expect(s.integrations).toEqual([{ integration: 'sentinelone', label: 'SentinelOne (integration)', orgs: 1, agents: 7 }]);
+    });
+
+    it('both integrations are named in one note', () => {
+      const s = buildEdrStatusSummary(partnerInput({
+        connections: [], tenants: [], endpoints: [],
+        legacy: { sentinelOne: { orgIds: [ORG], agents: 7 }, huntress: { orgIds: [OTHER_ORG], agents: 3 } },
+      }));
+      expect(s.coverage.notes.join(' ')).toMatch(/comes from the SentinelOne and Huntress integrations, not an EDR provider connection/);
+      expect(s.coverage.orgsWithEdr).toBe(2);
+      expect(s.integrations?.map((i) => i.integration)).toEqual(['sentinelone', 'huntress']);
+    });
+
+    it('orgsWithEdr is the union of provider-mapped and integration orgs (no double count)', () => {
+      expect(buildEdrStatusSummary(partnerInput({ legacy: { sentinelOne: NO_LEGACY, huntress: { orgIds: [ORG, OTHER_ORG], agents: 4 } } }))
+        .coverage.orgsWithEdr).toBe(2);
+      expect(buildEdrStatusSummary(partnerInput({ legacy: { sentinelOne: { orgIds: [ORG], agents: 1 }, huntress: { orgIds: [ORG], agents: 4 } } }))
+        .coverage.orgsWithEdr).toBe(1);
+    });
+
+    it('organization scope: Huntress replaces the "no provider endpoints" note and counts the org', () => {
+      const s = buildEdrStatusSummary(partnerInput({ syncHealthVisible: false, ...huntressOnly([ORG], 12) }));
+      expect(s.coverage.notes.join(' ')).not.toMatch(/No EDR provider endpoints are visible/);
+      expect(s.coverage.notes).toContain('EDR coverage for this organization comes from the Huntress integration, not EDR provider endpoints; '
+        + 'its alerts are not in the EDR provider detection list, so an empty detection list is not evidence of no threats.');
+      expect(s.coverage.orgsWithEdr).toBe(1);
+      expect(s.coverage.partial).toBe(true);
+      expect(s.integrations).toEqual([{ integration: 'huntress', label: 'Huntress (integration)', orgs: 1, agents: 12 }]);
+    });
   });
 
   it('organization scope: no connection/tenant fields, explicit partner-only sync-health note', () => {
@@ -98,6 +166,47 @@ describe('buildEdrStatusSummary — coverage disclosure (D6)', () => {
       tenants: [{ connectionId: 'c1', orgId: null, lastDetectionSyncAt: null, lastDetectionSyncStatus: null }],
     }));
     for (const n of s.coverage.notes) expect(n).not.toMatch(/c1|bitdefender/);
+  });
+});
+
+describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
+  it('groups agents by org within the caller\'s org', () => {
+    const { sql, params } = buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL();
+    expect(sql).toContain('from "huntress_agents"');
+    expect(sql).toMatch(/group by "huntress_agents"\."org_id"/);
+    expect(sql).toContain('"huntress_agents"."org_id" = $');
+    expect(params).toContain(ORG);
+  });
+
+  it('applies the site rule to a restricted caller (linked to an allowed device, or never linked)', () => {
+    const { sql, params } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] }, {}, 'sentinelone').toSQL();
+    expect(sql).toContain('from "s1_agents"');
+    expect(sql).toMatch(/"s1_agents"\."device_id" is null or "s1_agents"\."device_id" in \(/);
+    expect(params).toContain('d1');
+  });
+
+  it('a restricted caller with no allowed devices counts only never-linked agents', () => {
+    const { sql } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: [], allowedSiteIds: [] }, {}, 'huntress').toSQL();
+    expect(sql).toMatch(/"huntress_agents"\."device_id" is null/);
+    expect(sql).not.toMatch(/"huntress_agents"\."device_id" in/);
+  });
+
+  it('rejects an org outside an organization caller', () => {
+    expect(() => buildLegacyAgentCoverageQuery(unrestricted(), { orgId: OTHER_ORG }, 'huntress')).toThrow(EdrReadError);
+  });
+
+  it('partner scope counts only agents of an ACTIVE integration (a disabled one is not coverage)', () => {
+    const partnerAuth = {
+      scope: 'partner', canAccessOrg: () => true, orgCondition: () => undefined,
+    } as unknown as AuthContext;
+    const h = buildLegacyAgentCoverageQuery(unrestricted(partnerAuth), {}, 'huntress').toSQL();
+    expect(h.sql).toMatch(/exists \(select 1 from "huntress_integrations" i where i\.id = "huntress_agents"\."integration_id" and i\.is_active\)/);
+    const s1 = buildLegacyAgentCoverageQuery(unrestricted(partnerAuth), {}, 'sentinelone').toSQL();
+    expect(s1.sql).toMatch(/exists \(select 1 from "s1_integrations" i where i\.id = "s1_agents"\."integration_id" and i\.is_active\)/);
+  });
+
+  it('organization scope skips the integration-state filter (org tokens cannot read the partner-axis integration row under RLS)', () => {
+    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL().sql).not.toContain('huntress_integrations');
   });
 });
 

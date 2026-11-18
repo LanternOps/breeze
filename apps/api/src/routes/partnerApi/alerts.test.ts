@@ -40,7 +40,7 @@ vi.mock('../../middleware/partnerApiAuth', () => ({
 }));
 
 import { partnerApiRoutes } from './index';
-import { partnerAlertFeedEnvelopeSchema } from './schemas';
+import { partnerAlertFeedEnvelopeSchema, partnerAlertExportRecordSchema } from './schemas';
 
 type QueryResult = unknown[] | Error;
 let selectResults: QueryResult[] = [];
@@ -108,6 +108,32 @@ describe('partner alerts feed', () => {
     });
     expect(body.data[0]).not.toHaveProperty('context');
     expect(mocks.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('exports the owner of a device-less workload alert', async () => {
+    selectResults = [[alertRow(ALERT_A, '900', { deviceId: null, deviceHostname: null, ownerKind: 'backup_workload', ownerRef: ALERT_B })]];
+    const res = await request('/alerts');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ deviceId: null, owner: { kind: 'backup_workload', ref: ALERT_B } });
+  });
+
+  it.each([
+    ['device', { ownerKind: 'device', ownerRef: ALERT_B }, DEVICE_ID],
+    ['topology_site', { ownerKind: 'topology_site', ownerRef: ALERT_B, topologySiteId: ALERT_A }, ALERT_A],
+  ])('exports the %s owner reference from its authoritative field', async (kind, overrides, ref) => {
+    selectResults = [[alertRow(ALERT_A, '900', overrides)]];
+    const res = await request('/alerts');
+    expect(res.status).toBe(200);
+    const body = partnerAlertFeedEnvelopeSchema.parse(await res.json());
+    expect(body.data[0]?.owner).toEqual({ kind, ref });
+  });
+
+  it('requires an owner object even when its reference is missing', () => {
+    const ownerSchema = partnerAlertExportRecordSchema.shape.owner;
+    expect(ownerSchema.safeParse(null).success).toBe(false);
+    expect(ownerSchema.safeParse(undefined).success).toBe(false);
+    expect(ownerSchema.parse({ kind: 'device', ref: null })).toEqual({ kind: 'device', ref: null });
   });
 
   it('pages with a signed cursor that pins the traversal window', async () => {

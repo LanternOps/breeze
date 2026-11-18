@@ -9,13 +9,66 @@ import {
   MAX_UPLOAD_SIZE,
   getFileExtension,
   authorizeCatalogItemRead,
+  hasInstallScript,
+  installSpecError,
+  normalizeSupportedOs,
   resolveScopedOrgId,
 } from './softwareVersionShared';
 
 describe('softwareVersionShared', () => {
-  it('keeps the historical installer extension allowlist and 500MB cap', () => {
-    expect([...ALLOWED_EXTENSIONS].sort()).toEqual(['.deb', '.dmg', '.exe', '.msi', '.pkg']);
+  it('keeps the historical installer extension allowlist (+ .zip, #6958) and 500MB cap', () => {
+    expect([...ALLOWED_EXTENSIONS].sort()).toEqual(['.deb', '.dmg', '.exe', '.msi', '.pkg', '.zip']);
+    expect(ALLOWED_EXTENSIONS.has(getFileExtension('ctrld_1.5.8_windows_amd64.ZIP'))).toBe(true);
     expect(MAX_UPLOAD_SIZE).toBe(500 * 1024 * 1024);
+  });
+
+  describe('normalizeSupportedOs (#6958)', () => {
+    it('drops duplicates (case-insensitively, first spelling kept, order preserved)', () => {
+      expect(normalizeSupportedOs(['windows', 'windows'])).toEqual({ ok: true, value: ['windows'] });
+      expect(normalizeSupportedOs(['Windows', 'macos', 'windows'])).toEqual({ ok: true, value: ['Windows', 'macos'] });
+      expect(normalizeSupportedOs([' linux '])).toEqual({ ok: true, value: ['linux'] });
+    });
+
+    it('passes undefined and null through', () => {
+      expect(normalizeSupportedOs(undefined)).toEqual({ ok: true, value: undefined });
+      expect(normalizeSupportedOs(null)).toEqual({ ok: true, value: null });
+    });
+
+    it('rejects an empty or whitespace entry, or a non-array', () => {
+      expect(normalizeSupportedOs(['windows', ''])).toEqual({ ok: false, error: expect.stringMatching(/empty/) });
+      expect(normalizeSupportedOs(['  '])).toEqual({ ok: false, error: expect.stringMatching(/empty/) });
+      expect(normalizeSupportedOs('windows')).toEqual({ ok: false, error: expect.any(String) });
+      expect(normalizeSupportedOs([1])).toEqual({ ok: false, error: expect.any(String) });
+    });
+  });
+
+  describe('installSpecError (#6958)', () => {
+    const base = { fileType: 'exe', supportedOs: ['windows'], silentInstallArgs: null, preInstallScript: null, postInstallScript: null };
+
+    it('is null for a valid spec', () => {
+      expect(installSpecError(base)).toBeNull();
+      expect(installSpecError({ ...base, postInstallScript: 'Write-Output 1' })).toBeNull();
+      expect(installSpecError({ ...base, supportedOs: ['Windows'], postInstallScript: 'x' })).toBeNull();
+    });
+
+    it('returns every shared validator issue', () => {
+      expect(installSpecError({ ...base, fileType: 'zip', supportedOs: ['windows', 'macos'], preInstallScript: 'x', silentInstallArgs: '/S' }))
+        .toEqual({
+          error: expect.any(String),
+          issues: ['zip_requires_post_install_script', 'scripts_require_single_os', 'args_unsupported_for_file_type'],
+        });
+    });
+
+    it('a script bound to an OS the agent has no interpreter mapping for is refused', () => {
+      expect(installSpecError({ ...base, supportedOs: ['solaris'], postInstallScript: 'x' }))
+        .toEqual({ error: expect.any(String), issues: ['scripts_os_unsupported'] });
+    });
+  });
+
+  it('hasInstallScript treats blank text as no script', () => {
+    expect(hasInstallScript({ preInstallScript: null, postInstallScript: undefined })).toBe(false);
+    expect(hasInstallScript({ preInstallScript: '  ', postInstallScript: '' })).toBe(false);
+    expect(hasInstallScript({ preInstallScript: 'x', postInstallScript: null })).toBe(true);
   });
 
   it('extracts lowercase extensions and empty string when there is none', () => {

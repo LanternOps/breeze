@@ -272,6 +272,40 @@ describe('discovery routes', () => {
     app.route('/discovery', discoveryRoutes);
   });
 
+  describe('joined profile and bridge details stay within the record site', () => {
+    it.each([
+      ['/discovery/jobs', 200, 'discoveryJobs'],
+      ['/discovery/assets', 200, 'discoveredAssets'],
+      ['/discovery/assets/00000000-0000-4000-8000-000000000001', 404, 'discoveredAssets'],
+    ])('joins the profile on the record org and site for %s', async (path, status, parent) => {
+      const joins: unknown[] = [];
+      const chain: any = {};
+      for (const method of ['from', 'where', 'orderBy', 'limit']) chain[method] = () => chain;
+      chain.leftJoin = (_table: unknown, condition: unknown) => { joins.push(condition); return chain; };
+      chain.then = (resolve: any, reject: any) => Promise.resolve([]).then(resolve, reject);
+      vi.mocked(db.select).mockReturnValueOnce(chain);
+      if (parent === 'discoveryJobs') vi.mocked(db.select).mockReturnValueOnce(chain);
+      const res = await app.request(path, { headers: { 'x-restrict-site': 'site-a' } });
+      expect(res.status).toBe(status);
+      const profileJoin = joins.find((condition) => collectSqlLeafStrings(condition).includes('discoveryProfiles.siteId'));
+      expect(profileJoin).toBeDefined();
+      expect(collectSqlLeafStrings(profileJoin)).toEqual(expect.arrayContaining([
+        'discoveryProfiles.orgId', `${parent}.orgId`, 'discoveryProfiles.siteId', `${parent}.siteId`,
+      ]));
+      if (parent === 'discoveryJobs') {
+        // The returned profile id comes from the joined row, so it is null when the join drops.
+        expect(vi.mocked(db.select).mock.calls[0]![0]).toMatchObject({ profileId: 'discoveryProfiles.id' });
+      }
+      if (path.includes('/assets/')) {
+        const bridgeJoin = joins.find((condition) => collectSqlLeafStrings(condition).includes('devices.agentId'));
+        expect(bridgeJoin).toBeDefined();
+        expect(collectSqlLeafStrings(bridgeJoin)).toEqual(expect.arrayContaining([
+          'devices.orgId', 'discoveredAssets.orgId', 'devices.siteId', 'discoveredAssets.siteId',
+        ]));
+      }
+    });
+  });
+
   describe('GET /discovery/topology', () => {
     it('is gated by requirePermission(topology, read) at the route module', () => {
       // topology:read is its own grant (no longer piggy-backed on devices:read).
@@ -678,6 +712,33 @@ describe('discovery routes', () => {
       });
     });
 
+    it('projects a normalized osFingerprint in the asset list response', async () => {
+      const now = new Date();
+      const mk = (id: string, osFingerprint: unknown) => ({
+        asset: {
+          id, orgId: '00000000-0000-0000-0000-000000000000', assetType: 'workstation',
+          approvalStatus: 'pending', isOnline: true, hostname: id, label: null,
+          ipAddress: '10.0.2.9', macAddress: null, manufacturer: null, model: null,
+          openPorts: [], snmpData: null, responseTimeMs: 2, linkedDeviceId: null,
+          osFingerprint, discoveryMethods: ['ping'], notes: null, tags: [],
+          firstSeenAt: now, lastSeenAt: now, createdAt: now, updatedAt: now,
+        },
+        snmpMonitoringEnabled: false, networkMonitoringEnabled: false,
+        linkedDeviceHostname: null, linkedDeviceDisplayName: null,
+        profileId: null, profileName: null, profileSubnets: null,
+      });
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ leftJoin: () => ({ leftJoin: () => ({ leftJoin: () => ({
+          where: () => ({ orderBy: () => Promise.resolve([mk('a-obj', { os: 'Windows 11' }), mk('a-null', null)]) }),
+        }) }) }) }),
+      });
+      const res = await app.request('/discovery/assets', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].osFingerprint).toBe('Windows 11');
+      expect(body.data[1].osFingerprint).toBeNull();
+    });
+
     // Regression guard: the list serializer must forward typeSource and
     // detectedAssetType so the frontend can show the override badge without
     // fetching individual asset detail pages.
@@ -961,6 +1022,27 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.siteTimezone).toBe('America/Chicago');
+    });
+
+    it.each([
+      [{ os: 'Windows' }, 'Windows'],
+      ['Cisco IOS', 'Cisco IOS'],
+      [{ os: 42 }, null],
+      [null, null],
+      ['', null],
+      [{ os: '' }, null],
+    ])('returns osFingerprint %j as %j (#9645)', async (stored, expected) => {
+      const row = buildRow();
+      row.asset.osFingerprint = stored as any;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.osFingerprint).toBe(expected);
     });
 
     it('returns a null site timezone when the asset has no site', async () => {
@@ -1319,6 +1401,19 @@ describe('discovery routes', () => {
   });
 
   describe('GET /discovery/profiles', () => {
+    // #9644: the last-run aggregate is a second, separately-qualified query
+    // (a correlated subquery inside the single-table profile select lost its
+    // table qualifiers and always evaluated to NULL).
+    const mockLastRuns = (rows: Array<{ profileId: string; lastRunAt: unknown }>) => {
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            groupBy: () => Promise.resolve(rows),
+          }),
+        }),
+      });
+    };
+
     // Regression: the Changes tab differentiates "Alerting disabled" from "no
     // changes yet" using each profile's alertSettings, so the list response must
     // project alertSettings (#1729).
@@ -1347,7 +1442,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       };
 
       (db.select as any).mockReturnValueOnce({
@@ -1357,6 +1451,7 @@ describe('discovery routes', () => {
           }),
         }),
       });
+      mockLastRuns([]);
 
       const res = await app.request('/discovery/profiles', {
         method: 'GET',
@@ -1391,7 +1486,6 @@ describe('discovery routes', () => {
               createdAt: now,
               updatedAt: now,
             },
-            lastRunAt: '2026-08-25 18:34:15.123',
           };
 
           (db.select as any).mockReturnValueOnce({
@@ -1401,6 +1495,7 @@ describe('discovery routes', () => {
               }),
             }),
           });
+          mockLastRuns([{ profileId: 'profile-003', lastRunAt: '2026-08-25 18:34:15.123' }]);
 
           const res = await app.request('/discovery/profiles', {
             method: 'GET',
@@ -1433,7 +1528,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       };
 
       (db.select as any).mockReturnValueOnce({
@@ -1443,6 +1537,7 @@ describe('discovery routes', () => {
           }),
         }),
       });
+      mockLastRuns([]);
 
       const res = await app.request('/discovery/profiles', {
         method: 'GET',
@@ -1452,6 +1547,50 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data[0].alertSettings).toBeNull();
+    });
+
+    it('skips the last-run lookup when no profile is visible (#9644)', async () => {
+      (db.select as any).mockClear();
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      });
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns each profile\'s own newest completed-job time, null when none (#9644)', async () => {
+      const now = new Date();
+      const mk = (id: string) => ({
+        profile: {
+          id, orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: id, description: null, enabled: true, subnets: ['10.0.2.0/24'],
+          methods: ['ping'], schedule: { type: 'manual' }, deepScan: false,
+          resolveHostnames: true, alertSettings: null, createdAt: now, updatedAt: now,
+        },
+      });
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([mk('profile-a'), mk('profile-b')]) }) }),
+      });
+      mockLastRuns([{ profileId: 'profile-a', lastRunAt: new Date('2026-10-01T12:00:00.000Z') }]);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((p: any) => [p.id, p.lastRunAt])).toEqual([
+        ['profile-a', '2026-10-01T12:00:00.000Z'],
+        ['profile-b', null],
+      ]);
     });
   });
 
@@ -1575,6 +1714,66 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.snmpCommunities).toEqual(['********']);
       expect(body.snmpCredentials.authPassphrase).toBe('********');
+    });
+
+    describe('alertSettings (#11901)', () => {
+      const createWith = async (extra: Record<string, unknown>) => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+            }),
+          }),
+        } as any);
+        const insertValues = vi.fn((v: any) => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: 'profile-001',
+            orgId: '00000000-0000-0000-0000-000000000000',
+            ...v,
+            createdAt: new Date('2026-05-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+          }]))
+        }));
+        vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+        const res = await app.request('/discovery/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Alerts',
+            siteId: '00000000-0000-0000-0000-000000000001',
+            subnets: ['10.0.2.0/24'],
+            methods: ['ping'],
+            schedule: { type: 'interval', intervalMinutes: 30 },
+            ...extra
+          })
+        });
+        return { res, saved: (insertValues.mock.calls as any)[0]?.[0] };
+      };
+
+      it('stores alertSettings sent on create and returns them', async () => {
+        const alertSettings = {
+          enabled: true, alertOnNew: true, alertOnDisappeared: false, alertOnChanged: true, changeRetentionDays: 30
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+        expect((await res.json()).alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores an explicitly disabled configuration as sent', async () => {
+        const alertSettings = {
+          enabled: false, alertOnNew: false, alertOnDisappeared: false, alertOnChanged: false, changeRetentionDays: 7
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores null when alertSettings is omitted', async () => {
+        const { res, saved } = await createWith({});
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toBeNull();
+      });
     });
 
     it('rejects a profile site that does not belong to the resolved organization', async () => {
@@ -1910,7 +2109,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       });
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -1922,6 +2120,8 @@ describe('discovery routes', () => {
             ]),
           }),
         }),
+      } as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ groupBy: () => Promise.resolve([]) }) }),
       } as any);
 
       const res = await app.request('/discovery/profiles', {
@@ -3640,9 +3840,11 @@ describe('discovery routes', () => {
       };
       (db.select as any).mockReturnValueOnce({
         from: () => ({ where: () => ({ orderBy: () => Promise.resolve([
-          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE }, lastRunAt: null },
-          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null }, lastRunAt: null },
+          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE } },
+          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null } },
         ]) }) }),
+      }).mockReturnValueOnce({
+        from: () => ({ where: () => ({ groupBy: () => Promise.resolve([]) }) }),
       });
 
       const res = await app.request('/discovery/profiles', { method: 'GET', headers: { Authorization: 'Bearer token' } });

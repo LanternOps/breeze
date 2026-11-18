@@ -460,7 +460,10 @@ func TestInterfacePollEnvelopeEchoesTheCommand(t *testing.T) {
 	f := loadInterfacePollFixture(t)
 	cmd, _ := DecodeInterfacePollCommandV1(f.ValidV2c)
 	cmd.Interfaces = cmd.Interfaces[:1]
-	start := time.Date(2026, 11, 2, 10, 0, 0, 123456789, time.UTC)
+	// Anchored to the real clock: the request deadline becomes a real
+	// context.WithDeadline, so a fixed date expires the poll (and empties
+	// Samples) once the wall clock passes it.
+	start := time.Now().UTC()
 	tick := start
 	req := cmd.Request(start.Add(10 * time.Second))
 	req.Clock = func() time.Time { tick = tick.Add(time.Millisecond); return tick }

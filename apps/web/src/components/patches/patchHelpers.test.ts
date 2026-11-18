@@ -367,3 +367,14 @@ describe('normalizePatch — severitySource (#9387)', () => {
     expect(normalizePatch({ id: 'p1', title: 'KB1', severity: 'unknown', severitySource: 'derived' }, 0).severitySource).toBeUndefined();
   });
 });
+
+describe('normalizePatch — catalog identity (#9533)', () => {
+  it('carries externalId and version so same-title rows can be told apart', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB1', externalId: 'guid-1', version: '1.2' }, 0);
+    expect(patch.externalId).toBe('guid-1');
+    expect(patch.version).toBe('1.2');
+    const bare = normalizePatch({ id: 'p2', title: 'KB2' }, 1);
+    expect(bare.externalId).toBeUndefined();
+    expect(bare.version).toBeNull();
+  });
+});

@@ -1,10 +1,12 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ConnectedAppsList from './ConnectedAppsList';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+import { showToast } from '../shared/Toast';
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const jsonResponse = (payload: unknown, status = 200): Response =>
@@ -91,7 +93,7 @@ describe('ConnectedAppsList', () => {
     expect(await screen.findByText(/partner scope required/)).toBeTruthy();
   });
 
-  it('asks for confirmation, calls DELETE, and reloads after revoke', async () => {
+  it('confirms in a dialog (no native confirm), calls DELETE, toasts success, and reloads', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ clients: sampleApps }))
       .mockResolvedValueOnce(noContent())
@@ -101,10 +103,20 @@ describe('ConnectedAppsList', () => {
     const revokeBtn = (await screen.findAllByRole('button', { name: /Revoke/ }))[0];
     fireEvent.click(revokeBtn);
 
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Revoke/ }));
+
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/settings/connected-apps/client_claude',
         expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringContaining('Claude Desktop') }),
       );
     });
     await waitFor(() => {
@@ -113,41 +125,49 @@ describe('ConnectedAppsList', () => {
     expect(screen.getByText('ChatGPT')).toBeTruthy();
   });
 
-  it('skips the DELETE call when the user cancels confirmation', async () => {
-    vi.mocked(window.confirm).mockReturnValueOnce(false);
+  it('skips the DELETE call when the user cancels the dialog', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ clients: sampleApps }));
 
     render(<ConnectedAppsList />);
     const revokeBtn = (await screen.findAllByRole('button', { name: /Revoke/ }))[0];
     fireEvent.click(revokeBtn);
 
-    await waitFor(() => {
-      expect(window.confirm).toHaveBeenCalled();
-    });
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Cancel/ }));
+
+    expect(window.confirm).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces a revoke error from the API', async () => {
+  it('toasts a revoke error from the API', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ clients: sampleApps }))
       .mockResolvedValueOnce(jsonResponse({ message: 'something exploded' }, 500));
 
     render(<ConnectedAppsList />);
-    const revokeBtn = (await screen.findAllByRole('button', { name: /Revoke/ }))[0];
-    fireEvent.click(revokeBtn);
+    fireEvent.click((await screen.findAllByRole('button', { name: /Revoke/ }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Revoke/ }));
 
-    expect(await screen.findByText(/something exploded/)).toBeTruthy();
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('something exploded') }),
+      );
+    });
   });
 
-  it('surfaces a network error mid-revoke (rejected fetch) instead of bubbling', async () => {
+  it('toasts a network error mid-revoke (rejected fetch) instead of bubbling', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ clients: sampleApps }))
       .mockRejectedValueOnce(new Error('connection reset'));
 
     render(<ConnectedAppsList />);
-    const revokeBtn = (await screen.findAllByRole('button', { name: /Revoke/ }))[0];
-    fireEvent.click(revokeBtn);
+    fireEvent.click((await screen.findAllByRole('button', { name: /Revoke/ }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Revoke/ }));
 
-    expect(await screen.findByText(/connection reset/)).toBeTruthy();
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
   });
 });

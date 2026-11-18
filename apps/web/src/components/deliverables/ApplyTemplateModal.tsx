@@ -12,6 +12,7 @@ import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
 import { Drawer } from '../shared/Drawer';
 import { localDateInputValue } from '../../lib/localDate';
+import { PortalVisibilityBadge } from './PortalVisibilityBadge';
 
 export interface ApplyTemplateModalProps {
   fetcher: Fetcher;
@@ -149,6 +150,7 @@ export function ApplyTemplateModal({ fetcher, orgId, contractId, onApplied, onCl
   const setsFailed = sets === 'failed';
   const contractsLoading = !contractId && contracts === 'loading';
   const contractsFailed = !contractId && contracts === 'failed';
+  const selectedSet = Array.isArray(sets) ? sets.find((s) => s.id === setId) : undefined;
 
   return (
     <Drawer open onClose={onClose} title={t('templates.apply.title')} width="max-w-md" dataTestId="apply-template-modal" closeDisabled={submitting}>
@@ -178,6 +180,29 @@ export function ApplyTemplateModal({ fetcher, orgId, contractId, onApplied, onCl
             <p className="mt-1 text-xs text-destructive" role="alert">{t('templates.errors.loadFailed')}</p>
           )}
         </div>
+
+        {selectedSet && (
+          <div data-testid="apply-template-items">
+            <p className={labelClass}>{t('templates.apply.items')}</p>
+            {selectedSet.items.length === 0 ? (
+              <p className="mt-1 text-sm text-muted-foreground">{t('templates.apply.noItems')}</p>
+            ) : (
+              <ul className="mt-1 divide-y rounded-md border">
+                {selectedSet.items.map((item) => (
+                  <li key={item.id} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
+                    <span className="min-w-0">
+                      <span className="font-medium">{item.name}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {t(/* i18n-dynamic */ `cadence.${item.cadence}`)}
+                      </span>
+                    </span>
+                    <PortalVisibilityBadge visible={item.portalVisible} testId={`apply-template-item-portal-${item.id}`} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {contractId ? (
           <input type="hidden" data-testid="apply-template-contract" value={contractId} readOnly />

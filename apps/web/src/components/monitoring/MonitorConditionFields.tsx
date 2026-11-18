@@ -40,6 +40,11 @@ export interface MonitorConditionFieldsProps {
   kind: MonitorKind;
   /** react-hook-form path prefix for the condition object, e.g. 'condition'. */
   name: string;
+  /**
+   * `data-testid` per field key, and for `collection-warning`. For a second copy
+   * of a kind's fields on the same page, whose ids would otherwise collide.
+   */
+  testIdFor?: (key: string) => string;
 }
 
 /**
@@ -56,8 +61,9 @@ export default function MonitorConditionFields(props: MonitorConditionFieldsProp
 }
 
 /** Everything MonitorConditionFields did before composite existed (#5289). */
-function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
+function ScalarConditionFields({ kind, name, testIdFor }: MonitorConditionFieldsProps) {
   const { t } = useTranslation('monitoring');
+  const fieldTestId = testIdFor ?? ((key: string) => `condition-field-${key}`);
   const { register, watch, setValue, formState: { errors } } = useFormContext<FieldValues>();
   const fields = MONITOR_KIND_FIELDS[kind];
 
@@ -84,6 +90,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
   // #8174 — Information/Warning Application events reach the server only from
   // the agent's provider allowlist; flag a rule that targets anything else
   // before it is saved (the API returns the same check as `warnings`).
+  // The editor knows built-ins only; the save response also checks providers in scoped policies.
   const collectionGap = kind === 'event_log' ? eventLogCollectionGap(conditionValues) : null;
   const isVisible = (field: KindField): boolean =>
     !field.showWhen || String(conditionValues[field.showWhen.key] ?? '') === field.showWhen.equals;
@@ -180,7 +187,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
             <div key={field.key} className="flex items-center gap-2 pt-5">
               <input
                 id={fieldId(field.key)}
-                data-testid={`condition-field-${field.key}`}
+                data-testid={fieldTestId(field.key)}
                 type="checkbox"
                 className="h-4 w-4 rounded border"
                 {...register(path)}
@@ -200,7 +207,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
               </label>
               <select
                 id={fieldId(field.key)}
-                data-testid={`condition-field-${field.key}`}
+                data-testid={fieldTestId(field.key)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register(path)}
                 // Explicit `value` (in addition to `register`'s own binding)
@@ -236,7 +243,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
               </label>
               <select
                 id={fieldId(field.key)}
-                data-testid={`condition-field-${field.key}`}
+                data-testid={fieldTestId(field.key)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register(path)}
               >
@@ -258,7 +265,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
               </label>
               <select
                 id={fieldId(field.key)}
-                data-testid={`condition-field-${field.key}`}
+                data-testid={fieldTestId(field.key)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register(path)}
               >
@@ -283,7 +290,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
             </label>
             <input
               id={fieldId(field.key)}
-              data-testid={`condition-field-${field.key}`}
+              data-testid={fieldTestId(field.key)}
               type={field.kind === 'number' ? 'number' : 'text'}
               min={field.min}
               max={field.max}
@@ -316,7 +323,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
       {collectionGap && (
         <p
           className="text-xs text-amber-700 dark:text-amber-400 sm:col-span-2"
-          data-testid="event-log-collection-warning"
+          data-testid={testIdFor ? testIdFor('collection-warning') : 'event-log-collection-warning'}
           role="note"
         >
           {collectionGap.reason === 'no_source'

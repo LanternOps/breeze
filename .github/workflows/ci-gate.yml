@@ -1,0 +1,107 @@
+# The pinned CI Gate (W02, #10746). The org ruleset requires this workflow and
+# reads it from main, so a change cannot edit the gate that judges it.
+#
+# On merge_group it first publishes the entry's queue selection (`ci-gate.mjs
+# select`, W05 #10749), then waits for the entry's ci.yml run and judges the job
+# results with the base revision's classifier and ci-success script against that
+# selection (`ci-gate.mjs verify`). On pull_request it passes at once and records a trusted
+# anchor of the merge commit tested (`ci-gate.mjs anchor`); W05 reads it.
+#
+# Invariants are enforced by check-workflow-security.mjs (pinned-gate rule):
+# gate code comes only from workflow_sha, there is no install step, cache,
+# secret or concurrency, continue-on-error is only on the selection upload, the
+# only variable read is the CI_THIN_QUEUE kill switch, and permissions are read-only.
+# Runbook and rollback order: docs/agents/merge-and-deploy.md.
+name: CI Gate
+
+on:
+  # Run only by the org ruleset, which ignores these filters and reads this
+  # file from main. The ordinary trigger honours them and never fires.
+  pull_request:
+    branches: [ci-gate-ruleset-only]
+  merge_group:
+    branches: [ci-gate-ruleset-only]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 145
+    steps:
+      # The gate's own code, from the commit the ruleset ran. Candidate commits
+      # are fetched by sha inside ci-gate.mjs and only ever read, never run.
+      - name: Checkout the gate (workflow_sha, not the candidate)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.4'
+          package-manager-cache: false
+
+      # The queue selection (W05, #10749): which jobs this entry may skip, decided
+      # from the base revision and published before CI fans out, so CI can read
+      # it and verify judges the entry against it. It always exits 0 and writes a
+      # file; anything doubtful is mode=full. CI_THIN_QUEUE is the kill switch:
+      # unset or off publishes mode=full.
+      - name: Select the queue entry's jobs
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          THIN_QUEUE: ${{ vars.CI_THIN_QUEUE }}
+        run: node .github/scripts/ci-gate.mjs select
+
+      # The one soft step. verify reads the local file, so a failed upload only
+      # means CI finds no selection and runs everything.
+      - name: Upload the queue selection
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-gate-selection-attempt-${{ github.run_attempt }}
+          path: ci-gate-selection.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # The token reaches git and gh only; ci-gate.mjs runs base-revision
+      # scripts with PATH alone.
+      - name: Judge the queue entry
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: node .github/scripts/ci-gate.mjs verify
+
+      - name: Record the PR anchor
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node .github/scripts/ci-gate.mjs anchor
+
+      - name: Upload the PR anchor
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-gate-anchor-attempt-${{ github.run_attempt }}
+          path: ci-gate-anchor.json
+          retention-days: 7
+          if-no-files-found: ignore

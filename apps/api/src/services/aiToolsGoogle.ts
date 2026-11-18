@@ -52,6 +52,7 @@ export const googleToolTiers: Record<string, 1 | 3> = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_account_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
   google_list_user_groups: 1,
@@ -81,6 +82,7 @@ export const googleToolSearchHints: Readonly<Record<string, string>> = {
   google_share_calendar: 'Share a Google Calendar and set calendar access permissions',
   google_offboard_user: 'Offboard a Google Workspace employee and secure their account',
   google_wipe_mobile_device: 'Remotely wipe a Google Workspace managed mobile device',
+  google_account_wipe_mobile_device: 'Offboarding: remove the work account and its data from a user\'s mobile devices (device not erased)',
   google_security_drift: 'Check Google Workspace user security settings for drift from policy',
   google_email_report: 'Review Gmail delivery activity and email usage reports',
   google_list_user_groups: 'List Google Workspace group memberships for a user',
@@ -1266,6 +1268,50 @@ export async function googleWipeMobileDeviceHandler(
   const ctx = await resolveContext(auth, sessionId);
   if ('error' in ctx) return ctx.error;
   return googleWipeMobileDeviceAction(ctx, input);
+}
+
+/**
+ * Remove the WORK ACCOUNT and its data (mail, Drive) from every mobile device
+ * enrolled to a user, leaving the device itself untouched (`admin_account_wipe`).
+ *
+ * This is the offboarding wipe. Its sibling `google_wipe_mobile_device` issues
+ * `admin_remote_wipe`, a full factory reset, and is for a stolen or lost
+ * device only. The two differ by one string and by everything that matters:
+ * one removes company data from a phone the person owns, the other erases
+ * their phone. Keep them separate tools so an approval card can never be
+ * ambiguous about which one a technician is authorizing.
+ */
+export async function googleAccountWipeMobileDeviceAction(
+  ctx: GoogleToolContext,
+  input: Record<string, unknown>,
+): Promise<string> {
+  const reason = requireString(input, 'reason');
+  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  const email = requireString(input, 'userEmail');
+  if (!email) return errorString('missing_user', 'The user whose mobile devices should have the work account removed is required.');
+
+  try {
+    const dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+    const resolved = await resolveWipeTarget(dir, email);
+    if (!resolved.ok) return errorString(resolved.code, resolved.message);
+    const n = await wipeMobileDevices(dir, resolved.deviceIds, 'admin_account_wipe');
+    if (n === 0) return `No mobile devices are enrolled for ${resolved.user}; nothing to wipe.`;
+    return `Issued a selective account wipe to ${n} device(s) for ${resolved.user} [${resolved.deviceIds.join(', ')}]. The work account and its data are removed; the devices themselves are not erased.`;
+  } catch (err) {
+    return googleError(err);
+  }
+}
+
+export async function googleAccountWipeMobileDeviceHandler(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return ceiling;
+  const ctx = await resolveContext(auth, sessionId);
+  if ('error' in ctx) return ctx.error;
+  return googleAccountWipeMobileDeviceAction(ctx, input);
 }
 
 // ── Cluster 2: security drift (read) + reports-by-email ───────────────────────

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SiteForm from './SiteForm';
@@ -33,9 +34,18 @@ export interface SiteModalsProps {
   getSiteFormDefaults: (
     site: Site & { address?: Record<string, string>; contact?: Record<string, string> },
   ) => SiteFormDefaults;
+  /** Fleet-view add (#9794): the site's org is chosen in the dialog. Submit is
+   *  refused until `value` is set; the chosen org lives in the caller
+   *  (`useSiteCrud.writeOrgId`), so the write targets exactly what is shown. */
+  orgPicker?: {
+    organizations: Array<{ id: string; name: string }>;
+    value: string | null;
+    onChange: (orgId: string | null) => void;
+  };
 }
 
 const SITE_FORM_TITLE_ID = 'site-form-dialog-title';
+const SITE_ORG_PICKER_ID = 'site-org-picker';
 const noop = () => {};
 
 export default function SiteModals({
@@ -49,10 +59,27 @@ export default function SiteModals({
   onClose,
   onConfirmDelete,
   getSiteFormDefaults,
+  orgPicker,
 }: SiteModalsProps) {
   const { t } = useTranslation('settings');
+  const [orgPickError, setOrgPickError] = useState(false);
 
   const formOpen = mode === 'add' || mode === 'edit';
+  const showOrgPicker = mode === 'add' && Boolean(orgPicker);
+  const pickedOrgId = orgPicker?.value ?? null;
+
+  // A fresh dialog, or a pick, clears the "choose an organization" error.
+  useEffect(() => {
+    setOrgPickError(false);
+  }, [mode, pickedOrgId]);
+
+  const handleSubmit = (values: Record<string, unknown>) => {
+    if (showOrgPicker && !pickedOrgId) {
+      setOrgPickError(true);
+      return;
+    }
+    return onSubmit(values);
+  };
   const formTitle =
     mode === 'edit'
       ? t('organizationsPage.siteModal.editTitle')
@@ -83,7 +110,9 @@ export default function SiteModals({
                   ? t('organizationsPage.siteModal.editDescription')
                   : guidingFirstSite
                     ? t('organizationsPage.siteModal.firstDescription')
-                    : t('organizationsPage.siteModal.addDescription', { organization: orgName })}
+                    : showOrgPicker
+                      ? t('sites.page.fleetAddDescription')
+                      : t('organizationsPage.siteModal.addDescription', { organization: orgName })}
               </p>
             </div>
             {guidingFirstSite && (
@@ -96,8 +125,36 @@ export default function SiteModals({
               </button>
             )}
           </div>
+          {showOrgPicker && orgPicker && (
+            <div className="space-y-2 px-6 pt-6">
+              <label htmlFor={SITE_ORG_PICKER_ID} className="text-sm font-medium">
+                {t('sites.page.pickOrg')}
+              </label>
+              <select
+                id={SITE_ORG_PICKER_ID}
+                data-testid="sites-org-picker"
+                value={pickedOrgId ?? ''}
+                onChange={(event) => orgPicker.onChange(event.target.value || null)}
+                aria-invalid={orgPickError || undefined}
+                aria-describedby={orgPickError ? `${SITE_ORG_PICKER_ID}-error` : undefined}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+              >
+                <option value="">{t('sites.page.pickOrgPlaceholder')}</option>
+                {orgPicker.organizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+              {orgPickError && (
+                <p id={`${SITE_ORG_PICKER_ID}-error`} role="alert" className="text-sm text-destructive">
+                  {t('sites.page.pickOrgRequired')}
+                </p>
+              )}
+            </div>
+          )}
           <SiteForm
-            onSubmit={onSubmit}
+            onSubmit={handleSubmit}
             onCancel={onClose}
             className="space-y-6 p-6"
             defaultValues={

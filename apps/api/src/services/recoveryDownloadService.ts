@@ -1,19 +1,18 @@
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
 import { pipeline } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
+import { openApiLocalBackupObject } from './apiLocalBackupStorage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
+import { backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { resolveSnapshotPhysicalKey, snapshotKeyRootOf } from './backupKeyLayout';
 import { loadOriginKeyRoots } from './backupOriginKeyRoots';
 import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
+import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -93,14 +92,17 @@ export async function authorizeExternalReference(
   // Membership is read in one statement with the index state it was approved
   // on: rows of an index being rebuilt, or rebuilt from other bytes since the
   // check above, never count.
+  const entries = snapshotIndexEntries(args.snapshotDbId);
   const [membership] = await dbHandle
-    .select({ id: backupSnapshotFiles.id })
-    .from(backupSnapshotFiles)
-    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+    .select({ backupPath: entries.backupPath })
+    .from(entries)
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
     .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
     .where(and(
-      eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId),
-      eq(backupSnapshotFiles.backupPath, args.key),
+      eq(entries.backupPath, args.key),
+      // A content-less row (directory or symlink entry, #11235) names no
+      // object: its empty backup_path is never a key.
+      ne(entries.backupPath, ''),
       boundIndexCondition(boundDigest),
     ))
     .limit(1);
@@ -136,15 +138,6 @@ function isDownloadEligibleStatus(status: string, authenticatedAt: Date | null):
   return status === 'authenticated' || (status === 'active' && authenticatedAt !== null);
 }
 
-function ensureContainedLocalPath(rootPath: string, relativePath: string): string {
-  const base = resolvePath(rootPath);
-  const resolved = resolvePath(base, relativePath);
-  if (resolved !== base && !resolved.startsWith(`${base}/`)) {
-    throw new Error('path traversal detected');
-  }
-  return resolved;
-}
-
 function buildS3Client(config: {
   region: string;
   endpoint?: string;
@@ -177,10 +170,11 @@ function buildS3Client(config: {
 /**
  * Presigned GET for ONE exact object key of an S3 backup destination, built
  * with the same tenant-configuration client as the recovery download path.
- * The key is used verbatim (the agent writes `snapshots/<id>/...` without any
- * configured prefix; see backupSnapshotStorage.ts). The caller is responsible
- * for authorizing the key and for bounding `expiresInSeconds` (clamped here to
- * 1..300).
+ * The key is used verbatim: it is the PHYSICAL key, which the caller composes
+ * from the snapshot's recorded key root (#7081, backupKeyLayout.ts
+ * physicalKeyFor); this function never applies the destination's prefix. The
+ * caller is responsible for authorizing the key and for bounding
+ * `expiresInSeconds` (clamped here to 1..300).
  */
 export async function presignSnapshotObjectGet(args: {
   providerConfig: Record<string, unknown>;
@@ -243,13 +237,14 @@ function deriveRemoteStorageKey(
     return keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId);
   }
   // #6398: the destination's configured `prefix` is deliberately NOT applied.
-  // The agent's storage providers never apply it — every snapshot object is
-  // written at `snapshots/<id>/...` verbatim — so presigning
-  // `<prefix>/snapshots/...` 404'd every token-mode recovery (bmr-recover,
-  // bare-metal / Restore-as-VM rebuild, DR) on a prefixed destination. GC
-  // (backupSnapshotStorage.ts backupSnapshotRootPrefix) already relies on the
-  // same fact. Only a per-snapshot recorded storagePrefix that names the
-  // snapshot's root relocates its keys (keyUnderRecordedRoot).
+  // This path serves legacy_flat snapshots only, whose objects are at
+  // `snapshots/<id>/...` whatever the destination's prefix is now; presigning
+  // `<prefix>/snapshots/...` for them once 404'd every token-mode recovery
+  // (bmr-recover, bare-metal / Restore-as-VM rebuild, DR). A snapshot written
+  // under a destination prefix records `prefixed_flat` and its keys are mapped
+  // through that recorded root instead (#7081; see the caller). Only a
+  // per-snapshot recorded storagePrefix that names the snapshot's root
+  // relocates a legacy snapshot's keys (keyUnderRecordedRoot).
   const snapshotId = typeof snapshotMetadata.snapshotId === 'string' ? snapshotMetadata.snapshotId : null;
   return keyUnderRecordedRoot(normalizedRemotePath, getStringValue(snapshotMetadata, 'storagePrefix'), snapshotId);
 }
@@ -450,11 +445,12 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       return { unavailable: true, reason: 'Snapshot storage is misconfigured.' } as const;
     }
 
-    const filePath = ensureContainedLocalPath(
-      rootPath,
-      origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath
+    // Opened once; the response streams from this handle.
+    const object = await openApiLocalBackupObject(
+      origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath,
+      tokenRow.orgId,
+      resolved.config?.orgId === tokenRow.orgId ? resolved.localConfigId : undefined
     );
-    const fileInfo = await stat(filePath);
     const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';
     const contentType = normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream';
 
@@ -472,12 +468,12 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     // streams instead (see the route handler in routes/backup/bmr.ts, which
     // only sets the header when contentLength is non-null).
     if (normalizedRemotePath.endsWith('.gz')) {
-      const rawStream = createReadStream(filePath);
+      const rawStream = object.handle.createReadStream({ autoClose: true });
       const gunzip = createGunzip();
       // `pipeline` (not a bare `.pipe()`) so a failure on EITHER side closes
       // the other: a corrupt/truncated gzip payload destroys `gunzip` but
       // `.pipe()` alone never destroys its *source* in response, which would
-      // otherwise leak the open file descriptor from `createReadStream`
+      // otherwise leak the open file descriptor behind the read stream
       // until GC finalization — the exact case the "corrupt gzip" test
       // below exercises. The callback below only needs to swallow the
       // already-consumer-visible error (surfaced via `gunzip`'s own 'error'
@@ -498,9 +494,9 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       unavailable: false,
       type: 'stream' as const,
       fileName,
-      contentLength: fileInfo.size,
+      contentLength: object.size,
       contentType,
-      stream: createReadStream(filePath),
+      stream: object.handle.createReadStream({ autoClose: true }),
     };
   }
 

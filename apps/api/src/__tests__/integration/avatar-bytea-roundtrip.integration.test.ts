@@ -54,7 +54,7 @@ describe('avatar bytea round-trip (real driver, RLS enforced)', () => {
     await withDbAccessContext(ctx, async () => {
       const written = await writeAvatar(user.id, 'image/png', PNG_BYTES);
       expect(written).not.toBeNull();
-      expect(written!.avatarUrl).toBe(`/api/v1/users/${user.id}/avatar`);
+      expect(written!.avatarUrl).toMatch(new RegExp(`^/api/v1/users/${user.id}/avatar\\?v=[\\da-f-]{36}$`));
       expect(written!.size).toBe(PNG_BYTES.length);
 
       // statAvatar computes size via octet_length — must match without
@@ -73,7 +73,7 @@ describe('avatar bytea round-trip (real driver, RLS enforced)', () => {
 
       // avatar_url landed on the row in the same UPDATE.
       const [row] = await db.select({ avatarUrl: users.avatarUrl }).from(users).where(eq(users.id, user.id)).limit(1);
-      expect(row?.avatarUrl).toBe(`/api/v1/users/${user.id}/avatar`);
+      expect(row?.avatarUrl).toBe(written!.avatarUrl);
 
       expect(await deleteAvatar(user.id)).toBe(true);
       expect(await statAvatar(user.id)).toBeNull();

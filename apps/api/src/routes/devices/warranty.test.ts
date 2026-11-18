@@ -161,6 +161,33 @@ describe('manual refresh refuses agent-collected devices (#5511 W01, D11)', () =
     expect(queueWarrantySyncForDevice).toHaveBeenCalledWith('device-1', { force: true });
   });
 
+  it('says so, and keeps the data, when no vendor lookup exists for an imported row (#9862)', async () => {
+    // 'Acme' matches no registered provider, so the sync could only keep the row.
+    rigRefreshReads([{ manufacturer: 'Acme Whitebox' }], [{ dataSource: 'import' }]);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'WARRANTY_REFRESH_NOT_AVAILABLE', reason: 'no_vendor_lookup' });
+    expect(body.error).toMatch(/existing warranty data was kept/i);
+    expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
+  });
+
+  it('tags the agent refusal with its reason', async () => {
+    rigRefreshReads([{ manufacturer: 'HP' }], []);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(await res.json()).toMatchObject({ reason: 'agent_collected' });
+  });
+
   it('still queues for a device with no hardware row and no warranty row', async () => {
     rigRefreshReads([], []);
 

@@ -43,6 +43,43 @@
       "description": "Attach the built-in monitors to a policy."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "On",
+    "autoResolveOff": "Off",
+    "rearmLabel": "Re-arm",
+    "rearmNewEvidence": "New evidence",
+    "rearmAfterDelay": "After N minutes",
+    "rearmAfterMinutes_one": "After {{count}} minute",
+    "rearmAfterMinutes_other": "After {{count}} minutes",
+    "rearmDelayLabel": "Re-arm after (minutes)",
+    "rearmHelp": "New evidence: only an event the closed alert has not seen re-opens it. After N minutes: older events can also re-open it once N minutes have passed since it closed.",
+    "inheritOption": "Inherit ({{value}}, {{source}})",
+    "inheritOptionPlain": "Inherit",
+    "sources": {
+      "org": "Org default",
+      "partner": "Partner default",
+      "builtin": "Built-in default"
+    },
+    "errors": {
+      "cooldown": "Enter a whole number from 0 to 1440.",
+      "cooldownOrInherit": "Enter a whole number from 0 to 1440, or leave it blank to inherit.",
+      "rearmDelay": "Enter a whole number of minutes from 1 to 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Lifecycle defaults",
+    "descriptionPartner": "The default for every organization's monitors. An organization can override it, and a monitor's own setting beats both.",
+    "descriptionOrg": "Overrides the partner default for this organization. Leave a field blank to inherit it. A monitor's own setting beats this.",
+    "readOnly": "You do not have permission to change the partner default.",
+    "saved": "Lifecycle defaults saved",
+    "saveAction": "Save defaults",
+    "overrideCount_one": "{{count}} monitor overrides this",
+    "overrideCount_other": "{{count}} monitors override this",
+    "errors": {
+      "load": "Could not load the lifecycle defaults.",
+      "save": "Could not save the lifecycle defaults."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor created and attached to the policy",
     "titleNew": "New monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "What to watch",
-      "noise": "Severity & noise",
+      "lifecycle": "Alert lifecycle",
       "respond": "Respond",
       "notify": "Notify",
       "escalate": "Escalate to a human",
       "deployed": "Deployed to"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "This monitor overrides the org default ({{value}})",
+        "partner": "This monitor overrides the partner default ({{value}})",
+        "builtin": "This monitor overrides the built-in default ({{value}})",
+        "unknown": "This monitor overrides the inherited default."
+      },
+      "partnerWideHint": "An organization with its own default uses that instead of the inherited value shown here.",
+      "inheritedUnavailable": "Could not load the inherited values. You can still save.",
+      "windowWarning": "The event window ({{window}} min) is shorter than the cooldown ({{cooldown}} min). A new event during the cooldown can age out of the window before the alert re-opens."
     },
     "tabs": {
       "settings": "Settings",
@@ -77,7 +125,8 @@
       "recurrenceThreshold": "Escalate after",
       "recurrenceWindowDays": "episodes within (days)",
       "pauseResponses": "Pause automatic responses until a person resets",
-      "aiAgent": "AI agent (enables AI triage responses)"
+      "aiAgent": "AI agent (enables AI triage responses)",
+      "psaBoard": "PSA board for alert tickets"
     },
     "deliveryModes": {
       "inherit": "Use routing rules",
@@ -122,7 +171,8 @@
     "testDialog": {
       "title": "Test on a device",
       "selectDevice": "Device",
-      "run": "Run test"
+      "run": "Run test",
+      "saveToTest": "Save to test your changes"
     },
     "deliveryPreview": {
       "selectOrg": "Select an organization to preview delivery.",
@@ -169,6 +219,23 @@
       "failed": "Could not load assets",
       "orgRequired": "Select organization ownership to bind an asset.",
       "pingName": "Ping {{label}}"
+    },
+    "psaBoardDefault": "Use the connection’s default board",
+    "psaBoardHelp": "Alert tickets for this monitor are created on this board instead of the connection’s default.",
+    "psaBoardReadOnly": "Alert tickets go to PSA board #{{id}}",
+    "psaBoardUnavailable": "Could not load PSA boards, so the board override is unavailable right now.",
+    "clearsWhen": {
+      "title": "Clears when",
+      "hint": "Clears only on an event logged after the alert's trigger event.",
+      "noneHint": "No recovery condition is set, so the alert clears once the trigger stops matching.",
+      "add": "Add a recovery condition",
+      "removeCondition": "Remove",
+      "keepCustom": "Keep the custom condition",
+      "customTitle": "Custom recovery condition (API)",
+      "customHint": "This condition was set through the API and can't be edited here. Saving keeps it as it is.",
+      "replaceCustom": "Replace",
+      "invalid": "One of the recovery condition's values isn't valid.",
+      "customUnusable": "This condition can't be evaluated, so this monitor's alerts won't auto-resolve. Replace it to fix this."
     }
   },
   "kinds": {
@@ -246,8 +313,8 @@
     "nameserver": "Nameserver",
     "degradedIsFailure": "Treat degraded as failure",
     "maxResponseMs": "Fail when slower than (ms)",
-    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level.",
-    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", so this rule only matches its Error or Critical events. Collected providers: {{providers}}."
+    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level, unless an Event Logs configuration policy lists it (Configuration policy → Event Logs → Application providers).",
+    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", unless an Event Logs configuration policy lists it (Configuration policy → Event Logs → Application providers). Otherwise, this rule only matches its Error or Critical events. Built-in providers: {{providers}}."
   },
   "operators": {
     "gt": "greater than",
@@ -332,10 +399,13 @@
     "cancel": "Cancel",
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
+      "loadGroups": "Couldn't load device groups.",
       "attach": "Failed to attach monitor",
       "detach": "Failed to detach monitor",
       "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."
-    }
+    },
+    "partnerWideGroups": "All orgs (partner-wide)",
+    "organizationGroups": "Organization groups"
   },
   "policyTab": {
     "title": "Monitors",

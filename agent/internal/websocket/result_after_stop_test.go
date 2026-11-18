@@ -84,7 +84,15 @@ func TestStop_DrainsBufferedResultsToOutbox(t *testing.T) {
 // A successful hand-off (accepted into resultChan) also fires the notice, so
 // the journal entry for a normally-delivered command is cleared.
 func TestProcessCommand_HandedOffOnSuccessfulQueue(t *testing.T) {
-	c := newTestClient("http://localhost", noopHandler)
+	// Connected first: since W09 (#8148, D11) a result produced with no socket
+	// held goes to the outbox instead (result_disconnected_test.go).
+	s := newScriptedWSServer(t, nil)
+	c := newTestClient(s.srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	s.next(t)
 	handed := make(chan string, 1)
 	c.OnResultWriteFailed = func(CommandResult) { t.Error("queued result must not be outboxed") }
 	c.OnResultHandedOff = func(r CommandResult) { handed <- r.CommandID }
@@ -102,6 +110,7 @@ func TestProcessCommand_HandedOffOnSuccessfulQueue(t *testing.T) {
 	if len(c.resultChan) != 1 {
 		t.Fatalf("resultChan holds %d, want 1", len(c.resultChan))
 	}
+	<-c.resultChan // keep the cleanup Stop's outbox drain from seeing it
 }
 
 // SendResult racing Stop: every result SendResult ACCEPTED must reach the

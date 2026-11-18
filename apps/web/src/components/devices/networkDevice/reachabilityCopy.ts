@@ -1,8 +1,9 @@
 // Every status sentence on the network device page is built here. The spec's
 // copy rule (§10, §11) is "no bare Online": each status string is
 // `<state> · <source> <relative time>`. Keeping the assembly in one pure module
-// is what stops the header badge, the stat strip and the two overview cards
-// from drifting into three different phrasings of the same fact.
+// is what stops the header badge and the overview cards from drifting into
+// different phrasings of the same fact. Each fact is stated ONCE per page:
+// the badge carries the verdict, the Reachability card the per-source ages.
 
 import { formatLastSeen } from '@/lib/formatTime';
 import { formatTimestamp } from './format';

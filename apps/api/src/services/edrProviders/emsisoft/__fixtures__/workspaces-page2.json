@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "guid": "00000000-0000-4000-8000-0000000000b2",
+      "name": "Example Workspace Two",
+      "devices": 0,
+      "isExpired": true
+    },
+    {
+      "guid": "00000000-0000-4000-8000-0000000000b3",
+      "name": "Example Workspace Three",
+      "devices": 1,
+      "isExpired": false
+    }
+  ],
+  "totalCount": 3
+}

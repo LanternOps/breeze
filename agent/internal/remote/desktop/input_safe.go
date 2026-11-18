@@ -188,9 +188,15 @@ func (s *SafeInput) failQueued(err error) {
 }
 
 func (s *SafeInput) inject(ev InputEvent) error {
+	copyChord := s.held.isCopyChord(ev)
 	ev = s.held.prepare(ev)
 	err := s.inner.HandleEvent(ev)
 	s.held.observe(ev, err)
+	if copyChord && err == nil {
+		if h := s.hooks.Load(); h != nil && h.onCopyChord != nil {
+			h.onCopyChord()
+		}
+	}
 	return err
 }
 
@@ -444,11 +450,13 @@ func (s *SafeInput) SkipSeq(seq uint64) {
 }
 
 // safeInputHooks must not block and must not call back into SafeInput.
-// onReset runs on the goroutine that triggered the reset; onResync runs on the
-// worker. The Session's hooks only spawn a goroutine.
+// onReset runs on the goroutine that triggered the reset; onResync and
+// onCopyChord run on the worker. The Session's hooks only spawn a goroutine.
 type safeInputHooks struct {
 	onReset  func(reason string) // an agent-side reset started a new epoch
 	onResync func()              // sequenced input arrived with a stale epoch
+	// onCopyChord runs on the worker after a copy chord was injected.
+	onCopyChord func()
 }
 
 func (s *SafeInput) SetHooks(h safeInputHooks) { s.hooks.Store(&h) }
@@ -467,6 +475,21 @@ func (s *SafeInput) Epochs() (reset, geo uint32) {
 // release itself timed out.
 func (s *SafeInput) ReleaseAll(reason string) { s.reset(reason, false, true) }
 
+// modifierStateResetter is implemented by platform handlers that can clear
+// modifier keys the OS still has down although no held record names them: a
+// latch left by a release that did not land, or by bookkeeping that went out
+// of step (issue #9595).
+type modifierStateResetter interface {
+	ResetModifierState() error
+}
+
+// ReleaseAllOnRequest is the operator's "Release stuck keys": ReleaseAll, then
+// the platform's modifier reset, in the same worker job so no key can land
+// between the two. Only an explicit request resets OS modifier state;
+// ReleaseAll also runs on disconnects, and there it must not release a
+// modifier the person at the remote machine is holding.
+func (s *SafeInput) ReleaseAllOnRequest() { s.resetWith("viewer_request", false, true, true) }
+
 // ResetGeometry is ReleaseAll plus a new geometry epoch, in one step. The
 // monitor and desktop switches call it before the display offset changes.
 func (s *SafeInput) ResetGeometry(reason string) { s.reset(reason, true, true) }
@@ -483,6 +506,12 @@ func (s *SafeInput) LeaveSequencedMode() {
 }
 
 func (s *SafeInput) reset(reason string, geometry, announce bool) {
+	s.resetWith(reason, geometry, announce, false)
+}
+
+// resetWith is reset; resetModifiers also runs the platform's
+// modifierStateResetter after the releases.
+func (s *SafeInput) resetWith(reason string, geometry, announce, resetModifiers bool) {
 	s.orderMu.Lock()
 	s.order.agentReset(geometry)
 	epoch, geo := s.order.resetEpoch, s.order.geoEpoch
@@ -501,6 +530,9 @@ func (s *SafeInput) reset(reason string, geometry, announce bool) {
 		}
 		s.takeMove()
 		s.releaseHeld(reason)
+		if resetModifiers {
+			s.resetModifierState()
+		}
 		s.resetsDone.Add(1)
 		return nil
 	})
@@ -523,6 +555,18 @@ func (s *SafeInput) releaseHeld(reason string) {
 	}
 	if len(releases) > 0 {
 		slog.Info("Released held remote input", "session", s.label, "reason", reason, "count", len(releases)-failed, "failed", failed)
+	}
+}
+
+// resetModifierState runs the platform's modifier reset, if it has one.
+// Worker goroutine only.
+func (s *SafeInput) resetModifierState() {
+	r, ok := s.inner.(modifierStateResetter)
+	if !ok {
+		return
+	}
+	if err := r.ResetModifierState(); err != nil {
+		slog.Warn("Resetting remote modifier state failed", "session", s.label, "error", err.Error())
 	}
 }
 
@@ -562,6 +606,21 @@ func (s *SafeInput) SetAtLoginWindow(atLoginWindow bool) {
 }
 
 func (s *SafeInput) InputAvailable() bool { return s.inner.InputAvailable() }
+
+// RefreshScreenGeometry runs the inner handler's ScreenGeometryRefresher on
+// the input worker, so it is ordered with injection and never races the
+// metrics an in-flight event is using. A no-op for handlers without one.
+func (s *SafeInput) RefreshScreenGeometry() {
+	r, ok := s.inner.(ScreenGeometryRefresher)
+	if !ok {
+		return
+	}
+	if err := s.submit(true, s.closeTimeout, func() error { r.RefreshScreenGeometry(); return nil }); err != nil {
+		// Injection keeps the old metrics until the next refresh (Windows:
+		// the next mouse-down), so clicks may land off target until then.
+		slog.Warn("Input screen-geometry refresh did not run", "session", s.label, "error", err.Error())
+	}
+}
 
 func (s *SafeInput) SendMouseMove(x, y int) error {
 	return s.HandleEvent(InputEvent{Type: "mouse_move", X: x, Y: y})

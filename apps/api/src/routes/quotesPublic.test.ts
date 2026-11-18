@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -10,7 +11,7 @@ const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'update', 'set', 'returning', 'for']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'update', 'set', 'returning', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -56,6 +57,9 @@ vi.mock('../services/publicLinkOrgGate', async (importActual) => {
 });
 
 import { quotesPublicRoutes } from './quotesPublic';
+import { bySameOriginFramePath, isSameOriginFramePath } from '../middleware/sameOriginFrame';
+import { routeReferrerPolicyWins } from '../middleware/routeReferrerPolicy';
+import { securityMiddleware } from '../middleware/security';
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
 import { db } from '../db';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
@@ -207,7 +211,8 @@ describe('quotesPublic GET /:token', () => {
     expect(JSON.stringify(header)).not.toContain('do-not-serialize');
     // Sibling `presentation` field (Task 12) — no partner theme row preset, so
     // it falls through to the defaults, same as `branding.theme`/`pageSize`.
-    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+    // #12097: no page-size choice and no country → the (US) deployment default, Letter.
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'letter' });
   });
 
   it('resolves presentation.theme="condensed" from the partner default', async () => {
@@ -513,6 +518,54 @@ describe('quotesPublic GET /:token/contract-file/:blockId', () => {
     const res = await app().request(`/quotes/public/${TOKEN}/contract-file/${BLOCK_ID}`, { method: 'GET' });
     expect(res.status).toBe(401);
   });
+
+  describe('framing under the app-wide header stack (#10192)', () => {
+    // index.ts wraps every router in secureHeaders (X-Frame-Options) + securityMiddleware (CSP), both path-selected.
+    // Mount this router at its real /api/v1 path so a drift between the route and the frame list fails here.
+    function appWithHeaders() {
+      const OPTIONS = { strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload', xFrameOptions: 'DENY', referrerPolicy: 'strict-origin-when-cross-origin' } as const;
+      const a = new Hono();
+      a.use('*', routeReferrerPolicyWins(bySameOriginFramePath(
+        secureHeaders({ ...OPTIONS }),
+        secureHeaders({ ...OPTIONS, xFrameOptions: 'SAMEORIGIN' }),
+      )));
+      a.use('*', securityMiddleware({ nodeEnv: 'production', sameOriginFrameWhen: isSameOriginFramePath }));
+      a.route('/api/v1/quotes/public', quotesPublicRoutes);
+      return a;
+    }
+
+    it('the contract PDF can be framed by the quote page (same origin) and keeps its own headers', async () => {
+      dbResults.push([{ id: QUOTE_ID }]); // quotes SELECT
+      dbResults.push([
+        { id: BLOCK_ID, quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'contract', content: { templateId: TEMPLATE_ID, templateVersionId: VERSION_ID, variableValues: {} } },
+      ]); // quoteBlocks SELECT
+      dbResults.push([{
+        id: VERSION_ID, templateId: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, versionNumber: 1, status: 'published',
+        sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.4'), mime: 'application/pdf', byteSize: 8,
+        sha256: 'sha3', declaredVariables: [], publishedAt: new Date('2026-07-01T00:00:00Z'), createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'),
+      }]); // contractTemplateVersions SELECT
+      dbResults.push([{
+        id: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, name: 'MSA', description: null, status: 'active',
+        createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
+      }]); // contractTemplates SELECT
+      const res = await appWithHeaders().request(`/api/v1/quotes/public/${TOKEN}/contract-file/${BLOCK_ID}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/pdf');
+      expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+      const csp = res.headers.get('content-security-policy') ?? '';
+      expect(csp).toContain("frame-ancestors 'self'");
+      expect(csp).not.toContain("frame-ancestors 'none'");
+      expect(res.headers.get('cache-control')).toBe('private, max-age=300');
+    });
+
+    it('the JSON view on the same token stays unframeable', async () => {
+      (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const res = await appWithHeaders().request(`/api/v1/quotes/public/${TOKEN}`);
+      expect(res.status).toBe(401);
+      expect(res.headers.get('x-frame-options')).toBe('DENY');
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    });
+  });
 });
 
 describe('quotesPublic GET /:token/line-image/:lineId', () => {
@@ -529,7 +582,7 @@ describe('quotesPublic GET /:token/line-image/:lineId', () => {
 
   it('serves the per-line uploaded image for a valid token', async () => {
     dbResults.push([{ id: QUOTE_ID }]); // quote (token-resolved) lookup
-    dbResults.push([{ imageId: 'img-1', catalogItemId: null, customerVisible: true }]); // line
+    dbResults.push([{ imageId: 'img-1', ownCatalogItemId: null, customerVisible: true }]); // line
     dbResults.push([{ data: Buffer.from('PNGDATA'), mime: 'image/png', byteSize: 7 }]); // readQuoteImage
     const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
     expect(res.status).toBe(200);
@@ -538,7 +591,7 @@ describe('quotesPublic GET /:token/line-image/:lineId', () => {
 
   it('falls back to the catalog item image', async () => {
     dbResults.push([{ id: QUOTE_ID }]);
-    dbResults.push([{ imageId: null, catalogItemId: CATALOG_ID, customerVisible: true }]);
+    dbResults.push([{ imageId: null, ownCatalogItemId: CATALOG_ID, customerVisible: true }]);
     dbResults.push([{ data: Buffer.from('JPEG'), mime: 'image/jpeg', byteSize: 4 }]);
     const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
     expect(res.status).toBe(200);

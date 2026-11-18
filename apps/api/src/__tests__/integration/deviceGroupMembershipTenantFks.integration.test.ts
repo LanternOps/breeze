@@ -1,19 +1,19 @@
 /**
  * Live-Postgres coverage for #3182: `device_group_memberships` must be pinned
- * to its parents' org, and a cross-org device move must detach it.
+ * to its device's org and its group's owner, and a cross-org move must detach it.
  *
  * WHY THIS NEEDS A REAL DATABASE
  * ------------------------------
  * Every claim below is a property of Postgres, not of TypeScript:
  *
- *   1. The two composite FKs (`(group_id, org_id) -> device_groups(id,
- *      org_id)`, `(device_id, org_id) -> devices(id, org_id)`) reject the
- *      forged shapes. `moveOrg.coverage.test.ts` can only assert the DDL text.
+ *   1. The deferred group-owner trigger (#10521 W1) and composite device FK
+ *      `(device_id, org_id) -> devices(id, org_id)` reject the forged shapes.
+ *      `moveOrg.coverage.test.ts` can only assert the DDL text.
  *   2. The move no longer 23503s. `device_group_memberships` qualifies for
  *      `breeze_device_child_orgid_tables()`'s auto-discovery, so before this
  *      change the move RE-STAMPED the membership's org_id to the target org
  *      while its group_id kept naming the SOURCE org's group — producing the
- *      forged shape through ordinary supported use. With the FKs in place and
+ *      forged shape through ordinary supported use. With the owner trigger and device FK in place and
  *      no detach, that same re-stamp would abort the move outright.
  *   3. The detach — inside breeze_cascade_device_org_id(), an AFTER UPDATE OF
  *      org_id row trigger — really does beat the device FK's RI check, which
@@ -46,7 +46,7 @@ import {
   devices,
   organizations,
 } from '../../db/schema';
-import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
+import { createOrganization, createPartner, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
@@ -181,7 +181,7 @@ async function assertMoveOutcome(f: Fixture) {
   ).toEqual([{ groupId: f.targetGroupId, orgId: f.targetOrgId }]);
 }
 
-describe('device_group_memberships composite tenant FKs (#3182)', () => {
+describe('device_group_memberships tenant owner integrity (#3182, #10521 W1)', () => {
   it('rejects a membership naming another org\'s GROUP, even stamped with the writer\'s own org', async () => {
     const f = await seed();
 
@@ -196,13 +196,13 @@ describe('device_group_memberships composite tenant FKs (#3182)', () => {
 
     expect(err, 'the forged row must be rejected, not merely quarantined').toBeInstanceOf(Error);
     expect(JSON.stringify(err)).toContain('23503');
-    expect(JSON.stringify(err)).toContain('device_group_memberships_group_org_fk');
+    expect(JSON.stringify(err)).toContain('device_group_memberships_group_owner_check');
   });
 
   it('rejects a membership naming another org\'s DEVICE', async () => {
     const f = await seed();
 
-    // The mirror shape: the group's org is stamped, so the group FK is happy,
+    // The mirror shape: the group's org is stamped, so the owner check is happy,
     // but the device belongs to the other org.
     const err = await withSystemDbAccessContext(async () =>
       db.execute(sql`
@@ -238,6 +238,151 @@ describe('device_group_memberships composite tenant FKs (#3182)', () => {
   });
 });
 
+
+async function partnerGroup(partnerId: string) {
+  const [row] = await getTestDb().execute<{ id: string }>(sql`
+    INSERT INTO device_groups (partner_id, name, type)
+    VALUES (${partnerId}::uuid, ${`partner-group-${uid()}`}, 'dynamic') RETURNING id
+  `);
+  return row!.id;
+}
+
+describe('deferred membership owner integrity (#10521 W1)', () => {
+  it('insert then delete of an invalid row in one transaction commits', async () => {
+    const f = await seed();
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.execute(sql`
+        INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.targetDeviceId}::uuid, ${f.sourceGroupId}::uuid, ${f.targetOrgId}::uuid)
+      `);
+      await tx.execute(sql`DELETE FROM device_group_memberships
+        WHERE device_id = ${f.targetDeviceId}::uuid AND group_id = ${f.sourceGroupId}::uuid`);
+    });
+    expect(await readMemberships(f.targetDeviceId)).toEqual([
+      { groupId: f.targetGroupId, orgId: f.targetOrgId },
+    ]);
+  });
+
+  it('invalid then corrected org_id in one transaction commits', async () => {
+    const f = await seed();
+    const [group] = await getTestDb().execute<{ id: string }>(sql`
+      INSERT INTO device_groups (org_id, name, type)
+      VALUES (${f.sourceOrgId}::uuid, ${`corrected-${uid()}`}, 'static') RETURNING id
+    `);
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.execute(sql`SELECT breeze_partner_export_lock_orgs_exclusive(
+        ARRAY[${f.sourceOrgId}::uuid, ${f.targetOrgId}::uuid])`);
+      await tx.execute(sql`
+        INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.deviceId}::uuid, ${group!.id}::uuid, ${f.targetOrgId}::uuid)
+      `);
+      await tx.execute(sql`UPDATE device_group_memberships SET org_id = ${f.sourceOrgId}::uuid
+        WHERE device_id = ${f.deviceId}::uuid AND group_id = ${group!.id}::uuid`);
+    });
+    expect(await readMemberships(f.deviceId)).toContainEqual({ groupId: group!.id, orgId: f.sourceOrgId });
+  });
+
+  it('same-partner membership in a partner group commits; foreign-partner membership fails at COMMIT', async () => {
+    const f = await seed();
+    const groupId = await partnerGroup(f.partnerId);
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO device_group_memberships (device_id, group_id, org_id)
+      VALUES (${f.deviceId}::uuid, ${groupId}::uuid, ${f.sourceOrgId}::uuid)
+    `));
+    expect(await readMemberships(f.deviceId)).toContainEqual({ groupId, orgId: f.sourceOrgId });
+    const foreign = await createPartner();
+    const foreignGroupId = await partnerGroup(foreign.id);
+    let insertCompleted = false;
+    const err = await withSystemDbAccessContext(async () => {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`INSERT INTO device_group_memberships (device_id, group_id, org_id)
+          VALUES (${f.deviceId}::uuid, ${foreignGroupId}::uuid, ${f.sourceOrgId}::uuid)`);
+        insertCompleted = true;
+      });
+    }).then(() => null, (e: Error) => e);
+    expect(insertCompleted, 'the INSERT succeeds; the transaction commit rejects its current owner').toBe(true);
+    expect(err).toBeInstanceOf(Error);
+    expect(JSON.stringify(err)).toContain('23503');
+    expect(JSON.stringify(err)).toContain('device_group_memberships_group_owner_check');
+  });
+
+  for (const destination of ['same partner', 'another partner'] as const) {
+    it(`device move deletes a partner-group membership: ${destination}`, async () => {
+      const f = await seed();
+      const groupId = await partnerGroup(f.partnerId);
+      await getTestDb().execute(sql`INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.deviceId}::uuid, ${groupId}::uuid, ${f.sourceOrgId}::uuid)`);
+      let orgId = f.targetOrgId;
+      let siteId = f.targetSiteId;
+      if (destination === 'another partner') {
+        const other = await createPartner();
+        const org = await createOrganization({ partnerId: other.id });
+        const site = await createSite({ orgId: org.id });
+        orgId = org.id;
+        siteId = site.id;
+      }
+      await withSystemDbAccessContext(() => db.execute(sql`UPDATE devices
+        SET org_id = ${orgId}::uuid, site_id = ${siteId}::uuid WHERE id = ${f.deviceId}::uuid`));
+      expect(await readMemberships(f.deviceId)).toEqual([]);
+      expect(await readDeviceOrg(f.deviceId)).toBe(orgId);
+    });
+  }
+
+  it('moving an org group to another org with surviving memberships fails at COMMIT', async () => {
+    const f = await seed();
+    let updateCompleted = false;
+    const err = await withSystemDbAccessContext(async () => {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`UPDATE device_groups SET org_id = ${f.targetOrgId}::uuid
+          WHERE id = ${f.sourceGroupId}::uuid`);
+        updateCompleted = true;
+      });
+    }).then(() => null, (e: Error) => e);
+    expect(updateCompleted).toBe(true);
+    expect(err).toBeInstanceOf(Error);
+    expect(JSON.stringify(err)).toContain('23503');
+    expect(JSON.stringify(err)).toContain('device_group_memberships_group_owner_check');
+  });
+
+  it("org reparent deletes memberships in the old partner's groups and keeps org-group memberships", async () => {
+    const f = await seed();
+    const groupId = await partnerGroup(f.partnerId);
+    const other = await createPartner();
+    await getTestDb().execute(sql`INSERT INTO device_group_memberships (device_id, group_id, org_id)
+      VALUES (${f.deviceId}::uuid, ${groupId}::uuid, ${f.sourceOrgId}::uuid)`);
+    const [log] = await getTestDb().execute<{ id: string }>(sql`
+      INSERT INTO group_membership_log (group_id, device_id, org_id, action, reason)
+      VALUES (${groupId}::uuid, ${f.deviceId}::uuid, ${f.sourceOrgId}::uuid, 'added', 'filter_match') RETURNING id
+    `);
+    await withSystemDbAccessContext(() => db.execute(sql`UPDATE organizations
+      SET partner_id = ${other.id}::uuid WHERE id = ${f.sourceOrgId}::uuid`));
+    expect(await readMemberships(f.deviceId)).toEqual([{ groupId: f.sourceGroupId, orgId: f.sourceOrgId }]);
+    const logs = await getTestDb().execute(sql`SELECT id FROM group_membership_log WHERE id = ${log!.id}::uuid`);
+    expect(logs).toHaveLength(1);
+  });
+
+  it('merge repoint of group and memberships in two statements under SET CONSTRAINTS ALL DEFERRED commits', async () => {
+    const f = await seed();
+    await getTestDb().update(organizations).set({ status: 'merging' as never })
+      .where(eq(organizations.id, f.sourceOrgId));
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.execute(sql`SELECT breeze_partner_export_lock_orgs_exclusive(
+        ARRAY[${f.sourceOrgId}::uuid, ${f.targetOrgId}::uuid])`);
+      await tx.execute(sql`UPDATE device_groups SET org_id = ${f.targetOrgId}::uuid
+        WHERE id = ${f.sourceGroupId}::uuid`);
+      await tx.execute(sql`UPDATE device_group_memberships SET org_id = ${f.targetOrgId}::uuid
+        WHERE group_id = ${f.sourceGroupId}::uuid`);
+      await tx.execute(sql`UPDATE devices SET org_id = ${f.targetOrgId}::uuid, site_id = ${f.targetSiteId}::uuid
+        WHERE org_id = ${f.sourceOrgId}::uuid`);
+    });
+    expect(await readMemberships(f.deviceId)).toEqual([{ groupId: f.sourceGroupId, orgId: f.targetOrgId }]);
+    expect(await readMemberships(f.stayerId)).toEqual([{ groupId: f.sourceGroupId, orgId: f.targetOrgId }]);
+  });
+});
+
 describe('cross-org device move detaches group memberships (#3182)', () => {
   it('POST /devices/:id/move-org succeeds and drops the moved device\'s memberships', async () => {
     const f = await seed();
@@ -247,7 +392,7 @@ describe('cross-org device move detaches group memberships (#3182)', () => {
     const body = (await res.json()) as { success?: boolean; error?: string };
     // Without the detach this is a 500: the generic re-stamp loop would set
     // the membership's org_id to the target org while its group_id still
-    // names the source org's group, violating the group FK.
+    // names the source org's group, violating the deferred owner check.
     expect(res.status, JSON.stringify(body)).toBe(200);
     expect(body.success).toBe(true);
 

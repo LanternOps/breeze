@@ -28,6 +28,7 @@ import { and, eq, ilike, inArray, isNotNull, ne, or, sql, type SQL } from 'drizz
 
 import {
   deriveBackupHealth,
+  saasWorkloadLabel,
   type BackupHealth,
   type BackupHealthRow,
   type BackupHealthSummary,
@@ -59,6 +60,7 @@ import {
   fillHistoryWindow,
   foldBackupHealthSummary,
   foldJobsIntoDays,
+  foldProviderLedgerIntoDays,
   emptyBackupHealthSummary,
   invertBackupJobStatus,
   isConnectionStale,
@@ -130,7 +132,7 @@ const providerKeyExpr = sql<string>`('provider:' || ${backupProviderDevices.id}:
  * subqueries (latestJobSubquery/latestSuccessSubquery) — this one is neither
  * joined nor awaited, only referenced inside the WHERE clause.
  */
-const notLinkedToProviderDevice = sql`not exists (select 1 from ${backupProviderDevices} where ${backupProviderDevices.breezeDeviceId} = ${devices.id})`;
+const notLinkedToProviderDevice = sql`not exists (select 1 from ${backupProviderDevices} where ${backupProviderDevices.breezeDeviceId} = ${devices.id} and ${backupProviderDevices.accountType} not in ('m365', 'gws'))`;
 
 /**
  * `ORDER BY lower(name) COLLATE "C", key COLLATE "C"` — byte order, which is
@@ -300,6 +302,7 @@ function buildProviderLeg(
     // that is in one of their sites. An unlinked row has no site to attribute,
     // so it is withheld rather than shown to everyone.
     conditions.push(isNotNull(backupProviderDevices.breezeDeviceId));
+    conditions.push(sql`${backupProviderDevices.accountType} not in ('m365', 'gws')`);
     conditions.push(inArray(devices.siteId, scope.siteIds));
   }
 
@@ -338,7 +341,7 @@ function buildProviderLeg(
       selectedBytes: backupProviderDevices.selectedBytes,
       usedBytes: backupProviderDevices.usedBytes,
       errorsCount: backupProviderDevices.errorsCount,
-      breezeDeviceId: backupProviderDevices.breezeDeviceId,
+      breezeDeviceId: sql<string | null>`case when ${backupProviderDevices.accountType} in ('m365', 'gws') then null else ${backupProviderDevices.breezeDeviceId} end`.as('breezeDeviceId'),
       deviceStatus: sql<string | null>`${devices.status}`.as('deviceStatus'),
       deviceSiteId: sql<string | null>`${devices.siteId}`.as('deviceSiteId'),
       // LEFT JOIN, and NULL here means "invisible under this caller's RLS", not
@@ -348,10 +351,13 @@ function buildProviderLeg(
       connectionIsActive: sql<boolean | null>`${backupProviderConnections.isActive}`.as('connectionIsActive'),
       connectionLastSyncAt: sql<Date | null>`${backupProviderConnections.lastSyncAt}`.as('connectionLastSyncAt'),
       connectionSyncIntervalMinutes: sql<number | null>`${backupProviderConnections.syncIntervalMinutes}`.as('connectionSyncIntervalMinutes'),
+      verifiedBootableAt: backupProviderDevices.verifiedBootableAt,
+      verifiedBootable: backupProviderDevices.verifiedBootable,
+      verifiedBootableFailedChecks: backupProviderDevices.verifiedBootableFailedChecks,
     })
     .from(backupProviderDevices)
     .innerJoin(organizations, eq(organizations.id, backupProviderDevices.orgId))
-    .leftJoin(devices, eq(devices.id, backupProviderDevices.breezeDeviceId))
+    .leftJoin(devices, and(eq(devices.id, backupProviderDevices.breezeDeviceId), sql`${backupProviderDevices.accountType} not in ('m365', 'gws')`))
     .leftJoin(backupProviderConnections, eq(backupProviderConnections.id, backupProviderDevices.connectionId))
     .where(and(...conditions))
     .orderBy(...orderExprs(providerNameExpr, providerKeyExpr))
@@ -386,12 +392,13 @@ async function attachHistory(rows: BackupHealthRow[], now: Date): Promise<void> 
             ),
           ),
     providerIds.length === 0
-      ? Promise.resolve([] as Array<{ providerDeviceId: string; day: string; status: ExternalBackupStatus }>)
+      ? Promise.resolve([] as Array<{ providerDeviceId: string; day: string; status: ExternalBackupStatus; lastSuccessAt: Date | string | null }>)
       : db
           .select({
             providerDeviceId: backupProviderDeviceHistory.providerDeviceId,
             day: sql<string>`to_char(${backupProviderDeviceHistory.day}, 'YYYY-MM-DD')`.as('day'),
             status: backupProviderDeviceHistory.status,
+            lastSuccessAt: backupProviderDeviceHistory.lastSuccessAt,
           })
           .from(backupProviderDeviceHistory)
           .where(
@@ -409,18 +416,22 @@ async function attachHistory(rows: BackupHealthRow[], now: Date): Promise<void> 
     byDevice.set(job.deviceId, list);
   }
 
-  const byProvider = new Map<string, Map<string, ExternalBackupStatus>>();
+  const byProvider = new Map<string, Array<{ day: string; status: ExternalBackupStatus; lastSuccessAt: Date | string | null }>>();
   for (const row of ledgerRows) {
-    const days = byProvider.get(row.providerDeviceId) ?? new Map<string, ExternalBackupStatus>();
-    days.set(row.day, row.status);
-    byProvider.set(row.providerDeviceId, days);
+    const list = byProvider.get(row.providerDeviceId) ?? [];
+    list.push(row);
+    byProvider.set(row.providerDeviceId, list);
   }
 
+  const today = window[window.length - 1]!;
   for (const row of rows) {
     const observed =
       row.source === 'breeze'
         ? foldJobsIntoDays(byDevice.get(row.deviceId!) ?? [])
-        : (byProvider.get(row.key.slice('provider:'.length)) ?? new Map<string, ExternalBackupStatus>());
+        : foldProviderLedgerIntoDays(byProvider.get(row.key.slice('provider:'.length)) ?? [], {
+            lastSuccessAt: row.lastSuccessAt,
+            today,
+          });
     row.history28d = fillHistoryWindow(window, observed);
   }
 }
@@ -549,6 +560,7 @@ export async function getProviderCoverageForDevices(
   const rows = await db
     .select({
       breezeDeviceId: backupProviderDevices.breezeDeviceId,
+      accountType: backupProviderDevices.accountType,
       status: backupProviderDevices.status,
       lastSuccessAt: backupProviderDevices.lastSuccessAt,
       errorsCount: backupProviderDevices.errorsCount,
@@ -561,13 +573,14 @@ export async function getProviderCoverageForDevices(
     .where(
       and(
         eq(backupProviderDevices.orgId, orgId),
+        sql`${backupProviderDevices.accountType} not in ('m365', 'gws')`,
         inArray(backupProviderDevices.breezeDeviceId, deviceIds),
       ),
     );
 
   const now = opts.now ?? new Date();
   for (const row of rows) {
-    if (!row.breezeDeviceId) continue;
+    if (!row.breezeDeviceId || row.accountType === 'm365' || row.accountType === 'gws') continue;
     const stale = isConnectionStale(
       {
         isActive: row.connectionIsActive,
@@ -658,6 +671,7 @@ export async function getProviderAttentionItems(
   if (opts.allowedDeviceIds) {
     // Site-restricted: only rows attributable to a device this caller may see.
     // `allowedSiteIds` was already resolved into device ids by the route.
+    conditions.push(sql`${backupProviderDevices.accountType} not in ('m365', 'gws')`);
     conditions.push(
       opts.allowedDeviceIds.length > 0
         ? inArray(backupProviderDevices.breezeDeviceId, opts.allowedDeviceIds)
@@ -669,6 +683,8 @@ export async function getProviderAttentionItems(
     .select({
       id: backupProviderDevices.id,
       name: backupProviderDevices.vendorDeviceName,
+      accountType: backupProviderDevices.accountType,
+      dataSources: backupProviderDevices.dataSources,
       // Partner-axis LEFT JOIN: null under an org token (D-11).
       customerName: sql<string | null>`${backupProviderCustomers.vendorCustomerName}`.as('customerName'),
       orgName: organizations.name,
@@ -701,13 +717,16 @@ export async function getProviderAttentionItems(
       ? 'unknown'
       : deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount, now }).health;
     if (health !== 'critical') continue;
+    const saas = row.accountType === 'm365' || row.accountType === 'gws';
+    const customer = row.customerName ?? row.orgName;
+    const workload = saasWorkloadLabel(row.dataSources?.[0] ?? row.accountType);
     items.push({
       id: `provider:${row.id}`,
-      title: `${row.name}: external backup needs attention`,
+      title: saas ? `${customer} — ${workload} backup needs attention` : `${row.name}: external backup needs attention`,
       // D-11: the customer name is partner-axis, so it is null for an org
       // token. The mapped org's name is the faithful stand-in — it IS the
       // customer, spelled the way Breeze spells it.
-      description: `${row.name} (${row.customerName ?? row.orgName}) — ${row.status}`,
+      description: saas ? `${customer} — ${workload} backup — ${row.status}` : `${row.name} (${customer}) — ${row.status}`,
       severity: 'critical',
     });
     if (items.length >= opts.limit) break;

@@ -40,6 +40,8 @@ import { useToastRailOffset } from '../../shared/toastRailOffset';
 import RichTextEditor from '../../common/RichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
+import { blockContentLabel, nearestHeadingAbove } from './quoteOutlineLabels';
+import { ContractAutoVariableList } from './QuoteContractBlockEditor';
 import {
   TableBlockFields,
   CalloutBlockFields,
@@ -52,6 +54,7 @@ import {
 } from './QuoteBlockContentForms';
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
+import { QuoteIntroFields } from './QuoteIntroFields';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useServerSyncedDraft } from '../shared/useServerSyncedDraft';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
@@ -287,7 +290,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
   // rest of the editor. Scoped keys come from `pendingKey` (quoteEditorShared)
-  // plus a few editor-local literals ('terms', 'deposit', 'add-block',
+  // plus a few editor-local literals ('terms', 'expiry', 'intro', 'deposit', 'add-block',
   // 'cover-page', 'cover-image'). `pending` drives disabled styling;
   // `inFlight` is the synchronous double-submit guard (state updates are async).
   const inFlight = useRef<Set<string>>(new Set());
@@ -346,6 +349,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // Quiet "Saved" cue for the blur-to-save terms field (title moved to the
   // workspace header — see QuoteHeaderMeta).
   const [termsSaved, flashTermsSaved] = useSavedFlash();
+  // "Valid until" + intro notes (#9859): both print on the proposal. The date
+  // column is date-only (YYYY-MM-DD); '' in the draft means no expiry.
+  const { draft: expiry, dirty: expiryDirty, edit: editExpiry, markSaved: markExpirySaved } =
+    useServerSyncedDraft((quote.expiryDate ?? '').slice(0, 10));
+  const [expirySaved, flashExpirySaved] = useSavedFlash();
+  const { draft: introNotes, dirty: introDirty, edit: editIntro, markSaved: markIntroSaved } =
+    useServerSyncedDraft(quote.introNotes ?? '');
+  const [introSaved, flashIntroSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
   // Two separate questions, mirroring the invoice editor (see the long note
@@ -359,7 +370,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const hasPendingEdits = pending.size > 0
     || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   // Unsaved input blocks the g/c chords and queue keys (see useRegisterDirtyForm).
-  useRegisterDirtyForm(hasPendingEdits || termsDirty || footerDirty);
+  useRegisterDirtyForm(hasPendingEdits || termsDirty || footerDirty || expiryDirty || introDirty);
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
   // (e.g. the quote was just issued and the tab switched).
@@ -553,6 +564,42 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     }, t('quotes.editor.errors.saveFooter'));
     if (ok) flashFooterSaved();
   }, [footerDirty, footer, quote.id, refresh, runScoped, flashFooterSaved, markFooterSaved, t]);
+
+  // Blank → null (no expiry), never '' — the API's date validator rejects it.
+  const saveExpiry = useCallback(async () => {
+    if (!expiryDirty) return;
+    const value = expiry === '' ? null : expiry;
+    const ok = await runScoped('expiry', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ expiryDate: value }),
+        }),
+        errorFallback: t('quotes.editor.errors.saveExpiry'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      markExpirySaved(value ?? '');
+      refresh();
+    }, t('quotes.editor.errors.saveExpiry'));
+    if (ok) flashExpirySaved();
+  }, [expiryDirty, expiry, quote.id, refresh, runScoped, flashExpirySaved, markExpirySaved, t]);
+
+  // Blank → null so the document prints no intro paragraph at all.
+  const saveIntro = useCallback(async () => {
+    if (!introDirty) return;
+    const value = introNotes.trim() === '' ? null : introNotes.trim();
+    const ok = await runScoped('intro', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ introNotes: value }),
+        }),
+        errorFallback: t('quotes.editor.errors.saveIntroNotes'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      markIntroSaved(value ?? '');
+      refresh();
+    }, t('quotes.editor.errors.saveIntroNotes'));
+    if (ok) flashIntroSaved();
+  }, [introDirty, introNotes, quote.id, refresh, runScoped, flashIntroSaved, markIntroSaved, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -760,11 +807,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     if (pending.size > 0) return null;
     if (failedKeys.has('terms') && termsDirty) return t('quotes.editor.terms.title');
     if (failedKeys.has('footer') && footerDirty) return t('quotes.editor.footer.title');
+    if (failedKeys.has('expiry') && expiryDirty) return t('quotes.editor.intro.expiryLabel');
+    if (failedKeys.has('intro') && introDirty) return t('quotes.editor.intro.notesLabel');
     for (const id of Object.keys(lineDrafts)) {
       if (failedKeys.has(pendingKey.line(id))) return t('quotes.editor.unsavedField.lines');
     }
     return null;
-  }, [pending.size, failedKeys, termsDirty, footerDirty, lineDrafts, t]);
+  }, [pending.size, failedKeys, termsDirty, footerDirty, expiryDirty, introDirty, lineDrafts, t]);
   useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
   useEffect(() => () => onUnsavedEditsChange?.(null), [onUnsavedEditsChange]);
 
@@ -1001,34 +1050,45 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // A quiet block-level nav for long quotes: each entry jumps to (and focuses)
   // its block. Labels mirror what the canvas shows — the author's own text
   // where one exists (table label, heading text, contract label), else the
-  // block-type default the add menu uses. Only rendered with 2+ blocks: a
+  // block's own text, else the block-type name (see outlineLabels below).
+  // Only rendered with 2+ blocks: a
   // one-block quote has nothing to navigate.
   const blockContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const setBlockContainerRef = useCallback((blockId: string, el: HTMLDivElement | null) => {
     if (el) blockContainerRefs.current.set(blockId, el);
     else blockContainerRefs.current.delete(blockId);
   }, []);
-  const outlineLabel = useCallback((b: QuoteBlock): string => {
-    if (b.blockType === 'line_items') return pricingBlockLabel(b);
-    if (b.blockType === 'heading') {
-      const text = ((b.content?.text as string | undefined) ?? '').trim();
-      return text || t('quotes.editor.blockTypes.heading');
-    }
-    if (b.blockType === 'contract') {
-      const label = ((b.content?.label as string | undefined) ?? '').trim();
-      return label || t('quotes.editor.blockTypes.contract');
-    }
-    if (b.blockType === 'image') return t('quotes.editor.blockTypes.image');
-    if (b.blockType === 'table') {
-      const caption = ((b.content?.caption as string | undefined) ?? '').trim();
-      return caption || t('quotes.editor.blockTypes.table');
-    }
-    if (b.blockType === 'callout') {
-      const title = ((b.content?.title as string | undefined) ?? '').trim();
-      return title || t('quotes.editor.blockTypes.callout');
-    }
-    return t('quotes.editor.blockTypes.richText');
-  }, [pricingBlockLabel, t]);
+  // Unnamed rich text / image / table / callout blocks read from their own
+  // words, else "<type> · <nearest heading above>" (#9867) — a long proposal
+  // otherwise lists "Rich text" and "Image" several times each.
+  const outlineLabels = useMemo(() => {
+    const typeName: Partial<Record<QuoteBlock['blockType'], string>> = {
+      rich_text: t('quotes.editor.blockTypes.richText'),
+      image: t('quotes.editor.blockTypes.image'),
+      table: t('quotes.editor.blockTypes.table'),
+      callout: t('quotes.editor.blockTypes.callout'),
+    };
+    const labels = new Map<string, string>();
+    sortedBlocks.forEach((b, i) => {
+      if (b.blockType === 'line_items') { labels.set(b.id, pricingBlockLabel(b)); return; }
+      if (b.blockType === 'heading') {
+        const text = ((b.content?.text as string | undefined) ?? '').trim();
+        labels.set(b.id, text || t('quotes.editor.blockTypes.heading'));
+        return;
+      }
+      if (b.blockType === 'contract') {
+        const label = ((b.content?.label as string | undefined) ?? '').trim();
+        labels.set(b.id, label || t('quotes.editor.blockTypes.contract'));
+        return;
+      }
+      const own = blockContentLabel(b);
+      if (own) { labels.set(b.id, own); return; }
+      const type = typeName[b.blockType] ?? t('quotes.editor.blockTypes.richText');
+      const heading = nearestHeadingAbove(sortedBlocks, i);
+      labels.set(b.id, heading ? `${type} · ${heading}` : type);
+    });
+    return labels;
+  }, [sortedBlocks, pricingBlockLabel, t]);
   // Scroll-position highlight: the outline marks the topmost block currently in
   // the viewport. IntersectionObserver is feature-detected — in jsdom (and any
   // environment without it) the outline simply renders with no active entry.
@@ -2407,18 +2467,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                     {contractVersion.declaredVariables.some((v) => v.kind === 'auto') && (
                       <div>
                         <p className="mb-1 text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.autoVariablesTitle')}</p>
-                        <ul className="space-y-1">
-                          {contractVersion.declaredVariables.filter((v) => v.kind === 'auto').map((v) => (
-                            <li
-                              key={v.name}
-                              data-testid={`quote-block-contract-auto-${v.name}`}
-                              className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1 text-xs"
-                            >
-                              <span className="font-medium">{v.label ?? v.name}</span>
-                              <span className="font-mono text-muted-foreground">{`{{${v.name}}}`}</span>
-                            </li>
-                          ))}
-                        </ul>
+                        <ContractAutoVariableList
+                          variables={contractVersion.declaredVariables.filter((v) => v.kind === 'auto')}
+                          values={detail.contractAutoValues}
+                          testIdPrefix="quote-block-contract-auto-"
+                        />
                         <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
                       </div>
                     )}
@@ -2669,6 +2722,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           min-width floor (QuoteBlockCard.tsx) has to stay well under that,
           not just under the full 650px this column could theoretically
           offer. */}
+      {/* Proposal opening (#9859): above the canvas, in document order — the
+          date prints in the header, the notes above the first section. */}
+      <QuoteIntroFields
+        canWrite={canWrite}
+        expiry={{
+          value: expiry, dirty: expiryDirty, saved: expirySaved, busy: isPending('expiry'),
+          onChange: editExpiry, onBlur: () => void saveExpiry(),
+        }}
+        intro={{
+          value: introNotes, dirty: introDirty, saved: introSaved, busy: isPending('intro'),
+          onChange: editIntro, onBlur: () => void saveIntro(),
+        }}
+      />
+
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with a min-width
@@ -2828,6 +2895,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 onAddManual={addManual}
                 onEditLine={editLine}
                 onEditBlock={editBlock}
+                contractAutoValues={detail.contractAutoValues}
                 onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
                 onMoveLineToBlock={moveLineTo}
                 moveTargets={
@@ -3089,7 +3157,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                       }`}
                     >
-                      {outlineLabel(b)}
+                      {outlineLabels.get(b.id) ?? ''}
                     </button>
                   </li>
                 ))}

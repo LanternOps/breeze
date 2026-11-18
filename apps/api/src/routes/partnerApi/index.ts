@@ -11,6 +11,7 @@ import { partnerAlertRoutes } from './alerts';
 import { partnerTicketRoutes } from './tickets';
 import { partnerDeviceStatusRoutes } from './deviceStatus';
 import { partnerTicketWriteRoutes } from './ticketWrites';
+import { partnerAlertWriteRoutes } from './alertWrites';
 import { partnerExportAuditMiddleware } from './audit';
 
 export const partnerApiRoutes = new Hono();
@@ -40,3 +41,7 @@ partnerApiRoutes.route('/', partnerDeviceStatusRoutes);
 // ticketService; the principal acts as itself. Non-GET routes must ALSO be
 // listed in writeSurface.test.ts.
 partnerApiRoutes.route('/', partnerTicketWriteRoutes);
+
+// alerts:write (opt-in). CAS acknowledge/resolve as the principal itself;
+// no alert content. Non-GET routes must ALSO be listed in writeSurface.test.ts.
+partnerApiRoutes.route('/', partnerAlertWriteRoutes);

@@ -16,14 +16,16 @@ import {
   markCreditsDebited,
   recordCreditDebitFailure,
   recordCreditDebitRetry,
-  recordInvocationsWithRollups,
+  recordUnreservedInvocations,
   settleAiBudgetReservationDurably,
 } from '../aiBudgetReservations';
 import { checkCostAnomalies, debitBillingCredits } from '../aiCostTracker';
 import { captureException, captureMessage } from '../sentry';
+import { deliverCreditDebit, type CreditDebitOutcome } from '../aiCreditDebitOutbox';
 import { readConnectionOfferingRate } from './connectionOfferingRate';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
 import type { NewInvocation } from './invocationLedgerWrite';
+import type { AiInvocationModelRole } from '../../db/schema/aiInvocations';
 import { getPlatformModelByModelId } from './platformModels';
 import { platformRateSnapshot, priceInvocation, type RateSnapshot } from './pricing';
 import type { PromptProvenance } from './promptProfiles';
@@ -69,7 +71,8 @@ function boundModels(binding: TurnBinding): Set<string> {
  *   model's enabled, priced offering on the binding's OWN connection
  *   (`connectionRates`). Both are pre-fetched by settleInvocation and re-checked
  *   inside the settlement transaction. No such rate → the bound rate. Never a
- *   guess, and flagged `unboundModel` so the ledger marks it fallbackUsed.
+ *   guess, and flagged `unboundModel` so the ledger marks it fallbackUsed —
+ *   or, for the CLI's own helper call, model_role 'background' (#10413).
  * Fast is billed only when the provider CONFIRMED it (`speedServed`); the
  * Agent SDK never can, so SDK usage is always standard.
  */
@@ -133,6 +136,8 @@ export interface SettleInvocationInput {
   userId: string | null;
   sessionId: string | null;
   agentRunId: string | null;
+  /** W5 (#5220): the flow run an `ai` step call belongs to (ai_invocations.flow_run_id). */
+  flowRunId?: string | null;
   sourceRef: string | null;
   usage: BilledUsage[];
   outcome: TurnOutcome;
@@ -165,6 +170,11 @@ export interface SettleInvocationInput {
    * changed). Absent: the binding's profile, no variant.
    */
   prompt?: PromptProvenance | null;
+  /**
+   * #11395: the tool exposure the live query (or run) was created with. Absent:
+   * the ledger rows record no tool profile (NULL), as before W03.
+   */
+  toolExposure?: { profile: string; fingerprint: string } | null;
   /**
    * W11: when the turn happened. Omitted in production (stamped once in
    * toNewInvocations); the built rows carry it through a deferred
@@ -216,6 +226,29 @@ export function consistentPromptVariant(variant: string | null, surface: AiSurfa
   return null;
 }
 
+/**
+ * #10413: a usage key is the Agent SDK CLI's background call (a small model it
+ * runs once per query, e.g. for a title) when it is none of the models that
+ * can carry the turn: not the bound model, not its bound refusal fallback,
+ * not a model this session switched away from (carried), and not the model
+ * that served the turn. One exception keeps the old label: a turn that fell
+ * back but could not name the model that served it (the outcome still reads
+ * the bound model) cannot tell the fallback key from the helper key, so every
+ * unbound key stays a fallback there.
+ */
+export function isBackgroundCall(b: TurnBinding, outcome: TurnOutcome, p: Pick<BilledUsage, 'model' | 'providerModel'>): boolean {
+  // Only the Agent SDK reports no provider model, and only its CLI makes a
+  // helper call: a Messages API row (which names the model that served it) is
+  // never background, so an alias/dated-id mismatch cannot hide a fallback.
+  if (p.providerModel !== null) return false;
+  const model = p.model;
+  if (model === b.wireModel || model === outcome.servedModel) return false;
+  if (b.refusalFallback && model === b.refusalFallback.wireModel) return false;
+  if (b.carriedRates?.some((c) => c.wireModel === model)) return false;
+  if (outcome.fallbackUsed && outcome.servedModel === b.wireModel) return false;
+  return true;
+}
+
 export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsage[]): NewInvocation[] {
   const b = input.binding;
   const promptProfile = input.prompt?.profile ?? b.promptProfile ?? null;
@@ -238,7 +271,12 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
     const outcome = p.callOutcome ?? input.outcome;
     const callRows = p.call === undefined ? priced : priced.filter((x) => x.call === p.call);
     const multi = callRows.length > 1;
-    const servedByFallback = p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel);
+    // #10413: the CLI's own helper call is billed (at its own rate, via the
+    // unbound-model path) but is not a fallback: nothing served the turn in
+    // its place.
+    const background = isBackgroundCall(b, outcome, p);
+    const servedByFallback = !background && (p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel));
+    const modelRole: AiInvocationModelRole = background ? 'background' : servedByFallback ? 'fallback' : 'primary';
     const refusedLeg = outcome.fallbackUsed && multi && p.model === b.wireModel;
     // The speed the row was BILLED at: a requested 'fast' the provider served
     // as standard is recorded as standard (not applied).
@@ -252,6 +290,7 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       userId: input.userId,
       sessionId: input.sessionId,
       agentRunId: input.agentRunId,
+      flowRunId: input.flowRunId ?? null,
       sourceRef: input.sourceRef,
       offeringId: b.offeringId,
       connectionId: b.connectionId,
@@ -266,6 +305,7 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       stopReason: refusedLeg ? 'refusal' : outcome.stopReason,
       refusalCategory: refusedLeg || servedByFallback || outcome.refused ? outcome.refusalCategory : null,
       fallbackUsed: servedByFallback,
+      modelRole,
       // W09 (F5): this row is the SERVED hop's (offering/connection/funding
       // above come from its own binding); these record where it failed over from.
       failoverFromOfferingId: b.failover?.fromOfferingId ?? null,
@@ -288,6 +328,8 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       promptProfile,
       promptVariant,
       occurredAt,
+      toolProfile: input.toolExposure?.profile ?? null,
+      toolExposureFingerprint: input.toolExposure?.fingerprint ?? null,
     };
   });
 }
@@ -515,7 +557,10 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     return { costCents, invocationIds: result.invocationIds, deferred: false };
   }
 
-  const invocationIds = await recordInvocationsWithRollups({
+  // #7717 item 2: the debit intent (platform spend only) commits with the
+  // ledger rows; delivery never throws, and a failure stays on the outbox row
+  // for the sweep (retryable) or an operator re-drive (terminal).
+  const { invocationIds, debit } = await recordUnreservedInvocations({
     orgId: input.orgId,
     invocations: rows,
     sessionId: input.sessionId,
@@ -524,9 +569,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     turnCount: input.turnCount ?? 1,
     ...(sdkUsage ? { sdkUsage } : {}),
   });
-  if (input.binding.funding === 'platform' && costCents > 0 && invocationIds[0]) {
-    await debitUnreservedCredits(input.orgId, costCents, invocationIds[0]);
-  }
+  if (debit) await deliverCreditDebit(debit);
   checkSpendThresholds(input.orgId, input.sessionId, costCents);
   return { costCents, invocationIds, deferred: false };
 }
@@ -542,7 +585,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
  * 409s a key reused with another amount). Never throws: the AI turn already
  * happened and settled.
  */
-export async function debitSettledCredits(input: { orgId: string; reservationId: string; costCents: number }): Promise<void> {
+export async function debitSettledCredits(input: { orgId: string; reservationId: string; costCents: number }): Promise<CreditDebitOutcome> {
   try {
     const result = await debitBillingCredits(input.orgId, input.costCents, {
       idempotencyKey: creditDebitIdempotencyKey(input.reservationId),
@@ -550,9 +593,9 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
     switch (result.kind) {
       case 'debited':
         await markCreditsDebited(input.reservationId);
-        return;
+        return 'debited';
       case 'not_configured':
-        return;
+        return 'not_configured';
       case 'rejected': {
         await recordCreditDebitFailure(input.reservationId, result.code);
         console.error('[AI] platform credit debit REJECTED; stamped failed for an operator', {
@@ -563,7 +606,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
             eventCode: 'ai_credit_debit_rejected', tags: billingTags(input.orgId, result.status),
           });
         }
-        return;
+        return 'rejected';
       }
       case 'retryable': {
         const { attempts, exhausted } = await recordCreditDebitRetry(input.reservationId, result.code);
@@ -577,7 +620,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
             });
           }
         }
-        return;
+        return exhausted ? 'retries_exhausted' : 'retry_scheduled';
       }
     }
   } catch (error) {
@@ -586,6 +629,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
       orgId: input.orgId, reservationId: input.reservationId, error: message,
     });
     captureException(new Error(`AI credit debit bookkeeping failed: ${message}`));
+    return 'bookkeeping_failed';
   }
 }
 
@@ -609,34 +653,4 @@ function reportUnrecordedSettlement(input: SettleInvocationInput, costCents: num
     level: 'error',
     tags: { org_id: input.orgId, ...(input.reservationId ? { ai_reservation_id: input.reservationId } : {}) },
   });
-}
-
-/**
- * A platform debit with no reservation to stamp. Keyed by the call's first
- * ledger row, so a repeat of THIS call cannot double-charge, but there is no
- * durable retry: a failure is logged and reported for reconciliation, carrying
- * that first ledger row id (review S4) — the operator re-sends the debit under
- * `ai-invocation:<id>` for the summed cost of the call's rows.
- */
-async function debitUnreservedCredits(orgId: string, costCents: number, firstInvocationId: string): Promise<void> {
-  const idempotencyKey = `ai-invocation:${firstInvocationId}`;
-  try {
-    const result = await debitBillingCredits(orgId, costCents, { idempotencyKey });
-    if (result.kind === 'debited' || result.kind === 'not_configured') return;
-    console.error('[AI] unreserved platform credit debit did not land', {
-      orgId, costCents, code: result.code, kind: result.kind, invocationId: firstInvocationId,
-    });
-    if (shouldReport('ai_credit_debit_rejected', orgId)) {
-      captureMessage('AI platform credit debit (no reservation) did not land', {
-        eventCode: 'ai_credit_debit_rejected',
-        tags: { ...billingTags(orgId, result.status), ai_invocation_id: firstInvocationId },
-      });
-    }
-  } catch (error) {
-    const message = safeErrorMessage(error);
-    console.error('[AI] unreserved platform credit debit failed', { orgId, costCents, invocationId: firstInvocationId, error: message });
-    captureException(new Error(`AI credit debit failed: ${message}`), undefined, {
-      org_id: orgId, ai_invocation_id: firstInvocationId,
-    });
-  }
 }

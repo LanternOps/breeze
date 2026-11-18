@@ -392,7 +392,10 @@
           "saved": "Padrões da Central de Confiança salvos",
           "saveFailed": "Não foi possível salvar os padrões da Central de Confiança",
           "mfaRequired": "Alterar estes padrões exige autenticação multifator. Ative a MFA nas configurações de segurança do seu perfil e tente novamente.",
-          "revisionMismatch": "Outra pessoa alterou estes padrões. Recarregue para ver as alterações."
+          "revisionMismatch": "Outra pessoa alterou estes padrões. Recarregue para ver as alterações.",
+          "conflictNotice": "Outra pessoa salvou estes padrões enquanto você editava. Recarregue a versão dela para partir dela, ou continue editando: salvar de novo vai continuar falhando até você recarregar.",
+          "reloadTheirs": "Recarregar a versão dela",
+          "keepEditing": "Continuar editando"
         },
         "title": "Configurações herdadas"
       },
@@ -433,6 +436,7 @@
         "publishing": "Publicando…",
         "cancel": "Cancelar",
         "success": "Página da Central de Confiança publicada.",
+        "successPending": "Publicada. A página pública será atualizada em até um minuto.",
         "failed": "Não foi possível publicar a página da Central de Confiança.",
         "disabledNoWrite": "Você precisa de permissão para editar organizações para publicar.",
         "disabledSlug": "Corrija o endereço da página antes de publicar."
@@ -469,6 +473,7 @@
       },
       "errors": {
         "revisionMismatch": "Esta página foi alterada desde que você a carregou. Recarregue e tente novamente.",
+        "templateChanged": "O modelo da Central de Confiança do seu parceiro foi alterado desde que você carregou esta página. Recarregue e publique novamente.",
         "authorizationRequired": "Registre quem autorizou a publicação.",
         "mfaRequired": "A publicação exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
         "trustProbation": "A publicação é liberada quando sua conta passa a ser confiável.",
@@ -589,6 +594,7 @@
       "title": "Documentos",
       "subtitle": "Runbooks, baselines, políticas e evidências de entrega desta organização.",
       "empty": "Ainda não há documentos. Envie um runbook, uma baseline ou uma política assinada para iniciar a biblioteca.",
+      "emptyPortalHint": "Seu cliente vê os documentos marcados como Visível no portal. Uma proposta ou um contrato assinado e uma baseline de segurança são bons primeiros documentos.",
       "emptyFiltered": "Nenhum documento nesta categoria.",
       "loadFailed": "Não foi possível carregar os documentos.",
       "upload": "Enviar documento",

@@ -67,7 +67,7 @@ type Scheduler struct {
 	Scenario  Scenario
 	Exec      Executor
 	Rec       *Recorder
-	Internal  map[string]func() int
+	Internal  map[string]func(Action) int
 	PreWindow time.Duration
 
 	mu     sync.Mutex
@@ -135,7 +135,7 @@ func (s *Scheduler) runActions(ctx context.Context, event, phase string, planned
 				rec.Output = "internal action " + a.Internal + " is not wired in this run"
 				break
 			}
-			n := f()
+			n := f(a)
 			rec.OK = n > 0 // closing nothing did not inject the fault
 			rec.Output = fmt.Sprintf("closed %d sockets", n)
 		default:

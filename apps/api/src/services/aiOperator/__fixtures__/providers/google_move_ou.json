@@ -1,0 +1,54 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API users.get / users.update (User resource, orgUnitPath)",
+  "_notes": "A new account lands in the root org unit '/'. The refusal body (an OU path that does not exist) is unconfirmed: lab-run row.",
+  "toolName": "google_move_ou",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.users.get": {
+      "data": {
+        "id": "102",
+        "primaryEmail": "priya@customer.example",
+        "suspended": false,
+        "orgUnitPath": "/Staff"
+      }
+    }
+  },
+  "preUnsatisfied": {
+    "directory.users.get": {
+      "data": {
+        "id": "102",
+        "primaryEmail": "priya@customer.example",
+        "suspended": false,
+        "orgUnitPath": "/"
+      }
+    }
+  },
+  "writeOk": {
+    "directory.users.update": {
+      "data": {
+        "id": "102",
+        "primaryEmail": "priya@customer.example",
+        "orgUnitPath": "/Staff"
+      }
+    }
+  },
+  "postSatisfied": {
+    "directory.users.get": {
+      "data": {
+        "id": "102",
+        "primaryEmail": "priya@customer.example",
+        "suspended": false,
+        "orgUnitPath": "/Staff"
+      }
+    }
+  },
+  "writeRefusal": {
+    "directory.users.update": {
+      "error": {
+        "code": 400,
+        "message": "Invalid Input: INVALID_OU_ID"
+      }
+    }
+  }
+}

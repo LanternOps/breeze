@@ -2,6 +2,9 @@ import type { InheritableNotificationSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SavedSecretInput from './SavedSecretInput';
+import FieldLabel from './partnerSettings/FieldLabel';
+import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: InheritableNotificationSettings;
@@ -42,7 +45,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Custom SMTP */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+      <div className="space-y-4 border-t pt-6">
         <label className="flex items-center gap-3">
           <input
             type="checkbox"
@@ -107,8 +110,8 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Slack */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerNotifications.slackIntegration')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerNotifications.slackIntegration')}</h3>
         <div className="grid gap-4 sm:grid-cols-2">
           <SavedSecretInput
             value={data.slackWebhookUrl}
@@ -132,10 +135,10 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Pushover defaults */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+      <div className="space-y-4 border-t pt-6">
         <div>
-          <p className="text-sm font-medium">{t('partnerNotifications.pushoverDefaults')}</p>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-sm font-semibold">{t('partnerNotifications.pushoverDefaults')}</h3>
+          <p className="max-w-prose text-xs text-muted-foreground">
             {t('partnerNotifications.pushoverDescription')}
           </p>
         </div>
@@ -144,22 +147,28 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             value={data.pushoverAppToken}
             onChange={pushoverAppToken => set({ pushoverAppToken })}
             label={t('partnerNotifications.applicationToken')}
+            labelAddon={<SettingBadge fieldId="notifications.pushoverAppToken" />}
             testId="partner-notifications-pushover-token"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
-          />
+          >
+            <InheritanceLine fieldId="notifications.pushoverAppToken" />
+          </SavedSecretInput>
           <SavedSecretInput
             value={data.pushoverDefaultUser}
             onChange={pushoverDefaultUser => set({ pushoverDefaultUser })}
             label={t('partnerNotifications.defaultUserKey')}
+            labelAddon={<SettingBadge fieldId="notifications.pushoverDefaultUser" />}
             testId="partner-notifications-pushover-user"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
-          />
+          >
+            <InheritanceLine fieldId="notifications.pushoverDefaultUser" />
+          </SavedSecretInput>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
-            <label htmlFor="partner-notifications-pushover-sound" className="text-sm font-medium">{t('partnerNotifications.defaultSound')}</label>
+            <FieldLabel htmlFor="partner-notifications-pushover-sound" fieldId="notifications.pushoverDefaultSound">{t('partnerNotifications.defaultSound')}</FieldLabel>
             <input
               id="partner-notifications-pushover-sound"
               type="text"
@@ -168,9 +177,10 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               placeholder={t('partnerNotifications.soundPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
+            <InheritanceLine fieldId="notifications.pushoverDefaultSound" />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <label htmlFor="partner-notifications-pushover-priority" className="text-sm font-medium">{t('partnerNotifications.defaultPriority')}</label>
+            <FieldLabel htmlFor="partner-notifications-pushover-priority" fieldId="notifications.pushoverDefaultPriority">{t('partnerNotifications.defaultPriority')}</FieldLabel>
             <select
               id="partner-notifications-pushover-priority"
               value={data.pushoverDefaultPriority ?? ''}
@@ -191,6 +201,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               <option value={1}>{t('partnerNotifications.priorities.high')}</option>
               <option value={2}>{t('partnerNotifications.priorities.emergency')}</option>
             </select>
+            <InheritanceLine fieldId="notifications.pushoverDefaultPriority" />
           </div>
         </div>
         <label className="flex items-start gap-2 text-sm">

@@ -18,7 +18,7 @@ import DRPlanGroupCard, {
   REBUILD_WAIT_TIMEOUT_MAX,
   REBUILD_OUTPUT_DIR_MAX_LENGTH,
   REBUILD_WAIT_TIMEOUT_MIN,
-  isDRStepType,
+  normalizeDRStepType,
   type DRGroupForm,
 } from './DRPlanGroupCard';
 import { useTranslation } from 'react-i18next';
@@ -54,7 +54,8 @@ function stepFieldsFromRestoreConfig(
   restoreConfig: unknown
 ): Pick<DRGroupForm, 'stepType' | 'rebuildHostDeviceId' | 'outputDir' | 'waitTimeoutMinutes' | 'restorePayload'> {
   const config = isRecord(restoreConfig) ? restoreConfig : {};
-  const stepType = isDRStepType(config.commandType) ? config.commandType : '';
+  // Plans saved by an earlier editor hold upper-case step types (#11856).
+  const stepType = normalizeDRStepType(config.commandType) ?? '';
   return {
     stepType,
     rebuildHostDeviceId:

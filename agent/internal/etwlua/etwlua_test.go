@@ -57,6 +57,20 @@ type fakePamRunner struct {
 	// longer than the dedupe window it lets a test prove the post-flow re-record
 	// restarts the dedupe window from flow-end.
 	delay time.Duration
+	// submitFailed records every NotifyElevationSubmitFailed call.
+	submitFailed []Event
+}
+
+func (f *fakePamRunner) NotifyElevationSubmitFailed(ev Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.submitFailed = append(f.submitFailed, ev)
+}
+
+func (f *fakePamRunner) SubmitFailedCalls() []Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Event(nil), f.submitFailed...)
 }
 
 func (f *fakePamRunner) RunPamFlow(_ context.Context, _ Event, outcome ElevationOutcome) {

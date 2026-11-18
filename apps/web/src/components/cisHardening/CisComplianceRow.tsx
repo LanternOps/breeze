@@ -30,6 +30,7 @@ export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
     <>
       <tr
         className="cursor-pointer text-sm hover:bg-muted/40"
+        data-testid={`cis-compliance-row-${result.id}`}
         onClick={() => setExpanded(!expanded)}
       >
         <td className="px-4 py-3">
@@ -39,7 +40,7 @@ export default function CisComplianceRow({ entry }: CisComplianceRowProps) {
             <ChevronRight className="h-4 w-4 text-muted-foreground" />
           )}
         </td>
-        <td className="px-4 py-3 font-medium">{device.hostname}</td>
+        <td className="px-4 py-3 font-medium" title={device.hostname}>{device.displayName || device.hostname}</td>
         <td className="px-4 py-3">{baseline.name}</td>
         <td className="px-4 py-3 uppercase text-muted-foreground">{device.osType}</td>
         <td className="px-4 py-3">

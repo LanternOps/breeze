@@ -52,6 +52,17 @@ async function main(): Promise<void> {
     const context = await browser.newContext();
     const page = await context.newPage();
 
+    // Answer API-shaped requests here instead of letting them reach the web
+    // server. In production Caddy routes /api/* and /.well-known/* to the API;
+    // in this harness they fall through to Astro, which renders its HTML 404
+    // page, and the middleware marks HTML `Cache-Control: no-store`. Chromium
+    // never completes a no-store fetch whose body the caller doesn't read (e.g.
+    // featuresStore's `!res.ok` early return), so `networkidle` never fires.
+    // A JSON 404 keeps the "API calls 404" contract without that artifact.
+    await context.route(/^[^?#]*\/(api|\.well-known)\//, (route) =>
+      route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' }),
+    );
+
     // Register the listener before any page script runs; collect into a global.
     // Only collect inline-script violations (blockedURI === 'inline'); eval
     // violations from Monaco Editor are a separate concern and expected under

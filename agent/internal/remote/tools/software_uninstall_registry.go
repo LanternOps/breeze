@@ -169,10 +169,21 @@ func splitUninstallCommandLine(raw string) (exe string, rest string, err error) 
 		rest = strings.TrimSpace(s[cut:])
 	}
 
+	// Windows reads a run of path separators as one, so the path is checked,
+	// and later launched, in that collapsed form.
+	exe = collapsePathSeparators(exe)
 	if err := validateUninstallerPath(exe); err != nil {
 		return "", "", err
 	}
 	return exe, rest, nil
+}
+
+// collapsePathSeparators replaces every run of backslashes in path with one.
+func collapsePathSeparators(path string) string {
+	for strings.Contains(path, `\\`) {
+		path = strings.ReplaceAll(path, `\\`, `\`)
+	}
+	return path
 }
 
 func validateUninstallerPath(exe string) error {
@@ -190,6 +201,11 @@ func validateUninstallerPath(exe string) error {
 	}
 	segments := strings.Split(lower, `\`)
 	for _, seg := range segments {
+		// The location checks below look at components by position, so
+		// every component must be a real one.
+		if seg == "" {
+			return fmt.Errorf("uninstaller path %q contains an empty path component", exe)
+		}
 		if seg == ".." || seg == "." {
 			return fmt.Errorf("uninstaller path %q contains a traversal segment", exe)
 		}

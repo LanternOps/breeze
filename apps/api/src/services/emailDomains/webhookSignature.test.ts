@@ -110,6 +110,36 @@ describe('verifySvixSignature', () => {
       .toEqual({ ok: false, reason: 'bad_secret' });
   });
 
+  // Options exist for the Huntress receiver (#10335). The defaults above are
+  // what Resend relies on and must not move.
+  it('honours a wider toleranceSeconds when the caller passes one', () => {
+    const timestamp = ts(-(SVIX_TIMESTAMP_TOLERANCE_SECONDS + 60));
+    const signature = `v1,${sign(SECRET, ID, timestamp, BODY)}`;
+    expect(verifySvixSignature({ id: ID, timestamp, signature }, BODY, SECRET, NOW))
+      .toEqual({ ok: false, reason: 'stale_timestamp' });
+    expect(verifySvixSignature({ id: ID, timestamp, signature }, BODY, SECRET, NOW, { toleranceSeconds: 600 }))
+      .toEqual({ ok: true });
+    const tooOld = ts(-601);
+    const tooOldSignature = `v1,${sign(SECRET, ID, tooOld, BODY)}`;
+    expect(verifySvixSignature({ id: ID, timestamp: tooOld, signature: tooOldSignature }, BODY, SECRET, NOW, { toleranceSeconds: 600 }))
+      .toEqual({ ok: false, reason: 'stale_timestamp' });
+  });
+
+  it("uses an unprefixed secret's literal bytes when unprefixedSecret is 'raw'", () => {
+    const raw = 'plain-shared-secret';
+    const timestamp = ts();
+    const rawSignature = `v1,${createHmac('sha256', Buffer.from(raw, 'utf8')).update(`${ID}.${timestamp}.${BODY}`).digest('base64')}`;
+    expect(verifySvixSignature({ id: ID, timestamp, signature: rawSignature }, BODY, raw, NOW, { unprefixedSecret: 'raw' }))
+      .toEqual({ ok: true });
+    // Default ('base64') decodes the same string instead, so the raw-keyed signature fails.
+    expect(verifySvixSignature({ id: ID, timestamp, signature: rawSignature }, BODY, raw, NOW))
+      .toEqual({ ok: false, reason: 'bad_signature' });
+    // A whsec_ secret is base64-decoded either way.
+    const signature = `v1,${sign(SECRET, ID, timestamp, BODY)}`;
+    expect(verifySvixSignature({ id: ID, timestamp, signature }, BODY, SECRET, NOW, { unprefixedSecret: 'raw' }))
+      .toEqual({ ok: true });
+  });
+
   // A malformed entry must not be able to throw out of the verifier: a thrown
   // error inside a public handler is a 500, which tells the provider to retry
   // a payload that will never verify.

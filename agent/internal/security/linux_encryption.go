@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Linux disk-encryption detection. The headline status (encrypted /
@@ -557,7 +558,7 @@ func runCommandStdout(timeout time.Duration, name string, args ...string) (strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()

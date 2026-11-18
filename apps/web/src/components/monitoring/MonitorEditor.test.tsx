@@ -7,7 +7,11 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const authUser: { canManagePartnerWide?: boolean } = {};
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: authUser }),
+}));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) => selector({ currentOrgId: 'org-1' }),
 }));
@@ -567,6 +571,26 @@ describe('MonitorEditor (#5289)', () => {
     fireEvent.click(screen.getByTestId('monitor-editor-test-run'));
 
     await waitFor(() => expect(screen.getByTestId('monitor-editor-test-result')).toHaveTextContent('HOST-1'));
+  });
+
+  it('edit mode: disables Test while the form has unsaved edits and says why (#9625)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) return json({ data: { ...MONITOR_M1_FIXTURE } });
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (input === '/devices') return json({ devices: [{ id: 'dev-1', hostname: 'HOST-1' }] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    fireEvent.click(screen.getByTestId('monitor-editor-test-open'));
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-device')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('monitor-editor-test-device'), { target: { value: 'dev-1' } });
+    expect(screen.getByTestId('monitor-editor-test-run')).toBeEnabled();
+    expect(screen.queryByTestId('monitor-editor-test-dirty-hint')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk very full' } });
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-run')).toBeDisabled());
+    expect(screen.getByTestId('monitor-editor-test-dirty-hint')).toHaveTextContent('Save to test your changes');
   });
 
   it('edit mode: PATCHes the monitor on save and refetches (not POST, not the create-mode navigate)', async () => {

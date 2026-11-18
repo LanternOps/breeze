@@ -329,7 +329,8 @@ async function agree(f: DeliveryFixture, facts: ResolveDeliveryInput, expectedCh
     const result = await dispatch(await seedAlert(f, facts.severity as 'high', facts.monitorId ?? null));
     const queuedIds = bulk.mock.calls.flatMap(([jobs]) => jobs.map(job => job.data.channelId));
     expect(queuedIds.sort()).toEqual([...expectedChannels].sort());
-    const escalationIds = single.mock.calls.map(([, job]) => job.channelId);
+    // Each escalation occurrence enqueues a channel `send` plus an `escalation-event` publisher job (#10565); only sends carry a channel.
+    const escalationIds = single.mock.calls.filter(([name]) => name === 'send').map(([, job]) => job.channelId);
     expect(escalationIds.sort()).toEqual([...expectedEscalationChannels].sort());
     expect(result.queued).toBe(expectedChannels.length);
     expect(result.inAppSent).toBe(true);
@@ -408,7 +409,7 @@ describe('full W05b gate — dispatch ⇄ resolver ⇄ GET preview', () => {
     try {
       expect((await dispatch(alertId)).queued).toBe(1);
       expect(bulk.mock.calls.flatMap(([jobs]) => jobs.map(job => job.data.channelId))).toEqual(resolved.channelIds);
-      expect(single.mock.calls.map(([, job]) => job.channelId)).toEqual([f.orgChannel]);
+      expect(single.mock.calls.filter(([name]) => name === 'send').map(([, job]) => job.channelId)).toEqual([f.orgChannel]);
     } finally { bulk.mockRestore(); single.mockRestore(); }
     // HTTP previews and queued legacy alerts both describe current routing.
     const preview = await (await previewAs(f, facts)).json() as DeliveryPreview;

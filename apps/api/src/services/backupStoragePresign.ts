@@ -27,6 +27,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { buildS3StorageClient } from './backupSnapshotStorage';
+import { keyRootForNewSnapshot, physicalKeyFor } from './backupKeyLayout';
 
 export type StorageProviderConfig = Record<string, unknown>;
 
@@ -341,8 +342,13 @@ export async function deleteKeys(
 
 export type ConditionalWriteProbeResult = {
   supported: boolean;
-  /** precondition_enforced | condition_ignored | probe_write_failed | unexpected_response */
-  reason: 'precondition_enforced' | 'condition_ignored' | 'probe_write_failed' | 'unexpected_response';
+  /** precondition_enforced | condition_ignored | probe_write_failed | unexpected_response | invalid_destination_prefix */
+  reason:
+    | 'precondition_enforced'
+    | 'condition_ignored'
+    | 'probe_write_failed'
+    | 'unexpected_response'
+    | 'invalid_destination_prefix';
 };
 
 /**
@@ -353,10 +359,21 @@ export type ConditionalWriteProbeResult = {
  * call is time-bounded. The probe object is removed by the version id each
  * write returned (on a versioned or object-lock bucket a plain delete would
  * only add a delete marker), best effort.
+ *
+ * The probe object is written where this destination writes new snapshots
+ * (#7081): under `<prefix>/` when it has a valid key prefix — a credential
+ * scoped to `bucket/<prefix>/*` cannot write at the bucket root — and at the
+ * bucket root otherwise. `<prefix>/breeze-capability-probe/` is outside
+ * `<prefix>/snapshots/`, so storage GC never lists it. A destination whose
+ * stored prefix is invalid writes nowhere (mint refuses it), so it is
+ * reported unsupported without any storage call — never probed at the
+ * bucket root in its place.
  */
 export async function probeConditionalWrites(cfg: StorageProviderConfig): Promise<ConditionalWriteProbeResult> {
+  const writes = keyRootForNewSnapshot('s3', cfg);
+  if (!writes.ok) return { supported: false, reason: 'invalid_destination_prefix' };
   const { bucket, client: s3 } = client(cfg);
-  const key = `${CAPABILITY_PROBE_PREFIX}${randomUUID()}`;
+  const key = physicalKeyFor(writes.root, `${CAPABILITY_PROBE_PREFIX}${randomUUID()}`);
   const versions: Array<string | undefined> = [];
   let result: ConditionalWriteProbeResult;
   try {

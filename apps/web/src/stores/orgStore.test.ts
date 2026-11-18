@@ -277,7 +277,7 @@ describe('org store', () => {
   it('drops the previous org\'s enrollment defaults when the selection changes', () => {
     useOrgStore.setState({
       currentOrgId: 'org-1',
-      enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 25, maxTtlMinutes: 43200 }
+      enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 25, maxTtlMinutes: 43200, ttlConfigured: true, deviceCountConfigured: true }
     });
 
     // Showing org-1's cap while minting a link for org-2 would be a

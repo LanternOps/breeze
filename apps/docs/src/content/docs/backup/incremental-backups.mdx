@@ -1,0 +1,101 @@
+---
+title: How Incremental Backups Work
+description: "What a file or system image backup uploads on each run, when a run uploads everything again, what happens to interrupted runs, and how to read a job's Uploaded and Reused numbers."
+sidebar:
+  order: 4.5
+  label: "How Incremental Backups Work"
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+File backups and system image backups are incremental. After the first backup, a run uploads only the files that are new or have changed, and points to the copies already in storage for everything else. This page explains how a run decides what to upload, when it uploads everything again, and how to read the numbers a job shows.
+
+Hyper-V and SQL Server backups follow their own models, described in [Hyper-V](/backup/hyperv/) and [SQL Server](/backup/sql-server/). Nothing on this page applies to them.
+
+## What gets uploaded on each run
+
+When Breeze sends a backup to a device, it picks an earlier backup to build on, called the base. The device compares each file it is about to back up with that file's entry in the base:
+
+- **Different size, or not in the base:** the file is uploaded.
+- **Same size and same modification time:** the file is reused. The new backup points to the copy the base already stored, and nothing is uploaded.
+- **Same size, different modification time:** the device reads the file and compares its checksum with the stored one. If they match, the file is reused. If they differ, or the file cannot be read, it is uploaded.
+
+Reuse works on whole files. A large file that changed by a few bytes is uploaded again in full. Folders and symbolic links are always recorded fresh.
+
+A reused file is not copied inside the bucket. The new backup's file list points to the object an earlier backup uploaded, and that object stays in storage for as long as any backup still points to it.
+
+A system image backup uses the same rule for the files it walks, and builds only on an earlier system image backup. The system state that comes with a system image is not part of this comparison.
+
+### What a base must match
+
+A run builds only on an earlier backup that has all of these:
+
+- the same device and the same backup configuration
+- the same storage destination (provider, endpoint and bucket, or the same local path)
+- the same destination prefix
+- the same backup type (file or system image)
+- a status of **Completed** or **Completed with errors** (a **Partial** run is not used as a base)
+- not yet expired under retention, and not already removed by retention
+- taken after the agent's current installation began, if the device was re-enrolled
+- for agents that verify their base, a backup whose integrity Breeze has verified
+
+The device also checks the base it receives. It uploads everything if the base's file list does not match what the server recorded about it, or if the base was taken with a different list of folders to back up.
+
+## When a run uploads everything again
+
+A run that has no base uploads every file and shows a **Full** chip in the job list. The job detail names the reason:
+
+| Reason shown | What happened | What to do |
+|---|---|---|
+| First backup for this device and destination | No earlier backup of this device exists for this configuration and destination. | Nothing. The next run is incremental. |
+| The previous backup had expired under retention | The newest earlier backup was past its retention date. | If runs are further apart than the retention window, keep restore points longer. |
+| The backup destination changed | The configuration now points at a different bucket, endpoint or path. | Nothing, if the change was intended. Earlier backups stay where they were. |
+| The previous backup was a different type | The newest earlier backup was a file backup and this run is a system image, or the other way round. | Nothing. Each type builds on its own backups. |
+| No earlier backup finished successfully | The newest earlier backup failed, was cancelled, or ended **Partial**. | Fix what stopped the earlier runs (see [Troubleshooting](/backup/troubleshooting/)). |
+| The previous backup was removed by retention | Retention removed the backup this run would have built on, possibly while the run was being sent. | Nothing. The next run builds on this one. |
+| No earlier backup passed integrity verification | The agent only builds on a backup whose integrity Breeze verified, and none has been verified. | Check the earlier backups' integrity status in [Verification](/backup/verification/). |
+| The destination folder (prefix) changed | The destination prefix changed since the last backup. See [Storage Configuration](/backup/storage/). | Nothing, if the change was intended. |
+| The previous backup's storage location could not be read | The newest earlier backup records a storage location this version of Breeze cannot read. | Contact support if this keeps happening. |
+| The destination prefix is invalid | The configured prefix breaks the prefix rules, so the run has nowhere valid to write. | Correct the prefix in the storage configuration. |
+| An earlier backup was available, but no unchanged files could be reused | The run had a base but reused nothing. Common causes: the list of folders to back up changed, every file changed, or the device rejected the base. | If the folder list did not change, check the agent logs on the device. |
+| Reason not recorded (this backup ran before Breeze tracked it) | The run is older than the version of Breeze that records the reason. | Nothing. |
+
+A run also starts a new chain after the agent on the device is re-enrolled, because a backup taken by an earlier installation is never used as a base.
+
+## Interrupted and failed runs
+
+When a run is interrupted, the device keeps a checkpoint journal of the files it has already uploaded. The next run continues the same backup: it checks that each recorded file is unchanged and still stored correctly, then uploads only what is left. A journal is used for up to 7 days after the interrupted run started. After that, the backup starts over.
+
+A failed run leaves the objects it uploaded in the bucket so that a later run can continue from them. A run that is stopped without a journal, or that ends with no files, deletes what it uploaded.
+
+Breeze's storage cleanup is the only process that deletes backup objects, and it waits before doing so:
+
+- An object that no backup points to is deleted once it is more than 48 hours old.
+- The objects of an unfinished run are kept until the newest of them is 9 days old, which is longer than a journal can be resumed.
+
+## Reading a job's Uploaded and Reused numbers
+
+The **Size** column in the job list and on the device's **Backup** tab shows, for a run that ended **Completed**, **Completed with errors** or **Partial**:
+
+- **Uploaded:** the data this backup sent to storage. For a run that continued an interrupted backup, this includes what the interrupted attempt uploaded.
+- **Reused:** the data in unchanged files that this run pointed to instead of uploading.
+
+The two add up to **Protected**, the total size of everything the backup covers. Open a job to see all three under **What this run stored**, with the backup type (Incremental, or Full with its reason).
+
+For a run that failed or was cancelled, the column shows how much data it **processed before it stopped**. That figure includes files it checked and reused, so it is not what the run uploaded, and nothing from that run is a restore point.
+
+<Aside type="note">
+An older agent that does not report reuse shows **0 B reused** for every run, and its runs that had a base show as **Full** with the reason "no unchanged files could be reused". Update the agent to see real numbers.
+</Aside>
+
+## Why storage in the bucket can be larger than you expect
+
+**Storage Used** on the backup dashboard is an estimate built from backup results. For each device's chain of backups, it counts the oldest retained backup at its full size and each later backup at its uploaded size. See [Monitoring Backups](/backup/monitoring/).
+
+The bucket itself can hold more than that:
+
+- **Objects waiting for cleanup.** Objects no backup points to stay for 48 hours, and the objects of an unfinished run stay for up to 9 days.
+- **Failed runs.** A failed run's uploads stay so that the next run can continue from them.
+- **Data the estimate does not follow.** When retention removes an old backup, files that later backups still point to stay in storage. The estimate counts them only through the backup that uploaded them.
+
+Use your storage provider's own figures for billing.

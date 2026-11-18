@@ -67,6 +67,7 @@ function restApp(fixture: Fixture): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: fixture.deviceId,
       orgId: fixture.orgId,
       partnerId: fixture.partnerId,

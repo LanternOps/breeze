@@ -34,6 +34,9 @@ vi.mock('../services/commandQueue', () => ({
   queueCommand: vi.fn().mockResolvedValue({ id: 'cmd-123' })
 }));
 
+const { enqueueSecurityScan } = vi.hoisted(() => ({ enqueueSecurityScan: vi.fn(async () => 'job-1') }));
+vi.mock('../jobs/securityScanJobs', () => ({ enqueueSecurityScan }));
+
 vi.mock('../services/securityPosture', () => ({
   listLatestSecurityPosture: vi.fn(),
   getLatestSecurityPostureForDevice: vi.fn(),
@@ -52,6 +55,11 @@ vi.mock('../services/featureConfigResolver', () => ({
 vi.mock('../middleware/auth', () => ({
   // Step-up MFA gate on privileged routes; not under test here.
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // POST /scan/:deviceId passes the session's MFA state to startDeviceScan
+  // (#6263 W05-11); the sweep routes also read the principal kind.
+  hasSatisfiedMfa: vi.fn(() => false),
+  isInteractiveUserSession: vi.fn(() => true),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
@@ -298,6 +306,9 @@ describe('security routes', () => {
         }
       ]);
 
+      // #10057 gap 2: no Scan now already waiting on this device.
+      mockDeviceLookup([]);
+
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockResolvedValue(undefined)
       } as any);
@@ -314,7 +325,10 @@ describe('security routes', () => {
       expect(body.data.status).toBe('queued');
       expect(body.data.scanType).toBe('quick');
       expect(body.data.id).toBeDefined();
-      expect(queueCommand).toHaveBeenCalledTimes(1);
+      expect(body.data.queueExpiresAt).toEqual(expect.any(String));
+      // #10057 gap 2: queued for the capped claim, never dispatched directly.
+      expect(queueCommand).not.toHaveBeenCalled();
+      expect(enqueueSecurityScan).toHaveBeenCalledWith(body.data.id);
     });
 
     it('should return 404 for unknown device', async () => {
@@ -835,6 +849,7 @@ describe('security routes', () => {
     it('should return BE-9 recommendations with persisted action statuses', async () => {
       vi.mocked(listLatestSecurityPosture).mockResolvedValue([
         makePostureRow({
+          capturedAt: '2026-10-01T00:00:00.000Z',
           overallScore: 52,
           riskLevel: 'high',
           factors: {
@@ -862,16 +877,19 @@ describe('security routes', () => {
           severity: 'critical',
           status: 'detected',
           filePath: 'C:\\malware.exe',
-          detectedAt: new Date(),
+          detectedAt: new Date('2026-10-01T00:00:00.000Z'),
           resolvedAt: null
         }
       ]);
+      // Status is per org (#9641): the persisted action carries the org it was
+      // recorded against, and post-dates the last observation of the problem.
       mockAuditLogSelect([
         {
           action: 'security.recommendation.complete',
+          orgId: '11111111-1111-1111-1111-111111111111',
           resourceName: 'rec-enable-firewall',
           details: null,
-          timestamp: new Date()
+          timestamp: new Date('2026-10-02T00:00:00.000Z')
         }
       ]);
 

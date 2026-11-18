@@ -20,7 +20,7 @@ import {
   setOrgPriceOverride, removeOrgPriceOverride, setItemPrice, removeItemPrice,
   uploadCatalogItemImage, importCatalogItemImageFromUrl, catalogItemImagePath, deleteCatalogItemImageRequest,
   computeMargin, formatMargin, marginTone,
-  CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
+  CATALOG_TYPE_ORDER,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
   type CatalogBillingType, type CatalogBillingFrequency,
   type PriceBookEntry, type EnrichResult, type EnrichmentProvenance,
@@ -671,7 +671,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                   }`}
                   data-testid={`catalog-form-type-${catalogType}`}
                 >
-                  {CATALOG_TYPE_LABELS[catalogType]}
+                  {t(/* i18n-dynamic */ `catalogItemsTab.typeLabel.${catalogType}`)}
                 </button>
               ))}
             </div>

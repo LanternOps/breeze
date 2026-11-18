@@ -171,7 +171,9 @@ export async function deliverWorkstation(verificationId: string): Promise<void> 
   const claim = await system(() => claimPendingCommandForDelivery(row.commandId), 'callerVerification.deliverWorkstation.claim');
   if (claim.status !== 'claimed') return;
 
-  const outcome = await dispatchCommandToAgent(row.agentId, { id: row.commandId, type: CALLER_VERIFY_COMMAND, payload });
+  // #8318 §6.4: to the agent_id read IN the claim, not `row.agentId` read
+  // before it (a reattach or re-enroll may have committed since).
+  const outcome = await dispatchCommandToAgent(claim.agentId, { id: row.commandId, type: CALLER_VERIFY_COMMAND, payload });
   if (outcome.status === 'sent' || outcome.status === 'indeterminate') {
     // Indeterminate: the frame may have reached the agent. Releasing it could
     // show a second prompt; the result or the expiry settles it instead.

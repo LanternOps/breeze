@@ -44,6 +44,8 @@ export const EXTERNAL_BACKUP_STATUS_ENUM_VALUES = [
   'not_started',
   'no_backups',
   'unknown',
+  // 2027-01-22-205900-external-backup-status-paused.sql (Axcient PARKED).
+  'paused',
 ] as const;
 
 export const externalBackupStatusEnum = pgEnum(
@@ -178,7 +180,7 @@ export const backupProviderDevices = pgTable('backup_provider_devices', {
   accountType: varchar('account_type', { length: 20 })
     .notNull()
     .default('unknown')
-    .$type<'backup_manager' | 'm365' | 'unknown'>(),
+    .$type<'backup_manager' | 'm365' | 'gws' | 'unknown'>(),
   dataSources: text('data_sources').array().notNull().default(sql`'{}'::text[]`),
   status: externalBackupStatusEnum('status').notNull().default('unknown').$type<ExternalBackupStatus>(),
   vendorStatusCode: integer('vendor_status_code'),
@@ -205,6 +207,14 @@ export const backupProviderDevices = pgTable('backup_provider_devices', {
   pendingCondition: varchar('pending_condition', { length: 30 }),
   vendorCreatedAt: timestamp('vendor_created_at', { withTimezone: true }),
   vendorExpiresAt: timestamp('vendor_expires_at', { withTimezone: true }),
+  /**
+   * The provider's last boot check of a recovery point (Axcient AutoVerify).
+   * NULL for providers without one and for devices with no result; overwritten
+   * from every sync, so expired evidence clears. Evidence only, never status.
+   */
+  verifiedBootableAt: timestamp('verified_bootable_at', { withTimezone: true }),
+  verifiedBootable: boolean('verified_bootable'),
+  verifiedBootableFailedChecks: text('verified_bootable_failed_checks').array(),
   firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   /** Full vendor Settings map, for debugging and future columns. `excludedOpen` in the export policy. */

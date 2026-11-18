@@ -94,6 +94,20 @@ type Config struct {
 	// is a known, accepted gap for already-enrolled fleets at rollout, not a
 	// bug in agents enrolled after this field landed.
 	DeviceID string `mapstructure:"device_id"`
+	// WsFirstReconnectWindowSeconds bounds the random spread of the first
+	// WebSocket redial after a stable connection drops (W09, #8148). Default
+	// DefaultWsFirstReconnectWindowSeconds; 0..300 accepted. 0 (and anything
+	// <= 5) reproduces the 1-5 s spread shipped in #9145. An explicit 0 is
+	// meaningful, so the default is applied by Default() before the file is
+	// unmarshalled over it, never by "if zero" at the use site.
+	WsFirstReconnectWindowSeconds int `mapstructure:"ws_first_reconnect_window_seconds"`
+	// LoopRetryAfter makes the agent honour a server Retry-After at the loop
+	// level: httputil.Do returns it as RetryAt instead of sleeping into the
+	// caller's deadline, and the periodic heartbeat senders, the UniFi
+	// collector and the log shipper skip that route until then. Heartbeats
+	// and command results are never deferred. Default true; false restores
+	// per-request-only handling (W09, #8148).
+	LoopRetryAfter bool `mapstructure:"loop_retry_after"`
 	// BootstrapTokenFingerprint is the SHA-256 (hex) of the MSI bootstrap token
 	// that last enrolled this agent, or "" when no bootstrap token ever did
 	// (manual `enroll`, pre-#9540 fleets). The MSI BootstrapEnroll custom
@@ -121,6 +135,7 @@ type Config struct {
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`
 	BackupS3Bucket           string   `mapstructure:"backup_s3_bucket"`
 	BackupS3Region           string   `mapstructure:"backup_s3_region"`
+	BackupS3Prefix           string   `mapstructure:"backup_s3_prefix"` // Key prefix: snapshots go under <prefix>/snapshots/ (empty = bucket root)
 	BackupS3AccessKey        string   `mapstructure:"backup_s3_access_key"`
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
@@ -151,6 +166,12 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
+	// DesktopWaylandHelper turns on the Linux per-session desktop helper
+	// (#12117): root spawns an unprivileged helper into a Wayland session
+	// with systemd-run. Default false; with it off the agent never
+	// constructs the helper manager. Linux only.
+	DesktopWaylandHelper bool `mapstructure:"desktop_wayland_helper"`
+
 	// PAMEnabled opts into dormant elevation-account provisioning at startup.
 	// Default false. After reconciliation, organization PAM policy is authoritative:
 	// an enabled policy provisions the account even when this flag is false.
@@ -164,7 +185,8 @@ type Config struct {
 	// via agent.yaml. Managed PAM v2 uses its own launch path.
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
-	// Concurrency limits
+	// Concurrency limits. Both size the shared command pool and, separately,
+	// the backup verification lane (Heartbeat.verificationPool).
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`
 
@@ -388,6 +410,14 @@ const DefaultPatchScanIntervalHours = 24
 // and that invariant is only enforceable if both sides read one constant.
 const DefaultHeartbeatIntervalSeconds = 60
 
+// DefaultWsFirstReconnectWindowSeconds is the default spread of the first
+// WebSocket redial after a stable connection drops; MaxWsFirstReconnectWindowSeconds
+// is the accepted ceiling (W09, #8148).
+const (
+	DefaultWsFirstReconnectWindowSeconds = 30
+	MaxWsFirstReconnectWindowSeconds     = 300
+)
+
 func Default() *Config {
 	return &Config{
 		HeartbeatIntervalSeconds:     DefaultHeartbeatIntervalSeconds,
@@ -409,11 +439,19 @@ func Default() *Config {
 		AuditMaxSizeMB:               50,
 		AuditMaxBackups:              3,
 
+		// W09 (#8148): defaults live here, before the file is unmarshalled over
+		// them, so an absent key keeps them and an explicit 0/false is honoured.
+		WsFirstReconnectWindowSeconds: DefaultWsFirstReconnectWindowSeconds,
+		LoopRetryAfter:                true,
+
 		ECH:              true,
 		ECHServerEnabled: true,
 
-		AutoUpdate:                 true,
-		PatchExcludeFeatureUpdates: true,
+		AutoUpdate: true,
+		// Windows feature releases are decided by the device's update ring
+		// (heartbeat feature_update_settings); this key is only an operator kill
+		// switch that excludes them regardless of the ring.
+		PatchExcludeFeatureUpdates: false,
 		PatchMinDiskSpaceGB:        2.0,
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,
@@ -514,6 +552,8 @@ func loadLocked(cfgFile string) (*Config, error) {
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("BREEZE")
 
+	// The bytes of agent.yaml as read, for the reattached-identity pin below.
+	var fileBytes []byte
 	if trustedFile != "" {
 		data, err := readTrustedMachineConfigFileFn(trustedFile)
 		switch {
@@ -526,16 +566,22 @@ func loadLocked(cfgFile string) (*Config, error) {
 			if err := viper.ReadConfig(bytes.NewReader(data)); err != nil {
 				return nil, fmt.Errorf("reading %s: %w", trustedFile, err)
 			}
+			fileBytes = data
 		}
 	} else if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
+	} else if used := viper.ConfigFileUsed(); used != "" {
+		// The same file viper just parsed (this branch has no trust check).
+		fileBytes, _ = os.ReadFile(used)
 	}
 
 	if err := viper.Unmarshal(cfg); err != nil {
 		return nil, err
 	}
+	// #8318 — a reattached identity in agent.yaml wins over BREEZE_* values.
+	pinReattachedIdentity(cfg, fileBytes)
 
 	// Accept watchdog.max_heartbeat_staleness_sec (in seconds) as documented in
 	// issue #799 — coerce to the canonical Duration field. The alias mechanism
@@ -870,10 +916,22 @@ func SaveTo(cfg *Config, cfgFile string) error {
 // SaveEnrollment is SaveTo for a freshly enrolled identity: cfg's agent,
 // watchdog and helper tokens replace whatever is on disk, and any staged
 // pending_* set is dropped — it belonged to the previous identity and can
-// never be promoted against the new one.
+// never be promoted against the new one. So is a staged reattach set
+// (#8318): its phase 1 and confirm name the previous agent id.
+//
+// The reattach set goes first, and the enrollment fails if it cannot be
+// removed: a confirmed set left beside the new identity would write the
+// reattached identity over it on the next start. (ApplyRebindIdentity also
+// refuses an agent.yaml naming neither the set's source nor its target, so
+// a crash between the two steps cannot undo the enrollment either.)
 func SaveEnrollment(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
+	if err := RemoveRebindStaged(cfgFile); err != nil {
+		return fmt.Errorf("removing the staged reattach set of the previous identity: %w", err)
+	}
+	// A new enrollment is no reattach: the environment may pin it again.
+	viper.Set(reattachIntentKey, "")
 	return saveToLocked(cfg, cfgFile, credentialsFromConfig)
 }
 
@@ -1008,17 +1066,19 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	}
 
 	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
+	agentID, deviceID := cfg.AgentID, cfg.DeviceID
 	if identity == identityFromDisk {
 		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
+		agentID, deviceID = resolveReattachedIDsForSave(cfgPath, agentID, deviceID)
 	}
 
-	viper.Set("agent_id", cfg.AgentID)
+	viper.Set("agent_id", agentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
 	viper.Set("ownership_epoch", ownershipEpoch)
-	viper.Set("device_id", cfg.DeviceID)
+	viper.Set("device_id", deviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
@@ -1275,11 +1335,15 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	// Best-effort directory fsync — durable on POSIX, no-ops or errors on
-	// Windows. Log failures so a FS that's lost the ability to fsync metadata
-	// (e.g. went read-only, ENOSPC on the inode table) doesn't silently
-	// degrade durability across every SaveTo.
-	dir := filepath.Dir(path)
+	syncConfigDir(filepath.Dir(path))
+	return nil
+}
+
+// syncConfigDir is a best-effort directory fsync after a rename or a removal
+// in it — durable on POSIX, no-ops or errors on Windows. Failures are logged
+// so a FS that's lost the ability to fsync metadata (e.g. went read-only,
+// ENOSPC on the inode table) doesn't silently degrade durability.
+func syncConfigDir(dir string) {
 	if d, err := os.Open(dir); err == nil {
 		if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
 			log.Warn("config dir fsync failed", "dir", dir, "error", err.Error())
@@ -1288,7 +1352,6 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	} else if runtime.GOOS != "windows" {
 		log.Warn("config dir open for fsync failed", "dir", dir, "error", err.Error())
 	}
-	return nil
 }
 
 // isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.

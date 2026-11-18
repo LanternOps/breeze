@@ -9,6 +9,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import { clearTenantInstallerMaterial } from '../../services/edrProviders/installerMaterial';
 import { listNameSuggestions, RemapEdrTenantError, remapEdrTenant } from '../../services/edrProviders/mapping';
 import { enqueueEdrSync } from '../../jobs/edrProviderSync';
 import {
@@ -103,12 +104,16 @@ edrTenantRoutes.put(
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(hashtext('edr-provider-sync'), hashtext(${tenant.connectionId}))`,
         );
-        return remapEdrTenant(
+        const remapped = await remapEdrTenant(
           tx,
           { partnerId: gate.partnerId, userId: auth.user?.id ?? null },
           id,
           orgId,
         );
+        // An unmapped tenant installs nothing. Moving it to another org keeps the
+        // material: the vendor company, and so the link, is unchanged.
+        if (orgId === null) await clearTenantInstallerMaterial(tx, { tenantId: id });
+        return remapped;
       });
     } catch (error) {
       if (error instanceof RemapEdrTenantError) {

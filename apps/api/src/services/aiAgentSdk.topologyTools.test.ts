@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // this record, so the terminal return of a won release is asserted against it.
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
-import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { WORK_TURN_LIMIT_REFUSAL, createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { checkTenantToolRateLimit } from './toolSources/guardrails';
@@ -80,11 +80,11 @@ vi.mock('./aiAgent', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 
@@ -111,6 +111,16 @@ vi.mock('./toolSources/guardrails', async (importOriginal) => ({
 }));
 
 const mockWriteAuditEvent = vi.fn();
+// #9854: createSessionPreToolUse validates input against the full tool schema
+// before any approval. This suite's fixtures use placeholder ids/arguments the
+// real schemas reject, and it pins behaviour downstream of that check, so the
+// validator is stubbed to "valid". The check itself is pinned in
+// aiAgentSdk.test.ts ('#9854: input is validated before any approval').
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()),
+  validateToolInput: () => ({ success: true }),
+}));
+
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: (...args: unknown[]) => mockWriteAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
@@ -408,12 +418,26 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
     const session = makeActiveSession({ topologyInvestigation: undefined, topologyTurnSealed: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
     expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' })).toEqual({ allowed: false, error: 'This topology investigation has ended.' });
     expect(checkGuardrails).not.toHaveBeenCalled();
+    // #10411: the refusal leaves its one `refused` ledger row (no output).
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: 'This topology investigation has ended.' }));
+    expect(values.mock.calls[0]![0]).not.toHaveProperty('toolOutput');
     await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'tool-use-1');
-    expect(values).not.toHaveBeenCalled();
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(values.mock.calls)).not.toContain('LATE-RAW-OUTPUT');
     expect(session.eventBus.publish).not.toHaveBeenCalled();
     // The late call ran, so it is no longer pending: a late SDK echo of its
     // result must not reach the dropped-call fallback, which would persist it (#7931).
     expect(session.toolUseIdQueue).toEqual([]);
+  });
+
+  it('a turn stopped at its work-turn limit refuses further tool calls before any gate or approval (#10400)', async () => {
+    const values = mockInsertValues();
+    const session = makeActiveSession({ workTurnLimitStopped: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' }))
+      .toEqual({ allowed: false, error: WORK_TURN_LIMIT_REFUSAL });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: WORK_TURN_LIMIT_REFUSAL }));
   });
 
   it('claims the call by its SDK id when the result beats its stream event (#7931)', async () => {

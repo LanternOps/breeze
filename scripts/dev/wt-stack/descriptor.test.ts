@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
+import { writeDescriptor, readDescriptor, readRecordedProject, removeDescriptor, type StackDescriptor } from './descriptor';
+import { descriptorPath } from './project';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
@@ -28,5 +29,35 @@ describe('descriptor round-trip', () => {
 
   it('throws a clear error when the descriptor is missing', () => {
     expect(() => readDescriptor(dir)).toThrow(/No stack descriptor.*wt-stack up/);
+  });
+});
+
+describe('readRecordedProject (#9864)', () => {
+  it('returns the project up recorded', () => {
+    writeDescriptor(dir, sample);
+    expect(readRecordedProject(dir)).toBe('breeze-wt-feat-x');
+  });
+
+  it('returns null when there is no descriptor', () => {
+    expect(readRecordedProject(dir)).toBeNull();
+  });
+
+  it('throws on a corrupt descriptor rather than guessing a project', () => {
+    writeFileSync(descriptorPath(dir), '{nope', 'utf8');
+    expect(() => readRecordedProject(dir)).toThrow(/not valid JSON/);
+  });
+
+  it('throws when the descriptor has no project', () => {
+    writeFileSync(descriptorPath(dir), '{}', 'utf8');
+    expect(() => readRecordedProject(dir)).toThrow(/no "project"/);
+  });
+});
+
+describe('removeDescriptor', () => {
+  it('deletes the descriptor and tolerates it already being gone', () => {
+    writeDescriptor(dir, sample);
+    removeDescriptor(dir);
+    expect(existsSync(descriptorPath(dir))).toBe(false);
+    expect(() => removeDescriptor(dir)).not.toThrow();
   });
 });

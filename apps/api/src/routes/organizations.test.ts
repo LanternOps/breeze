@@ -99,6 +99,8 @@ vi.mock('../db', () => {
     withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
     runOutsideDbContext: vi.fn((fn: any) => fn()),
     runAfterDbContextExit: siteDelete.runAfterDbContextExit,
+    // clearPartnerScopePolicyCache (cluster invalidator, #8636) announces after commit.
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
     // tenantOffboarding's inCallerOrSystemDbContext (#2877) consults the
     // ambient-context metadata at runtime on the DELETE partner/org paths
     // (abort*Offboarding); undefined = no ambient context → fresh system
@@ -649,15 +651,24 @@ describe('organization routes', () => {
         return next();
       });
 
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              { id: 'site-1', orgId, name: 'HQ' }
-            ])
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'site-1', orgId, name: 'HQ' }
+              ])
+            })
           })
-        })
-      } as any);
+        } as any)
+        // GET /sites/:id also runs the grouped device-count queries (#9792).
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
 
       const res = await app.request('/orgs/sites/site-1', {
         method: 'GET',

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { notifyApprovalChanged, useTicketApprovalSummary } from '../../lib/ticketApproval';
 import TicketBudgetCard from './TicketBudgetCard';
@@ -8,9 +9,24 @@ import TicketApprovalsPanel from './TicketApprovalsPanel';
  * the budget card and the approvals panel. Mutations broadcast the billing
  * event, which reloads this summary, the time list and the workbench feed.
  */
-export default function TicketApprovalRail({ ticketId }: { ticketId: string }) {
+export default function TicketApprovalRail({ ticketId, readOnly = false, onAvailabilityChange }: {
+  ticketId: string;
+  /** Reports whether approvals apply to this ticket (a 403/404 summary means
+   *  they do not) and how many requests are pending, for a section summary. */
+  onAvailabilityChange?: (state: { available: boolean; pending: number }) => void;
+  /** #10073: the ticket is a merged tombstone; the budget PATCH and every
+   *  approval write answer 409 TICKET_MERGED. Shown for reading only. */
+  readOnly?: boolean;
+}) {
   const { t } = useTranslation('tickets');
-  const { summary, error, reload } = useTicketApprovalSummary(ticketId);
+  const { summary, loading, error, reload } = useTicketApprovalSummary(ticketId);
+  const onAvailabilityRef = useRef(onAvailabilityChange);
+  onAvailabilityRef.current = onAvailabilityChange;
+  const available = loading || Boolean(summary) || error;
+  const pending = summary?.requests.filter((r) => r.status === 'pending').length ?? 0;
+  useEffect(() => {
+    onAvailabilityRef.current?.({ available, pending });
+  }, [available, pending]);
   if (!summary && !error) return null;
   return (
     <>
@@ -33,8 +49,8 @@ export default function TicketApprovalRail({ ticketId }: { ticketId: string }) {
       )}
       {summary && (
         <>
-          <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} />
-          <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} />
+          <TicketBudgetCard ticketId={ticketId} summary={summary} onChanged={notifyApprovalChanged} readOnly={readOnly} />
+          <TicketApprovalsPanel summary={summary} onChanged={notifyApprovalChanged} readOnly={readOnly} />
         </>
       )}
     </>

@@ -12,6 +12,17 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParseDetectionRules(t *testing.T) {
+	t.Run("service_running reads serviceName", func(t *testing.T) {
+		got := parseDetectionRules(map[string]any{
+			"detectionRules": []any{
+				map[string]any{"type": "service_running", "serviceName": "ctrld"},
+			},
+		})
+		if len(got) != 1 || got[0].Type != "service_running" || got[0].ServiceName != "ctrld" {
+			t.Fatalf("got %+v, want one service_running rule for ctrld", got)
+		}
+	})
+
 	t.Run("absent key returns nil", func(t *testing.T) {
 		got := parseDetectionRules(map[string]any{})
 		if got != nil {

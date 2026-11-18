@@ -10,7 +10,7 @@
  * auth; `/__bz/ping`; reserved `/__bz/*` → 404; gates; budgets; dispatch.
  */
 import { Hono, type Context } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import type { ContentfulStatusCode, UnofficialStatusCode } from 'hono/utils/http-status';
 import { getCookie, generateCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
@@ -29,7 +29,7 @@ import {
   dispatchTunnelHttpRequest, loadOwnedTunnelSession, runTunnelRequestGates, signTunnelCookie, verifyTunnelCookie,
   type TunnelDispatchOutcome,
 } from './tunnelHttpCore';
-import { TUNNEL_ENTER_PATH, admitTunnelHostRequest } from './tunnelHostAdmission';
+import { TUNNEL_ENTER_PATH, admitTunnelHostRequest, isReservedTunnelPath } from './tunnelHostAdmission';
 import {
   TUNNEL_FRAME_COOKIE, TUNNEL_TAB_COOKIE, buildHostModeResponseHeaders, buildHostModeUpstreamHeaders, hostModeCsp,
 } from './tunnelHostHeaders';
@@ -86,34 +86,6 @@ async function authenticate(c: Context, tunnelId: string): Promise<{ userId: str
     if (userId) return { userId, context };
   }
   return null;
-}
-
-/**
- * `/__bz` and everything under it, however it is spelled: case, ASCII
- * percent-escapes (decoded repeatedly — `_`, `b`, `z` and `/` are all ASCII),
- * backslashes, repeated slashes and dot segments. Non-ASCII or stray `%`
- * sequences are left alone so a device path like `/100%` still works. A path
- * that keeps changing after a few rounds is treated as reserved.
- */
-const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
-function isReservedPath(rawPathname: string): boolean {
-  let current = rawPathname;
-  for (let round = 0; round < 4; round += 1) {
-    // Collapse `\` and `//` first: `new URL('//__bz/x', base)` would read
-    // `__bz` as a HOST, not a path segment.
-    const flattened = current.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
-    let normalized: string;
-    try {
-      normalized = new URL(`http://tunnel.invalid${flattened.startsWith('/') ? '' : '/'}${flattened}`).pathname.toLowerCase();
-    } catch {
-      return true;
-    }
-    if (normalized === '/__bz' || normalized.startsWith('/__bz/')) return true;
-    const decoded = current.replace(ASCII_ESCAPE, (_m, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if (decoded === current) return false;
-    current = decoded;
-  }
-  return true;
 }
 
 /**
@@ -196,6 +168,8 @@ function isServableStatus(status: unknown): status is number {
   return typeof status === 'number' && Number.isInteger(status) && status >= 200 && status <= 599;
 }
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+/** Logged status for a request whose client left before it was served (nginx's convention). */
+const CLIENT_CLOSED_REQUEST = 499 as UnofficialStatusCode;
 
 tunnelHostRoutes.all('*', async (c) => {
   const config = getTunnelOriginConfig();
@@ -222,7 +196,7 @@ tunnelHostRoutes.all('*', async (c) => {
   if (url.pathname === TUNNEL_ENTER_PATH) return handleEnter(c, tunnelId, config.frameAncestor);
   const auth = await authenticate(c, tunnelId);
   if (url.pathname === PING_PATH) return auth ? c.body(null, 204) : authFailed(c);
-  if (isReservedPath(url.pathname)) return c.text('Not found', 404);
+  if (isReservedTunnelPath(url.pathname)) return c.text('Not found', 404);
   if (!auth) return authFailed(c);
 
   const gate = await runTunnelRequestGates(tunnelId, auth.userId);
@@ -243,11 +217,28 @@ tunnelHostRoutes.all('*', async (c) => {
     c.header('retry-after', String(rate.retryAfterSeconds));
     return c.text('Too many requests', 429);
   }
-  const slot = acquireTunnelHttpSlot(budgetKeys);
+  // A full tunnel queues briefly for a slot (bounded wait and depth, see
+  // TUNNEL_HTTP_QUEUE_LIMITS); a full user or agent ceiling refuses at once.
+  // The request signal aborts when the client disconnects, which gives up the
+  // queue place.
+  const signal = c.req.raw.signal;
+  const slot = await acquireTunnelHttpSlot(budgetKeys, { signal });
   if (!slot.ok) {
-    recordTunnelHttpOutcome('host', 'rate_limited');
+    if (slot.reason === 'aborted') {
+      // Nobody is reading this response; not a budget refusal.
+      recordTunnelHttpOutcome('host', 'client_aborted');
+      return c.body(null, CLIENT_CLOSED_REQUEST);
+    }
+    recordTunnelHttpOutcome('host',
+      slot.reason === 'queue_full' ? 'queue_full' : slot.reason === 'timeout' ? 'queue_timeout' : 'rate_limited');
     c.header('retry-after', '1');
     return c.text('Too many concurrent requests', 429);
+  }
+  if (signal.aborted) {
+    // Granted a slot just as the client left: hand it straight on.
+    slot.release();
+    recordTunnelHttpOutcome('host', 'client_aborted');
+    return c.body(null, CLIENT_CLOSED_REQUEST);
   }
   let outcome: TunnelDispatchOutcome;
   try {

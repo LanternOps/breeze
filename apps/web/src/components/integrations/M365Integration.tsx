@@ -342,7 +342,7 @@ export default function M365Integration({
         </h3>
         <p className="mb-4 text-sm text-muted-foreground">
           {t("m365Integration.enterTheTenantIdAppClientIdAnd")}
-          {!isConnected && " Saving requires MFA verification."}
+          {!isConnected && t("m365Integration.savingRequiresMfa")}
         </p>
 
         <details className="mb-4 rounded-md border bg-muted/40 p-3 text-sm">
@@ -474,8 +474,8 @@ export default function M365Integration({
                 onChange={(e) => setClientSecret(e.target.value)}
                 placeholder={
                   isConnected
-                    ? "•••••••••• (stored, encrypted)"
-                    : "app client secret"
+                    ? t("m365Integration.clientSecretStoredPlaceholder")
+                    : t("m365Integration.clientSecretPlaceholder")
                 }
                 className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm outline-hidden focus:ring-2 focus:ring-primary/30"
               />

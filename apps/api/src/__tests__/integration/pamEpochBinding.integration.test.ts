@@ -87,6 +87,7 @@ function bindingApp(seed: SeededMovedDevice, orgId: string): Hono {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: seed.deviceId,
       orgId,
       partnerId: seed.partnerId,
@@ -546,6 +547,7 @@ describe('result path — historical epochs write nothing', () => {
     const app = new Hono();
     app.use('/agents/*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: seed.deviceId, orgId: currentOrg(seed, path), partnerId: seed.partnerId,
         agentId: agentIdOf(seed), siteId: seed.orgs.B!.siteId, role: 'agent',
       });

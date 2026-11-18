@@ -310,4 +310,16 @@ describe('ConnectionDrawer', () => {
       expect(screen.queryByTestId('ai-connection-openai-base-url-error')).toBeNull();
     });
   });
+
+  // The Drawer primitive adds no body padding or scroll: the caller owns both,
+  // and the footer must sit outside the scroll area so Save is never clipped.
+  it('pads and scrolls its body, with the actions in a footer outside it', () => {
+    render(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const body = screen.getByTestId('ai-connection-drawer-body');
+    expect(body.className).toMatch(/\boverflow-y-auto\b/);
+    expect(body.className).toMatch(/\bpx-5\b/);
+    const footer = screen.getByTestId('ai-connection-drawer-footer');
+    expect(body.contains(footer)).toBe(false);
+    expect(footer.contains(screen.getByTestId('ai-connection-save'))).toBe(true);
+  });
 });

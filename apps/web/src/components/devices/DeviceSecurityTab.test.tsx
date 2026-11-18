@@ -159,3 +159,53 @@ describe('DeviceSecurityTab', () => {
     });
   });
 });
+
+/**
+ * #10057 gap 2: a Scan now waits in `queued` for a free scan slot. The list
+ * says so, shows when it expires, and lets the user cancel it.
+ */
+describe('DeviceSecurityTab — queued Scan now (#10057 gap 2)', () => {
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  let scans: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scans = [
+      { id: 'scan-q', scanType: 'full', status: 'queued', startedAt: new Date().toISOString(), finishedAt: null, threatsFound: 0, queueExpiresAt: expiresAt },
+      { id: 'scan-c', scanType: 'quick', status: 'cancelled', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), threatsFound: 0, queueExpiresAt: expiresAt },
+      { id: 'scan-e', scanType: 'quick', status: 'expired', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), threatsFound: 0, queueExpiresAt: expiresAt },
+    ];
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.startsWith(`/security/scans/${deviceId}`) && method === 'GET') return makeJsonResponse({ data: scans });
+      if (url.startsWith(`/security/threats/${deviceId}`) && method === 'GET') return makeJsonResponse({ data: [] });
+      if (url === '/security/scans/scan-q/cancel' && method === 'POST') {
+        scans = scans.map((s) => (s.id === 'scan-q' ? { ...s, status: 'cancelled' } : s));
+        return makeJsonResponse({ data: { id: 'scan-q', status: 'cancelled' } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+  });
+
+  it('shows a waiting Scan now as waiting for a scan slot, with cancelled and expired labelled', async () => {
+    render(<DeviceSecurityTab deviceId={deviceId} orgId={orgId} />);
+    await screen.findByTestId('scan-waiting-scan-q');
+    expect(screen.getByTestId('scan-waiting-scan-q').textContent).toMatch(/waiting for a free scan slot/i);
+    expect(screen.getByText('Cancelled')).toBeTruthy();
+    expect(screen.getByText('Expired')).toBeTruthy();
+    // Only the waiting scan can be cancelled.
+    expect(screen.getByTestId('scan-cancel-scan-q')).toBeTruthy();
+    expect(screen.queryByTestId('scan-cancel-scan-c')).toBeNull();
+  });
+
+  it('cancel posts to the scan cancel route and refreshes the list', async () => {
+    render(<DeviceSecurityTab deviceId={deviceId} orgId={orgId} />);
+    fireEvent.click(await screen.findByTestId('scan-cancel-scan-q'));
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/security/scans/scan-q/cancel', expect.objectContaining({ method: 'POST' }));
+    });
+    await waitFor(() => expect(screen.queryByTestId('scan-cancel-scan-q')).toBeNull());
+  });
+});
+

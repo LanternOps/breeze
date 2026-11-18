@@ -88,7 +88,7 @@ func startRunForReprobeTest(t *testing.T, canCaptureAtConnect *atomic.Bool) (*Cl
 		runTCCCheckLoop, detectCapabilitiesFn, captureReprobeGOOS = restoreTCC, restoreDetect, restoreGOOS
 	})
 	tccReturned := make(chan struct{})
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, _ bool) {
 		<-stop
 		close(tccReturned)
 	}
@@ -98,8 +98,8 @@ func startRunForReprobeTest(t *testing.T, canCaptureAtConnect *atomic.Bool) (*Cl
 	}
 
 	capsCh, drop := serveHandshakeAndCollectCaps(t, ln)
-	client := NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser,
-		ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+	client := trustTestServer(NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser,
+		ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession))
 	done := make(chan struct{})
 	go func() {
 		_ = client.Run()

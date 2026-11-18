@@ -74,7 +74,7 @@ describe('contract deliverables route (#5573 W01)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'd1', contractId: CONTRACT }] });
     expect(listDeliverables).toHaveBeenCalledWith(
-      ORG, { contractId: CONTRACT }, { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] },
+      ORG, { contractId: CONTRACT }, { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'], evidenceLabelAccess: { documents: false, reports: false, agreements: false } },
     );
   });
 

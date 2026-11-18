@@ -7,6 +7,8 @@ import {
   enrollSchema,
   heartbeatSchema,
   submitEventLogsSchema,
+  eventLogRowSchema,
+  EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER,
 } from './schemas';
 
 // Build a minimal valid event-log entry the schema accepts.
@@ -88,6 +90,16 @@ describe('heartbeatSchema — PAM reconciliation telemetry', () => {
     });
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data.securityCapabilities?.pamReconciliationResetProtocolVersion).toBe(1);
+  });
+
+  // #8928
+  it('accepts the PAM user-notify capability and drops a malformed one without failing the beat', () => {
+    const ok = heartbeatSchema.safeParse({ ...minimal, securityCapabilities: { pamUserNotifyProtocolVersion: 1 } });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.securityCapabilities?.pamUserNotifyProtocolVersion).toBe(1);
+    const bad = heartbeatSchema.safeParse({ ...minimal, securityCapabilities: { pamUserNotifyProtocolVersion: 'yes' } });
+    expect(bad.success).toBe(true);
+    if (bad.success) expect(bad.data.securityCapabilities?.pamUserNotifyProtocolVersion).toBeUndefined();
   });
 
   it('accepts exact bounded reconciliation status', () => {
@@ -271,36 +283,61 @@ describe('helperLifecycleMode — heartbeatSchema (tolerant)', () => {
   });
 });
 
-describe('submitEventLogsSchema — server-side message length cap (#2642)', () => {
+describe('eventLogRowSchema — server-side message length cap (#2642)', () => {
   const MAX = 2000;
 
   it('accepts a message at the 2000-char cap', () => {
-    const parsed = submitEventLogsSchema.safeParse({
-      events: [makeEvent('a'.repeat(MAX))],
-    });
-    expect(parsed.success).toBe(true);
+    expect(eventLogRowSchema.safeParse(makeEvent('a'.repeat(MAX))).success).toBe(true);
   });
 
   it('rejects a message one char over the cap — an unbounded agent message can no longer reach device_event_logs', () => {
-    const parsed = submitEventLogsSchema.safeParse({
-      events: [makeEvent('a'.repeat(MAX + 1))],
-    });
+    const parsed = eventLogRowSchema.safeParse(makeEvent('a'.repeat(MAX + 1)));
     // Mutation guard: this reds if the `.max()` is dropped from `message`.
     expect(parsed.success).toBe(false);
   });
 
-  it('rejects the whole batch when any single event message is oversized', () => {
-    const parsed = submitEventLogsSchema.safeParse({
-      events: [makeEvent('ok'), makeEvent('a'.repeat(MAX + 1)), makeEvent('ok')],
-    });
-    expect(parsed.success).toBe(false);
+  it.each(['', '   '])('coerces blank message %j to the placeholder', (message) => {
+    expect(EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER).toBe('(no message text)');
+    expect(eventLogRowSchema.parse(makeEvent(message)).message).toBe(EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER);
   });
 
-  it('still enforces the pre-existing min(1) — an empty message is rejected', () => {
-    const parsed = submitEventLogsSchema.safeParse({
-      events: [makeEvent('')],
-    });
-    expect(parsed.success).toBe(false);
+  it('accepts mixed valid and invalid rows in the envelope for handler validation', () => {
+    const events = [makeEvent('ok'), makeEvent('a'.repeat(MAX + 1)), makeEvent('')];
+    expect(submitEventLogsSchema.safeParse({ events }).success).toBe(true);
+  });
+
+  it('rejects an envelope with 5001 entries', () => {
+    const events = Array.from({ length: 5001 }, () => makeEvent('ok'));
+    expect(submitEventLogsSchema.safeParse({ events }).success).toBe(false);
+  });
+});
+
+describe('eventLogRowSchema — source is truncated to the varchar(255) column (#11279)', () => {
+  const withSource = (source: string) => ({ ...makeEvent('m'), source });
+
+  it('keeps a source of exactly 255 characters untouched', () => {
+    expect(eventLogRowSchema.parse(withSource('s'.repeat(255))).source).toBe('s'.repeat(255));
+  });
+
+  it('truncates a 300-character source to 255 instead of rejecting the row', () => {
+    const parsed = eventLogRowSchema.safeParse(withSource('s'.repeat(300)));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.source).toBe('s'.repeat(255));
+  });
+
+  it('truncates on code-point boundaries, never splitting a surrogate pair', () => {
+    const parsed = eventLogRowSchema.parse(withSource('😀'.repeat(300)));
+    expect(Array.from(parsed.source)).toHaveLength(255);
+    expect(parsed.source).toBe('😀'.repeat(255));
+  });
+
+  it('leaves an astral source untouched when it is over 255 UTF-16 units but within 255 code points', () => {
+    const source = '😀'.repeat(200);
+    expect(eventLogRowSchema.parse(withSource(source)).source).toBe(source);
+  });
+
+  it('still rejects an empty source', () => {
+    expect(eventLogRowSchema.safeParse(withSource('')).success).toBe(false);
   });
 });
 

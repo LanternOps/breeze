@@ -89,6 +89,7 @@ export async function unlinkDevices(exec: DbExecutor, deviceIds: string[]): Prom
   if (deviceIds.length === 0) return;
   for (const id of deviceIds) {
     await exec
+      // own-device-row-allowlisted: link-group-unlink
       .update(devices)
       .set({ linkGroupId: null, linkGroupRole: null, updatedAt: new Date() })
       .where(eq(devices.id, id));

@@ -2,7 +2,9 @@ import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
 import { partners } from './orgs';
 
-export type DevicePoolAssignmentEventType = 'enrolled' | 'assigned' | 'expired' | 'purged';
+// 'reattached' (#8318 §4.5): a parked source retired in place by a reattach
+// confirm — the second explicit exit beside 'assigned'.
+export type DevicePoolAssignmentEventType = 'enrolled' | 'assigned' | 'expired' | 'purged' | 'reattached';
 export type DevicePoolAssignmentMethod = 'manual' | 'bulk';
 
 /**
@@ -31,7 +33,7 @@ export const devicePoolAssignmentEvents = pgTable('device_pool_assignment_events
   index('device_pool_assignment_events_device_idx').on(table.deviceId),
   index('device_pool_assignment_events_deploy_key_idx').on(table.deployKeyId),
   check('device_pool_assignment_events_event_type_chk',
-    sql`${table.eventType} IN ('enrolled', 'assigned', 'expired', 'purged')`),
+    sql`${table.eventType} IN ('enrolled', 'assigned', 'expired', 'purged', 'reattached')`),
   check('device_pool_assignment_events_method_chk',
     sql`${table.assignmentMethod} IS NULL OR ${table.assignmentMethod} IN ('manual', 'bulk')`),
   check('device_pool_assignment_events_duration_chk',

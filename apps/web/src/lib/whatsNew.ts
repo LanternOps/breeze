@@ -18,6 +18,71 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.129.0',
+    date: '2026-11-14',
+    title: 'Ticket triage board, backup destination alerts and security hardening',
+    highlights: [
+      'Work tickets on a triage board and open one in a focus view without leaving the workspace.',
+      'Get notified when a backup destination keeps failing.',
+      'See background work at a glance on the new System Health tab.',
+      'Set a tool profile and context window for each AI model.',
+      'Security hardening across sign-in, backup and remote access. Local backup destinations must now be private to the agent, and network shares are no longer supported as local destinations: read the upgrade notes before updating agents.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.128.0',
+    date: '2026-11-10',
+    title: 'Customer portal sign-up options, Wisp check-ins and standing instructions',
+    highlights: [
+      'Give contacts portal access from the Contacts list, one at a time or in bulk, and review access requests in one queue.',
+      'Verify customer domains and choose how each organization signs in to the portal. Sign in with Microsoft is available where configured.',
+      'Wisp can schedule check-ins, wait for an event, and follow standing instructions you give it in chat.',
+      'Upload an installer once to a partner-wide software package and use it across every organization.',
+      'Add an authenticator app as a backup next to your passkey.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.127.0',
+    date: '2026-11-07',
+    title: 'Backup browsing at any size, SLA reports, smarter alerts and AI approvals',
+    highlights: [
+      'Browse, search and restore single folders from any cloud backup snapshot, even very large ones.',
+      'See running backups live on the device page, with a plain reason when a backup fails.',
+      'New SLA performance report you can schedule and deliver to customers.',
+      'Set alert re-arm and auto-resolve defaults once for the partner or an organization.',
+      'Ask Breeze AI to run patch plans, check backups and manage org settings, with approvals.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.126.0',
+    date: '2026-11-03',
+    title: 'Alerts that reach your PSA, device groups across every organization, and Jobs moving to Flows',
+    highlights: [
+      'Partner administrators can create All organizations webhooks with a richer alert payload and retries for about 21 hours. A ConnectWise Manage connection can now open, update and close a ticket for each qualifying alert (opt-in per connection), and alert pages show the linked tickets.',
+      'Create dynamic device groups that span every organization and assign them from partner configuration policies. Group rules can match software version and vendor, and the Devices list adds CSV export, a warranty column and filter, and bulk Add to group / Remove from group.',
+      'Microsoft 365 and Google Workspace backups from NinjaOne SaaS Backup (Dropsuite) now appear next to Cove in backup health, the portal and reports. SaaS backup failures raise organization-level alerts that flow through notifications and automations.',
+      'Flows are now on by default and new jobs open there. The Jobs page shows how each existing job would convert, compares the draft flow against the running job before you switch, and keeps the job’s webhook URL working afterwards.',
+      'Breeze AI can now deploy software, generate contract invoices and sync them to QuickBooks or Xero, and manage Pax8 subscriptions and orders. Invoices, accounting pushes and Pax8 orders need a second person’s approval.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
+    version: '0.125.0',
+    date: '2026-10-27',
+    title: 'Agreements clients sign without a quote, ticket merge and routing, and update rings that decide Windows feature updates',
+    highlights: [
+      'Send any agreement for signature from Agreements, an organization’s Billing tab or a contract. Clients sign on a public page or in the portal’s new Agreements page, everyone gets the signed copy with a signature certificate, and you can remind, void or let it expire automatically.',
+      'Merge duplicate tickets into one, give SLAs business hours and holidays (a partner default with an organization override), and add routing rules that set the category, priority, status or assignee on new tickets.',
+      'Update rings now decide Windows feature updates: block them (the default), allow the newest release, or pin devices to one such as Windows 11 25H2. Needs this release’s agent.',
+      'Software versions can run pre- and post-install scripts and ship as zip packages, and Control D and NextDNS can be added from Software → Catalog → Built-in packages. A new Detection Rules page under Security manages YARA rule sets, and Sweep now runs them across many devices at once.',
+      'AI conversations move between the side panel and the full-page Breeze AI chat with their history, and dashboard numbers now open the filtered lists they count. Breeze Assist no longer crash-loops on an old WebView2 runtime, and the remote-support consent prompt now defaults to Deny.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.124.0',
     date: '2026-10-19',
     title: 'A fuller Trust Center, connection health alerts, and Huntress and SentinelOne deployed from policy',

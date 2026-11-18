@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   discoveryProfiles,
   networkBaselines,
@@ -30,7 +30,7 @@ import {
   mapNetworkChangeRow,
   resolveOrgId
 } from './networkShared';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 
 export const networkBaselineRoutes = new Hono();
 
@@ -646,9 +646,13 @@ networkBaselineRoutes.delete(
             .where(eq(networkBaselines.id, baseline.id));
         });
       } else {
-        await db
-          .delete(networkBaselines)
-          .where(eq(networkBaselines.id, baseline.id));
+        // Savepoint so the caught FK violation cannot poison the request
+        // transaction and turn the 409 into a 500 at commit (#11203).
+        await withDbTransaction(async () =>
+          db
+            .delete(networkBaselines)
+            .where(eq(networkBaselines.id, baseline.id))
+        );
       }
     } catch (error) {
       // Read the SQLSTATE through `pgErrorCode` (utils/pgErrors.ts, which owns
@@ -664,7 +668,7 @@ networkBaselineRoutes.delete(
       // network_baselines, narrow this to that constraint name -- otherwise the
       // new violation inherits this hint, `?deleteChanges=true` will not clear
       // it, and the caller retries into the same wall.
-      if (!deleteChanges && pgErrorCode(error) === '23503') {
+      if (!deleteChanges && isPgForeignKeyViolationCode(pgErrorCode(error))) {
         return c.json({
           error: 'Cannot delete baseline without deleting associated change events',
           hint: 'Use ?deleteChanges=true to delete events with the baseline'

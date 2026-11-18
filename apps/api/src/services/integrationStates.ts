@@ -140,7 +140,14 @@ export interface DnsRow {
   lastSyncStatus: string | null;
 }
 
-/** dnsSyncJob writes 'success' / 'error'; NULL means the integration never ran. */
+/**
+ * dnsSyncJob writes 'success' / 'error', 'partial' when a run stopped at the
+ * provider's request budget with the rest left for the next run (#10018), or
+ * 'truncated' when some records lay past the provider's paging limit and were
+ * not fetched (#10047). Both of those runs reached the vendor, so they are
+ * linked like 'success'; the loss is shown on the integration itself. NULL
+ * means the integration never ran.
+ */
 export function dnsState(row: DnsRow): MappingState {
   if (row.lastSyncStatus === null) return { state: 'pending', reason: 'never_synced' };
   if (row.lastSyncStatus === 'error') return { state: 'error', reason: 'sync_error' };
@@ -232,17 +239,24 @@ export function backupProviderHealth(row: { isActive: boolean; status: string; l
   return row.lastSyncStatus !== null && SYNC_OK.has(row.lastSyncStatus) ? HEALTHY : UNKNOWN;
 }
 
-/** EDR: connection-level reauth, else either stream's last run. A stream start clears only its own error. */
+/**
+ * EDR: connection-level reauth, else either stream's last run. A stream start
+ * clears only its own error. `stale` (#9127): either stream has had no
+ * successful run for three of its planned intervals, so a stream hung in
+ * `running` is a break rather than unknown forever.
+ */
 export function edrHealth(row: {
   isActive: boolean;
   status: string;
   lastInventorySyncStatus: string | null;
   lastDetectionSyncStatus: string | null;
+  stale?: boolean;
 }): HealthVerdict {
   if (!row.isActive) return RETIRED;
   if (row.status === 'reauth_required') return permanent('reauth_required');
   const streams = [row.lastInventorySyncStatus, row.lastDetectionSyncStatus];
   if (row.status === 'error' || streams.includes('error')) return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
   if (streams.includes('running')) return UNKNOWN;
   return streams.some((s) => s !== null && SYNC_OK.has(s)) ? HEALTHY : UNKNOWN;
 }
@@ -250,13 +264,14 @@ export function edrHealth(row: {
 /**
  * Accounting, via the board's accountingConnectorState. `pending_tenant` is a
  * connect in progress (abandoned rows are deleted), so it is unknown here even
- * though the board shows it as not connected.
+ * though the board shows it as not connected. `stale` (#9127): the payment
+ * reconcile sweep has not completed a run within its threshold.
  */
-export function accountingHealth(row: { status: string }): HealthVerdict {
+export function accountingHealth(row: { status: string; stale?: boolean }): HealthVerdict {
   if (row.status === 'pending_tenant') return UNKNOWN;
   switch (accountingConnectorState(row.status)) {
     case 'connected':
-      return HEALTHY;
+      return row.stale ? transient('sync_stale') : HEALTHY;
     case 'reauth_required':
       return permanent('reauth_required');
     case 'disconnected':
@@ -267,10 +282,11 @@ export function accountingHealth(row: { status: string }): HealthVerdict {
 }
 
 /** DNS filter, via the board's dnsState. No UI path deactivates a row today; the schema allows it. */
-export function dnsFilterHealth(row: { isActive: boolean; lastSyncStatus: string | null }): HealthVerdict {
+export function dnsFilterHealth(row: { isActive: boolean; lastSyncStatus: string | null; stale?: boolean }): HealthVerdict {
   if (!row.isActive) return RETIRED;
   const s = dnsState(row);
   if (s.state === 'error') return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
   return s.state === 'linked' ? HEALTHY : UNKNOWN;
 }
 
@@ -311,11 +327,20 @@ export function m365ConnectionHealth(row: { status: string; lastErrorCode: strin
  * sync reports unknown instead of opening a second incident. No rows = the
  * connection was disconnected (lifecycle deletes them).
  */
-export function m365SyncHealth(connectionStatus: string | null, domainStatuses: readonly (string | null)[]): HealthVerdict {
+export function m365SyncHealth(
+  connectionStatus: string | null,
+  domainStatuses: readonly (string | null)[],
+  opts: { anyStale?: boolean; syncEnabled?: boolean } = {},
+): HealthVerdict {
+  const { anyStale = false, syncEnabled = true } = opts;
+  // Tenant sync is dark by default: with the flag off no domain syncs, so
+  // nothing is judged here (a tracked incident closes silently, #10021 D7b).
+  if (!syncEnabled) return RETIRED;
   if (domainStatuses.length === 0) return RETIRED;
   if (connectionStatus !== 'active') return UNKNOWN;
   if (domainStatuses.includes('needs_consent')) return permanent('needs_consent');
   if (domainStatuses.includes('error')) return transient('sync_failed');
+  if (anyStale) return transient('sync_stale');
   return domainStatuses.some((s) => s !== null && SYNC_OK.has(s)) ? HEALTHY : UNKNOWN;
 }
 
@@ -333,6 +358,27 @@ export function webhookHealth(row: { status: string; hasTerminalFailure: boolean
 }
 
 /**
+ * Backup destination (#11772): the shared evaluator's answer
+ * (services/backupDestinationHealth.ts) for one backup_configs row. An outright
+ * refusal or a missing bucket will not fix itself, so it is permanent; any
+ * other destination fault is transient. A disabled config backs nothing up, so
+ * it is retired. Severity here and the evaluator's PERMANENT_DESTINATION_CAUSES
+ * name the same two causes (backupDestination.test.ts holds them together).
+ */
+export function backupDestinationHealth(row: {
+  isActive: boolean;
+  state: 'healthy' | 'broken' | 'unknown';
+  cause: string | null;
+}): HealthVerdict {
+  if (!row.isActive) return RETIRED;
+  if (row.state === 'healthy') return HEALTHY;
+  if (row.state !== 'broken') return UNKNOWN;
+  if (row.cause === 'storage_access_denied') return permanent('destination_access_denied');
+  if (row.cause === 'storage_not_found') return permanent('destination_not_found');
+  return transient('destination_failing');
+}
+
+/**
  * Google Workspace (spec §3, W4): the stored result of the reconciler's
  * verification probe. `unavailable` (rate limit, 5xx, network) says nothing
  * about the credentials, so it is unknown: a Google outage must not open an
@@ -344,11 +390,29 @@ export function googleWorkspaceHealth(row: { probeStatus: string | null }): Heal
   return HEALTHY;
 }
 
+/**
+ * TD SYNNEX nightly price file (#9127). The sync writes 'running', then 'ok'
+ * or 'error' (services/tdSynnexSftpSync.ts); disabling the row is the
+ * deliberate off switch. `stale`: no attempt finished, and the config was not
+ * saved, within three nights (a dead cron or a run hung in 'running'). A
+ * recorded failure still wins. Running and never-synced are unknown until then.
+ */
+export function tdSynnexSftpHealth(row: { enabled: boolean; lastSyncStatus: string | null; stale?: boolean }): HealthVerdict {
+  if (!row.enabled) return RETIRED;
+  if (row.lastSyncStatus === 'error') return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
+  return row.lastSyncStatus === 'ok' ? HEALTHY : UNKNOWN;
+}
+
 /** Spec §3: a mailbox is broken after this many transient poll failures in a row. */
 export const MAILBOX_TRANSIENT_FAILURE_THRESHOLD = 5;
 
-/** Ticket mailbox. `disabled` is the deliberate disconnect (the row is kept). */
-export function ticketMailboxHealth(row: { status: string; consecutiveTransientFailures: number }): HealthVerdict {
+/**
+ * Ticket mailbox. `disabled` is the deliberate disconnect (the row is kept).
+ * `stale` (#9127): a connected mailbox whose poll cursor has not moved within
+ * the threshold, which includes one the sweep never lists at all.
+ */
+export function ticketMailboxHealth(row: { status: string; consecutiveTransientFailures: number; stale?: boolean }): HealthVerdict {
   switch (row.status) {
     case 'reauth_required':
       return permanent('reauth_required');
@@ -357,7 +421,8 @@ export function ticketMailboxHealth(row: { status: string; consecutiveTransientF
     case 'disabled':
       return RETIRED;
     case 'connected':
-      return row.consecutiveTransientFailures >= MAILBOX_TRANSIENT_FAILURE_THRESHOLD ? transient('poll_failing') : HEALTHY;
+      if (row.consecutiveTransientFailures >= MAILBOX_TRANSIENT_FAILURE_THRESHOLD) return transient('poll_failing');
+      return row.stale ? transient('sync_stale') : HEALTHY;
     default:
       return UNKNOWN;
   }

@@ -42,9 +42,18 @@ const LANDING_URL = 'https://app.example.com/quick?code=ABC-DEF-GHI';
 const CREATED = {
   id: SESSION_ID,
   code: 'ABC-DEF-GHI',
-  codeExpiresAt: '2026-08-04T12:10:00.000Z',
-  hardExpiresAt: '2026-08-04T14:00:00.000Z',
+  // Relative to now: the page hides a code whose countdown has run out.
+  codeExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+  hardExpiresAt: new Date(Date.now() + 8 * 3_600_000).toISOString(),
   landingUrl: LANDING_URL,
+};
+
+/** A "New code" response for the same session. */
+const NEW_CODE = {
+  ...CREATED,
+  code: 'JKL-MNP-QRS',
+  landingUrl: 'https://app.example.com/quick?code=JKLMNPQRS',
+  codeExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
 };
 
 function view(overrides: Partial<SupportSessionView> = {}): SupportSessionView {
@@ -85,16 +94,21 @@ function installFetch(options: {
   detail?: SupportSessionView[];
   list?: SupportSessionView[];
   endResponse?: Response;
+  created?: typeof CREATED;
+  newCodeResponse?: Response;
 } = {}) {
   const detailQueue = [...(options.detail ?? [view()])];
   let lastDetail = detailQueue[0];
   fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
     if (url === LIST_URL) return makeResponse({ sessions: options.list ?? [] });
     if (url === '/remote/support-sessions' && opts?.method === 'POST') {
-      return makeResponse(CREATED, true, 201);
+      return makeResponse(options.created ?? CREATED, true, 201);
     }
     if (url === `${DETAIL_URL}/end` && opts?.method === 'POST') {
       return options.endResponse ?? makeResponse({ success: true });
+    }
+    if (url === `${DETAIL_URL}/code` && opts?.method === 'POST') {
+      return options.newCodeResponse ?? makeResponse(NEW_CODE);
     }
     if (url === DETAIL_URL) {
       if (detailQueue.length > 0) lastDetail = detailQueue.shift()!;
@@ -169,8 +183,8 @@ describe('QuickSupportPage', () => {
         body: JSON.stringify({ attributedOrgId: 'org-1', attributionLabel: "Jane's laptop" }),
       }),
     );
-    // The "copy it now, it is not recoverable" warning rides with the code.
-    expect(screen.getByText(/Copy this code now/i)).toBeInTheDocument();
+    // #11836: the code stays readable while pending; the copy says so.
+    expect(screen.getByText(/stays here until the person uses it/i)).toBeInTheDocument();
   });
 
   it('copies the landing URL from the copy-link button', async () => {
@@ -182,6 +196,21 @@ describe('QuickSupportPage', () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(LANDING_URL));
     expect(writeText).not.toHaveBeenCalledWith('ABC-DEF-GHI');
+  });
+
+  // #10508: an API without a configured public base returns a bare path; the
+  // clipboard must still get a link that works when pasted into email or chat.
+  it('copies an absolute URL when the API returns a relative landing path', async () => {
+    installFetch({ created: { ...CREATED, landingUrl: '/quick?code=ABCDEFGHI' } });
+    render(<QuickSupportPage />);
+    await createSession();
+
+    fireEvent.click(screen.getByTestId('quick-support-copy-link'));
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/quick?code=ABCDEFGHI`),
+    );
+    expect(writeText).not.toHaveBeenCalledWith('/quick?code=ABCDEFGHI');
   });
 
   it('polls every 3s and stops permanently once the session is terminal', async () => {
@@ -506,15 +535,127 @@ describe('QuickSupportPage', () => {
     expect(screen.getByTestId('quick-support-code')).toHaveTextContent('ABC-DEF-GHI');
   });
 
-  it('warns that the code is unrecoverable after leaving, not that it is never re-shown', async () => {
-    installFetch();
+  // #11836: the code is readable from the API while the session is pending, so
+  // it survives a reload.
+  it('shows the server-held code, link and countdown for a pending session after a reload', async () => {
+    window.location.hash = `#${SESSION_ID}`;
+    const pending = view({ code: 'ABC-DEF-GHI', landingUrl: LANDING_URL, canIssueNewCode: true });
+    installFetch({ list: [pending], detail: [pending] });
     render(<QuickSupportPage />);
-    await createSession();
 
-    const detail = screen.getByTestId('quick-support-detail');
-    expect(detail).toHaveTextContent(/Breeze stores only a hash of it/i);
-    expect(detail).toHaveTextContent(/cannot be recovered/i);
-    expect(detail).not.toHaveTextContent(/never be shown again/i);
+    expect(await screen.findByTestId('quick-support-code')).toHaveTextContent('ABC-DEF-GHI');
+    expect(screen.getByTestId('quick-support-landing-link')).toHaveTextContent(LANDING_URL);
+    expect(screen.getByTestId('quick-support-code-countdown')).toHaveTextContent(/Expires in \d+:\d{2}/);
+    expect(screen.getByTestId('quick-support-detail')).toHaveTextContent(/stays here until the person uses it/i);
+    // The list row carries the code too.
+    expect(screen.getByTestId('quick-support-row-code')).toHaveTextContent('ABC-DEF-GHI');
+
+    fireEvent.click(screen.getByTestId('quick-support-copy-code'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('ABC-DEF-GHI'));
+  });
+
+  it('hides the code and offers New code once the countdown runs out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    window.location.hash = `#${SESSION_ID}`;
+    const soon = new Date(Date.now() + 5_000).toISOString();
+    const pending = view({ code: 'ABC-DEF-GHI', landingUrl: LANDING_URL, codeExpiresAt: soon, canIssueNewCode: true });
+    installFetch({ list: [pending], detail: [pending] });
+    render(<QuickSupportPage />);
+
+    expect(await screen.findByTestId('quick-support-code')).toHaveTextContent('ABC-DEF-GHI');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quick-support-row-code')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quick-support-code-expired')).toHaveTextContent(/has expired/i);
+    expect(screen.getByTestId('quick-support-new-code')).toBeInTheDocument();
+  });
+
+  it('mints a New code through runAction and shows it in place of the old one', async () => {
+    window.location.hash = `#${SESSION_ID}`;
+    const pending = view({ code: 'ABC-DEF-GHI', landingUrl: LANDING_URL, canIssueNewCode: true });
+    installFetch({ list: [pending], detail: [pending] });
+    render(<QuickSupportPage />);
+    await screen.findByTestId('quick-support-code');
+
+    runActionMock.mockClear();
+    fireEvent.click(screen.getByTestId('quick-support-new-code'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-support-code')).toHaveTextContent('JKL-MNP-QRS'),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(`${DETAIL_URL}/code`, expect.objectContaining({ method: 'POST' }));
+    expect(runActionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorFallback: 'Could not generate a new code',
+        successMessage: 'New code generated. The previous code no longer works.',
+      }),
+    );
+  });
+
+  it('revives a reaper-expired session with New code and resumes polling it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    window.location.hash = `#${SESSION_ID}`;
+    const lapsed = view({
+      status: 'expired',
+      endedReason: 'expired',
+      endedAt: new Date(Date.now() - 60_000).toISOString(),
+      codeExpiresAt: new Date(Date.now() - 120_000).toISOString(),
+      canIssueNewCode: true,
+    });
+    const revived = view({ code: NEW_CODE.code, landingUrl: NEW_CODE.landingUrl, codeExpiresAt: NEW_CODE.codeExpiresAt, canIssueNewCode: true });
+    installFetch({ list: [lapsed], detail: [lapsed, revived] });
+    render(<QuickSupportPage />);
+
+    expect(await screen.findByTestId('quick-support-code-expired')).toBeInTheDocument();
+    await waitFor(() => expect(detailCallCount()).toBe(1));
+    // Terminal: the poller stopped.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(detailCallCount()).toBe(1);
+
+    fireEvent.click(screen.getByTestId('quick-support-new-code'));
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-support-code')).toHaveTextContent('JKL-MNP-QRS'),
+    );
+    expect(screen.getByTestId('quick-support-status')).toHaveTextContent('Waiting for the user');
+    // Pending again, so the poller started over.
+    await waitFor(() => expect(detailCallCount()).toBeGreaterThanOrEqual(2));
+  });
+
+  it('shows neither a code nor New code when the server offers neither', async () => {
+    window.location.hash = `#${SESSION_ID}`;
+    // Pending and inside its TTL but no code: e.g. a session created before
+    // codes were kept, viewed by someone who cannot mint Quick Support codes.
+    const pending = view({ canIssueNewCode: false });
+    installFetch({ list: [pending], detail: [pending] });
+    render(<QuickSupportPage />);
+
+    expect(await screen.findByTestId('quick-support-no-code')).toBeInTheDocument();
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quick-support-new-code')).not.toBeInTheDocument();
+  });
+
+  it('refreshes instead of toasting twice when New code loses to a redeem (409)', async () => {
+    window.location.hash = `#${SESSION_ID}`;
+    const pending = view({ code: 'ABC-DEF-GHI', landingUrl: LANDING_URL, canIssueNewCode: true });
+    installFetch({
+      list: [pending],
+      detail: [pending],
+      newCodeResponse: makeResponse({ error: 'Support session can no longer take a new code' }, false, 409),
+    });
+    render(<QuickSupportPage />);
+    await screen.findByTestId('quick-support-code');
+    const listCallsBefore = fetchMock.mock.calls.filter(([url]) => url === LIST_URL).length;
+
+    fireEvent.click(screen.getByTestId('quick-support-new-code'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([url]) => url === LIST_URL).length).toBeGreaterThan(listCallsBefore),
+    );
+    // runAction already toasted the server's message; the page adds none.
+    expect(showToastMock).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a list load failure', async () => {

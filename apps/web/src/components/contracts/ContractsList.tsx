@@ -32,6 +32,7 @@ import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AccessDenied from '../shared/AccessDenied';
 import { useStableT } from '@/lib/i18n/useStableT';
+import HashLink from '@/components/shared/HashLink';
 
 interface Organization {
   id: string;
@@ -375,10 +376,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           </span>
           {/* A plain hash link is enough: ContractsTabs' useHashState already
               subscribes to hashchange, so this swaps the view with no navigation. */}
-          <a href="#tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
+          <HashLink hash="tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
              className="font-medium text-primary hover:underline">
             {t('contracts.contractsList.currencyBanner.review')}
-          </a>
+          </HashLink>
         </div>
       )}
 
@@ -530,6 +531,22 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
                         >
                           {ctr.name}
                         </a>
+                        {/* #10361: a draft a quote accept created bills nothing until
+                            someone activates it — mark it so it cannot pass for a
+                            hand-started draft. Only drafts: once live, it is no
+                            longer pending. */}
+                        {ctr.status === 'draft' && ctr.sourceQuote && (
+                          <a
+                            href={`/billing/quotes/${ctr.sourceQuote.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            data-testid={`contract-from-quote-${ctr.id}`}
+                            className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 align-middle text-xs font-normal text-primary hover:bg-primary/20"
+                          >
+                            {ctr.sourceQuote.quoteNumber
+                              ? t('contracts.contractsList.fromQuoteReady', { number: ctr.sourceQuote.quoteNumber })
+                              : t('contracts.contractsList.fromQuoteReadyUnnumbered')}
+                          </a>
+                        )}
                       </td>
                       {!lockedOrgId && <td className="px-3 py-3">{orgName(ctr.orgId)}</td>}
                       <td className="px-3 py-3">

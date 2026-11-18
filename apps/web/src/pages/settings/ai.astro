@@ -1,0 +1,20 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import SettingsCatalog from '../../components/settings/SettingsCatalog';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
+---
+
+<DashboardLayout titleKey="titles.settingsAi">
+  <div class="space-y-6">
+    <h1 class="text-xl font-semibold tracking-tight">{tServer(locale, 'titles.settingsAi')}</h1>
+
+    <!--
+      W04 (#10135): the Settings → AI hub. It lists the AI group of the settings
+      catalogue (lib/settingsCatalog.ts) under the same gates as /settings. Add AI
+      settings pages to the catalogue with group: 'ai', not to this file.
+    -->
+    <SettingsCatalog client:load group="ai" />
+  </div>
+</DashboardLayout>

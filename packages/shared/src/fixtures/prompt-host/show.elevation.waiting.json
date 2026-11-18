@@ -1,0 +1,37 @@
+{
+  "promptId": "elevation:00000000-0000-4000-8000-0000000000e1",
+  "rev": 2,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "kind": "elevation.request",
+  "kindVersion": 1,
+  "state": "waiting",
+  "presentation": "card",
+  "copy": {
+    "title": "Waiting for your IT support team",
+    "body": "Your request to run this program as an administrator was sent.",
+    "stateDetail": "Your IT support team has until {time:1793016900000} to answer."
+  },
+  "facts": [
+    { "label": "Program", "value": "7-Zip File Manager" },
+    { "label": "Publisher", "value": "Igor Pavlov" },
+    { "label": "Command line", "value": "\"C:\\Program Files\\7-Zip\\7zFM.exe\"" }
+  ],
+  "actions": [
+    { "id": "cancel_request", "label": "Cancel request", "role": "safe" },
+    { "id": "hide", "label": "Hide", "role": "neutral" }
+  ],
+  "defaultActionId": "hide",
+  "timing": {
+    "presentWithinMs": 10000,
+    "deadlineUnixMs": 1793016900000,
+    "expiry": { "actionId": null, "text": "If no one answers by {time:1793016900000}, the request expires." }
+  },
+  "focus": "no_activate",
+  "listEntry": { "persistent": true, "expiresAtUnixMs": 1793620800000 },
+  "locale": "en",
+  "direction": "ltr",
+  "identityRef": {
+    "scopeId": "bad7313391508e4129c338752b2cc809",
+    "logoSha256": "c96253573225f1fa2044af43896a96056903b359eed7af9fad90bd626127ba99"
+  }
+}

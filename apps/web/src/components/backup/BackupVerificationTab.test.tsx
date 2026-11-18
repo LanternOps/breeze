@@ -179,7 +179,7 @@ describe('BackupVerificationTab', () => {
       return makeJsonResponse({});
     });
     render(<BackupVerificationTab deviceId={deviceId} />);
-    expect(await screen.findByText('5 GB')).toBeTruthy();
+    expect(await screen.findByText('5.00 GB')).toBeTruthy();
     expect(screen.queryByText(/MB/)).toBeNull();
   });
 

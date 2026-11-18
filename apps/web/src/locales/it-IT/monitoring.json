@@ -43,6 +43,43 @@
       "description": "Associa i monitor integrati a una policy."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Attivo",
+    "autoResolveOff": "Disattivo",
+    "rearmLabel": "Riarmo",
+    "rearmNewEvidence": "Nuove evidenze",
+    "rearmAfterDelay": "Dopo N minuti",
+    "rearmAfterMinutes_one": "Dopo {{count}} minuto",
+    "rearmAfterMinutes_other": "Dopo {{count}} minuti",
+    "rearmDelayLabel": "Riarma dopo (minuti)",
+    "rearmHelp": "Nuove evidenze: solo un evento che l’avviso chiuso non ha ancora visto lo riapre. Dopo N minuti: anche gli eventi più vecchi possono riaprirlo una volta trascorsi N minuti dalla chiusura.",
+    "inheritOption": "Eredita ({{value}}, {{source}})",
+    "inheritOptionPlain": "Eredita",
+    "sources": {
+      "org": "Predefinito dell’organizzazione",
+      "partner": "Predefinito del partner",
+      "builtin": "Predefinito integrato"
+    },
+    "errors": {
+      "cooldown": "Inserisci un numero intero da 0 a 1440.",
+      "cooldownOrInherit": "Inserisci un numero intero da 0 a 1440 oppure lascia vuoto il campo per ereditarlo.",
+      "rearmDelay": "Inserisci un numero intero di minuti da 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valori predefiniti del ciclo di vita",
+    "descriptionPartner": "Il predefinito per i monitor di ogni organizzazione. Un’organizzazione può sovrascriverlo, e l’impostazione propria di un monitor prevale su entrambi.",
+    "descriptionOrg": "Sovrascrive il predefinito del partner per questa organizzazione. Lascia vuoto un campo per ereditarlo. L’impostazione propria di un monitor prevale su questo valore.",
+    "readOnly": "Non hai l’autorizzazione per modificare il predefinito del partner.",
+    "saved": "Valori predefiniti del ciclo di vita salvati",
+    "saveAction": "Salva impostazioni predefinite",
+    "overrideCount_one": "{{count}} monitor lo sovrascrive",
+    "overrideCount_other": "{{count}} monitor lo sovrascrivono",
+    "errors": {
+      "load": "Impossibile caricare i valori predefiniti del ciclo di vita.",
+      "save": "Impossibile salvare i valori predefiniti del ciclo di vita."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor creato e collegato alla policy",
     "titleNew": "Nuovo monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Cosa monitorare",
-      "noise": "Gravità e rumore",
+      "lifecycle": "Ciclo di vita dell’avviso",
       "respond": "Rispondi",
       "notify": "Notifica",
       "escalate": "Escalation verso una persona",
       "deployed": "Distribuito su"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Questo monitor sovrascrive il predefinito dell’organizzazione ({{value}})",
+        "partner": "Questo monitor sovrascrive il predefinito del partner ({{value}})",
+        "builtin": "Questo monitor sovrascrive il predefinito integrato ({{value}})",
+        "unknown": "Questo monitor sovrascrive il predefinito ereditato."
+      },
+      "partnerWideHint": "Un’organizzazione con un proprio predefinito usa quello al posto del valore ereditato mostrato qui.",
+      "inheritedUnavailable": "Impossibile caricare i valori ereditati. Puoi comunque salvare.",
+      "windowWarning": "La finestra degli eventi ({{window}} min) è più breve del cooldown ({{cooldown}} min). Un nuovo evento durante il cooldown può uscire dalla finestra prima che l’avviso venga riaperto."
     },
     "tabs": {
       "settings": "Impostazioni",
@@ -77,7 +125,8 @@
       "recurrenceThreshold": "Esegui l'escalation dopo",
       "recurrenceWindowDays": "episodi entro (giorni)",
       "pauseResponses": "Sospendi le risposte automatiche finché una persona non le reimposta",
-      "aiAgent": "Agente IA (abilita le risposte di triage con IA)"
+      "aiAgent": "Agente IA (abilita le risposte di triage con IA)",
+      "psaBoard": "Board PSA per i ticket di avviso"
     },
     "deliveryModes": {
       "inherit": "Usa le regole di instradamento",
@@ -122,7 +171,8 @@
     "testDialog": {
       "title": "Prova su un dispositivo",
       "selectDevice": "Dispositivo",
-      "run": "Esegui prova"
+      "run": "Esegui prova",
+      "saveToTest": "Salva per testare le modifiche"
     },
     "deliveryPreview": {
       "selectOrg": "Seleziona un’organizzazione per visualizzare la consegna.",
@@ -169,6 +219,23 @@
       "failed": "Impossibile caricare gli asset",
       "orgRequired": "Seleziona un'organizzazione proprietaria per associare un asset.",
       "pingName": "Ping a {{label}}"
+    },
+    "psaBoardDefault": "Usa il board predefinito della connessione",
+    "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
+    "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento.",
+    "clearsWhen": {
+      "title": "Si risolve quando",
+      "hint": "Si risolve solo con un evento registrato dopo l'evento che ha attivato l'avviso.",
+      "noneHint": "Nessuna condizione di ripristino impostata: l'avviso si risolve quando l'attivatore smette di corrispondere.",
+      "add": "Aggiungi una condizione di ripristino",
+      "removeCondition": "Rimuovi",
+      "keepCustom": "Mantieni la condizione personalizzata",
+      "customTitle": "Condizione di ripristino personalizzata (API)",
+      "customHint": "Questa condizione è stata impostata tramite API e non può essere modificata qui. Il salvataggio la mantiene invariata.",
+      "replaceCustom": "Sostituisci",
+      "invalid": "Uno dei valori della condizione di ripristino non è valido.",
+      "customUnusable": "Questa condizione non può essere valutata, quindi gli avvisi di questo monitor non si risolveranno automaticamente. Sostituiscila per correggere il problema."
     }
   },
   "kinds": {
@@ -246,8 +313,8 @@
     "nameserver": "Server dei nomi",
     "degradedIsFailure": "Considera degradato come errore",
     "maxResponseMs": "Fallisci se più lento di (ms)",
-    "eventLogCollectionNoSource": "Gli eventi Applicazione di livello Informazioni e Avviso vengono raccolti solo da {{providers}}. Gli eventi di altre origini attivano questa regola solo ai livelli Errore o Critico.",
-    "eventLogCollectionSourceNotCollected": "L'agente non raccoglie gli eventi Applicazione di livello Informazioni o Avviso da \"{{source}}\", quindi questa regola corrisponderà solo ai suoi eventi Errore o Critico. Provider raccolti: {{providers}}."
+    "eventLogCollectionNoSource": "Gli eventi applicazione di livello Informazioni e Avviso vengono raccolti solo da {{providers}}. Gli eventi di altre origini corrispondono a questa regola solo ai livelli Errore o Critico, a meno che un criterio di configurazione dei registri eventi non includa l’origine (Criterio di configurazione → Registri eventi → Provider applicazioni).",
+    "eventLogCollectionSourceNotCollected": "L’agente non raccoglie eventi applicazione di livello Informazioni o Avviso da \"{{source}}\", a meno che un criterio di configurazione dei registri eventi non lo includa (Criterio di configurazione → Registri eventi → Provider applicazioni). Altrimenti, questa regola corrisponde solo ai suoi eventi Errore o Critico. Provider integrati: {{providers}}."
   },
   "operators": {
     "gt": "maggiore di",
@@ -332,10 +399,13 @@
     "cancel": "Annulla",
     "detachConfirm": "Scollegare da {{policy}}?",
     "errors": {
+      "loadGroups": "Impossibile caricare i gruppi di dispositivi.",
       "attach": "Impossibile collegare il monitor",
       "detach": "Impossibile scollegare il monitor",
       "linkedFeature": "I monitor di questa policy provengono da una policy di funzionalità condivisa. Modifica quella policy o scegline un'altra."
-    }
+    },
+    "partnerWideGroups": "Tutte le org. (a livello di partner)",
+    "organizationGroups": "Gruppi dell’organizzazione"
   },
   "policyTab": {
     "title": "Monitor",

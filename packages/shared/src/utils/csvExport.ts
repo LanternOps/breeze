@@ -77,11 +77,24 @@ function extractTable(rows: unknown[]): { headers: string[]; body: string[][] } 
   return { headers, body };
 }
 
+export interface RowsToCsvOptions {
+  /**
+   * Display label per row key for the header row. A key with no entry keeps the
+   * key itself. Only the header row changes: column order and body cells still
+   * come from the first row's keys. Labels are escaped like any other cell.
+   */
+  headerLabels?: Readonly<Record<string, string>>;
+}
+
 /** Serialize report rows to CSV (header from first row's keys). Empty input → ''. */
-export function rowsToCsv(rows: unknown[]): string {
+export function rowsToCsv(rows: unknown[], options: RowsToCsvOptions = {}): string {
   if (rows.length === 0) return '';
   const { headers, body } = extractTable(rows);
-  return [csvRow(headers), ...body.map(csvRow)].join('\n');
+  const labels = options.headerLabels;
+  const headerRow = labels
+    ? headers.map((h) => (Object.hasOwn(labels, h) ? labels[h]! : h))
+    : headers;
+  return [csvRow(headerRow), ...body.map(csvRow)].join('\n');
 }
 
 /** Serialize report rows to TSV (Excel-compatible). Empty input → ''. */

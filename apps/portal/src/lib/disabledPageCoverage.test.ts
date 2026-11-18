@@ -174,7 +174,7 @@ describe('visibility-gate handling in portal pages', () => {
  * - index.astro: pure redirect; resolveAuthenticatedLanding (lib/landing.ts)
  *   handles the disabled case there.
  * - account-disabled: the destination — guarding it would loop.
- * - quote/[token], invoice/[token], invoice/return: the URL token IS the
+ * - quote/[token], agreement/[token], invoice/[token], invoice/return: the URL token IS the
  *   capability; these documents are emailed to people who never sign in.
  * - autopay token pages (including stop/skip/confirm) and return: public payment
  *   capabilities; skip loads token state with GET and acts only on explicit POST.
@@ -185,8 +185,15 @@ const UNAUTHENTICATED_PAGES = new Set([
   'forgot-password.astro',
   'reset-password.astro',
   'accept-invite.astro',
+  // Self-registration (W6): the public form, and the emailed confirm page whose
+  // URL-fragment token is the capability (an explicit POST spends it).
+  'request-access/index.astro',
+  'request-access/verify.astro',
+  // Tenant-setup result page: the server callback lands a signed-out IT admin here.
+  'entra-setup.astro',
   'account-disabled.astro',
   'quote/[token].astro',
+  'agreement/[token].astro',
   'invoice/[token].astro',
   'invoice/return.astro',
   'autopay/[token].astro',

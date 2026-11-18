@@ -1,0 +1,10 @@
+{
+  "telemetry": {
+    "protocolVersion": 1,
+    "kinds": [],
+    "rendererVersion": "0.2.0"
+  },
+  "settings": {
+    "enabledKinds": []
+  }
+}

@@ -219,6 +219,62 @@ describe('BackupJobList', () => {
     expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
   });
 
+  it('shows an ETA for a running job with a total and a speed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:01:00.000Z')); // 60s after startedAt
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              // 1 MB in 60 s → 9 MB left at ~16.7 KB/s = 540 s.
+              transferredSize: 1_000_000,
+              totalSize: 10_000_000,
+              lastKeepaliveAt: '2026-04-01T00:00:55.000Z',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.getByTestId('backup-job-eta').textContent).toBe('about 9m left');
+  });
+
+  it('shows no ETA for a stalled running job', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              transferredSize: 1_000_000,
+              totalSize: 10_000_000,
+              lastKeepaliveAt: '2026-04-01T00:05:00.000Z',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.getByTestId('backup-job-stalled')).toBeTruthy();
+    expect(screen.queryByTestId('backup-job-eta')).toBeNull();
+  });
+
   it('updates progress and computes speed across two poll refreshes', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));
@@ -531,7 +587,7 @@ describe('BackupJobList', () => {
     expect(within(rowAfterPoll).queryByText('Running')).toBeNull();
   });
 
-  it('shows the incremental savings line for a completed job with referencedSize', async () => {
+  it('shows what a completed job stored, with uploaded and reused bytes', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/backup/jobs') {
@@ -569,6 +625,7 @@ describe('BackupJobList', () => {
           updatedAt: '2026-04-01T18:03:00.000Z',
           totalSize: 10_485_760, // 10 MB protected
           referencedSize: 4_194_304, // 4 MB reused -> 6 MB uploaded
+          dataAccounting: { protectedBytes: 10_485_760, uploadedBytes: 6_291_456, reusedBytes: 4_194_304, processedBytes: null, runKind: 'incremental', fullRunReason: null },
           fileCount: 10,
           errorLog: null,
         });
@@ -580,14 +637,71 @@ describe('BackupJobList', () => {
     await screen.findByText('Alpha Workstation');
     fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
 
-    const savings = await screen.findByTestId('backup-job-savings');
-    expect(savings.textContent).toContain('10.0 MB');
-    expect(savings.textContent).toContain('6.00 MB');
-    expect(savings.textContent).toContain('protected');
-    expect(savings.textContent).toContain('uploaded');
+    const summary = (await screen.findByText('What this run stored')).closest('[data-testid="backup-job-data-summary"]') as HTMLElement;
+    expect(summary.textContent).toContain('10.0 MB');
+    expect(summary.textContent).toContain('6.00 MB');
+    expect(summary.textContent).toContain('Uploaded this run');
+    expect(summary.textContent).toContain('Reused from earlier backups');
   });
 
-  it('renders nothing new for a completed job with null referencedSize (legacy/full run)', async () => {
+  it('shows uploaded and reused bytes, and a Full chip with its reason, in the Size cell', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-1',
+              type: 'file',
+              deviceId: 'device-1',
+              configId: 'config-1',
+              deviceName: 'Alpha Workstation',
+              configName: 'Nightly',
+              status: 'completed',
+              startedAt: '2026-04-01T18:00:00.000Z',
+              completedAt: '2026-04-01T18:02:00.000Z',
+              createdAt: '2026-04-01T17:59:00.000Z',
+              totalSize: 10_485_760,
+              errorCount: 0,
+              errorLog: null,
+              dataAccounting: { protectedBytes: 10_485_760, uploadedBytes: 10_485_760, reusedBytes: 0, processedBytes: null, runKind: 'full', fullRunReason: 'no_prior_snapshot' },
+            },
+            {
+              id: 'job-2',
+              type: 'file',
+              deviceId: 'device-2',
+              configId: 'config-1',
+              deviceName: 'Beta Server',
+              configName: 'Nightly',
+              status: 'failed',
+              startedAt: '2026-04-01T18:00:00.000Z',
+              completedAt: '2026-04-01T18:02:00.000Z',
+              createdAt: '2026-04-01T17:59:00.000Z',
+              totalSize: 10_485_760,
+              transferredSize: 6_291_456,
+              errorCount: 0,
+              errorLog: 'failed to upload file to s3: SlowDown',
+              dataAccounting: { protectedBytes: null, uploadedBytes: null, reusedBytes: null, processedBytes: 6_291_456, runKind: 'incremental', fullRunReason: null },
+            },
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const fullRow = (await screen.findByText('Alpha Workstation')).closest('tr') as HTMLElement;
+    expect(within(fullRow).getByTestId('backup-job-data-summary').textContent).toContain('10.0 MB uploaded · 0 B reused');
+    expect(within(fullRow).getByTestId('backup-run-full').getAttribute('title')).toBe('First backup for this device and destination');
+
+    const failedRow = screen.getByText('Beta Server').closest('tr') as HTMLElement;
+    const failedCell = within(failedRow).getByTestId('backup-job-data-summary');
+    expect(failedCell.textContent).toContain('6.00 MB processed before it stopped');
+    expect(failedCell.textContent).not.toMatch(/uploaded/i);
+  });
+
+  it('renders no data summary when an older API sends no dataAccounting', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/backup/jobs') {
@@ -634,12 +748,12 @@ describe('BackupJobList', () => {
     await screen.findByText('Alpha Workstation');
     fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
 
-    // Detail panel opens (snapshot/error sections load) but no savings line.
+    // Detail panel opens (snapshot/error sections load) but no data summary.
     await screen.findByText(/No error log recorded/i);
-    expect(screen.queryByTestId('backup-job-savings')).toBeNull();
+    expect(screen.queryByTestId('backup-job-data-summary')).toBeNull();
   });
 
-  it('clamps uploaded to zero when referencedSize exceeds totalSize (no negatives)', async () => {
+  it('shows zero uploaded when reused exceeds the total (no negatives)', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/backup/jobs') {
@@ -675,6 +789,7 @@ describe('BackupJobList', () => {
           updatedAt: '2026-04-01T18:03:00.000Z',
           totalSize: 1024, // 1 KB protected
           referencedSize: 4096, // 4 KB referenced -> negative delta must clamp to 0
+          dataAccounting: { protectedBytes: 1024, uploadedBytes: 0, reusedBytes: 4096, processedBytes: null, runKind: 'incremental', fullRunReason: null },
           fileCount: 10,
           errorLog: null,
         });
@@ -686,7 +801,7 @@ describe('BackupJobList', () => {
     await screen.findByText('Alpha Workstation');
     fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
 
-    const savings = await screen.findByTestId('backup-job-savings');
+    const savings = (await screen.findByText('What this run stored')).closest('[data-testid="backup-job-data-summary"]') as HTMLElement;
     // No negative byte value should ever be rendered.
     expect(savings.textContent).not.toMatch(/-\d/);
     expect(savings.textContent).toContain('1.00 KB'); // protected
@@ -864,7 +979,7 @@ describe('BackupJobList', () => {
     expect(screen.queryByTestId('backup-job-failed-count')).toBeNull();
   });
 
-  it('shows the incremental savings line for a partial job with referencedSize', async () => {
+  it('shows what a partial job stored', async () => {
     // A partial run still produced a restorable snapshot, so the dedup detail is
     // as meaningful as it is for a completed one.
     fetchMock.mockImplementation(async (input) => {
@@ -883,6 +998,7 @@ describe('BackupJobList', () => {
           updatedAt: '2026-04-01T18:05:00.000Z',
           totalSize: 10_485_760,
           referencedSize: 4_194_304,
+          dataAccounting: { protectedBytes: 10_485_760, uploadedBytes: 6_291_456, reusedBytes: 4_194_304, processedBytes: null, runKind: 'incremental', fullRunReason: null },
           fileCount: 1,
           errorLog: 'access denied',
         });
@@ -894,9 +1010,11 @@ describe('BackupJobList', () => {
     await screen.findByText('Gamma Laptop');
     fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
 
-    const savings = await screen.findByTestId('backup-job-savings');
-    expect(savings.textContent).toContain('10.0 MB');
-    expect(savings.textContent).toContain('6.00 MB');
+    const summary = (await screen.findByText('What this run stored')).closest('[data-testid="backup-job-data-summary"]') as HTMLElement;
+    expect(summary.textContent).toContain('10.0 MB');
+    expect(summary.textContent).toContain('6.00 MB');
+    expect(summary.textContent).toContain('Uploaded this run');
+    expect(summary.textContent).toContain('Reused from earlier backups');
   });
 
   it('renders a completed_with_errors job as its own amber status, never green Completed and never Partial', async () => {
@@ -918,7 +1036,7 @@ describe('BackupJobList', () => {
     expect(within(row).queryByText('Queued')).toBeNull();
   });
 
-  it('shows the incremental savings line for a completed_with_errors job with referencedSize', async () => {
+  it('shows what a completed_with_errors job stored', async () => {
     // A completed_with_errors run still produced a restorable snapshot, so the
     // dedup detail is as meaningful as it is for a completed/partial run.
     fetchMock.mockImplementation(async (input) => {
@@ -939,6 +1057,7 @@ describe('BackupJobList', () => {
           updatedAt: '2026-04-01T18:05:00.000Z',
           totalSize: 10_485_760,
           referencedSize: 4_194_304,
+          dataAccounting: { protectedBytes: 10_485_760, uploadedBytes: 6_291_456, reusedBytes: 4_194_304, processedBytes: null, runKind: 'incremental', fullRunReason: null },
           fileCount: 1,
           errorLog: 'access denied',
         });
@@ -950,9 +1069,11 @@ describe('BackupJobList', () => {
     await screen.findByText('Gamma Laptop');
     fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
 
-    const savings = await screen.findByTestId('backup-job-savings');
-    expect(savings.textContent).toContain('10.0 MB');
-    expect(savings.textContent).toContain('6.00 MB');
+    const summary = (await screen.findByText('What this run stored')).closest('[data-testid="backup-job-data-summary"]') as HTMLElement;
+    expect(summary.textContent).toContain('10.0 MB');
+    expect(summary.textContent).toContain('6.00 MB');
+    expect(summary.textContent).toContain('Uploaded this run');
+    expect(summary.textContent).toContain('Reused from earlier backups');
   });
 
   it('shows a prominent "files not backed up" block for a completed_with_errors job with the failed count and error log', async () => {
@@ -1043,6 +1164,86 @@ describe('BackupJobList', () => {
     expect(within(row).queryByText('-')).toBeNull();
   });
 
+  describe('failure category (#11027)', () => {
+    const mockJobs = (...jobs: unknown[]) =>
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') return makeJsonResponse({ data: jobs });
+        if (url === '/backup/jobs/job-partial') return makeJsonResponse(jobs[0]);
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+
+    it('failed row shows category badge before the error summary', async () => {
+      mockJobs(partialJob({
+        status: 'failed',
+        errorCount: 0,
+        errorLog: 'failed to upload file to s3: SlowDown',
+        failureCategory: 'storage',
+      }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      const badge = within(row).getByTestId('backup-failure-category');
+      const summary = within(row).getByTestId('backup-job-error-summary');
+      expect(badge.getAttribute('data-category')).toBe('storage');
+      expect(badge.textContent).toBe('Storage problem');
+      expect(summary.textContent).toContain('failed to upload file to s3: SlowDown');
+      expect(badge.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('shows the badge on a cancelled row that has no error text', async () => {
+      mockJobs(partialJob({ status: 'cancelled', errorCount: 0, errorLog: null, failureCategory: 'cancelled' }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).getByTestId('backup-failure-category').getAttribute('data-category')).toBe('cancelled');
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+    });
+
+    it('renders no badge when the API sends no category', async () => {
+      mockJobs(partialJob({ status: 'completed', errorCount: 0, errorLog: null, failureCategory: null }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).queryByTestId('backup-failure-category')).toBeNull();
+      expect(within(row).getByText('-')).toBeTruthy();
+    });
+
+    it('explains the category with its hint in the expanded details', async () => {
+      mockJobs(partialJob({
+        status: 'failed',
+        errorCount: 0,
+        errorLog: 'backup helper exited unexpectedly',
+        failureCategory: 'agent',
+      }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(screen.queryByText(/stopped unexpectedly/)).toBeNull();
+      fireEvent.click(within(row).getByRole('button', { name: /details/i }));
+
+      await screen.findByText(/The backup component on the device stopped unexpectedly/);
+      expect(screen.getByRole('link', { name: 'Troubleshooting guide' })).toBeTruthy();
+    });
+
+    it('explains the category inside the files-not-backed-up block of a partial run', async () => {
+      mockJobs(partialJob({ failureCategory: 'source_access' }));
+
+      render(<BackupJobList />);
+
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      fireEvent.click(within(row).getByRole('button', { name: /details/i }));
+
+      const block = await screen.findByTestId('backup-job-files-not-backed-up');
+      expect(within(block).getByTestId('backup-failure-category').getAttribute('data-category')).toBe('source_access');
+      expect(within(block).getByText(/Some files were locked/)).toBeTruthy();
+    });
+  });
+
   it('strips the internal reaper tag prefix from the displayed error summary', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {
@@ -1105,6 +1306,136 @@ describe('BackupJobList', () => {
 
     const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
     expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+  });
+
+  describe('skipped reparse points (#9543)', () => {
+    // Verbatim shape of the agent's summarizeSkippedReparsePoints fragment.
+    const reparseNote =
+      '159 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 159 other): ' +
+      'C:\\a.exe (other reparse point, tag 0x8000001B); C:\\b.exe (other reparse point, tag 0x8000001B); ' +
+      'C:\\c.exe (other reparse point, tag 0x8000001B); C:\\d.exe (other reparse point, tag 0x8000001B); ' +
+      'C:\\e.exe (other reparse point, tag 0x8000001B) (+154 more)';
+
+    const mockJob = (status: string, errorLog: string) => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') {
+          return makeJsonResponse({ data: [partialJob({ status, errorCount: 0, errorLog })] });
+        }
+        if (url === '/backup/jobs/job-partial') {
+          return makeJsonResponse({
+            id: 'job-partial',
+            type: 'file',
+            deviceId: 'device-2',
+            configId: 'config-1',
+            status,
+            createdAt: '2026-04-01T17:59:00.000Z',
+            errorCount: 0,
+            errorLog,
+          });
+        }
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+    };
+
+    it('keeps the real failure reason in the Errors column and error log, and shows the skip as info', async () => {
+      mockJob('failed', `backup stopped; ${reparseNote}`);
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      const summary = within(row).getByTestId('backup-job-error-summary');
+      expect(summary.textContent).toContain('backup stopped');
+      expect(summary.textContent).not.toContain('reparse');
+      expect(summary.getAttribute('title')).toBe('backup stopped');
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      const notice = await screen.findByTestId('backup-job-reparse-skipped');
+      expect(notice.textContent).toContain('159 reparse points skipped');
+      // The agent's sampled paths stay reachable behind the disclosure.
+      expect(notice.textContent).toContain('C:\\a.exe (other reparse point, tag 0x8000001B)');
+      const errorLog = screen.getByText('Error Log').nextElementSibling as HTMLElement;
+      expect(errorLog.textContent).toBe('backup stopped');
+    });
+
+    describe('the recoverable index drop note on historic rows (#11026)', () => {
+      const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+
+      it('hides the note when it is all the row carries', async () => {
+        mockJob('completed', `bounded: ${indexNote}`);
+        render(<BackupJobList />);
+        const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+        expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+        expect(row.textContent).not.toContain('snapshot file index');
+
+        fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+        await waitFor(() => expect(screen.queryByText('Error Log')).toBeNull());
+        expect(document.body.textContent).not.toContain('snapshot file index');
+      });
+
+      it('keeps the other text, in the Errors column and the error log', async () => {
+        mockJob('failed', `disk full || bounded: ${indexNote}`);
+        render(<BackupJobList />);
+        const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+        const summary = within(row).getByTestId('backup-job-error-summary');
+        expect(summary.textContent).toContain('disk full');
+        expect(summary.textContent).not.toContain('snapshot file index');
+
+        fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+        const label = await screen.findByText('Error Log');
+        expect((label.nextElementSibling as HTMLElement).textContent).toBe('disk full');
+      });
+    });
+
+    it('shows no error at all for a completed run whose only note is skipped reparse points', async () => {
+      mockJob('completed', reparseNote);
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      expect((await screen.findByTestId('backup-job-reparse-skipped')).textContent).toContain('159');
+      expect(screen.getByText('No error log recorded.')).toBeTruthy();
+    });
+
+    it('keeps the "files not backed up" block for a partial run with real file errors, without the skip text in it', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') {
+          return makeJsonResponse({ data: [partialJob({ errorCount: 21, errorLog: reparseNote })] });
+        }
+        if (url === '/backup/jobs/job-partial') {
+          return makeJsonResponse({
+            id: 'job-partial', type: 'file', deviceId: 'device-2', configId: 'config-1', status: 'partial',
+            createdAt: '2026-04-01T17:59:00.000Z', errorCount: 21, errorLog: reparseNote,
+          });
+        }
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      // errorCount still drives the Errors column when the log was only the skip.
+      expect(within(row).getByTestId('backup-job-error-summary').textContent).toContain('21 errors');
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      const block = await screen.findByTestId('backup-job-files-not-backed-up');
+      expect(block.textContent).toContain('21');
+      expect(block.textContent).not.toContain('reparse');
+      expect(screen.getByTestId('backup-job-reparse-skipped')).toBeTruthy();
+    });
+
+    it('does not open the "files not backed up" block for a completed_with_errors run on the skip alone', async () => {
+      // errorCount 0 + a reparse-only note: the warning block must not claim
+      // files failed when the only thing in errorLog is the deliberate skip.
+      mockJob('completed_with_errors', reparseNote);
+
+      render(<BackupJobList />);
+      await screen.findByText('Gamma Laptop');
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      await screen.findByTestId('backup-job-reparse-skipped');
+      expect(screen.queryByTestId('backup-job-files-not-backed-up')).toBeNull();
+    });
   });
 
   it('labels the running-job action button "Stop"', async () => {

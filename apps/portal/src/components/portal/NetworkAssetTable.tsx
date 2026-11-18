@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Network } from 'lucide-react';
-import type { NetworkAssetRowDto, NetworkAssetsDto, NetworkSiteDto } from '@breeze/shared';
+import type { NetworkAssetRowDto, NetworkAssetsDto, NetworkSiteDto, PhysicalPlacementDto } from '@breeze/shared';
 import { portalApi, type NetworkAssetStatusFilter } from '@/lib/api';
 import { cn, formatDateTime } from '@/lib/utils';
 import { CELL, EmptyState, ErrorNotice, INPUT, BTN_SECONDARY, ROW, StatusMark, TH } from './ui';
@@ -79,6 +79,27 @@ function writeHash(f: FilterState) {
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${next ? `#${next}` : ''}`);
 }
 
+/**
+ * Location cell text (CPEV-W1). The API omits `physicalPlacement` when the org
+ * flag is off or the asset has none, so a null field is simply left out: no
+ * placeholder strings. The placement's site is shown only when it differs from
+ * the row's Site column (the placement authority's live site can).
+ */
+function placementLabel(p: PhysicalPlacementDto, rowSiteName: string): string {
+  const parts: string[] = [];
+  if (p.siteName !== rowSiteName) parts.push(p.siteName);
+  if (p.room) parts.push(`Room ${p.room}`);
+  if (p.rack) parts.push(`Rack ${p.rack}`);
+  if (p.rackUnit !== null) {
+    parts.push(`U${p.rackUnit}${p.heightU !== null ? ` (${p.heightU}U)` : ''}`);
+  } else if (p.heightU !== null) {
+    parts.push(`${p.heightU}U`);
+  }
+  return parts.join(' · ') || '—';
+}
+
+const hasPlacement = (data: ReadonlyArray<NetworkAssetRowDto>) => data.some((r) => r.physicalPlacement);
+
 function StatusCell({ asset }: { asset: NetworkAssetRowDto }) {
   const testId = `portal-network-asset-status-${asset.id}`;
   if (asset.onlineState === 'online') {
@@ -110,6 +131,9 @@ export function NetworkAssetTable({
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
+  // The Location column exists only once the API has sent a placement (flag on).
+  // Sticky, so it does not blink away on a page or filter with no placement.
+  const [showLocation, setShowLocation] = useState(() => hasPlacement(initial?.data ?? []));
 
   async function load(next: FilterState) {
     const seq = ++requestSeq.current;
@@ -141,6 +165,7 @@ export function NetworkAssetTable({
     if (response.data && response.data.dataStatus !== 'not_enabled') {
       setResult(response.data);
       setFailed(false);
+      if (hasPlacement(response.data.data)) setShowLocation(true);
     } else {
       setFailed(true);
     }
@@ -269,6 +294,9 @@ export function NetworkAssetTable({
                 <th scope="col" className={cn(TH, 'text-left')}>Status</th>
                 <th scope="col" className={cn(TH, 'text-left')}>Make / model</th>
                 <th scope="col" className={cn(TH, 'text-left')}>Site</th>
+                {showLocation && (
+                  <th scope="col" className={cn(TH, 'text-left')}>Location</th>
+                )}
                 <th scope="col" className={cn(TH, 'text-left')}>Last seen</th>
                 <th scope="col" className={cn(TH, 'text-left')}>First seen</th>
               </tr>
@@ -302,6 +330,15 @@ export function NetworkAssetTable({
                     <span className={PHONE_LABEL}>Site</span>
                     {a.siteName}
                   </td>
+                  {showLocation && (
+                    <td
+                      className={cn(CELL, 'order-8 text-sm text-foreground')}
+                      data-testid={`portal-network-asset-location-${a.id}`}
+                    >
+                      <span className={PHONE_LABEL}>Location</span>
+                      {a.physicalPlacement ? placementLabel(a.physicalPlacement, a.siteName) : '—'}
+                    </td>
+                  )}
                   <td className={cn(CELL, 'order-8 text-sm text-foreground')}>
                     <span className={PHONE_LABEL}>Last seen</span>
                     {a.lastSeenAt ? formatDateTime(a.lastSeenAt, timezone, true) : '—'}

@@ -42,7 +42,65 @@ const slaRow = (
   slaBreachedAt: null,
   slaPausedAt: null,
   slaPausedMinutes: 0,
+  // #8973 W3: the stored deadlines the write points compute for these targets.
+  responseDueAt: new Date('2026-09-02T01:40:00Z'),
+  responseWarnAt: new Date('2026-09-02T01:20:00Z'),
+  resolutionDueAt: new Date('2026-09-02T04:00:00Z'),
+  resolutionWarnAt: new Date('2026-09-02T03:12:00Z'),
   ...overrides,
+});
+
+// #8973 W3 (spec §4.3 reader 4, §8.5 correction 1): the portal reads the
+// stored deadlines and never invents a priority-default target.
+describe('ticketSla reads the stored deadlines (#8973)', () => {
+  it('a null target is not_configured even on an urgent ticket (no PRIORITY_SLA_DEFAULTS fallback)', () => {
+    const sla = ticketSla(slaRow({
+      priority: 'urgent',
+      responseSlaMinutes: null, resolutionSlaMinutes: null,
+      responseDueAt: null, responseWarnAt: null, resolutionDueAt: null, resolutionWarnAt: null,
+    }), NOW);
+    expect(sla).toMatchObject({ status: 'not_configured', responseTargetMinutes: null, resolutionTargetMinutes: null });
+  });
+
+  it('a single null arm stays null instead of borrowing the priority default', () => {
+    const sla = ticketSla(slaRow({ priority: 'urgent', responseSlaMinutes: null, responseDueAt: null, responseWarnAt: null }), NOW);
+    expect(sla.responseTargetMinutes).toBeNull();
+    expect(sla.resolutionTargetMinutes).toBe(240);
+  });
+
+  it('a first response before the stored due is met even when it exceeds the raw target (pause before it)', () => {
+    // Target 100, but 20 paused minutes pushed the stored due to +120.
+    const sla = ticketSla(slaRow({
+      firstResponseAt: new Date('2026-09-02T01:50:00Z'),
+      responseDueAt: new Date('2026-09-02T02:00:00Z'),
+      resolutionSlaMinutes: null, resolutionDueAt: null, resolutionWarnAt: null,
+    }), NOW);
+    expect(sla.status).toBe('met');
+  });
+
+  it('a completion after the stored due is breached', () => {
+    expect(ticketSla(slaRow({
+      firstResponseAt: new Date('2026-09-02T01:41:00Z'),
+      resolutionSlaMinutes: null, resolutionDueAt: null, resolutionWarnAt: null,
+    }), NOW).status).toBe('breached');
+  });
+
+  it('a target whose stored deadline is not written yet is still running, never met', () => {
+    const sla = ticketSla(slaRow({
+      firstResponseAt: new Date('2026-09-02T00:20:00Z'),
+      resolutionDueAt: null, resolutionWarnAt: null,
+    }), new Date('2026-09-02T05:00:00Z'));
+    expect(sla.status).toBe('on_track');
+  });
+
+  it('at-risk follows the stored warn point, not elapsed arithmetic', () => {
+    // Warn moved early (e.g. by a business calendar): at risk at +50 min.
+    const early = slaRow({ responseWarnAt: new Date('2026-09-02T00:50:00Z') });
+    expect(ticketSla(early, new Date('2026-09-02T00:55:00Z')).status).toBe('at_risk');
+    // Warn moved late (paused minutes folded in): still on track at +85 min.
+    const late = slaRow({ responseWarnAt: new Date('2026-09-02T01:40:00Z') });
+    expect(ticketSla(late, new Date('2026-09-02T01:25:00Z')).status).toBe('on_track');
+  });
 });
 
 it('covers every portal SLA status', () => {

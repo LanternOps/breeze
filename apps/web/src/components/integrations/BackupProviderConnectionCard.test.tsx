@@ -152,6 +152,51 @@ describe("BackupProviderConnectionCard", () => {
     });
   });
 
+  it("lets a healthy connection open the credential form proactively", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    expect(screen.queryByTestId("backup-connection-password")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    expect(screen.getByTestId("backup-connection-password")).toBeInTheDocument();
+    expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
+  });
+
+  it("lets a healthy connection cancel a half-typed rotation, clearing the fields", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("backup-connection-rotate-cancel"));
+    expect(screen.queryByTestId("backup-connection-username")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    expect(screen.getByTestId("backup-connection-username")).toHaveValue("");
+  });
+
+  it("does not render the proactive rotate button on a reauth_required connection", () => {
+    render(<BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+    expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
+  });
+
+  it("blocks a Cove rotation that has a new username but a blank password, and never PATCHes it", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "new-user" } });
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("PATCHes the full Cove credential set once partner, username and token are all entered", async () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-partner-name"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "new-user" } });
+    fireEvent.change(screen.getByTestId("backup-connection-password"), { target: { value: "tok" } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string).credentials).toEqual({
+      partnerName: "Acme", username: "new-user", password: "tok",
+    });
+  });
+
   it("never sends an empty credentials object when the password field was left blank", async () => {
     render(
       <BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />,
@@ -211,5 +256,205 @@ describe("BackupProviderConnectionCard", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
     expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dropsuite card", () => {
+  function renderCard() {
+    render(<BackupProviderConnectionCard connection={connection({ provider: "dropsuite", status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+  }
+
+  it("labels its provider and workloads without device-link counters", () => {
+    renderCard();
+    expect(screen.getByTestId("backup-connection-provider")).toHaveTextContent("NinjaOne SaaS Backup (Dropsuite)");
+    expect(screen.getByTestId("backup-connection-devices")).toHaveTextContent("Workloads");
+    expect(screen.getByTestId("backup-connection-customers")).toHaveTextContent("Customers");
+    expect(screen.getByTestId("backup-connection-unmapped-devices")).toHaveTextContent("Unmapped workloads");
+    expect(screen.queryByTestId("backup-connection-linked")).toBeNull();
+    expect(screen.queryByTestId("backup-connection-ambiguous")).toBeNull();
+  });
+
+  it("PATCHes both masked token fields and clears them after saving", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.queryByTestId("backup-connection-password")).toBeNull();
+    for (const field of ["reseller-token", "auth-token"]) {
+      expect(screen.getByTestId(`backup-connection-${field}`)).toHaveAttribute("type", "password");
+      expect(screen.getByTestId(`backup-connection-${field}`)).toHaveAttribute("autoComplete", "new-password");
+      fireEvent.change(screen.getByTestId(`backup-connection-${field}`), { target: { value: field } });
+    }
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string).credentials).toEqual({ resellerToken: "reseller-token", authToken: "auth-token" });
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-auth-token")).toHaveValue("");
+    expect(screen.getByTestId("backup-connection-reseller-token")).toHaveValue("");
+  });
+
+  it("keeps stored credentials when both tokens are blank and requires a complete replacement", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-auth-token")).toHaveValue("");
+    fireEvent.change(screen.getByTestId("backup-connection-auth-token"), { target: { value: "new-token" } });
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-connection-auth-token"), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string)).not.toHaveProperty("credentials");
+  });
+
+  it("treats whitespace in one token as blank when deciding the replacement is incomplete", () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    fireEvent.change(screen.getByTestId("backup-connection-reseller-token"), { target: { value: " " } });
+    fireEvent.change(screen.getByTestId("backup-connection-auth-token"), { target: { value: "new-token" } });
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+  });
+
+  it("shows the Dropsuite re-entry help and uses the workloads delete copy", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByText("Leave both tokens blank to keep the stored credentials, or enter both to replace them.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("backup-connection-delete"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("synced workloads");
+  });
+});
+
+describe("Cove rotate semantics", () => {
+  function renderCard(provider = "cove") {
+    render(<BackupProviderConnectionCard connection={connection({ provider, status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+  }
+  const type = (field: string, value: string) => fireEvent.change(screen.getByTestId(`backup-connection-${field}`), { target: { value } });
+  const lastBody = () => fetchMock.mock.calls.at(-1)![1]!.body as string;
+
+  it("posts all three fields in order, trimming identity and not the password", async () => {
+    renderCard();
+    type("partner-name", " OliveTech ");
+    type("username", " breeze-ro ");
+    type("password", " s3cret ");
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(lastBody()).toBe('{"name":"OliveTech Cove","isActive":true,"showProviderNameInPortal":false,"credentials":{"partnerName":"OliveTech","username":"breeze-ro","password":" s3cret "}}');
+  });
+
+  it("refuses to save when the username is filled and the password blank, rather than dropping the username", () => {
+    renderCard();
+    type("username", "someone-else");
+    expect(screen.getByTestId("backup-connection-save")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the stored credential on a whitespace-only password", async () => {
+    renderCard();
+    type("password", "   ");
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(lastBody())).not.toHaveProperty("credentials");
+  });
+
+  it("keeps Save enabled while every credential field is blank (keeps the stored set)", () => {
+    renderCard();
+    expect(screen.getByTestId("backup-connection-save")).not.toBeDisabled();
+  });
+
+  it("clears the password after saving and keeps the partner name and username", async () => {
+    renderCard();
+    type("partner-name", "OliveTech");
+    type("username", "breeze-ro");
+    type("password", "s3cret");
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(screen.queryByTestId("backup-connection-password")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-password")).toHaveValue("");
+    expect(screen.getByTestId("backup-connection-partner-name")).toHaveValue("OliveTech");
+    expect(screen.getByTestId("backup-connection-username")).toHaveValue("breeze-ro");
+  });
+
+  it("toggles the password between masked and plain", () => {
+    renderCard();
+    expect(screen.getByTestId("backup-connection-password")).toHaveAttribute("type", "password");
+    fireEvent.click(screen.getByTestId("backup-connection-password-toggle"));
+    expect(screen.getByTestId("backup-connection-password")).toHaveAttribute("type", "text");
+  });
+
+  it("renders the Cove form for an unknown provider, matching the old fallthrough", () => {
+    renderCard("not-a-provider");
+    expect(screen.getByTestId("backup-connection-password")).toBeInTheDocument();
+    expect(screen.getByTestId("backup-connection-linked")).toBeInTheDocument();
+  });
+});
+
+describe("Axcient card", () => {
+  function renderCard(o: Partial<BackupProviderConnection> = {}) {
+    render(
+      <BackupProviderConnectionCard
+        connection={connection({ provider: "axcient", name: "Main Axcient", baseUrl: "https://axapi.axcient.com/x360recover", status: "reauth_required", ...o })}
+        onChanged={onChanged}
+        onTestResult={onTestResult}
+      />,
+    );
+  }
+
+  it("rotates an Axcient key with apiKey only", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    fireEvent.change(screen.getByTestId("backup-connection-api-key"), { target: { value: " new " } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    const body = JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string);
+    expect(body.credentials).toEqual({ apiKey: "new" });
+    expect(body.credentials).not.toHaveProperty("partnerName");
+    expect(body.credentials).not.toHaveProperty("username");
+    expect(body.credentials).not.toHaveProperty("password");
+  });
+
+  it("keeps the stored Axcient key when the field is blank", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-api-key")).toHaveValue("");
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string)).not.toHaveProperty("credentials");
+  });
+
+  it("labels an Axcient card with device-link counters (endpoint inventory)", () => {
+    renderCard();
+    expect(screen.getByTestId("backup-connection-provider")).toHaveTextContent("Axcient x360Recover");
+    expect(screen.getByTestId("backup-connection-linked")).toBeInTheDocument();
+    expect(screen.getByTestId("backup-connection-ambiguous")).toBeInTheDocument();
+    expect(screen.getByTestId("backup-connection-devices")).toHaveTextContent("Devices");
+    expect(screen.getByTestId("backup-connection-unmapped-devices")).toHaveTextContent("Unmapped devices");
+  });
+
+  it("renders a masked key field with its re-entry help, and no Cove or Dropsuite fields", () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-api-key")).toHaveAttribute("type", "password");
+    expect(screen.getByTestId("backup-connection-api-key")).toHaveAttribute("autoComplete", "new-password");
+    expect(screen.getByText("Leave the API key blank to keep the stored key, or enter a new one to replace it.")).toBeInTheDocument();
+    for (const absent of ["partner-name", "username", "password", "password-toggle", "reseller-token", "auth-token"]) {
+      expect(screen.queryByTestId(`backup-connection-${absent}`)).toBeNull();
+    }
+  });
+
+  it("clears the key after saving", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    fireEvent.change(screen.getByTestId("backup-connection-api-key"), { target: { value: "new" } });
+    fireEvent.click(screen.getByTestId("backup-connection-save"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("backup-connection-reauth"));
+    expect(screen.getByTestId("backup-connection-api-key")).toHaveValue("");
+  });
+
+  it("uses the device delete copy", async () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId("backup-connection-delete"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("synced devices");
   });
 });

@@ -150,6 +150,83 @@ describe('NetworkAssetTable (#6641)', () => {
     );
   });
 
+  describe('physical placement column (CPEV-W1)', () => {
+    const placed = (over: Partial<NonNullable<NetworkAssetRowDto['physicalPlacement']>> = {}) => ({
+      siteName: 'HQ',
+      room: 'Server room',
+      rack: 'A3',
+      rackUnit: 12,
+      heightU: 2,
+      ...over,
+    });
+
+    it('renders no Location column when no row carries a placement', () => {
+      render(<NetworkAssetTable initial={ok([row()])} timezone="UTC" />);
+      expect(screen.queryByRole('columnheader', { name: 'Location' })).toBeNull();
+      expect(screen.queryByTestId('portal-network-asset-location-a1')).toBeNull();
+    });
+
+    it('renders room, rack and unit; a row without placement shows a dash', () => {
+      render(
+        <NetworkAssetTable
+          initial={ok([row({ physicalPlacement: placed() }), row({ id: 'a2' })])}
+          timezone="UTC"
+        />,
+      );
+      expect(screen.getByRole('columnheader', { name: 'Location' })).toBeTruthy();
+      expect(screen.getByTestId('portal-network-asset-location-a1').textContent).toContain(
+        'Room Server room · Rack A3 · U12 (2U)',
+      );
+      expect(screen.getByTestId('portal-network-asset-location-a2').textContent).toContain('—');
+    });
+
+    it('omits null fields without placeholder strings', () => {
+      render(
+        <NetworkAssetTable
+          initial={ok([row({ physicalPlacement: placed({ room: null, rackUnit: null, heightU: null }) })])}
+          timezone="UTC"
+        />,
+      );
+      const text = screen.getByTestId('portal-network-asset-location-a1').textContent ?? '';
+      expect(text).toContain('Rack A3');
+      expect(text).not.toMatch(/null|unknown|undefined|room/i);
+    });
+
+    it('shows the placement site only when it differs from the Site column', () => {
+      render(
+        <NetworkAssetTable
+          initial={ok([
+            row({ physicalPlacement: placed() }),
+            row({ id: 'a2', physicalPlacement: placed({ siteName: 'Warehouse' }) }),
+          ])}
+          timezone="UTC"
+        />,
+      );
+      expect(screen.getByTestId('portal-network-asset-location-a1').textContent).not.toContain('HQ');
+      expect(screen.getByTestId('portal-network-asset-location-a2').textContent).toContain('Warehouse');
+    });
+
+    it('keeps the column on a later page that has no placement', async () => {
+      listMock.mockResolvedValue({ statusCode: 200, data: ok([row({ id: 'n2' })], 120, 2) });
+      render(<NetworkAssetTable initial={ok([row({ physicalPlacement: placed() })], 120)} timezone="UTC" />);
+      fireEvent.click(screen.getByTestId('portal-network-next'));
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-n2')).toBeTruthy());
+      expect(screen.getByRole('columnheader', { name: 'Location' })).toBeTruthy();
+      expect(screen.getByTestId('portal-network-asset-location-n2').textContent).toContain('—');
+    });
+
+    it('adds the column when a refetch brings the first placement', async () => {
+      listMock.mockResolvedValue({
+        statusCode: 200,
+        data: ok([row({ id: 'p1', physicalPlacement: placed() })]),
+      });
+      render(<NetworkAssetTable initial={ok([row()])} timezone="UTC" />);
+      expect(screen.queryByRole('columnheader', { name: 'Location' })).toBeNull();
+      fireEvent.change(screen.getByTestId('portal-network-filter-type'), { target: { value: 'printer' } });
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-location-p1')).toBeTruthy());
+    });
+  });
+
   it('has no site filter (needs a site list — tracked as a follow-up)', () => {
     render(<NetworkAssetTable initial={ok([row()])} timezone="UTC" />);
     expect(screen.queryByTestId('portal-network-filter-site')).toBeNull();

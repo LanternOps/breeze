@@ -37,7 +37,7 @@ func TestExecBackupRestoreWithProgressTreatsPartialRestoreAsFailure(t *testing.T
 	backupRestoreWorkRoot = func() string { return t.TempDir() }
 	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
 	baseDir := t.TempDir()
-	localProvider := providers.NewLocalProvider(baseDir)
+	localProvider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "restore-partial-1"
 	prefix := filepath.Join("snapshots", snapshotID)
 

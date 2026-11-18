@@ -9,7 +9,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useCustomFieldDefinitionsStore } from '../../stores/customFieldDefinitions';
 
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../stores/auth')>(),
   fetchWithAuth: vi.fn(),
   // orgStore registers an orgId provider at module load; the component now
   // pulls in orgStore via useFleetOrgOwner, so this export must exist.
@@ -157,6 +158,29 @@ describe('DeviceGroupsPage dynamic groups', () => {
     // Only device-1 is Windows — a count of 0 would mean the osType read is
     // still wrong, a throw would mean the crash is back.
     expect(screen.getByText(exactText('Matches 1 device'))).toBeInTheDocument();
+  });
+
+  it('resolves a scalar site/group id in the card chips to its name, not the UUID', async () => {
+    serveGroups([
+      {
+        id: 'group-1',
+        name: 'HQ Machines',
+        type: 'dynamic',
+        filterConditions: {
+          operator: 'AND',
+          conditions: [{ field: 'siteId', operator: 'equals', value: 'site-1' }],
+        },
+      },
+      { id: 'group-2', name: 'Other', type: 'static' },
+    ]);
+
+    render(<DeviceGroupsPage />);
+
+    await screen.findByText('HQ Machines');
+    await waitFor(() => {
+      expect(screen.getByText((_c, el) => el?.tagName === 'SPAN' && /Site .*HQ$/.test(el.textContent?.trim() ?? ''))).toBeInTheDocument();
+    });
+    expect(screen.queryByText((_c, el) => el?.tagName === 'SPAN' && /site-1/.test(el.textContent ?? ''))).not.toBeInTheDocument();
   });
 
   it('shows the configured filter conditions instead of a stale legacy rules stub', async () => {

@@ -59,7 +59,7 @@ vi.mock('../../middleware/auth', () => ({
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => fn(),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -89,6 +89,10 @@ vi.mock('../../services/aiRemoteToolsPolicy', () => ({
 // No mock of services/systemCleanup: the gate, the schemas, the queue/start
 // seam and the shared run-status resolver (with its cancel-and-fail
 // transaction) all run for real against the mocked db above.
+
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ type: 'commandOrgScope' })),
+}));
 
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
@@ -435,6 +439,19 @@ describe('POST /devices/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel',
     expect(updateMock.mock.calls[0]![0]).toMatchObject({ id: 'runs.id' });
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'device.filesystem.system_cleanup.cancel',
+      details: { cleanupRunId: RUN_ID, commandId: COMMAND_ID, commandCancelled: true },
+    }));
+  });
+
+  it('records that the command was NOT cancelled when the device had already claimed it (#10161 review)', async () => {
+    selectMock.mockReturnValueOnce(selectReturning([{ id: RUN_ID, deviceId: DEVICE_ID, orgId: 'org-1', kind: 'system', status: 'running', commandId: COMMAND_ID }]));
+    updateReturning([{ id: RUN_ID, commandId: COMMAND_ID }], []); // the command CAS (status = 'pending') matched nothing
+
+    const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: { cleanupRunId: RUN_ID, commandId: COMMAND_ID, commandCancelled: false },
     }));
   });
 
@@ -521,5 +538,28 @@ describe('system cleanup honours the per-device remote-tools policy', () => {
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/list`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect(checkDeviceRemoteToolsPolicyMock).not.toHaveBeenCalled();
+  });
+});
+
+// The poll GETs and the cancel POST keep the request's own transaction, so
+// their device check reads in it rather than opening a second pooled one.
+describe('routes that keep the request transaction read in it', () => {
+  it.each([
+    ['GET', `/devices/${DEVICE_ID}/filesystem/system-cleanup/list/${COMMAND_ID}`],
+    ['GET', `/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`],
+    ['POST', `/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`],
+  ])('%s %s opens no context of its own', async (method, path) => {
+    const { withAuthDbAccessContext } = await import('../../middleware/auth');
+    vi.mocked(withAuthDbAccessContext).mockClear();
+    await app().request(path, { method });
+    expect(getDeviceWithOrgAndSiteCheckMock).toHaveBeenCalled();
+    expect(withAuthDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('the POSTs that own their context still open one', async () => {
+    const { withAuthDbAccessContext } = await import('../../middleware/auth');
+    vi.mocked(withAuthDbAccessContext).mockClear();
+    await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/list`, { method: 'POST' });
+    expect(withAuthDbAccessContext).toHaveBeenCalled();
   });
 });

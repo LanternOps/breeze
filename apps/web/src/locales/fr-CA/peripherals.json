@@ -79,6 +79,14 @@
     "allOrganizations": "Toutes les organisations",
     "partnerWide": "(politique à l’échelle du partenaire)",
     "thisOrganization": "Cette organisation uniquement",
+    "appliesTo": "S'applique à",
+    "targets": {
+      "organization": "Tous les dispositifs",
+      "site": "Sites précis ({{total}})",
+      "group": "Groupes de dispositifs précis ({{total}})",
+      "device": "Dispositifs précis ({{total}})"
+    },
+    "targetReadOnlyHint": "Les cibles ne peuvent pas être modifiées dans ce formulaire. L'enregistrement conserve les cibles actuelles.",
     "deviceClass": "Classe d’appareils",
     "classes": {
       "storage": "Stockage",
@@ -102,7 +110,12 @@
     "serialNumber": "Numéro de série",
     "allow": "Autoriser :",
     "reason": "Raison",
+    "expiresAt": "Expire (votre heure locale)",
     "updatePolicy": "Mettre à jour la politique",
-    "createPolicy": "Créer une politique"
+    "createPolicy": "Créer une politique",
+    "saved": {
+      "created": "Politique créée",
+      "updated": "Politique mise à jour"
+    }
   }
 }

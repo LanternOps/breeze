@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '../../stores/auth';
+import { hasPermission } from '../../lib/permissions';
 import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '@/stores/aiStore';
 import { DEFAULT_DASHBOARD_EXCLUDE_ACTIONS } from '@/lib/auditFormat';
@@ -92,10 +93,14 @@ export default function DashboardPage() {
     (j: any) => j.data ?? []
   );
   const tickets = useDashboardQuery<TicketStats>('/tickets/stats', tick, (j: any) => j.data);
+  // GET /audit-logs/logs requires audit:read, which read-only roles such as
+  // Partner Viewer lack — skip the request rather than 403 every tick (#10295).
+  // Permissions still loading (undefined) also skip; the slot fetches once they land.
   const activity = useDashboardQuery<AuditLogEntry[]>(
     AUDIT_PATH,
     tick,
-    (j: any) => j.logs ?? j.auditLogs ?? j.data ?? []
+    (j: any) => j.logs ?? j.auditLogs ?? j.data ?? [],
+    { enabled: hasPermission(user?.permissions, 'audit', 'read') }
   );
   const patch = useDashboardQuery<PatchCompliance>('/patches/compliance', heavyTick, (j: any) => j.data);
   const security = useDashboardQuery<SecurityOverview>('/security/dashboard', heavyTick, (j: any) => j.data);

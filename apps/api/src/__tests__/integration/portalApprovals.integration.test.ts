@@ -43,6 +43,8 @@ type PortalUser = { id: string; orgId: string; email: string; name: string; cont
 async function portalUser(orgId: string, email: string, o: { status?: string; contactId?: string | null } = {}): Promise<PortalUser> {
   const [u] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({
     orgId, email, name: 'Portal person', status: o.status ?? 'active', contactId: o.contactId ?? null,
+    // W8: disabled_by is set exactly when status = 'disabled' (CHECK portal_users_disabled_by_status_chk).
+    disabledBy: o.status === 'disabled' ? 'msp' : null,
   }).returning({ id: portalUsers.id }));
   return { id: u!.id, orgId, email, name: 'Portal person', contactId: o.contactId ?? null };
 }

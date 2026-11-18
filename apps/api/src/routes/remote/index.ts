@@ -6,6 +6,7 @@ import {
   readRemoteAccessSettingsForPartner,
   toProviderSummaries,
 } from '../../services/remoteAccessProviders';
+import { REMOTE_ACCESS_DENIAL } from './remoteAccessDenial';
 import { sessionRoutes } from './sessions';
 import { supportSessionRoutes } from './supportSessions';
 import { deviceActiveSessionRoutes } from './deviceActiveSessions';
@@ -14,7 +15,14 @@ export const remoteRoutes = new Hono();
 
 // Apply auth middleware globally
 remoteRoutes.use('*', authMiddleware);
-remoteRoutes.use('*', requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action), requireMfa());
+remoteRoutes.use(
+  '*',
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action, {
+    // #11621: name the missing grant instead of a bare "Permission denied".
+    denial: REMOTE_ACCESS_DENIAL,
+  }),
+  requireMfa(),
+);
 
 // GET /remote/providers - the tenant's remote-access providers, id/name/enabled
 // only.

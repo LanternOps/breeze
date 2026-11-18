@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
-import BackupDestinationSection, { emptyConfigForm } from './BackupDestinationSection';
+import BackupDestinationSection, { destinationPrefixError, emptyConfigForm } from './BackupDestinationSection';
 
 // DBT-5: Chrome ignores `autoComplete="off"` on password-type inputs and
 // autofills the operator's saved Breeze login into the S3 credential fields.
@@ -72,5 +72,85 @@ describe('BackupDestinationSection empty state (#8152)', () => {
     render(<BackupDestinationSection {...baseProps} mode="create" />);
 
     expect(screen.queryByTestId('backup-destination-empty-create')).not.toBeInTheDocument();
+  });
+});
+
+// #7081: the S3 key prefix now relocates new snapshots, so the form explains
+// what it does and flags a prefix the server would refuse.
+describe('BackupDestinationSection key prefix (#7081)', () => {
+  const baseProps = {
+    configs: [],
+    configsLoading: false,
+    selectedConfigId: '',
+    onSelect: vi.fn(),
+    mode: 'create' as const,
+    onStartCreate: vi.fn(),
+    onCancelForm: vi.fn(),
+    onBeginEdit: vi.fn(),
+    form: { ...emptyConfigForm, provider: 's3' as const },
+    onFormChange: vi.fn(),
+    fieldErrors: {},
+    testStatus: 'idle' as const,
+    onTest: vi.fn(),
+  };
+
+  it('explains where new snapshots go and that existing ones stay', () => {
+    render(<BackupDestinationSection {...baseProps} />);
+    expect(screen.getByText(
+      'Key prefix for this destination. New snapshots are stored under <prefix>/snapshots/. Existing snapshots stay where they are. Changing it makes the next backup a full backup.',
+    )).toBeInTheDocument();
+  });
+
+  it.each([
+    ['a//b', 'Invalid key prefix: it must not contain empty, "." or ".." segments.'],
+    ['msp/Snapshots', 'Invalid key prefix: it must not contain a "snapshots" segment.'],
+    ['has space', "Invalid key prefix: use only letters, digits and ! _ . * ' ( ) - in each segment, separated by /."],
+    ['x'.repeat(257), 'Invalid key prefix: it must be at most 256 characters.'],
+  ])('shows the validator message inline for %s', (prefix, message) => {
+    render(<BackupDestinationSection {...baseProps} form={{ ...baseProps.form, prefix }} />);
+    expect(screen.getByText(message)).toBeInTheDocument();
+  });
+
+  it.each(['', 'msp/acme', '/msp/acme/'])('shows no prefix error for %j', (prefix) => {
+    render(<BackupDestinationSection {...baseProps} form={{ ...baseProps.form, prefix }} />);
+    expect(screen.queryByText(/Invalid key prefix/)).not.toBeInTheDocument();
+  });
+
+  it('destinationPrefixError ignores a local destination whatever prefix the form holds', () => {
+    expect(destinationPrefixError({ ...emptyConfigForm, provider: 'local', prefix: 'a//b' })).toBeNull();
+    expect(destinationPrefixError({ ...emptyConfigForm, provider: 's3', prefix: 'a//b' })).toMatch(/^Invalid key prefix/);
+  });
+});
+
+// Network shares are not supported as local destinations; the local form no
+// longer suggests a UNC share or a NAS path.
+describe('BackupDestinationSection local destination copy', () => {
+  const baseProps = {
+    configs: [],
+    configsLoading: false,
+    selectedConfigId: '',
+    onSelect: vi.fn(),
+    mode: 'create' as const,
+    onStartCreate: vi.fn(),
+    onCancelForm: vi.fn(),
+    onBeginEdit: vi.fn(),
+    form: { ...emptyConfigForm, provider: 'local' as const },
+    onFormChange: vi.fn(),
+    fieldErrors: {},
+    testStatus: 'idle' as const,
+    onTest: vi.fn(),
+  };
+
+  it('does not suggest a UNC or NAS share for a local destination', () => {
+    const { container } = render(<BackupDestinationSection {...baseProps} />);
+    const text = container.textContent ?? '';
+    const placeholders = Array.from(container.querySelectorAll('input'))
+      .map((input) => input.getAttribute('placeholder') ?? '')
+      .join(' ');
+
+    expect(text).not.toMatch(/UNC/);
+    expect(text).not.toMatch(/mounted NAS/i);
+    expect(placeholders).not.toContain('\\\\');
+    expect(text).toMatch(/network shares[^.]*not supported/i);
   });
 });

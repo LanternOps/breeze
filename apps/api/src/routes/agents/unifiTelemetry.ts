@@ -188,9 +188,6 @@ unifiTelemetryRoutes.post('/:id/unifi-telemetry', zValidator('json', telemetrySc
     ...payload,
     error: redactOptionalSecretText(payload.error),
     deviceId: agent.deviceId,
-    // Server-derived from the companion field, never from a client flag: the v2 materializer owns uptime/cpu/mem/
-    // num_clients for this request, so the legacy reconcile must not null them (even if the v2 companion was rejected).
-    ...(topologyV2 !== undefined ? { topologyV2Present: true } : {}),
   });
   return c.json({ accepted: true, ...(topology ? { topology } : {}) }, 202);
 });

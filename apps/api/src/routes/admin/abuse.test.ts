@@ -134,6 +134,15 @@ vi.mock('../../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
+// #9719: the bulk cancel must go through cancelDeviceCommands so the per-type
+// cancellation hooks run for every command it flips.
+const { cancelDeviceCommandsMock } = vi.hoisted(() => ({
+  cancelDeviceCommandsMock: vi.fn(async () => [] as unknown[]),
+}));
+vi.mock('../../services/commandCancelPropagation', () => ({
+  cancelDeviceCommands: cancelDeviceCommandsMock,
+}));
+
 vi.mock('../../db/schema', async (importOriginal) => ({
   // Spread the real schema so transitive imports (e.g. patchPolicies pulled in
   // via remoteSessionTeardown) resolve; override the tables this suite asserts
@@ -206,8 +215,9 @@ vi.mock('../../oauth/grantRevocation', () => ({
 // Billing subscription cancel on suspend. vi.hoisted so the stable mock fn is
 // referenceable inside the (hoisted) factory and assertable across calls.
 const billingCancelMock = vi.hoisted(() => vi.fn());
+const billingCloseCheckoutsMock = vi.hoisted(() => vi.fn());
 vi.mock('../../services/breezeBillingClient', () => ({
-  getBreezeBillingClient: () => ({ cancelSubscription: billingCancelMock }),
+  getBreezeBillingClient: () => ({ cancelSubscription: billingCancelMock, closeOpenCheckouts: billingCloseCheckoutsMock }),
 }));
 
 // /unsuspend now restores the agent fleet that an orgs.ts-initiated suspend
@@ -504,6 +514,18 @@ describe('admin/abuse — suspend mutation behavior', () => {
       expect(row.payload).toEqual({ removeConfig: true });
     });
 
+    // #9719: other pending/sent commands are cancelled through the shared
+    // helper (UPDATE + per-type hooks), inside the suspend transaction.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledTimes(1);
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: { reason: 'partner_suspended_for_abuse' },
+        executor: expect.anything(),
+        // A failing hook must never roll back the suspension itself.
+        isolateFailures: true,
+      }),
+    );
+
     // Sessions deleted (caller is not a member of partner here, so all users targeted).
     expect(txMockState.deletes).toContainEqual({ table: 'sessions' });
 
@@ -523,6 +545,11 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const familyUpdates = txMockState.updates.filter((u) => u.values && 'revokedReason' in u.values);
     expect(epochUpdates).toHaveLength(2);
     expect(familyUpdates).toHaveLength(2);
+    // Each disabled user's pending email-address change is cancelled too.
+    const pendingEmailCancels = txMockState.updates.filter(
+      (u) => u.values && u.values.pendingEmail === null && u.values.pendingEmailRequestedAt === null,
+    );
+    expect(pendingEmailCancels).toHaveLength(2);
 
     // Audit log written with the right action + details.
     expect(createAuditLog).toHaveBeenCalledTimes(1);
@@ -951,6 +978,7 @@ describe('admin/abuse — billing subscription cancel on suspend', () => {
     resetState();
     process.env.NODE_ENV = 'test';
     billingCancelMock.mockResolvedValue({ canceled: true, immediate: true });
+    billingCloseCheckoutsMock.mockResolvedValue({ status: 'closed', expiredCheckoutSessionIds: [], canceledSubscriptionIds: [] });
   });
 
   afterEach(() => {
@@ -1002,6 +1030,49 @@ describe('admin/abuse — billing subscription cancel on suspend', () => {
     });
   });
 
+  // #11952: a session opened before the suspension stayed payable for 24 h, and
+  // Stripe refuses to cancel an incomplete subscription while its session is open.
+  it('expires open checkouts BEFORE cancelling the subscription, and records the outcome', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    const order: string[] = [];
+    billingCloseCheckoutsMock.mockImplementation(async () => {
+      order.push('close');
+      return { status: 'closed', expiredCheckoutSessionIds: ['cs_1'], canceledSubscriptionIds: ['sub_inc'] };
+    });
+    billingCancelMock.mockImplementation(async () => { order.push('cancel'); return { canceled: true, immediate: true }; });
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    expect(billingCloseCheckoutsMock).toHaveBeenCalledWith({ partnerId: 'partner-1', reason: 'admin:suspend_for_abuse' });
+    expect(order).toEqual(['close', 'cancel']);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({
+      billingCheckoutsClosed: { status: 'closed', expiredCheckoutSessionIds: ['cs_1'], canceledSubscriptionIds: ['sub_inc'] },
+    });
+  });
+
+  it('a checkout close that does not happen never aborts the suspend or the subscription cancel', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    billingCloseCheckoutsMock.mockResolvedValue({ status: 'failed', detail: 'Billing service returned 502' });
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    expect(billingCancelMock).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    // The operator sees it in the response: those sessions need a manual expire.
+    expect(body.billingCheckoutsCloseFailed).toBe(true);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({ billingCheckoutsClosed: { status: 'failed', detail: 'Billing service returned 502' } });
+  });
+
   it('skips billing entirely when no billing service is configured (self-hosted)', async () => {
     delete process.env.BREEZE_BILLING_URL;
     const app = buildApp(platformAdminAuth);
@@ -1012,6 +1083,7 @@ describe('admin/abuse — billing subscription cancel on suspend', () => {
     });
     expect(res.status).toBe(200);
     expect(billingCancelMock).not.toHaveBeenCalled();
+    expect(billingCloseCheckoutsMock).not.toHaveBeenCalled();
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: null });
   });

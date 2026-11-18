@@ -292,4 +292,20 @@ describe('InvoiceActions issue refusal for held time (#8196)', () => {
     })));
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'raw server text' }));
   });
+
+  it('shows localized copy for a 409 SOURCE_HELD_FOR_HOUR_BLOCK (#8970)', async () => {
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') {
+        return { ok: false, status: 409, json: async () => ({ error: 'raw server text', code: 'SOURCE_HELD_FOR_HOUR_BLOCK' }) } as Response;
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceActions detail={detail([visibleLine])} onChanged={vi.fn()} variant="header" />);
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/held for this organization's block hours/),
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'raw server text' }));
+  });
 });

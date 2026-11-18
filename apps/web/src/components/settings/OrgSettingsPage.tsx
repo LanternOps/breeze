@@ -12,6 +12,7 @@ import {
   Check,
   Cloud,
   CreditCard,
+  AtSign,
   Fingerprint,
   Globe,
   Monitor,
@@ -29,6 +30,8 @@ import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav'
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgPortalUsersEditor from './OrgPortalUsersEditor';
+import OrgSignInRegistrationCard from './portalAccess/OrgSignInRegistrationCard';
+import OrgDomainsTab from './orgDomains/OrgDomainsTab';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
@@ -49,6 +52,7 @@ import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth, waitForPendingRefresh } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useJwtClaims } from '@/lib/authScope';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
@@ -58,7 +62,7 @@ import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 
 type TabKey =
-  | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
+  | 'general' | 'contacts' | 'domains' | 'branding' | 'portal' | 'notifications' | 'security'
   | 'approval-security' | 'ai' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
   | 'extensions' | 'cloud-tenants';
 
@@ -70,6 +74,10 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
       { key: 'contacts', hash: 'contacts', label: 'orgSettingsPage.nav.contacts', description: 'orgSettingsPage.nav.contactsDescription', icon: Contact },
+      // Portal registration W5 (#11382, spec §5.4): the one home for an org's
+      // customer email domains. Shown only to partner/system callers — the
+      // ticket-config governance gate (plan D9) refuses org-scoped tokens.
+      { key: 'domains', hash: 'domains', label: 'orgSettingsPage.nav.domains', description: 'orgSettingsPage.nav.domainsDescription', icon: AtSign },
       // 'contracts' is intentionally NOT a nav item anymore — it moved to the
       // organization record's Contracts & Billing tab (#5075 W03). It stays a
       // resolvable TabKey (see getTabFromHash's explicit case below) purely so
@@ -154,24 +162,17 @@ type OrgDetails = {
   type?: string;
   maxDevices?: number;
   settings?: {
-    branding?: {
-      logoUrl?: string;
-      primaryColor?: string;
-      secondaryColor?: string;
-      theme?: 'light' | 'dark' | 'system';
-      // customCss deliberately absent (#5952) — it now lives in
-      // portal_branding, loaded/saved by OrgBrandingEditor via
-      // /orgs/organizations/:id/portal-settings, not here.
-      portalSubdomain?: string;
-    };
+    // #9673: retired. Nothing reads the org-level blob; the Branding tab lives in portal_branding
+    // (OrgBrandingEditor, /orgs/organizations/:id/portal-settings). Only the
+    // legacy logo is still looked at, to offer it to the org, and the next
+    // Branding save clears the whole category (handleBrandingSaved).
+    branding?: { logoUrl?: string } & Record<string, unknown>;
     defaults?: {
       policyDefaults?: Record<string, string>;
       deviceGroup?: string;
-      alertThreshold?: string;
       autoEnrollment?: {
         enabled: boolean;
         requireApproval: boolean;
-        sendWelcome: boolean;
       };
       agentUpdatePolicy?: string;
       maintenanceWindow?: string;
@@ -257,6 +258,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   // the effect below to avoid a hydration mismatch (same pattern as
   // PartnerSettingsPage). Also tracks back/forward via hashchange.
   const [activeTab, setActiveTab] = useState<TabKey>('general');
+  // Domains (W5) follows the ticket-config governance gate: partner or system
+  // scope. 'unresolved' is "not known yet" on a cold load (#4013), never a denial.
+  const jwt = useJwtClaims();
+  const domainsAccess: 'unresolved' | 'allowed' | 'denied' =
+    jwt.status === 'unresolved'
+      ? 'unresolved'
+      : jwt.claims.scope === 'partner' || jwt.claims.scope === 'system' ? 'allowed' : 'denied';
 
   useEffect(() => {
     const applyHash = () => {
@@ -301,7 +309,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   usePageItemName(orgDetails?.name);
   const [locked, setLocked] = useState<string[]>([]);
   // Issue #2124: registered versions for the pin selectors + the partner's
-  // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
+  // effective pins (shown when the partner has set `defaults.agentVersionPins`).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
   // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
@@ -411,13 +419,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setEffectiveDefaults(effData.effective?.defaults);
         setAiApprovalTimeout(effData.aiApprovalTimeout ?? null);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
-        // assertNotLocked exemption in the org PATCH). But `locked` still carries
-        // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
-        // as a "partner has a pin" signal so the effective value is the partner's
-        // (not the org's own, which mergeCategory would surface when the partner
-        // hasn't pinned). The org selector is never disabled by this.
+        // assertNotLocked exemption in the org PATCH), so since #9762 they are
+        // reported in `partnerDefaults`, never in `locked`. That entry is the
+        // "partner has a pin" signal: only then is the merged effective value the
+        // partner's (otherwise it is the org's own, which mergeCategory surfaces
+        // when the partner hasn't pinned). The org selector is never disabled.
+        const partnerDefaultsList: string[] = effData.partnerDefaults || [];
         setPartnerPins(
-          lockedList.includes('defaults.agentVersionPins')
+          partnerDefaultsList.includes('defaults.agentVersionPins')
             ? effData.effective?.defaults?.agentVersionPins
             : undefined,
         );
@@ -497,6 +506,18 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       return false;
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
+
+  // #9673: the editor has already saved through portal-settings (an archived
+  // org never gets that far: saveBlockedMessage). Clearing the retired blob is
+  // the only org write left.
+  const handleBrandingSaved = useCallback(async () => {
+    const legacy = orgDetails?.settings?.branding;
+    if (legacy && Object.keys(legacy).length > 0) {
+      return handleSaveSettings('branding', {});
+    }
+    setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
+    return true;
+  }, [orgDetails, handleSaveSettings]);
 
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
@@ -643,16 +664,32 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <OrgBrandingEditor
             organizationName={displayOrg.name}
             orgId={effectiveOrgId}
-            branding={orgDetails?.settings?.branding}
+            legacyLogoUrl={orgDetails?.settings?.branding?.logoUrl}
             onDirty={handleDirty}
-            onSave={(data) => handleSaveSettings('branding', data)}
+            onSave={handleBrandingSaved}
+            saveBlockedMessage={isArchived ? t('orgSettingsPage.archived.saveBlocked') : undefined}
             locked={locked}
           />
         );
+      case 'domains':
+        if (domainsAccess === 'unresolved') {
+          return <p className="text-sm text-muted-foreground" data-testid="org-domains-pending">{t('orgDomains.checkingAccess')}</p>;
+        }
+        if (domainsAccess === 'denied') {
+          return <p className="text-sm text-muted-foreground" data-testid="org-domains-partner-only">{t('orgDomains.partnerOnly')}</p>;
+        }
+        return effectiveOrgId ? <OrgDomainsTab key={effectiveOrgId} orgId={effectiveOrgId} /> : null;
       case 'portal':
         return effectiveOrgId ? (
           <>
             <OrgPortalSettingsEditor
+              orgId={effectiveOrgId}
+              onDirty={handleDirty}
+              onSave={() => handleSave()}
+            />
+            {/* Sign-in & registration (portal registration W3): the org override of the
+                portal access policy, above the portal users list (spec §4). */}
+            <OrgSignInRegistrationCard
               orgId={effectiveOrgId}
               onDirty={handleDirty}
               onSave={() => handleSave()}
@@ -712,6 +749,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             {/* AI model registry W04 (#7602): org override of the partner's per-feature model defaults (tighten-only). */}
             <OrgModelDefaultsCard orgId={effectiveOrgId} />
             <OrgAiBudgetSettings orgId={effectiveOrgId} />
+            {/* Approval mode: stored with the budget fields (PUT /ai/budget)
+                but not a budget, so it renders as its own card ahead of the
+                approval timeout. */}
+            <OrgAiBudgetSettings orgId={effectiveOrgId} section="approvals" />
             {/* #6475 — a separate card, not folded into OrgAiBudgetSettings:
                 that one saves through PUT /ai/budget with different
                 semantics (touched-fields-only, its own lock model). This
@@ -916,6 +957,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             </section>
             <OrgDefaultsEditor
               organizationName={displayOrg.name}
+              organizationId={effectiveOrgId ?? undefined}
               defaults={orgDetails?.settings?.defaults}
               onDirty={handleDirty}
               // The editor now emits the shared `InheritableDefaultSettings`
@@ -934,7 +976,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   };
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {propOrgId && (
         <>
           <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
@@ -952,7 +994,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       )}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('orgSettingsPage.description', { organization: displayOrg.name })}
           </p>
@@ -1024,7 +1066,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         <SettingsSectionNav
           groups={TAB_GROUPS.map(group => ({
             label: t(/* i18n-dynamic */ group.label),
-            items: group.items.map(item => ({
+            items: group.items.filter(item => item.key !== 'domains' || domainsAccess === 'allowed').map(item => ({
               ...item,
               label: t(/* i18n-dynamic */ item.label),
               description: t(/* i18n-dynamic */ item.description),
@@ -1034,6 +1076,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           activeKey={activeTab}
           onNavigate={key => switchTab(key as TabKey)}
           selectId="org-settings-section"
+          testIdPrefix="org-settings"
         />
 
         <div className="min-w-0 space-y-6">{renderContent()}</div>

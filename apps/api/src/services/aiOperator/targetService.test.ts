@@ -1,9 +1,14 @@
 // apps/api/src/services/aiOperator/targetService.test.ts
 import { describe, expect, it, vi } from 'vitest';
+
+const reserveTaskAccount = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./accountReservations', () => ({ reserveTaskAccount }));
+
 import {
   CONTACT_LINK_SYSTEMS,
   createTaskTarget,
   freezeTargetAccount,
+  upsertContactExternalLinks,
   targetColumnForKind,
 } from './targetService';
 
@@ -55,11 +60,35 @@ describe('targetService — kind/pointer agreement (recipe spec §5.1)', () => {
     });
   });
 
+  it('#9981: every freeze reserves the account it froze, for the same task, on the same handle', async () => {
+    const values = vi.fn(() => ({ onConflictDoUpdate: () => ({ returning: async () => [{ id: 'acct-1' }] }) }));
+    const dbh = { insert: vi.fn(() => ({ values })), update: vi.fn(), select: vi.fn() } as never;
+    reserveTaskAccount.mockClear();
+    await freezeTargetAccount(dbh, {
+      orgId: 'org-1', taskId: 'task-1', targetId: 'target-1', provider: 'm365',
+      connectionId: 'conn-1', externalId: 'entra-oid-1', principalLabel: 'dana@acme.com',
+    });
+    expect(reserveTaskAccount).toHaveBeenCalledWith(dbh, {
+      orgId: 'org-1', taskId: 'task-1', provider: 'm365', externalId: 'entra-oid-1', principalLabel: 'dana@acme.com',
+    });
+  });
+
   it('pins the contact_external_links system vocabulary to m365 and google', () => {
     // `contact_external_links.system` is free-form text with no CHECK
     // (2026-08-19-contacts.sql) and is shared with the CSV/PSA importers, so
     // the Operator's own vocabulary has to be pinned in code or a typo would
     // create a second, silently-unmatched identity for the same person.
     expect([...CONTACT_LINK_SYSTEMS]).toEqual(['m365', 'google']);
+  });
+});
+
+describe('upsertContactExternalLinks — the ticket import namespace is reserved (#8313 W4b)', () => {
+  it('refuses a ticket-import: system before anything is inserted', async () => {
+    const dbh = { insert: vi.fn(), update: vi.fn(), select: vi.fn() } as never;
+    await expect(upsertContactExternalLinks(dbh, {
+      orgId: 'org-1', contactId: 'c-1',
+      links: [{ system: 'm365', externalId: 'a' }, { system: 'ticket-import:src-1' as never, externalId: 'b' }],
+    })).rejects.toThrow(/reserved for ticket imports/);
+    expect((dbh as unknown as { insert: ReturnType<typeof vi.fn> }).insert).not.toHaveBeenCalled();
   });
 });

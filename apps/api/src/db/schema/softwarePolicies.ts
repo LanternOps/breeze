@@ -46,7 +46,13 @@ export type SoftwarePolicyRulesDefinition = {
 };
 
 export type SoftwarePolicyViolation = {
-  type: 'unauthorized' | 'missing'; // 'outdated' planned but not yet emitted
+  /**
+   * 'outdated' is planned but not yet emitted. `not_running` and
+   * `service_unverified` come from the `service_running` compliance bridge
+   * (#6958 PR E, services/softwarePolicyServiceRules.ts) and never drive
+   * install or uninstall remediation.
+   */
+  type: 'unauthorized' | 'missing' | 'not_running' | 'service_unverified';
   software?: {
     name: string;
     version?: string | null;
@@ -64,6 +70,12 @@ export type SoftwarePolicyViolation = {
      * unique within a policy, so re-deriving it by name is not an option.
      */
     catalogId?: string;
+  };
+  /** The observed service behind a `not_running` / `service_unverified` violation (#6958). */
+  service?: {
+    name: string;
+    observedStatus: 'stopped' | 'not_found' | 'error' | null;
+    observedAt: string | null;
   };
   severity: 'low' | 'medium' | 'high' | 'critical';
   detectedAt: string;
@@ -169,6 +181,12 @@ export const softwareComplianceStatus = pgTable('software_compliance_status', {
   // cooldown bound the RATE of a mismatched-rule reinstall loop but never stop
   // it; this counter is what terminates it, at 'gave_up'.
   installRemediationAttempts: integer('install_remediation_attempts').notNull().default(0),
+  // #6958 PR E: the `service_running` names (OS-filtered, deduped, capped) the
+  // compliance worker derived for this (policy, device) on its last pass. The
+  // agent heartbeat unions them into the device's monitoring watches; restart
+  // authority is re-derived from the live policy row at read time and is
+  // never stored here. NULL = the policy derives no names for this device.
+  serviceWatches: jsonb('service_watches').$type<Array<{ name: string }>>(),
 }, (table) => ({
   deviceIdIdx: index('software_compliance_device_id_idx').on(table.deviceId),
   policyIdIdx: index('software_compliance_policy_id_idx').on(table.policyId),

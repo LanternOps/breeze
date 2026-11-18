@@ -25,6 +25,7 @@ vi.mock('../../stores/auth', () => ({
 }));
 vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }),
+  useJwtClaims: () => ({ status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } }),
   loginPathWithNext: () => '/login?next=%2F',
 }));
 vi.mock('../../lib/ticketConfigApi', async (orig) => ({
@@ -34,6 +35,9 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./TicketPartsCard', () => ({ default: () => null }));
 vi.mock('./TicketChecklistCard', () => ({ default: () => null }));
+// authScope is stubbed above without useJwtClaims, which the header's
+// Link-to-Wisp button reads; the button has its own suite.
+vi.mock('@/components/wisp/WispTalkButton', () => ({ default: () => null }));
 vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => true }));
 vi.mock('../callerVerification/TicketVerificationBadge', () => ({ TicketVerificationBadge: () => null }));
 vi.mock('../callerVerification/VerifyCallerModal', () => ({

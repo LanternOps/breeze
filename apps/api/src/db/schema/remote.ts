@@ -3,6 +3,7 @@ import { pgTable, uuid, text, timestamp, jsonb, pgEnum, integer, bigint, index, 
 import { devices } from './devices';
 import { users } from './users';
 import { organizations } from './orgs';
+import { REMOTE_SESSION_END_REASONS, type RemoteSessionEndReason } from '@breeze/shared';
 
 export const remoteSessionTypeEnum = pgEnum('remote_session_type', ['terminal', 'desktop', 'file_transfer']);
 export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed', 'denied']);
@@ -53,7 +54,15 @@ export const remoteSessions = pgTable('remote_sessions', {
   // stop result lands. A start is refused unless this is 'none'.
   terminationPhase: text('termination_phase').$type<'none' | 'pending' | 'confirmed'>().notNull().default('none'),
   iceCandidates: jsonb('ice_candidates').default([]),
+  // The session's original start: the first agent answer, or the first
+  // WebSocket-fallback start. Never moved by a reconnect; the lease hard
+  // deadline (max duration) is measured from it (#11113).
   startedAt: timestamp('started_at'),
+  // The latest start attempt: every committed offer or WebSocket-fallback start,
+  // and every agent answer. Creation time until the first attempt. Stale cleanup
+  // and the pending/connecting reaper are measured from it, so a session that is
+  // renegotiating is not ended as stale (#11149).
+  lastStartAttemptAt: timestamp('last_start_attempt_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at'),
   durationSeconds: integer('duration_seconds'),
   bytesTransferred: bigint('bytes_transferred', { mode: 'bigint' }),
@@ -64,6 +73,15 @@ export const remoteSessions = pgTable('remote_sessions', {
   // Redis holds only the lease TTL, so a renew after a Redis flush re-derives
   // the baseline from here. NULL on rows predating the revocation lease.
   permissionsEpochSnapshot: bigint('permissions_epoch_snapshot', { mode: 'number' }),
+  // Why the session ended (#11839; first value 'ended_by_user' from #10190 W06).
+  // Written by every terminal writer through terminalIntentSet as
+  // COALESCE(existing, new), so a reason recorded while the row was still live
+  // (the agent's desk-userend) is never overwritten. desktopUserEnd.ts is the
+  // one writer outside the contract: it sets 'ended_by_user' on a live row, or
+  // replaces the generic 'peer_disconnected' its own stop recorded first. NULL = not recorded (rows
+  // that predate #11839). Closed set REMOTE_SESSION_END_REASONS, CHECK-
+  // constrained (widened by 2027-01-24-220000-remote-sessions-end-reason-widen.sql).
+  endReason: text('end_reason').$type<RemoteSessionEndReason>(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   // W06 (#3900): one user's ended sessions for a day window; partial so the
@@ -77,6 +95,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   index('remote_sessions_device_live_idx')
     .on(t.deviceId)
     .where(remoteSessionIsLive(t.status)),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): ended-session
+  // age scan (jobs/historyRetention/accessHistory.ts).
+  index('remote_sessions_terminal_age_idx')
+    .on(sql`(COALESCE(${t.endedAt}, ${t.createdAt}))`)
+    .where(sql`${t.status} IN ('disconnected', 'failed', 'denied')`),
   check(
     'remote_sessions_desktop_prompt_mode_check',
     sql`${t.desktopPromptMode} IS NULL OR ${t.desktopPromptMode} IN ('off', 'notify', 'consent')`,
@@ -84,6 +107,10 @@ export const remoteSessions = pgTable('remote_sessions', {
   check(
     'remote_sessions_desktop_consent_unavailable_behavior_check',
     sql`${t.desktopConsentUnavailableBehavior} IS NULL OR ${t.desktopConsentUnavailableBehavior} IN ('proceed', 'block')`,
+  ),
+  check(
+    'remote_sessions_end_reason_check',
+    sql`${t.endReason} IS NULL OR ${t.endReason} IN (${sql.raw(REMOTE_SESSION_END_REASONS.map((v) => `'${v}'`).join(', '))})`,
   ),
   check(
     'remote_sessions_termination_phase_check',

@@ -6,18 +6,19 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
-import { computeChargeNow, ERROR_CODES } from '@breeze/shared';
+import { computeChargeNow, computeCheckoutCharge, ERROR_CODES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
+import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
 import { markViewed } from '../services/invoiceService';
 import { assembleCustomerInvoiceDocument } from '../services/customerDocument';
 import { getInvoicePdf, renderInvoicePdf } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
-import { isPartnerOnlinePaymentAvailable } from '../services/partnerStripe';
+import { isPartnerOnlinePaymentAvailableOnCallerConnection } from '../services/partnerStripe';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -121,6 +122,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       const [partner] = await db.select({
         name: partners.name, billingEmail: partners.billingEmail,
         documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+        billingAddressCountry: partners.billingAddressCountry,
+        settings: partners.settings,
       }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
         .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
@@ -145,9 +148,14 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       console.error('[invoicesPublic] markViewed failed', { invoiceId: inv.id, err });
     }
 
-    const chargeNow = computeChargeNow({
-      depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
-    });
+    // The Checkout rule the Pay button mints with (#3803 item 8), so the amount
+    // shown is the amount charged. A balance the currency cannot express gets no
+    // Pay CTA (the mint refuses it) and is displayed exactly, never rounded.
+    const depositInput = { depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance };
+    const checkoutCharge = computeCheckoutCharge(depositInput, inv.currencyCode);
+    const chargeNow = checkoutCharge.kind === 'charge'
+      ? { amount: checkoutCharge.amount, isDeposit: checkoutCharge.isDeposit }
+      : computeChargeNow(depositInput);
     // #7824: advisory in-flight autopay state (the pay route's 409 is the gate).
     let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
     try {
@@ -176,8 +184,10 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       lines: doc.lines,
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
-      payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
-        && await isPartnerOnlinePaymentAvailable(inv.partnerId),
+      // #9585: read on THIS handler's system-context connection — the default
+      // variant would open a second connection inside this open transaction.
+      payable: PAYABLE.has(inv.status) && checkoutCharge.kind === 'charge'
+        && await isPartnerOnlinePaymentAvailableOnCallerConnection(inv.partnerId),
       autopay: customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(inv.orgId, inv.id),
       bankAutopay: autopayKnown ? await getBankAutopayOffer(inv.id,inv.orgId) : null,
       branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Invoice' },
@@ -189,14 +199,16 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
 
 function brandingBlock(
   inv: { documentTheme: string | null; documentPageSize: string | null },
-  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null } | undefined,
+  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null; billingAddressCountry: string | null; settings: unknown } | undefined,
   brand: { logoUrl: string | null; primaryColor: string | null } | undefined,
 ) {
+  // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+  const docBrand = resolveDocumentBrand(brand, partner?.settings);
   return {
     partnerName: partner?.name ?? 'Invoice',
     contactEmail: partner?.billingEmail ?? null,
-    logoUrl: brand?.logoUrl ?? null,
-    primaryColor: brand?.primaryColor ?? null,
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
     // #6227: the invoice's issue-time snapshot (every non-draft invoice carries
     // one since 2026-10-29-100100), partner live values only as the fallback.
     ...resolveInvoicePresentation(inv, partner),
@@ -271,7 +283,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
       // family, so the two never mint competing sessions for the same charge.
       ...publicInvoiceCheckoutUrls(),
       ...body, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
-    });
+    }, { billingGate: false });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {

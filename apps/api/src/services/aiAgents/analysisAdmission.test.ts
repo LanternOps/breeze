@@ -12,10 +12,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const createAndEnqueueAgentRun = vi.hoisted(() => vi.fn());
-vi.mock('./runService', () => ({ createAndEnqueueAgentRun }));
+const GrantDepthExceededError = vi.hoisted(() => class GrantDepthExceededError extends Error {
+  readonly code = 'grant_depth_exceeded' as const;
+});
+vi.mock('./runService', () => ({ createAndEnqueueAgentRun, GrantDepthExceededError }));
 
 const resolveArtifact = vi.hoisted(() => vi.fn());
 vi.mock('../artifacts/artifactService', () => ({ resolveArtifact }));
+
+const verifiedAnalysisSiteId = vi.hoisted(() => vi.fn());
+vi.mock('./analysisRunSite', () => ({ verifiedAnalysisSiteId }));
+
+// W03: the handle pre-check runs in a system DB context (Review Focus 4).
+const dbCtx = vi.hoisted(() => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../../db', () => ({
+  db: {},
+  runOutsideDbContext: dbCtx.runOutsideDbContext,
+  withSystemDbAccessContext: dbCtx.withSystemDbAccessContext,
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+}));
 
 import { admitAnalysisRun, SKIP_REASON_REFUSALS, type AdmitAnalysisRunInput } from './analysisAdmission';
 
@@ -29,6 +47,7 @@ function input(over: Partial<AdmitAnalysisRunInput> = {}): AdmitAnalysisRunInput
     requestedByUserId: 'user-1',
     sessionId: 'chat-1',
     goal: 'why are three devices slow',
+    scope: 'devices',
     deviceIds: ['dev-1'],
     siteId: null,
     stagedHandles: [],
@@ -39,25 +58,82 @@ function input(over: Partial<AdmitAnalysisRunInput> = {}): AdmitAnalysisRunInput
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveArtifact.mockResolvedValue({ id: HANDLE, orgId: ORG_ID });
+  resolveArtifact.mockResolvedValue({
+    id: HANDLE, orgId: ORG_ID, kind: 'output', createdByTool: 'workspace_collect',
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  verifiedAnalysisSiteId.mockImplementation(async (_orgId: string, siteId: string | null) => siteId);
   createAndEnqueueAgentRun.mockResolvedValue({
     created: true, run: { id: RUN_ID, status: 'queued', errorCode: null },
   });
 });
 
 describe('admitAnalysisRun', () => {
+  it('records the requested site only when the site check confirms it', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    verifiedAnalysisSiteId.mockResolvedValueOnce(SITE);
+    await admitAnalysisRun(input({ siteId: SITE, deviceIds: ['dev-1', 'dev-2'] }));
+    expect(verifiedAnalysisSiteId).toHaveBeenCalledWith(ORG_ID, SITE, ['dev-1', 'dev-2']);
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).triggerRef.siteId).toBe(SITE);
+
+    verifiedAnalysisSiteId.mockResolvedValueOnce(null);
+    await admitAnalysisRun(input({ siteId: SITE, deviceIds: ['dev-1', 'dev-2'] }));
+    // A site that does not hold every input device is not recorded; the run is still admitted.
+    expect((createAndEnqueueAgentRun.mock.calls[1]![0] as any).triggerRef.siteId).toBeNull();
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+  });
+
+  // W06: the launcher's message names the frozen scope and the step, so
+  // admission hands back what the created row froze.
+  it('returns the frozen scope and chain depth of the created run', async () => {
+    createAndEnqueueAgentRun.mockResolvedValueOnce({
+      created: true,
+      run: {
+        id: RUN_ID, status: 'queued', errorCode: null, chainDepth: 2,
+        stagedInputs: { handles: [], deviceIds: ['d1'], region: 'us', scope: { kind: 'org', siteId: null, deviceCount: 412 } },
+      },
+    });
+    await expect(admitAnalysisRun(input({}))).resolves.toEqual({
+      created: true, runId: RUN_ID, status: 'queued', chainDepth: 2,
+      scope: { kind: 'org', siteId: null, deviceCount: 412 },
+    });
+  });
+
   it('admits as profile analysis with the frozen inputs, never as a device-bound run', async () => {
     await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] }))).resolves.toEqual({
-      created: true, runId: RUN_ID, status: 'queued',
+      created: true, runId: RUN_ID, status: 'queued', scope: null, chainDepth: 0,
     });
     const call = createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.profile).toBe('analysis');
     expect(call.deviceId).toBeNull();
-    expect(call.analysis).toEqual({ deviceIds: ['dev-1'], inputHandles: [HANDLE] });
+    expect(call.analysis).toEqual({ scope: 'devices', siteId: null, deviceIds: ['dev-1'], inputHandles: [HANDLE] });
     // The CHAT session belongs in trigger_ref — `ai_agent_runs.session_id` is
     // the agent session the run loop opens, a different thing entirely.
     expect(call.sessionId).toBeUndefined();
-    expect(call.triggerRef).toMatchObject({ source: 'chat_analysis', chatSessionId: 'chat-1' });
+    expect(call.triggerRef).toMatchObject({ source: 'chat_analysis', chatSessionId: 'chat-1', originSessionId: 'chat-1' });
+  });
+
+  it('forwards the trusted export grants and scope when given, and no exportGrants key when not', async () => {
+    const grants = { datasets: ['metrics'], sensitiveGates: [] };
+    await admitAnalysisRun(input({ scope: 'org', deviceIds: [], exportGrants: grants }));
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).analysis)
+      .toEqual({ scope: 'org', siteId: null, deviceIds: [], inputHandles: [], exportGrants: grants });
+    await admitAnalysisRun(input());
+    expect((createAndEnqueueAgentRun.mock.calls[1]![0] as any).analysis).not.toHaveProperty('exportGrants');
+  });
+
+  it('forwards the requested site as the frame siteId even when it is not recorded in trigger_ref', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    verifiedAnalysisSiteId.mockResolvedValueOnce(null);
+    await admitAnalysisRun(input({ scope: 'site', siteId: SITE, deviceIds: [] }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.analysis).toMatchObject({ scope: 'site', siteId: SITE });
+  });
+
+  it('records originSessionId as null (key present) when there is no chat session', async () => {
+    await admitAnalysisRun(input({ sessionId: null }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: Record<string, unknown> };
+    expect(call.triggerRef).toHaveProperty('originSessionId', null);
   });
 
   it('refuses artifact_forbidden for a handle that does not resolve in the org, without admitting', async () => {
@@ -89,6 +165,9 @@ describe('admitAnalysisRun', () => {
   it.each([
     ['too_many_input_devices', 'too_many_input_devices'],
     ['device_not_in_org', 'device_not_in_org'],
+    ['frame_too_large', 'frame_too_large'],
+    ['site_not_in_scope', 'site_not_in_scope'],
+    ['frame_empty', 'frame_empty'],
     ['external_processing_disabled', 'external_processing_disabled'],
     ['workspace_capability_missing', 'workspace_capability_missing'],
     ['workspace_unavailable', 'analysis_not_available'],
@@ -117,9 +196,104 @@ describe('admitAnalysisRun', () => {
       'analysis_region_unavailable', 'compute_budget_exceeded', 'org_budget_exceeded',
       'max_concurrent_analysis_runs', 'analysis_rate', 'too_many_input_devices',
       'device_not_in_org', 'artifact_forbidden', 'enqueue_failed', 'model_unavailable',
+      'grant_refused',
+      'frame_too_large', 'site_not_in_scope', 'frame_empty',
+      'analysis_continuation_not_found', 'analysis_chain_too_long', 'analysis_chain_budget_exceeded',
     ]);
     for (const [skip, refusal] of Object.entries(SKIP_REASON_REFUSALS)) {
       expect(allowed.has(refusal), `${skip} -> ${refusal}`).toBe(true);
     }
+  });
+
+  // Wisp W07 — the coordinator's analysis launcher is the only grant-bearing caller.
+  it('maps the grant_* skips onto grant_refused', async () => {
+    expect(SKIP_REASON_REFUSALS.grant_inactive).toBe('grant_refused');
+    expect(SKIP_REASON_REFUSALS.grant_org_out_of_ceiling).toBe('grant_refused');
+    createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'grant_inactive' });
+    await expect(admitAnalysisRun(input())).resolves.toMatchObject({ created: false, refusal: 'grant_refused' });
+  });
+
+  it('catches GrantDepthExceededError as grant_refused (never a thrown 500 on the chat path)', async () => {
+    createAndEnqueueAgentRun.mockRejectedValue(new GrantDepthExceededError('depth'));
+    await expect(admitAnalysisRun(input({ grant: { grantId: 'g', grantRevisionId: 'r', requestedByRunId: 'parent' } })))
+      .resolves.toEqual({ created: false, refusal: 'grant_refused' });
+  });
+
+  it('other admission errors still propagate', async () => {
+    createAndEnqueueAgentRun.mockRejectedValue(new Error('db down'));
+    await expect(admitAnalysisRun(input())).rejects.toThrow('db down');
+  });
+
+  it('forwards grant to createAndEnqueueAgentRun, and omits it when absent', async () => {
+    const grant = { grantId: 'g', grantRevisionId: 'r', requestedByRunId: 'parent' };
+    await admitAnalysisRun(input({ grant }));
+    expect(createAndEnqueueAgentRun.mock.calls[0]![0]).toMatchObject({ grant });
+    await admitAnalysisRun(input());
+    expect(createAndEnqueueAgentRun.mock.calls[1]![0]).not.toHaveProperty('grant');
+  });
+
+  // Wisp analysis sessions W03.
+  it.each([['analysis_chain_too_long'], ['analysis_chain_budget_exceeded'], ['analysis_continuation_not_found']])(
+    'maps %s onto itself', async (skipped) => {
+      createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
+      await expect(admitAnalysisRun(input())).resolves.toMatchObject({ created: false, refusal: skipped });
+    });
+
+  it.each([
+    ['an expired output', { kind: 'output', createdByTool: 'workspace_collect', expiresAt: new Date(Date.now() - 1) }],
+    ['a step_stdout artifact', { kind: 'step_stdout', createdByTool: 'workspace_run', expiresAt: new Date(Date.now() + 86_400_000) }],
+    ['a non-export capture', { kind: 'input_capture', createdByTool: 'search_logs', expiresAt: new Date(Date.now() + 86_400_000) }],
+  ])('refuses %s as artifact_forbidden, without admitting', async (_label, record) => {
+    resolveArtifact.mockResolvedValueOnce({ id: HANDLE, orgId: ORG_ID, ...record });
+    await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] })))
+      .resolves.toEqual({ created: false, refusal: 'artifact_forbidden' });
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('admits an unexpired export_dataset capture', async () => {
+    resolveArtifact.mockResolvedValueOnce({
+      id: HANDLE, orgId: ORG_ID, kind: 'input_capture', createdByTool: 'export_dataset',
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] }))).resolves.toMatchObject({ created: true });
+  });
+
+  it('reads every handle inside a system DB context', async () => {
+    await admitAnalysisRun(input({ stagedHandles: [HANDLE] }));
+    expect(dbCtx.runOutsideDbContext).toHaveBeenCalled();
+    expect(dbCtx.withSystemDbAccessContext).toHaveBeenCalled();
+    expect(resolveArtifact.mock.invocationCallOrder[0])
+      .toBeGreaterThan(dbCtx.withSystemDbAccessContext.mock.invocationCallOrder[0]!);
+    expect(resolveArtifact).toHaveBeenCalledWith(HANDLE, { orgId: ORG_ID });
+  });
+
+  it('writes trigger_ref.continuation and forwards the lineage to admission', async () => {
+    const PRIOR = '00000000-0000-4000-8000-0000000000f1';
+    const ROOT = '00000000-0000-4000-8000-0000000000f0';
+    const dropped = [{ handle: '00000000-0000-4000-8000-0000000000e1', reason: 'expired' as const }];
+    await admitAnalysisRun(input({ continuation: { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 1, seed: 'S', dropped } }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.triggerRef.continuation).toEqual({ fromRunId: PRIOR, seed: 'S', dropped });
+    expect(call.triggerRef.originSessionId).toBe('chat-1');
+    expect(call.analysis.continuation).toEqual({ fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 1 });
+  });
+
+  it('a continuation records no visibility site, without asking the site check', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    await admitAnalysisRun(input({
+      siteId: SITE,
+      continuation: { fromRunId: '00000000-0000-4000-8000-0000000000f1', chainRootRunId: '00000000-0000-4000-8000-0000000000f0', chainDepth: 1, seed: 'S', dropped: [] },
+    }));
+    expect(verifiedAnalysisSiteId).not.toHaveBeenCalled();
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).triggerRef.siteId).toBeNull();
+    // The frame still gets the requested site.
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).analysis.siteId).toBe(SITE);
+  });
+
+  it('a fresh run carries no continuation key on either side', async () => {
+    await admitAnalysisRun(input());
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.triggerRef).not.toHaveProperty('continuation');
+    expect(call.analysis).not.toHaveProperty('continuation');
   });
 });

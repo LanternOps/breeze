@@ -31,6 +31,7 @@ import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   hasActiveBackupLegalHold,
+  hasUnresolvedNetworkIsolations,
   LEGAL_HOLD_ACTIVE_MESSAGE,
 } from '../../services/tenantCascade';
 import { EVIDENCE_HOLD_DEFERRED_ACTION, findEvidenceHold } from '../../services/orgEvidenceHold';
@@ -78,6 +79,16 @@ tenantErasureRoutes.post(
 
     if (!org) {
       return c.json({ error: 'org not found' }, 404);
+    }
+
+    if (await hasUnresolvedNetworkIsolations(orgId)) {
+      await createAuditLog({
+        orgId: null, actorType: 'user', actorId: auth.user.id, actorEmail: auth.user.email,
+        action: 'tenant.erasure.refused_isolation', resourceType: 'organization', resourceId: orgId,
+        resourceName: org.name, details: { reason: 'isolation_unresolved' }, result: 'failure',
+        errorMessage: 'Release network isolation first',
+      });
+      return c.json({ error: 'isolation_unresolved', message: 'Release network isolation first' }, 409);
     }
 
     // Fast-path precondition check so the admin gets an immediate, actionable

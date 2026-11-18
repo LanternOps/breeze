@@ -292,11 +292,14 @@ export class CoveJsonRpcClient {
       if (this.calledAtLeastOnce && this.delayMs > 0) await this.sleepImpl(this.delayMs);
       this.calledAtLeastOnce = true;
 
+      // The visa is a top-level envelope field, not a param: Cove rejects a
+      // visa inside `params` with "Visa is inconsistent/corrupted".
       const body = JSON.stringify({
         jsonrpc: '2.0',
         id: 'jsonrpc',
+        ...(this.visa && !opts.isLogin ? { visa: this.visa } : {}),
         method,
-        params: this.visa && !opts.isLogin ? { ...params, visa: this.visa } : params,
+        params,
       });
 
       let response: CoveFetchResponse;

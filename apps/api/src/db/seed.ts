@@ -167,6 +167,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
   { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
   { resource: 'tickets', action: 'record_approval', description: 'Record a customer approval or denial of held ticket work on their behalf' },
+  { resource: 'tickets', action: 'email_review', description: 'Review the inbound email queue: list, convert to a ticket, and dismiss quarantined or failed emails' },
 
   // Time entries (#4251). Seeded because Partner Technician grants them: the
   // mobile start/stop timer (#3206 W05) calls routes gated on
@@ -205,6 +206,9 @@ export const DEFAULT_PERMISSIONS = [
   // Agreement templates + signed agreements (agreements vocabulary & IA split, W02).
   { resource: 'agreements', action: 'read', description: 'View agreement templates and signed agreements' },
   { resource: 'agreements', action: 'write', description: 'Create, edit, publish and archive agreement templates; link signed agreements' },
+  // #9075 W2a (OD7 B): send / copy link / void / remind / record-signed. Byte-identical
+  // to 2027-01-05-110000-agreements-send-permission.sql (seed.test.ts asserts it).
+  { resource: 'agreements', action: 'send', description: 'Send agreements for signature, copy signing links, void requests, and record agreements signed elsewhere' },
 
   // Quotes / Proposals (billing program)
   { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
@@ -278,6 +282,10 @@ export const DEFAULT_PERMISSIONS = [
   // it. Granted to no system role; partners grant it deliberately.
   { resource: 'ai_models', action: 'premium',
     description: 'Use AI model offerings that require the premium-model permission' },
+  // Wisp W02 (spec §4.6): execute-class gate on the sandbox workspace tools.
+  // Granted to no system role by name; Partner Admin matches it via `*:*`.
+  { resource: 'ai_workspace', action: 'execute',
+    description: 'Stage, run and collect code in AI sandbox workspaces' },
 
   // Tool sources (BYO MCP/OpenAPI tool catalog, #5215/#5216, spec 2026-09-07 §5):
   // managing the registrations is an admin task; calling the tools they expose
@@ -408,7 +416,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'quotes:read', 'quotes:write', 'quotes:send', 'quotes:accept',
       'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
       'contracts:read', 'contracts:write', 'contracts:manage',
-      'agreements:read', 'agreements:write'
+      'agreements:read', 'agreements:write', 'agreements:send'
     ]
   },
   {
@@ -1436,10 +1444,11 @@ export async function seedDefaultAdmin() {
       name: admin.name,
       passwordHash,
       status: 'active',
-      // Dev/E2E seed only: pre-verify the bootstrap admin's email so dev/E2E
-      // flows that require a verified recipient (e.g. sending-domain test
-      // sends) aren't blocked on a manual verification step for a seeded
-      // account. Production signup paths are untouched.
+      // Pre-verify the bootstrap admin's email (dev, E2E and the production
+      // first-boot seed alike): the operator chose this address in the
+      // environment, so it needs no e-mailed proof. Flows that require a
+      // verified recipient (sending-domain test sends) and the
+      // BREEZE_PLATFORM_ADMINS bootstrap rely on it. Signup paths are untouched.
       emailVerifiedAt: new Date(),
       preferences: { bootstrapSetupRequired: true },
     })

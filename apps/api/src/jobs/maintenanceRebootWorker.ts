@@ -48,6 +48,7 @@ import {
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS,
   emitRebootPendingAlert,
   loadOldestRebootRequiredSince,
+  resolveClearedRebootPendingAlerts,
 } from '../services/patchAlerts';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
@@ -294,8 +295,23 @@ export async function runMaintenanceRebootSweep(
     processRebootCandidate,
     emitRebootPendingAlert,
     loadOldestRebootRequiredSince,
+    resolveClearedRebootPendingAlerts,
   },
 ): Promise<{ issued: number; checked: number }> {
+  // A device that restarted reports pending_reboot = false and is never a
+  // candidate again, so its reboot-pending alert is cleared here, not in the
+  // loop below. A failure only delays the clear to the next tick.
+  try {
+    const resolved = await runWithSystemDbAccess(() => deps.resolveClearedRebootPendingAlerts());
+    if (resolved > 0) console.log(`[MaintenanceReboot] resolved ${resolved} reboot-pending alert(s) for restarted devices`);
+  } catch (err) {
+    console.error('[MaintenanceReboot] failed to resolve cleared reboot-pending alerts:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      worker: 'maintenanceRebootWorker',
+      stage: 'resolve-cleared-alerts',
+    });
+  }
+
   const candidates = await runWithSystemDbAccess(() => deps.getRebootCandidates());
   let issued = 0;
   for (const device of candidates) {

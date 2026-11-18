@@ -738,6 +738,49 @@ describe('MCP transport integration', () => {
     expect(ledgerUpdateSet).not.toHaveBeenCalled();
   });
 
+  // #12140: set_device_context runs over MCP at Tier 2 with no approval card,
+  // so the dispatch pins `unattendedNoteWrite` and the handler applies the
+  // unattended-note bounds (deviceNoteBounds.ts). No other tool gets the flag.
+  it.each([
+    ['set_device_context', { unattendedNoteWrite: true }],
+    ['execute_command', undefined],
+  ] as const)('pins the unattended-note flag only for set_device_context (%s)', async (toolName, expectedContext) => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+    setTestApiKey({ oauthGrantId: 'grant-1', scopes: ['ai:read', 'ai:execute'] });
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: toolName, description: '', input_schema: {} }]);
+    routeMocks.executeTool.mockResolvedValue('Context recorded successfully (ID: ctx-1).');
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === toolName ? 2 : undefined));
+    testState.aiTools = new Map([[toolName, { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
+    testState.db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }) }) }),
+      insert: () => ({ values: () => ({ returning: async () => [{ id: 'mcp-exec-1' }] }) }),
+      update: () => ({ set: () => ({ where: async () => undefined }) }),
+    };
+
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: { orgId: 'org-1', deviceId: 'device-1', contextType: 'issue', summary: 'note' } },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(routeMocks.executeTool).toHaveBeenCalledTimes(1);
+    const args = routeMocks.executeTool.mock.calls[0]!;
+    expect(args[0]).toBe(toolName);
+    if (expectedContext) {
+      expect(args[3]).toEqual({ context: expectedContext });
+    } else {
+      expect(args).toHaveLength(3);
+    }
+  });
+
   // Reversed 2026-08-02: same rationale as the successful-call sanitization
   // test above — pinned to Tier 2 since a Tier 3 call no longer reaches this
   // pipeline (executeTool throwing) at all over MCP.
@@ -1455,8 +1498,8 @@ describe('MCP transport integration', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.result.tools.map((tool: { name: string }) => tool.name))
-        .toEqual(['get_backup_status', 'query_devices', 'whoami', 'aa__read', 'ab__read']);
-      for (const tool of body.result.tools.slice(3)) {
+        .toEqual(['get_action_status', 'get_backup_status', 'query_devices', 'whoami', 'aa__read', 'ab__read']);
+      for (const tool of body.result.tools.slice(4)) {
         expect(Object.keys(tool).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
         expect(tool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
       }
@@ -1977,7 +2020,7 @@ describe('MCP transport integration', () => {
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
       });
       const page1 = await page1Res.json();
-      expect(page1.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status']);
+      expect(page1.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_action_status']);
       expect(typeof page1.result.nextCursor).toBe('string');
 
       const page2Res = await mcpServerRoutes.request('/message', {
@@ -1986,16 +2029,23 @@ describe('MCP transport integration', () => {
         body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { cursor: page1.result.nextCursor } }),
       });
       const page2 = await page2Res.json();
-      expect(page2.result.tools.map((t: { name: string }) => t.name)).toEqual(['query_devices']);
-      // B-W02: the server-intrinsic whoami tool sorts after the two registry tools.
+      expect(page2.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status']);
       const page3Res = await mcpServerRoutes.request('/message', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: page2.result.nextCursor } }),
       });
       const page3 = await page3Res.json();
-      expect(page3.result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
-      expect(page3.result.nextCursor).toBeUndefined();
+      expect(page3.result.tools.map((t: { name: string }) => t.name)).toEqual(['query_devices']);
+      // B-W02/B-W04: the server-intrinsic get_action_status and whoami tools sort around the two registry tools.
+      const page4Res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list', params: { cursor: page3.result.nextCursor } }),
+      });
+      const page4 = await page4Res.json();
+      expect(page4.result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
+      expect(page4.result.nextCursor).toBeUndefined();
     });
 
     it('rejects a page-1 cursor with a JSON-RPC error once the resolved catalog changes before page 2', async () => {
@@ -2095,7 +2145,7 @@ describe('MCP transport integration', () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_backup_status', 'query_devices', 'whoami']);
+      expect(body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_action_status', 'get_backup_status', 'query_devices', 'whoami']);
       expect(body.result.nextCursor).toBeUndefined();
     });
   });

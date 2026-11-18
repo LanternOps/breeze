@@ -21,6 +21,14 @@ vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 vi.mock('./remoteSessionCreate', () => remoteSessionCreateMocks);
+// W04-D11: create_remote_session's route gates are asserted in aiToolsRemote.sessionGates.test.ts.
+vi.mock('./remoteAccessPolicy', () => ({ checkRemoteAccess: vi.fn(async () => ({ allowed: true })) }));
+vi.mock('../routes/remote/helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../routes/remote/helpers')>()),
+  checkSessionRateLimit: vi.fn(async () => ({ allowed: true, currentCount: 0 })),
+  checkUserSessionRateLimit: vi.fn(async () => ({ allowed: true, currentCount: 0 })),
+  logSessionAudit: vi.fn(async () => undefined),
+}));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';

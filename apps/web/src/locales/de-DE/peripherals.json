@@ -79,6 +79,14 @@
     "allOrganizations": "Alle Organisationen",
     "partnerWide": "(partnerweite Richtlinie)",
     "thisOrganization": "Nur diese Organisation",
+    "appliesTo": "Gilt für",
+    "targets": {
+      "organization": "Alle Geräte",
+      "site": "Bestimmte Standorte ({{total}})",
+      "group": "Bestimmte Gerätegruppen ({{total}})",
+      "device": "Bestimmte Geräte ({{total}})"
+    },
+    "targetReadOnlyHint": "Die Ziele können in diesem Formular nicht geändert werden. Beim Speichern bleiben die aktuellen Ziele erhalten.",
     "deviceClass": "Geräteklasse",
     "classes": {
       "storage": "Speichergeräte",
@@ -102,7 +110,12 @@
     "serialNumber": "Seriennummer",
     "allow": "Zulassen:",
     "reason": "Grund",
+    "expiresAt": "Läuft ab (Ihre Ortszeit)",
     "updatePolicy": "Richtlinie aktualisieren",
-    "createPolicy": "Richtlinie erstellen"
+    "createPolicy": "Richtlinie erstellen",
+    "saved": {
+      "created": "Richtlinie erstellt",
+      "updated": "Richtlinie aktualisiert"
+    }
   }
 }

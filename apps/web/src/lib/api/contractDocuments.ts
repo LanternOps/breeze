@@ -78,10 +78,13 @@ export async function listOrgSignedAgreements(f: Fetcher, orgId: string): Promis
   return unwrapData<ContractDocument[]>(await f(`${BASE}${buildQuery({ orgId, linked: 'all' })}`));
 }
 
-/** Path for usePdfDownload — the route streams the stored bytes under their
- *  stored MIME (a PDF, or an externally signed PNG/JPEG scan). */
-export function contractDocumentPdfPath(id: string): string {
-  return `${BASE}/${id}/pdf`;
+export type SignedAgreementCopy = 'certified' | 'original';
+
+/** Path for usePdfDownload. `certified` (default) is always a PDF — the
+ *  agreement plus a signature certificate page; `original` streams the stored
+ *  bytes under their stored MIME (a PDF, or an externally signed PNG/JPEG scan). */
+export function contractDocumentPdfPath(id: string, copy: SignedAgreementCopy = 'certified'): string {
+  return `${BASE}/${id}/pdf?copy=${copy}`;
 }
 
 const SIGNED_AGREEMENT_EXT: Record<string, string> = {
@@ -90,10 +93,15 @@ const SIGNED_AGREEMENT_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
 };
 
-/** Saved filename for a signed agreement — follows the stored MIME, same name
- *  the API puts in Content-Disposition (routes/contracts/documents.ts). */
-export function signedAgreementFilename(doc: Pick<ContractDocument, 'id' | 'mime'>): string {
-  return `signed-agreement-${doc.id}.${SIGNED_AGREEMENT_EXT[doc.mime] ?? 'pdf'}`;
+/** Saved filename for a signed agreement — same name the API puts in
+ *  Content-Disposition. The certified copy is always a PDF; the original
+ *  follows the stored MIME. */
+export function signedAgreementFilename(
+  doc: Pick<ContractDocument, 'id' | 'mime'>,
+  copy: SignedAgreementCopy = 'certified',
+): string {
+  if (copy === 'certified') return `signed-agreement-${doc.id}.pdf`;
+  return `signed-agreement-${doc.id}-original.${SIGNED_AGREEMENT_EXT[doc.mime] ?? 'pdf'}`;
 }
 
 /** Link-later: attach a previously-unattached document to a contract (the

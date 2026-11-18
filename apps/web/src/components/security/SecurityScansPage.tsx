@@ -2,33 +2,52 @@ import { useCallback, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { useHashTab } from "@/lib/useHashState";
+import { useHashState } from "@/lib/useHashState";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityScanManager from "./SecurityScanManager";
 import ThreatList from "./ThreatList";
 import ThreatDetail from "./ThreatDetail";
-
-type ScansTab = "scans" | "threats";
-
-const SCANS_TABS: readonly ScansTab[] = ["scans", "threats"];
+import SweepsPanel from "./sweeps/SweepsPanel";
+import {
+  DEFAULT_SCANS_HASH_STATE,
+  encodeScansHash,
+  parseScansHash,
+  type ScansHashState,
+  type ScansTab,
+} from "./scansHash";
 
 export default function SecurityScansPage() {
   const { t } = useTranslation("security");
-  const [tab, setTab] = useHashTab<ScansTab>(SCANS_TABS, "scans");
-  // Local, not hash-backed: this page only uses the hash for the top-level
-  // scans/threats tab (see CLAUDE.md "URL State in Components"), and a
-  // selected-threat id isn't a tab.
+  const [{ tab, group }, setHashState] = useHashState<ScansHashState>(
+    DEFAULT_SCANS_HASH_STATE,
+    parseScansHash,
+  );
+  // Local, not hash-backed: the hash holds the top-level tab and the selected
+  // sweep group (`#sweeps&group=<id>`, see CLAUDE.md "URL State in
+  // Components"); a selected-threat id isn't a tab.
   const [selectedThreatId, setSelectedThreatId] = useState<string | null>(
     null,
   );
 
+  const writeState = useCallback(
+    (next: ScansHashState) => {
+      window.location.hash = encodeScansHash(next);
+      setHashState(next);
+    },
+    [setHashState],
+  );
+
   const switchTab = useCallback(
     (next: ScansTab) => {
-      window.location.hash = next;
-      setTab(next);
+      writeState({ tab: next, group: null });
       setSelectedThreatId(null);
     },
-    [setTab],
+    [writeState],
+  );
+
+  const selectGroup = useCallback(
+    (groupId: string | null) => writeState({ tab: "sweeps", group: groupId }),
+    [writeState],
   );
 
   return (
@@ -55,12 +74,22 @@ export default function SecurityScansPage() {
         >
           {t("securityScansPage.threatsTab")}
         </button>
+        <button
+          type="button"
+          data-testid="security-scans-tab-sweeps"
+          onClick={() => switchTab("sweeps")}
+          className={`rounded-md px-3 py-1 ${tab === "sweeps" ? "bg-background shadow-xs" : "text-muted-foreground"}`}
+        >
+          {t("securityScansPage.sweepsTab")}
+        </button>
       </div>
 
       {tab === "scans" ? (
         <div data-testid="security-scan-manager">
           <SecurityScanManager />
         </div>
+      ) : tab === "sweeps" ? (
+        <SweepsPanel group={group} onSelectGroup={selectGroup} />
       ) : selectedThreatId ? (
         <div data-testid="security-threat-detail">
           <button

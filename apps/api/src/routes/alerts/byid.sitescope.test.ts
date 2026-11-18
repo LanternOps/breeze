@@ -276,10 +276,10 @@ describe('alert by-id site-axis scope (T9, #1051)', () => {
       expect(res.status).toBe(200);
     });
 
-    it('200 on a deviceless (org-wide) alert for a SITE_A-restricted user', async () => {
+    it('404 on a deviceless (org-wide) alert for a SITE_A-restricted user', async () => {
       restrictToSiteA();
       const res = await makeApp().request(`/alerts/${ALERT_ORGWIDE}`);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
 
     it('200 on an out-of-site alert for an unrestricted user (no regression)', async () => {

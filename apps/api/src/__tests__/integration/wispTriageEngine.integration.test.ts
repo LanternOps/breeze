@@ -1,0 +1,830 @@
+/**
+ * Wisp W05b Task 13 (#9917, feature #9906) — the triage engine end to end
+ * against real Postgres and the test Redis (BullMQ):
+ *
+ *   - ceiling isolation: an org-A grant never sees org-B concerns through
+ *     listConcernsForCeiling, and an org-A assessment's context (digest +
+ *     openConcerns) never carries org-B rows;
+ *   - budget: an exhausted UTC-day budget admits nothing, tells the grantor
+ *     once, records the event deterministically, never pauses the grant
+ *     (spec §9); a run queued YESTERDAY is not charged to today (Review
+ *     Focus 4); the floor tick is suspended for an exhausted grant;
+ *   - a grant that reaches an org only through a site restriction is refused
+ *     (`grant_org_site_restricted`);
+ *   - flag off: the tick and the wake subscriber do nothing;
+ *   - real admission (profile assessment, grant pinned, triage agent) and its
+ *     `no_effective_agent` sibling; the 60 s debounce coalesces;
+ *   - a paused grant's watches stop and the partner admin is told once
+ *     across two ticks (Review Focus 1);
+ *   - the reaper resolves a concern whose ticket was deleted (Review Focus 3).
+ *
+ * The run enqueuer (agent-run BullMQ queue) is stubbed with
+ * registerAgentRunEnqueuer and publishEvent is mocked, as the other
+ * admission suites do; the `wisp-wake` queue is REAL and obliterated around
+ * every test.
+ */
+import './setup';
+import { randomUUID } from 'node:crypto';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { and, count, eq } from 'drizzle-orm';
+
+const { publishEventMock } = vi.hoisted(() => ({
+  publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
+}));
+vi.mock('../../services/eventBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/eventBus')>();
+  return { ...actual, publishEvent: publishEventMock };
+});
+
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  aiAgentRuns,
+  aiAgents,
+  alerts,
+  connectionHealthIncidents,
+  metricAnomalyEpisodes,
+  metricAnomalyIncidents,
+  organizationUsers,
+  tickets,
+  userNotifications,
+  wispConcerns,
+  wispGrantRevisions,
+  wispGrants,
+  wispWatches,
+} from '../../db/schema';
+import type { WispCeilingSnapshot } from '../../db/schema/wisp';
+import type { BreezeEvent } from '../../services/eventBus';
+import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
+import { enqueueAssessment, lastAssessmentWatermark, loadAssessmentContext } from '../../services/wisp/assessment';
+import { listConcernsForCeiling, upsertConcern } from '../../services/wisp/concerns';
+import { resolveGrantCeiling, type GrantCeiling } from '../../services/wisp/grantAuthority';
+import { pauseGrant } from '../../services/wisp/grants';
+import { createWatch } from '../../services/wisp/watches';
+import {
+  closeWispWakeQueue,
+  getWispWakeQueue,
+  handleWispWakeEvent,
+  loadLastAssessedByOrg,
+  requestAssessment,
+  wakeJobId,
+} from '../../services/wisp/wake';
+import { processWakeTick } from '../../jobs/wispWakeScheduler';
+import { runWispConcernRetention } from '../../jobs/wispConcernRetention';
+import {
+  assignUserToOrganization,
+  assignUserToPartner,
+  createOrganization,
+  createPartner,
+  createDevice,
+  createRole,
+  createSite,
+  createUser,
+  grantRolePermissions,
+} from './db-utils';
+import { getTestDb } from './setup';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+import { insertEpisodeDevice, seedEpisode, seedIncident as seedAnomalyIncident } from './metricAnomalyEpisodeFixtures';
+
+// Admission resolves the triage agent's model; the platform default needs a key.
+usePlatformAiKeyPlaceholder();
+
+const SYSTEM_CTX: DbAccessContext = {
+  scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
+};
+const asSystem = <T>(fn: () => Promise<T>) => withDbAccessContext(SYSTEM_CTX, fn);
+
+const DAY_MS = 86_400_000;
+
+function enableWisp() {
+  vi.stubEnv('IS_HOSTED', 'true');
+  vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+}
+
+let enqueuedRunIds: string[] = [];
+
+beforeEach(async () => {
+  enableWisp();
+  publishEventMock.mockClear();
+  enqueuedRunIds = [];
+  registerAgentRunEnqueuer(async (runId) => {
+    enqueuedRunIds.push(runId);
+    return { enqueued: true, jobId: `agent-run:${runId}` };
+  });
+  await getWispWakeQueue().obliterate({ force: true });
+});
+
+afterEach(async () => {
+  registerAgentRunEnqueuer(null);
+  vi.unstubAllEnvs();
+  await getWispWakeQueue().obliterate({ force: true }).catch(() => {});
+});
+
+afterAll(async () => {
+  await closeWispWakeQueue();
+});
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+interface Tenant {
+  partnerId: string;
+  orgA: string;
+  orgB: string;
+  grantorId: string;
+  adminId: string;
+}
+
+/**
+ * Partner with orgs A and B; a live grantor (ai_sessions:use + tickets:read,
+ * org_access all) and a partner admin. tickets:read lets the digest's tickets
+ * section load (each digest section is gated on the grantor's permission).
+ */
+async function seedTenant(extraPermissions: Array<{ resource: string; action: string }> = []): Promise<Tenant> {
+  const partner = await createPartner();
+  const orgA = await createOrganization({ partnerId: partner.id });
+  const orgB = await createOrganization({ partnerId: partner.id });
+  const grantor = await createUser({ partnerId: partner.id, email: `wisp-triage-grantor-${randomUUID()}@wisp.test` });
+  const role = await createRole({ scope: 'partner', partnerId: partner.id });
+  await grantRolePermissions(role.id, [
+    { resource: 'ai_sessions', action: 'use' }, { resource: 'tickets', action: 'read' }, ...extraPermissions,
+  ]);
+  await assignUserToPartner(grantor.id, partner.id, role.id, 'all');
+  const admin = await createUser({ partnerId: partner.id, email: `wisp-triage-admin-${randomUUID()}@wisp.test` });
+  const adminRole = await createRole({ scope: 'partner', partnerId: partner.id });
+  await assignUserToPartner(admin.id, partner.id, adminRole.id, 'all');
+  return { partnerId: partner.id, orgA: orgA.id, orgB: orgB.id, grantorId: grantor.id, adminId: admin.id };
+}
+
+/** A grant + revision 1 + pointer in system scope (the W02/W05a fixture path). */
+async function seedGrant(t: Tenant, opts: { scopeOrgId?: string | null; orgIds: string[]; budgetCentsPerDay?: number; permissionKeys?: string[] }) {
+  const scopeOrgId = opts.scopeOrgId ?? null;
+  const snapshot: WispCeilingSnapshot = {
+    version: 1, permissionKeys: opts.permissionKeys ?? ['ai_sessions:use', 'tickets:read'], orgIds: opts.orgIds, siteIds: null,
+    toolAllowlist: null, deniedTools: [], partnerWide: scopeOrgId === null,
+  };
+  return asSystem(async () => {
+    const [g] = await db.insert(wispGrants).values({
+      partnerId: t.partnerId, orgId: scopeOrgId, grantorUserId: t.grantorId, status: 'active',
+      expiresAt: new Date(Date.now() + 30 * DAY_MS),
+      ...(opts.budgetCentsPerDay !== undefined ? { budgetCentsPerDay: opts.budgetCentsPerDay } : {}),
+    }).returning({ id: wispGrants.id });
+    const [r] = await db.insert(wispGrantRevisions).values({
+      grantId: g!.id, partnerId: t.partnerId, revision: 1, ceilingSnapshot: snapshot,
+      factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+    }).returning({ id: wispGrantRevisions.id });
+    await db.update(wispGrants).set({ currentRevisionId: r!.id }).where(eq(wispGrants.id, g!.id));
+    return { grantId: g!.id, revisionId: r!.id };
+  });
+}
+
+/** An enabled partner-wide triage agent (aiAgentSchedulesPartnerRls / wispGrantsRls insert shape). */
+async function seedTriageAgent(t: Tenant): Promise<string> {
+  const [agent] = await asSystem(() => db.insert(aiAgents).values({
+    partnerId: t.partnerId, orgId: null, kind: 'triage', name: 'Wisp Triage', enabled: true, mode: 'shadow', model: null,
+    toolAllowlist: ['query_devices'],
+    protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+    limits: { maxConcurrentRuns: 5, maxRunsPerHour: 50, maxBudgetCentsPerDay: 1000 },
+    triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: false },
+    recipients: { userIds: [], roleIds: [] }, instructions: null, cooldownSeconds: 0, createdBy: t.adminId,
+  } as never).returning({ id: aiAgents.id }));
+  return agent!.id;
+}
+
+/** A finished assessment run under the grant, queued at `queuedAt` (finished a minute later), that cost `costCents`. */
+async function seedSpentRun(agentId: string, orgId: string, g: { grantId: string; revisionId: string }, costCents: number, queuedAt: Date): Promise<string> {
+  const [row] = await asSystem(() => db.insert(aiAgentRuns).values({
+    agentId, orgId, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+    policySnapshot: {} as never, profile: 'assessment', status: 'completed', costCents,
+    queuedAt, startedAt: queuedAt, finishedAt: new Date(queuedAt.getTime() + 60_000),
+    grantId: g.grantId, grantRevisionId: g.revisionId,
+  } as never).returning({ id: aiAgentRuns.id }));
+  return row!.id;
+}
+
+async function seedTicket(t: Tenant, orgId: string, subject: string): Promise<string> {
+  const [row] = await asSystem(() => db.insert(tickets).values({
+    orgId, partnerId: t.partnerId, subject, source: 'manual' as const, priority: 'normal' as const,
+    ticketNumber: `WISP-TRI-${randomUUID().slice(0, 12)}`,
+  }).returning({ id: tickets.id }));
+  return row!.id;
+}
+
+const runsOfGrant = (grantId: string) =>
+  asSystem(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.grantId, grantId)));
+
+const noticesByKey = (userId: string, dedupeKey: string) =>
+  asSystem(() => db.select().from(userNotifications)
+    .where(and(eq(userNotifications.userId, userId), eq(userNotifications.dedupeKey, dedupeKey))));
+
+const noticesByPrefix = async (userId: string, prefix: string) =>
+  (await asSystem(() => db.select().from(userNotifications).where(eq(userNotifications.userId, userId))))
+    .filter((n) => (n.dedupeKey ?? '').startsWith(prefix));
+
+const readGrant = async (grantId: string) => {
+  const [row] = await asSystem(() => db.select().from(wispGrants).where(eq(wispGrants.id, grantId)));
+  return row!;
+};
+
+async function tableCount(table: typeof wispConcerns | typeof aiAgentRuns | typeof userNotifications | typeof wispWatches): Promise<number> {
+  const [row] = await asSystem(() => db.select({ n: count() }).from(table));
+  return Number(row?.n ?? 0);
+}
+
+function utcDayKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function alertEvent(orgId: string, alertId: string): BreezeEvent {
+  return {
+    id: `evt-${randomUUID()}`,
+    type: 'alert.triggered',
+    orgId,
+    source: 'test',
+    priority: 'normal',
+    payload: { alertId },
+    metadata: { timestamp: new Date().toISOString() },
+  } as BreezeEvent;
+}
+
+// ---------------------------------------------------------------------------
+
+describe('ceiling isolation', () => {
+  it('a grant scoped to org A never sees org B concerns (listConcernsForCeiling) or org B rows in an org-A assessment context', async () => {
+    const t = await seedTenant();
+    const g = await seedGrant(t, { scopeOrgId: t.orgA, orgIds: [t.orgA] });
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    expect([...ceiling.orgIds]).toEqual([t.orgA]);
+
+    const ticketA = await seedTicket(t, t.orgA, 'Printer offline in the front office');
+    const ticketB = await seedTicket(t, t.orgB, 'VPN drops every hour');
+    const concernA = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgA, subject: { kind: 'ticket', id: ticketA },
+      summary: 'A waiting', severity: 'medium', evidence: {},
+    });
+    const concernB = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgB, subject: { kind: 'ticket', id: ticketB },
+      summary: 'B waiting', severity: 'high', evidence: {},
+    });
+
+    const listed = (await listConcernsForCeiling(ceiling)).map((c) => c.id);
+    expect(listed).toContain(concernA.id);
+    expect(listed).not.toContain(concernB.id);
+    expect(await listConcernsForCeiling(ceiling, { orgId: t.orgB })).toEqual([]);
+
+    const ctx = await loadAssessmentContext({
+      id: randomUUID(),
+      orgId: t.orgA,
+      grantId: g.grantId,
+      grantRevisionId: g.revisionId,
+      triggerRef: { wisp: { grantId: g.grantId, grantRevisionId: g.revisionId, reason: { kind: 'tick' }, watermark: null } },
+    });
+    expect(ctx).not.toBeNull();
+    expect(ctx!.openConcerns.map((c) => c.id)).toEqual([concernA.id]);
+    const digestTickets = ctx!.digest.tickets.map((x) => x.id);
+    expect(digestTickets).toContain(ticketA);
+    expect(digestTickets).not.toContain(ticketB);
+    expect(JSON.stringify(ctx)).not.toContain(ticketB);
+    expect(JSON.stringify(ctx)).not.toContain(concernB.id);
+
+    // The same grant cannot be pointed at org B: no context at all.
+    expect(await loadAssessmentContext({
+      id: randomUUID(),
+      orgId: t.orgB,
+      grantId: g.grantId,
+      grantRevisionId: g.revisionId,
+      triggerRef: { wisp: { grantId: g.grantId, grantRevisionId: g.revisionId, reason: { kind: 'tick' }, watermark: null } },
+    })).toBeNull();
+  });
+
+  it('an org the grant reaches only through a site restriction is refused (grant_org_site_restricted); a whole org is admitted', async () => {
+    const t = await seedTenant();
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA, t.orgB] });
+
+    // The grantor's org-A membership (AI-capable) binds org A to one site.
+    const siteA = await createSite({ orgId: t.orgA });
+    const orgRole = await createRole({ scope: 'organization', orgId: t.orgA });
+    await grantRolePermissions(orgRole.id, [{ resource: 'ai_sessions', action: 'use' }]);
+    await assignUserToOrganization(t.grantorId, t.orgA, orgRole.id);
+    await getTestDb().update(organizationUsers).set({ siteIds: [siteA.id] })
+      .where(and(eq(organizationUsers.userId, t.grantorId), eq(organizationUsers.orgId, t.orgA)));
+
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    expect(ceiling.orgIds.has(t.orgA)).toBe(true);
+    expect(ceiling.orgTerms.get(t.orgA)?.siteIds).not.toBeNull();
+
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } }))
+      .toEqual({ skipped: 'grant_org_site_restricted' });
+    expect((await runsOfGrant(g.grantId)).filter((r) => r.orgId === t.orgA)).toEqual([]);
+
+    // Control: org B is reached whole, so the same grant is admitted there.
+    const admitted = await enqueueAssessment({ grantId: g.grantId, orgId: t.orgB, reason: { kind: 'tick' } });
+    expect(admitted).toHaveProperty('runId');
+    const runs = await runsOfGrant(g.grantId);
+    expect(runs.map((r) => r.orgId)).toEqual([t.orgB]);
+    expect(runs[0]!.agentId).toBe(agentId);
+  });
+});
+
+describe('budget (UTC day, queued_at)', () => {
+  it('an exhausted budget admits zero runs across 3 attempts: grantor told once, deterministic low concern once, grant stays active', async () => {
+    const t = await seedTenant();
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], budgetCentsPerDay: 200 });
+    const now = new Date();
+    await seedSpentRun(agentId, t.orgA, g, 120, new Date(now.getTime() - 60_000));
+    await seedSpentRun(agentId, t.orgA, g, 80, new Date(now.getTime() - 30_000));
+    expect(await runsOfGrant(g.grantId)).toHaveLength(2);
+
+    const alertId = randomUUID();
+    for (let i = 0; i < 3; i += 1) {
+      const result = await enqueueAssessment({
+        grantId: g.grantId, orgId: t.orgA,
+        reason: { kind: 'event', eventType: 'alert.triggered', eventId: `evt-${i}` },
+        subject: { kind: 'alert', id: alertId },
+      });
+      expect(result).toEqual({ skipped: 'budget_exhausted' });
+    }
+
+    expect(await runsOfGrant(g.grantId)).toHaveLength(2);
+    expect(enqueuedRunIds).toEqual([]);
+    expect(await noticesByKey(t.grantorId, `wisp-budget-${g.grantId}-${utcDayKey(new Date())}`)).toHaveLength(1);
+    expect(await noticesByPrefix(t.grantorId, 'wisp-budget-')).toHaveLength(1);
+    // The day's single digest notice for the deterministic path.
+    expect(await noticesByPrefix(t.grantorId, 'wisp-digest-')).toHaveLength(1);
+
+    const concerns = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.partnerId, t.partnerId)));
+    expect(concerns).toHaveLength(1);
+    expect(concerns[0]).toMatchObject({
+      orgId: t.orgA, subjectKind: 'alert', subjectId: alertId, severity: 'low', status: 'open', raisedByGrantId: g.grantId,
+    });
+
+    expect(await readGrant(g.grantId)).toMatchObject({ status: 'active', pausedReason: null });
+  });
+
+  it('a run queued yesterday (UTC) for the whole budget is not charged to today: admission proceeds', async () => {
+    const t = await seedTenant();
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], budgetCentsPerDay: 200 });
+    const todayStart = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+    await seedSpentRun(agentId, t.orgA, g, 200, new Date(todayStart - 60_000)); // 23:59 yesterday
+
+    // An event reason: a tick with nothing new since yesterday's run would be
+    // skipped by the no-changes gate (#11423) before admission.
+    const result = await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'event', eventType: 'alert.triggered', eventId: 'evt-yesterday' },
+    });
+    expect(result).not.toEqual({ skipped: 'budget_exhausted' });
+    expect(result).toHaveProperty('runId');
+    expect(await noticesByPrefix(t.grantorId, 'wisp-budget-')).toHaveLength(0);
+
+    // Control: the same spend queued today does exhaust it.
+    await seedSpentRun(agentId, t.orgA, g, 200, new Date());
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } }))
+      .toEqual({ skipped: 'budget_exhausted' });
+  });
+
+  it('the floor tick is suspended for an exhausted grant: no assess job, one grantor notice over two ticks, grant stays active', async () => {
+    const t = await seedTenant();
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], budgetCentsPerDay: 100 });
+    await seedSpentRun(agentId, t.orgA, g, 100, new Date(Date.now() - 60_000));
+    const queue = getWispWakeQueue();
+
+    const first = await processWakeTick(new Date());
+    expect(first.grantsTicked).toBe(0);
+    expect(await queue.getJob(wakeJobId(g.grantId, t.orgA))).toBeUndefined();
+    expect((await readGrant(g.grantId)).lastFloorTickAt).not.toBeNull();
+
+    // Make the grant due again; the second check must not tell the grantor twice.
+    await asSystem(() => db.update(wispGrants).set({ lastFloorTickAt: null }).where(eq(wispGrants.id, g.grantId)));
+    const second = await processWakeTick(new Date());
+    expect(second.grantsTicked).toBe(0);
+    expect(await queue.getJob(wakeJobId(g.grantId, t.orgA))).toBeUndefined();
+    expect(await noticesByPrefix(t.grantorId, 'wisp-budget-')).toHaveLength(1);
+    expect(await readGrant(g.grantId)).toMatchObject({ status: 'active', pausedReason: null });
+
+    // Control: with budget headroom the same due grant IS ticked.
+    await asSystem(() => db.update(wispGrants).set({ lastFloorTickAt: null, budgetCentsPerDay: 1000 }).where(eq(wispGrants.id, g.grantId)));
+    const funded = await processWakeTick(new Date());
+    expect(funded.grantsTicked).toBe(1);
+    expect(await queue.getJob(wakeJobId(g.grantId, t.orgA))).toBeDefined();
+  });
+});
+
+describe('flag off', () => {
+  it('processWakeTick returns zeros and handleWispWakeEvent touches no table and queues nothing', async () => {
+    const t = await seedTenant();
+    await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA] });
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    const past = new Date(Date.now() - DAY_MS);
+    const watch = await createWatch(ceiling, { orgId: t.orgA, kind: 'ticket_waiting', params: {}, cadenceMinutes: 60 }, past);
+
+    vi.stubEnv('BREEZE_WISP_ENABLED', 'false');
+    const before = {
+      concerns: await tableCount(wispConcerns),
+      runs: await tableCount(aiAgentRuns),
+      notices: await tableCount(userNotifications),
+    };
+
+    expect(await processWakeTick(new Date())).toEqual({
+      grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0, checkInRunsPosted: 0,
+    });
+    await handleWispWakeEvent(alertEvent(t.orgA, randomUUID()));
+
+    const queue = getWispWakeQueue();
+    expect(await queue.getJob(wakeJobId(g.grantId, t.orgA))).toBeUndefined();
+    expect(await queue.count()).toBe(0);
+    expect({
+      concerns: await tableCount(wispConcerns),
+      runs: await tableCount(aiAgentRuns),
+      notices: await tableCount(userNotifications),
+    }).toEqual(before);
+    const grant = await readGrant(g.grantId);
+    expect(grant.lastFloorTickAt).toBeNull();
+    const [w] = await asSystem(() => db.select().from(wispWatches).where(eq(wispWatches.id, watch.id)));
+    expect(w!.lastRanAt).toBeNull();
+    expect(w!.nextDueAt.getTime()).toBe(new Date(watch.nextDueAt).getTime());
+
+    // Control: flag on, the same event queues one assess job for (grant, org A).
+    vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+    await handleWispWakeEvent(alertEvent(t.orgA, randomUUID()));
+    expect(await queue.getJob(wakeJobId(g.grantId, t.orgA))).toBeDefined();
+  });
+});
+
+describe('real admission (flag on)', () => {
+  it('enqueueAssessment admits a run with profile assessment, grant pinned, the triage agent, accepted by ai_agent_runs_profile_chk', async () => {
+    const t = await seedTenant();
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA, t.orgB] });
+
+    const result = await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'onboarding' } });
+    if (!('runId' in result)) throw new Error(`expected admission, got skip ${result.skipped}`);
+
+    const [row] = await asSystem(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, result.runId)));
+    expect(row).toMatchObject({
+      orgId: t.orgA, agentId, profile: 'assessment', triggerKind: 'schedule',
+      grantId: g.grantId, grantRevisionId: g.revisionId, deviceId: null,
+    });
+    expect(row!.triggerRef).toMatchObject({
+      wisp: { grantId: g.grantId, grantRevisionId: g.revisionId, reason: { kind: 'onboarding' }, watermark: null },
+    });
+    const [agent] = await asSystem(() => db.select({ kind: aiAgents.kind }).from(aiAgents).where(eq(aiAgents.id, row!.agentId)));
+    expect(agent!.kind).toBe('triage');
+    expect(enqueuedRunIds).toEqual([result.runId]);
+  });
+
+  it('with no enabled triage agent: { skipped: no_effective_agent } and no run', async () => {
+    const t = await seedTenant();
+    const g = await seedGrant(t, { orgIds: [t.orgA] });
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } }))
+      .toEqual({ skipped: 'no_effective_agent' });
+    expect(await runsOfGrant(g.grantId)).toEqual([]);
+  });
+
+  it('two requestAssessment calls for one (grant, org) inside 60 s → queued, then coalesced (one delayed job)', async () => {
+    const t = await seedTenant();
+    const g = await seedGrant(t, { orgIds: [t.orgA, t.orgB] });
+    const queue = getWispWakeQueue();
+
+    expect(await requestAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } })).toBe('queued');
+    expect(await requestAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'event', eventType: 'alert.triggered', eventId: 'e-2' },
+    })).toBe('coalesced');
+    // Another org is its own window.
+    expect(await requestAssessment({ grantId: g.grantId, orgId: t.orgB, reason: { kind: 'tick' } })).toBe('queued');
+
+    const job = await queue.getJob(wakeJobId(g.grantId, t.orgA));
+    expect(job).toBeDefined();
+    expect(await job!.getState()).toBe('delayed');
+    // The first request's data is kept.
+    expect(job!.data).toMatchObject({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } });
+    expect(await queue.getDelayedCount()).toBe(2);
+  });
+});
+
+// #11423: a tick or watch for an org where nothing changed since its last
+// clean assessment records a skipped run and makes no model call.
+describe('no-changes gate (#11423)', () => {
+  const MIN = 60_000;
+  // Each section is probed only when the grantor may read it (the digest's rule).
+  const READ_ALL = [
+    { resource: 'ai_agents', action: 'read' }, { resource: 'alerts', action: 'read' }, { resource: 'organizations', action: 'read' },
+  ];
+  const READ_ALL_KEYS = ['ai_sessions:use', 'tickets:read', 'ai_agents:read', 'alerts:read', 'organizations:read'];
+  const tick = { kind: 'tick' } as const;
+
+  /** A grant on org A whose last clean assessment finished 60 min ago. */
+  async function gateFixture() {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const lastRunId = await seedSpentRun(agentId, t.orgA, g, 5, new Date(Date.now() - 61 * MIN));
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `look-${n++}` });
+    return { t, agentId, g, lastRunId, look };
+  }
+
+  async function seedAlert(orgId: string, at: { triggeredAt: Date; acknowledgedAt?: Date }): Promise<string> {
+    const site = await createSite({ orgId });
+    const device = await createDevice({ orgId, siteId: site.id });
+    const [row] = await asSystem(() => db.insert(alerts).values({
+      orgId, deviceId: device.id, severity: 'high', title: 'Disk almost full', status: 'active', ...at,
+    }).returning({ id: alerts.id }));
+    return row!.id;
+  }
+
+  /** A non-Wisp run of the org's agent (profile full), or a specialist child with depth 1. */
+  async function seedOtherRun(agentId: string, orgId: string, at: { queuedAt: Date; finishedAt: Date }, depth = 0) {
+    await asSystem(() => db.insert(aiAgentRuns).values({
+      agentId, orgId, triggerKind: 'schedule', dedupeKey: `other:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'full', status: 'completed', depth,
+      queuedAt: at.queuedAt, startedAt: at.queuedAt, finishedAt: at.finishedAt,
+    } as never));
+  }
+
+  async function seedIncident(t: Tenant, viewPermission: string, openedAt: Date) {
+    await asSystem(() => db.insert(connectionHealthIncidents).values({
+      partnerId: t.partnerId, orgId: t.orgA, sourceKind: 'oauth_grant', sourceId: `grant-${randomUUID()}`,
+      condition: 'reauth_required', severity: 'permanent', displayName: 'Accounting app', fixHref: '/settings/connected-apps',
+      viewPermission, repairPermission: 'connected_apps:manage', firstFailedAt: openedAt, openedAt, lastObservedAt: openedAt,
+    }));
+  }
+
+  it('alerts on real Postgres: one triggered before the last run is not a change; acknowledging it, or a new one, is', async () => {
+    const f = await gateFixture();
+    const alertId = await seedAlert(f.t.orgA, { triggeredAt: new Date(Date.now() - 90 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await asSystem(() => db.update(alerts).set({ status: 'acknowledged', acknowledgedAt: new Date() }).where(eq(alerts.id, alertId)));
+    expect(await f.look()).toHaveProperty('runId');
+
+    const g = await gateFixture();
+    expect(await g.look()).toEqual({ skipped: 'no_changes' });
+    await seedAlert(g.t.orgA, { triggeredAt: new Date() }); // timestamp without time zone, set by the app
+    expect(await g.look()).toHaveProperty('runId');
+  });
+
+  it('runs on real Postgres: an older run that FINISHED since is a change; a specialist child (depth 1) is not', async () => {
+    const f = await gateFixture();
+    const now = Date.now();
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 30 * MIN), finishedAt: new Date(now - 25 * MIN) }, 1);
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 100 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 5 * MIN) });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('incidents on real Postgres: one the grantor may not view is not a change; one it may view is', async () => {
+    const f = await gateFixture();
+    await seedIncident(f.t, 'billing:read', new Date());
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedIncident(f.t, 'organizations:read', new Date());
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a watch of a kind the digest cannot judge (backup_health) always runs', async () => {
+    const f = await gateFixture();
+    const ceiling = await resolveGrantCeiling(f.g.grantId, f.g.revisionId);
+    const w = await createWatch(ceiling, { orgId: f.t.orgA, kind: 'backup_health', params: {}, cadenceMinutes: 60 });
+    expect(await enqueueAssessment({ grantId: f.g.grantId, orgId: f.t.orgA, reason: { kind: 'watch', watchId: w.id } }))
+      .toHaveProperty('runId');
+  });
+
+  it('nothing new since the last completed run: a skipped no_changes row, nothing enqueued; a new ticket then admits a model run', async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const queuedAt = new Date(Date.now() - 61 * MIN);
+    const lastRunId = await seedSpentRun(agentId, t.orgA, g, 5, queuedAt); // finished 60 min ago
+
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'k1' }))
+      .toEqual({ skipped: 'no_changes' });
+    // The gate's own skip is not a change: the next look (an alert_pattern watch) skips too.
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    const alertWatch = await createWatch(ceiling, { orgId: t.orgA, kind: 'alert_pattern', params: {}, cadenceMinutes: 60 });
+    expect(await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'watch', watchId: alertWatch.id }, occurrenceKey: 'k2',
+    })).toEqual({ skipped: 'no_changes' });
+    expect(enqueuedRunIds).toEqual([]);
+
+    const skips = (await runsOfGrant(g.grantId)).filter((r) => r.id !== lastRunId);
+    expect(skips).toHaveLength(2);
+    for (const r of skips) {
+      expect(r).toMatchObject({
+        orgId: t.orgA, agentId, profile: 'assessment', status: 'skipped', errorCode: 'no_changes',
+        costCents: 0, turnCount: 0, startedAt: null, grantId: g.grantId, grantRevisionId: g.revisionId,
+      });
+      expect(r.finishedAt).toBeInstanceOf(Date);
+      expect(r.summary).toMatch(/nothing changed/i);
+      expect(r.triggerRef).toMatchObject({ wisp: { grantId: g.grantId, watermark: queuedAt.toISOString() } });
+    }
+    // A skip never moves the watermark; it does count as a look for the round-robin.
+    expect(await lastAssessmentWatermark(g.grantId, t.orgA)).toEqual(queuedAt);
+    const lastLook = (await loadLastAssessedByOrg(g.grantId)).get(t.orgA)!;
+    expect(lastLook.getTime()).toBe(Math.max(...skips.map((r) => r.finishedAt!.getTime())));
+
+    // Control: a ticket updated since the last run is a change.
+    await seedTicket(t, t.orgA, 'Scanner offline in the back office');
+    const ran = await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'k3' });
+    if (!('runId' in ran)) throw new Error(`expected admission, got skip ${ran.skipped}`);
+    expect(enqueuedRunIds).toEqual([ran.runId]);
+  });
+
+  it("another grant's assessment and its concern touch are not a change; a later edit by a person is", async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g1 = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    // One live grant per (grantor, scope): the second is scoped to org A.
+    const g2 = await seedGrant(t, { scopeOrgId: t.orgA, orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const now = Date.now();
+    await seedSpentRun(agentId, t.orgA, g1, 5, new Date(now - 61 * MIN)); // g1 finished 60 min ago
+    const otherRunId = await seedSpentRun(agentId, t.orgA, g2, 5, new Date(now - 21 * MIN)); // g2 finished 20 min ago
+    const ticketId = await seedTicket(t, t.orgA, 'Label printer queue stuck');
+    const concern = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgA, subject: { kind: 'ticket', id: ticketId },
+      summary: 'Label printer queue stuck for a day', severity: 'medium', evidence: {},
+    });
+    // The ticket predates g1's last run; g2's run then touched the concern
+    // (its finalizer writes before the run's finished_at).
+    await asSystem(() => db.update(tickets).set({ updatedAt: new Date(now - 70 * MIN) }).where(eq(tickets.id, ticketId)));
+    await asSystem(() => db.update(wispConcerns)
+      .set({ updatedAt: new Date(now - 20.5 * MIN), lastAssessedRunId: otherRunId })
+      .where(eq(wispConcerns.id, concern.id)));
+
+    expect(await enqueueAssessment({ grantId: g1.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'g1-k1' }))
+      .toEqual({ skipped: 'no_changes' });
+    expect(enqueuedRunIds).toEqual([]);
+
+    // A person snoozes it after g2's run finished: that write is not a finalizer's.
+    await asSystem(() => db.update(wispConcerns)
+      .set({ status: 'snoozed', updatedAt: new Date(now - 5 * MIN) })
+      .where(eq(wispConcerns.id, concern.id)));
+    expect(await enqueueAssessment({ grantId: g1.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'g1-k2' }))
+      .toHaveProperty('runId');
+  });
+
+  // #11513: the anomalies probe on real SQL, and the anchor a degraded
+  // anomaly read must not move. The grant reads devices (the anomalies
+  // section's permission) and nothing else the gate probes, so a change can
+  // only be an anomaly: in particular the `runs` probe is off, and the seeded
+  // runs themselves are never the change.
+  const ANOMALY_KEYS = ['ai_sessions:use', 'devices:read'];
+
+  async function anomalyFixture(lastRunQueuedAt: Date) {
+    const t = await seedTenant([{ resource: 'devices', action: 'read' }]);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: ANOMALY_KEYS });
+    await seedSpentRun(agentId, t.orgA, g, 5, lastRunQueuedAt);
+    const site = await createSite({ orgId: t.orgA });
+    const deviceId = await insertEpisodeDevice(t.orgA, site.id);
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `anomaly-look-${n++}` });
+    return { t, agentId, g, deviceId, look };
+  }
+
+  /** An incident of a new episode, announced (dispatched) at `dispatchedAt`, or never when null. */
+  async function seedAnomaly(orgId: string, deviceId: string, o: {
+    dispatchedAt: Date | null; status?: 'open' | 'resolved' | 'dismissed'; resolvedAt?: Date; episodeUpdatedAt?: Date; suppressed?: boolean;
+  }) {
+    const start = new Date(Date.now() - 4 * 60 * MIN);
+    const { episodeId } = await seedEpisode({
+      orgId, deviceId, memberCount: 1, start, status: o.status ?? 'open', resolvedAt: o.resolvedAt ?? null,
+      // A distinct episode key per call (episodeKey is source:type:family).
+      metricFamily: `fam-${randomUUID().slice(0, 8)}`,
+    });
+    if (o.episodeUpdatedAt) {
+      await asSystem(() => db.update(metricAnomalyEpisodes).set({ updatedAt: o.episodeUpdatedAt }).where(eq(metricAnomalyEpisodes.id, episodeId)));
+    }
+    const incidentId = await seedAnomalyIncident({ orgId, deviceId, episodeId, windowStart: start });
+    await asSystem(() => db.update(metricAnomalyIncidents)
+      .set({ dispatchedAt: o.dispatchedAt, suppressedByEpisode: o.suppressed ?? false })
+      .where(eq(metricAnomalyIncidents.id, incidentId)));
+    return { episodeId, incidentId };
+  }
+
+  it('anomalies on real Postgres: an incident announced before the last run, unannounced or suppressed is not a change; one announced since is', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN)); // last run finished 60 min ago
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 90 * MIN) });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: null });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(), suppressed: true });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('anomalies on real Postgres: a resolve whose resolved_at is backdated before the last run is a change (updated_at since)', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN));
+    const before = new Date(Date.now() - 90 * MIN);
+    // Resolved before the last run: not a change.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: before });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    // The automatic close: resolved_at backdated to the end of the data, updated_at stamped now.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a run that could not read the anomalies does not move the anchor: an anomaly announced before it still wakes the next tick', async () => {
+    // A completed assessment 30 min ago, after a clean one 120 min ago; an
+    // anomaly was announced between them (60 min ago).
+    async function withLaterRun(errorCode: string | null, status: 'completed' | 'awaiting_approval' = 'completed') {
+      const f = await anomalyFixture(new Date(Date.now() - 121 * MIN));
+      await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 60 * MIN) });
+      const startedAt = new Date(Date.now() - 31 * MIN);
+      await asSystem(() => db.insert(aiAgentRuns).values({
+        agentId: f.agentId, orgId: f.t.orgA, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+        policySnapshot: {} as never, profile: 'assessment', status, costCents: 5, errorCode,
+        queuedAt: startedAt, startedAt, finishedAt: new Date(startedAt.getTime() + 60_000),
+        grantId: f.g.grantId, grantRevisionId: f.g.revisionId,
+      } as never));
+      return { ...f, startedAt };
+    }
+
+    // Control: the later run read the anomalies, so it saw that one: skip.
+    const clean = await withLaterRun(null);
+    expect(await clean.look()).toEqual({ skipped: 'no_changes' });
+
+    // The later run's anomaly read failed: the anchor stays at the clean run,
+    // so the anomaly announced after it is a change and the tick runs.
+    const degraded = await withLaterRun('assessment_anomalies_unread');
+    expect(await degraded.look()).toHaveProperty('runId');
+    // The digest watermark still advances to the degraded run's start: the
+    // anomalies are current state and are read again whatever the window.
+    expect(await lastAssessmentWatermark(degraded.g.grantId, degraded.t.orgA)).toEqual(degraded.startedAt);
+
+    // The same for a run that also left a pending intent (awaiting_approval).
+    const pending = await withLaterRun('assessment_anomalies_unread', 'awaiting_approval');
+    expect(await pending.look()).toHaveProperty('runId');
+  });
+
+  it('an event reason runs even when nothing changed', async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    await seedSpentRun(agentId, t.orgA, g, 5, new Date(Date.now() - 61 * MIN));
+    expect(await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'event', eventType: 'ticket.stale', eventId: 'evt-stale' },
+    })).toHaveProperty('runId');
+  });
+});
+
+describe('paused grant', () => {
+  it('the next tick stops its watches; the partner admin orphan notice exists once after two ticks', async () => {
+    const t = await seedTenant();
+    const g = await seedGrant(t, { orgIds: [t.orgA] });
+    const ceiling: GrantCeiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    const w1 = await createWatch(ceiling, { orgId: t.orgA, kind: 'backup_health', params: {}, cadenceMinutes: 60 });
+    const w2 = await createWatch(ceiling, { orgId: null, kind: 'ticket_cluster', params: {}, cadenceMinutes: 60 });
+
+    await pauseGrant(g.grantId, 'grantor_suspended');
+    expect(await readGrant(g.grantId)).toMatchObject({ status: 'paused', pausedReason: 'grantor_suspended' });
+
+    // One clock for both ticks: W05a's orphan notice is deduped per grant per UTC day.
+    const now = new Date();
+    const first = await processWakeTick(now);
+    expect(first.watchesStopped).toBe(2);
+    const second = await processWakeTick(new Date(now.getTime() + 1_000));
+    expect(second.watchesStopped).toBe(0);
+
+    const rows = await asSystem(() => db.select().from(wispWatches).where(eq(wispWatches.grantId, g.grantId)));
+    expect(rows.map((r) => r.id).sort()).toEqual([w1.id, w2.id].sort());
+    for (const r of rows) expect(r).toMatchObject({ status: 'stopped', stoppedReason: 'paused' });
+
+    expect(await noticesByKey(t.adminId, `wisp-watches-orphaned-${g.grantId}-${now.toISOString().slice(0, 10)}`)).toHaveLength(1);
+    // A paused grant is never floor-ticked and gets no assessment.
+    expect(await getWispWakeQueue().getJob(wakeJobId(g.grantId, t.orgA))).toBeUndefined();
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } }))
+      .toEqual({ skipped: 'grant_inactive' });
+    expect(await runsOfGrant(g.grantId)).toEqual([]);
+  });
+});
+
+describe('concern retention reaper', () => {
+  it('a live ticket concern whose ticket row is deleted is resolved subject_gone; one whose ticket remains stays open', async () => {
+    const t = await seedTenant();
+    const goneTicket = await seedTicket(t, t.orgA, 'Old laptop will not boot');
+    const keptTicket = await seedTicket(t, t.orgA, 'Shared drive is slow');
+    const gone = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgA, subject: { kind: 'ticket', id: goneTicket },
+      summary: 'Waiting 3 days', severity: 'medium', evidence: {},
+    });
+    const kept = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgA, subject: { kind: 'ticket', id: keptTicket },
+      summary: 'Waiting 2 days', severity: 'medium', evidence: {},
+    });
+
+    await asSystem(() => db.delete(tickets).where(eq(tickets.id, goneTicket)));
+    const result = await runWispConcernRetention(new Date());
+    expect(result.subjectGone).toBe(1);
+
+    const [goneRow] = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.id, gone.id)));
+    expect(goneRow).toMatchObject({ status: 'resolved', outcome: 'subject_gone' });
+    const [keptRow] = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.id, kept.id)));
+    expect(keptRow!.status).toBe('open');
+  });
+});

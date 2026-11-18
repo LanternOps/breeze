@@ -80,6 +80,34 @@ describe('software dependency identity', () => {
       .not.toBe(fingerprintSoftwareInstallMethodDependency(method, catalog));
   });
 
+  // #6958 (o): a deployment approved before install scripts existed must keep
+  // dispatching, so a version with no ENABLED scripts fingerprints exactly as
+  // it did before — pinned to the literal pre-#6958 value.
+  it('keeps the pre-#6958 fingerprint when scripts are absent or not enabled', () => {
+    const PRE_6958 = '1a27cbf00118d8abae243cbe998712889bed2b15975bb527620d4b28f307eca1';
+    expect(fingerprintSoftwareVersionDependency(version, catalog)).toBe(PRE_6958);
+    expect(fingerprintSoftwareVersionDependency({ ...version, installScriptsEnabled: false }, catalog)).toBe(PRE_6958);
+    // Dormant stored scripts are never dispatched, so they do not enter the pin.
+    expect(fingerprintSoftwareVersionDependency(
+      { ...version, installScriptsEnabled: false, preInstallScript: 'a', postInstallScript: 'b' },
+      catalog,
+    )).toBe(PRE_6958);
+  });
+
+  it('changes the fingerprint when scripts are enabled, and when an enabled script changes', () => {
+    const enabled = { ...version, installScriptsEnabled: true, preInstallScript: null, postInstallScript: 'Write-Output 1' };
+    const base = fingerprintSoftwareVersionDependency(version, catalog);
+    const withScript = fingerprintSoftwareVersionDependency(enabled, catalog);
+    expect(withScript).not.toBe(base);
+    expect(fingerprintSoftwareVersionDependency({ ...enabled, postInstallScript: 'Write-Output 2' }, catalog))
+      .not.toBe(withScript);
+    expect(fingerprintSoftwareVersionDependency({ ...enabled, preInstallScript: 'Write-Output 0' }, catalog))
+      .not.toBe(withScript);
+    // The one OS picks the script's interpreter, so it is pinned too.
+    expect(fingerprintSoftwareVersionDependency({ ...enabled, supportedOs: ['windows'] }, catalog))
+      .not.toBe(fingerprintSoftwareVersionDependency({ ...enabled, supportedOs: ['macos'] }, catalog));
+  });
+
   it('fails legacy and changed dependencies closed while allowing an exact match', () => {
     const current = fingerprintSoftwareVersionDependency(version, catalog);
     expect(dependencyFingerprintError(null, current)).toBe(SOFTWARE_DEPENDENCY_UNPINNED);

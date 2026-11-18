@@ -25,9 +25,10 @@
     "aiAgentsFixMemory": "Memória de correções",
     "flows": "Fluxos",
     "flowDetail": "Fluxo",
+    "flowRun": "Execução de fluxo",
     "aiAgentsRunsDetail": "Detalhes da execução",
     "aiAgentsRuns": "Execuções de agentes",
-    "aiForOffice": "IA para Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Motor de risco de IA",
     "alertsDelivery": "Alertas – Entrega",
     "alertsCorrelations": "Correlações de alertas",
@@ -72,10 +73,10 @@
     "dnsSecurity": "Segurança de DNS",
     "dr": "Recuperação de desastres",
     "extensionsNamePath": "Extensão",
-    "fleet": "Orquestração de frota",
+    "fleet": "Descobertas",
     "forgotPassword": "Esqueci minha senha",
     "incidentsDetail": "Detalhes do incidente",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "dashboard": "Painel",
     "integrations": "Integrações",
     "integrationsPsa": "Integrações PSA",
@@ -84,6 +85,7 @@
     "logs": "Logs",
     "monitoring": "Rede",
     "oauthConsent": "Autorizar acesso",
+    "oauthError": "Falha ao conectar o app",
     "onedrive": "OneDrive",
     "organizations": "Organizações",
     "organizationsDetail": "Organização",
@@ -141,6 +143,7 @@
     "settingsBilling": "Configurações de faturamento",
     "settingsCatalog": "Catálogo de produtos",
     "settingsConnectedApps": "Aplicativos conectados",
+    "settingsDeliverableTemplates": "Modelos de entregáveis",
     "settingsCustomFields": "Campos personalizados",
     "settingsEnrollmentKeys": "Chaves de registro",
     "settingsFilters": "Filtros salvos",
@@ -154,6 +157,7 @@
     "settingsProfile": "Configurações de perfil",
     "settingsRoles": "Funções",
     "settingsSitesDetail": "Configurações do site",
+    "settingsSites": "Sites",
     "settingsSso": "Login único (SSO)",
     "settingsUsers": "Usuários",
     "settingsVariables": "Variáveis",
@@ -167,7 +171,6 @@
     "ticketsNew": "Criar chamado",
     "timesheet": "Folha de horas",
     "vulnerabilities": "Vulnerabilidades",
-    "workspace": "Assistente de IA",
     "aiAgentsFleetDesign": "Design de frota",
     "agreementTemplates": "Modelos de acordo",
     "agreementTemplateDetail": "Modelo de acordo",
@@ -177,8 +180,20 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Mensagens para dispositivos"
+    "adminWisp": "Wisp",
+    "billingAutopay": "Pagamentos automáticos",
+    "endpointMessages": "Mensagens para dispositivos",
+    "securityDetectionRules": "Regras de detecção",
+    "settingsPlan": "Plano e recursos",
+    "settingsWispMemory": "Memória do Wisp",
+    "wispThread": "Conversa do Wisp",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tarefas de IA",
+    "aiTask": "Tarefa de IA",
+    "settingsAi": "Configurações de IA",
+    "settingsFlowLimits": "Limites de fluxos",
+    "ticketsImport": "Importar chamados"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -197,6 +212,33 @@
     "referenceIdLabel": "ID de referência:",
     "dashboardLink": "Ir para o painel",
     "signInLink": "Entrar"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Este app não pode se conectar",
+      "body": "O Breeze não reconhece o app que enviou você para cá, ou o app não tem permissão para se conectar a este servidor Breeze. Verifique se o app está configurado com o endereço deste servidor e tente novamente."
+    },
+    "invalidRedirectUri": {
+      "heading": "O endereço de retorno deste app não está registrado",
+      "body": "O app pediu ao Breeze para enviar você de volta a um endereço que nunca registrou, então o Breeze parou aqui para proteger sua conta. O desenvolvedor do app ou seu administrador precisa corrigir a URL de redirecionamento do app."
+    },
+    "sessionExpired": {
+      "heading": "Este login expirou",
+      "body": "A conexão demorou demais ou foi iniciada em outro navegador. Volte ao app e conecte-se novamente."
+    },
+    "invalidRequest": {
+      "heading": "O app enviou uma solicitação que o Breeze não pode aceitar",
+      "body": "A solicitação de conexão do app estava incompleta ou pedia algo que este servidor não suporta. Volte ao app e tente novamente. Se continuar acontecendo, entre em contato com o desenvolvedor do app."
+    },
+    "serverError": {
+      "heading": "O Breeze não conseguiu concluir a conexão",
+      "body": "Ocorreu um erro do nosso lado. Aguarde alguns minutos, depois volte ao app e tente novamente."
+    },
+    "generic": {
+      "heading": "Não foi possível concluir esta conexão",
+      "body": "Volte ao app e inicie a conexão novamente. Se continuar acontecendo, entre em contato com o administrador do Breeze."
+    },
+    "nextStep": "Nenhum acesso foi concedido. Você pode fechar esta página."
   },
   "settingsIndex": {
     "heading": "Configurações",
@@ -232,7 +274,7 @@
       },
       "connectedApps": {
         "title": "Aplicativos Conectados",
-        "description": "Revise e revogue assistentes de IA e clientes MCP autorizados a acessar seu locatário."
+        "description": "Revise e revogue clientes de IA autorizados a acessar seu locatário."
       },
       "officeAddinBindings": {
         "title": "Vínculos do Suplemento do Outlook",
@@ -261,6 +303,18 @@
       },
       "alertTemplates": {
         "title": "Modelos de alerta"
+      },
+      "plan": {
+        "title": "Plano e recursos",
+        "description": "Seu plano, quais recursos ele inclui e de onde vem cada um."
+      },
+      "wispMemory": {
+        "title": "Memória do Wisp",
+        "description": "Revise, confirme e retire o que o Wisp lembra."
+      },
+      "flowLimits": {
+        "title": "Limites de fluxos",
+        "description": "Limites mensais de execuções e limite de tokens de IA para os fluxos."
       }
     },
     "groups": {
@@ -283,7 +337,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Aplicativos conectados",
-    "description": "Assistentes de IA e outros clientes MCP autorizados a acessar seu locatário via OAuth. Revogue o acesso a qualquer momento — o token do aplicativo será rejeitado em até 10 minutos."
+    "description": "Clientes de IA que foram autorizados a acessar seu locatário via OAuth. Revogue o acesso a qualquer momento — o token do aplicativo será rejeitado em até 10 minutos."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Configurações da organização",

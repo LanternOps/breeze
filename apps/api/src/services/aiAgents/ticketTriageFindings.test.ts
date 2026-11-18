@@ -73,6 +73,7 @@ const readAiKillState = vi.hoisted(() => vi.fn<() => Promise<{ killed: boolean; 
 vi.mock('../aiKillState', () => ({ readAiKillState }));
 
 import { persistTicketTriage, type TicketTriagePersistRunInput } from './ticketTriageFindings';
+import { checkGuardrails } from '../aiGuardrails';
 
 const agentAuth = {
   principal: { kind: 'ai_agent' },
@@ -188,6 +189,22 @@ describe('persistTicketTriage', () => {
     expect((noteCalls[0]![1] as { input: { content: string } }).input.content)
       .toContain('Printer offline; likely a driver issue.');
     expect(result.intentIds).toContain('intent-note');
+  });
+
+  // W02 (#6756) QA1/QA2: the note is internal, said explicitly, so it never
+  // reaches the public-comment escalation and stays tier 2.
+  it('the triage note is an explicit internal note (isPublic:false) and resolves tier 2', async () => {
+    state.selectQueue.push([ticketRow()]);
+    createActionIntent.mockResolvedValue({ id: 'intent-note', status: 'pending_approval' });
+
+    await persistTicketTriage(runInput(), proposal(), agentAuth);
+
+    const [noteCall] = createActionIntent.mock.calls.filter(
+      ([, input]) => (input as { input: { action: string } }).input.action === 'comment',
+    );
+    const noteInput = (noteCall![1] as { input: Record<string, unknown> }).input;
+    expect(noteInput.isPublic).toBe(false);
+    expect(checkGuardrails('manage_tickets', noteInput).tier).toBe(2);
   });
 
   it('skips the resolution-note draft when the ticket already has one', async () => {

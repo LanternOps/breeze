@@ -9,10 +9,19 @@
     libraries (e.g. libopenh264) that were signed by a different team.
     Without this, hardened runtime rejects production-signed dylibs.
 
+  com.apple.security.cs.allow-unsigned-executable-memory (#10375):
+    the agent's YARA engine (yaraxwasm on wazero) executes code it compiles
+    into anonymous memory; without this the kernel kills a dev-signed agent
+    on its first security scan. Production scopes it to breeze-agent
+    (entitlements/agent-macos.entitlements.plist); this dev file is shared
+    by the dev agent, watchdog and desktop helper for simplicity.
+
   This file is intentionally NOT used by production builds.
 -->
 <plist version="1.0">
 <dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
 </dict>

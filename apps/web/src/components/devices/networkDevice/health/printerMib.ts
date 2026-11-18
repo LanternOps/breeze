@@ -188,11 +188,13 @@ export function summariseDeltas(points: Array<[string, number]>): {
   lastWeek: number | null;
 } {
   if (points.length === 0) return { yesterday: null, lastWeek: null };
-  const yesterday = points[points.length - 1][1];
+  // Pages are whole. The API differences bucket maxima, so these are integers
+  // already; rounding keeps an older API's averaged buckets off the card.
+  const yesterday = Math.round(points[points.length - 1][1]);
   // Claiming a week from fewer than seven buckets would under-report it as a
   // fact rather than a partial window, so it stays null.
   const lastWeek = points.length >= 7
-    ? points.slice(-7).reduce((sum, [, value]) => sum + value, 0)
+    ? Math.round(points.slice(-7).reduce((sum, [, value]) => sum + value, 0))
     : null;
   return { yesterday, lastWeek };
 }

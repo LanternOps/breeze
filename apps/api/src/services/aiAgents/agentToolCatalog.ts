@@ -18,10 +18,11 @@ import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import {
-  TOOL_ACTION_INPUT_KEYS,
+  AGENT_HUMAN_ONLY_ACTIONS, TOOL_ACTION_INPUT_KEYS,
   checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
+import { isFlowToolName } from '../flows/toolNames';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 
@@ -167,6 +168,48 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_tickets: 'tickets',
   send_endpoint_message: 'tickets',
   manage_ticket_checklist: 'tickets',
+  // Full-control W06 (#6776): PSA configuration + ticket ops. Reachable in the catalog; the
+  // classes (aiGuardrails) make every write a proposal, and each handler refuses an ai_agent
+  // principal for the write actions (users-FK actors; an agent must not reconfigure its queue).
+  manage_ticket_config: 'tickets',
+  manage_ticket_checklist_templates: 'tickets',
+  manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets',
+  manage_ticket_forms: 'tickets',
+  manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
+  // Full-control W07 (#6777): alert correlation + signal triage. The reads are agent-reachable;
+  // manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS (group writes span devices, QW3): it keeps a
+  // capability row (the catalog maps every registered tool) but is never offered. Anomaly dismiss/resolve
+  // and the reliability label are proposals released as the approver (USER_OWNED_RELEASE_ACTIONS).
+  get_alert_correlations: 'alerts_monitoring',
+  manage_alert_correlations: 'alerts_monitoring',
+  manage_device_anomalies: 'alerts_monitoring',
+  reliability_feedback: 'automations_reports',
+  // Full-control W08 (#6778): network topology. All six are AGENT_HUMAN_ONLY_TOOLS (W08-D1): they keep a
+  // capability row (the catalog maps every registered tool) but are never offered to an agent.
+  get_topology_graph: 'network',
+  run_topology_diagnostic: 'network',
+  manage_topology_manual: 'network',
+  manage_topology_monitoring: 'network',
+  manage_topology_templates: 'network',
+  apply_topology_template: 'network',
+  // Full-control W09 (#6779): SNMP + network monitoring. Known guests and both UniFi tools are AGENT_HUMAN_ONLY
+  // (partner-wide); they keep a capability row but are never offered to an agent.
+  manage_snmp_templates: 'network',
+  get_snmp_metrics: 'network',
+  probe_network_asset: 'network',
+  manage_known_guests: 'network',
+  get_unifi_status: 'network',
+  trigger_unifi_sync: 'network',
+  // Full-control W10 (#6780): AI-agent reads sit with the other AI-run reads (list_ai_agent_runs). The operator-task reads are
+  // AGENT_DENIED_READ_TOOLS: they keep a capability row but are never offered to an agent.
+  get_device_ai_activity: 'tenancy',
+  list_operator_tasks: 'tenancy',
+  get_operator_task: 'tenancy',
+  list_ai_agent_schedules: 'tenancy',
+  list_fleet_designs: 'tenancy',
+  get_fleet_design: 'tenancy',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
@@ -189,6 +232,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- security_response (tone: high) ----
   security_scan: 'security_response',
+  // #6268: mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (Gate B 10).
+  ioc_hunt: 'security_response',
   s1_isolate_device: 'security_response',
   s1_threat_action: 'security_response',
   get_s1_status: 'security_response',
@@ -198,6 +244,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   edr_endpoint_action: 'security_response',
   sync_edr_data: 'security_response',
   execute_containment: 'security_response',
+  // W13 (#10101): mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (a release is a four-eyes human decision).
+  release_containment: 'security_response',
   apply_cis_remediation: 'security_response',
   get_cis_compliance: 'security_response',
   get_cis_device_report: 'security_response',
@@ -210,9 +259,18 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   validate_flow: 'automations_reports',
   get_flow: 'automations_reports',
   list_flows: 'automations_reports',
+  run_flow: 'automations_reports',
+  list_flow_runs: 'automations_reports',
+  get_flow_run: 'automations_reports',
+  cancel_flow_run: 'automations_reports',
+  list_business_calendars: 'tickets', // #8973 W4: read-only
+  list_ticket_routing_rules: 'tickets', // #8883 W5: read-only
+  test_ticket_routing_rule: 'tickets', // #8883 W5: dry run, writes nothing
+  manage_ticket_routing_rules: 'tickets', // #8883 W5: Tier 3 writes
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',
+  get_huntress_agents: 'security_response',
   sync_huntress_data: 'security_response',
   create_incident: 'security_response',
   collect_evidence: 'security_response',
@@ -221,6 +279,57 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   request_elevation: 'security_response', // PAM
   revoke_elevation: 'security_response',
   get_elevation_history: 'security_response',
+  // Full-control W11 (#6781): security posture reads and actions sit with security_response; policy authoring
+  // (security policies, compliance-policy deactivate, audit baselines) with config_policies. manage_access_reviews
+  // and manage_pam_rules are AGENT_HUMAN_ONLY_TOOLS: they keep a capability row but are never offered to an agent.
+  get_security_compliance: 'security_response',
+  manage_security_recommendations: 'security_response',
+  manage_recovery_keys: 'security_response',
+  manage_pam_rules: 'security_response',
+  manage_access_reviews: 'security_response',
+  manage_security_policies: 'config_policies',
+  manage_compliance_policies: 'config_policies',
+  manage_audit_baselines: 'config_policies',
+  // Full-control W12 (#6782): software reads and installs sit with patching_software beside the patch and
+  // software-policy tools; fleet findings beside get_fleet_findings, custom fields beside query_custom_fields.
+  // bootstrap_homebrew is AGENT_HUMAN_ONLY_TOOLS (kept here so the capability map stays total).
+  manage_software_catalog: 'patching_software',
+  search_packages: 'patching_software',
+  manage_software_deployments: 'patching_software',
+  get_device_software: 'patching_software',
+  manage_device_software: 'patching_software',
+  manage_software_inventory: 'patching_software',
+  bootstrap_homebrew: 'patching_software',
+  manage_fleet_findings: 'alerts_monitoring',
+  manage_custom_fields: 'automations_reports',
+  // Full-control W13 (#6783): device inventory reads and records sit beside get_device_details
+  // (automations_reports).
+  get_device_events: 'automations_reports',
+  get_device_health: 'automations_reports',
+  get_process_samples: 'automations_reports',
+  get_management_posture: 'automations_reports',
+  manage_device_function: 'automations_reports',
+  manage_device_links: 'automations_reports',
+  manage_manual_assets: 'automations_reports',
+  manage_device_warranty: 'automations_reports',
+  // W13 PR B (#6783): the live event-log read beside manage_processes; tenant variables beside the script tools;
+  // support sessions beside the remote-access tools.
+  browse_device_event_log: 'scripts_commands',
+  manage_tenant_variables: 'scripts_commands',
+  manage_support_sessions: 'remote_access',
+  // W14 (#6784): billing lifecycle tools beside the contract / invoice tools.
+  manage_billing_profiles: 'business',
+  manage_billing_settings: 'business',
+  manage_contract_templates: 'business',
+  manage_contract_documents: 'business',
+  get_device_billing: 'business',
+  // W14 PR B (#6784): accounting sync beside the invoice tools (partner-only handler; every write agent-human-only).
+  manage_accounting_sync: 'business',
+  // W15 PR A (#6785): reads reachable, writes require explicit grants; handler scope gates still apply.
+  get_pax8_status: 'business',
+  search_pax8_products: 'business',
+  manage_pax8_subscriptions: 'business',
+  manage_pax8_orders: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
@@ -265,6 +374,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   search_c2c_items: 'backup_recovery',
   trigger_c2c_sync: 'backup_recovery',
   restore_c2c_items: 'backup_recovery',
+  // W17 (#6788). manage_c2c_configs is mapped too, but AGENT_HUMAN_ONLY_TOOLS keeps it out of the catalog.
+  manage_backup_verification: 'backup_recovery',
+  get_vss_status: 'backup_recovery',
+  list_bmr_recoveries: 'backup_recovery',
+  get_backup_health: 'backup_recovery',
+  manage_c2c_configs: 'backup_recovery',
 
   // ---- config_policies ----
   apply_configuration_policy: 'config_policies',
@@ -338,6 +453,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_analytics: 'automations_reports',
   get_executive_summary: 'automations_reports',
   query_audit_log: 'automations_reports',
+  // Full-control W18 PR A (#6789): the only agent-reachable W18 read (one org's retention policy), beside query_audit_log.
+  get_audit_retention: 'automations_reports',
   query_change_log: 'automations_reports',
   search_documentation: 'automations_reports',
   get_invite_funnel: 'automations_reports', // deployment/enrollment funnel report
@@ -370,7 +487,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_deliverable_templates: 'business',
   manage_deliverables: 'business',
   manage_key_dates: 'business',
-  manage_catalog: 'business',
+  manage_billing_catalog: 'business',
   search_catalog: 'business',
   lookup_distributor_product: 'business',
   get_catalog_item: 'business',
@@ -384,12 +501,54 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_site: 'tenancy',
   list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
+  get_partner_settings_inheritance: 'tenancy', // #9763 read: which orgs override a partner setting
+  // Full-control W18 PR A (#6789): mapped for the picker's completeness only. All six are AGENT_DENIED_READ_TOOLS,
+  // so the catalog never offers them (pinned in the unreachable-set snapshot).
+  get_org_summary: 'tenancy',
+  get_account_readiness: 'tenancy',
+  list_portal_users: 'tenancy',
+  list_users: 'tenancy',
+  get_user: 'tenancy',
+  list_roles: 'tenancy',
+  // Full-control W18 PR B (#6789): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  manage_org_portal_settings: 'tenancy',
+  manage_report_recipients: 'automations_reports',
+  // Full-control W16 PR A (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  run_patch_plan: 'tenancy',
+  create_operator_task: 'tenancy',
+  // Full-control W16 PR B (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  manage_ai_agent_schedules: 'tenancy',
+  manage_fleet_designs: 'tenancy',
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',
   query_psa_status: 'tenancy',
   manage_ai_agents: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS; mapped for completeness, never reachable
   operator_plan: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS (plan approval carrier); mapped for completeness, never reachable
+  // Wisp W03 memory (domain 'ai'). confirm/retract are HUMAN_ONLY_TOOLS
+  // (never tiered, so never agent-reachable); mapped for completeness.
+  recall: 'tenancy',
+  remember: 'tenancy',
+  confirm_memory: 'tenancy',
+  retract_memory: 'tenancy',
+  // Wisp W05a concerns/watches (domain 'ai'), as W03 chose for memory.
+  list_concerns: 'tenancy',
+  raise_concern: 'tenancy',
+  snooze_concern: 'tenancy',
+  resolve_concern: 'tenancy',
+  create_watch: 'tenancy',
+  // Wisp W08 thread links (domain 'ai'), as W03/W05a chose.
+  link_entity: 'tenancy',
+  list_links: 'tenancy',
+  // Wisp check-in timers (domain 'ai', #10991 W03), as W03/W05a/W08 chose.
+  schedule_check_in: 'tenancy',
+  list_check_ins: 'tenancy',
+  cancel_check_in: 'tenancy',
+  // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
+  // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
+  // (raised only by the coordinator); mapped for completeness.
+  launch_specialist: 'tenancy',
+  wisp_specialist_request: 'tenancy',
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`
@@ -439,6 +598,9 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
   designer: [],
   // AI Suggested Fixes W2 — research is system-provisioned and read-only: zero actions.
   research: [],
+  // Wisp delegation W1 (#11084) — never user-created; the provisioner stores
+  // its allowlist (troubleshootProvisioning.ts), so there is no create preset.
+  troubleshoot: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -526,13 +688,29 @@ function resolveOperation(toolName: string, action: string | null): AgentToolOpe
   };
 }
 
+/**
+ * A tool's agent capability. W5 PR C (#5220): a flow tool (`flow__<slug>`) is
+ * a per-org dynamic name — no per-name `TOOL_CAPABILITY` entry — and maps to
+ * `automations_reports` by prefix. The static catalog never lists flows; this
+ * is the server-side rule the web agent picker mirrors when it adds the
+ * org's enabled manual flows (W5 PR D, plan Task D4).
+ */
+export function agentToolCapability(name: string): AgentCapabilityId | undefined {
+  if (isFlowToolName(name)) return 'automations_reports';
+  return TOOL_CAPABILITY[name];
+}
+
 let memo: AgentToolCatalogDto | null = null;
 
 export function buildAgentToolCatalog(): AgentToolCatalogDto {
   if (memo) return memo;
   const tools: AgentToolCatalogToolDto[] = listAgentReachableTools().map((name) => {
     const actions = toolActionEnum(name);
-    const operations = actions ? actions.sort().map((a) => resolveOperation(name, a)) : [resolveOperation(name, null)];
+    // W02-D2 (#6756): a human-only ACTION is never offered as a picker
+    // operation, so it can never be written to an agent's allowlist.
+    const operations = actions
+      ? actions.sort().filter((a) => !AGENT_HUMAN_ONLY_ACTIONS.has(`${name}:${a}`)).map((a) => resolveOperation(name, a))
+      : [resolveOperation(name, null)];
     const baseTier = aiTools.get(name)!.tier;
     // Same reachability invariant as resolveOperation's tier check above —
     // throw rather than silently clamp a tier-4 tool into a false tier 3.
@@ -559,6 +737,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
       designer: [...AGENT_KIND_PRESETS.designer],
       research: [...AGENT_KIND_PRESETS.research],
+      troubleshoot: [...AGENT_KIND_PRESETS.troubleshoot],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

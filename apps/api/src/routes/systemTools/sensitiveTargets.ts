@@ -95,7 +95,10 @@ function canonicalHive(hive: string): string {
  * trust that upstream validation always will.
  */
 function registryPathSegments(path: string): string[] {
-  const normalized = path.toLowerCase().replace(/\//g, '\\');
+  // Upper-case first: Windows compares key names upper-cased, and some
+  // non-ASCII letters only fold to ASCII that way (U+017F long s -> S, U+0131
+  // dotless i -> I), so `ſam` opens SAM while `'ſam'.toLowerCase()` stays `ſam`.
+  const normalized = path.toUpperCase().toLowerCase().replace(/\//g, '\\');
   const raw = normalized.split('\\').filter((seg) => seg.length > 0);
   const resolved: string[] = [];
   for (const seg of raw) {

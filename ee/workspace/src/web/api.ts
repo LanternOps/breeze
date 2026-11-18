@@ -5,12 +5,17 @@
  * - resolves ONLY relative paths below the extension's own API namespace
  *   (`/api/v1/ext/workspace/`) — callers cannot supply origins, rooted paths,
  *   schemes, traversal, or percent-encoded segments;
- * - sends `credentials: 'same-origin'` and nothing else;
+ * - goes through the host API the web host assigned to the element
+ *   (`@breeze/extension-web-sdk` host API v1), never the global `fetch`. The
+ *   API accepts a Bearer token only and the token lives in the host, so a bare
+ *   `fetch` is always 401 (#11922). The host API attaches the session and
+ *   refuses anything outside this extension's namespace a second time;
  * - caps response bodies before parsing;
  * - normalizes failures into {@link WorkspaceApiError} without ever adopting a
  *   server-supplied string as its own `message` (server text is preserved
  *   separately on `detail` for callers that render it as textContent).
  */
+import type { ExtensionHostApiV1 } from '@breeze/extension-web-sdk';
 
 export const WORKSPACE_API_BASE = '/api/v1/ext/workspace/';
 
@@ -24,15 +29,17 @@ export type WorkspaceApiErrorKind =
   | 'not-found'
   | 'server'
   | 'network'
-  | 'aborted';
+  | 'aborted'
+  | 'host-unavailable';
 
 const KIND_MESSAGES: Record<WorkspaceApiErrorKind, string> = {
-  protocol: 'The Workspace API returned an unexpected response.',
+  'host-unavailable': 'Knowledge could not connect to the Breeze API from this page.',
+  protocol: 'The Knowledge API returned an unexpected response.',
   'invalid-request': 'The request was rejected as invalid.',
-  unauthorized: 'You are not authorized for this Workspace resource.',
-  'not-found': 'The Workspace resource was not found.',
-  server: 'The Workspace API failed to process the request.',
-  network: 'The Workspace API could not be reached.',
+  unauthorized: 'You are not authorized for this Knowledge resource.',
+  'not-found': 'The Knowledge resource was not found.',
+  server: 'The Knowledge API failed to process the request.',
+  network: 'The Knowledge API could not be reached.',
   aborted: 'The request was aborted.',
 };
 
@@ -160,15 +167,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Returns the host API currently assigned to the element, or null if none. */
+export type HostApiSource = () => ExtensionHostApiV1 | null;
+
 async function request(
+  hostApi: ExtensionHostApiV1 | null,
   url: string,
   init: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<unknown> {
+  // No host API = a host that predates host API v1, or a mount outside the
+  // web host. Sending a bare fetch would only earn a misleading 401.
+  if (!hostApi) throw new WorkspaceApiError('host-unavailable');
+
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await hostApi.fetch(url, {
       method: init.method ?? 'GET',
-      credentials: 'same-origin',
       signal: init.signal,
       ...(init.body !== undefined
         ? {
@@ -181,6 +195,10 @@ async function request(
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new WorkspaceApiError('aborted');
     }
+    // buildWorkspaceUrl already confines paths; a host refusal is a bug here.
+    // Matched by name, not instanceof: the web app throws it from its own
+    // bundled copy of the SDK, a different class from the one bundled here.
+    if (error instanceof Error && error.name === 'ExtensionApiPathError') refuse();
     // Never echo the underlying failure text — it can carry hosts/paths.
     throw new WorkspaceApiError('network');
   }
@@ -222,10 +240,15 @@ function expectSourceRow(body: unknown): SourceRow {
   return record as unknown as SourceRow;
 }
 
-export function createWorkspaceApi() {
+/**
+ * @param getHostApi read on every request, so an element can build its client
+ *   once and still pick up the host API the host assigns to it.
+ */
+export function createWorkspaceApi(getHostApi: HostApiSource) {
+  const send = (url: string, init?: Parameters<typeof request>[2]) => request(getHostApi(), url, init);
   return {
     async listSources(orgId: string, options: RequestOptions = {}): Promise<SourceRow[]> {
-      const body = expectRecord(await request(
+      const body = expectRecord(await send(
         buildWorkspaceUrl('sources', { orgId }),
         { signal: options.signal },
       ));
@@ -234,14 +257,14 @@ export function createWorkspaceApi() {
     },
 
     async createSource(orgId: string, input: SourceInput, options: RequestOptions = {}): Promise<SourceRow> {
-      return expectSourceRow(await request(
+      return expectSourceRow(await send(
         buildWorkspaceUrl('sources', { orgId }),
         { method: 'POST', body: input, signal: options.signal },
       ));
     },
 
     async getSource(orgId: string, id: string, options: RequestOptions = {}): Promise<SourceRow> {
-      return expectSourceRow(await request(
+      return expectSourceRow(await send(
         buildWorkspaceUrl(`sources/${assertSegment(id)}`, { orgId }),
         { signal: options.signal },
       ));
@@ -253,14 +276,14 @@ export function createWorkspaceApi() {
       patch: Partial<SourceInput>,
       options: RequestOptions = {},
     ): Promise<SourceRow> {
-      return expectSourceRow(await request(
+      return expectSourceRow(await send(
         buildWorkspaceUrl(`sources/${assertSegment(id)}`, { orgId }),
         { method: 'PATCH', body: patch, signal: options.signal },
       ));
     },
 
     async deleteSource(orgId: string, id: string, options: RequestOptions = {}): Promise<void> {
-      expectRecord(await request(
+      expectRecord(await send(
         buildWorkspaceUrl(`sources/${assertSegment(id)}`, { orgId }),
         { method: 'DELETE', signal: options.signal },
       ));
@@ -272,21 +295,21 @@ export function createWorkspaceApi() {
       credential: CredentialInput,
       options: RequestOptions = {},
     ): Promise<void> {
-      expectRecord(await request(
+      expectRecord(await send(
         buildWorkspaceUrl(`sources/${assertSegment(id)}/credential`, { orgId }),
         { method: 'PUT', body: credential, signal: options.signal },
       ));
     },
 
     async clearCredential(orgId: string, id: string, options: RequestOptions = {}): Promise<void> {
-      expectRecord(await request(
+      expectRecord(await send(
         buildWorkspaceUrl(`sources/${assertSegment(id)}/credential`, { orgId }),
         { method: 'DELETE', signal: options.signal },
       ));
     },
 
     async listRuns(orgId: string, sourceId: string, options: RequestOptions = {}): Promise<CrawlRunRow[]> {
-      const body = expectRecord(await request(
+      const body = expectRecord(await send(
         buildWorkspaceUrl(`sources/${assertSegment(sourceId)}/runs`, { orgId, limit: '20' }),
         { signal: options.signal },
       ));
@@ -299,7 +322,7 @@ export function createWorkspaceApi() {
       deviceId: string,
       options: RequestOptions = {},
     ): Promise<DeviceSummary> {
-      const record = expectRecord(await request(
+      const record = expectRecord(await send(
         buildWorkspaceUrl(`devices/${assertSegment(deviceId)}/summary`, { orgId }),
         { signal: options.signal },
       ));

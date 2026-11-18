@@ -2,6 +2,8 @@ import type { InheritableEventLogSettings } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SavedSecretInput from './SavedSecretInput';
+import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: InheritableEventLogSettings;
@@ -15,15 +17,21 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
 
   return (
     <div className="space-y-6">
-      <label className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          checked={data.enabled ?? false}
-          onChange={e => set({ enabled: e.target.checked })}
-          className="h-4 w-4 rounded border"
-        />
-        <span className="text-sm font-medium">{t('partnerEventLogs.enable')}</span>
-      </label>
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={data.enabled ?? false}
+              onChange={e => set({ enabled: e.target.checked })}
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">{t('partnerEventLogs.enable')}</span>
+          </label>
+          <SettingBadge fieldId="eventLogs" />
+        </div>
+        <InheritanceLine fieldId="eventLogs" />
+      </div>
 
       {data.enabled && (
         <div className="grid gap-6 sm:grid-cols-2">

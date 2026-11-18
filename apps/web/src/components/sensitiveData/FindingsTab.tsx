@@ -2,7 +2,9 @@ import '@/lib/i18n';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction, handleActionError, ActionError } from '@/lib/runAction';
+import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 import {
   DETECTION_CLASSES,
   RISK_LEVELS,
@@ -12,6 +14,7 @@ import {
   STATUS_COLORS,
 } from './constants';
 import RemediationModal from './RemediationModal';
+import { useSensitiveDataLabels } from './useSensitiveDataLabels';
 import { formatPercent } from '@/lib/i18n/format';
 
 type Finding = {
@@ -37,10 +40,12 @@ type Pagination = {
 
 export default function FindingsTab() {
   const { t } = useTranslation('security');
+  const { riskLabel, findingStatusLabel, dataTypeLabel } = useSensitiveDataLabels();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [forbidden, setForbidden] = useState(false);
 
   // Filters
   const [dataType, setDataType] = useState('');
@@ -56,12 +61,20 @@ export default function FindingsTab() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const params = new URLSearchParams({ page: String(page), limit: String(pagination.limit) });
       if (dataType) params.set('dataType', dataType);
       if (risk) params.set('risk', risk);
       if (status) params.set('status', status);
 
       const res = await fetchWithAuth(`/sensitive-data/report?${params}`);
+      if (res.status === 403) {
+        // Stale org selection (#9697): never keep the previous org's rows.
+        setFindings([]);
+        setSelectedIds(new Set());
+        setForbidden(true);
+        return;
+      }
       if (!res.ok) {
         throw new Error(
           t('sensitiveDataFindingsTab.errors.fetchFindings', {
@@ -74,6 +87,8 @@ export default function FindingsTab() {
       setPagination(json.pagination ?? { page: 1, limit: 25, total: 0, totalPages: 1 });
       setSelectedIds(new Set());
     } catch (err) {
+      setFindings([]);
+      setSelectedIds(new Set());
       setError(
         err instanceof Error
           ? err.message
@@ -125,25 +140,31 @@ export default function FindingsTab() {
   };
 
   const handleQuickAction = async (findingId: string, action: 'accept_risk' | 'false_positive') => {
+    const fallback = t('sensitiveDataFindingsTab.errors.updateFinding', {
+      defaultValue: 'Failed to update finding',
+    });
     try {
-      const res = await fetchWithAuth('/sensitive-data/remediate', {
-        method: 'POST',
-        body: JSON.stringify({ findingIds: [findingId], action }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          t('sensitiveDataFindingsTab.errors.updateFinding', {
-            defaultValue: 'Failed to update finding',
+      await runAction({
+        request: () =>
+          fetchWithAuth('/sensitive-data/remediate', {
+            method: 'POST',
+            body: JSON.stringify({ findingIds: [findingId], action }),
           }),
-        );
-      }
+        errorFallback: fallback,
+        successMessage:
+          action === 'accept_risk'
+            ? t('sensitiveDataFindingsTab.toasts.riskAccepted', { defaultValue: 'Risk accepted' })
+            : t('sensitiveDataFindingsTab.toasts.markedFalsePositive', {
+                defaultValue: 'Marked as false positive',
+              }),
+        onUnauthorized: handleSessionExpired,
+      });
       await fetchFindings(pagination.page);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t('sensitiveDataFindingsTab.errors.actionFailed', { defaultValue: 'Action failed' }),
-      );
+      // ActionError already toasted (401 is handled by the auth redirect).
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) handleActionError(err, fallback);
+      setError(err instanceof Error ? err.message : fallback);
     }
   };
 
@@ -153,21 +174,23 @@ export default function FindingsTab() {
     fetchFindings(pagination.page);
   };
 
+  if (forbidden) return <SensitiveDataAccessDenied />;
+
   return (
     <div className="space-y-4">
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <select value={dataType} onChange={(e) => setDataType(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allTypes', { defaultValue: 'All Types' })}</option>
-          {DETECTION_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          {DETECTION_CLASSES.map((c) => <option key={c.value} value={c.value}>{dataTypeLabel(c.value)}</option>)}
         </select>
         <select value={risk} onChange={(e) => setRisk(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allRisks', { defaultValue: 'All Risks' })}</option>
-          {RISK_LEVELS.map((r) => <option key={r} value={r} className="capitalize">{r}</option>)}
+          {RISK_LEVELS.map((r) => <option key={r} value={r}>{riskLabel(r)}</option>)}
         </select>
         <select value={status} onChange={(e) => setStatus(e.target.value)} className="h-9 rounded-md border bg-background px-3 text-sm">
           <option value="">{t('sensitiveDataFindingsTab.filters.allStatuses', { defaultValue: 'All Statuses' })}</option>
-          {FINDING_STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s.replace('_', ' ')}</option>)}
+          {FINDING_STATUSES.map((s) => <option key={s} value={s}>{findingStatusLabel(s)}</option>)}
         </select>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -258,19 +281,19 @@ export default function FindingsTab() {
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${DATA_TYPE_COLORS[f.dataType] ?? ''}`}>
-                      {f.dataType}
+                      {dataTypeLabel(f.dataType)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{f.patternId}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${RISK_COLORS[f.risk] ?? ''}`}>
-                      {f.risk}
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${RISK_COLORS[f.risk] ?? ''}`}>
+                      {riskLabel(f.risk)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs">{formatPercent(f.confidence, { maximumFractionDigits: 0 })}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${STATUS_COLORS[f.status] ?? ''}`}>
-                      {f.status.replace('_', ' ')}
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[f.status] ?? ''}`}>
+                      {findingStatusLabel(f.status)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{f.deviceName}</td>
@@ -333,6 +356,8 @@ export default function FindingsTab() {
             type="button"
             disabled={pagination.page <= 1}
             onClick={() => fetchFindings(pagination.page - 1)}
+            aria-label={t('common:actions.previousPage')}
+            title={t('common:actions.previousPage')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50 hover:bg-muted"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -348,6 +373,8 @@ export default function FindingsTab() {
             type="button"
             disabled={pagination.page >= pagination.totalPages}
             onClick={() => fetchFindings(pagination.page + 1)}
+            aria-label={t('common:actions.nextPage')}
+            title={t('common:actions.nextPage')}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50 hover:bg-muted"
           >
             <ChevronRight className="h-4 w-4" />

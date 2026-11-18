@@ -14,6 +14,18 @@ const SITE_ID_2 = '12121212-1212-4121-8121-121212121212';
 
 vi.mock('../services', () => ({}));
 
+// These org-only route regressions do not enter the separate OD5 read view.
+// Preserve ownership/locking helpers used by the real membership code, while
+// keeping the new cross-owner lookups out of their queued Drizzle responses.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
+  resolveOrgSessionPartnerId: vi.fn().mockResolvedValue(null),
+  readPartnerGroupsForOrgSession: vi.fn().mockResolvedValue([]),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -66,6 +78,9 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // groupMembership schedules peripheral reconciliation after commit (#10521 W2b);
+  // there is no transaction here, so run it immediately.
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -490,6 +505,31 @@ describe('groups routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('rejects ownerScope partner without orgId for a partner without full org access', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Partner Group', ownerScope: 'partner' })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Managing partner-wide state requires full partner org access (orgAccess must be "all")');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('rejects an inaccessible org supplied via the query param', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
@@ -810,7 +850,7 @@ describe('groups routes', () => {
         vi.mocked(db.insert).mockReturnValueOnce({
           values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([created]) })
         } as any);
-        const membershipValuesMock = vi.fn().mockResolvedValue(undefined);
+        const membershipValuesMock = vi.fn((rows: Array<{ deviceId: string }>) => ({ onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) }));
         vi.mocked(db.insert).mockReturnValueOnce({ values: membershipValuesMock } as any);
 
         const res = await app.request('/groups', {

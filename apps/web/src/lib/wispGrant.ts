@@ -1,0 +1,200 @@
+// Wisp W04 (web): grant handshake + thread read shared by the step-up modal
+// (create / refresh) and the thread header. Server contracts: W02
+// `routes/wisp.ts` (grants) and W04a `routes/wispThreads.ts` (thread).
+import type { WispFirstLookState } from '@breeze/shared';
+import { fetchWithAuth } from '../stores/auth';
+import type { WispGrantStatus, WispState } from '../stores/aiStore';
+import { extractApiError } from './apiError';
+import { WispThreadError } from './wispSession';
+import { mintStepUpGrant, type StepUpReauth } from './mfaStepUp';
+import { pickReauthTier, type ReauthTier } from '../components/settings/StepUpPrompt';
+
+/** The factor the step-up will ask for (same discovery as TopologyArmStepUp). */
+export async function discoverStepUpTier(): Promise<ReauthTier> {
+  const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
+  if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
+  const me = (await user.json()) as { mfaMethod?: string | null } | null;
+  const keys = (await passkeys.json()) as unknown;
+  const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
+  if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
+  return pickReauthTier(list.length, me.mfaMethod ?? null);
+}
+
+/** A preview the server refused (entitlement, scope, flag off) — message is the server's. */
+export class WispPreviewError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = 'WispPreviewError';
+  }
+}
+
+/**
+ * w00 A4: the `wisp_grant` step-up is bound to the server-computed ceiling
+ * hash, so every create/refresh is `GET /wisp/grants/preview` → mint. The
+ * hash is re-read on every attempt: a reach change between two attempts must
+ * produce a new proof, never a replay of the old one.
+ *
+ * #10973: a refresh names its grant (`refreshGrantId`), so the server's hash
+ * covers the unattended-reads switch the grant already has; `unattendedReads`
+ * asks for the ceiling that turns it on.
+ */
+export async function mintWispGrantStepUp(input: {
+  partnerId: string;
+  orgId: string | null;
+  reauth: StepUpReauth;
+  refreshGrantId?: string;
+  unattendedReads?: boolean;
+}): Promise<string> {
+  const params = new URLSearchParams();
+  if (input.orgId) params.set('orgId', input.orgId);
+  if (input.refreshGrantId) params.set('grantId', input.refreshGrantId);
+  if (input.unattendedReads) params.set('unattendedReads', 'true');
+  const query = params.size > 0 ? `?${params.toString()}` : '';
+  // The URL owns the scope: a partner-wide preview (no orgId) must not pick up
+  // the switcher's ambient `?orgId=`, or the step-up is minted against an
+  // org-scoped ceiling hash that the partner-wide POST /wisp/grants refuses.
+  const res = await fetchWithAuth(`/wisp/grants/preview${query}`, { skipOrgIdInjection: true });
+  const body = (await res.json().catch(() => null)) as { ceilingHash?: unknown; code?: unknown } | null;
+  if (!res.ok) {
+    throw new WispPreviewError(
+      extractApiError(body, 'Could not prepare the Wisp grant.'),
+      res.status,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
+  if (typeof body?.ceilingHash !== 'string') throw new WispPreviewError('Could not prepare the Wisp grant.', res.status);
+  return mintStepUpGrant({
+    operation: 'wisp_grant',
+    resource: { partnerId: input.partnerId, orgId: input.orgId, requestedCeilingHash: body.ceilingHash },
+    reauth: input.reauth,
+  });
+}
+
+/** The IANA zone this browser reports (#10402, the morning brief's default); null when it names none. */
+export function detectBrowserTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch (err) {
+    console.warn('[wispGrant] the browser reported no time zone', err);
+    return null;
+  }
+}
+
+const STATUSES: ReadonlySet<string> = new Set<WispGrantStatus>(['active', 'paused', 'revoked', 'expired']);
+const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+const int = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+
+/**
+ * `GET /wisp/thread` → the panel's Wisp state. Tolerant of fields it does not
+ * know (W05 adds `spentTodayCents`/`budgetResetsAt`, A32); null when the
+ * required ids or the status are missing.
+ */
+const FIRST_LOOK_STATES: ReadonlySet<unknown> = new Set<WispFirstLookState>(['looking', 'done', 'couldnt_look']);
+
+export function wispStateFromThread(body: unknown): NonNullable<WispState> | null {
+  const data = (body as { data?: Record<string, unknown> } | null)?.data;
+  const thread = data?.thread as Record<string, unknown> | undefined;
+  const grant = data?.grant as Record<string, unknown> | undefined;
+  const threadId = str(thread?.id);
+  const grantId = str(grant?.id);
+  const status = str(grant?.status);
+  const expiresAt = str(grant?.expiresAt);
+  if (!threadId || !grantId || !status || !STATUSES.has(status) || !expiresAt) return null;
+  const optional: Partial<NonNullable<WispState>> = {};
+  // A32 spend meter: only when both halves are present, so a half-formed
+  // payload never renders "NaN¢".
+  if (typeof grant?.spentTodayCents === 'number' && Number.isFinite(grant.spentTodayCents) && typeof grant?.budgetResetsAt === 'string') {
+    optional.spentTodayCents = grant.spentTodayCents;
+    optional.budgetResetsAt = grant.budgetResetsAt;
+    // #10414: the breakdown rides along only when both halves are numbers; otherwise the total meter shows alone.
+    if (Number.isFinite(grant.backgroundCents) && Number.isFinite(grant.chatCents)
+      && typeof grant.backgroundCents === 'number' && typeof grant.chatCents === 'number') {
+      optional.backgroundCents = grant.backgroundCents;
+      optional.chatCents = grant.chatCents;
+    }
+  } else if (grant && ('spentTodayCents' in grant || 'budgetResetsAt' in grant)) {
+    console.error('[wispGrant] spend meter fields malformed; hiding the meter', { spentTodayCents: grant.spentTodayCents, budgetResetsAt: grant.budgetResetsAt });
+  }
+  // Absent key = unknown (left undefined, WispGrantPauseControl looks it up); present = authoritative.
+  if (grant && 'pausedReason' in grant) optional.pausedReason = str(grant.pausedReason);
+  // #11145: anything else (an older API) stays unknown: a chat surface then claims nothing rather than a default.
+  if (FIRST_LOOK_STATES.has(data?.firstLookState)) optional.firstLookState = data?.firstLookState as WispFirstLookState;
+  return {
+    ...optional,
+    grantId,
+    threadId,
+    scopeOrgId: str(grant?.orgId),
+    focusOrgId: str(thread?.focusOrgId),
+    focusOrgName: str(data?.focusOrgName),
+    status: status as WispGrantStatus,
+    expiresAt,
+    summary: str(thread?.summary) ?? '',
+    // w00 A6 column defaults when an older payload omits them.
+    budgetCentsPerDay: int(grant?.budgetCentsPerDay, 200),
+    floorTickMinutes: int(grant?.floorTickMinutes, 30),
+    wideningAvailable: data?.wideningAvailable === true,
+    // #10973: effective (live AND pinned) on the server; anything but literal true is off.
+    unattendedReads: grant?.unattendedReads === true,
+    // #10390: off unless the server says literally true.
+    summaryRefine: grant?.summaryRefine === true,
+    // #11672: the session a surface entering Wisp resumes when it is still live.
+    lastSessionId: str(thread?.lastSessionId) || null,
+  };
+}
+
+/**
+ * `GET /wisp/thread` did not yield a thread. `status` is the HTTP status and
+ * `code` the server's machine code when it sent one; a 200 here means the body
+ * was unreadable, and null means there was no response. See `isNoActiveGrant`
+ * for the ordinary "no grant" answer.
+ */
+export class WispThreadReadError extends WispThreadError {
+  constructor(message: string, status: number | null, readonly code?: string) {
+    super(message, status);
+    this.name = 'WispThreadReadError';
+  }
+}
+
+/** The machine code `fetchWispThread` rejects with for "no active grant for this scope". */
+export const NO_ACTIVE_GRANT = 'no_active_grant';
+
+/**
+ * The ordinary "you have no active grant for this scope" answer, as opposed
+ * to a failure: `GET /wisp/thread` answers 200 `{ data: null }` (#10200 — an
+ * expected miss, so no red console line), and a pre-#10200 API answered 404
+ * `no_active_grant`. A bare 404 (the hub's answer while the server has Wisp
+ * switched off) is not it.
+ */
+export function isNoActiveGrant(err: unknown): boolean {
+  return err instanceof WispThreadReadError && err.code === NO_ACTIVE_GRANT && (err.status === 200 || err.status === 404);
+}
+
+/** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
+export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
+  // Exact-scope lookup on the server: the ambient `?orgId=` must not turn a
+  // partner-wide read into an org-scoped miss (no active grant).
+  let res: Response;
+  try {
+    res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread', { skipOrgIdInjection: true });
+  } catch (err) {
+    // No response at all: status null, so a caller reads it as no answer, not "no grant" (#10142).
+    throw new WispThreadReadError(err instanceof Error ? err.message : 'Could not open the Wisp thread.', null);
+  }
+  const body = (await res.json().catch(() => null)) as { code?: unknown; data?: unknown } | null;
+  // No grant for this scope (#10200): still a rejection, so every caller keeps
+  // one "no grant" path (`isNoActiveGrant`) for this and the legacy 404.
+  if (res.ok && body?.data === null) {
+    throw new WispThreadReadError('No active Wisp delegation for this scope', res.status, NO_ACTIVE_GRANT);
+  }
+  if (!res.ok) {
+    throw new WispThreadReadError(
+      extractApiError(body, 'Could not open the Wisp thread.'),
+      res.status,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
+  const state = wispStateFromThread(body);
+  // A 2xx the panel cannot read is no answer, not "no grant".
+  if (!state) throw new WispThreadReadError('Could not open the Wisp thread.', res.status);
+  return state;
+}

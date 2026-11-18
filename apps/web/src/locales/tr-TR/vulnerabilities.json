@@ -95,7 +95,9 @@
     "high": "Yüksek",
     "medium": "Orta",
     "low": "Düşük",
-    "unknown": "Bilinmiyor"
+    "unknown": "Bilinmiyor",
+    "unscored": "Puanlanmamış",
+    "unscoredTitle": "Bu CVE için henüz bir NVD önem puanı yayımlanmadı."
   },
   "softwareGroupDrawer": {
     "titleFallback": "Yazılım grubu",
@@ -190,7 +192,8 @@
       "patch": "Yama"
     },
     "help": {
-      "riskAria": "Risk puanı hakkında"
+      "riskAria": "Risk puanı hakkında",
+      "patchAria": "Yama sütunu hakkında"
     },
     "actions": {
       "openDetailsAria": "{{name}} güvenlik açığı ayrıntılarını açın"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Yama hazır",
-        "detail": "{{count}} mevcut bir yamayla bulguları açın",
-        "detail_one": "{{count}} yamayla birlikte açık bulgu",
-        "detail_other": "{{count}} mevcut bir yamayla bulguları açın"
+        "detail": "Yüklemeye hazır onaylı yaması olan {{count}} açık bulgu",
+        "detail_one": "Yüklemeye hazır onaylı yaması olan {{count}} açık bulgu",
+        "detail_other": "Yüklemeye hazır onaylı yaması olan {{count}} açık bulgu"
       },
       "acceptedExpiring": {
         "label": "Kabul edildi, süresi yakında doluyor",
@@ -350,13 +353,15 @@
       "cvssAria": "CVSS puanı hakkında",
       "riskAria": "Risk puanı hakkında",
       "epssAria": "EPSS puanı hakkında",
-      "kevAria": "KEV bayrağı hakkında"
+      "kevAria": "KEV bayrağı hakkında",
+      "patchAria": "Yama sütunu hakkında"
     },
     "actions": {
       "openDetailsAria": "{{cveId}} ayrıntılarını aç"
     },
     "patch": {
-      "ready": "Hazır"
+      "ready": "Hazır",
+      "update": "En son sürüme güncelle"
     },
     "hasMore": "Riske göre ilk 500 CVE gösteriliyor — geri kalanını görmek için filtreleri daraltın."
   }

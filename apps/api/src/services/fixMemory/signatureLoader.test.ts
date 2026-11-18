@@ -14,6 +14,14 @@ import { alertSignature, signatureForSource, sourceRefFor } from './signatureLoa
 describe('signatureLoader', () => {
   beforeEach(() => { rows.length = 0; });
 
+  it('skips a device-less alert before OS lookup and records the reason', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    rows.push([{ id: 'workload', deviceId: null, ruleId: null, context: {}, requiresHuman: false }], [{ osType: 'linux' }]);
+    expect(await alertSignature('workload')).toBeNull();
+    expect(rows).toEqual([[{ osType: 'linux' }]]);
+    expect(log).toHaveBeenCalledWith(expect.any(String), { alertId: 'workload', reason: 'alert_has_no_device' });
+  });
+
   it('rule alert: rule override conditions win over the template', async () => {
     rows.push(
       [{ id: 'a-1', deviceId: 'd-1', ruleId: 'r-1', context: {}, requiresHuman: false }],

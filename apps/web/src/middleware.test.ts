@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildFallbackCspDirectives, relaxExistingCsp, resolveLocaleFromCookie, onRequest } from './middleware';
+import { buildFallbackCspDirectives, relaxExistingCsp, resolveLocaleFromCookie, onRequest, tightenCspConnectSrc, widenCspFrameSrc } from './middleware';
 import { LOCALE_COOKIE_NAME } from './lib/appearance';
 
 type MockLocals = { locale?: string };
@@ -72,8 +72,9 @@ describe('CSP directives drop the jsdelivr CDN (#1023)', () => {
     expect(source).not.toContain('jsdelivr');
   });
 
-  // #1750: astro.config.mjs's frame-src is the prod-authoritative directive for
-  // HTML responses (middleware.ts never rewrites frame-src), and it's a
+  // #1750: astro.config.mjs's frame-src is the prod-authoritative base for
+  // HTML responses (middleware.ts only widens it with runtime sources such as
+  // the Network Proxy tunnel origin, #11300 — it never removes one), and it's a
   // hand-maintained duplicate of resolveFrameSrcDirective in csp.ts. Guard the
   // file directly so dropping blob: from the frame-src Set here — which silently
   // re-breaks the quote PDF preview in prod while every other test stays green —
@@ -203,5 +204,130 @@ describe('Referrer-Policy is a default, not an override (#8964)', () => {
       (async () => new Response('ok')) as never,
     );
     expect((res as Response).headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+});
+
+// RoboShadow/ZAP "CSP: Wildcard Directive" (SOC 2 header hardening): the
+// build-time Astro CSP carries `connect-src 'self' https: ws: wss:` because
+// the per-deployment API origin is not known at build time. The middleware
+// must narrow it at request time from the runtime environment, and must not
+// leave the empty `;;` directive the Astro styleDirective join emits.
+describe('runtime connect-src tightening (SOC 2 header hardening)', () => {
+  const astroCsp =
+    "default-src 'self';img-src 'self' data: blob: https:;connect-src 'self' https: ws: wss:; script-src 'self' 'sha256-abc'; style-src 'self' 'unsafe-inline' ;; script-src-attr 'none'";
+
+  it('replaces the wildcard connect-src with the resolved directive and drops empty directives', () => {
+    const tightened = tightenCspConnectSrc(astroCsp, "connect-src 'self' https://us.example.app wss://us.example.app");
+
+    expect(tightened).toContain("connect-src 'self' https://us.example.app wss://us.example.app");
+    expect(tightened).not.toMatch(/connect-src[^;]*\bhttps:(\s|;|$)/);
+    expect(tightened).not.toMatch(/connect-src[^;]*\bws:(\s|;|$)/);
+    expect(tightened).not.toMatch(/connect-src[^;]*\bwss:(\s|;|$)/);
+    expect(tightened).not.toMatch(/;\s*;/);
+    // Everything else is untouched.
+    expect(tightened).toContain("img-src 'self' data: blob: https:");
+    expect(tightened).toContain("script-src 'self' 'sha256-abc'");
+    expect(tightened).toContain("script-src-attr 'none'");
+  });
+
+  it('adds connect-src when the incoming policy has none', () => {
+    const tightened = tightenCspConnectSrc("default-src 'self'", "connect-src 'self' wss://x.example");
+    expect(tightened).toBe("default-src 'self'; connect-src 'self' wss://x.example");
+  });
+});
+
+// ZAP "Storable and Cacheable Content" / "Re-examine Cache-control": HTML
+// documents (including /login) carried no Cache-Control at all. Browsers may
+// heuristically cache them; shared caches must never store them.
+describe('HTML documents are never stored by caches (SOC 2 header hardening)', () => {
+  const run = async (upstream: Response): Promise<Response> => {
+    const result = await onRequest(makeContext(undefined) as any, async () => upstream);
+    if (!(result instanceof Response)) throw new Error('middleware returned no Response');
+    return result;
+  };
+
+  it('sets Cache-Control: no-store on an HTML response that chose none', async () => {
+    const res = await run(new Response('<html></html>', { headers: { 'Content-Type': 'text/html; charset=utf-8' } }));
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('keeps a route-chosen Cache-Control on HTML', async () => {
+    const res = await run(new Response('<html></html>', { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'public, max-age=60' } }));
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+  });
+
+  it('leaves non-HTML responses alone', async () => {
+    const res = await run(new Response('{}', { headers: { 'Content-Type': 'application/json' } }));
+    expect(res.headers.get('Cache-Control')).toBeNull();
+  });
+});
+
+// #11300: Network Proxy host mode frames the device web UI from a per-tunnel
+// origin. The prod HTML CSP's frame-src comes from astro.config.mjs at build
+// time, and the GHCR web image is built once for every region, so the tunnel
+// origin can only be added from the runtime environment.
+describe('runtime frame-src widening for the Network Proxy tunnel origin (#11300)', () => {
+  const astroCsp =
+    "default-src 'self'; frame-src 'self' blob: https://docs.breezermm.com https://docs.selfhosted.example; connect-src 'self' https: ws: wss:; script-src 'self' 'sha256-abc'";
+
+  it('adds the runtime sources and keeps every build-time frame source', () => {
+    const widened = widenCspFrameSrc(
+      astroCsp,
+      "frame-src 'self' blob: https://docs.breezermm.com https://*.breeze.tunnel.example.net",
+    );
+
+    expect(widened).toContain(
+      "frame-src 'self' blob: https://docs.breezermm.com https://docs.selfhosted.example https://*.breeze.tunnel.example.net;",
+    );
+    expect(widened).toContain("script-src 'self' 'sha256-abc'");
+  });
+
+  it('leaves the policy unchanged when there is nothing new to add', () => {
+    expect(widenCspFrameSrc(astroCsp, "frame-src 'self' blob:")).toBe(astroCsp);
+  });
+
+  it('adds the resolved frame-src when the incoming policy has none', () => {
+    expect(widenCspFrameSrc("default-src 'self'", "frame-src 'self' https://*.t.example.net")).toBe(
+      "default-src 'self'; frame-src 'self' https://*.t.example.net",
+    );
+  });
+
+  describe('onRequest (production CSP path)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const frameSrcOf = async (): Promise<string | undefined> => {
+      const result = await onRequest(makeContext(undefined) as any, async () =>
+        new Response('<html></html>', {
+          headers: {
+            'Content-Type': 'text/html',
+            'Content-Security-Policy': "default-src 'self'; frame-src 'self' blob: https://docs.breezermm.com",
+          },
+        }),
+      );
+      if (!(result instanceof Response)) throw new Error('middleware returned no Response');
+      return result.headers
+        .get('Content-Security-Policy')
+        ?.split(';')
+        .map((directive) => directive.trim())
+        .find((directive) => directive.startsWith('frame-src '));
+    };
+
+    it('adds the tunnel origin from TUNNEL_ORIGIN_TEMPLATE to the Astro CSP frame-src', async () => {
+      vi.stubEnv('DEV', false);
+      vi.stubEnv('TUNNEL_ORIGIN_TEMPLATE', 'https://{id}.breeze.tunnel.example.net');
+
+      expect(await frameSrcOf()).toBe(
+        "frame-src 'self' blob: https://docs.breezermm.com https://*.breeze.tunnel.example.net",
+      );
+    });
+
+    it('leaves frame-src as built when host mode is not configured', async () => {
+      vi.stubEnv('DEV', false);
+      vi.stubEnv('TUNNEL_ORIGIN_TEMPLATE', '');
+
+      expect(await frameSrcOf()).toBe("frame-src 'self' blob: https://docs.breezermm.com");
+    });
   });
 });

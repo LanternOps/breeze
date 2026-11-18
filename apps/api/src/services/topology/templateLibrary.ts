@@ -15,6 +15,7 @@ import {
   topologyConfigTemplateVersions,
 } from '../../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import {
   canAccessOrg,
   hasPermission,
@@ -81,7 +82,7 @@ export function assertTopologyTemplateAccess(
   // policy, matching the step-up bar other governance writes carry
   // (softwarePolicyAuthorization.ts, ai/scriptPolicy.ts).
   if (write) {
-    if (auth.principal?.kind === 'ai_agent')
+    if (isAutomationPrincipal(auth))
       throw new TopologyOperationError('topology_permission_denied', 403);
     if (!hasSatisfiedMfa(auth))
       throw new TopologyOperationError('topology_mfa_required', 403);
@@ -219,17 +220,21 @@ export async function createTopologyTemplate(
   assertTopologyTemplateAccess(auth, permissions, owner, true);
   if (!owner.orgId && !owner.partnerId)
     throw new TopologyOperationError('owner_required', 400);
-  const [row] = await db
-    .insert(topologyConfigTemplates)
-    .values({
-      ...owner,
-      key: value.key,
-      name: value.name,
-      description: value.description,
-      createdBy: auth.user.id,
-      updatedBy: auth.user.id,
-    })
-    .returning();
+  // Savepoint so a duplicate key/name (mapped to 409 by the route) cannot
+  // poison the request transaction and become a 500 at commit (#11203).
+  const [row] = await withDbTransaction(async () =>
+    db
+      .insert(topologyConfigTemplates)
+      .values({
+        ...owner,
+        key: value.key,
+        name: value.name,
+        description: value.description,
+        createdBy: auth.user.id,
+        updatedBy: auth.user.id,
+      })
+      .returning(),
+  );
   if (!row) throw new TopologyOperationError('template_create_failed', 503);
   await audit(auth, row, 'created', row.id);
   return { ...row, revision: row.revision.toString() };
@@ -254,23 +259,27 @@ export async function updateTopologyTemplate(
     value.lifecycle !== 'revoked'
   )
     throw new TopologyOperationError('template_revocation_terminal', 409);
-  const [updated] = await db
-    .update(topologyConfigTemplates)
-    .set({
-      name: value.name,
-      description: value.description,
-      lifecycle: value.lifecycle,
-      revision: row.revision + 1n,
-      updatedBy: auth.user.id,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(topologyConfigTemplates.id, id),
-        eq(topologyConfigTemplates.revision, row.revision),
-      ),
-    )
-    .returning();
+  // Savepoint so a duplicate name (mapped to 409 by the route) cannot poison
+  // the request transaction and become a 500 at commit (#11203).
+  const [updated] = await withDbTransaction(async () =>
+    db
+      .update(topologyConfigTemplates)
+      .set({
+        name: value.name,
+        description: value.description,
+        lifecycle: value.lifecycle,
+        revision: row.revision + 1n,
+        updatedBy: auth.user.id,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(topologyConfigTemplates.id, id),
+          eq(topologyConfigTemplates.revision, row.revision),
+        ),
+      )
+      .returning(),
+  );
   if (!updated) throw new TopologyOperationError('revision_conflict', 409);
   if (value.lifecycle === 'revoked') {
     // Scope comes from rows referencing this authorized version, never user-supplied site IDs.

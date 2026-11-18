@@ -377,3 +377,38 @@ describe('manage_browser_policy list — page completeness (review #6110)', () =
     expect(parsed.scopeNote).toBeUndefined();
   });
 });
+
+describe('manage_browser_policy apply — resolved target cap (W04)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const orgPolicy = {
+    id: 'p1', orgId: 'org-1', name: 'Policy', targetType: 'org', targetIds: null, isActive: true,
+    allowedExtensions: [], blockedExtensions: [], requiredExtensions: [], settings: {},
+  };
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, hostname: `h${i}` }));
+  function mockResolved(n: number) {
+    mockDb.select
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([orgPolicy]) }) }) })
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(rows(n)) }) });
+  }
+
+  it('refuses an implicit org-wide target set over the cap before dispatching anything', async () => {
+    mockResolved(1001);
+    const result = JSON.parse(await handlerFor('manage_browser_policy')(
+      { action: 'apply', policyId: 'p1' }, makeAuth(undefined),
+    ));
+    expect(result.error).toMatch(/1000/);
+    expect(result.error).toMatch(/deviceIds/);
+    expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+    expect(aiDispatchDeviceCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('dispatches when the resolved set is exactly at the cap', async () => {
+    mockResolved(1000);
+    const result = JSON.parse(await handlerFor('manage_browser_policy')(
+      { action: 'apply', policyId: 'p1' }, makeAuth(undefined),
+    ));
+    expect(result.success).toBe(true);
+    expect(aiDispatchDeviceCommandMock).toHaveBeenCalledTimes(1000);
+  });
+});

@@ -54,7 +54,7 @@ export default function PartnerCompanyTab({
       <section className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="mb-6 flex items-center gap-2">
           <Building2 className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">{t('partnerCompany.company')}</h2>
+          <h3 className="text-sm font-semibold">{t('partnerCompany.company')}</h3>
         </div>
         <div className="space-y-2">
           <label htmlFor="company-name" className="text-sm font-medium">
@@ -76,7 +76,7 @@ export default function PartnerCompanyTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <MapPin className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerCompany.address')}</h2>
+            <h3 className="text-sm font-semibold">{t('partnerCompany.address')}</h3>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {t('partnerCompany.addressDescription')}
@@ -154,7 +154,7 @@ export default function PartnerCompanyTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <User className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerCompany.contact')}</h2>
+            <h3 className="text-sm font-semibold">{t('partnerCompany.contact')}</h3>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">{t('partnerCompany.contactDescription')}</p>
         </div>
@@ -226,7 +226,7 @@ export default function PartnerCompanyTab({
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <Mail className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerCompany.emailSignature')}</h2>
+            <h3 className="text-sm font-semibold">{t('partnerCompany.emailSignature')}</h3>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {t('partnerCompany.emailSignatureDescription')}

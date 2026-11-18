@@ -248,3 +248,65 @@ describe('evaluatePolicy — tag-targeted results are observe-only (#8857)', () 
     expect(publishEventMock).toHaveBeenCalled();
   });
 });
+
+/**
+ * #12130: the legacy automation-policy path reads the same collected state. A
+ * registry rule whose value the org's agents are not sent a probe for was
+ * never read: the device is `pending`, not non-compliant, so an enforce
+ * policy remediates nothing and publishes only policy.evaluated.
+ */
+describe('evaluatePolicy — a rule whose value is not collected (#12130)', () => {
+  it('records pending, dispatches no remediation and publishes policy.evaluated and policy.not_assessed', async () => {
+    queueSelects(
+      [DEVICE],                // resolveTargetDevices
+      [], [], [], [], [], [],  // existing rows, disks, software, inventory, registry, config
+      [{ partnerId: null }],   // probe list: org lookup
+      [],                      // probe list: automation policies
+      [],                      // probe list: configuration-policy compliance rules
+      [{ partnerId: null }],   // remediation automation resolver (must not be reached)
+      [{ id: AUTOMATION_ID, actions: [{ scriptId: SCRIPT_ID }], orgId: DEVICE.orgId, partnerId: null }],
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, enabled: true, orgId: DEVICE.orgId, partnerId: null, retiredAt: null }],
+    );
+    const policy = {
+      ...(policyWithTargets({ deviceIds: [DEVICE.id] }) as object),
+      rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Contoso', registryValueName: 'Enabled', registryExpectedValue: '1' }],
+    };
+
+    const result = await evaluatePolicy(policy as never, { requestRemediation: true });
+
+    expect(result.results[0]).toMatchObject({ deviceId: DEVICE.id, status: 'pending', remediationRunId: null });
+    expect(result.summary).toEqual({ compliant: 0, non_compliant: 0 });
+    expect(enqueueAutomationRunMock).not.toHaveBeenCalled();
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    // Strix (PR #12184): the uncollected rule is announced, never only `pending`.
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.not_assessed']);
+    expect(publishEventMock.mock.calls[1]![1]).toBe(DEVICE.orgId);
+    expect(publishEventMock.mock.calls[1]![2]).toMatchObject({
+      policyId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      deviceId: DEVICE.id,
+      status: 'pending',
+      reason: 'probe_cap',
+      notAssessedRules: 1,
+    });
+  });
+
+  it('a rule set that is not assessed for a non-cap reason publishes no policy.not_assessed', async () => {
+    queueSelects(
+      [DEVICE],
+      [], [], [], [], [], [],
+      [{ partnerId: null }], [], [],
+    );
+    const policy = {
+      ...(policyWithTargets({ deviceIds: [DEVICE.id] }) as object),
+      // HKLM\SAM is never collected: `not_collectable`, an authoring error the
+      // rule's own message names, not the probe cap.
+      rules: [{ type: 'registry_check', registryPath: 'HKLM\\SAM\\Domains', registryValueName: 'F' }],
+    };
+
+    const result = await evaluatePolicy(policy as never, { requestRemediation: true });
+
+    expect(result.results[0]).toMatchObject({ status: 'pending' });
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated']);
+  });
+});

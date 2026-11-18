@@ -13,10 +13,9 @@ const components = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (rel: string) => readFileSync(join(components, rel), 'utf8');
 
 describe('caller verification mounts', () => {
-  it('partner settings mounts the partner baseline in #security, read-only without partner-wide rights', () => {
+  it('partner settings mounts the partner baseline in #caller-verification, read-only without partner-wide rights', () => {
     const page = src('settings/PartnerSettingsPage.tsx');
-    const security = page.slice(page.indexOf("{activeTab === 'security' && ("), page.indexOf("{activeTab === 'notifications' && ("));
-    expect(security).toContain('<PartnerCallerVerificationPolicy />');
+    expect(page).toMatch(/\{activeTab === 'callerVerification' && [^}]*<PartnerCallerVerificationPolicy \/>/);
   });
 
   it('org settings mounts the org override in #security', () => {

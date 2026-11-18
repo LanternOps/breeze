@@ -20,6 +20,14 @@ const { queryMock, insertedRows, updateCalls } = vi.hoisted(() => ({
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 
+// Wisp W04 Task 4: getOrCreate resolves the session's delegation grant itself
+// (lookupWispGrant); every session in this suite is an ordinary one.
+vi.mock('./wisp/chatCeiling', () => ({
+  lookupWispGrant: vi.fn(async () => null),
+  unreachableWispAuth: (auth: unknown) => auth,
+  WispSessionUnavailableError: class WispSessionUnavailableError extends Error {},
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -78,9 +86,19 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// A registered tool the CLI still calls unknown (e.g. removed from this
+// session by a grant ceiling) is a real gap, so it must stay a red failure.
+vi.mock('./aiToolNames', async (orig) => ({
+  ...(await orig<typeof import('./aiToolNames')>()),
+  hasCoreAiToolName: (name: string) => name === 'list_services',
+}));
+
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { recordToolOutcomeForAutoFlag } from './aiSessionAutoFlag';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -229,6 +247,72 @@ describe('dropped tool_result fallback (#3094)', () => {
     expect(flagUpdates[0]!.flagReason).toContain('set_device_context');
   });
 
+  // #9855: the model called a tool that does not exist. The CLI answers with
+  // its own "No such tool available" error and the model retries; the result
+  // is marked unknownTool so the sidebar renders a neutral note, not a red
+  // Failed card.
+  it('marks a call to a nonexistent tool as unknownTool', async () => {
+    const id = 'toolu_unknown_01';
+    const name = 'mcp__breeze__list_processes_placeholder';
+    mockSdkQuery([
+      toolUseStreamEvent(id, name),
+      assistantToolUseMessage(id, name, {}),
+      userToolResultMessage(id, `<tool_use_error>Error: No such tool available: ${name}</tool_use_error>`),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-unknown', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const resultRows = insertedRows.filter((r) => r.role === 'tool_result');
+    expect(resultRows).toHaveLength(1);
+    expect(resultRows[0]).toMatchObject({ toolName: 'list_processes_placeholder', toolUseId: id });
+    expect(resultRows[0]!.toolOutput).toMatchObject({ droppedBeforeExecution: true, unknownTool: true });
+    const event = session.eventBus.getReplayEvents().find((e) => e.type === 'tool_result');
+    expect(event).toMatchObject({ toolUseId: id, isError: true, output: { unknownTool: true } });
+    // Still flagged: an invented tool name is a model-quality signal for review.
+    expect(updateCalls.filter((u) => typeof u.flagReason === 'string')).toHaveLength(1);
+  });
+
+  it('does not mark a registered tool the session lacks as unknownTool', async () => {
+    const id = 'toolu_unavailable_01';
+    const name = 'mcp__breeze__list_services';
+    mockSdkQuery([
+      toolUseStreamEvent(id, name),
+      assistantToolUseMessage(id, name, {}),
+      userToolResultMessage(id, `<tool_use_error>Error: No such tool available: ${name}</tool_use_error>`),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-unavailable', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const output = insertedRows.find((r) => r.role === 'tool_result')!.toolOutput as Record<string, unknown>;
+    expect(output).toMatchObject({ droppedBeforeExecution: true });
+    expect(output).not.toHaveProperty('unknownTool');
+  });
+
+  it('does not mark an input-validation drop as unknownTool', async () => {
+    mockSdkQuery([
+      toolUseStreamEvent(TOOL_USE_ID, 'mcp__breeze__set_device_context'),
+      assistantToolUseMessage(TOOL_USE_ID, 'mcp__breeze__set_device_context', PAREN_INPUT),
+      userToolResultMessage(TOOL_USE_ID, VALIDATION_ERROR_TEXT),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-validation', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const output = insertedRows.find((r) => r.role === 'tool_result')!.toolOutput as Record<string, unknown>;
+    expect(output).not.toHaveProperty('unknownTool');
+  });
+
   it('does not double-record a tool_result already handled by postToolUse (id no longer queued)', async () => {
     mockSdkQuery([
       // No content_block_start for this id — simulates postToolUse having
@@ -280,5 +364,118 @@ describe('dropped tool_result fallback (#3094)', () => {
     // The dropped id was spliced out; the retry id is untouched at the head.
     expect(session.toolUseIdQueue).toEqual(['toolu_retry_02']);
     expect(session.toolUseNames?.get('toolu_retry_02')).toBe('set_device_context');
+  });
+});
+
+// #11968: an input-validation drop is a refusal the model can correct. It is
+// held until the turn ends, and a successful retry of the same tool drops it.
+describe('dropped input-validation refusal and the session auto-flag (#11968)', () => {
+  const flagWrites = () => updateCalls.filter((u) => typeof u.flagReason === 'string');
+
+  /** Yields `before`, runs `between` (the handler's side of the turn), then the result. */
+  function mockSdkQueryWithStep(before: unknown[], between: () => Promise<void>) {
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* before as never[];
+        await between();
+        yield RESULT_MSG as never;
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+  }
+
+  const dropped = [
+    toolUseStreamEvent(TOOL_USE_ID, 'mcp__breeze__set_device_context'),
+    assistantToolUseMessage(TOOL_USE_ID, 'mcp__breeze__set_device_context', PAREN_INPUT),
+    userToolResultMessage(TOOL_USE_ID, VALIDATION_ERROR_TEXT),
+  ];
+
+  it('does not flag when the same tool then succeeds in the turn', async () => {
+    let session: Awaited<ReturnType<StreamingSessionManager['getOrCreate']>> | undefined;
+    mockSdkQueryWithStep(dropped, async () => {
+      // The retry's successful postToolUse (the real handler is mocked out here).
+      await recordToolOutcomeForAutoFlag(session!, 'set_device_context', { isError: false, errorCode: undefined, errorMsg: '' });
+    });
+
+    session = await manager.getOrCreate('sess-corrected', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    // The drop itself is still recorded; only the flag is withheld.
+    expect(insertedRows.filter((r) => r.role === 'tool_result')).toHaveLength(1);
+    expect(flagWrites()).toHaveLength(0);
+  });
+
+  it('holds the flag until the turn ends when the model never corrects the call', async () => {
+    let flagsBeforeResult = -1;
+    mockSdkQueryWithStep(dropped, async () => {
+      flagsBeforeResult = flagWrites().length;
+    });
+
+    const session = await manager.getOrCreate('sess-uncorrected', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsBeforeResult).toBe(0);
+    expect(flagWrites()).toHaveLength(1);
+    expect(flagWrites()[0]!.flagReason).toMatch(/^Tool rejected before execution: set_device_context — /);
+    expect(session.deferredToolFailureFlags?.size ?? 0).toBe(0);
+  });
+
+  it('writes the held flag when the turn result is handled, not only when the processor exits', async () => {
+    let flagsAfterResult = -1;
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* dropped as never[];
+        yield RESULT_MSG as never;
+        // Resumed only after the processor has fully handled the result.
+        flagsAfterResult = flagWrites().length;
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+
+    const session = await manager.getOrCreate('sess-result-flush', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsAfterResult).toBe(1);
+    expect(flagWrites()).toHaveLength(1);
+  });
+
+  it('writes the held flag when the turn ends without a result (the SDK stream throws)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* dropped as never[];
+        throw new Error('sdk crashed');
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+
+    const session = await manager.getOrCreate('sess-no-result', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagWrites()).toHaveLength(1);
+    expect(flagWrites()[0]!.flagReason).toMatch(/^Tool rejected before execution: set_device_context — /);
+    expect(session.deferredToolFailureFlags?.size ?? 0).toBe(0);
+    errSpy.mockRestore();
+  });
+
+  it('a drop that is not an input-validation error still flags at once', async () => {
+    let flagsBeforeResult = -1;
+    const id = 'toolu_other_01';
+    mockSdkQueryWithStep([
+      toolUseStreamEvent(id, 'mcp__breeze__set_device_context'),
+      assistantToolUseMessage(id, 'mcp__breeze__set_device_context', PAREN_INPUT),
+      userToolResultMessage(id, 'Tool call was cancelled by the client'),
+    ], async () => {
+      flagsBeforeResult = flagWrites().length;
+    });
+
+    const session = await manager.getOrCreate('sess-other-drop', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsBeforeResult).toBe(1);
+    expect(flagWrites()).toHaveLength(1);
   });
 });

@@ -67,6 +67,18 @@ const {
 // similarly just runs its callback. Both pass through so the org->partner lookup
 // (which must escape the request's org-scoped RLS context to read `partners`) works
 // under this file's plain db mock. See helpers.test.ts for the same convention.
+// Existing route cases exercise the non-isolated ICE plan.
+vi.mock('./desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -75,6 +87,9 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: (fn: () => Promise<unknown>) => fn(),
   // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
   // unless this reports an open db access context.
   hasDbAccessContext: vi.fn(() => true),
@@ -99,6 +114,7 @@ vi.mock('../../db/schema', () => ({
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
+    endReason: 'remoteSessions.endReason',
   },
   devices: {
     id: 'devices.id',
@@ -272,8 +288,8 @@ vi.mock('../../services/desktopStartInFlight', () => ({
 }));
 
 import { sessionRoutes } from './sessions';
-import { db } from '../../db';
-import { buildRemoteSessionPromptPayload } from './helpers';
+import { db, runOutsideDbContext } from '../../db';
+import { buildRemoteSessionPromptPayload, logSessionAudit } from './helpers';
 import { RemoteSessionPromptPolicyError } from './consentGate';
 
 const ORG_ID = 'org-111';
@@ -313,6 +329,7 @@ function makeRemoteSessionRow(deviceId: string) {
     type: 'desktop',
     status: 'active',
     terminationPhase: undefined as 'none' | 'pending' | 'confirmed' | undefined,
+    endReason: null as 'ended_by_user' | null,
     startedAt: new Date('2026-01-01T00:00:00Z'),
     endedAt: null,
     durationSeconds: null,
@@ -616,6 +633,26 @@ describe('remote sessions — site-scope enforcement', () => {
       const body = await res.json();
       expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'none']);
     });
+
+    // #10190 W06: why the session ended, null when not known.
+    it('serializes endReason on every list row', async () => {
+      vi.mocked(db.select).mockClear();
+      rigListSessionsUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2' },
+      ]);
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
+    });
   });
 
   describe('GET /sessions/history', () => {
@@ -756,6 +793,26 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'confirmed', 'none']);
+    });
+
+    // #10190 W06: SessionHistory.tsx shows "Ended by the user" from this.
+    it('serializes endReason on every history row', async () => {
+      vi.mocked(db.select).mockClear();
+      rigSessionHistoryUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2', status: 'disconnected' },
+      ]);
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
     });
   });
 
@@ -1155,6 +1212,28 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).terminationPhase).toBe(terminationPhase);
     });
+
+    it.each([['ended_by_user', 'ended_by_user'], [null, null], [undefined, null]] as const)(
+      'surfaces endReason=%s as %s (#10190 W06)',
+      async (endReason, expected) => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'disconnected', deviceId: DEVICE_IN_ALLOWED, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z'), terminationPhase: 'confirmed', endReason },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+        });
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+          }),
+        } as never);
+
+        const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+          headers: { Authorization: 'Bearer t' },
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).endReason).toBe(expected);
+      },
+    );
   });
 
   describe('POST /sessions/:id/offer', () => {
@@ -2004,6 +2083,29 @@ describe('POST /remote/sessions/:id/end', () => {
   // row must carry the generation/phase columns or that call throws.
   const endTerminalFields = { terminalGeneration: 1n, terminationPhase: 'pending' as const };
 
+  // #4142: End runs inside the auth middleware's request transaction, and the
+  // relay refuses to run inside a held DB context. The stop must be sent from
+  // outside it, or a stream on another instance keeps running after End.
+  it('sends stop_desktop outside the request DB context', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
+    let outsideDepth = 0;
+    let depthAtSend = -1;
+    vi.mocked(runOutsideDbContext).mockImplementation(((fn: () => unknown) => {
+      outsideDepth += 1;
+      try { return fn(); } finally { outsideDepth -= 1; }
+    }) as never);
+    dispatchCommandToAgent.mockImplementation(async () => {
+      depthAtSend = outsideDepth;
+      return { status: 'sent', via: 'relay' };
+    });
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    expect(dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(depthAtSend).toBeGreaterThan(0);
+  });
+
   it('dispatches stop_desktop through the durable relay, never the socket-local send', async () => {
     rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
 
@@ -2090,6 +2192,22 @@ describe('POST /remote/sessions/:id/end', () => {
       { event_code: 'remote_desktop_stop_dispatch_failed' }
     );
     error.mockRestore();
+  });
+
+  // The viewer token must not stay replayable behind a 200: a failed
+  // revocation is audited, the agent is still stopped, and End answers 500.
+  it('fails (after audit and the agent stop) when the viewer token cannot be revoked', async () => {
+    const update = rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
+    revokeViewerSession.mockRejectedValueOnce(new Error('viewer session revocation unavailable'));
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(500);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logSessionAudit)).toHaveBeenCalledWith(
+      'session_ended', 'user-1', ORG_ID, expect.objectContaining({ sessionId: SESSION_ID }), '10.0.0.1',
+    );
+    expect(dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({ type: 'stop_desktop' }));
   });
 
   it('refuses to overwrite a `denied` row — both End guards share one live-status list', async () => {

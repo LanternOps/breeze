@@ -12,24 +12,31 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   deviceCommands,
   devices,
+  organizations,
+  partners,
   peripheralPolicyDeliveryEvents,
   peripheralPolicyDeviceStates,
 } from '../db/schema';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 // The insert chokepoint, from its LEAF module -- never from `commandQueue.ts`,
-// which statically imports `routes/agentWs.ts`. This module sits in the import
-// closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
+// the heavy command-queue hub (hundreds of modules). This module sits in the
+// import closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
 // `contractQuantities` -> the quote and contract workers, so an edge to
-// `commandQueue.ts` from here drags the live agent-socket registry into two
-// `global`-placement worker processes -- which
-// `workerEntrypointClosure.contract.test.ts` (#4086) forbids, and which a lazy
-// `await import()` would NOT fix (its per-entry check follows dynamic edges).
+// `commandQueue.ts` from here drags that whole graph into two
+// `global`-placement worker processes. (Before the relay facade that graph
+// reached `routes/agentWs.ts`, which `workerEntrypointClosure.contract.test.ts`
+// (#4086) forbids; `pnpm --filter @breeze/api worker:closure` shows the
+// current state.) A lazy `await import()` would not help either.
 import { insertQueuedCommandInTransaction } from './commandQueueInsert';
 import type { CommandPayload } from './commandQueue';
 import { CommandTypes } from './commandTypes';
 import { randomUUID } from 'node:crypto';
 import type { AiOriginRef } from '@breeze/shared';
 import { isParkedDevice } from './unassignedPool/deliveryEligibility';
+
+// Org lifecycle states whose devices are reconciled (same set the auth
+// middleware admits). Keep in step with the sweep page query (#10362).
+const ACTIVE_ORG_STATUSES: ReadonlySet<string> = new Set(['active', 'trial']);
 
 export type PeripheralReconcileReason =
   | 'policy_changed'
@@ -202,15 +209,36 @@ export async function reconcilePeripheralPolicyDevice(
         orgId: devices.orgId,
         peripheralPolicyProtocolVersion: devices.peripheralPolicyProtocolVersion,
         status: devices.status,
+        orgStatus: organizations.status,
+        orgDeletedAt: organizations.deletedAt,
+        partnerStatus: partners.status,
+        partnerDeletedAt: partners.deletedAt,
       })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(eq(devices.id, deviceId))
       .limit(1)
-      .for('update');
+      // Lock only the device row; the org/partner rows are read, not locked.
+      .for('update', { of: devices });
     // A decommissioned device can never execute a command, and reconciling it
     // would reach the partner-trust gate below and spam capability_denied audit
     // rows every sweep (issue #5590). Bail before any trust check or write.
     if (device?.status === 'decommissioned') return 'incompatible';
+    // Same for a device of an inactive tenant (#10362): a suspended, churned,
+    // offboarding or soft-deleted org/partner is never pushed a policy. Mirrors
+    // the sweep's page predicate in jobs/peripheralJobs.ts.
+    if (
+      device
+      && (
+        !ACTIVE_ORG_STATUSES.has(device.orgStatus)
+        || device.orgDeletedAt !== null
+        || device.partnerStatus !== 'active'
+        || device.partnerDeletedAt !== null
+      )
+    ) {
+      return 'incompatible';
+    }
     // A device parked in a holding org receives lifecycle removal only, so a
     // policy push is never planned for it (no desired state, no command).
     if (device && (await isParkedDevice(tx, deviceId))) return 'incompatible';

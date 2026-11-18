@@ -43,15 +43,15 @@ Breeze is a full IT platform for MSPs and internal IT: monitoring, patching, rem
 
 Every RMM on the market hands you a dashboard and leaves the labor to you. Breeze hands you a team: **an AI operator that uses the platform for you.** It investigates alerts, remediates issues, resolves tickets, documents what it did, and only interrupts you when it needs a human decision.
 
-Breeze is free, open source (AGPL-3.0), and designed to be self-hosted or [cloud-hosted at breezermm.com](https://breezermm.com) (US and EU regions).
+Breeze has a free, open-source core (AGPL-3.0), designed to be self-hosted or [cloud-hosted at breezermm.com](https://breezermm.com) (US and EU regions). Extensions under [`ee/`](ee/), including Workspace, use a [separate commercial license](ee/LICENSE).
 
 ### Why Breeze?
 
 - **AI-native, not AI-added.** Every page has an AI operator that can see what you see and take action using built-in tools. Not a chatbot, an agent.
 - **RMM + PSA in one system.** Resolved is nice. Invoiced is better. The ticket, the time entry, the quote, and the invoice live where the work happens. No separate PSA, no sync job.
-- **Never metered.** Self-host with unlimited devices, forever. Every module ships in every plan; nothing sits behind a paywall.
+- **Free Community core.** Self-host the AGPL-3.0 core with unlimited devices and technicians. You fund infrastructure and any AI usage; commercial `ee/` extensions have separate terms.
 - **Lightweight agent.** Single Go binary. Cross-platform. Minimal resource footprint. Your clients won't notice it's there.
-- **Actually open source.** AGPL-3.0. Read every line. Fork it. Contribute. No bait-and-switch.
+- **Inspectable source.** Read, fork, and contribute to the AGPL-3.0 core. Source-visible commercial extensions are identified under `ee/`.
 - **Multi-tenant from day one.** Built for MSPs managing multiple clients, not retrofitted from a single-tenant architecture.
 - **Modern stack.** Not a legacy codebase with 15 years of technical debt. Clean, fast, extensible.
 
@@ -486,10 +486,10 @@ Thank you to everyone who has contributed to Breeze.
 ## FAQ
 
 **Is this really free?**
-Yes. Breeze is AGPL-3.0 licensed. Self-host it, use it in production, manage as many endpoints as you want. Free forever.
+Yes. Breeze Community is the AGPL-3.0 core, free to self-host in production with unlimited devices and technicians. You run and fund the infrastructure and any AI usage. Extensions under `ee/`, including Workspace, have separate commercial terms and require a commercial agreement for production use.
 
 **What's the catch?**
-No catch. The business model sits on top of the free platform: [Breeze Cloud](https://breezermm.com/pricing/) (managed hosting, US and EU regions), support plans for self-hosters, and [Managed AI Ops](https://breezermm.com/brain/), where a supervised team of AI agents works your queue and we tune it with you. Breeze is great on its own. The paid tiers add hosting and workers.
+You operate the free Community core yourself, with community support. Paid options include [Breeze Cloud and supported self-hosting](https://breezermm.com/pricing/), separately licensed commercial extensions under `ee/`, and [Managed AI Ops](https://breezermm.com/brain/), where a supervised team of AI agents works your queue and we tune it with you. Confirm the deployment, extension and service scope before purchasing.
 
 **What is Managed AI Ops?**
 AI agents working your alerts, patches, and tickets inside your own Breeze instance, with persistent memory, playbooks, and compliance evidence building up over time. The part no one else offers: we read the AI's conversations, verify its resolutions, and tune the agents as your fleet changes. Your risk engine holds the approvals throughout. Available on self-hosted or cloud Breeze. [Book a call](https://breezermm.com/contact/).

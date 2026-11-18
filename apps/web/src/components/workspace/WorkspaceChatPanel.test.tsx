@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Captures the props the panel forwards, so the tab-id closure on
 // onIntentDecided can be asserted against the RENDERED tab.
@@ -10,7 +10,24 @@ vi.mock('../ai/AiChatMessages', () => ({
     return <div />;
   },
 }));
-vi.mock('../ai/AiChatInput', () => ({ default: () => <div /> }));
+const inputHarness = vi.hoisted(() => ({ props: null as Record<string, any> | null }));
+vi.mock('../ai/AiChatInput', () => ({
+  default: (props: Record<string, any>) => {
+    inputHarness.props = props;
+    return <div />;
+  },
+}));
+vi.mock('./WorkspaceSessionChips', () => ({
+  default: (props: Record<string, any>) => <div data-testid="chips" data-props={JSON.stringify(props)} />,
+}));
+const lookup = vi.hoisted(() => ({ firstLookState: 'looking' as string, kind: 'grant' as string }));
+vi.mock('@/lib/wispSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/wispSession')>()),
+  // A tab knows only its grant id: the welcome asks the grant how its first look stands.
+  findActiveWispGrant: async () => (lookup.kind === 'grant'
+    ? { kind: 'grant', grant: { grantId: 'g', firstLookState: lookup.firstLookState } }
+    : { kind: 'unknown' }),
+}));
 vi.mock('../ai/AiContextBadge', () => ({ default: () => <div /> }));
 vi.mock('../ai/AiCostIndicator', () => ({ default: () => <div /> }));
 
@@ -25,11 +42,14 @@ const store = {
   clearError: vi.fn(),
   draftTicketFromChat: vi.fn(),
   saveTicketFromChat: vi.fn(),
+  setComposerDraft: vi.fn(),
+  retryLastTurn: vi.fn(),
 };
 
 vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
 
 import WorkspaceChatPanel from './WorkspaceChatPanel';
+import { useOrgStore } from '@/stores/orgStore';
 
 const baseTab = (over = {}) => ({
   id: 't',
@@ -46,6 +66,28 @@ const baseTab = (over = {}) => ({
   approvalMode: 'auto',
   isPaused: false,
   ...over,
+});
+
+// #9429: the notification bell (states tested in AiNotifyToggle.test.tsx).
+vi.mock('../ai/AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
+describe('WorkspaceChatPanel - notification bell (#9429)', () => {
+  it('mounts the bell in the panel header', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+  });
+});
+
+describe('WorkspaceChatPanel - Try again (#9428)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('retries the failed turn for its own tab', () => {
+    const retryTarget = { sessionId: 's1', content: 'hi', code: 'timeout', detail: null, mode: 'retry', error: 'Timed out' };
+    render(<WorkspaceChatPanel tab={baseTab({ error: 'Timed out', retryTarget }) as any} />);
+    fireEvent.click(screen.getByTestId('ai-error-retry'));
+    expect(store.retryLastTurn).toHaveBeenCalledWith('t');
+  });
 });
 
 describe('WorkspaceChatPanel - Create Ticket button', () => {
@@ -127,5 +169,187 @@ describe('WorkspaceChatPanel - onIntentDecided', () => {
     render(<WorkspaceChatPanel tab={baseTab() as any} />);
 
     expect(store.clearPendingApproval).not.toHaveBeenCalled();
+  });
+});
+
+describe('WorkspaceChatPanel - move to the side panel, draft, chips (#9840 W3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    inputHarness.props = null;
+  });
+
+  it('the header "Continue in side panel" button calls onContinueInPanel; Create Ticket stays unique', () => {
+    const onContinueInPanel = vi.fn();
+    render(<WorkspaceChatPanel tab={baseTab() as any} onContinueInPanel={onContinueInPanel} />);
+    fireEvent.click(screen.getByTestId('workspace-continue-in-panel'));
+    expect(onContinueInPanel).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('workspace-continue-in-panel')).toHaveTextContent('Continue in side panel');
+    expect(screen.getAllByRole('button', { name: /create ticket/i })).toHaveLength(1);
+  });
+
+  it('no header move button for a tab without a session', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ sessionId: null }) as any} onContinueInPanel={vi.fn()} />);
+    expect(screen.queryByTestId('workspace-continue-in-panel')).toBeNull();
+  });
+
+  it('errorAction continue_in_panel → the banner offers the side panel', () => {
+    const onContinueInPanel = vi.fn();
+    render(
+      <WorkspaceChatPanel
+        tab={baseTab({ error: 'Continue in side panel to choose a model', errorAction: 'continue_in_panel' }) as any}
+        onContinueInPanel={onContinueInPanel}
+      />,
+    );
+    const banner = screen.getByTestId('workspace-error-banner');
+    expect(banner).toHaveTextContent('Continue in side panel to choose a model');
+    fireEvent.click(screen.getByTestId('workspace-error-continue-in-panel'));
+    expect(onContinueInPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a plain error shows no banner action', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ error: 'Failed to send message', errorAction: null }) as any} onContinueInPanel={vi.fn()} />);
+    expect(screen.getByTestId('workspace-error-banner')).toHaveTextContent('Failed to send message');
+    expect(screen.queryByTestId('workspace-error-continue-in-panel')).toBeNull();
+  });
+
+  // Wisp companion W01 (#10211, spec D3): the Breeze AI page gets the same
+  // thread look as the Wisp home: reading width and time dividers.
+  it('renders the thread at reading width with time dividers, and the composer in the same column', () => {
+    const { container } = render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(messagesHarness.props).toMatchObject({ layout: 'page', showTimeDividers: true });
+    expect(messagesHarness.props!.assistantLabel).toBeUndefined();
+    expect(container.querySelector('[data-testid="workspace-composer"]')?.className).toContain('max-w-3xl');
+  });
+
+  it('the composer is controlled by the tab’s draft', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ id: 'tab-c', composerDraft: 'carried over' }) as any} />);
+    expect(inputHarness.props!.value).toBe('carried over');
+    inputHarness.props!.onValueChange('next');
+    expect(store.setComposerDraft).toHaveBeenCalledWith('tab-c', 'next');
+  });
+
+  it('shows the joined-mid-response line only while joinedMidResponse', () => {
+    const { rerender } = render(<WorkspaceChatPanel tab={baseTab({ joinedMidResponse: true }) as any} />);
+    expect(screen.getByTestId('workspace-joined-mid-response')).toHaveTextContent(
+      'Joined mid-response. The full reply appears when it finishes.',
+    );
+    rerender(<WorkspaceChatPanel tab={baseTab({ joinedMidResponse: false }) as any} />);
+    expect(screen.queryByTestId('workspace-joined-mid-response')).toBeNull();
+  });
+
+  it('passes the tab’s chip fields to WorkspaceSessionChips', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ orgId: 'o1', deviceLabel: 'h1', m365ConnectionId: 'c1' }) as any} />);
+    expect(JSON.parse(screen.getByTestId('chips').getAttribute('data-props')!)).toEqual({
+      orgId: 'o1', deviceLabel: 'h1', m365ConnectionId: 'c1',
+    });
+  });
+});
+
+describe('WorkspaceChatPanel - chat mode label (#10142)', () => {
+  it('says Wisp for a tab under a Wisp grant', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'o' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Wisp');
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveAttribute('data-mode', 'wisp');
+  });
+
+  it('says Breeze AI for a plain chat, not Wisp', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI');
+    expect(screen.getByTestId('workspace-chat-mode')).not.toHaveTextContent('Wisp');
+  });
+
+  it('shows no label while the tab is still finding out', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(screen.queryByTestId('workspace-chat-mode')).toBeNull();
+  });
+
+  describe('a plain chat beside an active grant (#10289)', () => {
+    afterEach(() => { (store as Record<string, unknown>).wispGrantAvailable = undefined; });
+
+    it('says "Breeze AI · not Wisp" when a grant is active', () => {
+      (store as Record<string, unknown>).wispGrantAvailable = true;
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' } }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI · not Wisp');
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveAttribute('data-mode', 'plain');
+    });
+
+    it('says it for a tab the user opened as plain, before any grant lookup has answered', () => {
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' }, plainChosen: true }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI · not Wisp');
+    });
+
+    it('a Wisp tab keeps its Wisp label when a grant is active', () => {
+      (store as Record<string, unknown>).wispGrantAvailable = true;
+      render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'o' } }) as any} />);
+      expect(screen.getByTestId('workspace-chat-mode').textContent).toBe('Wisp');
+    });
+  });
+});
+
+describe('WorkspaceChatPanel - one voice under a Wisp grant (#10195)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lookup.firstLookState = 'looking';
+    lookup.kind = 'grant';
+  });
+
+  it.each([
+    ['couldnt_look', "I couldn't look at All organizations yet."],
+    ['done', "I've had a first look at All organizations."],
+  ])('#11145: a %s grant does not say "looking around" in the tab', async (state, text) => {
+    lookup.firstLookState = state;
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('looking around');
+  });
+
+  it('#11145: a tab with no answer about the grant claims nothing, and keeps its chips', async () => {
+    lookup.kind = 'unknown';
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('looking around');
+    expect(screen.getAllByTestId('wisp-suggestion').length).toBeGreaterThan(0);
+  });
+
+  it('a Wisp tab labels replies Wisp, greets as Wisp and asks "Message Wisp"', async () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBe('Wisp');
+    expect(inputHarness.props?.placeholder).toBe('Message Wisp');
+    // The empty state is Wisp's own (its suggestions), not the generic Breeze AI prompts.
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(await screen.findByText("I'm looking around All organizations.")).toBeInTheDocument();
+    expect(screen.getAllByTestId('wisp-suggestion').length).toBeGreaterThan(0);
+    // "Your first brief arrives…" belongs to the home's first visit, not a new conversation.
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('first brief');
+  });
+
+  it('a Wisp suggestion sends into this tab', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0]);
+    expect(store.sendMessage).toHaveBeenCalledWith('t', 'What needs my attention today? Keep it short.');
+  });
+
+  it('an org-scoped Wisp tab greets with the organization name, or "this organization" before the list loads', async () => {
+    useOrgStore.setState({ organizations: [{ id: 'org-a', name: 'Acme' }] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-a' } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(await screen.findByText("I'm looking around Acme.")).toBeInTheDocument();
+    useOrgStore.setState({ organizations: [] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-x' } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(await screen.findByText("I'm looking around this organization.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ['a plain chat', { kind: 'plain' }],
+    ['a tab still finding out', undefined],
+  ])('%s keeps the Breeze AI defaults', (_name, wisp) => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBeUndefined();
+    expect(messagesHarness.props?.emptyState).toBeUndefined();
+    expect(inputHarness.props?.placeholder).toBeUndefined();
   });
 });

@@ -358,13 +358,74 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     });
   });
 
-  it('mint failure rejects with the status attached (so the UI can map 401/403/429)', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ error: 'Invalid credentials' }, false, 401));
+  // #9007: register-grant answers a rejected proof with 400 + a stable `code`
+  // (401 is reserved for the bearer, #4470).
+  it('mint failure rejects with the status and code attached (so the UI can map 400/403/429)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      false,
+      400,
+    ));
     vi.stubGlobal('fetch', fetchMock);
     await expect(
       registerApproverDevice('x', { method: 'password', password: 'nope' })
-    ).rejects.toMatchObject({ status: 401 });
+    ).rejects.toMatchObject({ status: 400, code: 'invalid_credentials' });
     expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
+  });
+
+  it('sso path: posts only { ssoReauthGrantId } to /authenticator/register-grant, then threads registerGrantId to options+verify', async () => {
+    webauthnMocks.startRegistration.mockResolvedValueOnce({ id: 'cred-1', response: {} });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ registerGrantId: 'g-sso' }))    // exchange
+      .mockResolvedValueOnce(makeResponse(optionsPayload))                  // options
+      .mockResolvedValueOnce(makeResponse({ success: true }));              // verify
+    vi.stubGlobal('fetch', fetchMock);
+
+    await registerApproverDevice('Front desk', { method: 'sso', ssoReauthGrantId: 'sso-g' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toContain('/authenticator/register-grant');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ssoReauthGrantId: 'sso-g' });
+    expect(fetchMock.mock.calls[1][0]).toContain('/authenticator/devices/webauthn/options');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ registerGrantId: 'g-sso' });
+    expect(fetchMock.mock.calls[2][0]).toContain('/authenticator/devices/webauthn/verify');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
+      registerGrantId: 'g-sso', label: 'Front desk',
+    });
+  });
+
+  it('sso path: a 400 enrollment_grant_expired rejects with status 400 and that code, before any ceremony', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse(
+      {
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
+      },
+      false,
+      400,
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      registerApproverDevice('x', { method: 'sso', ssoReauthGrantId: 'dead-grant' })
+    ).rejects.toMatchObject({ status: 400, code: 'enrollment_grant_expired' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
+  });
+
+  // `enrollment_proof_required` carries no `code`; the literal `error` token is
+  // the discriminator, so it must survive as the message.
+  it('sso path: a 400 enrollment_proof_required keeps the literal token as the message', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse(
+      { error: 'enrollment_proof_required', reauthUrl: '/sso/reauth/start' },
+      false,
+      400,
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      registerApproverDevice('x', { method: 'sso', ssoReauthGrantId: 'g' })
+    ).rejects.toMatchObject({ status: 400, message: 'enrollment_proof_required' });
   });
 
   it('a 2xx with an unparseable body throws a clean RegisterStepError instead of returning null (no downstream null-deref)', async () => {

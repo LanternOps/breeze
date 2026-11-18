@@ -13,6 +13,11 @@ vi.mock('drizzle-orm', () => ({
   sql: () => ({ op: 'sql' }),
 }));
 
+const sumByProviderMock = vi.hoisted(() => vi.fn());
+vi.mock('./backupStoredBytes', () => ({
+  sumStoredSnapshotBytesByProvider: (...a: unknown[]) => sumByProviderMock(...a),
+}));
+
 import { buildStorageProviders, getStorageByProvider } from './backupStorageByProvider';
 
 type Chain = Record<string, ReturnType<typeof vi.fn>> & PromiseLike<unknown>;
@@ -63,13 +68,15 @@ describe('buildStorageProviders (#2562 item 5)', () => {
 describe('getStorageByProvider query scoping', () => {
   const ORG = 'org-1';
   let configsChain: Chain;
-  let usageChain: Chain;
 
   beforeEach(() => {
     selectMock.mockReset();
+    sumByProviderMock.mockReset();
     configsChain = chainMock([{ provider: 'backblaze', configs: 1 }]);
-    usageChain = chainMock([{ provider: 'backblaze', bytes: '10', snapshots: 1 }]);
-    selectMock.mockReturnValueOnce(configsChain).mockReturnValueOnce(usageChain);
+    selectMock.mockReturnValueOnce(configsChain);
+    // Usage is stored bytes (#9631) — the window-function query itself is
+    // proven against real Postgres in backupStoredBytes.integration.test.ts.
+    sumByProviderMock.mockResolvedValue([{ provider: 'backblaze', bytes: 10, snapshots: 1 }]);
   });
 
   it('filters both queries by org and leaves an unrestricted caller unscoped by device', async () => {
@@ -77,19 +84,17 @@ describe('getStorageByProvider query scoping', () => {
 
     expect(rows).toEqual([{ id: 'backblaze', name: 'Backblaze B2', usedBytes: 10, snapshots: 1, configs: 1 }]);
     expect(configsChain.where).toHaveBeenCalledWith({ op: 'eq', column: 'bc.org_id', value: ORG });
-    expect(usageChain.leftJoin).toHaveBeenCalledWith(expect.objectContaining({ id: 'bc.id' }), { op: 'eq', column: 'bs.config_id', value: 'bc.id' });
-    expect(usageChain.where).toHaveBeenCalledWith({
+    expect(sumByProviderMock).toHaveBeenCalledWith({
       op: 'and',
       conditions: [{ op: 'eq', column: 'bs.org_id', value: ORG }],
     });
     expect(configsChain.groupBy).toHaveBeenCalledWith('bc.provider');
-    expect(usageChain.groupBy).toHaveBeenCalledWith('bc.provider');
   });
 
   it('narrows snapshot usage to the site-scoped device list', async () => {
     await getStorageByProvider(ORG, ['dev-a']);
 
-    expect(usageChain.where).toHaveBeenCalledWith({
+    expect(sumByProviderMock).toHaveBeenCalledWith({
       op: 'and',
       conditions: [
         { op: 'eq', column: 'bs.org_id', value: ORG },
@@ -102,6 +107,7 @@ describe('getStorageByProvider query scoping', () => {
     const rows = await getStorageByProvider(ORG, []);
 
     expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(sumByProviderMock).not.toHaveBeenCalled();
     expect(rows).toEqual([{ id: 'backblaze', name: 'Backblaze B2', usedBytes: 0, snapshots: 0, configs: 1 }]);
   });
 });

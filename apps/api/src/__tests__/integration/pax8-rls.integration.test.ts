@@ -192,7 +192,7 @@ describe('pax8 partner-axis RLS (breeze_app)', () => {
         partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01', currencyCode: 'USD',
       }).returning({ id: contracts.id });
       const [line] = await db.insert(contractLines).values({
-        contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00',
+        contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00', manualQuantity: '1.00',
       }).returning({ id: contractLines.id });
       return line!.id;
     });
@@ -311,7 +311,7 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
         partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01', currencyCode: 'USD',
       }).returning({ id: contracts.id });
       const [line] = await db.insert(contractLines).values({
-        contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00',
+        contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'L', unitPrice: '0.00', manualQuantity: '1.00',
       }).returning({ id: contractLines.id });
       const [second] = await db.insert(pax8SubscriptionSnapshots).values({
         integrationId: integrationA.id, partnerId: partnerA.id, pax8CompanyId: 'pax8-co-a',

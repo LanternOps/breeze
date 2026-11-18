@@ -230,6 +230,18 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
     expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
+  it('#8972: bridges ticket.merged onto the bus as ticket.merged (ids and numbers only)', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    const payload = { sourceTicketId: 's-1', targetTicketId: 'ticket-1', sourceInternalNumber: 'T-2026-0009', targetInternalNumber: 'T-2026-0002' };
+    executeMock.mockResolvedValueOnce({ rows: [claimedRow({ id: 7, event_type: 'ticket.merged', payload })] });
+    updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+    const result = await publishOutboxRows();
+
+    expect(result).toEqual({ published: 1, skipped: 0 });
+    expect(publishEventMock).toHaveBeenCalledWith('ticket.merged', 'org-1', { ticketId: 'ticket-1', ...payload }, 'ticket-outbox-publisher');
+  });
+
   it('drains the unmapped ticket.restored — marks published WITHOUT calling publishEvent', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
     executeMock.mockResolvedValueOnce({

@@ -6,7 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 // `AnalyticsPage`, `QueryBuilder` and `DashboardGrid` all read the API through
 // this one helper, so mocking it here controls every request the page makes.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -85,7 +85,7 @@ const routeFetch = (trendsResponse: () => Response) => {
  */
 const waitForLoadedPage = async () => {
   await screen.findByText(/^Updated /);
-  expect(screen.getByText('Fleet uptime')).toBeInTheDocument();
+  expect(screen.getByText('Online now')).toBeInTheDocument();
   expect(screen.getByText('Sessions in range')).toBeInTheDocument();
   expect(screen.getByText('99.50%')).toBeInTheDocument();
 };

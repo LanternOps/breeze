@@ -13,7 +13,7 @@ import {
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { friendlyFetchError } from '../../lib/utils';
-import { formatNumber } from '@/lib/i18n/format';
+import { formatBytes } from './backupDashboardHelpers';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -68,14 +68,6 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return '-';
-  if (bytes < 1024) return `${bytes} B`;
-  // Auto-scale units (B → TB) like the rest of the backup screens (#7213).
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${formatNumber(bytes / 1024 ** i, { maximumFractionDigits: 1 })} ${units[i]}`;
-}
 
 function readinessColor(score: number): string {
   if (score >= 85) return 'text-success';
@@ -366,7 +358,7 @@ export default function BackupVerificationTab({
                       </td>
                       <td className="py-2 pr-4 text-success">{v.filesVerified}</td>
                       <td className="py-2 pr-4 text-destructive">{v.filesFailed}</td>
-                      <td className="py-2">{formatBytes(v.sizeBytes)}</td>
+                      <td className="py-2">{formatBytes(v.sizeBytes, '-')}</td>
                     </tr>
                   );
                 })}

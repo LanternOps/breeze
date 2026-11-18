@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { AgentCeilingDto, AgentToolCatalogDto, AiAgentKind } from '@breeze/shared';
+import type { AgentCeilingDto, AgentToolCatalogDto, AgentToolCatalogToolDto, AiAgentKind } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
+import { listFlows } from '../../flows/api';
 
 export interface UseAgentToolCatalogOptions {
   kind: AiAgentKind;
@@ -60,6 +61,45 @@ function parseCeilingBody(data: unknown): AgentCeilingDto | null | undefined {
 }
 
 /**
+ * Enabled manual flows are callable by agents as `flow__<slug>` tools (#5220), but
+ * the static tool catalog cannot know them: they are per-tenant. Append them here.
+ * Best effort — a 403, a disabled-flows 404 or a malformed body yields no entries and
+ * never fails the catalog. Each carries one synthetic operation so the picker (which
+ * lists operations, not tools) can show and select it.
+ */
+async function loadFlowTools(): Promise<AgentToolCatalogToolDto[]> {
+  try {
+    const { flows } = await listFlows({ status: 'enabled', limit: 100 });
+    return flows
+      .filter((flow) => flow.triggerType === 'manual')
+      .map((flow) => {
+        const name = `flow__${flow.slug}`;
+        return {
+          name,
+          capability: 'automations_reports',
+          tier: flow.effectiveTier,
+          readOnly: flow.effectiveTier === 1,
+          operations: [
+            {
+              key: name,
+              action: null,
+              tier: flow.effectiveTier,
+              readOnly: flow.effectiveTier === 1,
+              policyDecidable: false,
+              actEligible: false,
+              actRequiresAuthorizedScripts: false,
+            },
+          ],
+        };
+      });
+  } catch (err) {
+    // Flow tools are additive: the base catalog must survive, but say why they are missing.
+    console.error('[useAgentToolCatalog] could not load flow tools', err);
+    return [];
+  }
+}
+
+/**
  * Loads the agent-reachable tool catalog once per mount, and — only for an
  * organization-owned draft, where a partner-wide baseline can narrow what the
  * picker may offer — the live ceiling for the current `kind`. Re-fetches the
@@ -87,8 +127,14 @@ export function useAgentToolCatalog({ kind, ownerScope, orgId = null }: UseAgent
         if (!response.ok) throw new Error(`GET /ai/agents/tool-catalog ${response.status}`);
         const body = (await response.json()) as { data?: AgentToolCatalogDto };
         if (cancelled) return;
-        if (body.data) setCatalog(body.data);
-        else setCatalogError(true);
+        if (!body.data) {
+          setCatalogError(true);
+          return;
+        }
+        const base = body.data;
+        setCatalog(base);
+        const flowTools = await loadFlowTools();
+        if (!cancelled && flowTools.length > 0) setCatalog({ ...base, tools: [...base.tools, ...flowTools] });
       } catch (err) {
         console.error('[useAgentToolCatalog] could not load tool catalog', err);
         if (!cancelled) setCatalogError(true);

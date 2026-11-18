@@ -35,6 +35,8 @@ import {
   addFeatureLink,
   assignPolicy,
   deleteConfigPolicy,
+  ComplianceItemNameTooLongError,
+  ComplianceRegistryPathNotCollectedError,
   DuplicateComplianceItemNameError,
   removeFeatureLink,
   unassignPolicy,
@@ -94,6 +96,57 @@ describe('duplicate compliance rule set names', () => {
     expect(tx.delete).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
     expect(scheduleMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('over-long compliance rule set names', () => {
+  it('addFeatureLink refuses a name over 200 characters before the transaction opens', async () => {
+    const long = 'x'.repeat(201);
+    const err = await addFeatureLink(POLICY_ID, 'compliance', null, { items: [item(long)] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceItemNameTooLongError);
+    expect((err as ComplianceItemNameTooLongError).names).toEqual([long]);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('updateFeatureLink refuses one before the rule sets are deleted and re-inserted', async () => {
+    const tx = mockTx(COMPLIANCE_LINK);
+    const err = await updateFeatureLink(LINK_ID, { inlineSettings: { items: [item('x'.repeat(201))] } }, POLICY_ID)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceItemNameTooLongError);
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+});
+
+// #11976: the agent's probe list drops a registry path it will never collect
+// (policyProbeSafety.isAllowedPolicyRegistryProbe), so a rule on one would
+// report "Registry value not found" forever. Refuse it when it is written.
+describe('compliance registry_check paths the agent never collects', () => {
+  const registryItem = (registryPath: string) => ({
+    name: 'Registry', rules: [{ type: 'registry_check', registryPath, registryValueName: 'F' }],
+  });
+
+  it('addFeatureLink refuses one before the transaction opens', async () => {
+    const err = await addFeatureLink(POLICY_ID, 'compliance', null, { items: [registryItem('HKEY_LOCAL_MACHINE/SECURITY/Policy')] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceRegistryPathNotCollectedError);
+    expect((err as ComplianceRegistryPathNotCollectedError).paths).toEqual(['HKEY_LOCAL_MACHINE/SECURITY/Policy']);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('updateFeatureLink refuses one before the rule sets are deleted and re-inserted', async () => {
+    const tx = mockTx(COMPLIANCE_LINK);
+    const err = await updateFeatureLink(LINK_ID, { inlineSettings: { items: [registryItem('HKLM\\SAM')] } }, POLICY_ID)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComplianceRegistryPathNotCollectedError);
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts an ordinary policy path', async () => {
+    mockTx({ ...COMPLIANCE_LINK });
+    await expect(addFeatureLink(POLICY_ID, 'compliance', null, { items: [registryItem('HKLM\\SOFTWARE\\Policies\\Example')] }))
+      .resolves.toBeTruthy();
   });
 });
 

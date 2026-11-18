@@ -54,7 +54,6 @@ describe('analysis task handoff', () => {
     const task = buildAgentRunTaskPrompt(context);
     expect(task).toContain(goal);
     expect(task).toContain('["frozen-device"]');
-    expect(task).toContain('["artifact:input"]');
     expect(task).toContain('workspace_collect');
     expect(task).not.toContain('Assess the health');
     expect(task).not.toContain('private-chat-id');
@@ -71,6 +70,125 @@ describe('analysis task handoff', () => {
     expect(task).toContain('Admission-frozen device IDs (JSON): []');
     expect(task).toContain('An empty set authorizes no device reads');
     expect(task).toContain('Compute 2 + 2');
+  });
+
+  describe('scope frame and export grants (W02)', () => {
+    const GRANTS = { datasets: ['event_logs', 'metrics'], sensitiveGates: [] as never[] };
+    const render = (analysis: ReturnType<typeof analysisPromptContext>) =>
+      buildAgentRunTaskPrompt(ctx({ profile: 'analysis', device: null, alert: null, analysis }));
+
+    it('an org frame states scope and count, lists no device ids, and lists the exportable datasets', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1', 'd2'], region: 'eu',
+        scope: { kind: 'org', siteId: null, deviceCount: 2 }, exportGrants: GRANTS,
+      });
+      const task = render(analysis);
+      expect(task).toContain('Device scope: the whole organization (2 devices, frozen at launch).');
+      expect(task).not.toContain('d1');
+      expect(task).not.toContain('Admission-frozen device IDs');
+      expect(task).toContain('Datasets you may export with export_dataset (JSON): ["event_logs","metrics"]');
+      expect(task).toContain('Rows withheld from those exports (JSON): ["security_events"]');
+    });
+
+    it('a site frame names the site id', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1'], region: 'eu',
+        scope: { kind: 'site', siteId: 'site-1', deviceCount: 1 },
+        exportGrants: { datasets: ['metrics'], sensitiveGates: [] },
+      });
+      const task = render(analysis);
+      expect(task).toContain('Device scope: one site, site-1 (1 devices, frozen at launch).');
+      expect(task).not.toContain('Rows withheld');
+    });
+
+    it('a pre-W02 run (no scope, no grants) renders the device-id list and no dataset line', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, { handles: [], deviceIds: ['d1'], region: 'eu' });
+      expect(analysis.scope).toBeNull();
+      expect(analysis.exportGrants).toBeNull();
+      const task = render(analysis);
+      expect(task).toContain('Admission-frozen device IDs (JSON): ["d1"]');
+      expect(task).not.toContain('Datasets you may export');
+    });
+
+    it('a devices-kind scope keeps the device-id list', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1'], scope: { kind: 'devices', siteId: null, deviceCount: 1 },
+      });
+      expect(render(analysis)).toContain('Admission-frozen device IDs (JSON): ["d1"]');
+    });
+
+    it('scope is read from staged_inputs only, never from trigger_ref', () => {
+      expect(analysisPromptContext({ goal: 'why', scope: { kind: 'org' } }, { handles: [], deviceIds: [], region: 'eu' }).scope).toBeNull();
+      expect(analysisPromptContext({ goal: 'why', exportGrants: GRANTS }, { handles: [], deviceIds: [] }).exportGrants).toBeNull();
+    });
+
+    it.each([
+      { kind: 'galaxy', siteId: null, deviceCount: 1 },
+      { kind: 'org', siteId: null, deviceCount: -1 },
+      { kind: 'org', siteId: null, deviceCount: 1.5 },
+      { kind: 'org', siteId: 7, deviceCount: 1 },
+      { kind: 'org', siteId: null },
+      { kind: 'site', siteId: null, deviceCount: 1 },
+      'org',
+      null,
+    ])('a malformed scope reads as null: %j', (scope) => {
+      expect(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [], scope }).scope).toBeNull();
+    });
+
+    it.each([
+      { datasets: 'metrics', sensitiveGates: [] },
+      { datasets: [1], sensitiveGates: [] },
+      { datasets: [], sensitiveGates: ['nope'] },
+      { datasets: [], sensitiveGates: 'security_events' },
+      { datasets: [] },
+      [],
+    ])('malformed export grants read as null: %j', (exportGrants) => {
+      expect(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [], exportGrants }).exportGrants).toBeNull();
+    });
+  });
+
+  describe('input manifest and continuation seed (W03)', () => {
+    const H1 = '00000000-0000-4000-8000-0000000000a1';
+    const R1 = '00000000-0000-4000-8000-0000000000b1';
+    const PRIOR = '00000000-0000-4000-8000-0000000000c1';
+    const render = (analysis: ReturnType<typeof analysisPromptContext>) =>
+      buildAgentRunTaskPrompt(ctx({ profile: 'analysis', device: null, alert: null, analysis }));
+
+    it('lists each allowed handle in a fenced manifest instead of a bare JSON list', () => {
+      const analysis = analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [H1] },
+        [{ handle: H1, name: 'bsod.csv', bytes: 14000, contentType: 'text/csv', kind: 'output', producedByRunId: R1, producerChainDepth: 0 }]);
+      const task = render(analysis);
+      expect(task).not.toContain('Available input artifact handles (JSON)');
+      expect(task).toContain(`${H1} · bsod.csv · 14000 bytes · text/csv · output · produced by run ${R1} (step 1 of chain)`);
+      expect(analysis.manifest).toHaveLength(1);
+      expect(analysis.continuation).toBeNull();
+    });
+
+    it('with no manifest entries says there are no input files', () => {
+      expect(render(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [] }))).toContain('No input files.');
+    });
+
+    it('renders a stored seed and the drop line on a continuation', () => {
+      const seed = '## Continuation\nThis run continues an earlier analysis run.';
+      const analysis = analysisPromptContext(
+        { goal: 'g', continuation: { fromRunId: PRIOR, seed, dropped: [{ handle: H1, reason: 'expired' }] } },
+        { deviceIds: [], handles: [] },
+      );
+      expect(analysis.continuation).toEqual({ fromRunId: PRIOR, seed, dropped: [{ handle: H1, reason: 'expired' }] });
+      const task = render(analysis);
+      expect(task).toContain(seed);
+      expect(task).toContain('1 inherited file(s) were not carried forward: 1 expired.');
+      expect(task).not.toContain(`${H1} was`);
+    });
+
+    it('renders nothing for an oversized seed', () => {
+      const analysis = analysisPromptContext(
+        { goal: 'g', continuation: { fromRunId: PRIOR, seed: 'x'.repeat(4097) } },
+        { deviceIds: [], handles: [] },
+      );
+      expect(analysis.continuation).toBeNull();
+      expect(render(analysis)).not.toContain('xxxx');
+    });
   });
 
   it.each([null, {}, { goal: 42 }, { goal: '  ' }])('does not invent a fleet task when the goal is missing: %j', (ref) => {
@@ -834,7 +952,7 @@ function narrativeContext(
     },
     backupProviders: {
       available: true,
-      devices: 11,
+      devices: 11, saasWorkloads: 2,
       devicesByHealth: { healthy: 8, warning: 1, critical: 2, unknown: 0 },
       criticalDevices: [{ name: 'BACKUP-SVR' }, { name: 'OLD-FILESERVER' }],
       criticalDevicesTruncated: false,
@@ -956,6 +1074,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
     const backups = text.slice(text.indexOf('## Backups'), text.indexOf('## Fleet'));
 
     expect(backups).toContain('third-party backup devices: 11');
+    expect(backups).toContain('third-party SaaS backup workloads: 2');
     expect(backups).toContain('third-party backup devices healthy: 8');
     expect(backups).toContain('third-party backup devices critical: 2');
     expect(backups).toContain('BACKUP-SVR');
@@ -968,7 +1087,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
   it('says plainly when no third-party backup reports for the org, instead of a column of zeroes', () => {
     const none = narrativeContext();
     none.backupProviders = {
-      available: true, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      available: true, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
     };
     const text = buildNarrativeTaskPrompt(narrativeCtx(none));
@@ -980,7 +1099,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
   it('renders the third-party block as "(not measured)" when its loader failed', () => {
     const failed = narrativeContext();
     failed.backupProviders = {
-      available: false, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      available: false, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
     };
     failed.unavailable = [...failed.unavailable, 'backupProviders'];
@@ -1399,7 +1518,7 @@ function patchEvidenceFixture(title = 'Cumulative Update KB5041234') {
     rollup: {
       devicesTotal: 12, devicesNonCompliant: 3, devicesCompliant: 9, outstandingPatches: 5,
       outstandingBySeverity: { critical: 2, important: 2, moderate: 1, low: 0, unrated: 0 },
-      oldestOutstandingDays: 45, snapshot: null,
+      oldestOutstandingDays: 45,
     },
     sections: {
       ringPosture: { rows: [{ deviceId: null, hostname: null, fields: { name: 'Pilot', autoApprove: 'off', heldByDeferral: null } }], total: 1 },
@@ -1459,7 +1578,7 @@ describe('patch profile prompts (AI patch agent W01)', () => {
       rollup: {
         devicesTotal: 12, devicesNonCompliant: 3, devicesCompliant: 9, outstandingPatches: 5,
         outstandingBySeverity: { critical: 2, important: 2, moderate: 1, low: 0, unrated: 0 },
-        oldestOutstandingDays: 45, snapshot: null,
+        oldestOutstandingDays: 45,
       },
       sections: {
         ringPosture: { rows: [], total: 0 },

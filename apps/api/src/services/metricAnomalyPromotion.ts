@@ -1,10 +1,9 @@
 import { and, eq, ne } from 'drizzle-orm';
 
 import { db } from '../db';
-import { alerts, metricAnomalies, metricAnomalyIncidents } from '../db/schema';
-import { publishEvent } from './eventBus';
+import { metricAnomalies, metricAnomalyIncidents } from '../db/schema';
+import { createSourcedAlert } from './alertService';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
-import { resolveDeviceSiteId } from './deviceSiteResolver';
 
 type MetricAnomalyRow = typeof metricAnomalies.$inferSelect;
 
@@ -61,6 +60,11 @@ export type PromoteMetricAnomalyToAlertOptions = {
   orgId: string;
   deviceId: string;
   anomalyId: string;
+  /**
+   * Who promoted it. The `alert.triggered` event carries no actor: the outbox
+   * publishes it after COMMIT without a `userId`, as for every staged alert,
+   * so `metadata.userId` is absent on it.
+   */
   actorUserId?: string | null;
   requireCreateAlertsFlag?: boolean;
   /**
@@ -251,45 +255,53 @@ export async function promoteMetricAnomalyToAlert(
   const now = new Date();
   const incidentAgentRunId = await findIncidentAgentRunId(canonical.orgId, canonical);
 
-  const [alert] = await db
-    .insert(alerts)
-    .values({
-      ruleId: null,
-      deviceId: canonical.deviceId,
-      orgId: canonical.orgId,
-      status: 'active',
-      severity,
-      title,
-      message,
-      context: {
-        source: 'metric_anomaly',
-        anomalyId: canonical.id,
-        metricName: canonical.metricName,
-        metricType: canonical.metricType,
-        anomalyType: canonical.anomalyType,
-        observedValue: canonical.observedValue,
-        baselineValue: canonical.baselineValue,
-        confidence: canonical.confidence,
-        score: canonical.score,
-        modelVersion: (canonical.baselineSummary as { modelVersion?: unknown } | null)?.modelVersion ?? null,
-        // Wave 6 PR 4 (#3828 Task 3) — informational only; see
-        // findIncidentAgentRunId's docstring.
-        agentRunId: incidentAgentRunId,
-        ...(options.episodeId ? { episodeId: options.episodeId } : {}),
-      },
-      triggeredAt: now,
-    })
-    .returning({ id: alerts.id });
+  // #11348 — through the shared create path: `alert.triggered` is staged on
+  // the row and published after the caller's transaction commits. The inline
+  // publish this replaced ran inside the request transaction, so
+  // `process-alert` could read before COMMIT and drop the notification, and a
+  // rolled-back promotion still announced an alert that never existed. The
+  // anomaly's `linkedAlertId` (set below, same transaction) is this
+  // producer's dedupe, so a repeat promotion never raises or publishes again.
+  const alertId = await createSourcedAlert({
+    deviceId: canonical.deviceId,
+    orgId: canonical.orgId,
+    severity,
+    title,
+    message,
+    context: {
+      source: 'metric_anomaly',
+      anomalyId: canonical.id,
+      metricName: canonical.metricName,
+      metricType: canonical.metricType,
+      anomalyType: canonical.anomalyType,
+      observedValue: canonical.observedValue,
+      baselineValue: canonical.baselineValue,
+      confidence: canonical.confidence,
+      score: canonical.score,
+      modelVersion: (canonical.baselineSummary as { modelVersion?: unknown } | null)?.modelVersion ?? null,
+      // Wave 6 PR 4 (#3828 Task 3) — informational only; see
+      // findIncidentAgentRunId's docstring.
+      agentRunId: incidentAgentRunId,
+      ...(options.episodeId ? { episodeId: options.episodeId } : {}),
+    },
+    publisher: 'metric-anomaly-promotion',
+    // The anomaly the caller asked to promote; `context.anomalyId` is the
+    // canonical row that drives the alert.
+    eventPayload: { anomalyId: anomaly.id },
+    triggeredAt: now,
+    // Never `episodeId`: that writes `alerts.episode_id`, the MONITOR breach
+    // episode (#5290). The anomaly episode lives in `context.episodeId` only.
+  });
 
-  if (!alert?.id) {
-    throw new Error('Failed to create alert for metric anomaly');
+  if (!alertId) {
+    throw new Error(`Failed to create alert for metric anomaly ${canonical.id} (org=${canonical.orgId} device=${canonical.deviceId})`);
   }
 
   const [updated] = await db
     .update(metricAnomalies)
     .set({
       status: 'promoted',
-      linkedAlertId: alert.id,
+      linkedAlertId: alertId,
       resolvedAt: null,
       updatedAt: now,
     })
@@ -303,7 +315,7 @@ export async function promoteMetricAnomalyToAlert(
       .update(metricAnomalies)
       .set({
         status: 'promoted',
-        linkedAlertId: alert.id,
+        linkedAlertId: alertId,
         resolvedAt: null,
         updatedAt: now,
       })
@@ -316,37 +328,16 @@ export async function promoteMetricAnomalyToAlert(
       );
   }
 
-  const siteId = await resolveDeviceSiteId(anomaly.deviceId);
-  await publishEvent(
-    'alert.triggered',
-    anomaly.orgId,
-    {
-      alertId: alert.id,
-      ruleId: null,
-      deviceId: anomaly.deviceId,
-      severity,
-      title,
-      message,
-      source: 'metric-anomaly',
-      anomalyId: anomaly.id,
-    },
-    'metric-anomaly-promotion',
-    {
-      userId: options.actorUserId ?? undefined,
-      siteId,
-    },
-  );
-
   return {
     status: 'promoted',
     anomaly: updated ?? {
       ...anomaly,
       status: 'promoted',
-      linkedAlertId: alert.id,
+      linkedAlertId: alertId,
       resolvedAt: null,
       updatedAt: now,
     },
-    alertId: alert.id,
+    alertId,
     created: true,
   };
 }

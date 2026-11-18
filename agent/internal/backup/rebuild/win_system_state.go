@@ -93,13 +93,12 @@ func (r *run) ensureWinHives() error {
 	if r.hives == nil {
 		r.hives = map[string]winhive.Handle{}
 	}
-	cfg := filepath.Join(r.rootVolume, "Windows", "System32", "config")
 	var loadedNow []string
 	for _, hive := range winStateHives {
 		if r.hives[hive] != nil {
 			continue
 		}
-		h, err := r.opts.WinSystem.LoadHive(filepath.Join(cfg, hive), hiveMountName(r, hive))
+		h, err := r.loadTreeHive(r.opts.WinSystem.LoadHive, r.rootVolume, filepath.Join("Windows", "System32", "config", hive), hiveMountName(r, hive))
 		if err != nil {
 			for _, name := range loadedNow {
 				if cerr := r.hives[name].Close(); cerr != nil {
@@ -120,6 +119,19 @@ func (r *run) ensureWinHives() error {
 		r.controlSets = sets
 	}
 	return nil
+}
+
+// loadTreeHive loads base\relative through load (WinSystem.LoadHive or
+// LoadHiveReadOnly) once bmr.TreeHivePath has confirmed that no component
+// from base down to the hive is a link. The preflight artifact checks call
+// bmr.TreeHivePath themselves because an absent artifact is not an error
+// there; every other hive load in this package goes through here.
+func (r *run) loadTreeHive(load func(hiveFile, mountName string) (winhive.Handle, error), base, relative, mountName string) (winhive.Handle, error) {
+	hivePath, err := bmr.TreeHivePath(base, relative)
+	if err != nil {
+		return nil, err
+	}
+	return load(hivePath, mountName)
 }
 
 // closeWinHives flushes and unloads every loaded hive (validate does this

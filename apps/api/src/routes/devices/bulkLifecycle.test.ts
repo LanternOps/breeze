@@ -8,6 +8,8 @@ const DEV_3 = '44444444-4444-4444-8444-444444444444';
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  // Decommission/restore enqueue a dynamic-group re-evaluation after commit (#9933).
+  runAfterDbContextCommit: vi.fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {

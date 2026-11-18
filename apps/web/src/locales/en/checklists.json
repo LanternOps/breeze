@@ -21,11 +21,11 @@
     "manual": "Manual",
     "deliverable": "Deliverable",
     "checklist_template": "Template",
-    "operator_task": "Operator step"
+    "operator_task": "AI task step"
   },
   "operator": {
     "viewTask": "View task",
-    "badgeTitle": "Created by an AI Operator task. Tick it when the work is done and the task continues."
+    "badgeTitle": "Created by an AI task. Tick it when the work is done and the task continues."
   },
   "editDoneWarning": "Changing the step text clears who completed it and when. Editing only the note keeps the tick.",
   "resolveConfirm": {
@@ -40,7 +40,7 @@
     "saveFailed": "Failed to save the checklist step.",
     "reorderFailed": "Failed to reorder the checklist.",
     "tickRequiresUser": "Ticking a step requires a signed-in user session.",
-    "operatorStepWaiting": "An Operator task is still waiting on this step, so it can't be deleted. Tick it when the work is done, or stop the task first."
+    "operatorStepWaiting": "An AI task is still waiting on this step, so it can't be deleted. Tick it when the work is done, or stop the task first."
   },
   "templates": {
     "title": "Checklist templates",
@@ -74,7 +74,7 @@
       "loadFailed": "Failed to load checklist templates.",
       "saveFailed": "Failed to save the checklist template.",
       "applyFailed": "Failed to apply the checklist template.",
-      "operatorStepWaiting": "An Operator task is waiting on one of this ticket's unticked steps, so the template can't replace them. Choose “Add these steps to the existing checklist” instead, tick the step when the work is done, or stop the task first.",
+      "operatorStepWaiting": "An AI task is waiting on one of this ticket's unticked steps, so the template can't replace them. Choose “Add these steps to the existing checklist” instead, tick the step when the work is done, or stop the task first.",
       "saveAsFailed": "Failed to save the checklist as a template.",
       "noSteps": "This ticket has no reusable steps to save.",
       "duplicateFailed": "Failed to duplicate the checklist template."
@@ -87,7 +87,7 @@
       "allOrganizations": "Make available to all organizations",
       "submit": "Save template",
       "success": "Saved as template “{{name}}”.",
-      "skipped": "Left out: {{operator}} Operator step(s) and {{duplicates}} repeated step(s)."
+      "skipped": "Left out: {{operator}} AI task step(s) and {{duplicates}} repeated step(s)."
     }
   }
 }

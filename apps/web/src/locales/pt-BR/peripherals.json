@@ -79,6 +79,14 @@
     "allOrganizations": "Todas as organizações",
     "partnerWide": "(política de todo o parceiro)",
     "thisOrganization": "Somente esta organização",
+    "appliesTo": "Aplica-se a",
+    "targets": {
+      "organization": "Todos os dispositivos",
+      "site": "Locais específicos ({{total}})",
+      "group": "Grupos de dispositivos específicos ({{total}})",
+      "device": "Dispositivos específicos ({{total}})"
+    },
+    "targetReadOnlyHint": "Os destinos não podem ser alterados neste formulário. Ao salvar, os destinos atuais são mantidos.",
     "deviceClass": "Classe do dispositivo",
     "classes": {
       "storage": "Armazenamento",
@@ -102,7 +110,12 @@
     "serialNumber": "Número de série",
     "allow": "Permitir:",
     "reason": "Motivo",
+    "expiresAt": "Expira (seu horário local)",
     "updatePolicy": "Atualizar política",
-    "createPolicy": "Criar política"
+    "createPolicy": "Criar política",
+    "saved": {
+      "created": "Política criada",
+      "updated": "Política atualizada"
+    }
   }
 }

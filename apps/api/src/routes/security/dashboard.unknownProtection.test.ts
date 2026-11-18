@@ -92,6 +92,30 @@ describe('GET /dashboard — unknown AV / firewall state', () => {
     expect(data.protectedDevices).toBe(1);
   });
 
+  // #9643 — "BitLocker enabled" counts fully encrypted machines only; partial
+  // is reported separately instead of inflating the enabled number.
+  it('counts only fully encrypted devices as enabled and reports partial separately', async () => {
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({ deviceId: 'w1', os: 'windows', encryptionStatus: 'encrypted' }),
+      statusRow({ deviceId: 'w2', os: 'windows', encryptionStatus: 'partial' }),
+      statusRow({ deviceId: 'w3', os: 'windows', encryptionStatus: 'unencrypted' }),
+      statusRow({ deviceId: 'm1', os: 'macos', encryptionStatus: 'encrypted' }),
+      statusRow({ deviceId: 'm2', os: 'macos', encryptionStatus: 'partial' }),
+    ]);
+
+    const res = await buildApp().request('/security/dashboard');
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+
+    expect(data.encryption).toEqual({
+      bitlockerEnabled: 1,
+      bitlockerPartial: 1,
+      filevaultEnabled: 1,
+      filevaultPartial: 1,
+      total: 5,
+    });
+  });
+
   // #8538 — a failed collection is stored as provider 'unknown' and must get its
   // own "Unknown" bucket in the provider breakdown, not be folded into "Other".
   it('reports unknown-provider devices in an Unknown bucket, separate from Other', async () => {

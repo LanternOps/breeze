@@ -1,0 +1,69 @@
+/**
+ * Wisp memory (W03, feature #9906): the closed value sets of `ai_memory_blocks`
+ * and the DTO the `/api/v1/wisp/memory` routes return.
+ *
+ * Each array mirrors a CHECK constraint in
+ * apps/api/migrations/2027-01-04-110100-ai-memory-blocks.sql — change both
+ * together. The API's broker-level `MemoryBlockType` (services/wisp/memoryBroker.ts)
+ * is the same set; this module names it `MemoryBlockTypeName` so the two never
+ * collide on a shared import.
+ */
+
+export const MEMORY_OWNER_KINDS = ['user', 'org', 'partner'] as const;
+export type MemoryOwnerKind = (typeof MEMORY_OWNER_KINDS)[number];
+
+/** `work_summary`: what a working session did; org-owned, `content.evidence` points at Breeze records. */
+export const MEMORY_BLOCK_TYPES = [
+  'preference',
+  'standing_instruction',
+  'fact',
+  'decision',
+  'concern_outcome',
+  'work_summary',
+] as const;
+export type MemoryBlockTypeName = (typeof MEMORY_BLOCK_TYPES)[number];
+
+export const MEMORY_CONFIDENCES = ['low', 'medium', 'high'] as const;
+export type MemoryConfidence = (typeof MEMORY_CONFIDENCES)[number];
+
+export const MEMORY_BLOCK_STATUSES = ['unconfirmed', 'confirmed', 'retracted'] as const;
+export type MemoryBlockStatus = (typeof MEMORY_BLOCK_STATUSES)[number];
+
+/**
+ * The human-readable subject of a memory block (#11612). A standing
+ * instruction's `subjectKey` is an internal clause key (`device:<uuid>:<verb>:<hash>`),
+ * so it is shown as the instruction's own text; null means "no readable text,
+ * the caller supplies a label" — never the key. Other block types keep the
+ * subject key their author chose, which is already readable (e.g. `reply-style`).
+ */
+export function memoryBlockSubjectText(block: {
+  blockType: string;
+  subjectKey: string;
+  content?: unknown;
+}): string | null {
+  if (block.blockType !== 'standing_instruction') return block.subjectKey;
+  const content = block.content;
+  const text =
+    content !== null && typeof content === 'object' ? (content as Record<string, unknown>).text : undefined;
+  return typeof text === 'string' && text.trim() !== '' ? text.trim() : null;
+}
+
+/** Wire shape of one memory block (timestamps ISO-8601). */
+export type MemoryBlockDto = {
+  id: string;
+  ownerKind: MemoryOwnerKind;
+  ownerUserId: string | null;
+  ownerOrgId: string | null;
+  blockType: MemoryBlockTypeName;
+  subjectKey: string;
+  content: Record<string, unknown>;
+  confidence: MemoryConfidence;
+  status: MemoryBlockStatus;
+  /** A standing instruction whose `until` has passed: still listed, no longer in Wisp's prompt or enforced. */
+  expired: boolean;
+  authoredByGrantId: string | null;
+  supersededById: string | null;
+  sourceSessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};

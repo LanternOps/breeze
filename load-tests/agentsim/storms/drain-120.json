@@ -1,0 +1,12 @@
+{
+  "name": "drain-120",
+  "description": "A draining API instance tells every agent to reconnect within 120 s, then closes its socket: the simulator gives every live session a drain hint of 120000 ms and closes each socket as a server going away (reported to the pacer as close code 1001; no close frame is sent). Measures how evenly the agent fleet spreads its redials (reconnectSpanS, peakToMean, peakConnectsPerSecond, t90S). The drain SENDER is the API's (W5c); this action stands in for it, so it exercises the agent side only. Not modelled: agents older than #9145 (they redial at once); use --pre-w09-fraction for the #9145 cohort, which ignores drain hints.",
+  "events": [
+    {
+      "name": "drain-120",
+      "at": "3m",
+      "recovery": "4m",
+      "start": [{ "internal": "drain-sockets", "withinMs": 120000 }]
+    }
+  ]
+}

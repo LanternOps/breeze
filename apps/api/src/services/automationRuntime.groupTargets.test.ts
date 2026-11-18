@@ -116,6 +116,15 @@ beforeEach(() => {
 });
 
 describe('resolveAutomationTargetsDetailed — groups', () => {
+  it('reports a partner-owned group as an unusable target without dispatch', async () => {
+    queueSelects([{ id: G1, orgId: null, filterFieldsUsed: [] }]);
+    const result = await resolveAutomationTargetsDetailed(automation());
+    expect(result.deviceIds).toEqual([]);
+    expect(result.problems).toEqual([expect.stringContaining(G1)]);
+    expect(resolveWithWarningsMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it('resolves an org-owned group through the per-org resolver', async () => {
     queueSelects([groupRow(G1)]);
     resolveWithWarningsMock.mockResolvedValueOnce({ deviceIds: ['d1', 'd2'], warnings: [] });

@@ -14,6 +14,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
+import { tunnelHttpCommandPrefix } from '../services/tunnelHttpCommandId';
 import { isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
@@ -37,9 +38,8 @@ export const HOST_COOKIE_AUDIENCE = 'breeze-tunnel-host';
 export const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
 export const TUNNEL_CLOSED_ERROR = 'tunnel_closed';
 
-export function tunnelHttpCommandPrefix(tunnelId: string): string {
-  return `http-req-${tunnelId}-`;
-}
+// The id prefix lives in a leaf module agentAuth also reads (#11464).
+export { tunnelHttpCommandPrefix };
 
 const TUNNEL_CONTINUATION_PERMISSIONS = [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE];
 

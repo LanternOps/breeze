@@ -23,9 +23,9 @@ describe('resolveTaskRecipe', () => {
   });
 
   it('refuses an unknown key with a detail naming the key and the version', () => {
-    const resolved = resolveTaskRecipe({ workflowKey: 'identity_offboarding', workflowVersion: 1 });
+    const resolved = resolveTaskRecipe({ workflowKey: 'no_such_recipe', workflowVersion: 1 });
     expect(resolved.ok).toBe(false);
-    expect((resolved as { detail: string }).detail).toContain('identity_offboarding');
+    expect((resolved as { detail: string }).detail).toContain('no_such_recipe');
     expect((resolved as { detail: string }).detail).toContain('1');
   });
 

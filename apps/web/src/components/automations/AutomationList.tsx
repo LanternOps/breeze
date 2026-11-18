@@ -18,9 +18,12 @@ import {
   XCircle,
   AlertTriangle,
   MoreHorizontal,
+  ArrowRightLeft,
   Bot} from 'lucide-react';
+import type { FlowConversionFidelity, FlowConversionFinding, FlowConversionState } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { FilterSelect } from '../shared/FilterSelect';
+import { FidelityBadge } from './conversion/FidelityBadge';
 
 export type TriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
 export type AutomationStatus = 'idle' | 'running' | 'success' | 'failed';
@@ -66,6 +69,17 @@ export type Automation = {
   // field is declared on the shared type for completeness and so a future
   // caller doesn't have to guess its shape.
   managedByMonitorId?: string | null;
+  // #5221 W06 (Decision 9): the Job's latest conversion generation, or null.
+  // A `switched` row is frozen — the API 409s `automation_converted` on every
+  // write — so the list renders it read-only with a link to its flow.
+  conversion?: { id: string; state: FlowConversionState; flowId: string } | null;
+};
+
+/** The "Move to Flows" column (#5221 W06). Present only while Flows are enabled. */
+export type MoveToFlowsColumn = {
+  /** Fidelity of each live conversion, by automation id (unconverted rows are absent). */
+  fidelityByAutomation: ReadonlyMap<string, { fidelity: FlowConversionFidelity; findings: readonly FlowConversionFinding[] }>;
+  onOpen: (automation: Automation) => void;
 };
 
 export type TriggerFilter = 'all' | 'schedule' | 'event' | 'webhook' | 'manual';
@@ -82,6 +96,7 @@ type AutomationListProps = {
   /** #5288: when provided, the trigger filter is controlled by the parent (Jobs tabs). */
   triggerFilter?: TriggerFilter;
   onTriggerFilterChange?: (value: TriggerFilter) => void;
+  moveToFlows?: MoveToFlowsColumn;
 };
 
 const triggerConfig: Record<TriggerType, { label: string; icon: typeof Clock; color: string }> = {
@@ -145,9 +160,11 @@ export default function AutomationList({
   pageSize = 10,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
   triggerFilter: controlledTriggerFilter,
-  onTriggerFilterChange
+  onTriggerFilterChange,
+  moveToFlows
 }: AutomationListProps) {
   const { t } = useTranslation('scripts');
+  const { t: tf } = useTranslation('flows');
   const [query, setQuery] = useState('');
   const [internalTriggerFilter, setInternalTriggerFilter] = useState<TriggerFilter>('all');
   const triggerFilter = controlledTriggerFilter ?? internalTriggerFilter;
@@ -265,6 +282,7 @@ export default function AutomationList({
               <th className="px-4 py-3">{t('automationList.headers.lastRun')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('common:states.enabled')}</th>
+              {moveToFlows && <th className="px-4 py-3">{tf('conversion.column.heading')}</th>}
               <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
@@ -274,6 +292,13 @@ export default function AutomationList({
                 const lastStatus = (automation.lastRunStatus ?? 'idle') as StatusKey;
                 const StatusIcon = statusConfig[lastStatus].icon;
                 const isManaged = typeof automation.managedByAgentId === 'string';
+                const movedFlowId = automation.conversion?.state === 'switched' ? automation.conversion.flowId : null;
+                // A switched Job is frozen like a managed one; the hint says where it lives now.
+                const locked = isManaged || movedFlowId !== null;
+                const lockedHint = movedFlowId !== null
+                  ? tf('conversion.errors.automation_converted')
+                  : t('automationList.managedByAgentHint');
+                const liveFidelity = moveToFlows?.fidelityByAutomation.get(automation.id);
 
                 return (
                   <tr key={automation.id} className="transition hover:bg-muted/40">
@@ -357,28 +382,67 @@ export default function AutomationList({
                     </td>
                     <td className="px-4 py-3">
                       <label
-                        className={cn('relative inline-flex items-center', isManaged ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')}
-                        title={isManaged ? t('automationList.managedByAgentHint') : undefined}
+                        className={cn('relative inline-flex items-center', locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')}
+                        title={locked ? lockedHint : undefined}
                       >
                         <input
                           type="checkbox"
                           checked={automation.enabled}
                           onChange={e => onToggle?.(automation, e.target.checked)}
-                          disabled={isManaged}
+                          disabled={locked}
                           data-testid={`automation-toggle-${automation.id}`}
                           className="peer sr-only"
                         />
                         <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:u-left-px-2 after:u-top-px-2 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full" />
                       </label>
                     </td>
+                    {moveToFlows && (
+                      <td className="px-4 py-3" data-testid={`automation-move-cell-${automation.id}`}>
+                        {movedFlowId ? (
+                          <div className="flex flex-col items-start gap-1">
+                            <a
+                              href={`/flows/${movedFlowId}`}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                              data-testid={`automation-moved-link-${automation.id}`}
+                            >
+                              <ArrowRightLeft className="h-3 w-3" />
+                              {tf('conversion.state.switched')}
+                            </a>
+                            {/* The panel holds Revert. */}
+                            <button
+                              type="button"
+                              onClick={() => moveToFlows.onOpen(automation)}
+                              className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                              data-testid={`automation-move-${automation.id}`}
+                            >
+                              {tf('conversion.column.view')}
+                            </button>
+                          </div>
+                        ) : isManaged ? null : (
+                          <div className="flex flex-col items-start gap-1">
+                            {liveFidelity && (
+                              <FidelityBadge fidelity={liveFidelity.fidelity} findings={liveFidelity.findings} />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => moveToFlows.onOpen(automation)}
+                              className="text-xs font-medium text-primary hover:underline"
+                              data-testid={`automation-move-${automation.id}`}
+                            >
+                              {liveFidelity ? tf('conversion.column.view') : tf('conversion.column.move')}
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <button
                           type="button"
                           onClick={() => onRun?.(automation)}
-                          disabled={!automation.enabled || isManaged}
+                          disabled={!automation.enabled || locked}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={isManaged ? t('automationList.managedByAgentHint') : t('automationList.actions.runNow')}
+                          title={locked ? lockedHint : t('automationList.actions.runNow')}
                           data-testid={`automation-run-${automation.id}`}
                         >
                           <Play className="h-4 w-4" />
@@ -386,9 +450,9 @@ export default function AutomationList({
                         <button
                           type="button"
                           onClick={() => onEdit?.(automation)}
-                          disabled={isManaged}
+                          disabled={locked}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={isManaged ? t('automationList.managedByAgentHint') : t('common:actions.edit')}
+                          title={locked ? lockedHint : t('common:actions.edit')}
                           data-testid={`automation-edit-${automation.id}`}
                         >
                           <Pencil className="h-4 w-4" />
@@ -417,8 +481,8 @@ export default function AutomationList({
                               </button>
                               <button
                                 type="button"
-                                disabled={isManaged}
-                                title={isManaged ? t('automationList.managedByAgentHint') : undefined}
+                                disabled={locked}
+                                title={locked ? lockedHint : undefined}
                                 data-testid={`automation-delete-${automation.id}`}
                                 onClick={() => {
                                   onDelete?.(automation);

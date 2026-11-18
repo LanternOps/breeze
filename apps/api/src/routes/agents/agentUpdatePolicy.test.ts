@@ -4,6 +4,7 @@ import {
   parseMaintenanceWindow,
   isWithinMaintenanceWindow,
   shouldSendAgentUpgrade,
+  isolationAgentUpgradeGate,
 } from './agentUpdatePolicy';
 
 // All Dates below are UTC. 2026-06-14 is a Sunday.
@@ -119,5 +120,18 @@ describe('shouldSendAgentUpgrade', () => {
   it('staged with no window behaves like auto-anytime (non-breaking default)', () => {
     expect(shouldSendAgentUpgrade({ policy: 'staged', maintenanceWindow: null }, SUN_0500))
       .toEqual({ allow: true, reason: 'allowed' });
+  });
+});
+
+
+describe('isolationAgentUpgradeGate', () => {
+  it.each(['0.66.0', '998.99.99', 'dev-local', '', '999.0'])('refuses unsafe target %s while isolation is unresolved', (target) => {
+    expect(isolationAgentUpgradeGate(target, true)).toEqual({ allow: false, reason: 'network-isolation-version-floor' });
+  });
+  it.each(['999.0.0', '999.0.0-preview', '1000.0.0'])('allows supported target %s while isolation is unresolved', (target) => {
+    expect(isolationAgentUpgradeGate(target, true)).toEqual({ allow: true, reason: 'allowed' });
+  });
+  it('preserves ordinary upgrades when no isolation is unresolved', () => {
+    expect(isolationAgentUpgradeGate('0.66.0', false)).toEqual({ allow: true, reason: 'allowed' });
   });
 });

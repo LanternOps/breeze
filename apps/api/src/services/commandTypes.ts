@@ -156,6 +156,15 @@ export const CommandTypes = {
 
   // Safe mode reboot (Windows only)
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
+  // #8729: immediate reboot that force-closes running apps (/f on Windows).
+  // Queued only by POST /devices/:id/force-reboot (step-up, interactive session).
+  FORCE_REBOOT: 'force_reboot',
+  // Vendor updates (#11065): runs the hardware vendor's own update tool. Queued
+  // only through services/oemUpdates/dispatch.ts (oemUpdateExposure.contract.test.ts).
+  OEM_UPDATE_RUN: 'oem_update_run',
+  // Hands a vendor tool's own update schedule back. Queued only through
+  // services/oemUpdates/dispatch.ts (oemUpdateExposure.contract.test.ts).
+  OEM_UPDATE_RELEASE: 'oem_update_release',
   // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
   WAKE_ON_LAN: 'wake_on_lan',
   // On-demand inventory refresh — agent re-runs every send*Inventory collector,
@@ -169,6 +178,12 @@ export const CommandTypes = {
   // while; registering it here is what makes it queueable. Partner-trust gated
   // (GATED_COMMAND_TYPES), never a lifecycle type: it carries operator content.
   NOTIFY_USER: 'notify_user',
+  // PAM outcome notice (#8928): tells the user who handed an elevation request
+  // to IT that it was denied (with the technician's reason) or expired.
+  // Fire-and-forget; no result handler. Partner-trust GATED like notify_user,
+  // because the deny reason is technician free text. Claimable only by agents
+  // reporting pamUserNotifyProtocolVersion 1 or 2 (commandDispatch claim gate).
+  PAM_REQUEST_NOTIFY: 'pam_request_notify',
   // Endpoint messaging W02 (#8742): withdraw a message already on screen.
   // Carries no operator content (only the message id), so it is a lifecycle
   // type: a restricted partner can still take a message down.
@@ -230,6 +245,7 @@ export const CommandTypes = {
   // Incident response
   COLLECT_EVIDENCE: 'collect_evidence',
   EXECUTE_CONTAINMENT: 'execute_containment',
+  RELEASE_CONTAINMENT: 'release_containment',
 
   // Caller verification (#6354 W02): a short, interactive confirmation card
   // for the explicitly selected console user. Never queued (see LIVE).

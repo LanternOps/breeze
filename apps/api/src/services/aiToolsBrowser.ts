@@ -20,23 +20,11 @@ import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { aiDispatchDeviceCommand } from './aiDispatch';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
-import type { ToolExecutionContext } from './toolExecutionContext';
+// #6911: manage_browser_policy:create writes auth.user.id into browser_policies.created_by, a users FK; refused on an approver-release mismatch.
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-/**
- * #6911: `manage_browser_policy:create` is user-owned on release
- * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
- * `auth.user.id` into `browser_policies.created_by`, a `users` FK. Under the
- * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
- * a row whose owner the worker and this handler's auth disagree about.
- * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch` and
- * `aiToolsAlerts.ts`'s copy of the same guard.
- */
-function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
-  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
-}
 
 
 // A site-restricted caller may only mutate policies that target sites entirely
@@ -48,6 +36,10 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
 // single device, so such a caller can never confirm scope over one. Callers
 // with NEITHER restriction always pass. Mirrors the route-layer
 // browserSecurity.ts helper (AuthContext flavour).
+// Mirrors the `deviceIds` Zod cap (.max(1000)) on manage_browser_policy in
+// aiToolSchemas.ts; the implicit org-wide target set is held to the same bound.
+const MAX_BROWSER_POLICY_APPLY_DEVICES = 1000;
+
 export function policyWithinSiteWriteScope(
   auth: AuthContext,
   targetType: string,
@@ -566,6 +558,14 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
         if (targetDevices.length === 0) {
           return JSON.stringify({ error: 'No target devices found' });
+        }
+
+        // Bound the RESOLVED set (implicit org-wide or explicit) before any
+        // trust check or dispatch; refuse rather than truncate.
+        if (targetDevices.length > MAX_BROWSER_POLICY_APPLY_DEVICES) {
+          return JSON.stringify({
+            error: `Policy resolves to ${targetDevices.length} devices, over the ${MAX_BROWSER_POLICY_APPLY_DEVICES}-device limit per apply call. Pass explicit deviceIds in batches of at most ${MAX_BROWSER_POLICY_APPLY_DEVICES}.`,
+          });
         }
 
         try {

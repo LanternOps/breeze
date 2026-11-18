@@ -32,12 +32,10 @@ import {
   elevationAudit,
   elevationRequests,
   normalizeSignerGroupEntries,
-  PAM_RULE_NEGATE_KEYS,
   pamOrgConfig,
   pamRules,
   pamSignerGroups,
   type SignerGroupEntry,
-  type StoredSignerEntry,
   sites,
   softwarePolicies,
   users,
@@ -49,12 +47,27 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
 import { expireSupersededMobileApprovals } from '../services/pamMobileApprovals';
+import { normalizePamDenialReason } from '../services/pamDenialReason';
 import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
+import { describePamRuleTierDrift } from '../services/pamRuleTierDrift';
 import {
-  describePamRuleTierDrift,
-  PAM_RULE_TIER_UNREACHABLE_CODE,
-} from '../services/pamRuleTierDrift';
+  cleanupPamRuleActuations,
+  PAM_ACTIVE_ELEVATION_STATUSES,
+  pamRuleInsertValues,
+  pamRuleUpdateSet,
+  tierDriftResponse,
+} from '../services/pamPolicyAdmin';
+import {
+  createRuleSchema,
+  createSignerGroupSchema,
+  MAX_APPROVAL_DURATION_MINUTES,
+  ruleCriteriaValidators,
+  updateConfigSchema,
+  updateRuleSchema,
+  updateSignerGroupSchema,
+  validateRuleShape,
+} from '../services/pamPolicySchemas';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -70,6 +83,8 @@ import {
   requestPamCleanup,
   type PamActuationRef,
 } from '../services/pamActuationLifecycle';
+import { enqueuePamRequestNotify } from '../services/pamRequestNotify';
+import { resolvePamTechnicianName } from '../services/pamTechnicianName';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
@@ -111,6 +126,10 @@ const requirePamApprove = requirePermission(
   PERMISSIONS.PAM_APPROVE.resource,
   PERMISSIONS.PAM_APPROVE.action,
 );
+const requirePamExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
 const requirePamManagePolicy = requirePermission(
   PERMISSIONS.PAM_MANAGE_POLICY.resource,
   PERMISSIONS.PAM_MANAGE_POLICY.action,
@@ -119,7 +138,6 @@ const requirePamManagePolicy = requirePermission(
 // Bounds for approval windows. Default matches ingest's auto-approval
 // default in routes/agents/elevationRequests.ts.
 const DEFAULT_APPROVAL_DURATION_MINUTES = 15;
-const MAX_APPROVAL_DURATION_MINUTES = 24 * 60;
 
 // Bounds for the rule preview endpoint.
 const PREVIEW_MAX_WINDOW_DAYS = 90;
@@ -127,33 +145,8 @@ const PREVIEW_DEFAULT_WINDOW_DAYS = 30;
 const PREVIEW_SCAN_CAP = 5000; // rows pulled into JS — totalScanned/truncated keep this honest
 const PREVIEW_SAMPLE_CAP = 10;
 
-const ACTIVE_STATUSES = ['approved', 'auto_approved', 'actuating'] as const;
+const ACTIVE_STATUSES = PAM_ACTIVE_ELEVATION_STATUSES;
 
-type PamRouteTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-async function cleanupPamRuleActuations(
-  tx: PamRouteTx,
-  input: { ruleId: string; orgId: string },
-): Promise<number> {
-  const result = await tx.execute<Record<string, unknown> & { id: string }>(sql`
-    SELECT id
-    FROM elevation_requests
-    WHERE org_id = ${input.orgId}
-      AND status IN ('approved', 'auto_approved', 'actuating')
-      AND metadata ->> 'pam_rule_id' = ${input.ruleId}
-    ORDER BY id
-    FOR UPDATE
-  `);
-  const rows = ((result as { rows?: Array<{ id: string }> }).rows ?? result) as Array<{ id: string }>;
-  for (const row of rows) {
-    await tx
-      .update(elevationRequests)
-      .set({ status: 'revoked', revokedAt: new Date(), revokedReason: 'PAM rule removed', updatedAt: new Date() })
-      .where(and(eq(elevationRequests.id, row.id), inArray(elevationRequests.status, [...ACTIVE_STATUSES])));
-    await requestPamCleanup(tx, { elevationRequestId: row.id, cause: 'policy_removed' });
-  }
-  return rows.length;
-}
 
 // Aliased user joins for the three decider columns (left joins — all three
 // ids are nullable). Reads run under the request's RLS context: a decider the
@@ -277,7 +270,7 @@ function getPagination(query: { page?: string; limit?: string }) {
 
 const listQuerySchema = z.object({
   status: z
-    .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating'])
+    .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn'])
     .optional(),
   flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
   deviceId: z.string().guid().optional(),
@@ -539,6 +532,28 @@ pamRoutes.post(
     const approve = body.decision === 'approve';
     const durationMinutes = body.durationMinutes ?? DEFAULT_APPROVAL_DURATION_MINUTES;
 
+    // Resolve the execution grant before holding a transaction: permission
+    // resolution can borrow its own connection. Denials and other flows keep
+    // their dedicated PAM permission semantics.
+    let uacExecutionAuthorized = false;
+    if (approve) {
+      const [candidate] = await db.select({
+        orgId: elevationRequests.orgId,
+        siteId: elevationRequests.siteId,
+        flowType: elevationRequests.flowType,
+      }).from(elevationRequests).where(eq(elevationRequests.id, id)).limit(1);
+      if (!candidate || !auth.canAccessOrg(candidate.orgId)) {
+        return c.json({ error: 'Elevation request not found' }, 404);
+      }
+      if (perms && candidate.siteId && !canAccessSite(perms, candidate.siteId)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      if (candidate.flowType === 'uac_intercept') {
+        await requirePamExecute(c, async () => {});
+        uacExecutionAuthorized = true;
+      }
+    }
+
     // L4 (critical) re-auth: verify the fresh password BEFORE opening the
     // transaction (it does its own DB/Redis work; we don't want it holding the
     // txn open). A bad/rate-limited password short-circuits with the helper's
@@ -605,6 +620,22 @@ pamRoutes.post(
           return { kind: 'forbidden' as const };
         }
 
+        if (approve && row.flowType === 'uac_intercept') {
+          // Approval creates a v2 apply intent in this transaction. Require the
+          // same execution grant as direct device actuation before granting it.
+          if (!uacExecutionAuthorized) return { kind: 'forbidden' as const };
+          const [device] = await tx.select({
+            orgId: devices.orgId,
+            siteId: devices.siteId,
+          }).from(devices).where(eq(devices.id, row.deviceId)).limit(1);
+          if (!device || device.orgId !== row.orgId) return { kind: 'not_found' as const };
+          const executePerms = c.get('permissions') as UserPermissions | undefined;
+          // Use the current device site: it may have moved since the request.
+          if (executePerms && !canAccessSite(executePerms, device.siteId ?? '')) {
+            return { kind: 'forbidden' as const };
+          }
+        }
+
         // Separation-of-duties (maker/checker): the subject who requested the
         // elevation cannot APPROVE their own request. tech_jit_admin sets
         // subjectUserId to the requesting technician, so without this they could
@@ -661,7 +692,7 @@ pamRoutes.post(
               : {
                   status: 'denied',
                   deniedByUserId: auth.user.id,
-                  denialReason: body.reason ?? null,
+                  denialReason: normalizePamDenialReason(body.reason),
                   updatedAt: now,
                   decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                   decidedVia: assurance.decidedVia,
@@ -672,7 +703,16 @@ pamRoutes.post(
           .returning({ id: elevationRequests.id, status: elevationRequests.status });
 
         if (updated.length === 0) {
-          return { kind: 'conflict' as const, currentStatus: row.status };
+          // `row.status` is the pre-CAS read: when a concurrent withdraw,
+          // decide or expiry won between that read and the CAS it still says
+          // 'pending'. Re-read so the conflict names the status that won
+          // (#8971: the web console tells the approver the user withdrew).
+          const [current] = await tx
+            .select({ status: elevationRequests.status })
+            .from(elevationRequests)
+            .where(eq(elevationRequests.id, id))
+            .limit(1);
+          return { kind: 'conflict' as const, currentStatus: current?.status ?? row.status };
         }
 
         await tx.insert(elevationAudit).values({
@@ -723,6 +763,15 @@ pamRoutes.post(
           }
         }
 
+        // #8928: tell the end user who handed this request to IT that it was
+        // denied. Savepointed and best-effort: it can never roll back the deny.
+        // The raw body reason, not the stored placeholder, so a reason-less
+        // deny shows no "Reason:" line.
+        if (!approve && row.flowType === 'uac_intercept') {
+          await enqueuePamRequestNotify(tx, { id: row.id, deviceId: row.deviceId }, 'denied', body.reason,
+            () => resolvePamTechnicianName(row.deviceId, { name: auth.user.name ?? null, userId: auth.user.id }));
+        }
+
         const newStatus = actuation.refusalReason ? 'denied' : updated[0]!.status;
         return { kind: 'ok' as const, row, newStatus, actuation };
       });
@@ -771,6 +820,7 @@ pamRoutes.post(
         {
           success: false,
           error: `Request is not pending (current status: ${result.currentStatus})`,
+          currentStatus: result.currentStatus,
         },
         409,
       );
@@ -835,9 +885,9 @@ pamRoutes.post(
       },
     );
 
-    // NOTE: actuation of approved uac_intercept rows stays on the existing
-    // admin actuate route (#960) until #1150 makes the agent the credential
-    // authority — approving here does not enqueue an agent command.
+    // The transactional decision intent/outbox dispatches pam_apply_v2 via
+    // pamActuationWorker. The client must not also call the legacy actuation
+    // route: that would create a second execution path for the same approval.
     return c.json({
       success: true,
       id: result.row.id,
@@ -984,165 +1034,8 @@ pamRoutes.post(
 // Rules CRUD
 // ============================================================
 
-const ruleCriteriaFields = [
-  'matchSigner',
-  'matchSignerThumbprint',
-  'matchSignerGroupId',
-  'matchHash',
-  'matchPathGlob',
-  'matchParentImage',
-  'matchCommandLine',
-  'matchUser',
-  'matchAdGroup',
-] as const;
 
-const timeWindowSchema = z.object({
-  start: z.string().regex(/^\d{1,2}:\d{2}$/),
-  end: z.string().regex(/^\d{1,2}:\d{2}$/),
-  days: z.array(z.number().int().min(0).max(6)).max(7).optional(),
-  timezone: z.string().max(64).optional(),
-});
 
-// Criteria fields shared verbatim between ruleBaseSchema and previewRuleSchema.
-// Spread into both z.object calls so any validator change applies to both.
-const ruleCriteriaValidators = {
-  siteId: z.string().guid().nullable().optional(),
-  matchSigner: z.string().min(1).max(255).nullable().optional(),
-  matchSignerThumbprint: z
-    .string()
-    .trim()
-    .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex thumbprint')
-    .nullable()
-    .optional(),
-  matchSignerGroupId: z.string().guid().nullable().optional(),
-  matchHash: z
-    .string()
-    .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex digest')
-    .nullable()
-    .optional(),
-  matchPathGlob: z.string().min(1).max(4096).nullable().optional(),
-  matchParentImage: z.string().min(1).max(4096).nullable().optional(),
-  matchCommandLine: z.string().min(1).max(4096).nullable().optional(),
-  matchUser: z.string().min(1).max(255).nullable().optional(),
-  matchAdGroup: z.string().min(1).max(255).nullable().optional(),
-  matchToolName: z.string().min(1).max(100).nullable().optional(),
-  matchRiskTier: z.number().int().min(0).max(4).nullable().optional(),
-  matchNegate: z.array(z.enum(PAM_RULE_NEGATE_KEYS)).max(PAM_RULE_NEGATE_KEYS.length).nullable().optional(),
-  timeWindow: timeWindowSchema.nullable().optional(),
-};
-
-const ruleBaseSchema = z.object({
-  orgId: z.string().guid().optional(),
-  ...ruleCriteriaValidators,
-  name: z.string().min(1).max(255),
-  description: z.string().max(2000).nullable().optional(),
-  enabled: z.boolean().optional(),
-  priority: z.number().int().min(0).max(100000).optional(),
-  verdict: z.enum(['auto_approve', 'auto_deny', 'require_approval', 'ignore']),
-  approvalDurationMinutes: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_APPROVAL_DURATION_MINUTES)
-    .nullable()
-    .optional(),
-});
-
-type RuleCriteriaShape = {
-  matchSigner?: string | null;
-  matchSignerThumbprint?: string | null;
-  matchSignerGroupId?: string | null;
-  matchHash?: string | null;
-  matchPathGlob?: string | null;
-  matchParentImage?: string | null;
-  matchCommandLine?: string | null;
-  matchUser?: string | null;
-  matchAdGroup?: string | null;
-  matchToolName?: string | null;
-  matchRiskTier?: number | null;
-  verdict?: 'auto_approve' | 'auto_deny' | 'require_approval' | 'ignore';
-};
-
-// A rule must carry at least one identifying criterion. A rule scoped only
-// by time window (or nothing) must never exist — it would match every
-// elevation in the org (catastrophic for verdict=auto_approve).
-function hasAnyCriterion(rule: RuleCriteriaShape): boolean {
-  return ruleCriteriaFields.some((f) => Boolean(rule[f])) || hasToolActionCriteria(rule);
-}
-
-// Binary-identifying criteria — what makes a rule executable-shaped (user/
-// group/time only narrow; they don't identify a binary).
-const executableCriteriaFields = [
-  'matchSigner',
-  'matchSignerThumbprint',
-  'matchSignerGroupId',
-  'matchHash',
-  'matchPathGlob',
-  'matchParentImage',
-  'matchCommandLine',
-] as const;
-
-function hasToolActionCriteria(rule: RuleCriteriaShape): boolean {
-  return Boolean(rule.matchToolName) || rule.matchRiskTier != null;
-}
-
-function hasExecutableShapeCriteria(rule: RuleCriteriaShape): boolean {
-  return executableCriteriaFields.some((f) => Boolean(rule[f]));
-}
-
-/**
- * A rule is either executable-shaped or tool-action-shaped (Phase 1 helper
- * governance) — mixing the two is rejected because no single candidate
- * carries both kinds of field, so a mixed rule could never match anything.
- * Returns an error string, or null when the rule shape is valid.
- */
-function validateRuleShape(rule: RuleCriteriaShape): string | null {
-  if (!hasAnyCriterion(rule)) {
-    return 'At least one match criterion (signer/hash/path/parent/user/group/tool/tier) is required';
-  }
-  if (hasExecutableShapeCriteria(rule) && hasToolActionCriteria(rule)) {
-    return 'A rule cannot mix executable criteria with tool-action criteria';
-  }
-  if ((rule.matchSigner || rule.matchSignerThumbprint) && rule.matchSignerGroupId) {
-    return 'A rule cannot combine matchSignerGroupId with matchSigner/matchSignerThumbprint — use a group or a direct signer match, not both';
-  }
-  if (hasToolActionCriteria(rule) && rule.verdict === 'ignore') {
-    return "verdict 'ignore' is not valid for tool-action rules — a tool action must be decided";
-  }
-  return null;
-}
-
-/**
- * #3128: reject a tool-action rule pinned to a risk tier its tool selector can
- * no longer resolve to. Tool tiers are static code that ships with the API, so
- * a re-classification (#3105 moved three read-only execute_command
- * commandTypes from Tier 3 to Tier 2) can leave a stored rule permanently
- * unmatchable — and the engine's exact-equality match makes that silent.
- *
- * Deliberately NOT folded into validateRuleShape: that one feeds a Zod
- * superRefine on create, which would emit the generic validation-failure body.
- * Calling this from both handlers gives create and update the SAME
- * machine-readable 400, and keeps the check off the preview endpoint — a
- * dry-run must stay able to demonstrate that a stale rule matches nothing.
- *
- * Fails OPEN for an unrecognised tool name (see describePamRuleTierDrift).
- */
-function tierDriftResponse(
-  rule: RuleCriteriaShape & { matchNegate?: readonly string[] | null },
-): { error: string; code: string; validTiers: number[] } | null {
-  const drift = describePamRuleTierDrift(rule);
-  if (!drift) return null;
-  return {
-    error: drift.message,
-    code: PAM_RULE_TIER_UNREACHABLE_CODE,
-    validTiers: drift.validTiers,
-  };
-}
-
-const createRuleSchema = ruleBaseSchema.superRefine((rule, ctx) => {
-  const err = validateRuleShape(rule);
-  if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, message: err });
-});
 
 // Preview schema: subset of criteria fields (no name/verdict/priority — those
 // are irrelevant to matching), plus windowDays/flowType overrides.
@@ -1227,32 +1120,7 @@ pamRoutes.post('/rules', requirePamManagePolicy, requireMfa(), zValidator('json'
 
   const [created] = await db
     .insert(pamRules)
-    .values({
-      orgId: resolvedOrg.orgId,
-      siteId: payload.siteId ?? null,
-      name: payload.name,
-      description: payload.description ?? null,
-      enabled: payload.enabled ?? true,
-      priority: payload.priority ?? 100,
-      matchSigner: payload.matchSigner ?? null,
-      matchSignerThumbprint: payload.matchSignerThumbprint
-        ? payload.matchSignerThumbprint.toLowerCase()
-        : null,
-      matchSignerGroupId: payload.matchSignerGroupId ?? null,
-      matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null,
-      matchPathGlob: payload.matchPathGlob ?? null,
-      matchParentImage: payload.matchParentImage ?? null,
-      matchCommandLine: payload.matchCommandLine ?? null,
-      matchUser: payload.matchUser ?? null,
-      matchAdGroup: payload.matchAdGroup ?? null,
-      matchToolName: payload.matchToolName ?? null,
-      matchRiskTier: payload.matchRiskTier ?? null,
-      matchNegate: payload.matchNegate ?? null,
-      timeWindow: payload.timeWindow ?? null,
-      verdict: payload.verdict,
-      approvalDurationMinutes: payload.approvalDurationMinutes ?? null,
-      createdByUserId: auth.user.id,
-    })
+    .values(pamRuleInsertValues(payload, resolvedOrg.orgId, auth.user.id))
     .returning();
 
   if (!created) {
@@ -1385,6 +1253,7 @@ pamRoutes.post(
       expired: 0,
       revoked: 0,
       actuating: 0,
+      withdrawn: 0,
     };
     const sample: Array<Record<string, unknown>> = [];
 
@@ -1430,16 +1299,6 @@ pamRoutes.post(
   },
 );
 
-const updateRuleSchema = ruleBaseSchema
-  .partial()
-  .omit({ orgId: true })
-  .extend({
-    // §6B re-approval: restores `verdict` from `suspended_verdict` (set by
-    // the 2026-10-15-150200 migration's auto_approve quarantine) and clears
-    // it. A body combining `reapprove: true` with an explicit `verdict` is
-    // ambiguous intent and is rejected below rather than guessing which wins.
-    reapprove: z.boolean().optional(),
-  });
 
 pamRoutes.patch('/rules/:id', requirePamManagePolicy, requireMfa(), zValidator('json', updateRuleSchema), async (c) => {
   const auth = c.get('auth');
@@ -1507,65 +1366,7 @@ pamRoutes.patch('/rules/:id', requirePamManagePolicy, requireMfa(), zValidator('
   }
 
   const [updated] = await db.transaction(async (tx) => {
-    const result = await tx.update(pamRules).set({
-      ...(payload.siteId !== undefined ? { siteId: payload.siteId } : {}),
-      ...(payload.name !== undefined ? { name: payload.name } : {}),
-      ...(payload.description !== undefined ? { description: payload.description } : {}),
-      ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
-      ...(payload.priority !== undefined ? { priority: payload.priority } : {}),
-      ...(payload.matchSigner !== undefined ? { matchSigner: payload.matchSigner } : {}),
-      ...(payload.matchSignerThumbprint !== undefined
-        ? {
-            matchSignerThumbprint: payload.matchSignerThumbprint
-              ? payload.matchSignerThumbprint.toLowerCase()
-              : null,
-          }
-        : {}),
-      ...(payload.matchSignerGroupId !== undefined
-        ? { matchSignerGroupId: payload.matchSignerGroupId }
-        : {}),
-      ...(payload.matchHash !== undefined
-        ? { matchHash: payload.matchHash ? payload.matchHash.toLowerCase() : null }
-        : {}),
-      ...(payload.matchPathGlob !== undefined ? { matchPathGlob: payload.matchPathGlob } : {}),
-      ...(payload.matchParentImage !== undefined
-        ? { matchParentImage: payload.matchParentImage }
-        : {}),
-      ...(payload.matchCommandLine !== undefined
-        ? { matchCommandLine: payload.matchCommandLine }
-        : {}),
-      ...(payload.matchUser !== undefined ? { matchUser: payload.matchUser } : {}),
-      ...(payload.matchAdGroup !== undefined ? { matchAdGroup: payload.matchAdGroup } : {}),
-      ...(payload.matchToolName !== undefined ? { matchToolName: payload.matchToolName } : {}),
-      ...(payload.matchRiskTier !== undefined ? { matchRiskTier: payload.matchRiskTier } : {}),
-      ...(payload.matchNegate !== undefined ? { matchNegate: payload.matchNegate } : {}),
-      ...(payload.timeWindow !== undefined ? { timeWindow: payload.timeWindow } : {}),
-      ...(payload.verdict !== undefined ? { verdict: payload.verdict } : {}),
-      // An explicit verdict edit supersedes any pending quarantine: without
-      // this, a later plain Re-approve click (payload.reapprove) would
-      // restore the STALE pre-suspension verdict from suspendedVerdict and
-      // silently overwrite the admin's fresh edit. payload.verdict and
-      // payload.reapprove are mutually exclusive (rejected together above),
-      // so this never fights the reapprove branch below.
-      ...(payload.verdict !== undefined && existing.suspendedVerdict !== null
-        ? { suspendedVerdict: null }
-        : {}),
-      ...(payload.approvalDurationMinutes !== undefined
-        ? { approvalDurationMinutes: payload.approvalDurationMinutes }
-        : {}),
-      // §6B re-approval: restore the pre-suspension verdict and clear the
-      // quarantine marker, stamped with who/when. Mutually exclusive with the
-      // `payload.verdict` branch above (rejected together earlier).
-      ...(payload.reapprove
-        ? {
-            verdict: existing.suspendedVerdict!,
-            suspendedVerdict: null,
-            reapprovedAt: new Date(),
-            reapprovedByUserId: auth.user.id,
-          }
-        : {}),
-      updatedAt: new Date(),
-    })
+    const result = await tx.update(pamRules).set(pamRuleUpdateSet(payload, existing, auth.user.id))
       .where(eq(pamRules.id, id!))
       .returning();
     if (payload.enabled === false && existing.enabled) {
@@ -1631,10 +1432,6 @@ pamRoutes.delete('/rules/:id', requirePamManagePolicy, requireMfa(), async (c) =
 // When an elevation matches no software policy and no PAM rule, the org's
 // configured default applies. Absent a row, the default is require_approval
 // (the historical behavior — the request waits for a human).
-const updateConfigSchema = z.object({
-  orgId: z.string().guid().optional(),
-  defaultUnmatchedVerdict: z.enum(['require_approval', 'auto_deny']),
-});
 
 pamRoutes.get('/config', requirePamRead, async (c) => {
   const auth = c.get('auth');
@@ -1714,69 +1511,6 @@ pamRoutes.put(
 // ============================================================
 // A named, org-scoped set of signer (subject CN) patterns referenced from
 // rules via matchSignerGroupId. Manage vendors once, reference everywhere.
-// A signer-group entry is EITHER a bare subject-CN string (legacy / weak tier,
-// stored as-is for backward-compatibility) OR an object pinning a SHA-256
-// thumbprint (strong tier) and/or a CN (#1776). At least one field is required
-// on the object form. Stored shape stays read-compatible with the legacy
-// string[] — see normalizeSignerGroupEntries / StoredSignerEntry.
-const signerEntryObjectSchema = z
-  .object({
-    subjectCn: z.string().trim().min(1).max(255).optional(),
-    thumbprint: z
-      .string()
-      .trim()
-      .regex(/^[0-9a-fA-F]{64}$/, 'must be a sha256 hex thumbprint')
-      .optional(),
-  })
-  .refine((e) => Boolean(e.subjectCn) || Boolean(e.thumbprint), {
-    message: 'each signer entry needs a subjectCn or a thumbprint',
-  });
-
-const signerListSchema = z
-  .array(z.union([z.string().trim().min(1).max(255), signerEntryObjectSchema]))
-  .max(500)
-  // Normalize to the stored form (bare CN strings stay strings; pins become
-  // objects with a lowercased thumbprint) and de-duplicate, preserving the
-  // first spelling.
-  .transform((arr) => {
-    const seen = new Set<string>();
-    const out: StoredSignerEntry[] = [];
-    for (const el of arr) {
-      if (typeof el === 'string') {
-        const cn = el.trim();
-        const key = `cn:${cn.toLowerCase()}`;
-        if (cn && !seen.has(key)) {
-          seen.add(key);
-          out.push(cn);
-        }
-        continue;
-      }
-      const cn = el.subjectCn?.trim();
-      const thumbprint = el.thumbprint?.trim().toLowerCase();
-      const key = `obj:${cn?.toLowerCase() ?? ''}|${thumbprint ?? ''}`;
-      if ((cn || thumbprint) && !seen.has(key)) {
-        seen.add(key);
-        const entry: { subjectCn?: string; thumbprint?: string } = {};
-        if (cn) entry.subjectCn = cn;
-        if (thumbprint) entry.thumbprint = thumbprint;
-        out.push(entry);
-      }
-    }
-    return out;
-  });
-
-const createSignerGroupSchema = z.object({
-  orgId: z.string().guid().optional(),
-  name: z.string().trim().min(1).max(255),
-  description: z.string().max(2000).nullable().optional(),
-  signers: signerListSchema.optional(),
-});
-
-const updateSignerGroupSchema = z.object({
-  name: z.string().trim().min(1).max(255).optional(),
-  description: z.string().max(2000).nullable().optional(),
-  signers: signerListSchema.optional(),
-});
 
 pamRoutes.get('/signer-groups', requirePamRead, async (c) => {
   const auth = c.get('auth');

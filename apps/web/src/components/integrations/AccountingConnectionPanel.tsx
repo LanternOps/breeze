@@ -22,6 +22,7 @@ import AccountingTenantPicker from "./AccountingTenantPicker";
 import AccountingSettingsStep from "./AccountingSettingsStep";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 import {
   ACCOUNTING_PROVIDER_NAMES,
   ACCOUNTING_PROVIDER_PRODUCT_NAMES,
@@ -1020,20 +1021,12 @@ function Header({ provider }: Props) {
   const providerName = ACCOUNTING_PROVIDER_NAMES[provider];
   const productName = ACCOUNTING_PROVIDER_PRODUCT_NAMES[provider];
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <span className="text-sm font-bold">{PROVIDER_MONOGRAMS[provider]}</span>
-      </div>
-      <div>
-        <h1 className="text-2xl font-semibold">
-          {t("accountingConnection.heading", { provider: productName })}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "accountingConnection.syncCustomersInvoicesAndPaymentsToYourBooks", { provider: providerName },
-          )}
-        </p>
-      </div>
-    </div>
+    <IntegrationPanelHeader
+      icon={<span className="text-xs font-bold">{PROVIDER_MONOGRAMS[provider]}</span>}
+      title={t("accountingConnection.heading", { provider: productName })}
+      description={t(
+        "accountingConnection.syncCustomersInvoicesAndPaymentsToYourBooks", { provider: providerName },
+      )}
+    />
   );
 }

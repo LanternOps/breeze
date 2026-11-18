@@ -335,11 +335,12 @@ describe('migration windows (real Postgres, as breeze_app)', () => {
     })));
     expect(result!.window.counts).toEqual({
       orgs: [
-        { orgId: fx.orgA.id, ticketsImported: 1, commentsImported: 2 },
-        { orgId: fx.orgB.id, ticketsImported: 0, commentsImported: 0 },
+        { orgId: fx.orgA.id, ticketsImported: 1, commentsImported: 2, attachmentsImported: 0 },
+        { orgId: fx.orgB.id, ticketsImported: 0, commentsImported: 0, attachmentsImported: 0 },
       ].sort((a, b) => a.orgId.localeCompare(b.orgId)),
       ticketsImported: 1,
       commentsImported: 2,
+      attachmentsImported: 0,
     });
     const [row] = await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.id, window.id));
     expect(row).toMatchObject({ status: 'closed', closedReason: 'closed_by_admin', closedBy: fx.owner.id, summaryPublishedAt: null });
@@ -406,7 +407,7 @@ describe('migration windows (real Postgres, as breeze_app)', () => {
       const events = published.filter((e) => e.payload.windowId === id);
       expect(events.map((e) => e.orgId).sort()).toEqual([fx.orgA.id, fx.orgB.id].sort());
       expect(events.every((e) => e.type === 'migration.window_closed' && e.eventId === `${id}:${e.orgId}`)).toBe(true);
-      expect(events[0]!.payload).toMatchObject({ partnerId: fx.partner.id, sourceLabel: 'zammad', ticketsImported: 0, commentsImported: 0 });
+      expect(events[0]!.payload).toMatchObject({ partnerId: fx.partner.id, sourceLabel: 'zammad', ticketsImported: 0, commentsImported: 0, attachmentsImported: 0 });
     }
     expect(published.some((e) => e.payload.windowId === windows.healthy.id)).toBe(false);
 

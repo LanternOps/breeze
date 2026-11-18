@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import type { db } from '../../db';
 import { contactRoles } from '../../db/schema/contactRoles';
 import { contacts } from '../../db/schema/contacts';
@@ -19,6 +19,7 @@ export interface ContactResponsibilityInput {
 }
 
 export class ResponsibilityValidationError extends Error {
+  readonly status = 400;
   constructor(
     message: string,
     readonly code:
@@ -80,32 +81,132 @@ async function replaceCanonicalSet(
 
 /**
  * Compatibility adapter for legacy writers that still accept only
- * `contacts.site_id` + role names. Their input is translated into the canonical
- * whole assignment set; `contacts.roles[]` is then re-projected from that set.
+ * `contacts.site_id` + role names (spec §7.4, §8.3, §9). It is NOT an
+ * authoritative writer: it applies a *delta* against the assignments already
+ * held in `contact_roles`, and leaves everything it has no authority over alone.
  *
- * The scope is mechanically derived from the resulting pin exactly as the
- * approved migration/backfill contract requires:
- *   - site_id NULL => Organization
- *   - site_id SET  => that exact Site
+ *   - role added    => one assignment at the scope derived from the resulting
+ *                      pin (site_id NULL => Organization, SET => that Site);
+ *   - role removed  => every assignment of that role, at any scope, is removed
+ *                      (the only way to keep the `roles[]` projection true);
+ *   - role kept     => stays, but when the contact is pinned to a Site its
+ *                      Organization/Site-scoped assignments are re-scoped to
+ *                      that Site (§7.4 re-pin): a legacy pin must never leave
+ *                      an organization-wide authorizer behind;
+ *   - Device Group  => never touched by a re-pin; a legacy writer has no
+ *                      authority over them (§8.4).
+ *
+ * Un-pinning (site_id back to NULL) is the inverse derivation (§7.4): the
+ * kept roles held at the previously pinned Site (`previousSiteId`) move back to
+ * Organization scope. Rows at other Sites and Device Group rows are never touched.
+ *
+ * `contacts.roles[]` is then re-projected from the resulting canonical set.
  */
-export async function reconcileLegacyContactResponsibilities(
+export async function syncLegacyContactRoles(
   exec: ContactExecutor,
   input: {
     contactId: string;
     orgId: string;
     siteId: string | null;
+    /** The pin before this write; only an un-pin reads it. */
+    previousSiteId?: string | null;
     roles: readonly ContactRole[] | readonly string[] | null | undefined;
   },
 ): Promise<void> {
-  const roles = [...new Set(input.roles ?? [])] as ContactRole[];
+  const desired = new Set<string>(input.roles ?? []);
+  const owned = and(eq(contactRoles.contactId, input.contactId), eq(contactRoles.orgId, input.orgId));
+
+  const existing = await exec
+    .select({
+      role: contactRoles.role,
+      siteId: contactRoles.siteId,
+      deviceGroupId: contactRoles.deviceGroupId,
+      isPrimary: contactRoles.isPrimary,
+    })
+    .from(contactRoles)
+    .where(owned);
+  const held = new Set<string>(existing.map((row) => row.role));
+
+  const removed = [...held].filter((role) => !desired.has(role));
+  // Not filtered to CONTACT_ROLES: an unknown name must reach the role CHECK and
+  // be refused, exactly as the replace-the-set adapter did, not dropped silently.
+  const added = [
+    ...CONTACT_ROLES.filter((role) => desired.has(role) && !held.has(role)),
+    ...[...desired].filter((role) => !held.has(role) && !(CONTACT_ROLES as readonly string[]).includes(role)),
+  ];
+
+  if (removed.length > 0) {
+    await exec.delete(contactRoles).where(and(owned, inArray(contactRoles.role, removed)));
+  }
+
   const scope: ResponsibilityScopeInput = input.siteId === null
     ? { type: 'organization' }
     : { type: 'site', siteId: input.siteId };
-  await replaceCanonicalSet(exec, {
-    contactId: input.contactId,
-    orgId: input.orgId,
-    responsibilities: roles.map((role) => ({ role, scope })),
-  });
+  const inserts = added.map((role) => ({ role, isPrimary: false }));
+
+  if (input.siteId !== null) {
+    // Kept roles with a legacy-derived (Organization or other-Site) row move to
+    // the pinned Site; a row already at the pinned Site is left as it is.
+    const pinned = input.siteId;
+    const atPinnedSite = new Set(existing.filter((row) => row.siteId === pinned).map((row) => row.role));
+    const stale = existing.filter((row) =>
+      desired.has(row.role) && row.deviceGroupId === null && row.siteId !== pinned);
+    const staleRoles = [...new Set(stale.map((row) => row.role))];
+    if (staleRoles.length > 0) {
+      await exec.delete(contactRoles).where(and(
+        owned,
+        inArray(contactRoles.role, staleRoles),
+        isNull(contactRoles.deviceGroupId),
+        or(isNull(contactRoles.siteId), ne(contactRoles.siteId, pinned)),
+      ));
+      for (const role of staleRoles) {
+        if (atPinnedSite.has(role)) continue;
+        inserts.push({ role, isPrimary: stale.some((row) => row.role === role && row.isPrimary) });
+      }
+    }
+  }
+
+  if (input.siteId === null && input.previousSiteId) {
+    // Un-pin: kept roles the pin scoped to the previous Site go back to
+    // Organization. A role already held at Organization is deduplicated (the
+    // Site row is dropped) rather than violating the unique scope index.
+    const previous = input.previousSiteId;
+    const atPreviousSite = existing.filter((row) =>
+      desired.has(row.role) && row.deviceGroupId === null && row.siteId === previous);
+    const widenRoles = [...new Set(atPreviousSite.map((row) => row.role))];
+    if (widenRoles.length > 0) {
+      await exec.delete(contactRoles).where(and(
+        owned,
+        inArray(contactRoles.role, widenRoles),
+        isNull(contactRoles.deviceGroupId),
+        eq(contactRoles.siteId, previous),
+      ));
+      const atOrganization = new Set(existing
+        .filter((row) => row.siteId === null && row.deviceGroupId === null)
+        .map((row) => row.role));
+      for (const role of widenRoles) {
+        if (atOrganization.has(role)) continue;
+        inserts.push({ role, isPrimary: atPreviousSite.some((row) => row.role === role && row.isPrimary) });
+      }
+    }
+  }
+
+  if (inserts.length > 0) {
+    await exec.insert(contactRoles).values(inserts.map(({ role, isPrimary }) => ({
+      contactId: input.contactId,
+      orgId: input.orgId,
+      role,
+      isPrimary,
+      ...scopeColumns(scope),
+    })));
+  }
+
+  // kept ∪ added == the desired roles inside the vocabulary.
+  const resulting = CONTACT_ROLES.filter((role) => desired.has(role));
+  await exec
+    .update(contacts)
+    .set({ roles: resulting, updatedAt: new Date() })
+    .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)));
 }
 
 /** Replace a contact's explicit canonical responsibility set atomically. */

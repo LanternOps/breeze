@@ -119,8 +119,10 @@ describe('integration connection authority with real bearer authentication and P
     expect(dnsResponse.status, await dnsResponse.clone().text()).toBe(201);
     const dns = await dnsResponse.json();
     expect(effects.sync).toHaveBeenCalledExactlyOnceWith(dns.id);
-    expect((await f.request('DELETE', `/dns-security/integrations/${dns.id}`)).status).toBe(200);
-    expect(await getTestDb().select().from(dnsFilterIntegrations).where(eq(dnsFilterIntegrations.id, dns.id))).toEqual([]);
+    expect((await f.request('DELETE', `/dns-security/integrations/${dns.id}`)).status).toBe(202);
+    // #10019 — the request only stops and marks the row; a background job removes it.
+    const [deleting] = await getTestDb().select().from(dnsFilterIntegrations).where(eq(dnsFilterIntegrations.id, dns.id));
+    expect(deleting).toMatchObject({ isActive: false, lastSyncStatus: 'deleting' });
     expect(effects.audit).toHaveBeenCalledTimes(7);
   });
 

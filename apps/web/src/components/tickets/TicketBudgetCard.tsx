@@ -7,11 +7,13 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { approvalFriendly, type ApprovalSummary, type ApprovalTrigger } from '../../lib/ticketApproval';
 import { formatMinutes } from '../../lib/timeFormat';
 import { formatMoney } from '../billing/shared/format';
+import { laborHours } from '@breeze/shared';
 
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/;
 const MAX_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
-const hoursText = (minutes: number | null) => (minutes == null ? '' : String(+(minutes / 60).toFixed(2)));
+// Hours to 2 dp via the shared labour rule (#9561), trailing zeros dropped ('1.5', not '1.50').
+const hoursText = (minutes: number | null) => (minutes == null ? '' : String(Number(laborHours(minutes))));
 
 interface BarProps {
   testId: string;
@@ -36,19 +38,19 @@ function UsageBar({ testId, label, ceiling, consumed, held, usedText, heldText }
         data-testid={testId}
       >
         <div
-          className={over ? 'bg-red-500' : 'bg-primary'}
+          className={over ? 'bg-destructive' : 'bg-primary'}
           style={{ width: `${(consumed * 100) / denom}%` }}
           data-testid={`${testId}-consumed`}
         />
         <div
-          className="bg-amber-400"
+          className="bg-warning"
           style={{ width: `${(held * 100) / denom}%` }}
           data-testid={`${testId}-held`}
         />
       </div>
-      <p className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-muted-foreground">
+      <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
         <span>{usedText}</span>
-        {held > 0 && <span className="text-amber-700">{heldText}</span>}
+        {held > 0 && <span className="text-warning-ink">{heldText}</span>}
       </p>
     </div>
   );
@@ -59,12 +61,14 @@ interface Props {
   summary: ApprovalSummary | null;
   /** Called after any mutation so the host reloads the summary and the time list. */
   onChanged: () => void;
+  /** #10073: a merged tombstone — the budget PATCH and the request POST 409. */
+  readOnly?: boolean;
 }
 
-export default function TicketBudgetCard({ ticketId, summary, onChanged }: Props) {
+export default function TicketBudgetCard({ ticketId, summary, onChanged, readOnly = false }: Props) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
-  const canWrite = can('tickets', 'write');
+  const canWrite = can('tickets', 'write') && !readOnly;
 
   const initialHours = hoursText(summary?.budget.minutes ?? null);
   const initialAmount = summary?.budget.amount ?? '';
@@ -259,7 +263,7 @@ export default function TicketBudgetCard({ ticketId, summary, onChanged }: Props
           <p className="text-xs text-muted-foreground" data-testid="ticket-budget-none">{t('ticketApproval.budget.noBudget')}</p>
         )}
         {summary.held.unpricedEntryCount > 0 && (
-          <p className="text-[10px] text-muted-foreground" data-testid="ticket-budget-unpriced">
+          <p className="text-xs text-muted-foreground" data-testid="ticket-budget-unpriced">
             {t('ticketApproval.budget.unpriced', { count: summary.held.unpricedEntryCount })}
           </p>
         )}

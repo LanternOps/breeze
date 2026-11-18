@@ -1,0 +1,22 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id}?$select=accountEnabled and PATCH /users/{id} (accountEnabled false)",
+  "_notes": "Caller-protected: the executor dispatches to the pinned object id (oid). Under the product-default caller-verification policy this effect is not planned at all and is done by hand.",
+  "toolName": "m365_disable_user",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "accountEnabled": false } }
+  },
+  "preUnsatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "accountEnabled": true } }
+  },
+  "writeOk": {
+    "write:m365.user.disable": { "ok": true, "result": { "success": true, "action": "m365.user.disable", "userId": "00000000-0000-4000-8000-0000000a0001" } }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "accountEnabled": false } }
+  },
+  "writeRefusal": {
+    "write:m365.user.disable": { "ok": false, "code": "consent_upgrade_required", "message": "Microsoft 365 needs to be re-consented before Breeze can disable accounts." }
+  }
+}

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Activity, RefreshCw, Settings2 } from 'lucide-react';
+import { Activity, Maximize2, Minimize2, RefreshCw, Settings2 } from 'lucide-react';
 import type { GraphNode, PresenceVisitor, TopologyView } from '@breeze/shared';
 import { useHashState } from '../../lib/useHashState';
 import { ActionError, handleActionError } from '../../lib/runAction';
@@ -20,6 +20,7 @@ import { restoreTopologyRelationship } from './RelationshipExclusionAction';
 import TopologyCanvas from './TopologyCanvas';
 import TopologyList from './TopologyList';
 import TopologySiteRoster from './TopologySiteRoster';
+import TopologySiteNotes from './TopologySiteNotes';
 import TopologyInspector from './TopologyInspector';
 import TopologyDiagnosticsPanel from './TopologyDiagnosticsPanel';
 import TopologyConfiguration from './TopologyConfiguration';
@@ -46,8 +47,11 @@ const portalInto = (target: HTMLElement | undefined, node: ReactNode) => (target
 /**
  * `toolbarSlot`: the entry's own toolbar row, which already holds the site select. The toolbar renders
  * into it through a portal so the select keeps one stable place (and keyboard focus) across site changes.
+ * `onToggleMaximized`: the entry can fill the window with the map (TopologyEntry); without it there is no toggle.
  */
-export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings, toolbarSlot }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings; toolbarSlot?: HTMLElement }) {
+export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings, toolbarSlot, maximized = false, onToggleMaximized }: {
+  siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings; toolbarSlot?: HTMLElement; maximized?: boolean; onToggleMaximized?: () => void;
+}) {
   const { t } = useTranslation('topology');
   const [navigation, setNavigation] = useHashState<TopologyNavigation>({ siteId, view: 'overview', search: '' }, (hash) => {
     const value = parseTopologyHash(hash); return value && (!value.siteId || value.siteId === siteId) ? value : undefined;
@@ -68,6 +72,8 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   const [warning, setWarning] = useState<string>(), [announcement, setAnnouncement] = useState(''), [saving, setSaving] = useState(false), [conflict, setConflict] = useState(false);
   // The floating layout toolbar covers the map's top edge; Fit map keeps that strip clear.
   const layoutBar = useRef<HTMLDivElement>(null), [fitInsetTop, setFitInsetTop] = useState(0);
+  // The inspector beside the map stops at the map's bottom and scrolls inside (2026-10-25), so it never pushes the page past the fold.
+  const [mapHeight, setMapHeight] = useState<number>();
   useEffect(() => {
     const bar = layoutBar.current;
     if (!bar) return;
@@ -220,9 +226,21 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   } : undefined;
   const aiNotConfigured = settings.capabilities.ai?.reason === 'ai_not_configured';
   const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
+  const overview = view === 'overview';
+  const nodeLabel = (id: string | null) => render?.nodes.find((node) => node.id === id)?.label ?? '';
+  /** The site's notes (TopologySiteNotes): what the map cannot draw, and what would make it more precise. */
+  const notes = !graph || !render ? [] : [
+    ...(overview && render.grouped ? render.site.unlinked.map((id) => <li key={`unlinked:${id}`} data-testid="topology-unlinked-note">{t('grouped.noObservedLink', { network: nodeLabel(id), primary: nodeLabel(render.site.primary) })}</li>) : []),
+    ...(overview && render.grouped && !render.siteHasDeclarations && render.nodes.some((node) => node.kind === 'group' || node.kind === 'network') ? [<li key="declare" data-testid="topology-declare-hint">
+      {t('grouped.declareHint', { site: siteLabel })} <a className="text-primary underline underline-offset-4" href="/discovery#profiles">{t('grouped.declareHintLink')}</a></li>] : []),
+    ...(overview && presence && presence.ignoredDeclarations > 0 ? [<li key="ignored" data-testid="topology-ignored-declarations">{t('grouped.crossSite.ignoredDeclarations', { count: presence.ignoredDeclarations })}</li>] : []),
+  ];
   // `data-layout-applied`: a layout result reached the canvas. Browser gates wait on it; the unsaved
   // indicator is no signal since an automatic arrangement is not an unsaved change (#7880).
   return <section data-testid="topology-explorer" data-layout-applied={positions.length ? 'true' : undefined} className="min-w-0 space-y-3">
+    {/* Off-screen helpers first, so nothing follows the map but the diagnostics panel it opens. */}
+    <div aria-live="polite" className="sr-only">{announcement}</div>
+    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-[54px] pr-[14px] text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}</div>)}</div>
     {/* One toolbar row (2026-10-03): site, search, view, list; refresh/configuration/operations as a compact icon group. */}
     {portalInto(toolbarSlot, <div data-testid="topology-toolbar" className={toolbarSlot ? 'contents' : 'flex flex-wrap items-center gap-2'}>
       <label className="min-w-48 flex-1"><span className="sr-only">{t('search')}</span>
@@ -233,9 +251,10 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
         <button data-testid="topology-refresh" className={ICON_BUTTON} aria-label={t('refresh')} title={t('refresh')} onClick={refreshGraph}><RefreshCw className="h-4 w-4" aria-hidden="true" /></button>
         <button data-testid="topology-configure" className={`${ICON_BUTTON} border-l`} aria-label={t('configuration')} title={t('configuration')} aria-expanded={configuration} onClick={() => setConfiguration(!configuration)}><Settings2 className="h-4 w-4" aria-hidden="true" /></button>
         <button data-testid="topology-operations-toggle" className={`${ICON_BUTTON} border-l`} aria-label={t('operations.toggle')} title={t('operations.toggle')} aria-pressed={!!navigation.operations} onClick={() => navigate({ ...navigation, operations: !navigation.operations })}><Activity className="h-4 w-4" aria-hidden="true" /></button>
+        {onToggleMaximized && <button data-testid="topology-maximize" className={`${ICON_BUTTON} border-l`} aria-label={t('maximizeMap')} title={maximized ? t('maximizeMapExit') : t('maximizeMap')} aria-pressed={maximized} onClick={onToggleMaximized}>
+          {maximized ? <Minimize2 className="h-4 w-4" aria-hidden="true" /> : <Maximize2 className="h-4 w-4" aria-hidden="true" />}</button>}
       </div>
     </div>)}
-    {(focusNodeId || searchFocus) && !fullSite && <button className="text-sm text-primary underline" onClick={() => { setFullSite(true); setSearchFocus(undefined); }}>{t('fullSite')}</button>}
     {configuration && <TopologyConfiguration siteId={siteId} />}
     {navigation.operations && <section data-testid="topology-operations" aria-label={t('operations.heading')} className="space-y-2 rounded border bg-card p-4">
       {operations.monitoring && <MonitoringPolicyPanel siteId={siteId} canConfigure={canConfigureMonitoring} />}
@@ -245,32 +264,37 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      {/* One status row: the site and its networks, collection coverage (reasons behind a disclosure), health, counts. */}
-      <div data-testid="topology-status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-        {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} siteLabel={siteLabel} observedElsewhere={presence?.counts.observedElsewhere ?? 0}
+      {/* One status row (2026-10-25): "Show full site" on a focused map, the site and its networks, its notes and off-site devices (each a popover over the map),
+          then collection coverage (reasons behind a disclosure), health and counts. Nothing else stacks above the map. */}
+      <div data-testid="topology-status" className="relative flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
+        {/* A map focused on one device or search hit (the device pages) widens to the whole site from here. */}
+        {(focusNodeId || searchFocus) && !fullSite && <button type="button" data-testid="topology-full-site" onClick={() => { setFullSite(true); setSearchFocus(undefined); }}
+          className="rounded font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">{t('fullSite')}</button>}
+        {overview && render?.grouped && <SiteHeader render={render} siteName={siteName} observedElsewhere={presence?.counts.observedElsewhere ?? 0}
           suggestedVisitors={presence?.visitors.filter((visitor) => visitor.suggestion) ?? []} onReview={(id) => select({ kind: 'node', id })} />}
-        <PhysicalCoveragePanel coverage={graph.coverage} />
-        <span data-testid="topology-health-internet">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</span>
-        <span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span>
-        {graph.counts.omittedNodes + graph.counts.omittedRelationships > 0 && <span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span>}
+        <TopologySiteNotes notes={notes} />
+        {overview && render && <TopologySiteRoster siteName={siteLabel} roster={render.roster} nodesById={rosterNodes} onSelect={select} presence={presence} deviceNodeIds={deviceNodeIds}
+          canMoveDevices={!!graph?.permissions.canMoveDevices} onPresenceChanged={() => { reloadPresence(); refreshGraph(); }} />}
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:ml-auto">
+          <PhysicalCoveragePanel coverage={graph.coverage} />
+          <span data-testid="topology-health-internet">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</span>
+          <span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span>
+          {graph.counts.omittedNodes + graph.counts.omittedRelationships > 0 && <span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span>}
+        </span>
       </div>
-      {render?.grouped && view === 'overview' && !render.siteHasDeclarations && render.nodes.some((node) => node.kind === 'group' || node.kind === 'network') && <p data-testid="topology-declare-hint" className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-        {t('grouped.declareHint', { site: siteLabel })} <a className="text-primary underline underline-offset-4" href="/discovery#profiles">{t('grouped.declareHintLink')}</a></p>}
-      {view === 'overview' && presence && presence.ignoredDeclarations > 0 && <p data-testid="topology-ignored-declarations" className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-        {t('grouped.crossSite.ignoredDeclarations', { count: presence.ignoredDeclarations })}</p>}
-      {view === 'overview' && render && <TopologySiteRoster siteName={siteLabel} roster={render.roster} nodesById={rosterNodes} onSelect={select} presence={presence} deviceNodeIds={deviceNodeIds}
-        canMoveDevices={!!graph?.permissions.canMoveDevices} onPresenceChanged={() => { reloadPresence(); refreshGraph(); }} />}
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
       {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
       {!nodes.length ? (view === 'physical'
         ? <div data-testid="topology-physical-empty" className="py-12 text-center text-muted-foreground"><p>{t('physicalView.empty')}</p>
           <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
-        : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
+        : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div data-testid="topology-map-region" className="flex flex-col overflow-hidden rounded-lg border lg:flex-row"
+        style={mapHeight && !list && !navigation.search ? { '--topology-map-height': `${mapHeight}px` } as CSSProperties : undefined}>
         <div className="relative min-w-0 flex-1">
         {/* Layout actions float over the map's top-left on wide screens (a row above it on narrow ones), so the map starts higher. */}
         <div ref={layoutBar} data-testid="topology-layout-actions" role="toolbar" aria-label={t('layoutActions')}
           className={`flex flex-wrap items-center gap-1.5 border-b bg-card/95 p-2 ${list || navigation.search ? '' : 'lg:absolute lg:left-2 lg:top-2 lg:z-10 lg:max-w-[calc(100%-12rem)] lg:rounded-lg lg:border lg:shadow-sm'}`}>
         {expanded && <button data-testid="topology-collapse" className={LAYOUT_BUTTON} onClick={collapse}>{t('collapse')}</button>}
+        {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className={LAYOUT_BUTTON} onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}
         <button data-testid="topology-fit" className={LAYOUT_BUTTON} onClick={() => fitRef.current?.()}>{t('fit')}</button>
         <button data-testid="topology-arrange" className={LAYOUT_BUTTON} onClick={() => void arrange('incremental', true)}>{t('arrange')}</button>
         <button data-testid="topology-reflow" className={LAYOUT_BUTTON} onClick={() => void arrange('reflow', true)}>{t('reflow')}</button>
@@ -283,32 +307,36 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
         </div>
         {list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
           visitors={navigation.search ? undefined : presence?.visitors}
-          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitInsetTop={fitInsetTop} fitKey={`${view}:${showAllNetworks}:${showOtherNetworks}:${render?.grouped}:${expansion ?? ''}`} />}</div>
+          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <>
+          <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitInsetTop={fitInsetTop} fitKey={`${view}:${showAllNetworks}:${showOtherNetworks}:${render?.grouped}:${expansion ?? ''}`} placement={maximized ? 'expanded' : 'page'} onHeight={setMapHeight} />
+          {/* The legend sits on the map (bottom left), closed by default; it no longer takes a row under the map. */}
+          <details data-testid="topology-legend" className="absolute bottom-2 left-2 z-10 max-w-[min(32rem,calc(100%-1rem))] rounded-md border bg-card/95 text-xs text-muted-foreground shadow-sm">
+            <summary className="cursor-pointer select-none rounded-md px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">{t('legendToggle')}</summary>
+            <div className="space-y-1 border-t px-2.5 py-2">
+              {overview && render?.grouped && <p data-testid="topology-site-intro">{t('grouped.siteIntro', { site: siteLabel })}</p>}
+              <p>{t('legend')}</p>
+            </div>
+          </details>
+        </>}</div>
         {selection && (selected || hiddenSelected || visitorSelected) && <TopologyInspector graph={graph} visitor={visitorSelected} canMoveDevices={!!graph.permissions.canMoveDevices} onPresenceChanged={() => { reloadPresence(); refreshGraph(); }} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
           historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} siteName={siteName} sharedAddressCount={render?.nodes.find((node) => node.id === selection.id)?.sharedWith} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit && !visitorSelected ? () => { const point = draft.positions.get(selection.id); if (point) changePositions([{ ...point, pinned: !point.pinned }]); } : undefined} />}
       </div>}
-      <p className="text-xs text-muted-foreground">{t('legend')}</p>
-      {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}
       {diagnostic && <TopologyDiagnosticsPanel siteId={siteId} graphRevision={graph.revisions.graph} subject={{ kind: diagnostic.kind === 'edge' ? 'relationship' : 'node', id: diagnostic.id }} onClose={() => setDiagnostic(undefined)} />}
     </>}
-    <div aria-live="polite" className="sr-only">{announcement}</div>
-    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-[54px] pr-[14px] text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}</div>)}</div>
   </section>;
 }
 
 /**
  * The site at a glance above the overview (2026-10-03): the cards below are networks within one
- * site. Names the site, counts networks and devices, and says plainly when a secondary network has
- * no observed link to the primary one, rather than drawing a connection nobody saw (spec C:14).
+ * site. Names the site and counts networks and devices. A secondary network with no observed link to
+ * the primary one is said plainly in the site's notes (spec C:14), rather than drawn as a connection nobody saw.
  */
-function SiteHeader({ render, siteName, siteLabel, observedElsewhere, suggestedVisitors = [], onReview }: {
-  render: NonNullable<ReturnType<typeof compileTopologyRender>>; siteName?: string; siteLabel: string; observedElsewhere: number;
+function SiteHeader({ render, siteName, observedElsewhere, suggestedVisitors = [], onReview }: {
+  render: NonNullable<ReturnType<typeof compileTopologyRender>>; siteName?: string; observedElsewhere: number;
   /** W3: visitors carrying a suggestion for this site; the API only sends ones the viewer may see. */
   suggestedVisitors?: PresenceVisitor[]; onReview?: (visitorId: string) => void;
 }) {
   const { t } = useTranslation('topology');
-  const label = (id: string | null) => render.nodes.find((node) => node.id === id)?.label ?? '';
-  const primary = label(render.site.primary);
   return <div data-testid="topology-site-header" className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
     {siteName && <h3 className="text-base font-semibold tracking-[-0.01em]">{siteName}</h3>}
     <span className="text-sm text-muted-foreground">{[t('grouped.siteNetworks', { count: render.site.networks }), t('grouped.devices', { count: render.site.devices })].join(' · ')}</span>
@@ -317,8 +345,5 @@ function SiteHeader({ render, siteName, siteLabel, observedElsewhere, suggestedV
       · {t('grouped.crossSite.headerSuggested', { count: suggestedVisitors.length })} · <button type="button" data-testid="topology-suggested-review"
         className="rounded text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         onClick={() => onReview?.(suggestedVisitors[0]!.id)}>{t('grouped.crossSite.review')}</button></span>}
-    {render.site.unlinked.map((id) => <span key={id} data-testid="topology-unlinked-note" className="text-sm text-muted-foreground">
-      · {t('grouped.noObservedLink', { network: label(id), primary })}</span>)}
-    <span data-testid="topology-site-intro" className="basis-full text-sm text-muted-foreground">{t('grouped.siteIntro', { site: siteLabel })}</span>
   </div>;
 }

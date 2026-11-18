@@ -9,7 +9,7 @@ import { resolveAuthenticatedLanding } from './lib/landing';
 import { isProtectedPath, requiresAccountStatusGuard } from './lib/protectedPaths';
 import { redirectToAccountDisabled } from './lib/accountStatus';
 
-const authOnlyPaths = new Set(['/login', '/forgot-password']);
+const authOnlyPaths = new Set(['/login', '/forgot-password', '/request-access']);
 
 /** Build `/login?next=<path>` so an emailed deep link survives the auth wall. */
 function loginWithNext(pathname: string, search: string): string {
@@ -104,7 +104,12 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
   }
 
-  if (hasSession && authOnlyPaths.has(pathname)) {
+  // The Microsoft sign-in callback (W4 #11381, D3) sets the session cookie and
+  // lands here on /login?sso=signed_in. That page must render: its island reads
+  // the `next` path kept in sessionStorage (which the server cannot see) and
+  // navigates there through safeNextPath. Every other signed-in /login bounces.
+  const oidcSignedInLanding = pathname === '/login' && context.url.searchParams.get('sso') === 'signed_in';
+  if (hasSession && authOnlyPaths.has(pathname) && !oidcSignedInLanding) {
     return context.redirect(
       withBase(await authenticatedLanding(context.request)),
       302
@@ -158,7 +163,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // must never land in referrer headers, shared caches, or search indexes.
   // strict-origin-when-cross-origin (the base policy) still sends the full
   // token url on same-origin navigation — no-referrer does not.
-  if (pathname.startsWith('/quote/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')) {
+  //
+  // Self-registration (W6 plan D9): /request-access/verify carries its token in
+  // the fragment, and /accept-invite carries an invite token in the query
+  // (the instant-mode handoff lands there too). Neither may be cached, indexed
+  // or leaked through a referrer.
+  if (
+    pathname.startsWith('/quote/') || pathname.startsWith('/agreement/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')
+    || pathname === '/request-access/verify' || pathname === '/accept-invite'
+  ) {
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Cache-Control', 'no-store');

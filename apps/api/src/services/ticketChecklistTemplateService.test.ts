@@ -22,6 +22,7 @@ vi.mock('../db', () => {
       'returning',
       'groupBy',
       'execute',
+      'for', // #8972 W0: lockTicketForWrite ends in .for('update')
     ]) {
       c[m] = vi.fn(() => c);
     }
@@ -418,7 +419,7 @@ describe('applyChecklistTemplateToTicket', () => {
     resetDbCalls();
   });
 
-  /** load template -> load its items -> (tx) max position -> (tx) insert. */
+  /** load template -> load its items -> (tx) ticket lock -> (tx) max position -> (tx) insert. */
   function queueApply(
     template: Record<string, unknown> | null,
     items: Array<Record<string, unknown>>,
@@ -427,6 +428,7 @@ describe('applyChecklistTemplateToTicket', () => {
     dbMocks.rows.push(template ? [template] : []);
     if (!template) return;
     dbMocks.rows.push(items);
+    dbMocks.rows.push([{ id: 'tk-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite (first statement in the tx)
     dbMocks.rows.push([{ maxPosition }]);
     dbMocks.rows.push([]); // the insert's own await
     dbMocks.rows.push([]); // listChecklist re-read

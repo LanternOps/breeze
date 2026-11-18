@@ -7,6 +7,8 @@ import {
 } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { deviceWorkloadRuntimes, deviceWorkloads, devices } from '../../db/schema';
+import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { lockDeviceInventory } from '../inventoryChildSync';
 import { planWorkloadSync, type WorkloadRuntimePlan } from './plan';
 import { getDeviceWorkloadInventorySettings } from './settings';
@@ -16,6 +18,8 @@ import { containerImageSubjectKey } from '../alertConditions/handlers/containerI
 
 export interface IngestWorkloadsArgs {
   deviceId: string;
+  /** The `agent_id` the request authenticated as; the host-column write is bound to it (#8318 §6.4). */
+  agentId: string;
   orgId: string;
   report: WorkloadsReport;
   receivedAt: Date;
@@ -47,6 +51,7 @@ function toWorkloadRow(args: IngestWorkloadsArgs, runtime: WorkloadRuntime, item
     imageTag: item.imageTag,
     imageDigest: item.imageDigest,
     imageId: item.imageId,
+    imageProvenance: item.imageProvenance,
     guestOs: item.guestOs,
     composeProject: item.composeProject,
     composeService: item.composeService,
@@ -151,9 +156,13 @@ async function applyRuntimePlan(args: IngestWorkloadsArgs, plan: WorkloadRuntime
  *   image list failed), so the stored digest is kept — but only while the
  *   image is provably the same one (same image id and reference).
  * - The upstream comparison describes one specific local image: it is reset
- *   to `pending` (digest/checked-at cleared) when the effective digest or the
- *   image reference changes, and preserved otherwise. A brand-new row takes
- *   the column defaults (`pending`).
+ *   to `pending` (digest/checked-at cleared) when the effective digest, the
+ *   image reference or the effective provenance (#9067) changes, and
+ *   preserved otherwise. A brand-new row takes the column defaults (`pending`).
+ * - Provenance travels with the digest: when the stored digest is kept and
+ *   no provenance was reported, the stored one is kept. NULL (pre-#9067 agent)
+ *   and `confirmed` decide the same thing, so an agent upgrade that starts
+ *   reporting `confirmed` does not reset a row or its behind_since clock.
  */
 function upstreamUpsertSet(incompleteSnapshot: boolean) {
   const t = deviceWorkloads;
@@ -165,9 +174,15 @@ function upstreamUpsertSet(incompleteSnapshot: boolean) {
         AND excluded.image_id IS NOT DISTINCT FROM ${t.imageId} AND ${sameImage})`
     : sql`false`;
   const nextDigest = sql`CASE WHEN ${keepStoredDigest} THEN ${t.imageDigest} ELSE excluded.image_digest END`;
-  const unchanged = sql`(${nextDigest} IS NOT DISTINCT FROM ${t.imageDigest} AND ${sameImage})`;
+  // A kept digest keeps its provenance only when the agent sent none; a fresh
+  // value is newer evidence about the same image and wins.
+  const nextProvenance = sql`CASE WHEN ${keepStoredDigest}
+    THEN COALESCE(excluded.image_provenance, ${t.imageProvenance}) ELSE excluded.image_provenance END`;
+  const sameProvenance = sql`COALESCE(${nextProvenance}, 'confirmed') = COALESCE(${t.imageProvenance}, 'confirmed')`;
+  const unchanged = sql`(${nextDigest} IS NOT DISTINCT FROM ${t.imageDigest} AND ${sameImage} AND ${sameProvenance})`;
   return {
     imageDigest: nextDigest,
+    imageProvenance: nextProvenance,
     upstreamStatus: sql`CASE WHEN ${unchanged} THEN ${t.upstreamStatus} ELSE 'pending' END`,
     upstreamDigest: sql`CASE WHEN ${unchanged} THEN ${t.upstreamDigest} ELSE NULL END`,
     upstreamCheckedAt: sql`CASE WHEN ${unchanged} THEN ${t.upstreamCheckedAt} ELSE NULL END`,
@@ -226,12 +241,26 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     // Per-device advisory lock (above) serializes concurrent reports; no other
     // writer takes this key. Then the device row, before any child row, which
     // is the same device-before-children order the deletion cascade uses.
-    const [device] = await db
-      .select({ id: devices.id, hostsWorkloads: devices.hostsWorkloads, workloadRuntimes: devices.workloadRuntimes })
-      .from(devices)
-      .where(and(eq(devices.id, args.deviceId), eq(devices.orgId, args.orgId)))
-      .for('no key update');
-    if (!device) throw new Error('Workload inventory device missing or ownership changed');
+    //
+    // #8318 §6.4: the row is read bound to the authenticated id + agent_id
+    // (and the org), locked, before any child row is written. A request a
+    // reattach confirm or an in-place re-enroll overtook finds 0 rows here and
+    // writes nothing; one that holds the lock first finishes as the old
+    // install before the identity change can apply.
+    const identity = { deviceId: args.deviceId, agentId: args.agentId };
+    const device = await selectOwnDeviceRowForUpdate(
+      db,
+      identity,
+      { id: devices.id, hostsWorkloads: devices.hostsWorkloads, workloadRuntimes: devices.workloadRuntimes },
+      { where: eq(devices.orgId, args.orgId) },
+    );
+    if (!device) {
+      // The row now carries another agent_id than the request authenticated
+      // as: nothing was written, and the request gets the stale-credential
+      // 401 agent auth gives a token that no longer matches.
+      if (await ownDeviceRowChangedHands(db, identity)) throw staleAgentCredentialRejection();
+      throw new Error('Workload inventory device missing or ownership changed');
+    }
 
     const reported = args.report.runtimes.map((entry) => entry.runtime);
     const storedRuntimes = reported.length
@@ -275,10 +304,15 @@ export async function ingestWorkloadsReport(args: IngestWorkloadsArgs): Promise<
     }
     await retireDroppedImageSubjects(args.deviceId, plan.runtimes, storedWorkloads);
     if (plan.host.changed) {
-      await db
-        .update(devices)
-        .set({ hostsWorkloads: plan.host.hostsWorkloads, workloadRuntimes: plan.host.workloadRuntimes })
-        .where(and(eq(devices.id, args.deviceId), eq(devices.orgId, args.orgId)));
+      const written = await updateOwnDeviceRow(
+        db,
+        identity,
+        { hostsWorkloads: plan.host.hostsWorkloads, workloadRuntimes: plan.host.workloadRuntimes },
+        { where: eq(devices.orgId, args.orgId) },
+      );
+      // The bound, locked read above makes this unreachable; if it ever is
+      // reached, roll the child rows back rather than report them accepted.
+      if (written.length === 0) throw new Error('Workload inventory device row changed during ingest');
     }
     return {
       accepted: true as const,

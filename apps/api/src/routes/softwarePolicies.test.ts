@@ -63,14 +63,11 @@ vi.mock('../services/softwarePolicyService', () => ({
     allowUnknown: r.allowUnknown,
   }),
   recordSoftwarePolicyAudit: vi.fn(async () => undefined),
+  cleanupSoftwarePolicyElevations: vi.fn(async () => 0),
 }));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
-}));
-
-vi.mock('../services/pamActuationLifecycle', () => ({
-  requestPamCleanup: vi.fn(),
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -91,40 +88,15 @@ vi.mock('../services/permissions', () => ({
 
 import {
   executableRuleSchema,
-  cleanupSoftwarePolicyElevations,
   resolveOrgIdForWrite,
   softwarePoliciesRoutes,
   softwareRulesSchema,
 } from './softwarePolicies';
-import { normalizeSoftwarePolicyRules } from '../services/softwarePolicyService';
+import { cleanupSoftwarePolicyElevations, normalizeSoftwarePolicyRules } from '../services/softwarePolicyService';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
-import { requestPamCleanup } from '../services/pamActuationLifecycle';
-
-describe('cleanupSoftwarePolicyElevations', () => {
-  it('creates cleanup generations for only the active requests transitioned by the policy removal', async () => {
-    const execute = vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }, { id: 'elevation-2' }] });
-    const tx = { execute } as any;
-
-    await cleanupSoftwarePolicyElevations(tx, 'policy-1');
-
-    expect(requestPamCleanup).toHaveBeenCalledTimes(2);
-    expect(requestPamCleanup).toHaveBeenNthCalledWith(1, tx, {
-      elevationRequestId: 'elevation-1', cause: 'policy_removed',
-    });
-    expect(requestPamCleanup).toHaveBeenNthCalledWith(2, tx, {
-      elevationRequestId: 'elevation-2', cause: 'policy_removed',
-    });
-  });
-
-  it('propagates cleanup failure so the caller transaction rolls back', async () => {
-    const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }] }) } as any;
-    vi.mocked(requestPamCleanup).mockRejectedValueOnce(new Error('cleanup failed'));
-    await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).rejects.toThrow('cleanup failed');
-  });
-});
 
 function makeOrgAuth(orgId: string): AuthContext {
   return {
@@ -978,6 +950,24 @@ describe('partner-wide software policies (#2126)', () => {
 
     expect(res.status).toBe(200);
     expect(tx.update).toHaveBeenCalled();
+  });
+
+  // W04-D15 (#6758) moved cleanupSoftwarePolicyElevations into
+  // softwarePolicyService; pin that DELETE still calls it inside its tx.
+  it('DELETE revokes the elevations the policy minted, inside the delete transaction', async () => {
+    setPartnerAuth('all');
+    mockPartnerPolicyLookup();
+    const whereResolved = { where: vi.fn().mockResolvedValue([]) };
+    const tx = {
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue(whereResolved) }),
+      delete: vi.fn().mockReturnValue(whereResolved),
+    };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
+
+    const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(cleanupSoftwarePolicyElevations).toHaveBeenCalledWith(tx, POLICY_ID);
   });
 });
 

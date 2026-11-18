@@ -68,6 +68,16 @@ describe('workspace tools', () => {
     expect(other.cancel).not.toHaveBeenCalled();
   });
 
+  it('refuses a flow principal even when a workspace is registered under its run id (W04 #5219: never an agent run)', async () => {
+    const svc = { cancel: vi.fn(async () => {}) } as unknown as WorkspaceService;
+    registerWorkspace('run-flow', svc);
+    const map = toolsMap();
+    const flowAuth = { principal: { kind: 'flow', flowId: 'flow-1', runId: 'run-flow' }, orgId: 'org-1' } as unknown as AuthContext;
+    const out = await map.get('workspace_cancel')!.handler({}, flowAuth);
+    expect(JSON.parse(out).error).toBe('workspace_requires_run');
+    expect(svc.cancel).not.toHaveBeenCalled();
+  });
+
   it('refuses a non-agent principal even when a workspace is registered for some run', async () => {
     registerWorkspace('run-1', { cancel: vi.fn(async () => {}) } as unknown as WorkspaceService);
     const map = toolsMap();

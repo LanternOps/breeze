@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   recordFailure: vi.fn(),
   recordRetry: vi.fn(),
   debit: vi.fn(),
+  deliver: vi.fn(),
   getPlatformModelByModelId: vi.fn(),
   readConnectionOfferingRate: vi.fn(),
   attestUnboundRate: vi.fn(),
@@ -20,13 +21,14 @@ vi.mock('../aiBudgetReservations', () => ({
   settleAiBudgetReservationDurably: m.settleDurably,
   attestUnboundRate: m.attestUnboundRate,
   readUnboundRateAttestation: m.readUnboundRateAttestation,
-  recordInvocationsWithRollups: m.recordWithRollups,
+  recordUnreservedInvocations: m.recordWithRollups,
   markCreditsDebited: m.markDebited,
   recordCreditDebitFailure: m.recordFailure,
   recordCreditDebitRetry: m.recordRetry,
   creditDebitIdempotencyKey: (id: string) => `ai-settlement:${id}`,
 }));
 vi.mock('../aiCostTracker', () => ({ debitBillingCredits: m.debit, checkCostAnomalies: m.checkCostAnomalies }));
+vi.mock('../aiCreditDebitOutbox', () => ({ deliverCreditDebit: m.deliver }));
 vi.mock('./platformModels', () => ({ getPlatformModelByModelId: m.getPlatformModelByModelId }));
 vi.mock('../sentry', () => ({ captureMessage: m.captureMessage, captureException: m.captureException }));
 vi.mock('./connectionOfferingRate', () => ({ readConnectionOfferingRate: m.readConnectionOfferingRate }));
@@ -69,6 +71,7 @@ const OK: TurnOutcome = {
 const use = (model: string, over: Partial<BilledUsage> = {}): BilledUsage => ({
   model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null, ...over,
 });
+const INTENT = { id: 'd1', orgId: 'o1', source: 'invocation' as const, idempotencyKey: 'ai-invocation:i1', costCents: 300 };
 const base = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
   binding: B, orgId: 'o1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
   usage: [use('claude-sonnet-5-5')], outcome: OK, reservationId: 'r1', ...over,
@@ -80,7 +83,8 @@ beforeEach(() => {
   m.settleDurably.mockResolvedValue({
     kind: 'settled', reservationId: 'r1', actualCostCents: 300, invocationIds: ['i1'], billingSource: 'platform', creditsDebitDue: true,
   });
-  m.recordWithRollups.mockResolvedValue(['i1']);
+  m.recordWithRollups.mockResolvedValue({ invocationIds: ['i1'], debit: INTENT });
+  m.deliver.mockResolvedValue('debited');
   m.debit.mockResolvedValue({ kind: 'debited', replayed: false });
   m.recordRetry.mockResolvedValue({ attempts: 1, exhausted: false });
   m.getPlatformModelByModelId.mockResolvedValue(null);
@@ -282,12 +286,20 @@ describe('settleInvocation', () => {
     });
   });
 
-  it('without a reservation, rows + rollups go through recordInvocationsWithRollups and the debit is keyed by the first ledger row', async () => {
+  it('without a reservation, rows + rollups + the keyed debit intent go through recordUnreservedInvocations, and the intent is delivered', async () => {
     await settleInvocation(base({ reservationId: undefined, sessionId: 's1' }));
     expect(m.settleDurably).not.toHaveBeenCalled();
     expect(m.recordWithRollups).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'o1', sessionId: 's1' }));
-    expect(m.debit).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-invocation:i1' });
+    // #7717 item 2: durable (outbox) delivery, not a fire-and-forget debit.
+    expect(m.deliver).toHaveBeenCalledWith(INTENT);
+    expect(m.debit).not.toHaveBeenCalled();
     expect(m.markDebited).not.toHaveBeenCalled();
+  });
+
+  it('without a reservation and no debit intent (partner-funded or $0), nothing is delivered', async () => {
+    m.recordWithRollups.mockResolvedValueOnce({ invocationIds: ['i1'], debit: null });
+    await settleInvocation(base({ reservationId: undefined }));
+    expect(m.deliver).not.toHaveBeenCalled();
   });
 });
 
@@ -383,40 +395,16 @@ describe('debitSettledCredits: 4xx terminal, 5xx/network retried under the same 
   it('never throws: a failing stamp is reported (scrubbed) and the sweep retries later', async () => {
     m.markDebited.mockRejectedValue(Object.assign(new Error('Failed query: UPDATE ... params: secret'), { params: ['secret'] }));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(debitSettledCredits({ orgId: 'o1', reservationId: 'r1', costCents: 300 })).resolves.toBeUndefined();
+    await expect(debitSettledCredits({ orgId: 'o1', reservationId: 'r1', costCents: 300 })).resolves.toBe('bookkeeping_failed');
     const logged = JSON.stringify(error.mock.calls);
     expect(logged).not.toContain('secret');
     error.mockRestore();
   });
 });
 
-describe('unreserved debit reporting (review S4)', () => {
-  it('throttles per (eventCode, org), not globally, and tags the first ledger row so an operator can recover it', async () => {
-    m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
-    m.recordWithRollups.mockResolvedValueOnce(['i-o1']).mockResolvedValueOnce(['i-o2']).mockResolvedValueOnce(['i-o1b']);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o2' }));
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));   // same org inside the window: log only
-    error.mockRestore();
-    const reports = m.captureMessage.mock.calls.filter(([, o]) => o.eventCode === 'ai_credit_debit_rejected');
-    expect(reports).toHaveLength(2);
-    expect(reports.map(([, o]) => o.tags)).toEqual([
-      expect.objectContaining({ org_id: 'o1', ai_invocation_id: 'i-o1' }),
-      expect.objectContaining({ org_id: 'o2', ai_invocation_id: 'i-o2' }),
-    ]);
-  });
-
-  it('a thrown unreserved debit is reported with the org and first ledger row', async () => {
-    m.debit.mockRejectedValue(new Error('socket hang up'));
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await settleInvocation(base({ reservationId: undefined }));
-    error.mockRestore();
-    expect(m.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
-      org_id: 'o1', ai_invocation_id: 'i1',
-    }));
-  });
-
+describe('debit reporting throttle (review S4)', () => {
+  // The unreserved-debit reporting moved to the outbox with the debit itself
+  // (aiCreditDebitOutbox.test.ts).
   it('the settled-debit rejection throttle is per org too', async () => {
     m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -448,6 +436,13 @@ describe('SDK usage snapshot (W05 spike)', () => {
     expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_usage_snapshot_regressed' }));
   });
 
+  it('a context-window refusal is confirmed: no ai_usage_unconfirmed warning (#10577)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: true, usageNote: 'context_window_exceeded' } }));
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('ai_usage_unconfirmed');
+    warn.mockRestore();
+  });
+
   it('any other unconfirmed usage is a structured warning, not a Sentry event', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: false, usageNote: 'no_result' } }));
@@ -473,6 +468,101 @@ describe('priceUsage: carried rates across a switch (W05 spike constraint 4)', (
   });
 });
 
+describe('#10413 follow-up: the CLI background call is attributed as background, never as a fallback', () => {
+  // A haiku id the binding never named (B.refusalFallback is the undated alias).
+  const BG = 'claude-haiku-4-5-20251001';
+  const BG_RATE = { inputCentsPerM: 80, outputCentsPerM: 400, cacheReadCentsPerM: 8, cacheWriteCentsPerM: 100 };
+  const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
+  const roles = (rows: ReturnType<typeof toNewInvocations>) => rows.map((r) => [r.requestedModel, r.modelRole, r.fallbackUsed]);
+
+  it('a two-key agent-run hop: one primary row + one background row, fallback_used false on both, total unchanged', async () => {
+    const { sdkTurnUsage, newSdkTurnObservation } = await import('./invocationUsage');
+    const MAIN = { input: 100, output: 80, cacheRead: 1500, cacheWrite: 10 };
+    const BGT = { input: 900, output: 15, cacheRead: 0, cacheWrite: 0 };
+    const mu = (t: typeof MAIN) => ({
+      inputTokens: t.input, outputTokens: t.output, cacheReadInputTokens: t.cacheRead,
+      cacheCreationInputTokens: t.cacheWrite, webSearchRequests: 0, costUSD: 0,
+    });
+    const turn = sdkTurnUsage({
+      binding: B, observation: newSdkTurnObservation(), previousSnapshot: null, queryStartedAtZero: true,
+      result: {
+        type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn',
+        usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 1500, cache_creation_input_tokens: 10 },
+        modelUsage: { 'claude-sonnet-5-5': mu(MAIN), [BG]: mu(BGT) },
+      } as never,
+    });
+    expect(turn.usage.map((u) => u.model)).toEqual(['claude-sonnet-5-5', BG]);
+    m.getPlatformModelByModelId.mockResolvedValue({ rates: BG_RATE, optionRates: null });
+    await settleInvocation(base({ agentRunId: 'run-1', usage: turn.usage, outcome: turn.outcome }));
+    const rows = m.settleDurably.mock.calls[0]![0].invocations as ReturnType<typeof toNewInvocations>;
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      [BG, 'background', false],
+    ]);
+    expect(rows.map((r) => r.refusalCategory)).toEqual([null, null]);
+    // Attribution only: each row keeps its own rate, and the total is both keys billed.
+    const expected = priceInvocation({ source: 'platform', standard: STD }, MAIN, {})
+      + priceInvocation({ source: 'platform', standard: BG_RATE }, BGT, {});
+    expect(rows.reduce((s, r) => s + (r.costCents ?? 0), 0)).toBeCloseTo(expected, 6);
+    expect(rows[1]!.rateSnapshot).toEqual({ source: 'platform', standard: BG_RATE });
+  });
+
+  it('a refusal swap with the background call: refused leg primary, the fallback model fallback, the helper background', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5'), use(BG)],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-haiku-4-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-haiku-4-5', 'fallback', true],
+      [BG, 'background', false],
+    ]);
+    expect(rows.map((r) => r.stopReason)).toEqual(['refusal', 'end_turn', 'end_turn']);
+  });
+
+  it('a failed hop whose only usage is the background call (#7786): background, not a fallback', () => {
+    const rows = rowsOf(base({ usage: [use(BG)], outcome: { ...OK, stopReason: 'error', servedModel: 'claude-sonnet-5-5' } }));
+    expect(roles(rows)).toEqual([[BG, 'background', false]]);
+  });
+
+  it('a CLI swap to an unbound model that SERVED the turn stays a fallback', () => {
+    const rows = rowsOf(base({ usage: [use('claude-sonnet-4-6')], outcome: { ...OK, fallbackUsed: true, servedModel: 'claude-sonnet-4-6' } }));
+    expect(roles(rows)).toEqual([['claude-sonnet-4-6', 'fallback', true]]);
+  });
+
+  it('a refusal swap the turn could not attribute to a key keeps every unbound key a fallback (conservative)', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5'), use('claude-sonnet-4-6'), use(BG)],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-sonnet-5-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-sonnet-4-6', 'fallback', true],
+      [BG, 'fallback', true],
+    ]);
+  });
+
+  it('a Messages API row (provider-reported model) is never background: only the Agent SDK CLI makes a helper call', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5', { providerModel: 'claude-sonnet-5-5' }), use(BG, { providerModel: BG })],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-haiku-4-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      [BG, 'fallback', true],
+    ]);
+  });
+
+  it('a carried model\'s late delta is primary, not background', () => {
+    const binding = withCarriedRates(B, [{ wireModel: 'claude-opus-4-8', rateSnapshot: { source: 'platform', standard: OTHER } }]);
+    const rows = rowsOf(base({ binding, usage: [use('claude-sonnet-5-5'), use('claude-opus-4-8')] }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-opus-4-8', 'primary', false],
+    ]);
+  });
+});
+
 describe('W11 prompt provenance', () => {
   const input = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
     binding: { ...B, promptProfile: 'claude-standard' }, orgId: 'org-1', userId: null, sessionId: 's1', agentRunId: null,
@@ -480,6 +570,12 @@ describe('W11 prompt provenance', () => {
   });
   const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
 
+  // W5 PR B (#5220, Decision 13): a flow `ai` step attributes its cost to the run.
+  it('flowRunId is written', () => {
+    const FLOW_RUN = '99999999-9999-4999-8999-999999999999';
+    expect(rowsOf(input({ flowRunId: FLOW_RUN }))[0]).toMatchObject({ flowRunId: FLOW_RUN });
+    expect(rowsOf(input())[0]!.flowRunId ?? null).toBeNull();
+  });
   it('a one-shot surface records the binding profile and no variant', () => {
     expect(rowsOf(input())[0]).toMatchObject({ promptProfile: 'claude-standard', promptVariant: null });
   });
@@ -562,6 +658,20 @@ describe('W09 ledger provenance', () => {
       offeringId: 'off-k', connectionId: 'conn-1', fundingSource: 'partner_key',
       failoverFromOfferingId: 'off-p', failoverHop: 1, failoverCause: 'rate_limited',
     });
+  });
+
+  it('#11395: toNewInvocations records the tool exposure the turn ran under; none → NULL', () => {
+    const binding = turnBindingFrom(makeResolvedModel('platform'));
+    const base = {
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    };
+    const [constrained] = toNewInvocations({ ...base, toolExposure: { profile: 'minimal', fingerprint: '0123456789abcdef' } }, priceUsage(binding, []));
+    expect(constrained).toMatchObject({ toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' });
+    const [identity] = toNewInvocations({ ...base, toolExposure: { profile: 'full', fingerprint: 'full' } }, priceUsage(binding, []));
+    expect(identity).toMatchObject({ toolProfile: 'full', toolExposureFingerprint: 'full' });
+    const [none] = toNewInvocations(base, priceUsage(binding, []));
+    expect(none).toMatchObject({ toolProfile: null, toolExposureFingerprint: null });
   });
 
   it('a turn with no failover writes hop 0 and no cause', () => {

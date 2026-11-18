@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-18
 **Tracking issues:** LanternOps/breeze#8883 (epic), #8972 (merge), #8973 (business-hours SLA calendars). Routing rules are tracked in the #8883 umbrella.
-**Status:** Draft for maintainer review. Advisor quorum (Opus + Codex `gpt-6-astra` xhigh, read-only) is folded in (§9). Open Decisions are in §10, with the ones Todd must settle listed first.
+**Status:** Approved at Gate A on 2026-10-22. Advisor quorum (Opus + Codex `gpt-6-astra` xhigh, read-only) is folded in (§9). Open Decisions are in §10, with the ones Todd must settle listed first.
+**Approval:** approved 2026-10-22 by Todd. All twelve Open Decisions in §10 are decided as recommended (also covers #8972 and #8973).
 **Code base:** `origin/main` at `d49876c54d`.
 **Deliverable of this PR:** specification only. No code and no migration. Plans are written per wave after approval.
 **Builds on (shipped):**
@@ -525,63 +526,87 @@ Each decision has a recommendation, and work proceeds on it unless Todd override
   - (c) Read-only access.
 
   **Recommend (b).** The two requesters are in the same customer org, and the technician merged deliberately after a preview that warns when the requesters differ. Email replies from that requester already thread to the survivor (§3.8), so (a) or (c) would make the portal stricter than email. The disclosure risk (requester B reads A's public replies) is why this is Todd's call.
+
+  **Decided 2026-10-22:** (b). The source's requester keeps public read and public reply on the survivor through the separate `portalTicketReadAccess` predicate. Writes are never widened implicitly.
 - **D2 (Todd): Where do business hours live?**
   - (a) Ticketing → Priorities & SLAs, with the Regional card removed.
   - (b) Partner → Regional, as a cross-domain calendar.
 
   **Recommend (a).** Settings rule 2 puts ticketing settings under Ticketing, and SLA is the only consumer in v1. When after-hours approvals adopt calendars, they read the same resolver and do not add a second editor.
+
+  **Decided 2026-10-22:** (a). Business hours live under Ticketing → Priorities & SLAs, and the dead Regional card is retired.
 - **D3 (Todd): Approvals and budgets on merge.**
   - (a) Refuse when either ticket has any approval request or a budget.
   - (b) Move the time and re-run the approval gate on the survivor.
 
   **Recommend (a)** for v1. Approvals are off by default and rare. (b) needs a trigger exception on immutable decided requests and a re-gating path. Revisit when a partner hits the 409.
+
+  **Decided 2026-10-22:** (a) for v1. A merge is refused when either ticket has an approval request or a budget.
 - **D4: Undo.**
   - (a) None. Preview plus confirm.
   - (b) A short undo window backed by a merge journal.
 
   **Recommend (a).** An undo has to un-move invoiced-time references, email links and dropped links. A journal adds a new tenant table and registrations for a rare correction.
+
+  **Decided 2026-10-22:** (a), as recommended. No undo; preview plus confirm.
 - **D5: Survivor SLA.**
   - (a) The survivor keeps its own clock, and the UI suggests the older ticket as survivor.
   - (b) The survivor adopts the earlier of the two deadlines.
 
   **Recommend (a).** It is simpler, it never back-dates a deadline the survivor's requester saw, and the older-survivor default already keeps the earliest commitment.
+
+  **Decided 2026-10-22:** (a), as recommended.
 - **D6: Notify the source requester on merge.**
   - (a) An opt-out checkbox, defaulted on when the requesters differ.
   - (b) Always.
   - (c) Never.
 
   **Recommend (a).**
+
+  **Decided 2026-10-22:** (a), as recommended.
 - **D7: Rule order across axes.**
   - (a) Org rules, then partner-wide rules, first match wins.
   - (b) Partner-wide rules first.
 
   **Recommend (a).** This is settings rule 3: the org is more specific.
+
+  **Decided 2026-10-22:** (a), as recommended.
 - **D8: Default inbound assignee.**
   - (a) Keep it as the fallback and move its editor into Routing.
   - (b) Convert it into a system catch-all rule.
 
   **Recommend (a).** Under first-match-wins, a catch-all would stop applying whenever an earlier rule matched without assigning. That would change today's guarantee.
+
+  **Decided 2026-10-22:** (a), as recommended.
 - **D9: Per-priority or per-category calendar** (for example "urgent is 24×7").
   - (a) Defer.
   - (b) A nullable calendar on `ticket_priority_settings`.
 
   **Recommend (a).** (b) adds a second place the concept is configured, which needs a Rule 9 justification. Revisit on a partner ask.
+
+  **Decided 2026-10-22:** (a), as recommended. Deferred.
 - **D10: Per-site calendar or time zone.**
   - (a) Defer. One calendar per org, with its own time zone.
   - (b) Resolve by the ticket device's site.
 
   **Recommend (a).** Tickets have no site of their own, and `device_id` is optional.
+
+  **Decided 2026-10-22:** (a), as recommended. Deferred.
 - **D11: Portal due time.**
   - (a) Status only, as today.
   - (b) Also show "expected by".
 
   **Recommend (a).** A shown time becomes a customer-facing commitment that changes when a holiday is added.
+
+  **Decided 2026-10-22:** (a), as recommended.
 - **D12: Correcting a calendar for tickets already open.** Revisions apply to new tickets only (§4.5), so a time-zone or hours typo stays wrong for every open ticket.
   - (a) New tickets only, with no correction path.
   - (b) An explicit admin "apply this revision to open tickets" action. It recomputes all unfrozen targets and accepts the caveat that past pause minutes are reinterpreted.
   - (c) The same action, limited to open tickets with **no pause history** (`sla_paused_business_minutes = 0` and not paused). Their deadlines recompute exactly.
 
   **Recommend (c)**, behind a preview that shows how many tickets would move and how many would become immediately breached. Tickets with pauses keep their revision, and the preview counts them.
+
+  **Decided 2026-10-22:** (c), as recommended, behind the preview.
 
 ## 11. Waves (sketch; plans are written after approval)
 

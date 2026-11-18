@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
+import { ORG_TAB_COLUMN_PRESET, writeColumnVisibility } from '@/components/devices/columnVisibility';
 import OrgDevicesTab, { ORG_DEVICES_LIMIT } from './OrgDevicesTab';
 import { useOrgStore } from '@/stores/orgStore';
 import type { OrgFetch } from './orgRecordFetch';
@@ -62,6 +63,72 @@ describe('OrgDevicesTab', () => {
     useOrgStore.setState({ currentOrgId: OTHER_ORG, allOrgs: false } as never);
     granted.clear();
     granted.add('organizations:write');
+  });
+
+  it('loads warranty through the pinned fetch when the column is enabled', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([`/devices?limit=${ORG_DEVICES_LIMIT}`]);
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    fireEvent.click(within(screen.getByTestId('column-chooser-option-warranty')).getByRole('checkbox'));
+    await waitFor(() => expect(calls).toContain(`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`));
+  });
+
+  it('keeps the loaded rows on screen while warranty loads and skips a reload when the column is hidden', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    const warrantyToggle = () => within(screen.getByTestId('column-chooser-option-warranty')).getByRole('checkbox');
+    fireEvent.click(warrantyToggle());
+    // No spinner: the previous rows stay visible until the warranty-bearing response lands.
+    expect(screen.getByText('acme-laptop-01')).toBeInTheDocument();
+    await waitFor(() => expect(calls).toContain(`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`));
+    const after = calls.filter(c => c.startsWith('/devices')).length;
+    fireEvent.click(warrantyToggle());
+    fireEvent.click(warrantyToggle());
+    await new Promise(r => setTimeout(r, 50));
+    expect(calls.filter(c => c.startsWith('/devices')).length).toBe(after);
+  });
+
+  it('requests remembered warranty visibility on its first pinned fetch', async () => {
+    writeColumnVisibility([...ORG_TAB_COLUMN_PRESET.defaultVisible, 'warranty'], ORG_TAB_COLUMN_PRESET);
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([`/devices?limit=${ORG_DEVICES_LIMIT}&includeWarranty=true`]);
+  });
+
+  it('loads disk inventory through the pinned fetch when the column is enabled', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({
+      'includeDisks=true': () => jsonResponse({ data: [{
+        ...DEVICE,
+        disks: [{ mountPoint: 'C:', totalGb: 100, usedGb: 25, freeGb: 75, usedPercent: 25 }],
+      }] }),
+      '/devices': () => jsonResponse({ data: [DEVICE] }),
+    });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+    const toggle = () => within(screen.getByTestId('column-chooser-option-diskUsage')).getByRole('checkbox');
+    fireEvent.click(toggle());
+    expect(screen.getByText('acme-laptop-01')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('device-d1-disk-usage')).toHaveTextContent('25%'));
+    fireEvent.click(toggle());
+    fireEvent.click(toggle());
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([
+      `/devices?limit=${ORG_DEVICES_LIMIT}`,
+      `/devices?limit=${ORG_DEVICES_LIMIT}&includeDisks=true`,
+    ]);
+  });
+
+  it('requests remembered disk usage visibility on its first pinned fetch', async () => {
+    writeColumnVisibility([...ORG_TAB_COLUMN_PRESET.defaultVisible, 'diskUsage'], ORG_TAB_COLUMN_PRESET);
+    const { orgFetch, calls } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme" orgFetch={orgFetch} />);
+    await screen.findByText('acme-laptop-01');
+    expect(calls.filter(c => c.startsWith('/devices'))).toEqual([`/devices?limit=${ORG_DEVICES_LIMIT}&includeDisks=true`]);
   });
 
   it('loads devices through orgFetch (org-pinned) and renders them with forceSingleOrg, while the store points elsewhere', async () => {
@@ -285,6 +352,32 @@ describe('OrgDevicesTab', () => {
     fireEvent.click(await screen.findByTestId('org-devices-add'));
     expect(applyOrgSwitchMock).not.toHaveBeenCalled();
     expect(navigateTo).toHaveBeenCalledWith('/devices#add-device');
+  });
+
+  it('resolves site names past the first 100 sites (no "Unknown Site"), through orgFetch (#9791)', async () => {
+    const mkSites = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, i) => ({ id: `site-${from + i + 1}`, name: `Site ${from + i + 1}` }));
+    const device150 = { ...DEVICE, siteId: 'site-150' };
+    const { orgFetch, calls } = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [device150] }),
+    });
+    // Page-aware stub layered over the recording fetch: 150 sites, 100 per page.
+    const paged = (async (path: string, init?: unknown) => {
+      if (path.startsWith('/orgs/sites')) {
+        calls.push(path);
+        const page = Number(new URL(path, 'http://x').searchParams.get('page') ?? '1');
+        const rows = page === 1 ? mkSites(0, 100) : mkSites(100, 150);
+        return jsonResponse({ data: rows, pagination: { page, limit: 100, total: 150 } });
+      }
+      return (orgFetch as unknown as (p: string, i?: unknown) => Promise<Response>)(path, init);
+    }) as unknown as OrgFetch;
+
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={paged} />);
+
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Site 150').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Unknown Site')).toBeNull();
+    expect(calls.filter((c) => c.startsWith('/orgs/sites')).length).toBe(2);
   });
 
   it('shows no cap notice when the whole org fit in one request', async () => {

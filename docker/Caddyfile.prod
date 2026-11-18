@@ -110,6 +110,7 @@
       request>headers>X-Xero-Signature replace REDACTED
       request>headers>Stripe-Signature replace REDACTED
       request>headers>Svix-Signature replace REDACTED
+      request>headers>Webhook-Signature replace REDACTED
       request>headers>Intuit-Signature replace REDACTED
       request>headers>Mcp-Session-Id replace REDACTED
       request>headers>Cf-Access-Jwt-Assertion replace REDACTED
@@ -349,6 +350,24 @@
     respond `{"webcredentials":{"apps":["D8W6N2JYMA.com.breeze.rmm"]}}` 200
   }
 
+  # --- Worker-role Prometheus scrape (worker:3001/metrics) ---
+  # The worker container (BREEZE_ROLE=worker) serves its own registry at
+  # /metrics, gated by the same METRICS_SCRAPE_TOKEN bearer check as the api's
+  # /metrics/scrape (services/metricsScrapeAuth.ts). The Authorization header
+  # passes through untouched, and Caddy still redacts it in logs by default.
+  # Must come BEFORE `handle @api`: `/metrics/*` there matches this path too,
+  # and named-matcher handles evaluate in written order. Installs without a
+  # separate worker container (BREEZE_ROLE=all) answer 502 here; their api
+  # already publishes everything on /metrics/scrape. If the worker sets
+  # METRICS_SCRAPE_IP_ALLOWLIST, it sees CADDY's address as the peer, not the
+  # scraper's, so the allowlist must list Caddy.
+  @workerMetrics path /metrics/worker
+  handle @workerMetrics {
+    encode zstd gzip
+    rewrite * /metrics
+    reverse_proxy worker:3001
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {
@@ -466,11 +485,30 @@
     reverse_proxy web:4321
   }
 
+  # Response-header policy. `>` = defer + replace (the upstream copy is dropped,
+  # so the browser never sees the header twice); `?` = default only, deferred.
   header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    X-Content-Type-Options "nosniff"
+    >Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    >X-Content-Type-Options "nosniff"
     # `?` = default only: capability-URL responses (verify, public invoice) send no-referrer from the app
     ?Referrer-Policy "strict-origin-when-cross-origin"
+    # SOC 2 header hardening (RoboShadow/ZAP 2026-10-18): static assets served
+    # by the Astro node server (/_astro/*, theme-bootstrap.js) never run the web
+    # middleware, so this is the only place that puts the policy on them.
+    ?Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+  }
+
+  # Cross-Origin-Resource-Policy (ZAP "Insufficient Site Isolation Against
+  # Spectre"). Deliberately NOT on API routes: the public trust badge
+  # (/api/v1/trust/public/.../badge.svg) is embedded as an <img> on customers'
+  # own sites, and partner-branding/avatar images may be too. Everything else
+  # (app HTML, portal, static assets, billing UI) is only ever embedded by
+  # 2breeze.app origins, so same-site is safe.
+  @corp {
+    not path /api/* /s/* /i/* /activate/* /health /health/* /ready /metrics/* /oauth/* /.well-known/*
+  }
+  header @corp {
+    ?Cross-Origin-Resource-Policy "same-site"
   }
 }
 

@@ -250,6 +250,18 @@ export const moveTicketOrgSchema = z.object({
   acceptCurrencyMismatch: z.boolean().optional()
 });
 
+// Ticket merge (#8972, spec §3.4). `notifyRequester` omitted → the API
+// defaults it on when the two requesters differ (D6). Merge is irreversible (D4).
+export const mergeTicketSchema = z.object({
+  intoTicketId: z.string().guid(),
+  notifyRequester: z.boolean().optional(),
+});
+export type MergeTicketInput = z.infer<typeof mergeTicketSchema>;
+
+export const mergePreviewQuerySchema = z.object({
+  into: z.string().guid(),
+});
+
 const ticketTypeListQuerySchema = z.preprocess(
   (raw) => {
     if (raw === undefined) return undefined;
@@ -274,10 +286,15 @@ export const listTicketsQuerySchema = z.object({
   priority: ticketPrioritySchema.optional(),
   slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
-  sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage'),
+  sort: z.enum(['triage', 'newest', 'oldest', 'updated', 'due']).default('triage'),
   // deleted=only returns the soft-deleted "Archived" queue (tickets:manage only).
   // Omitted/any other value returns live tickets (deleted rows excluded).
-  deleted: z.enum(['only']).optional()
+  deleted: z.enum(['only']).optional(),
+  // #8972: merged tombstones are hidden unless `showMerged=true`.
+  showMerged: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+  // #8313: `imported=true` lists only tickets a migration window imported
+  // (migration_window_id set, served by idx_tickets_migration_window).
+  imported: z.enum(['true', 'false']).transform((v) => v === 'true').optional()
 });
 
 export const ticketCategoryInputSchema = z.object({

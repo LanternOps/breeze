@@ -50,6 +50,19 @@ describe('AiUsageBreakdown', () => {
     expect(window.location.hash).toBe('#usage-by-surface');
   });
 
+  it('titles the card by the active grouping', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('model')));
+    render(<AiUsageBreakdown orgId={null} />);
+    expect(await screen.findByRole('heading', { name: 'AI usage by model' })).toBeTruthy();
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('org')));
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-org'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by organization' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-user'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by technician' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-surface'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by feature' })).toBeTruthy();
+  });
+
   it('reads the grouping from the hash on mount', async () => {
     window.location.hash = '#usage-by-org';
     fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('org')));
@@ -124,7 +137,7 @@ describe('AiUsageBreakdown', () => {
 });
 
 const QT = {
-  invocations: 10, costCents: 100, refusals: 1, refusalRate: 0.1, failovers: null, failoverRate: null,
+  invocations: 10, costCents: 100, refusals: 1, refusalRate: 0.1, refusedToolBatches: 0, refusedToolBatchRate: 0, failovers: null, failoverRate: null,
   conversations: 3, costPerConversationCents: 33, sessions: 3, flagged: 1, autoFlagged: 2, flagRate: 1 / 3,
   switchedAway: 1, continued: null, leftRate: 1 / 3, resolvedSessions: 2, medianTurnsToResolution: 4,
   agentRuns: 0, agentRunsCompleted: 0, agentCompletionRate: null,
@@ -142,6 +155,7 @@ describe('AiUsageBreakdown quality view (W11)', () => {
     await waitFor(() => expect(fetchWithAuth.mock.calls.at(-1)![0]).toMatch(new RegExp(`^/ai/models/usage/quality\\?groupBy=model.*orgId=${ORG}`)));
     expect(window.location.hash).toBe('#quality-by-model');
     expect(screen.getByTestId('ai-quality-groupby-prompt_profile')).toBeTruthy();
+    expect(screen.getByTestId('ai-quality-groupby-tool_profile').textContent).toMatch(/Tool profile/);
     expect(screen.queryByTestId('ai-usage-groupby-user')).toBeNull();
   });
 

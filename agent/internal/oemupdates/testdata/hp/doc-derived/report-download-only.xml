@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<HPIA>
+  <Recommendations>
+    <Drivers>
+      <Recommendation TargetComponent="Example Network Driver">
+        <Solution>
+          <Softpaq>
+            <Id>sp100001</Id>
+            <Name>Example Network Driver</Name>
+            <Version>1.2.0</Version>
+          </Softpaq>
+        </Solution>
+        <Status>Installed</Status>
+      </Recommendation>
+    </Drivers>
+    <Firmware>
+      <Recommendation TargetComponent="Example Firmware">
+        <Solution>
+          <Softpaq>
+            <Id>sp100004</Id>
+            <Name>Example Firmware</Name>
+            <Version>4.0.0</Version>
+          </Softpaq>
+        </Solution>
+        <Status>Downloaded</Status>
+      </Recommendation>
+    </Firmware>
+  </Recommendations>
+</HPIA>

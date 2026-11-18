@@ -30,6 +30,8 @@ const { decideMock } = vi.hoisted(() => ({ decideMock: vi.fn() }));
 vi.mock('../../services/portal/trustPageEditor', () => ({ decidePortalTrustPageEditor: decideMock }));
 
 import {
+  PORTAL_SECTION_GATES,
+  portalSectionGate,
   createPortalFeatureGateAny,
   createPortalFeatureGateStrict,
   requirePortalTrustPageEditor,
@@ -241,6 +243,45 @@ describe('createPortalFeatureGateAny', () => {
     const response = await anyApp(false).request('/protected');
     expect(response.status).toBe(401);
     expect(dbState.where).toBeUndefined();
+  });
+});
+
+describe('portalSectionGate (shared gate table, #9350)', () => {
+  const app = (key: Parameters<typeof portalSectionGate>[0], withAuth = true) => {
+    const a = new Hono();
+    if (withAuth) {
+      a.use('*', async (c, next) => {
+        c.set('portalAuth', { user: { id: 'pu1', orgId: ORG_ID }, token: 't', authMethod: 'bearer', timezone: 'UTC' } as never);
+        await next();
+      });
+    }
+    a.use('/s', portalSectionGate(key));
+    a.get('/s', (c) => c.json({ ok: true }));
+    return a;
+  };
+
+  it("requires EVERY flag of a multi-flag row, answering with the first missing flag's code", async () => {
+    dbState.rows = [{ enableSupportUsage: true, enableHourBlock: false }];
+    const res = await app('supportUsage').request('/s');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'PORTAL_HOUR_BLOCK_DISABLED' });
+
+    dbState.rows = [{ enableSupportUsage: false, enableHourBlock: true }];
+    const first = await app('supportUsage').request('/s');
+    expect(first.status).toBe(403);
+    expect(await first.json()).toMatchObject({ code: 'PORTAL_SUPPORT_USAGE_DISABLED' });
+
+    dbState.rows = [{ enableSupportUsage: true, enableHourBlock: true }];
+    expect((await app('supportUsage').request('/s')).status).toBe(200);
+  });
+
+  it.each(PORTAL_SECTION_GATES.map((g) => [g.key] as const))('%s fails closed on a missing portal_branding row', async (key) => {
+    dbState.rows = [];
+    expect((await app(key).request('/s')).status).toBe(403);
+  });
+
+  it('rejects unauthenticated requests', async () => {
+    expect((await app('dashboard', false).request('/s')).status).toBe(401);
   });
 });
 

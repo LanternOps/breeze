@@ -42,6 +42,9 @@ export const ticketOutboxEventEnum = [
   'ticket.assigned',
   'ticket.commented',
   'ticket.restored',
+  // #8972 ticket merge (spec §3.7): written on the SURVIVOR, payload
+  // { sourceTicketId, targetTicketId, sourceInternalNumber, targetInternalNumber }.
+  'ticket.merged',
 ] as const;
 export type TicketOutboxEvent = (typeof ticketOutboxEventEnum)[number];
 

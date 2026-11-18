@@ -57,7 +57,7 @@ const evaluationQuerySchema = z.object({
   labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
 });
 
-const feedbackBodySchema = z.object({
+export const feedbackBodySchema = z.object({
   outcome: z.enum(['failure_confirmed', 'replaced', 'false_alarm']),
   occurredAt: z.coerce.date().optional(),
   sourceEventId: z.string().guid().optional(),
@@ -89,6 +89,55 @@ function reliabilityFeedbackDedupeKey(options: {
     return `source:${options.sourceEventId}:${options.outcome}`;
   }
   return `snapshot:${options.snapshotComputedAt ?? 'unknown'}:${options.outcome}`;
+}
+
+export type DeviceReliabilityFeedbackOutcome =
+  | { status: 'no_snapshot' }
+  | { status: 'ok'; feedback: { deviceId: string; eventType: string; outcome: string } };
+
+/**
+ * Label a device's reliability score (failure confirmed / replaced / false
+ * alarm). The caller has already passed the device org + site gate. Shared by
+ * the REST route and the `reliability_feedback` AI tool (full-control W07,
+ * #6777).
+ */
+export async function recordDeviceReliabilityFeedback(options: {
+  orgId: string;
+  deviceId: string;
+  actorUserId?: string;
+  body: z.infer<typeof feedbackBodySchema>;
+}): Promise<DeviceReliabilityFeedbackOutcome> {
+  const { orgId, deviceId, actorUserId, body } = options;
+  const snapshot = await getDeviceReliability(deviceId);
+  if (!snapshot) return { status: 'no_snapshot' };
+
+  const eventType = body.outcome === 'failure_confirmed'
+    ? 'device.failure_confirmed'
+    : body.outcome === 'replaced'
+      ? 'device.replaced'
+      : 'device.false_alarm';
+
+  await emitDeviceReliabilityFeedback({
+    orgId,
+    deviceId,
+    eventType,
+    dedupeKey: reliabilityFeedbackDedupeKey({
+      outcome: body.outcome,
+      sourceEventId: body.sourceEventId,
+      snapshotComputedAt: body.snapshotComputedAt ?? snapshot.computedAt,
+    }),
+    outcome: body.outcome,
+    actorUserId,
+    occurredAt: body.occurredAt,
+    metadata: {
+      ...body.metadata,
+      reliabilityScore: snapshot.reliabilityScore,
+      topIssues: snapshot.topIssues,
+      computedAt: snapshot.computedAt,
+    },
+  });
+
+  return { status: 'ok', feedback: { deviceId, eventType, outcome: body.outcome } };
 }
 
 export const reliabilityRoutes = new Hono();
@@ -309,44 +358,19 @@ reliabilityRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const snapshot = await getDeviceReliability(deviceId);
-    if (!snapshot) {
+    const outcome = await recordDeviceReliabilityFeedback({
+      orgId: device.orgId,
+      deviceId,
+      actorUserId: auth.user?.id,
+      body,
+    });
+    if (outcome.status === 'no_snapshot') {
       return c.json({ error: 'No reliability snapshot available for this device yet' }, 404);
     }
 
-    const eventType = body.outcome === 'failure_confirmed'
-      ? 'device.failure_confirmed'
-      : body.outcome === 'replaced'
-        ? 'device.replaced'
-        : 'device.false_alarm';
-
-    await emitDeviceReliabilityFeedback({
-      orgId: device.orgId,
-      deviceId,
-      eventType,
-      dedupeKey: reliabilityFeedbackDedupeKey({
-        outcome: body.outcome,
-        sourceEventId: body.sourceEventId,
-        snapshotComputedAt: body.snapshotComputedAt ?? snapshot.computedAt,
-      }),
-      outcome: body.outcome,
-      actorUserId: auth.user?.id,
-      occurredAt: body.occurredAt,
-      metadata: {
-        ...body.metadata,
-        reliabilityScore: snapshot.reliabilityScore,
-        topIssues: snapshot.topIssues,
-        computedAt: snapshot.computedAt,
-      },
-    });
-
     return c.json({
       success: true,
-      feedback: {
-        deviceId,
-        eventType,
-        outcome: body.outcome,
-      },
+      feedback: outcome.feedback,
     });
   }
 );

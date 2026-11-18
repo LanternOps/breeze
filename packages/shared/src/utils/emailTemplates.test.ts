@@ -16,7 +16,9 @@ describe('email template catalog', () => {
       'ticket_comment_notification',
       'ticket_autoresponse',
       'ticket_resolved',
+      'ticket_merged',
       'quote_send',
+      'agreement_request_send',
       'invoice_send',
       'invoice_autopay',
       'portal_invite',
@@ -112,6 +114,20 @@ describe('email template catalog', () => {
     expect(varsForEmailTemplate('quote_send')).toEqual([
       'quote_number', 'quote_title', 'org_name', 'partner_name', 'total', 'expiry_date', 'accept_url', 'cta_button',
     ]);
+  });
+
+  it('agreement_request_send (#9075 W2b): labelled CTA template, closed vars, reuses existing keys + agreement_name', () => {
+    expect(varsForEmailTemplate('agreement_request_send')).toEqual([
+      'agreement_name', 'org_name', 'partner_name', 'expiry_date', 'accept_url', 'cta_button',
+    ]);
+    expect(emailTemplateLabel('agreement_request_send')).toBe('Agreement request');
+    expect(emailTemplateHasCta('agreement_request_send')).toBe(true);
+    const d = emailTemplateFieldDefaults('agreement_request_send');
+    expect(d.html).toContain('{{cta_button}}');
+    expect(d.html).toContain('{{agreement_name}}');
+    expect(d.buttonLabel).toBe('Review & sign');
+    // An agreement request carries no price.
+    expect(`${d.subject}${d.heading}${d.html}`).not.toMatch(/total|price|\$/i);
   });
 
   it('invoice_send vars are the closed list', () => {

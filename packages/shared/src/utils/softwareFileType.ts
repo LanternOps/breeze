@@ -32,8 +32,13 @@
  *  agent/internal/remote/tools/software_install.go. Nothing enforces that
  *  mirror, and the drift is asymmetric: this list backs a `z.enum` on the
  *  create-version route, so a type added agent-side without being added here is
- *  rejected by the API with a 400. */
-export const SOFTWARE_FILE_TYPES = ['msi', 'exe', 'dmg', 'deb', 'pkg'] as const;
+ *  rejected by the API with a 400.
+ *
+ *  `zip` (#6958): the agent only extracts the archive; the version's required
+ *  post-install script does the install. The API rejects a zip without one
+ *  (validateSoftwareVersionInstallSpec) and dispatches it only to an agent
+ *  that runs install scripts (apps/api services/softwareInstallAgentSupport.ts). */
+export const SOFTWARE_FILE_TYPES = ['msi', 'exe', 'dmg', 'deb', 'pkg', 'zip'] as const;
 
 export type SoftwareFileType = (typeof SOFTWARE_FILE_TYPES)[number];
 

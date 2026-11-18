@@ -192,10 +192,16 @@ const ticketColumns = {
   resolutionSlaMinutes: tickets.resolutionSlaMinutes,
   slaBreachedAt: tickets.slaBreachedAt,
   slaBreachReason: tickets.slaBreachReason,
+  responseDueAt: tickets.responseDueAt,
+  resolutionDueAt: tickets.resolutionDueAt,
+  responseWarnAt: tickets.responseWarnAt,
+  resolutionWarnAt: tickets.resolutionWarnAt,
   deletedAt: tickets.deletedAt,
   createdAt: tickets.createdAt,
   updatedAt: tickets.updatedAt,
   migrationWindowId: tickets.migrationWindowId,
+  mergedIntoTicketId: tickets.mergedIntoTicketId,
+  mergedAt: tickets.mergedAt,
   changeXid: sql<string>`${tickets.partnerFeedXid}::text`,
 };
 
@@ -245,9 +251,16 @@ export function toPartnerTicketRecord(row: TicketRow, ref: TicketExternalRef | n
     resolutionSlaMinutes: row.resolutionSlaMinutes ?? null,
     slaBreachedAt: iso(row.slaBreachedAt ?? null),
     slaBreachReason: truncateText(row.slaBreachReason ?? null, 1000),
+    responseDueAt: iso(row.responseDueAt ?? null),
+    resolutionDueAt: iso(row.resolutionDueAt ?? null),
+    responseWarnAt: iso(row.responseWarnAt ?? null),
+    resolutionWarnAt: iso(row.resolutionWarnAt ?? null),
     createdAt: iso(row.createdAt ?? null)!,
     updatedAt: iso(row.updatedAt ?? null)!,
     migrationWindowId: row.migrationWindowId ?? null,
+    // #8972: set on a merge tombstone (read-only); null on every other ticket.
+    mergedIntoTicketId: row.mergedIntoTicketId ?? null,
+    mergedAt: iso(row.mergedAt ?? null),
     changeVersion: String(row.changeXid),
   };
   return { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };

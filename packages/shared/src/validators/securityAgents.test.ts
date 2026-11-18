@@ -19,9 +19,18 @@ describe('securityAgentsInlineSettingsSchema (#6960)', () => {
         { vendor: 'sentinelone', enabled: false },
         { vendor: 'controld', enabled: false },
         { vendor: 'nextdns', enabled: false, platforms: ['linux'] },
+        { vendor: 'bitdefender', enabled: false },
       ],
     });
     expect(parsed.agents.map((a) => a.vendor)).toEqual([...SECURITY_AGENT_VENDOR_KEYS]);
+  });
+
+  it('accepts bitdefender as a framework vendor (#8170), and the agents cap grows with the vendor list', () => {
+    expect(SECURITY_AGENT_VENDOR_KEYS).toContain('bitdefender');
+    expect(securityAgentsInlineSettingsSchema.safeParse({ version: 1, agents: [{ vendor: 'bitdefender', enabled: false }] }).success).toBe(true);
+    const everyVendor = SECURITY_AGENT_VENDOR_KEYS.map((vendor) => ({ vendor, enabled: false }));
+    expect(everyVendor).toHaveLength(5);
+    expect(securityAgentsInlineSettingsSchema.safeParse({ version: 1, agents: everyVendor }).success).toBe(true);
   });
 
   it('rejects an unknown top-level key, so a secret cannot ride along', () => {

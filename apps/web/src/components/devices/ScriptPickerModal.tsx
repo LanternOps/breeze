@@ -8,6 +8,7 @@ import { usePermissions } from '../../lib/permissions';
 import { hasSecretParameters, runtimeParameters, secretsBlockedForRun, type ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
+import { ScopeBadge } from '../shared/ScopeBadge';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -21,6 +22,13 @@ export type Script = {
   category: string;
   osTypes: OSType[];
   isSystem?: boolean;
+  /**
+   * Ownership (#9935): importing a catalog (system) script creates an org or
+   * partner-wide copy with the same name, so the picker badges each row's
+   * source. Absent when the caller's rows don't carry them — no badge then.
+   */
+  orgId?: string | null;
+  partnerId?: string | null;
   parameters?: ScriptParameter[];
   /**
    * The script's SAVED run context (#4888). `GET /scripts` selects whole rows,
@@ -140,6 +148,8 @@ export default function ScriptPickerModal({
           category: (s.category ?? t('scriptPickerModal.generalCategory')) as string,
           osTypes: (s.osTypes ?? s.os_types ?? ['macos', 'linux']) as OSType[],
           isSystem: s.isSystem as boolean | undefined,
+          orgId: s.orgId as string | null | undefined,
+          partnerId: s.partnerId as string | null | undefined,
           parameters: Array.isArray(s.parameters) ? (s.parameters as ScriptParameter[]) : undefined
         }));
 
@@ -352,6 +362,7 @@ export default function ScriptPickerModal({
                     <button
                       key={script.id}
                       type="button"
+                      data-testid={`script-picker-row-${script.id}`}
                       onClick={() => handleSelect(script)}
                       className="flex w-full items-start gap-3 rounded-lg border p-4 text-left transition hover:bg-muted/50"
                     >
@@ -362,7 +373,17 @@ export default function ScriptPickerModal({
                         {languageConfig[script.language].icon}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium">{script.name}</p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="font-medium">{script.name}</p>
+                          {(script.isSystem !== undefined || script.orgId !== undefined || script.partnerId !== undefined) && (
+                            <ScopeBadge
+                              testId={`script-source-badge-${script.id}`}
+                              orgId={script.orgId ?? null}
+                              partnerId={script.partnerId ?? null}
+                              isSystem={script.isSystem ?? false}
+                            />
+                          )}
+                        </div>
                         {script.description && (
                           <p className="mt-0.5 text-sm text-muted-foreground line-clamp-2">
                             {script.description}

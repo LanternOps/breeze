@@ -6,9 +6,15 @@
 import type { DeviceRole } from '@breeze/shared';
 
 export interface QuoteForContract {
+  /** #10361: stamped onto every created contract as source_quote_id. */
+  quoteId?: string | null;
   orgId: string;
   partnerId: string;
   quoteNumber: string;
+  /** #9778: quote title; names the contract when non-blank. */
+  title?: string | null;
+  /** #9778: client (organization) name, appended to a titled contract name. */
+  orgName?: string | null;
   currencyCode: string;
   terms: string | null;
 }
@@ -71,6 +77,8 @@ export interface NewContractSpec {
   notes?: string | null;
   terms?: string | null;
   createdBy?: string | null;
+  /** #10361: the accepted quote this contract came from (contracts.source_quote_id). */
+  sourceQuoteId?: string | null;
   lines: NewContractLineSpec[];
 }
 
@@ -94,6 +102,25 @@ const CADENCES: ReadonlyArray<{ key: 'monthly' | 'annual'; intervalMonths: numbe
   { key: 'annual', intervalMonths: 12, label: 'Annual' },
 ];
 
+// contracts.name is varchar(255).
+const CONTRACT_NAME_MAX = 255;
+
+/**
+ * #9778: "<title> — <client> (<cadence>)" so a contracts list is scannable.
+ * A quote with no title keeps the legacy "<quote number> — <cadence>".
+ * The title/client portion is truncated so the cadence suffix always survives.
+ */
+export function contractNameForQuote(quote: QuoteForContract, cadenceLabel: string): string {
+  const title = quote.title?.trim();
+  if (!title) return `${quote.quoteNumber} — ${cadenceLabel}`;
+  const client = quote.orgName?.trim();
+  const suffix = ` (${cadenceLabel})`;
+  const head = client ? `${title} — ${client}` : title;
+  const room = CONTRACT_NAME_MAX - suffix.length;
+  const clipped = head.length > room ? `${head.slice(0, room - 1).trimEnd()}…` : head;
+  return `${clipped}${suffix}`;
+}
+
 export function buildContractSpecsFromQuote(
   quote: QuoteForContract,
   lines: QuoteLineForContract[],
@@ -113,7 +140,7 @@ export function buildContractSpecsFromQuote(
     specs.push({
       orgId: quote.orgId,
       partnerId: quote.partnerId,
-      name: `${quote.quoteNumber} — ${cadence.label}`,
+      name: contractNameForQuote(quote, cadence.label),
       billingTiming: 'advance',
       intervalMonths: cadence.intervalMonths,
       startDate,
@@ -125,6 +152,7 @@ export function buildContractSpecsFromQuote(
       notes: null,
       terms: quote.terms ?? null,
       createdBy,
+      sourceQuoteId: quote.quoteId ?? null,
       lines: group.map((l, i) => {
         const base = {
           description: (l.name && l.description ? `${l.name} — ${l.description}` : (l.name ?? l.description ?? '')),

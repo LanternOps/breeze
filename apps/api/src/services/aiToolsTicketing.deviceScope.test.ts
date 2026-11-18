@@ -58,6 +58,8 @@ function chain(rows: unknown[]): any {
     set: () => self,
     returning: () => Promise.resolve(rows),
     limit: () => self,
+    // #8972 W1: link_device takes the ticket row lock (`.for('update')`).
+    for: () => Promise.resolve(rows),
     offset: () => Promise.resolve(rows),
     then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(res, rej),

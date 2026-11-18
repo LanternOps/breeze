@@ -1,8 +1,12 @@
 /**
- * The one way to delete a device group (#3205 W02). Three surfaces call it:
- * DELETE /groups/:id, DELETE /devices/groups/:id, and the AI manage_groups tool.
+ * The shared device-group deletion path (#3205 W02), used by both REST APIs,
+ * the AI manage_groups tool, and Fleet Design rollback.
  * Callers keep their own auth/site checks, audit write and peripheral-policy
  * scheduling; this module owns the transactional part.
+ * Partner deletion runs outside the request context in a partner-pinned system
+ * transaction, so suspended/holding orgs participate in the complete export
+ * lock set and no invisible memberships survive. Callers MUST first establish
+ * readability and enforce canManagePartnerWidePolicies in routes/groups.ts.
  *
  * Refuses while a draft/active/paused contract or draft/sent/viewed quote has
  * a per_device_group line on the group. Terminal documents do not block: the
@@ -13,9 +17,10 @@
  * insert takes FOR KEY SHARE on the same row (its composite FK), so one side
  * waits for the other and the loser fails cleanly.
  */
-import { and, eq, inArray } from 'drizzle-orm';
-import { db } from '../db';
-import { configPolicyAssignments, contracts, contractLines, deviceGroups, deviceGroupMemberships, groupMembershipLog, quotes, quoteLines } from '../db/schema';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
+import { configPolicyAssignments, contracts, contractLines, deviceGroups, deviceGroupMemberships, groupMembershipLog, organizations, quotes, quoteLines } from '../db/schema';
 
 export type DeviceGroupDeleteCode = 'NOT_FOUND' | 'HAS_CHILDREN' | 'BILLED_BY_CONTRACTS' | 'QUOTED_BY_QUOTES';
 
@@ -63,52 +68,87 @@ export async function listQuotesPricingGroup(executor: Executor, groupId: string
 }
 
 export interface DeleteDeviceGroupResult {
-  group: { id: string; name: string; orgId: string };
+  group: { id: string; name: string; orgId: string | null; partnerId: string | null };
   affectedDeviceIds: string[];
 }
 
-export async function deleteDeviceGroup(groupId: string, orgId: string): Promise<DeleteDeviceGroupResult> {
-  return db.transaction(async (tx) => {
+export async function deleteDeviceGroup(
+  groupId: string,
+  owner: { orgId: string } | { partnerId: string },
+): Promise<DeleteDeviceGroupResult> {
+  const remove = () => db.transaction(async (tx) => {
     const [group] = await tx
-      .select({ id: deviceGroups.id, name: deviceGroups.name, orgId: deviceGroups.orgId })
+      .select({ id: deviceGroups.id, name: deviceGroups.name, orgId: deviceGroups.orgId, partnerId: deviceGroups.partnerId })
       .from(deviceGroups)
-      .where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, orgId)))
+      .where(and(eq(deviceGroups.id, groupId), 'partnerId' in owner
+        ? and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, owner.partnerId))
+        : eq(deviceGroups.orgId, owner.orgId)))
       .for('update');
     if (!group) throw new DeviceGroupDeleteError('NOT_FOUND', 'Group not found');
 
-    const [child] = await tx.select({ id: deviceGroups.id }).from(deviceGroups).where(eq(deviceGroups.parentId, groupId)).limit(1);
-    if (child) throw new DeviceGroupDeleteError('HAS_CHILDREN', 'Cannot delete group with child groups');
+    if ('partnerId' in owner) {
+      // The assignment export trigger touches ALL partner orgs, including
+      // suspended, Quick Support and holding orgs. UNION deduplicates; ordering
+      // is shared with every other export-lock caller. Do not use the restricted
+      // partner-exclusive helpers, which are revoked from breeze_app.
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
+        SELECT org_id FROM (
+          SELECT ${organizations.id} AS org_id FROM ${organizations}
+            WHERE ${organizations.partnerId} = ${owner.partnerId}
+          UNION
+          SELECT ${deviceGroupMemberships.orgId} AS org_id FROM ${deviceGroupMemberships}
+            WHERE ${deviceGroupMemberships.groupId} = ${groupId}
+        ) AS affected_orgs ORDER BY org_id
+      )::uuid[])`);
+    } else {
+      const [child] = await tx.select({ id: deviceGroups.id }).from(deviceGroups).where(eq(deviceGroups.parentId, groupId)).limit(1);
+      if (child) throw new DeviceGroupDeleteError('HAS_CHILDREN', 'Cannot delete group with child groups');
 
-    const billing = await listContractsBillingGroup(tx, groupId);
-    const quoted = await listQuotesPricingGroup(tx, groupId);
-    // Report contracts FIRST, then quotes, and never collapse them: the two
-    // lists send the operator to two different places.
-    if (billing.length > 0 || quoted.length > 0) {
-      throw new DeviceGroupDeleteError(
-        billing.length > 0 ? 'BILLED_BY_CONTRACTS' : 'QUOTED_BY_QUOTES',
-        [
-          billing.length > 0 ? `Group is billed by ${billing.length} contract(s); remove those contract lines first` : null,
-          quoted.length > 0 ? `Group is priced by ${quoted.length} open quote(s); remove those quote lines first` : null,
-        ].filter(Boolean).join('. '),
-        billing.length > 0 ? billing.map((b) => ({ id: b.id, name: b.name, status: String(b.status) })) : undefined,
-        quoted.length > 0 ? quoted.map((q) => ({ id: q.id, quoteNumber: q.quoteNumber, status: String(q.status) })) : undefined,
-      );
+      const billing = await listContractsBillingGroup(tx, groupId);
+      const quoted = await listQuotesPricingGroup(tx, groupId);
+      // Report contracts FIRST, then quotes, and never collapse them: the two
+      // lists send the operator to two different places.
+      if (billing.length > 0 || quoted.length > 0) {
+        throw new DeviceGroupDeleteError(
+          billing.length > 0 ? 'BILLED_BY_CONTRACTS' : 'QUOTED_BY_QUOTES',
+          [
+            billing.length > 0 ? `Group is billed by ${billing.length} contract(s); remove those contract lines first` : null,
+            quoted.length > 0 ? `Group is priced by ${quoted.length} open quote(s); remove those quote lines first` : null,
+          ].filter(Boolean).join('. '),
+          billing.length > 0 ? billing.map((b) => ({ id: b.id, name: b.name, status: String(b.status) })) : undefined,
+          quoted.length > 0 ? quoted.map((q) => ({ id: q.id, quoteNumber: q.quoteNumber, status: String(q.status) })) : undefined,
+        );
+      }
     }
 
     const affected = await tx.select({ deviceId: deviceGroupMemberships.deviceId })
       .from(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, groupId));
-    await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, groupId));
-    // group_membership_log FKs device_groups with no ON DELETE (#3313).
+    // Clear polymorphic assignments before group deletion; log rows have a
+    // non-cascading group FK. All deletes follow the complete export pre-lock.
+    await tx.delete(configPolicyAssignments).where(and(
+      eq(configPolicyAssignments.level, 'device_group'),
+      eq(configPolicyAssignments.targetId, groupId),
+    ));
     await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, groupId));
-    // ab_config_policy_assignment_group_owner_delete trigger validates surviving assignments on group delete.
-    await tx.delete(configPolicyAssignments).where(
-      and(
-        eq(configPolicyAssignments.level, 'device_group'),
-        eq(configPolicyAssignments.targetId, groupId)
-      )
-    );
+    await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, groupId));
     await tx.delete(deviceGroups).where(eq(deviceGroups.id, groupId));
 
     return { group, affectedDeviceIds: affected.map((a) => a.deviceId) };
   });
+  if ('partnerId' in owner) return runOutsideDbContext(() => withSystemDbAccessContext(remove));
+  // An org-owned group's delete locks the group row before the membership
+  // rows, the reverse of the membership writers' order (export lock first),
+  // so it can be chosen as a deadlock victim. It runs in its own savepoint:
+  // rolling that back releases its locks. After a short pause, which lets the
+  // writer that won finish and commit, it retries once.
+  try {
+    return await remove();
+  } catch (err) {
+    if (pgErrorCode(err) !== '40P01') throw err;
+    await new Promise((resolve) => setTimeout(resolve, DELETE_RETRY_PAUSE_MS + Math.floor(Math.random() * DELETE_RETRY_PAUSE_MS)));
+    return remove();
+  }
 }
+
+/** Base pause before the one retry of an org-owned group delete (jittered up to 2x). */
+const DELETE_RETRY_PAUSE_MS = 100;

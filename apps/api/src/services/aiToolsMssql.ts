@@ -544,7 +544,8 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
   // ============================================
 
   registerTool({
-    tier: 2,
+    // W03 (#6757): tier 3 supervised — queues MSSQL_VERIFY on the device.
+    tier: 3,
     domain: 'backup',
     searchHint: 'Microsoft SQL Server backup snapshot verification',
     definition: {

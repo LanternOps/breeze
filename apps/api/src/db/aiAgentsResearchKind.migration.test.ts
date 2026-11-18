@@ -1,9 +1,10 @@
-// The newest migration redefining ai_agents_kind_chk / ai_agent_runs_profile_chk
-// is where the live contract lives (same convention as
-// aiAgentsAnalysisProfile.migration.test.ts, which stays frozen at v-prev).
+// Both CHECKs this migration defined were redefined later (profile by Wisp W05,
+// 2027-01-04-110350; kind and profile by Wisp delegation W1,
+// 2027-01-20-180000), so both assertions below are FROZEN at what this
+// migration shipped. The live CHECK == enum contract for both lives in
+// aiAgentsTroubleshootKind.migration.test.ts.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { AI_AGENT_KINDS, AI_AGENT_RUN_PROFILES } from '@breeze/shared';
 import { CORE_TENANT_EXPORT_POLICY } from '../services/tenantExportPolicyRegistry';
 import { aiAgents } from './schema/aiAgents';
 
@@ -12,11 +13,13 @@ const SQL = readFileSync(new URL(`../../migrations/${FILE}`, import.meta.url), '
 const listed = (re: RegExp) => (re.exec(SQL)?.[1] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean).sort();
 
 describe(`${FILE}`, () => {
-  it('ai_agents_kind_chk lists exactly AI_AGENT_KINDS', () => {
-    expect(listed(/ai_agents_kind_chk\s+CHECK \(kind IN \(([^)]*)\)\)/)).toEqual([...AI_AGENT_KINDS].sort());
+  it('ai_agents_kind_chk lists the five kinds that existed when it shipped', () => {
+    expect(listed(/ai_agents_kind_chk\s+CHECK \(kind IN \(([^)]*)\)\)/)).toEqual(['designer', 'helpdesk', 'patch', 'research', 'triage']);
   });
-  it('ai_agent_runs_profile_chk lists exactly AI_AGENT_RUN_PROFILES', () => {
-    expect(listed(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+  it('ai_agent_runs_profile_chk lists the nine profiles that existed when it shipped', () => {
+    expect(listed(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual(
+      ['analysis', 'design', 'full', 'narrative', 'patch', 'remediation_research', 'sweep', 'triage', 'verdict'],
+    );
   });
   it('makes created_by nullable only together with an XOR provisioner CHECK', () => {
     expect(SQL).toMatch(/ALTER COLUMN created_by DROP NOT NULL/);

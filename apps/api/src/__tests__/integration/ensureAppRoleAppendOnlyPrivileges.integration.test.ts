@@ -61,6 +61,10 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
     // Table-level UPDATE is revoked; the column-level UPDATE (org_id) grant for
     // the org-merge repoint is asserted in aiInvocationsAppendOnly.integration.
     'ai_invocations',
+    // Signed agreements (#9075 W4b, 2027-01-06-150000): table-level UPDATE is
+    // revoked; the column-level UPDATE (contract_id, org_id) grant is asserted
+    // in contractDocumentsAppendOnly.integration.
+    'contract_documents',
   ])('breeze_app has no UPDATE, DELETE, or TRUNCATE on %s after ensureAppRole runs', async (table) => {
     const p = await tablePrivileges(table);
     expect(p.can_update).toBe(false);
@@ -93,6 +97,9 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
     // UPDATE it, org erasure DELETEs it), so only TRUNCATE is revoked —
     // ensureAppRole.ts revokes it from breeze_app AND PUBLIC.
     'ai_budget_reservations',
+    // AI credit debit outbox (#9451): mark-sent/failed UPDATE it, org erasure
+    // DELETEs it; only TRUNCATE is revoked (breeze_app AND PUBLIC).
+    'ai_credit_debits',
   ])(
     'breeze_app keeps UPDATE/DELETE but has no TRUNCATE on %s',
     async (table) => {

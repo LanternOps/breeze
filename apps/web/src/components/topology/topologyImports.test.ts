@@ -6,10 +6,11 @@ import { describe, expect, it } from 'vitest';
  * The topology island runs under the web CSP (no 'unsafe-eval'). zod's JIT
  * probes `Function('')` when an object schema is CONSTRUCTED, unless
  * `@breeze/shared/validators/topologyZod` has set `jitless` first. The topology
- * validator subpaths import it before any schema; the `@breeze/shared` barrel
- * constructs hundreds of unrelated schemas before it and trips the CSP
- * (topology-browser-gate: "script-src: eval …/schemas.*.js"). Runtime imports
- * here must use the topology subpaths; type-only barrel imports are fine.
+ * validator subpaths import it before any schema. The `@breeze/shared` barrel
+ * now imports it first too, but it constructs hundreds of unrelated schemas and
+ * once tripped the CSP (topology-browser-gate: "script-src: eval
+ * …/schemas.*.js"), so runtime imports here still use the topology subpaths;
+ * type-only barrel imports are fine.
  */
 const dir = join(__dirname);
 const sources = readdirSync(dir).filter((name) => /\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name));

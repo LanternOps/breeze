@@ -83,6 +83,13 @@ describe('CustomFieldDefinitionImportStep', () => {
     expect(screen.getByTestId('cf-def-type-udf7')).toHaveValue('text');
   });
 
+  it('labels the Type options with the translated type names, not raw enum values', async () => {
+    render(<CustomFieldDefinitionImportStep source="datto_rmm" organizationId={ORG_ID} />);
+    await uploadCsv('UDF Slot\nudf7\n');
+    const labels = Array.from(screen.getByTestId('cf-def-type-udf7').querySelectorAll('option')).map((o) => o.textContent);
+    expect(labels).toEqual(['Text', 'Number', 'Yes/No', 'Dropdown', 'Date']);
+  });
+
   it('hides the partner-wide owner option from a user who cannot manage it', async () => {
     state.isPartnerScope = true;
     state.canManagePartnerWide = false;
@@ -127,6 +134,27 @@ describe('CustomFieldDefinitionImportStep', () => {
     for (const row of body.rows) {
       expect(row.fieldKey).toMatch(/^[a-z][a-z0-9_]*$/);
     }
+  });
+
+  it('splits camelCase source labels into underscore keys (#9679)', async () => {
+    mockPreview([{ index: 0, fieldKey: 'backup_plan', name: 'backupPlan' }]);
+    render(<CustomFieldDefinitionImportStep source="csv" organizationId={ORG_ID} />);
+    await uploadCsv('Key\nbackupPlan\n');
+    fireEvent.click(screen.getByTestId('cf-def-preview'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const [, init] = fetchWithAuthMock.mock.calls[0]!;
+    const body = JSON.parse((init as { body: string }).body) as { rows: Array<{ fieldKey: string }> };
+    expect(body.rows[0]!.fieldKey).toBe('backup_plan');
+  });
+
+  it('guesses each row type from a Type column and keeps the per-row override (#9679)', async () => {
+    render(<CustomFieldDefinitionImportStep source="csv" organizationId={ORG_ID} />);
+    await uploadCsv('Key,Type\nseats,Number\nactive,Checkbox\nnotes,String\n');
+    expect(screen.getByTestId('cf-def-type-seats')).toHaveValue('number');
+    expect(screen.getByTestId('cf-def-type-active')).toHaveValue('boolean');
+    expect(screen.getByTestId('cf-def-type-notes')).toHaveValue('text');
+    fireEvent.change(screen.getByTestId('cf-def-type-seats'), { target: { value: 'date' } });
+    expect(screen.getByTestId('cf-def-type-seats')).toHaveValue('date');
   });
 
   it('surfaces a type-conflict row and excludes it from the commit selection', async () => {

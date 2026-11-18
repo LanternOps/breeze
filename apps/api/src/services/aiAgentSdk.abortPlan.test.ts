@@ -40,6 +40,8 @@ vi.mock('../db/schema', () => ({
   // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
   devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
   patches: { severity: 'patches.severity', category: 'patches.category' },
+  // services/drPlanDefinition.ts lists dr_plan_groups columns at import time.
+  drPlanGroups: {},
 }));
 
 vi.mock('drizzle-orm', async (importOriginal) => ({
@@ -57,7 +59,7 @@ vi.mock('./aiAgent', () => ({
 
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: vi.fn(),
-  checkBudget: vi.fn(),
+  checkBudgetDetailed: vi.fn(),
   getRemainingBudgetUsd: vi.fn(),
 }));
 

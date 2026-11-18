@@ -57,6 +57,8 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./alertService', () => ({
   createAlert: vi.fn().mockResolvedValue('alert-1'),
+  resolveAlert: vi.fn().mockResolvedValue(true),
+  RESOLVABLE_ALERT_STATUSES: ['active', 'acknowledged', 'suppressed'],
 }));
 
 vi.mock('./featureConfigResolver', () => ({
@@ -76,7 +78,7 @@ vi.mock('./sentry', () => ({
 
 import { db } from '../db';
 import { alertTemplates, alertRules, alerts } from '../db/schema';
-import { createAlert } from './alertService';
+import { createAlert, resolveAlert } from './alertService';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
 import {
@@ -226,6 +228,32 @@ describe.each([ensurePatchJobFailureRule, ensureRebootPendingRule])('patch rule 
 });
 
 describe('emitPatchJobFailureAlert', () => {
+  it.each([
+    { name: 'retains multiline errors beyond 200 characters', error: 'x'.repeat(250) + '\nInstaller technology differs.' },
+    { name: 'retains a message at the code point limit', error: '😀'.repeat(4000 - '1 patch(es) failed to install on HOST-01. '.length) },
+    { name: 'caps oversized errors without splitting emoji', error: '😀'.repeat(5000) },
+  ])('$name', async ({ error }) => {
+    mockSelectOnce([{ hostname: 'HOST-01' }]);
+    mockSelectOnce([{ id: 'rule-1' }]);
+
+    await emitPatchJobFailureAlert({
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      patchJobId: JOB_ID,
+      failedCount: 1,
+      errorMessage: error,
+    });
+
+    const fullMessage = '1 patch(es) failed to install on HOST-01. ' + error;
+    const { message } = vi.mocked(createAlert).mock.calls[0]![0];
+    if (Array.from(fullMessage).length > 4000) {
+      expect(Array.from(message!)).toHaveLength(4000);
+      expect(message).toBe('1 patch(es) failed to install on HOST-01. ' + '😀'.repeat(3957) + '…');
+    } else {
+      expect(message).toBe(fullMessage);
+    }
+  });
+
   it('raises through createAlert with a ruleId, never inserting into alerts directly', async () => {
     mockSelectOnce([{ hostname: 'HOST-01' }]); // hostname lookup
     mockSelectOnce([{ id: 'rule-1' }]); // ensureRule: existing rule
@@ -235,7 +263,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 2,
-      errorExcerpt: 'disk full',
+      errorMessage: 'disk full',
     });
 
     expect(alertId).toBe('alert-1');
@@ -269,7 +297,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     const templateInsert = insertCalls.find((c) => c.table === alertTemplates);
@@ -297,7 +325,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBeNull();
@@ -321,7 +349,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBe('alert-1');
@@ -339,7 +367,7 @@ describe('emitPatchJobFailureAlert', () => {
         deviceId: DEVICE_ID,
         patchJobId: JOB_ID,
         failedCount: 1,
-        errorExcerpt: null,
+        errorMessage: null,
       }),
     ).resolves.toBeNull();
   });
@@ -354,7 +382,7 @@ describe('emitPatchJobFailureAlert', () => {
       deviceId: DEVICE_ID,
       patchJobId: JOB_ID,
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(result).toBeNull();
@@ -370,7 +398,7 @@ describe('emitPatchJobFailureAlert', () => {
       patchJobId: JOB_ID,
       hostname: 'GIVEN-HOST',
       failedCount: 1,
-      errorExcerpt: null,
+      errorMessage: null,
     });
 
     expect(vi.mocked(createAlert)).toHaveBeenCalledWith(
@@ -560,5 +588,37 @@ describe('loadOldestRebootRequiredSince', () => {
   it('throws on an unparseable value instead of silently dropping the reboot flag', async () => {
     mockMinRow('not-a-timestamp');
     await expect(loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).rejects.toThrow(TypeError);
+  });
+});
+
+describe('resolveClearedRebootPendingAlerts', () => {
+  function mockCandidates(ids: string[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(ids.map((id) => ({ id }))) }) }),
+          }),
+        }),
+      }),
+    } as never);
+  }
+
+  it('one failing resolve does not strand the rest of the batch, and the count survives', async () => {
+    const { resolveClearedRebootPendingAlerts } = await import('./patchAlerts');
+    mockCandidates(['a1', 'a2', 'a3']);
+    vi.mocked(resolveAlert).mockReset();
+    vi.mocked(resolveAlert)
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error('publish failed'))
+      .mockResolvedValueOnce(true);
+
+    await expect(resolveClearedRebootPendingAlerts()).resolves.toBe(2);
+    expect(vi.mocked(resolveAlert)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ alertId: 'a2' }),
+    );
   });
 });

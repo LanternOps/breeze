@@ -20,11 +20,13 @@ import { buildEscalationCas, buildEnrichmentClaimScope } from './incidentJobs';
 describe('incident winner predicates (compiled SQL)', () => {
   const dialect = new PgDialect();
 
-  it('escalation CAS is an AND of the incident id and an unescalated marker', () => {
+  it('escalation CAS is an AND of the incident id, an unescalated marker and a pre-containment status', () => {
     const { sql, params } = dialect.sqlToQuery(buildEscalationCas('inc-1')!);
 
-    expect(sql).toBe('("incidents"."id" = $1 and "incidents"."escalated_at" is null)');
-    expect(params).toEqual(['inc-1']);
+    expect(sql).toBe(
+      '("incidents"."id" = $1 and "incidents"."escalated_at" is null and "incidents"."status" in ($2, $3))'
+    );
+    expect(params).toEqual(['inc-1', 'detected', 'analyzing']);
   });
 
   it('enrichment claim scope is open-and-unclaimed, keyed on the marker column', () => {

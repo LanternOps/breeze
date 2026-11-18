@@ -1,7 +1,10 @@
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { assertOemUpdatesLinkWrite } from './oemUpdates/oemUpdatesLinkWrite';
+import { armsBeyond, hasArmedCategory } from '@breeze/shared';
 import { syncManagedSoftwarePolicy } from './securityAgents/managedPolicyGenerator';
 import {
   configurationPolicies,
@@ -48,7 +51,7 @@ import {
   isCompatibleParent,
   PolicyHasChildrenError,
 } from './configPolicyOwnership';
-import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { captureException } from './sentry';
 import { z } from 'zod';
 import {
@@ -57,6 +60,8 @@ import {
   configFeatureInlineSettingsSchema,
   duplicateComplianceItemNameMessage,
   duplicateComplianceItemNames,
+  overlongComplianceItemNameMessage,
+  overlongComplianceItemNames,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   hardwareMonitoringInlineSettingsSchema,
@@ -66,6 +71,8 @@ import {
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -80,9 +87,18 @@ import {
   tryNormalizePatchInlineSettings,
 } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import {
+  uncollectableComplianceRegistryPathMessage,
+  uncollectableComplianceRegistryPaths,
+} from '../routes/agents/policyProbeSafety';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
+import { scheduleOemPolicySideRefresh } from './oemUpdates/policySideRefreshTrigger';
+import {
+  capturePeripheralLinkDeleteScope,
+  schedulePeripheralLinkReconcile,
+} from './peripheralLinkReconcileTrigger';
 import {
   describeQuarantineApproval,
   securityLinkAuthorityColumns,
@@ -114,6 +130,8 @@ export const remoteAccessConsentSettingsSchema = z.object({
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
   technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+  // #10190 W06 (OD-5 (c), Gate A): default ON.
+  allowUserEndSession: z.boolean().default(true),
 });
 
 // Write-path validation for the WHOLE remote_access inlineSettings blob: the
@@ -131,6 +149,7 @@ export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSc
   notifyOnSessionEnd: z.boolean().optional(),
   showActiveIndicator: z.boolean().optional(),
   technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+  allowUserEndSession: z.boolean().optional(),
 });
 
 // Exported so the route can import the same schema (single source of truth).
@@ -177,8 +196,12 @@ export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'devic
 
 // Discriminated union so a valid result can't carry a stray error string and
 // an invalid result can't omit one — every `return` in validateAssignmentTarget
-// below conforms.
-export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
+// below conforms. The structured partner-group refusal carries its HTTP class;
+// routes must not infer that class from human-readable error text.
+export type AssignmentTargetValidation =
+  | { valid: true }
+  | { valid: false; error: string; code?: undefined }
+  | { valid: false; error: string; code: 'PARTNER_GROUP_TARGET_UNSUPPORTED'; status: 400 };
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -303,7 +326,7 @@ const INVALID_PARENT_CHECK_CONSTRAINTS: ReadonlySet<string> = new Set([
 function isInvalidParentDbError(err: unknown): boolean {
   const code = pgErrorCode(err);
   const constraint = pgErrorConstraint(err) ?? '';
-  if (code === '23503') return constraint === 'configuration_policies_parent_policy_id_fkey';
+  if (isPgForeignKeyViolationCode(code)) return constraint === 'configuration_policies_parent_policy_id_fkey';
   if (code === '23514') return INVALID_PARENT_CHECK_CONSTRAINTS.has(constraint);
   return false;
 }
@@ -532,6 +555,59 @@ export async function policyEffectivelyEnablesHpCmslCollection(policyId: string)
   return warrantyHpCmslCollectionEffective(row?.inlineSettings);
 }
 
+/**
+ * True when the named parent policy carries an `oem_updates` link that would
+ * install anything (#11070) — the input to the create-with-parent gate in
+ * routes/configurationPolicies/crud.ts. One level, for the reason given on
+ * parentPolicyEnablesHpCmslCollection: a parent is always a root policy, and a
+ * parent this context cannot see makes createConfigPolicy refuse the create.
+ */
+export async function parentPolicyArmsOemUpdates(parentId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, parentId),
+        eq(configPolicyFeatureLinks.featureType, 'oem_updates')
+      )
+    )
+    .limit(1);
+  return hasArmedCategory(row?.inlineSettings);
+}
+
+/**
+ * True when the `oem_updates` link in effect on a policy (its own, else its
+ * parent's, whole) would install anything (#11070). For callers without a loaded
+ * policy aggregate (the AI tools). FAILS CLOSED: a policy or a parent that is set
+ * but not visible to this context reads as armed, because "can't tell" must not
+ * read as "no parent" — the effective view alone would drop it silently.
+ */
+export async function policyEffectivelyArmsOemUpdates(policyId: string): Promise<boolean> {
+  const [own] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'oem_updates')))
+    .limit(1);
+  if (own) return hasArmedCategory(own.inlineSettings);
+
+  const [policy] = await db
+    .select({ parentPolicyId: configurationPolicies.parentPolicyId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, policyId))
+    .limit(1);
+  if (!policy) return true;
+  if (!policy.parentPolicyId) return false;
+
+  const [parent] = await db
+    .select({ id: configurationPolicies.id })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, policy.parentPolicyId))
+    .limit(1);
+  if (!parent) return true;
+  return parentPolicyArmsOemUpdates(parent.id);
+}
+
 export async function listEligibleParentPolicies(
   auth: AuthContext,
   sel: { ownerScope: 'organization'; orgId: string } | { ownerScope: 'partner' },
@@ -677,9 +753,31 @@ export async function listConfigPolicies(
     else linksByPolicyId.set(link.configPolicyId, [entry]);
   }
 
+  // #9565: a partner-owned policy (org_id NULL) applies to every organization
+  // only once it has a partner-level assignment; until then it applies to no
+  // organization at all. The list's "Partner-wide" badge keys off this flag.
+  // ADDITIVE and batched like the links read above: one statement per page,
+  // issued only when the page holds a partner-owned row. Tenancy: the
+  // assignment RLS policies are the same EXISTS join back to the parent
+  // policy, so restricting to ids the access-filtered query already returned
+  // adds no visibility.
+  const partnerOwnedIds = rows.filter((row) => row.orgId === null).map((row) => row.id);
+  const partnerWideAssignedIds = new Set<string>();
+  if (partnerOwnedIds.length) {
+    const partnerAssignmentRows = await db
+      .select({ configPolicyId: configPolicyAssignments.configPolicyId })
+      .from(configPolicyAssignments)
+      .where(and(
+        inArray(configPolicyAssignments.configPolicyId, partnerOwnedIds),
+        eq(configPolicyAssignments.level, 'partner'),
+      ));
+    for (const assignment of partnerAssignmentRows) partnerWideAssignedIds.add(assignment.configPolicyId);
+  }
+
   const data = rows.map((row) => ({
     ...row,
     featureLinks: linksByPolicyId.get(row.id) ?? [],
+    hasPartnerWideAssignment: partnerWideAssignedIds.has(row.id),
   }));
 
   return { data, pagination: { page: pagination.page, limit: pagination.limit, total } };
@@ -722,6 +820,11 @@ export async function updateConfigPolicy(
   // is no longer active close through the reconcile.
   if (data.status !== undefined && data.status !== existing.status) {
     scheduleComplianceAlertReconcile({ configPolicyId: id }, 'policy-status');
+    // A switched-on/off policy carrying vendor updates changes its devices' winning link (#11242).
+    scheduleOemPolicySideRefresh({ configPolicyId: id, onlyIfOemLinked: true }, 'policy-status');
+    // Only an active config policy's Peripheral Control link governs devices
+    // (#9619); a no-op when the policy carries no peripheral link.
+    schedulePeripheralLinkReconcile({ configPolicyId: id, standalone: true }, 'policy-status');
   }
   return updated;
 }
@@ -752,6 +855,14 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
     .where(eq(configurationPolicies.parentPolicyId, id));
   if (children.length > 0) throw new PolicyHasChildrenError(children);
 
+  // The delete cascades the policy's links and assignments away, so the
+  // devices its Peripheral Control link governed must be captured first (#9619).
+  // Best effort: the periodic peripheral reconciliation sweep is the net.
+  const peripheralScope = await capturePeripheralLinkDeleteScope(id).catch((error) => {
+    console.error('[configurationPolicy] could not capture peripheral link scope before delete:', error);
+    return null;
+  });
+
   try {
     const [deleted] = await db
       .delete(configurationPolicies)
@@ -762,13 +873,17 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
       ? { orgId: existing.orgId }
       : existing.partnerId ? { partnerId: existing.partnerId } : null;
     if (deleted && owner) scheduleComplianceAlertReconcile(owner, 'policy-delete');
+    if (deleted && owner) scheduleOemPolicySideRefresh(owner, 'policy-delete');
+    if (deleted && peripheralScope) {
+      schedulePeripheralLinkReconcile({ ...peripheralScope, standalone: true }, 'policy-delete');
+    }
     return deleted ?? null;
   } catch (err) {
     // Lost the race: a child was created after the check above. The FK is the
     // real guard; report the same 409 (without the names, which we no longer
     // have a consistent read of).
     if (
-      pgErrorCode(err) === '23503'
+      isPgForeignKeyViolationCode(pgErrorCode(err))
       && pgErrorConstraint(err) === 'configuration_policies_parent_policy_id_fkey'
     ) {
       throw new PolicyHasChildrenError([]);
@@ -1072,6 +1187,7 @@ async function decomposeInlineSettings(
         notifyOnSessionEnd: parsed.notifyOnSessionEnd,
         showActiveIndicator: parsed.showActiveIndicator,
         technicianIdentityLevel: parsed.technicianIdentityLevel,
+        allowUserEndSession: parsed.allowUserEndSession,
       });
       break;
     }
@@ -1160,6 +1276,9 @@ async function decomposeInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
+    case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1183,8 +1302,11 @@ async function decomposeInlineSettings(
  *
  * Mirrors exactly the `case` arms of decomposeInlineSettings that call `.parse`
  * — the others build their rows defensively from `unknown` and cannot throw —
- * plus one rule decompose cannot enforce by itself: compliance rule set names
- * are unique within the link (DuplicateComplianceItemNameError).
+ * plus the compliance rule set name rules decompose cannot enforce by itself:
+ * names are unique within the link (DuplicateComplianceItemNameError) and fit
+ * the 200-character state columns (ComplianceItemNameTooLongError), and no
+ * registry_check names a path the agent never collects
+ * (ComplianceRegistryPathNotCollectedError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1215,7 +1337,7 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       monitorsInlineSettingsSchema.parse(settings);
       break;
     case 'compliance':
-      assertUniqueComplianceItemNames(settings);
+      assertValidComplianceItemNames(settings);
       break;
     default:
       break;
@@ -1280,6 +1402,9 @@ async function deleteNormalizedRows(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
+    case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1393,6 +1518,8 @@ async function assembleInlineSettings(
         durationHours: row.durationHours,
         timezone: row.timezone,
         windowStart: row.windowStart,
+        dayOfWeek: row.dayOfWeek,
+        dayOfMonth: row.dayOfMonth,
         suppressAlerts: row.suppressAlerts,
         suppressPatching: row.suppressPatching,
         suppressAutomations: row.suppressAutomations,
@@ -1417,6 +1544,7 @@ async function assembleInlineSettings(
         collectCategories: row.collectCategories,
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
+        applicationProviders: row.applicationProviders ?? [],
         rateLimitPerHour: row.rateLimitPerHour,
       };
     }
@@ -1528,6 +1656,7 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+        allowUserEndSession: row.allowUserEndSession,
       };
     }
 
@@ -1584,6 +1713,9 @@ async function assembleInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
+    case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1689,14 +1821,48 @@ export class DuplicateComplianceItemNameError extends Error {
   }
 }
 
-function assertUniqueComplianceItemNames(settings: unknown): void {
+/**
+ * A compliance rule set name longer than the 200-character config_item_name
+ * columns it is copied into (compliance state, alerts, automation runs). The
+ * HTTP routes refuse this with a 400 (COMPLIANCE_RULE_SET_NAME_TOO_LONG); this
+ * is the backstop for every other caller.
+ */
+export class ComplianceItemNameTooLongError extends Error {
+  readonly code = 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const;
+
+  constructor(readonly names: string[]) {
+    super(overlongComplianceItemNameMessage(names[0] ?? ''));
+    this.name = 'ComplianceItemNameTooLongError';
+  }
+}
+
+/**
+ * #11976: a registry_check rule on a path the agent never collects
+ * (policyProbeSafety.uncollectableComplianceRegistryPaths) would report
+ * "Registry value not found" on every evaluation. The HTTP routes refuse this
+ * with a 400 (COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED) and the AI tool with a
+ * readable error; this is the backstop for every other caller.
+ */
+export class ComplianceRegistryPathNotCollectedError extends Error {
+  readonly code = 'COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED' as const;
+
+  constructor(readonly paths: string[]) {
+    super(uncollectableComplianceRegistryPathMessage(paths[0] ?? ''));
+    this.name = 'ComplianceRegistryPathNotCollectedError';
+  }
+}
+
+function assertValidComplianceItemNames(settings: unknown): void {
   if (!settings || typeof settings !== 'object') return;
   const items = (settings as { items?: unknown }).items;
   if (!Array.isArray(items)) return;
-  const names = duplicateComplianceItemNames(
-    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
-  );
+  const objects = items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object');
+  const names = duplicateComplianceItemNames(objects);
   if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
+  const overlong = overlongComplianceItemNames(objects);
+  if (overlong.length > 0) throw new ComplianceItemNameTooLongError(overlong);
+  const uncollectable = uncollectableComplianceRegistryPaths(settings);
+  if (uncollectable.length > 0) throw new ComplianceRegistryPathNotCollectedError(uncollectable);
 }
 
 /**
@@ -1800,7 +1966,49 @@ export type FeatureLinkWriteOptions = {
    * caller that never checked (the AI tool, a future job) cannot enable a vendor.
    */
   securityAgentsArmAuthorized?: boolean;
+  /**
+   * `oem_updates` links only (#11070): the caller has verified the writer may
+   * arm vendor updates (devices.execute + MFA). Absent means NOT authorized, so
+   * the AI tool and any future job can narrow a link but never arm one.
+   */
+  oemUpdatesArmAuthorized?: boolean;
 };
+
+/**
+ * The `oem_updates` settings in effect on a policy before a new link is added:
+ * the one it inherits (the effective view returns the parent's link while the
+ * policy has none of its own). Read in the caller's context; a parent it cannot
+ * see reads as null, which only makes the arming check stricter.
+ */
+async function effectiveOemUpdatesSettings(configPolicyId: string, executor: DbExecutor): Promise<unknown> {
+  const [row] = await executor
+    .select({ inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings })
+    .from(configPolicyEffectiveFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configPolicyId),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'oem_updates'),
+      ),
+    )
+    .limit(1);
+  return row?.inlineSettings ?? null;
+}
+
+/**
+ * OD-11 (#10190): a newly created Breeze Assist (helper) feature link deploys
+ * Assist unless the request decides `enabled` itself. Create path only:
+ * updates store what they are sent. Devices with no helper policy are
+ * unaffected (HELPER_DEFAULTS.enabled stays false in helperSettings.ts),
+ * because defaulting those on would silently install software on every
+ * existing customer's machines (OD-11 option c, rejected).
+ */
+function withHelperCreateDefaults(inlineSettings: unknown): Record<string, unknown> {
+  const settings =
+    inlineSettings !== null && typeof inlineSettings === 'object' && !Array.isArray(inlineSettings)
+      ? (inlineSettings as Record<string, unknown>)
+      : {};
+  return settings.enabled === undefined ? { ...settings, enabled: true } : settings;
+}
 
 export async function addFeatureLink(
   configPolicyId: string,
@@ -1813,6 +2021,10 @@ export async function addFeatureLink(
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'helper') {
+    inlineSettings = withHelperCreateDefaults(inlineSettings);
   }
 
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
@@ -1835,6 +2047,16 @@ export async function addFeatureLink(
     inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'containment') {
+    if (featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+    inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'wake_on_lan') {
+    if (featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+    inlineSettings = wakeOnLanInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -1853,7 +2075,7 @@ export async function addFeatureLink(
     inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
-  if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+  if (featureType === 'compliance') assertValidComplianceItemNames(inlineSettings);
 
   // #6960: service-level backstop for the route/AI checks (arming authorization,
   // NULL featurePolicyId, strict settings, enableable vendors). A link without
@@ -1863,6 +2085,23 @@ export async function addFeatureLink(
       featurePolicyId: featurePolicyId ?? null,
       inlineSettings: inlineSettings ?? null,
       armAuthorized: options.securityAgentsArmAuthorized === true,
+    });
+  }
+
+  // #11070: service-level backstop for the route/AI checks (arming authorization
+  // against what is in effect now, NULL featurePolicyId, strict settings, closed
+  // gates). The inherited link is read only when this write could arm at all:
+  // `armsBeyond(null, next)` is false exactly when no previous could make it arm.
+  if (featureType === 'oem_updates') {
+    const armAuthorized = options.oemUpdatesArmAuthorized === true;
+    const previous = !armAuthorized && armsBeyond(null, inlineSettings ?? null)
+      ? await effectiveOemUpdatesSettings(configPolicyId, executor)
+      : null;
+    inlineSettings = assertOemUpdatesLinkWrite({
+      featurePolicyId: featurePolicyId ?? null,
+      previous,
+      next: inlineSettings ?? null,
+      armAuthorized,
     });
   }
 
@@ -1936,6 +2175,18 @@ export async function addFeatureLink(
   if (added && featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-add');
   }
+  // A vendor-updates link changes which link wins for the policy's devices (#11242).
+  if (added && featureType === 'oem_updates') {
+    scheduleOemPolicySideRefresh({ configPolicyId }, 'feature-link-add');
+  }
+  // #9619: a Peripheral Control link is authoritative for which devices get the
+  // linked peripheral policy; linking moves devices in/out of it.
+  if (added && featureType === 'peripheral_control' && added.featurePolicyId) {
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, peripheralPolicyIds: [added.featurePolicyId], standalone: true },
+      'feature-link-add',
+    );
+  }
   return added;
 }
 
@@ -1965,6 +2216,8 @@ export async function updateFeatureLink(
   }
 
   let updatedComplianceOf: string | null = null;
+  let updatedOemUpdatesOf: string | null = null;
+  let peripheralLinkChange: { configPolicyId: string; policyIds: string[] } | null = null;
   const result = await executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
@@ -1997,12 +2250,37 @@ export async function updateFeatureLink(
       updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
+    if (existing.featureType === 'containment') {
+      if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
+    }
+
+    if (existing.featureType === 'wake_on_lan') {
+      if (updates.featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = wakeOnLanInlineSettingsSchema.parse(updates.inlineSettings);
+      }
+    }
+
     // #6960: same backstop as addFeatureLink, on whichever fields are sent.
     if (existing.featureType === 'security_agents') {
       const parsed = assertSecurityAgentsLinkWrite({
         featurePolicyId: updates.featurePolicyId,
         inlineSettings: updates.inlineSettings,
         armAuthorized: options.securityAgentsArmAuthorized === true,
+      });
+      if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
+    }
+
+    // #11070: same backstop as addFeatureLink, compared with the stored row.
+    if (existing.featureType === 'oem_updates') {
+      const parsed = assertOemUpdatesLinkWrite({
+        featurePolicyId: updates.featurePolicyId,
+        previous: existing.inlineSettings,
+        next: updates.inlineSettings,
+        armAuthorized: options.oemUpdatesArmAuthorized === true,
       });
       if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
     }
@@ -2117,12 +2395,35 @@ export async function updateFeatureLink(
       );
     }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
+    if (existing.featureType === 'oem_updates') updatedOemUpdatesOf = existing.configPolicyId;
+    if (existing.featureType === 'peripheral_control' && updates.featurePolicyId !== undefined) {
+      // Re-pointing the link moves devices out of the old policy and into the new one.
+      peripheralLinkChange = {
+        configPolicyId: existing.configPolicyId,
+        policyIds: [existing.featurePolicyId, updated.featurePolicyId]
+          .filter((id): id is string => !!id),
+      };
+    }
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
   // A renamed or removed rule set never gets another compliance event, so its
   // open alerts close through the reconcile.
   if (updatedComplianceOf) {
     scheduleComplianceAlertReconcile({ configPolicyId: updatedComplianceOf }, 'feature-link-update');
+  }
+  if (updatedOemUpdatesOf) {
+    scheduleOemPolicySideRefresh({ configPolicyId: updatedOemUpdatesOf }, 'feature-link-update');
+  }
+  const peripheralChange = peripheralLinkChange as { configPolicyId: string; policyIds: string[] } | null;
+  if (peripheralChange && peripheralChange.policyIds.length > 0) {
+    schedulePeripheralLinkReconcile(
+      {
+        configPolicyId: peripheralChange.configPolicyId,
+        peripheralPolicyIds: peripheralChange.policyIds,
+        standalone: true,
+      },
+      'feature-link-update',
+    );
   }
   return result;
 }
@@ -2153,6 +2454,19 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
   // they raised close through the reconcile.
   if (removed?.featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-remove');
+  }
+  // The policy no longer carries the link, but its devices still need recomputing (#11242).
+  if (removed?.featureType === 'oem_updates') {
+    scheduleOemPolicySideRefresh({ configPolicyId }, 'feature-link-remove');
+  }
+  // Unlinking returns the peripheral policy to its own targeting (#9619). A
+  // `kept` row stayed live, so nothing changed for it.
+  if (removed && !('kept' in removed && removed.kept)
+    && removed.featureType === 'peripheral_control' && removed.featurePolicyId) {
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, peripheralPolicyIds: [removed.featurePolicyId], standalone: true },
+      'feature-link-remove',
+    );
   }
   return removed;
 }
@@ -2304,7 +2618,12 @@ export async function assignPolicy(
     .returning();
   // A new assignment can take precedence over the one a device followed until
   // now; alerts raised by rules the device no longer follows close.
-  if (assignment) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
+  if (assignment) {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
+    scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-add');
+    // A new assignment brings a linked peripheral policy to the target's devices (#9619).
+    schedulePeripheralLinkReconcile({ configPolicyId, assignments: [{ level, targetId }] }, 'assignment-add');
+  }
   return assignment ?? null;
 }
 
@@ -2355,8 +2674,11 @@ export async function validateAssignmentTarget(
         const [group] = await db
           .select({ id: deviceGroups.id })
           .from(deviceGroups)
-          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
-          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .leftJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), or(
+            eq(organizations.partnerId, partnerId),
+            and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId)),
+          )))
           .limit(1);
         return group
           ? { valid: true }
@@ -2418,9 +2740,16 @@ export async function validateAssignmentTarget(
         .from(deviceGroups)
         .where(and(eq(deviceGroups.id, targetId), eq(deviceGroups.orgId, policyOrgId)))
         .limit(1);
-      return group
-        ? { valid: true }
-        : { valid: false, error: 'Device group target not found in the policy organization' };
+      if (group) return { valid: true };
+      if ((await findPartnerOwnedGroupIds([targetId])).length > 0) {
+        return {
+          valid: false,
+          error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+          code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+          status: 400,
+        };
+      }
+      return { valid: false, error: 'Device group target not found in the policy organization' };
     }
 
     case 'device': {
@@ -2585,7 +2914,14 @@ export async function unassignPolicy(assignmentId: string, configPolicyId: strin
       )
     )
     .returning();
-  if (deleted) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
+  if (deleted) {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
+    scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-remove');
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, assignments: [{ level: deleted.level, targetId: deleted.targetId }] },
+      'assignment-remove',
+    );
+  }
   return deleted ?? null;
 }
 
@@ -3043,6 +3379,12 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // the generated software policy is owned on the config policy's own axis and
   // found via software_policies.managed_by_link_id.
   'security_agents',
+  // #10100: partner-wide inline settings; featurePolicyId is always refused below.
+  'containment',
+  // #11065: partner-wide inline settings; featurePolicyId is always refused below.
+  'oem_updates',
+  // #10838: partner-wide inline settings; featurePolicyId is always refused.
+  'wake_on_lan',
 ]);
 
 /**
@@ -3293,7 +3635,9 @@ export async function validateFeaturePolicyExists(
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
     featureType === 'warranty' ||
-    featureType === 'system_protection'
+    featureType === 'system_protection' ||
+    featureType === 'containment' ||
+    featureType === 'oem_updates'
   ) {
     // These have no policy table — they require inlineSettings.
     //

@@ -80,6 +80,7 @@ function buildApp(opts?: {
   const app = new Hono();
   app.use('/agents/*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       orgId: 'org-1',
       partnerId: 'partner-1',

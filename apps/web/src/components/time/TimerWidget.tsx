@@ -19,8 +19,12 @@ export default function TimerWidget() {
   // (e.g. Org Viewer) would 403 on every page, so don't issue the request.
   // 'unresolved' (token not restored yet) also waits rather than guessing.
   const jwt = useJwtClaims();
+  // It also needs time_entries:read, which read-only partner roles such as
+  // Partner Viewer lack (#10295); permissions still loading count as "not yet".
   const timersAvailable =
-    jwt.status === 'resolved' && (jwt.claims.scope === 'partner' || jwt.claims.scope === 'system');
+    jwt.status === 'resolved' &&
+    (jwt.claims.scope === 'partner' || jwt.claims.scope === 'system') &&
+    can('time_entries', 'read');
   const [timer, setTimer] = useState<RunningTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);

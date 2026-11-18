@@ -13,6 +13,7 @@ import { db } from '../db';
 import { isEnforcing, loadPartnerPolicy } from './authenticatorPolicy';
 import {
   backupConfigs,
+  backupProviderDevices,
   c2cConnections,
   devicePatches,
   devices,
@@ -42,16 +43,19 @@ import {
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupsVerifiedEvidence, loadM365MfaEvidence } from './postureEvidenceNetNew';
+import { isConnectionStale, providerLabelFor } from './backupHealthRows';
+import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import {
-  CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck,
+  CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck, deriveBackupHealth, saasWorkloadLabel,
   type BenchmarkOs, type ControlEvidence, type PostureControlEvidence, type SafeguardEvidence,
 } from '@breeze/shared';
 import { trustCisFrameworkViewEnabled } from '../config/env';
 import { cisFindingSchema } from '../db/schema/cisHardening';
+import { averageCisScore, cisDeviceScore } from './cisScore';
 
 export interface PostureEvidencePolicy {
   sites: string[];
@@ -139,6 +143,7 @@ export interface OrgWideEvidence {
   dns: { isActive: boolean; provider: string; lastSyncStatus: string | null } | undefined;
   backup: { isActive: boolean; provider: string; encryption: unknown } | undefined;
   c2c: { status: string; provider: string } | undefined;
+  providerSaasBackups?: SecurityProductEvidence[];
   m365: { status: string } | undefined;
   google: { status: string } | undefined;
   pamCfg: { uacInterceptionEnabled: boolean | null } | undefined;
@@ -157,7 +162,28 @@ export interface PostureEvidence {
   controls: PostureControlEvidence;
   report: {
     reporting: number;
+    /**
+     * Report-only protection figures (#12044). A device is AV-assessed when it
+     * is EDR/AV-assessed (§19.7: a fresh status row, an agent row or a recent
+     * check-in) AND its protection is known — so a device with no status row
+     * and no agent, or a null real-time-protection reading, is NOT ASSESSED
+     * here, never unprotected. So is a device whose only evidence is a stale
+     * status row (not seen recently, no agent), even if that row says
+     * unprotected. `avAssessed` counts AV-assessed devices, `avProtected` the
+     * protected ones, and `unprotected` = avAssessed - avProtected. The shared
+     * `controls.endpoint_protection` (trust page) keeps its §19.7 semantics.
+     */
     unprotected: number;
+    avAssessed: number;
+    avProtected: number;
+    /**
+     * Report-only: EDR-assessed devices with an EDR product — an integration
+     * agent (Huntress, SentinelOne, EDR connector) OR an EDR provider the device
+     * itself reports with real-time protection on, so the figure reconciles with the
+     * product inventory, which lists both (#12044). The shared
+     * `controls.edr_coverage` still counts integration agents only.
+     */
+    edrProtected: number;
     cisIncluded: boolean;
     cisAssessedCount: number;
     edrUnknown: number;
@@ -318,6 +344,9 @@ export async function loadPostureEvidence(
     report: {
       reporting: 0,
       unprotected: 0,
+      avAssessed: 0,
+      avProtected: 0,
+      edrProtected: 0,
       cisIncluded: policy.includeCis,
       cisAssessedCount: 0,
       edrUnknown: 0,
@@ -438,6 +467,10 @@ export async function loadPostureEvidence(
     if (orgWide) applyOrgWide(out.controls, orgWide);
     // maxSecurityStatusAgeDays IS the evidence-age window (spec §5.4); windowDays is the elevation-activity window.
     if (includeOrgWide) out.controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
+    if (orgWide) {
+      orgWide.providerSaasBackups = await loadProviderSaasEvidence(orgId, asOf);
+      out.report.productEvidence = assembleProductEvidence({ orgWide, backupEvidence: [] });
+    }
     return out;
   }
 
@@ -521,6 +554,7 @@ export async function loadPostureEvidence(
         deviceId: cisBaselineResults.deviceId,
         passedChecks: cisBaselineResults.passedChecks,
         totalChecks: cisBaselineResults.totalChecks,
+        score: cisBaselineResults.score,
         checkedAt: cisBaselineResults.checkedAt
       })
       .from(cisBaselineResults)
@@ -530,8 +564,12 @@ export async function loadPostureEvidence(
       if (cisSeen.has(r.deviceId)) continue; // desc order → first seen is the latest scan
       cisSeen.add(r.deviceId);
       if (!withinDays(asOf, r.checkedAt, policy.maxSecurityStatusAgeDays)) continue;
+      // A scan that evaluated nothing stores score 100 (summarizeCisFindings); that is
+      // absence of evidence, not a pass.
+      const pct = cisDeviceScore(r);
+      if (pct === null) continue;
       cisByDevice.set(r.deviceId, {
-        pct: r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0,
+        pct,
         checkedAt: r.checkedAt ?? null,
       });
       if (r.id) cisFreshResultIds.push(r.id);
@@ -593,9 +631,10 @@ export async function loadPostureEvidence(
   controls.backups_verified = await loadBackupsVerifiedEvidence(orgId, deviceIds, asOf, policy.maxSecurityStatusAgeDays);
 
   let reporting = 0; // devices reporting a security_status row
-  let unprotected = 0;
+  let avAssessed = 0;
+  let avProtected = 0;
+  let edrProtected = 0;
   let edrUnknown = 0;
-  let anyAvUnknown = 0;
   const monitoringCutoff = asOf.getTime() - policy.monitoringWindowHours * 3600_000;
   const evidenceCutoff = asOf.getTime() - policy.maxSecurityStatusAgeDays * 86400000;
 
@@ -630,10 +669,6 @@ export async function loadPostureEvidence(
         });
 
     if (ss) reporting += 1;
-    // The report has no unknown protection bucket. An absent status row (and a
-    // null real-time-protection reading) has always counted as unprotected
-    // here, so preserve that public contract.
-    if (protection !== 'protected') unprotected += 1;
 
     // Firewall/encryption are live device states that stop updating when a device
     // goes offline, so a row older than the cutoff is treated as unknown rather
@@ -648,12 +683,22 @@ export async function loadPostureEvidence(
     const seenRecently = Number.isFinite(lastSeenMs) && lastSeenMs >= evidenceCutoff;
     const epAssessed = ssFresh || isManaged || seenRecently;
     const epEvidenceAt = ssFresh ? ss!.updatedAt : lastSeenAt;
-    if (!epAssessed) {
-      edrUnknown += 1;
-      anyAvUnknown += 1;
-    }
+    if (!epAssessed) edrUnknown += 1;
     bump(controls.edr_coverage, epAssessed, isManaged, epEvidenceAt);
     bump(controls.endpoint_protection, epAssessed, protection === 'protected', epEvidenceAt);
+
+    // Report-only figures (#12044): unknown protection is not assessed, never
+    // unprotected; an EDR the device reports itself counts as EDR coverage.
+    if (epAssessed && protection !== 'unknown') {
+      avAssessed += 1;
+      if (protection === 'protected') avProtected += 1;
+    }
+    // A self-reported EDR counts only while it is protecting (real-time on) and
+    // the row saying so is inside the evidence-age window — the same rule that
+    // marks it active in the product inventory. A product recorded long ago is
+    // not evidence of protection now (#12134).
+    const reportsEdrProduct = ssFresh && categoryForEndpointProvider(ss!.provider) === 'edr' && rtp === true;
+    if (epAssessed && (isManaged || reportsEdrProduct)) edrProtected += 1;
 
     const enc = ss?.encryptionStatus ?? 'unknown';
     bump(controls.disk_encryption, ssFresh && enc !== 'unknown', enc === 'encrypted', ss?.updatedAt);
@@ -718,11 +763,9 @@ export async function loadPostureEvidence(
     };
   });
 
-  const cisValues = [...cisByDevice.values()].map((v) => v.pct);
-  controls.hardening_baseline.aggregatePct =
-    policy.includeCis && cisValues.length > 0
-      ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
-      : null;
+  controls.hardening_baseline.aggregatePct = policy.includeCis
+    ? averageCisScore([...cisByDevice.values()].map((v) => v.pct))
+    : null;
 
   if (policy.includeCis && policy.includeCisSafeguards) {
     controls.hardening_baseline.safeguards = computeSafeguardEvidence(deviceRows, cisByDevice, safeguardFindings);
@@ -746,11 +789,13 @@ export async function loadPostureEvidence(
     deviceProductEvidence.push({
       product: prettySecurityProvider(row.provider),
       category: categoryForEndpointProvider(row.provider),
-      active: row.realTimeProtection === true,
+      // A stale row still lists the product, but not as protecting (#12134).
+      active: row.realTimeProtection === true && withinDays(asOf, row.updatedAt, policy.maxSecurityStatusAgeDays),
       lastSyncStatus: null,
       deviceIds: [row.deviceId]
     });
   }
+  if (orgWide) orgWide.providerSaasBackups = await loadProviderSaasEvidence(orgId, asOf);
   const productEvidence = [
     ...deviceProductEvidence,
     ...assembleProductEvidence({ orgWide, backupEvidence: backupProviders.evidence }),
@@ -765,11 +810,14 @@ export async function loadPostureEvidence(
     controls,
     report: {
       reporting,
-      unprotected,
+      unprotected: avAssessed - avProtected,
+      avAssessed,
+      avProtected,
+      edrProtected,
       cisIncluded: policy.includeCis,
       cisAssessedCount: cisByDevice.size,
       edrUnknown,
-      anyAvUnknown,
+      anyAvUnknown: deviceRows.length - avAssessed,
       orgWide,
       backupProviders,
       vulnByDevice,
@@ -797,7 +845,7 @@ function assembleProductEvidence(input: {
   if (w?.dns) out.push({ product: prettyDnsProvider(w.dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
   if (w?.backup) out.push({ product: `Backup (${w.backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
   if (w?.c2c) out.push({ product: `SaaS backup (${w.c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
-  out.push(...input.backupEvidence);
+  out.push(...(w?.providerSaasBackups ?? []), ...input.backupEvidence);
   if (w?.m365) out.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
   if (w?.google) out.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
   return out;
@@ -808,4 +856,46 @@ function applyOrgWide(controls: PostureControlEvidence, w: OrgWideEvidence): voi
   const dnsSync = w.dns?.lastSyncStatus ?? null;
   orgFact(controls.dns_filtering, true, Boolean(w.dns) && dnsSync !== 'error');
   orgFact(controls.privileged_access, true, w.pamRuleRows.length > 0 || w.mfaStepUpEnforced);
+}
+
+/** Org-scoped SaaS evidence has workloads, never a device-coverage denominator. */
+async function loadProviderSaasEvidence(orgId: string, asOf: Date): Promise<SecurityProductEvidence[]> {
+  const rows = await db.select({
+    orgId: backupProviderDevices.orgId,
+    provider: backupProviderDevices.provider,
+    portalShowProviderName: backupProviderDevices.portalShowProviderName,
+    connectionId: backupProviderDevices.connectionId,
+    accountType: backupProviderDevices.accountType,
+    dataSources: backupProviderDevices.dataSources,
+    status: backupProviderDevices.status,
+    lastSuccessAt: backupProviderDevices.lastSuccessAt,
+    errorsCount: backupProviderDevices.errorsCount,
+  }).from(backupProviderDevices).where(and(
+    eq(backupProviderDevices.orgId, orgId),
+    inArray(backupProviderDevices.accountType, ['m365', 'gws']),
+  ));
+  const scopedRows = rows.filter((row) => row.orgId === orgId && (row.accountType === 'm365' || row.accountType === 'gws'));
+  // One hidden connection hides the provider name for the entire provider group,
+  // including when that connection currently contributes no healthy evidence.
+  const hiddenProviders = new Set(scopedRows.filter((row) => !row.portalShowProviderName).map((row) => row.provider));
+  const freshness = await loadBackupConnectionFreshness(scopedRows.map((row) => row.connectionId));
+  const byProvider = new Map<string, Set<string>>();
+  for (const row of scopedRows) {
+    const connection = freshness.get(row.connectionId);
+    if (!connection || isConnectionStale(connection, asOf)) continue;
+    const health = deriveBackupHealth({ ...row, now: asOf }).health;
+    if (health !== 'healthy' && health !== 'warning') continue;
+    const label = providerLabelFor(row.provider, {
+      labels: 'portal', portalShowProviderName: row.portalShowProviderName && !hiddenProviders.has(row.provider),
+    });
+    if (!label) continue;
+    const workloads = byProvider.get(label) ?? new Set<string>();
+    for (const source of row.dataSources) workloads.add(saasWorkloadLabel(source));
+    if (workloads.size === 0) workloads.add('SaaS');
+    byProvider.set(label, workloads);
+  }
+  return [...byProvider.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, workloads]) => ({
+    product: `${label} — ${[...workloads].sort().join(', ')}`,
+    category: 'backup', active: true, lastSyncStatus: null,
+  }));
 }

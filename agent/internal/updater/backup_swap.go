@@ -254,7 +254,12 @@ func prepareRollbackArtifacts(set RollbackSwapSet) (rollbackSwapJournal, error) 
 		if err := copyRollbackFile(livePath, entry.BackupPath, liveInfo.Mode()); err != nil {
 			return rollbackSwapJournal{}, fmt.Errorf("backup %s: %w", artifact.Component, err)
 		}
-		if err := copyRollbackFile(stagedPath, entry.NewPath, stagedInfo.Mode()); err != nil {
+		// The staged copy is a CreateTemp file (0600). Installing it with that
+		// mode over LivePath would strip the execute bit from the agent and
+		// every companion binary, so the service could never start again and
+		// the on-disk recovery material could never be applied. Use the live
+		// artifact's mode, the same rule replaceBinary and Rollback follow.
+		if err := copyRollbackFile(stagedPath, entry.NewPath, liveInfo.Mode()); err != nil {
 			return rollbackSwapJournal{}, fmt.Errorf("stage %s beside live file: %w", artifact.Component, err)
 		}
 		journal.Artifacts = append(journal.Artifacts, entry)

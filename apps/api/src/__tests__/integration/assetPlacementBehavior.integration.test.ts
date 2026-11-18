@@ -93,7 +93,7 @@ describe('asset_physical_placements behaviour (#8359)', () => {
     await asSystem(async () => {
       expect(await savePlacement(subject, A)).toEqual(A);
       expect(await savePlacement(subject, B)).toEqual(B);
-      expect(await readPlacement('device', deviceId)).toEqual(B);
+      expect(await readPlacement('device', deviceId, t.orgId)).toEqual(B);
     });
     expect(await rowCount('device_id', deviceId)).toBe(1);
 
@@ -158,8 +158,8 @@ describe('asset_physical_placements behaviour (#8359)', () => {
       await asSystem(async () => {
         await savePlacement(assetSubject(t, assetId), A);
         expect(await reconcilePlacementOnLink({ discoveredAssetId: assetId, deviceId, mode: 'manual' })).toBe('moved');
-        expect(await readPlacement('device', deviceId)).toEqual(A);
-        expect(await readPlacement('discovered', assetId)).toBeNull();
+        expect(await readPlacement('device', deviceId, t.orgId)).toEqual(A);
+        expect(await readPlacement('discovered', assetId, t.orgId)).toBeNull();
       });
     });
 
@@ -187,8 +187,8 @@ describe('asset_physical_placements behaviour (#8359)', () => {
         await expect(
           reconcilePlacementOnLinkOrThrow({ discoveredAssetId: assetId, deviceId, mode: 'manual' }),
         ).rejects.toBeInstanceOf(PlacementLinkConflictError);
-        expect(await readPlacement('discovered', assetId)).toEqual(A);
-        expect(await readPlacement('device', deviceId)).toEqual(B);
+        expect(await readPlacement('discovered', assetId, t.orgId)).toEqual(A);
+        expect(await readPlacement('device', deviceId, t.orgId)).toEqual(B);
       });
     });
 
@@ -200,7 +200,7 @@ describe('asset_physical_placements behaviour (#8359)', () => {
         await savePlacement(assetSubject(t, assetId), A);
         await savePlacement(deviceSubject(t, deviceId), B);
         expect(await reconcilePlacementOnLink({ discoveredAssetId: assetId, deviceId, mode: 'automatic' })).toBe('device_wins');
-        expect(await readPlacement('device', deviceId)).toEqual(B);
+        expect(await readPlacement('device', deviceId, t.orgId)).toEqual(B);
       });
       expect(await rowCount('discovered_asset_id', assetId)).toBe(0);
 

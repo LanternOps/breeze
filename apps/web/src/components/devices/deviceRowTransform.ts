@@ -1,7 +1,28 @@
 import type { DeviceRole } from '@/lib/deviceRoles';
 import { i18n } from '@/lib/i18n';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
-import type { Device, DeviceStatus, OSType } from './DeviceList';
+import type { Device, DeviceStatus, OSType, WakeAvailability, WarrantyStatus } from './DeviceList';
+
+const WARRANTY_STATUSES: ReadonlySet<string> = new Set<WarrantyStatus>([
+  'active', 'expiring', 'expired', 'unknown', 'subscription_active',
+]);
+function isWarrantyStatus(value: unknown): value is WarrantyStatus {
+  return typeof value === 'string' && WARRANTY_STATUSES.has(value);
+}
+
+/** Validates the wire shape; anything else is dropped so older/odd payloads keep Wake (#10838). */
+export function parseWakeAvailability(value: unknown): WakeAvailability | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.show !== 'boolean') return undefined;
+  return {
+    show: v.show,
+    mode: v.mode === 'none' || v.mode === 'verified' || v.mode === 'always' ? v.mode : 'unknown',
+    state: typeof v.state === 'string' ? v.state : 'unknown',
+    testWakeAllowed: v.testWakeAllowed === true,
+    flaggedTimeouts: v.flaggedTimeouts === true,
+  };
+}
 
 /** A device row exactly as `GET /devices` returns it (untyped on the wire). */
 export type ApiDeviceRow = Record<string, unknown>;
@@ -55,6 +76,11 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
     watchdogVersion: (d.watchdogVersion ?? null) as string | null,
     helperVersion: (d.helperVersion ?? null) as string | null,
     helperInstallIssue: (d.helperInstallIssue ?? null) as string | null,
+    // #8868 — closed-enum kind on the wire; anything but a string is null.
+    controlPlaneBlockKind: typeof d.controlPlaneBlockKind === 'string' ? d.controlPlaneBlockKind : null,
+    // Server time of the last report when the block is only last-known.
+    controlPlaneBlockLastKnownAt:
+      typeof d.controlPlaneBlockLastKnownAt === 'string' ? d.controlPlaneBlockLastKnownAt : null,
     agentServerUrl: (d.agentServerUrl ?? null) as string | null,
     // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
     // wire; anything else degrades to null so a malformed value renders
@@ -86,6 +112,9 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
       typeof d.possibleReplacementOfDeviceId === 'string'
         ? d.possibleReplacementOfDeviceId
         : null,
+    // #10838: server-decided Wake availability. Explicit whitelist, so omitting
+    // it would silently keep Wake visible on devices the server hid it for.
+    wakeAvailability: parseWakeAvailability(d.wakeAvailability),
     batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
     activeVpns: (d.activeVpns as Device['activeVpns']) ?? null,
     // Linked multi-boot profiles (#2138): grouping is computed
@@ -97,11 +126,15 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
     linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
     enrolledAt: d.enrolledAt as string | undefined,
     desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
+    disks: Array.isArray(d.disks) ? d.disks as Device['disks'] : [],
     hardware: hardware ? {
       cpuModel: hardware.cpuModel as string | undefined,
       cpuCores: typeof hardware.cpuCores === 'number' ? hardware.cpuCores : undefined,
       ramTotalMb: typeof hardware.ramTotalMb === 'number' ? hardware.ramTotalMb : undefined,
       diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
+      serialNumber: typeof hardware.serialNumber === 'string' ? hardware.serialNumber : undefined,
+      productSku: typeof hardware.productSku === 'string' ? hardware.productSku : undefined,
+      model: typeof hardware.model === 'string' ? hardware.model : undefined,
     } : undefined,
     // Reliability column (#1720): score is null until the reliability
     // worker has computed one for the device; the column renders a dash
@@ -129,6 +162,11 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
           asRecord(asRecord(d.hardwareHealthSummary)?.counts) ?? asRecord(d.hardwareHealthSummary)!,
         ).filter((entry): entry is [string, number] =>
           typeof entry[1] === 'number' && Number.isFinite(entry[1]))) : null,
+    // Warranty column (#9863): both null when the device has no warranty
+    // record. Status is checked against the known values so an unexpected API
+    // value renders as a dash rather than an unlabelled badge.
+    warrantyEndDate: typeof d.warrantyEndDate === 'string' ? d.warrantyEndDate : null,
+    warrantyStatus: isWarrantyStatus(d.warrantyStatus) ? d.warrantyStatus : null,
     // RDS per-session helper mode (Task 12): validated against the known
     // values so an unexpected API value falls back to null rather than
     // leaking through the type — Tasks 13/14 gate the session picker on

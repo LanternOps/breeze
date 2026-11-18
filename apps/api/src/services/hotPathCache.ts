@@ -81,10 +81,18 @@ export interface HotPathTtlCacheOptions {
   cluster?: true | { bus: ClusterCacheBus };
 }
 
-/** Cluster caches must have string keys: the key goes on the wire. */
-type OptionsFor<K> = [K] extends [string]
-  ? HotPathTtlCacheOptions
-  : Omit<HotPathTtlCacheOptions, 'cluster'> & { cluster?: never };
+/** True only for `any` (`0 extends 1 & K` holds for no other type). */
+type IsAny<K> = 0 extends 1 & K ? true : false;
+
+/**
+ * Cluster caches must have string keys: the key goes on the wire. `any` is
+ * rejected explicitly because `[any] extends [string]` is true.
+ */
+type OptionsFor<K> = IsAny<K> extends true
+  ? Omit<HotPathTtlCacheOptions, 'cluster'> & { cluster?: never }
+  : [K] extends [string]
+    ? HotPathTtlCacheOptions
+    : Omit<HotPathTtlCacheOptions, 'cluster'> & { cluster?: never };
 
 export class HotPathTtlCache<K, V> {
   readonly name: string;

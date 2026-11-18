@@ -207,7 +207,7 @@
     "title": "Verificação de quem liga necessária",
     "tier": "Esta ação precisa de uma verificação de nível {{tier}}.",
     "verify": "Verificar quem está ligando",
-    "verifiedRetry": "Quem liga foi verificado. Peça ao assistente para tentar de novo.",
+    "verifiedRetry": "Quem liga foi verificado. Peça ao Breeze AI para tentar de novo.",
     "reasons": {
       "no_fresh_verification": "Quem liga não foi verificado recentemente.",
       "grant_consumed": "A última verificação já foi usada para outra ação.",

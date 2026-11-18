@@ -35,12 +35,12 @@ describe("IntegrationsPage — EDR providers sub-tab", () => {
     expect(screen.queryByTestId("stub-huntress")).toBeNull();
   });
 
-  it("offers an EDR providers sub-tab button that writes #edr", () => {
+  it("offers an EDR providers entry that writes #edr", () => {
     h.fetch.mockResolvedValue(Response.json({ data: [] }));
     window.location.hash = "#security";
     render(<IntegrationsPage />);
     expect(screen.getByTestId("stub-security")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "EDR providers" }));
+    fireEvent.click(screen.getByRole("link", { name: "EDR providers" }));
     expect(window.location.hash).toBe("#edr");
     expect(screen.getByTestId("stub-edr")).toBeTruthy();
   });

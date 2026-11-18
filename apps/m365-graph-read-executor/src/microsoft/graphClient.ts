@@ -39,7 +39,12 @@ export interface GraphTenantObservation {
   readonly observedGrants: readonly CanonicalAppRoleAssignment[] | null;
 }
 
-export type GraphSyncStopReason = 'complete' | 'max_pages' | 'max_items' | 'paused' | 'deadline';
+/**
+ * `interrupted` (#9394): a later page timed out or stayed throttled and the
+ * caller opted into `keepPagesOnTransientFailure`, so the pages already read
+ * come back with that page as the resume point instead of being thrown away.
+ */
+export type GraphSyncStopReason = 'complete' | 'max_pages' | 'max_items' | 'paused' | 'deadline' | 'interrupted';
 
 export interface GraphSyncRetryPolicy {
   maxAttempts: number;        // total attempts per page, including the first
@@ -90,6 +95,15 @@ export interface MicrosoftGraphClient {
     startUrl?: string;              // resume point from a decrypted continuation
     limits: GraphSyncLimits;
     beforePage?: () => boolean;     // false ⇒ stop now, hand back nextLink (the sign-in limiter)
+    /**
+     * #9394. When a page AFTER the first one fails with graph_request_timeout
+     * or graph_throttled, return the pages already read with stopReason
+     * `interrupted` and that page as nextLink, rather than throwing them away.
+     * Only for a caller that resumes through a continuation (sign-in events):
+     * a snapshot domain that marks unreturned rows stale must never see a
+     * partial page set as anything but a failure.
+     */
+    keepPagesOnTransientFailure?: boolean;
   }): Promise<GraphSyncPageSet>;
 }
 
@@ -358,6 +372,14 @@ export function createMicrosoftGraphClient(
    * deadline signal so an expiring deadline cancels the in-flight fetch, and
    * charges bytes against the caller's cumulative budget (NOT the client-wide
    * 512 KiB interactive one).
+   *
+   * #9394: once Graph has answered this page with a 429/503 and the RUN
+   * DEADLINE then cuts the page off (during the wait, or during the retry it
+   * was waiting for), the failure is reported as `graph_throttled` with
+   * Graph's retry hint: the deadline only won because Graph throttled.
+   * Reporting it as `graph_request_timeout` hid Graph's status behind a
+   * client-side timer. A retry that instead runs out its own per-request
+   * timer is a timeout like any other and stays `graph_request_timeout`.
    */
   async function syncRequest(
     url: string,
@@ -366,6 +388,12 @@ export function createMicrosoftGraphClient(
     limits: SyncRequestOptions,
     throttleSpentMs: { value: number },
   ): Promise<unknown> {
+    let throttledRetryAfterSeconds: number | undefined;
+    const aborted = (): GraphClientError => (
+      throttledRetryAfterSeconds !== undefined && limits.deadlineSignal.aborted
+        ? new GraphClientError('graph_throttled', throttledRetryAfterSeconds)
+        : failure('graph_request_timeout'));
+
     for (let attempt = 1; ; attempt += 1) {
       const timeout = AbortSignal.timeout(limits.perRequestTimeoutMs);
       const signal = AbortSignal.any([timeout, limits.deadlineSignal]);
@@ -379,28 +407,52 @@ export function createMicrosoftGraphClient(
         });
       } catch (error) {
         if (error instanceof GraphClientError) throw error;
-        throw failure(signal.aborted ? 'graph_request_timeout' : 'graph_transport_failed');
+        throw signal.aborted ? aborted() : failure('graph_transport_failed');
       }
 
       if (RETRYABLE_STATUS.has(response.status)) {
         // Do not charge a throttle body against the byte budget.
         await response.body?.cancel().catch(() => {});
         const waitMs = limits.retry.fixedBackoffMs ?? retryAfterSecondsFromHeader(response) * 1_000;
+        const retryAfterSeconds = Math.min(300, Math.max(1, Math.ceil(waitMs / 1_000)));
         const outOfAttempts = attempt >= limits.retry.maxAttempts;
         const outOfBudget = throttleSpentMs.value + waitMs > limits.retry.cumulativeBudgetMs;
         const pastDeadline = nowMs() + waitMs + limits.perRequestTimeoutMs > limits.deadlineAt;
         if (outOfAttempts || outOfBudget || pastDeadline) {
-          throw new GraphClientError('graph_throttled', Math.min(300, Math.max(1, Math.ceil(waitMs / 1_000))));
+          throw new GraphClientError('graph_throttled', retryAfterSeconds);
         }
+        throttledRetryAfterSeconds = retryAfterSeconds;
         throttleSpentMs.value += waitMs;
-        await sleepImpl(waitMs, limits.deadlineSignal);
+        try {
+          await sleepImpl(waitMs, limits.deadlineSignal);
+        } catch (error) {
+          // Only the deadline signal interrupts this wait, so the page was
+          // still waiting out Graph's throttle when the run ran out of time.
+          if (error instanceof GraphClientError && error.code === 'graph_request_timeout') {
+            throw new GraphClientError('graph_throttled', retryAfterSeconds);
+          }
+          throw error;
+        }
         continue;
       }
 
-      const responseBody = await readBoundedBody(response, budget, limits.maxResponseBytes);
+      let responseBody: string;
+      try {
+        responseBody = await readBoundedBody(response, budget, limits.maxResponseBytes);
+      } catch (error) {
+        // A timer that fires mid-body aborts the stream: classify it like an
+        // abort before the headers, never let the raw DOMException escape.
+        if (error instanceof GraphClientError) throw error;
+        throw signal.aborted ? aborted() : failure('graph_transport_failed');
+      }
       if (!response.ok) throw readFailure(response, responseBody);
       return parseJson(responseBody);
     }
+  }
+
+  function isTransientPageFailure(error: unknown): boolean {
+    return error instanceof GraphClientError
+      && (error.code === 'graph_request_timeout' || error.code === 'graph_throttled');
   }
 
   async function collection(
@@ -678,7 +730,20 @@ export function createMicrosoftGraphClient(
           if (nowMs() >= limits.deadlineAt) { stopReason = 'deadline'; break; }
           if (input.beforePage !== undefined && !input.beforePage()) { stopReason = 'paused'; break; }
 
-          const page = parseCollectionPage(await syncRequest(url, input.accessToken, budget, options, throttleSpentMs));
+          let body: unknown;
+          try {
+            body = await syncRequest(url, input.accessToken, budget, options, throttleSpentMs);
+          } catch (error) {
+            // `url` is the page that failed, so it is the resume point. With no
+            // page read yet there is nothing to keep: throw, and the caller's
+            // stored cursor (if any) stays where it was.
+            if (input.keepPagesOnTransientFailure === true && pages > 0 && isTransientPageFailure(error)) {
+              stopReason = 'interrupted';
+              break;
+            }
+            throw error;
+          }
+          const page = parseCollectionPage(body);
           pages += 1;
           let overflowed = false;
           for (const value of page.value) {

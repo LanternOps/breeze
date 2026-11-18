@@ -392,7 +392,10 @@
           "saved": "Standardwerte des Vertrauenszentrums gespeichert",
           "saveFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht gespeichert werden",
           "mfaRequired": "Zum Ändern dieser Standardwerte ist eine Multi-Faktor-Authentifizierung erforderlich. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
-          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen."
+          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen.",
+          "conflictNotice": "Jemand anderes hat diese Standards gespeichert, während Sie bearbeitet haben. Laden Sie deren Version neu, um davon auszugehen, oder bearbeiten Sie weiter: Erneutes Speichern schlägt fehl, bis Sie neu laden.",
+          "reloadTheirs": "Deren Version laden",
+          "keepEditing": "Weiter bearbeiten"
         },
         "title": "Geerbte Einstellungen"
       },
@@ -433,6 +436,7 @@
         "publishing": "Wird veröffentlicht…",
         "cancel": "Abbrechen",
         "success": "Seite des Vertrauenszentrums veröffentlicht.",
+        "successPending": "Veröffentlicht. Die öffentliche Seite wird innerhalb einer Minute aktualisiert.",
         "failed": "Die Seite des Vertrauenszentrums konnte nicht veröffentlicht werden.",
         "disabledNoWrite": "Zum Veröffentlichen benötigen Sie die Berechtigung, Organisationen zu bearbeiten.",
         "disabledSlug": "Korrigieren Sie die Seitenadresse vor dem Veröffentlichen."
@@ -469,6 +473,7 @@
       },
       "errors": {
         "revisionMismatch": "Diese Seite wurde seit dem Laden geändert. Laden Sie sie neu und versuchen Sie es erneut.",
+        "templateChanged": "Die Vorlage des Vertrauenszentrums Ihres Partners wurde seit dem Laden dieser Seite geändert. Laden Sie die Seite neu und veröffentlichen Sie erneut.",
         "authorizationRequired": "Geben Sie an, wer die Veröffentlichung genehmigt hat.",
         "mfaRequired": "Das Veröffentlichen erfordert eine Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
         "trustProbation": "Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
@@ -589,6 +594,7 @@
       "title": "Dokumente",
       "subtitle": "Runbooks, Baselines, Richtlinien und Servicenachweise für diese Organisation.",
       "empty": "Noch keine Dokumente. Laden Sie ein Runbook, eine Baseline oder eine unterschriebene Richtlinie hoch, um die Bibliothek zu starten.",
+      "emptyPortalHint": "Ihr Kunde sieht Dokumente, die als „Im Portal sichtbar“ markiert sind. Ein unterschriebenes Angebot oder eine Vereinbarung und eine Sicherheits-Baseline sind gute erste Dokumente.",
       "emptyFiltered": "Keine Dokumente in dieser Kategorie.",
       "loadFailed": "Dokumente konnten nicht geladen werden.",
       "upload": "Dokument hochladen",

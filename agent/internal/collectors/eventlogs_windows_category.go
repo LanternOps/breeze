@@ -48,7 +48,7 @@ func systemLogQueryEnabled(categories []string) bool {
 }
 
 // windowsPowerEventIDs are the System-log event IDs collected by
-// collectPowerEvents: 41 unexpected shutdown (Kernel-Power), 1074 planned
+// the system-power stream: 41 unexpected shutdown (Kernel-Power), 1074 planned
 // shutdown, 6005 boot, 6006 clean shutdown, 6008 unexpected shutdown,
 // 6009 OS info at boot.
 var windowsPowerEventIDs = []int{41, 1074, 6005, 6006, 6008, 6009}
@@ -64,7 +64,7 @@ func isWindowsPowerEventID(eventID int) bool {
 
 // systemLogCategoryFor classifies a System-log error entry and reports whether
 // to keep it: its derived category must be enabled, and "system" entries with
-// a power event ID are left to collectPowerEvents (which runs whenever
+// a power event ID are left to the system-power stream (which runs whenever
 // "system" is enabled) so they are not emitted twice.
 func systemLogCategoryFor(categories []string, provider string, eventID int) (string, bool) {
 	category := classifySystemLogEntry(provider, eventID)

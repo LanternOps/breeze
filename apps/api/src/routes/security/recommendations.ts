@@ -14,6 +14,8 @@ import {
   paginate,
   getPolicyOrgId,
   getRecommendationStatusMap,
+  resolveRecommendationStatus,
+  resolveOrgRecommendationBreakdown,
   buildBe9Recommendations
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
@@ -36,7 +38,7 @@ function resolveActionOrgId(
   }
   const orgId = getPolicyOrgId(auth);
   if (!orgId) {
-    return { error: 'Unable to determine organization context', status: 400 };
+    return { error: 'orgId is required: choose an organization to act on this recommendation', status: 400 };
   }
   return { orgId };
 }
@@ -60,7 +62,9 @@ recommendationsRoutes.get(
 
     let recommendations = recommendationsResult.recommendations.map((rec) => ({
       ...rec,
-      status: recommendationStatusMap.get(rec.id) ?? 'open'
+      status: resolveRecommendationStatus(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap),
+      // Per-org rows so the UI can act on ONE org's recommendation (#9714).
+      orgs: resolveOrgRecommendationBreakdown(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap)
     }));
 
     if (query.priority) {
@@ -77,7 +81,7 @@ recommendationsRoutes.get(
 
     const all = recommendationsResult.recommendations.map((rec) => ({
       ...rec,
-      status: recommendationStatusMap.get(rec.id) ?? 'open'
+      status: resolveRecommendationStatus(rec.id, recommendationsResult.affectedByOrg?.get(rec.id), recommendationStatusMap)
     }));
 
     return c.json({
@@ -172,5 +176,46 @@ recommendationsRoutes.post(
     markRequestAuditWritten();
 
     return c.json({ data: { id, status: 'dismissed' } });
+  }
+);
+
+recommendationsRoutes.post(
+  '/recommendations/:id/reopen',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'write'),
+  zValidator('param', recommendationActionSchema),
+  zValidator('query', recommendationActionQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const resolved = resolveActionOrgId(auth, c.req.valid('query').orgId);
+    if ('error' in resolved) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const { orgId } = resolved;
+
+    const recommendationsResult = await buildBe9Recommendations(auth, orgId);
+    if (recommendationsResult.error) {
+      return c.json({ error: recommendationsResult.error.message }, recommendationsResult.error.status);
+    }
+    const recommendation = recommendationsResult.recommendations.find((item) => item.id === id);
+    if (!recommendation) {
+      return c.json({ error: 'Recommendation not found' }, 404);
+    }
+
+    await db.insert(auditLogs).values({
+      orgId,
+      actorType: 'user',
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'security.recommendation.reopen',
+      resourceType: 'security_recommendation',
+      resourceName: id,
+      details: { recommendationId: id },
+      result: 'success'
+    });
+    markRequestAuditWritten();
+
+    return c.json({ data: { id, status: 'open' } });
   }
 );

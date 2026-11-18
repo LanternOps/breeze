@@ -207,9 +207,6 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/routes/aiAgents.ts', new Map([
     ['GET /runs/:runId', pinned(4, `AI-agent run artifact reads join reports and pin eq(reports.orgId, run.orgId) AND auth.orgCondition(reports.orgId); ${ORG_PIN}`, AUD_AI_AGENT_ARTIFACT)],
   ])],
-  ['src/routes/fleetDesign.ts', new Map([
-    ['GET /', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId)', AUD_TYPE_PINNED)],
-  ])],
   ['src/services/aiAgents/fleetDesignReport.ts', new Map([
     ['persistFleetDesignReport', pinned(3, `Fleet Design is system-authored and org-owned: definition read/update keyed on eq(reports.orgId, run.orgId); the run update targets the artifact row it just inserted; ${ORG_PIN}`, AUD_TYPE_PINNED)],
     ['loadFleetDesignReport', pinned(2, 'by-id run read joined to reports with type ai_fleet_design AND orgCondition(reports.orgId); a partner-owned row is never that type', AUD_TYPE_PINNED)],
@@ -230,8 +227,17 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/evidenceBaseline.ts', new Map([
     ['previousOccurrenceBaselineFor', pinned(1, 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)', AUD_EVIDENCE_LINKED)],
   ])],
+  ['src/services/actionIntents/aiDesignIntentTarget.ts', new Map([
+    ['fleetDesignTarget', pinned(2, 'decides which org an intent belongs in, so there is no intent org to filter on yet and no auth to guard with: a system read of one run by id AND type ai_fleet_design. A row with no org returns null, and both callers (createSessionPreToolUse, createMcpActionIntent) use the org only when the call\'s reach covers it; the mandatory pin then re-reads the run under eq(reports.orgId, <intent org>) (fleetDesign/applyTargets.ts loadOrgReport)', AUD_TYPE_PINNED)],
+  ])],
+  ['src/services/fleetDesign/applyTargets.ts', new Map([
+    ['loadOrgReport', pinned(2, `four-eyes digest material, read with no auth by design (the release paths have none to give, and partnerOwnedReportVisibility is TRUE for system scope): one run by id AND eq(reports.orgId, <intent org>) AND type ai_fleet_design; ${ORG_PIN}`, AUD_TYPE_PINNED)],
+  ])],
   ['src/services/fleetDesign/drift.ts', new Map([
     ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs', AUD_TYPE_PINNED)],
+  ])],
+  ['src/services/fleetDesign/listing.ts', new Map([
+    ['listFleetDesigns', pinned(2, 'lists type ai_fleet_design (system-authored, org-owned) under auth.orgCondition(reports.orgId); moved verbatim from routes/fleetDesign.ts GET / (#6780) and shared by the route and list_fleet_designs', AUD_TYPE_PINNED)],
   ])],
   ['src/services/fleetDesign/ledger.ts', new Map([
     ['lockReportRun', pinned(2, 'Fleet Design ledger reads type ai_fleet_design under orgCondition(reports.org_id); a partner-owned row is never that type', AUD_TYPE_PINNED)],
@@ -288,6 +294,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/serviceDeliverableService.ts', new Map([
     ['validateReferences', pinned(1, `evidence linkage validates eq(reports.orgId, <deliverable org>) — ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
     ['insertEvidenceRef', pinned(2, `run evidence joins reports and pins eq(reports.orgId, orgId); ${ORG_PIN}`, AUD_EVIDENCE_REFUSES)],
+    ['selectEvidence', pinned(1, `#9961 evidence display-name LEFT JOIN pins eq(reports.orgId, service_deliverable_evidence.orgId) on top of the id; only reports.name is read, and only for a reports:read caller; ${ORG_PIN}`, AUD_EVIDENCE_LINKED)],
   ])],
   ['src/jobs/reportScheduleWorker.ts', new Map([
     ['findDueReports', pinned(2, 'system DB context due scan; nothing selected is shown to anyone — every due row is re-authorized per run (#3198 W01 Task 6)', AUD_WORKER)],
@@ -307,6 +314,10 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['rehomeReportChildrenThenDelete', pinned(12, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor>; a partner-owned definition has org_id NULL and is never re-homed, deduplicated or deleted', AUD_SYSTEM)],
     ['archiveCollidingSeriesChildren', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor> with series_id IS NOT NULL; series children are org-owned (reports_series_child_shape_chk), so a partner-owned definition is never archived or joined', AUD_SYSTEM)],
     ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin', AUD_SYSTEM)],
+  ])],
+  // Report-run retention (#4342 W5): system-context nightly sweep, never a caller read.
+  ['src/jobs/historyRetention/runHistory.ts', new Map([
+    ['where', pinned(1, 'REPORT_RUN_RETENTION_TARGET predicate, run by retentionBatch in system context (report-only until REPORT_RUN_RETENTION_ENFORCE): the one raw site is the keep-newest probe FROM report_runs n WHERE n.report_id = report_runs.report_id, so it only compares runs of the SAME definition and never crosses owners; it reads no org_id or partner_id, so partner-owned (NULL-org) and org-owned runs age out under one window, and only a count / the expired rows leave the job', AUD_SYSTEM)],
   ])],
 ]);
 
@@ -870,7 +881,11 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
 
   it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
     const raw = files.flatMap((f) => querySiteMatches(code(f)).filter((h) => h.text.startsWith('sql`')).map(() => rel(f)));
-    expect(new Set(raw)).toEqual(new Set(['src/services/orgMergeCustomExecutors.ts', 'src/services/reportSeries/reconcile.ts']));
+    expect(new Set(raw)).toEqual(new Set([
+      'src/jobs/historyRetention/runHistory.ts',
+      'src/services/orgMergeCustomExecutors.ts',
+      'src/services/reportSeries/reconcile.ts',
+    ]));
   });
 
   it('every guard entrypoint reaches the helper', () => {

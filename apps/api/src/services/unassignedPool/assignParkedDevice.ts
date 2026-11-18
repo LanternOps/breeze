@@ -22,6 +22,7 @@
  * Only full partner admins (canManagePartnerWidePolicies) and system scope
  * may assign; the check is repeated here, not only in the route.
  */
+import { assertNoUnresolvedIsolation, NetworkIsolationUnresolvedError } from '../networkIsolation/lifecycle';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
@@ -98,9 +99,11 @@ export type ParkedAssignRefusalCode =
   // Lost a lock race (a bounded lock wait timed out, or a deadlock victim):
   // nothing was written; retrying shortly succeeds.
   | 'ASSIGNMENT_BUSY'
-  | 'ASSIGNMENT_FAILED';
+  | 'ASSIGNMENT_FAILED'
+  | 'isolation_unresolved';
 
 const REFUSAL_MESSAGES: Record<ParkedAssignRefusalCode, string> = {
+  isolation_unresolved: 'Release network isolation first',
   PARTNER_WIDE_WRITE_DENIED: 'Assigning parked devices requires full partner org access',
   DEVICE_NOT_FOUND: 'Parked device not found',
   DEVICE_NOT_PARKED: 'This device is not waiting for assignment',
@@ -245,6 +248,7 @@ async function assignInTransaction(
   if (isParkedDeviceExpired(device.createdAt, now)) {
     throw new ParkedAssignmentRefusedError('DEVICE_PARKING_EXPIRED');
   }
+  await assertNoUnresolvedIsolation(tx, { deviceId: device.id }, 'assign_parked_device');
   await hooks?.afterDeviceLock?.(device.id);
 
   const target = await lockTargetOrg(tx, item.targetOrgId);
@@ -357,6 +361,7 @@ async function admitOrRefuse(check: () => Promise<PartnerDeviceCapacityResult>):
  * transaction back like any other refusal; they are answers, not failures.
  */
 function engineRefusal(err: unknown): ParkedAssignmentRefusedError | null {
+  if (err instanceof NetworkIsolationUnresolvedError) return new ParkedAssignmentRefusedError('isolation_unresolved');
   if (err instanceof DevicePoolMembershipRefusedError) return new ParkedAssignmentRefusedError('POOL_MEMBERSHIP_REFUSED');
   if (err instanceof OrgVanishedDuringMoveError) {
     return new ParkedAssignmentRefusedError(err.which === 'target' ? 'TARGET_ORG_INVALID' : 'DEVICE_NOT_FOUND');
@@ -373,6 +378,10 @@ function engineRefusal(err: unknown): ParkedAssignmentRefusedError | null {
   // as a deadlock victim, rolled everything back and is worth a retry.
   if (isTransientLockError(err)) return new ParkedAssignmentRefusedError('ASSIGNMENT_BUSY');
   const pgNode = pgErrorNode(err);
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node unwrapped by pgErrorNode.
+  if (pgNode?.code === '55000' && typeof pgNode.message === 'string' && pgNode.message.startsWith('isolation_unresolved:')) {
+    return new ParkedAssignmentRefusedError('isolation_unresolved');
+  }
   // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by pgErrorNode.
   if (pgNode?.code === '23514' && pgNode.constraint_name === PAM_MOVE_GUARD_CONSTRAINT) {
     return new ParkedAssignmentRefusedError('PAM_DEVICE_MOVE_BLOCKED');
@@ -461,7 +470,8 @@ function afterCommit(
     return requestDeviceGroupReevaluation({
       deviceId: item.deviceId,
       orgId: item.targetOrgId,
-      eventType: 'device.updated',
+      // The move cleared memberships; device.created evaluates every target-org dynamic group.
+      eventType: 'device.created',
       reason: 'parked_device_assigned',
     });
   });

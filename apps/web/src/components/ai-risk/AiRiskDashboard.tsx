@@ -37,6 +37,8 @@ interface TimeSeriesPoint {
   completed: number;
   failed: number;
   rejected: number;
+  /** Platform refusals (#10411); absent from an API that predates it. */
+  refused?: number;
 }
 export interface ToolExecution {
   id: string;

@@ -289,6 +289,27 @@ describe('probeConditionalWrites', () => {
     expect(deletes.sort()).toEqual(['v1', 'v2']);
   });
 
+  // #7081: a credential scoped to `bucket/<prefix>/*` cannot write at the
+  // bucket root, so the probe writes under the destination's prefix — outside
+  // `<prefix>/snapshots/`, so storage GC never sees it.
+  it('probes under the destination prefix when one is set', async () => {
+    holder.send
+      .mockResolvedValueOnce({ VersionId: 'v1' })
+      .mockRejectedValueOnce(httpError(412, 'PreconditionFailed'))
+      .mockResolvedValueOnce({});
+    await expect(probeConditionalWrites({ ...CFG, prefix: '/msp/acme/' }))
+      .resolves.toEqual({ supported: true, reason: 'precondition_enforced' });
+    const keys = holder.send.mock.calls.map((c) => c[0].input.Key);
+    expect(keys[0]).toMatch(/^msp\/acme\/breeze-capability-probe\/[0-9a-f-]{36}$/);
+    expect(keys).toEqual([keys[0], keys[0], keys[0]]);
+  });
+
+  it('never falls back to the bucket root: an invalid stored prefix is unsupported with no storage call', async () => {
+    await expect(probeConditionalWrites({ ...CFG, prefix: 'a//b' }))
+      .resolves.toEqual({ supported: false, reason: 'invalid_destination_prefix' });
+    expect(holder.send).not.toHaveBeenCalled();
+  });
+
   it('is unsupported on any other error, with a reason', async () => {
     holder.send.mockRejectedValueOnce(httpError(403, 'AccessDenied'));
     await expect(probeConditionalWrites(CFG)).resolves.toEqual({ supported: false, reason: 'probe_write_failed' });

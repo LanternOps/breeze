@@ -61,6 +61,13 @@ describe('sms sender', () => {
     expect(sendSmsMessage).toHaveBeenCalledTimes(2);
   });
 
+  it.each([true, false])('renders the subject in SMS (workload=%s)', async (workload) => {
+    const sendSmsMessage = vi.fn().mockResolvedValue({ success: true });
+    vi.mocked(getTwilioService).mockReturnValue({ sendSmsMessage } as unknown as ReturnType<typeof getTwilioService>);
+    await sendSmsNotification({ phoneNumbers: ['+15551234567'] }, { alertName: 'Alert', severity: 'high', summary: 'Failed', subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' });
+    expect(sendSmsMessage.mock.calls[0]?.[1]).toContain(workload ? ' on Microsoft 365 mail backup · Example customer' : ' on Server-1');
+  });
+
   it('returns failure when one or more sms sends fail', async () => {
     const sendSmsMessage = vi
       .fn()

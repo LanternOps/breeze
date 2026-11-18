@@ -16,8 +16,8 @@ type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
   ringId?: string | null;
-  /** Name of the organization this patch approval applies to, for the confirm message. */
-  orgName?: string | null;
+  /** Name of the selected ring, for the confirm message (ring approvals span all organizations). */
+  ringName?: string | null;
   /** Number of devices in the target ring/scope, for the confirm message. */
   ringDeviceCount?: number | null;
   /** Which action tab is preselected on open (default 'approve'). Used by the
@@ -60,7 +60,7 @@ export default function PatchApprovalModal({
   open,
   patch,
   ringId,
-  orgName,
+  ringName,
   ringDeviceCount,
   initialAction,
   onClose,
@@ -370,15 +370,21 @@ export default function PatchApprovalModal({
       variant="warning"
       confirmLabel={t('patchApprovalModal.actions.approve.label')}
       confirmTestId="confirm-fleet-action"
-      message={t(
-        /* i18n-dynamic */ (ringDeviceCount ?? 1) === 1
-          ? 'patchApprovalModal.confirm.messageOne'
-          : 'patchApprovalModal.confirm.messageMany',
-        {
-          count: ringDeviceCount ?? 1,
-          org: orgName ?? t('patchApprovalModal.confirm.selectedOrganization'),
-        }
-      )}
+      message={
+        // No ring => the approval is partner-wide (patch_approvals.ring_id IS NULL)
+        // and applies to every organization; never name a single org or a count.
+        ringId
+          ? t(
+              /* i18n-dynamic */ (ringDeviceCount ?? 1) === 1
+                ? 'patchApprovalModal.confirm.messageRingOne'
+                : 'patchApprovalModal.confirm.messageRingMany',
+              {
+                count: ringDeviceCount ?? 1,
+                ring: ringName ?? t('patchApprovalModal.confirm.selectedRing'),
+              }
+            )
+          : t('patchApprovalModal.confirm.messagePartnerWide')
+      }
     />
     </>
   );

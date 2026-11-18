@@ -44,6 +44,14 @@ export interface ApprovalRequest {
    * instead. Do not wire operator_plan into the M365 mutation tool set.
    */
   customerTenant: string | null;
+  /**
+   * The action intent this row decides (server `serialize`, `intentId`), or
+   * null for an intent-less row. Wisp W06: a concern names its approval card
+   * by INTENT id, and an intent fans out to one approval row per approver, so
+   * the thread screen maps intent → this user's row before focusing it.
+   * Optional: absent from older servers.
+   */
+  intentId?: string | null;
   status: ApprovalStatus;
   expiresAt: string;
   decidedAt: string | null;

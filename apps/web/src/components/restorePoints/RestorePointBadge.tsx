@@ -111,6 +111,11 @@ const STATUS_MAP: Record<RestorePointStatus, StatusEntry> = {
       return message ? t('badge.failed', { message: truncate(message), interpolation: { escapeValue: false } }) : t('badge.failedNoMessage');
     },
   },
+  // #9163: the agent restarted or shut down before it reported the outcome.
+  // Warning, not danger: nothing is known to have failed, but a technician
+  // should check the device. Not 'failed' either, which sends them chasing the
+  // System Restore service.
+  interrupted: { tone: 'warning', text: (t) => t('badge.interrupted') },
 };
 
 const UNKNOWN_ENTRY: StatusEntry = { tone: 'neutral', text: (t) => t('badge.unknown') };

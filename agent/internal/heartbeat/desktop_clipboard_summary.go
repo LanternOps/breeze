@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -30,7 +31,7 @@ var (
 	clipboardSummaryDirections = map[string]bool{"host_to_viewer": true, "viewer_to_host": true}
 	clipboardSummaryTypes      = map[string]bool{"text": true, "rtf": true, "image": true}
 	// clipboardSegmentIDPattern matches the API schema's segmentId.
-	clipboardSegmentIDPattern = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
+	clipboardSegmentIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{16,64}$`) })
 )
 
 func newClipboardSegmentID() string {
@@ -116,7 +117,7 @@ func desktopClipboardSummaryPayload(sessionID string, in ipc.ClipboardSummary) m
 	}
 	// The API records one row per segment and rejects a malformed id; a
 	// report without a usable one is still its own segment.
-	if !clipboardSegmentIDPattern.MatchString(out.SegmentID) {
+	if !clipboardSegmentIDPattern().MatchString(out.SegmentID) {
 		out.SegmentID = newClipboardSegmentID()
 	}
 	for _, t := range in.Transfers {
@@ -146,7 +147,7 @@ func (h *Heartbeat) sendDesktopClipboardSummary(sessionID string, summary ipc.Cl
 	if h.wsClient == nil {
 		return
 	}
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		log.Warn("refusing to send desktop clipboard summary with invalid session ID", "sessionId", sessionID)
 		return
 	}

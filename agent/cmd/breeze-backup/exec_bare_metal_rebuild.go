@@ -142,7 +142,8 @@ func execBareMetalRebuild(parentCtx context.Context, payload json.RawMessage, re
 	if err != nil {
 		return fail(err.Error())
 	}
-	opts.RegenerateInitramfs = true // the CLI's default; a direct Options caller must ask for it explicitly
+	// The restored system's boot tools stay off: this host has an installed
+	// agent, and the engine refuses them here anyway (rebuild boot_tools.go).
 	opts.System = rebuildSystemForTest
 	opts.WinSystem = rebuildWinSystemForTest
 	opts.Progress = func(ph rebuild.Phase, msg string, cur, total int64) {

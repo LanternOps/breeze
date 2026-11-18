@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { normalizeSignupIntent, type SignupIntent } from '@breeze/shared';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, sql } from 'drizzle-orm';
@@ -6,18 +7,27 @@ import { createHash } from 'crypto';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, partners, roles } from '../../db/schema';
-import { mfaSrcFor } from '../../services/mfaAssuranceSource';
+import { mfaSrcFor, resolveNoFactorSessionMfa } from '../../services/mfaAssuranceSource';
 import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
+  reserveAccountAttempt,
+  clearAccountFailures,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from '../../services/emailVerification';
+import {
+  checkSignupPassword,
+  type SignupPasswordFailure,
+} from '../../services/signupPasswordConfirmation';
+import { notifyAccountLocked } from './login';
 import {
   consumePendingRegistration,
   peekPendingRegistration,
@@ -131,15 +141,57 @@ function registrationIssuanceError(c: Context, error: unknown): Response | null 
   return null;
 }
 
+const SIGNUP_PASSWORD_REQUIRED_BODY = {
+  error: 'Enter the password you chose when signing up.',
+  status: 'password_required',
+} as const;
+const INVALID_VERIFICATION_LINK_BODY = { error: 'Invalid or expired verification link' } as const;
+
+/**
+ * Answer a refused signup-password confirmation. Every refusal is audited with
+ * its reason. The caller sees "password required" while the link can still be
+ * used (missing, wrong, or account locked out), the ordinary invalid-link body
+ * once the link has used up its attempts and has been retired, or 503 when the
+ * attempt counter is unreachable (nothing was checked; the link is kept).
+ */
+async function refuseSignupPassword(
+  c: Context,
+  reason: SignupPasswordFailure,
+  subject: { userId?: string; email: string },
+  retireLink: () => Promise<unknown>,
+): Promise<Response> {
+  writeAuthAudit(c, {
+    action: 'auth.email_verify_failed',
+    result: 'failure',
+    reason,
+    userId: subject.userId,
+    email: subject.email,
+  });
+  if (reason === 'check_unavailable') {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  if (reason !== 'attempts_exhausted') {
+    return c.json(SIGNUP_PASSWORD_REQUIRED_BODY, 400);
+  }
+  try {
+    await retireLink();
+  } catch (err) {
+    console.error('[verify-email] failed to retire a signup link after its password attempts', err);
+    captureException(err);
+  }
+  return c.json(INVALID_VERIFICATION_LINK_BODY, 400);
+}
+
 const verifyEmailSchema = z.object({
   token: z.string().min(1, 'token required'),
+  password: z.string().max(1024).optional(),
 });
 
 verifyEmailRoutes.post(
   '/verify-email',
   zValidator('json', verifyEmailSchema),
   async (c) => {
-    const { token } = c.req.valid('json');
+    const { token, password } = c.req.valid('json');
     const rateLimitClient = getClientRateLimitKey(c);
 
     const redis = getRedis();
@@ -165,10 +217,70 @@ verifyEmailRoutes.post(
     const tokenHash = sha256Hex(token);
     const pending = await peekPendingRegistration(tokenHash);
     if (pending) {
+      // The account is created with the password chosen at signup, so the
+      // person confirming must know it as well as hold the mailbox. A refusal
+      // leaves the pending record untouched (the page asks for the password
+      // and submits the same token again) until the link has used up its
+      // attempts; then the pending registration is discarded.
+      const check = await checkSignupPassword({
+        redis,
+        tokenHash,
+        passwordHash: pending.passwordHash,
+        password,
+      });
+      if (!check.ok) {
+        return refuseSignupPassword(c, check.reason, { email: pending.email }, () => consumePendingRegistration(tokenHash));
+      }
       return finalizePendingRegistration(c, Object.freeze({ ...pending }), tokenHash);
     }
 
-    const result = await consumeVerificationToken(token);
+    // A signup link for an account that already exists and has a password:
+    // confirm that password here, before the claim transaction, against the
+    // same per-account lockout the login route uses.
+    const signupAccount = await peekSignupPasswordConfirmation(token);
+    if (signupAccount) {
+      const check = await checkSignupPassword({
+        redis,
+        tokenHash: signupAccount.tokenHash,
+        passwordHash: signupAccount.passwordHash,
+        password,
+        account: {
+          reserve: () => reserveAccountAttempt(redis, signupAccount.email),
+          notifyLocked: (count) => notifyAccountLocked(
+            c,
+            { id: signupAccount.userId, email: signupAccount.email, name: signupAccount.name },
+            count,
+          ),
+          clearFailures: () => clearAccountFailures(redis, signupAccount.email),
+        },
+      });
+      if (!check.ok) {
+        return refuseSignupPassword(
+          c,
+          check.reason,
+          { userId: signupAccount.userId, email: signupAccount.email },
+          () => retireVerificationToken(token),
+        );
+      }
+    }
+
+    const result = await consumeVerificationToken(
+      token,
+      signupAccount ? { confirmedPasswordHash: signupAccount.passwordHash } : {},
+    );
+
+    // The stored password changed between the check above and the claim, or
+    // the account gained one: ask again rather than claim.
+    if (!result.ok && result.error === 'password_required') {
+      writeAuthAudit(c, {
+        action: 'auth.email_verify_failed',
+        result: 'failure',
+        reason: 'password_required',
+        userId: signupAccount?.userId,
+        email: signupAccount?.email,
+      });
+      return c.json(SIGNUP_PASSWORD_REQUIRED_BODY, 400);
+    }
 
     if (!result.ok) {
       // The real reason is AUDIT-ONLY. Returning it verbatim
@@ -180,7 +292,7 @@ verifyEmailRoutes.post(
         result: 'failure',
         reason: result.error,
       });
-      return c.json({ error: 'Invalid or expired verification link' }, 400);
+      return c.json(INVALID_VERIFICATION_LINK_BODY, 400);
     }
 
     // SR2-17: the pending address has just been swapped in, the user has been
@@ -379,10 +491,17 @@ verifyEmailRoutes.post('/resend-verification', authMiddleware, async (c) => {
   return c.json({ sent: true });
 });
 
+/** sign_in responses echo the normalized intent when the record carried one; never a purchaseSelection. */
+function signInIntent(rec: PendingRegistration): { signupIntent?: SignupIntent } {
+  const carried = rec.signupIntent ?? rec.purchaseSelection;
+  return carried ? { signupIntent: normalizeSignupIntent(carried) } : {};
+}
+
 type CreatedRegistration = Awaited<ReturnType<typeof createPartner>>;
 
 interface RegistrationFacts {
   created: CreatedRegistration;
+  purchaseSelection: SignupIntent;
   partnerRow: {
     id: string;
     name: string;
@@ -421,6 +540,10 @@ async function createRegistrationAccount(
     .limit(1);
   if (existing) return null;
 
+  // Old pending snapshots can predate signup intent or carry the legacy launch
+  // tuple. Resolve the cloud default only after ruling out an existing user, and
+  // carry the same value through the durable insert and the post-commit billing hook.
+  const purchaseSelection = normalizeSignupIntent(rec.signupIntent ?? rec.purchaseSelection);
   const created = await createPartner({
     orgName: rec.companyName,
     adminEmail: rec.email,
@@ -428,6 +551,7 @@ async function createRegistrationAccount(
     passwordHash: rec.passwordHash,
     origin: { mcp: false, ip: rec.signupIp, userAgent: rec.signupUserAgent },
     status: rec.hostedExpectation ? 'pending' : 'active',
+    purchaseSelection,
   }, { tx });
 
   const [partnerRow] = await tx
@@ -476,11 +600,15 @@ async function createRegistrationAccount(
     security: partnerSettings.security as MfaSecuritySettings | undefined,
     failClosed: true,
   });
-  const mfaEnrollmentRequired = ENABLE_2FA && !userRow.mfaEnabled && policy.required;
-  const mfaSatisfied = !ENABLE_2FA || (!userRow.mfaEnabled && !policy.required);
+  const { mfa: mfaSatisfied, mfaEnrollmentRequired } = resolveNoFactorSessionMfa({
+    twoFactorEnabled: ENABLE_2FA,
+    userMfaEnabled: userRow.mfaEnabled === true,
+    policyRequired: policy.required,
+  });
 
   return {
     created,
+    purchaseSelection,
     partnerRow,
     userRow,
     roleRow,
@@ -630,7 +758,7 @@ async function finalizePendingRegistration(
           reason: 'already_registered',
           email: rec.email,
         });
-        return c.json({ verified: false, status: 'sign_in' as const }, 200);
+        return c.json({ verified: false, status: 'sign_in' as const, ...signInIntent(rec) }, 200);
       }
       return c.json({ error: 'Authentication temporarily unavailable' }, 409);
     }
@@ -649,7 +777,7 @@ async function finalizePendingRegistration(
       reason: 'already_registered',
       email: rec.email,
     });
-    return c.json({ verified: false, status: 'sign_in' as const }, 200);
+    return c.json({ verified: false, status: 'sign_in' as const, ...signInIntent(rec) }, 200);
   }
 
   const { facts } = committed;
@@ -691,6 +819,7 @@ async function finalizePendingRegistration(
       email: facts.userRow.email,
       partnerName: facts.partnerRow.name,
       plan: facts.partnerRow.plan,
+      purchaseSelection: facts.purchaseSelection,
     });
 
     let effectiveStatus: PartnerStatus = facts.partnerRow.status;
@@ -773,9 +902,13 @@ async function finalizePendingRegistration(
     // guard). A bare leading-slash test is NOT sufficient: `//evil.com` is
     // protocol-relative and navigates off-origin, and browsers normalize
     // `/\evil.com` into the same thing. Mirrors apps/web's getSafeNext.
+    // An explicit hook response owns routing, including a pending review hold
+    // with no redirect. Recover selected intent only when the hook is unavailable.
     const redirectUrl = isSafeRelativeRedirect(hookResponse?.redirectUrl)
       ? hookResponse!.redirectUrl
-      : undefined;
+      : rec.hostedExpectation && hookResponse == null
+        ? '/billing/plans'
+        : undefined;
 
     const responseBase = {
       verified: true,

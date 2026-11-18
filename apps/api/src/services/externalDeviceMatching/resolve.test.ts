@@ -120,3 +120,55 @@ describe('normalizeMatchName', () => {
     expect(normalizeMatchName('.corp')).toBeNull();
   });
 });
+
+describe('resolveDeviceMatches { strictUnique: true } (identifier-poor vendors, EDR A3)', () => {
+  const row = (id: string, matchName = 'pc04', orgId = ORG, macs: string[] = []) => ({ id, orgId, matchName, macAddresses: macs });
+  const strict = { strictUnique: true } as const;
+
+  it('2 Breeze devices with the name, 1 row -> ambiguous (default mode also ambiguous here)', () => {
+    const rows = [row('p1')];
+    const devs = [dev('d1', 'pc04'), dev('d2', 'pc04')];
+    expect(resolveDeviceMatches(rows, devs, strict)).toEqual({ links: [], ambiguous: ['p1'] });
+  });
+
+  it('2 devices, one CLAIMED, 1 row -> ambiguous under strict; default mode links the free one (the pinned difference)', () => {
+    const rows = [row('p1')];
+    const devs = [dev('d1', 'pc04', [], true), dev('d2', 'pc04')];
+    expect(resolveDeviceMatches(rows, devs, strict)).toEqual({ links: [], ambiguous: ['p1'] });
+    expect(resolveDeviceMatches(rows, devs).links).toEqual([{ rowId: 'p1', deviceId: 'd2', source: 'auto_hostname' }]);
+  });
+
+  it('1 device, 2 rows with the same name -> both ambiguous under strict; default mode links the lower id', () => {
+    const rows = [row('p1'), row('p2')];
+    const devs = [dev('d1', 'pc04')];
+    const out = resolveDeviceMatches(rows, devs, strict);
+    expect(out.links).toEqual([]);
+    expect([...out.ambiguous].sort()).toEqual(['p1', 'p2']);
+    expect(resolveDeviceMatches(rows, devs).links).toEqual([{ rowId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
+  });
+
+  it('1 device, 1 row -> auto_hostname', () => {
+    expect(resolveDeviceMatches([row('p1')], [dev('d1', 'pc04')], strict).links)
+      .toEqual([{ rowId: 'p1', deviceId: 'd1', source: 'auto_hostname' }]);
+  });
+
+  it('a row with MACs is never auto_mac under strict (no MAC step)', () => {
+    const rows = [row('p1', 'pc04', ORG, ['aa:bb:cc:dd:ee:ff'])];
+    const devs = [dev('d1', 'pc04', ['aa:bb:cc:dd:ee:ff']), dev('d2', 'pc04', ['00:11:22:33:44:55'])];
+    expect(resolveDeviceMatches(rows, devs, strict)).toEqual({ links: [], ambiguous: ['p1'] });
+    expect(resolveDeviceMatches(rows, devs).links).toEqual([{ rowId: 'p1', deviceId: 'd1', source: 'auto_mac' }]);
+  });
+
+  it('the same name in another org is never counted as a second row or a second device', () => {
+    const rows = [row('p1'), row('p2', 'pc04', OTHER_ORG)];
+    const devs = [dev('d1', 'pc04'), { ...dev('d9', 'pc04'), orgId: OTHER_ORG }];
+    expect(resolveDeviceMatches(rows, devs, strict).links).toEqual([
+      { rowId: 'p1', deviceId: 'd1', source: 'auto_hostname' },
+      { rowId: 'p2', deviceId: 'd9', source: 'auto_hostname' },
+    ]);
+  });
+
+  it('a name with no candidate stays silent (not ambiguous)', () => {
+    expect(resolveDeviceMatches([row('p1', 'nobody')], [dev('d1', 'pc04')], strict)).toEqual({ links: [], ambiguous: [] });
+  });
+});

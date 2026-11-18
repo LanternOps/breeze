@@ -51,12 +51,14 @@ import {
   awaitSystemCleanupResult,
   parseAgentJson,
   queueSystemCleanupList,
+  cancelSystemCleanupRun,
   resolveSystemCleanupRunStatus,
   startSystemCleanupRun,
   systemCleanupCatalogSchema,
 } from './systemCleanup';
 import { CommandTypes } from './commandTypes';
 import { createAuditLogAsync } from './auditService';
+import { aiOriginAuditActor } from './aiOriginColumns';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
@@ -122,6 +124,87 @@ async function verifyDeviceAccess(
   return { device };
 }
 
+type FileCommandResult = Awaited<ReturnType<typeof aiExecuteCommand>>;
+type DescribedDeleteResult = FileCommandResult & {
+  outcome?: 'moved_to_trash' | 'permanently_deleted' | 'unverified';
+  spaceReclaimed?: false;
+  bytesRemoved?: number;
+  message?: string;
+};
+
+function parseAgentStdoutObject(stdout: string | undefined): Record<string, unknown> | null {
+  if (!stdout) return null;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+// Every message below stays under the tightest chat-compaction tier's
+// maxStringChars (300, aiToolOutput.ts) so the model never reads a cut one.
+const DELETE_TIMEOUT_MESSAGE = 'The delete timed out waiting for the agent. It may still have happened on the device. List the folder to check before retrying or reporting it.';
+const DELETE_UNVERIFIED_MESSAGE = 'The agent reply did not confirm what happened, so it is unknown whether the item was deleted or any space was freed. List the folder and run analyze_disk_usage refresh=true before reporting.';
+
+/**
+ * A timeout may still have acted on the device after the wait ended; say so
+ * instead of passing back a bare timeout the model reads as "nothing happened".
+ */
+function timedOutDelete(result: FileCommandResult): DescribedDeleteResult | null {
+  return result.status === 'timeout'
+    ? { ...result, outcome: 'unverified', message: DELETE_TIMEOUT_MESSAGE }
+    : null;
+}
+
+/**
+ * #9853: the agent answers a trash move with `{ deleted: true, trashId }`,
+ * which read as "space freed" to the model on a disk that stayed full. The
+ * agent body stays in `stdout` (fenced as device text, trashId included); the
+ * fields added here are API-authored and survive the chat compactor.
+ */
+function describeTrashDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  const timedOut = timedOutDelete(result);
+  if (timedOut) return timedOut;
+  if (result.status !== 'completed') return result;
+  const body = parseAgentStdoutObject(result.stdout);
+  if (body?.deleted !== true || typeof body.trashId !== 'string') {
+    return { ...result, outcome: 'unverified', message: DELETE_UNVERIFIED_MESSAGE };
+  }
+  return {
+    ...result,
+    outcome: 'moved_to_trash',
+    spaceReclaimed: false,
+    message: 'Moved to the agent trash (trashId in the agent result), not deleted. No disk space was reclaimed: the bytes stay in the trash, normally on the same volume, until it is purged after 30 days. To free space use disk_cleanup (preview, then execute) or delete with permanent: true.',
+  };
+}
+
+function describePermanentDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  const timedOut = timedOutDelete(result);
+  if (timedOut) return timedOut;
+  if (result.status !== 'completed') return result;
+  const body = parseAgentStdoutObject(result.stdout);
+  const bytesRemoved = body && typeof body.bytesFreed === 'number' && Number.isFinite(body.bytesFreed)
+    ? Math.max(0, body.bytesFreed)
+    : null;
+  if (body?.permanent !== true || bytesRemoved === null) {
+    // A gated agent always answers a permanent delete with both fields. If
+    // they are missing the API cannot tell a permanent delete from a trash
+    // move, so it must not claim either.
+    return { ...result, outcome: 'unverified', message: DELETE_UNVERIFIED_MESSAGE };
+  }
+  // No `spaceReclaimed: true`: the agent's `bytesFreed` is a link-following
+  // stat of the path, and an unlinked file that a process still holds open (a
+  // runaway log) keeps its blocks until that process closes it. The API cannot
+  // see either, so it reports what the agent removed and how to confirm.
+  return {
+    ...result,
+    outcome: 'permanently_deleted',
+    bytesRemoved,
+    message: `Permanently deleted; cannot be restored. The agent removed ${bytesRemoved} bytes, but space returns only if no process still has the file open (restart it) and the path was not a link. Confirm with analyze_disk_usage refresh=true before reporting space freed.`,
+  };
+}
+
 // #6745 (A-W05 follow-up): the largest preview page of realistic candidates
 // that fits the chat budget uncompacted (aiToolsFilesystem.diskCleanup.outputShape.test.ts).
 const DISK_CLEANUP_DEFAULT_CANDIDATES = 35;
@@ -142,7 +225,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
-      description: 'Perform file operations on a device. list auto-executes with audit; read, write, delete, mkdir and rename require approval because the agent reads/writes as root/LocalSystem. The org AI data policy may refuse user profile folders; request_diagnostic_access is the exception unless the level is off.',
+      description: 'File operations on a device. list auto-executes; read/write/delete/mkdir/rename need approval (runs as root). delete moves the item to the agent trash on the same volume, which frees no disk space; to free space use disk_cleanup or permanent: true. The AI data policy may refuse profile folders.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -150,7 +233,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', enum: ['list', 'read', 'write', 'delete', 'mkdir', 'rename'], description: 'File operation' },
           path: { type: 'string', description: 'File or directory path' },
           content: { type: 'string', description: 'File content (for write)' },
-          newPath: { type: 'string', description: 'New path (for rename)' }
+          newPath: { type: 'string', description: 'New path (for rename)' },
+          permanent: { type: 'boolean', description: 'delete only: delete now, not to the agent trash; cannot be restored. A file a process holds open frees space when it closes. Non-empty folders refused.' }
         },
         required: ['deviceId', 'action', 'path']
       }
@@ -197,12 +281,47 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      const permanent = input.permanent === true;
+      if (permanent && fileCommandType !== 'file_delete') {
+        return JSON.stringify({ error: 'permanent applies only to the delete action' });
+      }
+
+      if (permanent) {
+        // #9853: the same fail-closed agent-version gate disk_cleanup's execute
+        // lane uses. A gated agent answers a permanent delete with
+        // `{ permanent: true, bytesFreed }`, which is how the result below can
+        // say what was freed. An older or unparseable agent is refused: nothing
+        // is dispatched, so a permanent request never turns into a silent trash
+        // move that frees nothing.
+        if (!agentSupportsCleanupGuard(access.device.agentVersion)) {
+          return JSON.stringify({
+            error: 'agent_update_required',
+            minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+            agentVersion: access.device.agentVersion || null,
+            message: `Nothing was deleted. This agent cannot permanently delete files; permanent delete needs agent ${MIN_AGENT_VERSION_CLEANUP_GUARD} or newer. Upgrade the agent. disk_cleanup has the same requirement. A delete without permanent only moves the item to the agent trash on the same volume and frees no disk space.`,
+          });
+        }
+        // File Manager lane, not the cleanup lane: no `cleanupGuard`, because
+        // the guard confines deletes to the cleanup rule table and refuses
+        // anything modified recently — an active runaway log, the case this
+        // exists for. No `recursive`, so a non-empty folder is refused by the
+        // agent rather than wiped; folders go through disk_cleanup.
+        const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
+          path: input.path,
+          permanent: true,
+        }, { userId: auth.user.id, timeoutMs: 30000 });
+        return JSON.stringify(describePermanentDeleteResult(result));
+      }
+
       const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
         path: input.path,
         content: input.content,
         newPath: input.newPath
       }, { userId: auth.user.id, timeoutMs: 30000 });
 
+      if (fileCommandType === 'file_delete') {
+        return JSON.stringify(describeTrashDeleteResult(result));
+      }
       return JSON.stringify(result);
     }
   });
@@ -725,7 +844,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   // ============================================
   // system_cleanup - Tier 2 list (asks the device live), Tier 1 status,
-  // Tier 3 run (spec §9.1)
+  // Tier 3 run (spec §9.1) and cancel (#10161)
   // ============================================
   //
   // THIN on purpose. Every decision — the MIN_AGENT_VERSION gate, action-id
@@ -746,15 +865,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     selfManagedDbContext: ['list'],
     definition: {
       name: 'system_cleanup',
-      description: 'List, run or check OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux cache/journal) beyond scanner reach. list is read-only; re-poll pending with commandId. run needs approval, returns cleanupRunId; poll status until executed/failed, do not re-run. status is read-only.',
+      description: 'List, run, check or cancel OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux cache/journal) beyond scanner reach. list is read-only; re-poll pending with commandId. run returns cleanupRunId; poll status until executed/failed, do not re-run. run and cancel need approval.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
-          action: { type: 'string', enum: ['list', 'run', 'status'], description: 'list (read-only catalog), run (start selected actions; returns a cleanupRunId), or status (read-only progress/result of a run)' },
+          action: { type: 'string', enum: ['list', 'run', 'status', 'cancel'], description: 'list (read-only catalog), run (start selected actions; returns a cleanupRunId), status (read-only progress/result of a run), or cancel (end a running run)' },
           actionIds: { type: 'array', items: { type: 'string' }, description: 'Catalog action ids to run, from a prior list call (required for run)' },
           params: { type: 'object', description: 'Optional per-action parameters. journalVacuumBytes (67108864-4294967296) bounds journalctl --vacuum-size.' },
-          cleanupRunId: { type: 'string', description: 'The cleanupRunId returned by run (required for status)' },
+          cleanupRunId: { type: 'string', description: 'The cleanupRunId returned by run (required for status and cancel)' },
           commandId: { type: 'string', description: 'For list only: the commandId of a catalog request that answered "pending", to re-check it instead of starting a new one' },
         },
         required: ['deviceId', 'action'],
@@ -762,14 +881,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
-      const action = input.action as 'list' | 'run' | 'status';
+      const action = input.action as 'list' | 'run' | 'status' | 'cancel';
 
       // Throws (never returns) when the surface minted no origin — an
       // unattributed destructive device command is refused, not degraded.
       const aiOrigin = requireAiOrigin(auth, 'system_cleanup');
 
-      // `status` reads a run row; the device need not be online for that.
-      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action !== 'status'));
+      // `status` reads a run row and `cancel` fails one (its pending command is
+      // exactly what an offline device has not claimed); neither needs it online.
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action !== 'status' && action !== 'cancel'));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const device = {
@@ -810,6 +930,82 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const [userRow] = await inToolDbPhase(auth, () =>
         db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1));
       const requestedBy = userRow ? auth.user.id : null;
+      // Tool catalog W04 (#5219), Decision 16: a flow is system automation
+      // carrying its run — never 'ai_agent' (the fallback below for a
+      // non-users actor) and never its synthetic attribution id.
+      const flowActor = aiOrigin.kind === 'flow'
+        ? aiOriginAuditActor(aiOrigin, { agentActorId: null, humanActorId: null })
+        : null;
+      const auditActor = flowActor
+        ? { actorType: flowActor.actorType, actorId: flowActor.actorId, initiatedBy: flowActor.initiatedBy }
+        : {
+          actorType: requestedBy ? 'user' as const : 'ai_agent' as const,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          initiatedBy: 'ai' as const,
+        };
+
+      if (action === 'cancel') {
+        const cleanupRunId = typeof input.cleanupRunId === 'string' ? input.cleanupRunId : '';
+        if (!cleanupRunId) return JSON.stringify({ error: 'cleanupRunId is required for the cancel action' });
+        // The SAME lookup + CAS the human cancel route uses
+        // (POST …/run/:cleanupRunId/cancel), scoped to the verified device.
+        const cancelled = await cancelSystemCleanupRun({ device: { id: device.id, orgId: device.orgId }, cleanupRunId });
+        if (!cancelled.ok) {
+          if (cancelled.status === 404) return JSON.stringify({ error: 'Cleanup run not found' });
+          // Same F-4 lesson as run_in_progress below: a bare error next to a
+          // status reads like success, so say plainly nothing was cancelled.
+          // A re-read that still says `running` means the cancel lost its
+          // CAS for some other reason; never call that "no longer running".
+          return JSON.stringify({
+            error: 'not_running',
+            refused: true,
+            cleanupRunId,
+            status: cancelled.runStatus,
+            note: cancelled.runStatus === 'running'
+              ? 'Nothing was cancelled: the cancel did not take effect and the run still reads running. Check status before trying again.'
+              : `Nothing was cancelled: this run is no longer running (status ${cancelled.runStatus}).`,
+          });
+        }
+        void createAuditLogAsync({
+          orgId: device.orgId,
+          ...auditActor,
+          action: 'device.filesystem.system_cleanup.cancel',
+          resourceType: 'device',
+          resourceId: device.id,
+          resourceName: access.device.hostname,
+          details: {
+            cleanupRunId,
+            commandId: cancelled.commandId,
+            commandCancelled: cancelled.commandCancelled,
+            surface: 'ai_tool',
+            ...(flowActor ? flowActor.originDetails : {}),
+          },
+          result: 'success',
+        }).catch((auditError: unknown) => {
+          console.error('[system_cleanup] cancel audit write failed (non-fatal)', { deviceId: device.id, error: auditError });
+        });
+        // Only a command the device had not claimed is actually stopped. A
+        // claimed one keeps running on the device, so do not say "cancelled"
+        // for it (#10161 review): the cleaner may still delete files.
+        if (cancelled.commandCancelled) {
+          return JSON.stringify({
+            cleanupRunId,
+            status: 'failed',
+            cancelled: true,
+            commandCancelled: true,
+            note: 'Cancelled before the device started it: no cleaner ran.',
+          });
+        }
+        return JSON.stringify({
+          cleanupRunId,
+          status: 'failed',
+          cancelled: false,
+          runMarkedFailed: true,
+          commandCancelled: false,
+          note: 'The device had already started this run, so it could not be stopped. The run is marked failed, but the cleaner may still finish and free space; its result is recorded on the run without changing this status.',
+        });
+      }
 
       if (action === 'list') {
         // A re-check of a catalog request that answered `pending` earlier:
@@ -882,14 +1078,11 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // status) for every path, AI or human.
       void createAuditLogAsync({
         orgId: device.orgId,
-        actorType: requestedBy ? 'user' : 'ai_agent',
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
+        ...auditActor,
         action: 'device.filesystem.system_cleanup.run',
         resourceType: 'device',
         resourceId: device.id,
         resourceName: access.device.hostname,
-        initiatedBy: 'ai',
         details: {
           cleanupRunId: started.cleanupRunId,
           commandId: started.commandId,
@@ -897,6 +1090,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           surface: 'ai_tool',
           status: 'running',
           deadlineAt: started.deadlineAt,
+          ...(flowActor ? flowActor.originDetails : {}),
         },
         result: 'success',
       }).catch((auditError: unknown) => {

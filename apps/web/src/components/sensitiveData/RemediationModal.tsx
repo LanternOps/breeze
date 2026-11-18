@@ -102,7 +102,13 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
           <h2 className="text-lg font-semibold">
             {t('sensitiveDataRemediationModal.title', { defaultValue: 'Remediate Findings' })}
           </h2>
-          <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 hover:bg-muted"
+            aria-label={t('common:actions.close')}
+            title={t('common:actions.close')}
+          >
             <X className="h-5 w-5" />
           </button>
         </div>

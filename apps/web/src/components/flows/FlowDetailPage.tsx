@@ -5,9 +5,20 @@ import type { FlowDetailDto, FlowValidationResult } from '@breeze/shared';
 import { useFlowsGate } from '../../stores/featuresStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { getFlow } from './api';
+import { ActionError } from '@/lib/runAction';
+import { usePermissions } from '@/lib/permissions';
+import { useHashTab } from '@/lib/useHashState';
+import { cn } from '@/lib/utils';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
+import { disableFlow, getFlow } from './api';
+import { FlowEnableDialog } from './FlowEnableDialog';
+import { FlowRunDialog } from './FlowRunDialog';
+import { FlowRunsTab } from './FlowRunsTab';
 import { FlowStepList } from './FlowStepList';
 import { FlowIssuesPanel } from './FlowIssuesPanel';
+import { FlowRefusalBanner, FlowUsageMeter } from './FlowUsageMeter';
+import { FlowWebhookPanel } from './FlowWebhookPanel';
 import { TriggerSummary } from './TriggerSummary';
 
 type LoadState =
@@ -16,14 +27,45 @@ type LoadState =
   | { kind: 'not_found' }
   | { kind: 'error' };
 
+const TABS = ['overview', 'runs', 'webhook'] as const;
+
 /**
- * Read-only flow detail (#5218 W3 PR B). No enable / edit / delete controls:
- * flows are drafted in AI chat and only reviewed here.
+ * Flow detail (#5218 W3 PR B review surface; #5219 W4 adds enable / disable /
+ * run-now). Flows are still drafted in AI chat; this page reviews and operates
+ * them. Actions need `automations.write` (UX only: the API re-checks).
  */
 export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const { t } = useTranslation('flows');
   const { enabled, loaded } = useFlowsGate();
+  const { can } = usePermissions();
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [tab, setTab] = useHashTab(TABS, 'overview');
+  const [enableOpen, setEnableOpen] = useState(false);
+  const [runOpen, setRunOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disabling, setDisabling] = useState(false);
+  // W05 (#10270): the enable that just ran cleared the webhook secret.
+  const [secretInvalidated, setSecretInvalidated] = useState(false);
+
+  const reload = () => setReloadSeq((n) => n + 1);
+
+  const confirmDisable = async () => {
+    if (disabling) return;
+    setDisabling(true);
+    try {
+      await disableFlow(flowId);
+      setDisableOpen(false);
+      reload();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('errors.disableFailed') }); // ActionError already toasted
+      setDisableOpen(false);
+      reload(); // the flow's state may have changed under us (e.g. already disabled)
+    } finally {
+      setDisabling(false);
+    }
+  };
 
   useEffect(() => {
     if (!enabled) return;
@@ -40,7 +82,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [enabled, flowId]);
+  }, [enabled, flowId, reloadSeq]);
 
   const notFound = (
     <p className="p-4 text-sm text-muted-foreground" data-testid="flow-not-found">{t('errors.notFound')}</p>
@@ -55,6 +97,18 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
 
   const { flow, validation } = state;
   const { definition } = flow;
+  const canWrite = can('automations', 'write');
+  const canEnable = canWrite && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
+  const canDisable = canWrite && (flow.status === 'enabled' || flow.status === 'paused');
+  const canRun = canWrite && flow.status === 'enabled' && definition.trigger.type === 'manual';
+  const isWebhook = definition.trigger.type === 'webhook' && flow.webhook !== null;
+  const tabs = TABS.filter((id) => id !== 'webhook' || isWebhook);
+  // A #webhook hash on a flow that has no webhook falls back to the overview.
+  const activeTab = tabs.includes(tab) ? tab : 'overview';
+  const openTab = (id: (typeof TABS)[number]) => {
+    window.location.hash = id;
+    setTab(id);
+  };
 
   return (
     <div className="space-y-6 p-4" data-testid="flow-detail">
@@ -74,14 +128,77 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
           <span>{formatDateTime(flow.updatedAt)}</span>
           {flow.aiSessionId && <span>{t('detail.createdInChat')}</span>}
         </div>
+        {flow.convertedFrom && (
+          <p className="text-sm text-muted-foreground" data-testid="flow-moved-from">
+            {t('detail.movedFromJob')}{' '}
+            <a href={`/jobs#convert-${flow.convertedFrom.automationId}`} className="font-medium text-primary hover:underline">
+              {flow.convertedFrom.name}
+            </a>
+            {flow.convertedFrom.state === 'reverted' && (
+              <span className="ml-2 text-xs" data-testid="flow-moved-from-reverted">{t('detail.movedFromJobReverted')}</span>
+            )}
+          </p>
+        )}
+        {flow.status === 'paused' && flow.pausedReason && (
+          <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="flow-paused-reason">
+            {t(/* i18n-dynamic */ `status.pausedReason.${flow.pausedReason}`)}
+          </p>
+        )}
+        <FlowRefusalBanner refusal={flow.lastAdmissionRefusal ?? null} />
+        {secretInvalidated && (
+          <div role="status" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200" data-testid="flow-webhook-secret-invalidated">
+            <span>{t('enable.webhookSecretInvalidated')}</span>
+            {isWebhook && (
+              <button type="button" className="rounded border border-current px-2 py-0.5 text-xs" data-testid="flow-webhook-secret-invalidated-open" onClick={() => openTab('webhook')}>
+                {t('webhook.secret.create')}
+              </button>
+            )}
+          </div>
+        )}
+        {(canEnable || canDisable) && (
+          <div className="flex flex-wrap gap-2 pt-2" data-testid="flow-actions">
+            {canEnable && (
+              <button type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground" data-testid="flow-enable" onClick={() => setEnableOpen(true)}>
+                {t('actions.enable')}
+              </button>
+            )}
+            {canRun && (
+              <button type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground" data-testid="flow-run-now" onClick={() => setRunOpen(true)}>
+                {t('actions.runNow')}
+              </button>
+            )}
+            {canDisable && (
+              <button type="button" className="rounded border px-3 py-1.5 text-sm" data-testid="flow-disable" onClick={() => setDisableOpen(true)}>
+                {t('actions.disable')}
+              </button>
+            )}
+          </div>
+        )}
       </header>
 
-      <p
-        className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
-        data-testid="flow-preview-notice"
-      >
-        {t('previewNotice')}
-      </p>
+      <div role="tablist" className="flex gap-4 border-b" data-testid="flow-tabs">
+        {tabs.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === id}
+            data-testid={`flow-tab-${id}`}
+            className={cn('-mb-px border-b-2 px-1 pb-2 text-sm', activeTab === id ? 'border-primary font-medium' : 'border-transparent text-muted-foreground')}
+            onClick={() => openTab(id)}
+          >
+            {t(/* i18n-dynamic */ `tabs.${id}`)}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'runs' ? (
+        <FlowRunsTab flowId={flowId} ownerScope={flow.ownerScope} />
+      ) : activeTab === 'webhook' ? (
+        <FlowWebhookPanel flow={flow} canWrite={canWrite} onSecretChanged={() => { setSecretInvalidated(false); reload(); }} />
+      ) : (
+        <>
+      {flow.usage && <FlowUsageMeter usage={flow.usage} />}
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">{t('detail.trigger')}</h2>
@@ -111,8 +228,36 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">{t('detail.steps')}</h2>
-        <FlowStepList steps={definition.steps} summaries={validation.steps} />
+        <FlowStepList steps={definition.steps} summaries={validation.steps} preApprovedStepIds={flow.preApprovedStepIds ?? []} />
       </section>
+        </>
+      )}
+
+      {enableOpen && (
+        <FlowEnableDialog
+          open
+          flow={flow}
+          validation={validation}
+          onClose={() => setEnableOpen(false)}
+          onStale={reload}
+          onEnabled={(result) => {
+            setEnableOpen(false);
+            setSecretInvalidated(result.webhookSecretInvalidated === true);
+            reload();
+          }}
+        />
+      )}
+      {runOpen && <FlowRunDialog open flow={flow} onClose={() => setRunOpen(false)} />}
+      <ConfirmDialog
+        open={disableOpen}
+        onClose={() => setDisableOpen(false)}
+        onConfirm={confirmDisable}
+        title={t('disable.title')}
+        message={t('disable.message')}
+        confirmLabel={t('actions.disable')}
+        isLoading={disabling}
+        confirmTestId="flow-disable-confirm"
+      />
     </div>
   );
 }

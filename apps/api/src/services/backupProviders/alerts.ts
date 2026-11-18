@@ -1,16 +1,17 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   alerts,
   backupProviderCustomers,
   backupProviderDevices,
   devices,
+  organizations,
 } from '../../db/schema';
 import { createSourcedAlert, resolveAlert } from '../alertService';
 import { EVENT_TYPES, publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 // Package ROOT — deriveBackupHealth is a VALUE import (see Global Constraints).
-import { deriveBackupHealth, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
+import { deriveBackupHealth, saasWorkloadLabel, type BackupProviderAlertCondition, type ExternalBackupStatus } from '@breeze/shared';
 import { getBackupProvider } from './registry';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
@@ -19,6 +20,12 @@ export const BACKUP_PROVIDER_ALERT_SOURCE = 'backup_provider';
 /** `publisher` passed to createSourcedAlert (the `alert.triggered` event source). */
 export const BACKUP_PROVIDER_ALERT_PUBLISHER = 'backup-provider-sync';
 export const PROVIDER_ALERT_RESOLUTION_NOTE = 'Condition cleared by provider sync';
+/**
+ * A parked device (`paused`) stopped being protected on purpose. Its alerts
+ * close as `source_retired`, never `condition_cleared`: the fix-memory outcome
+ * watcher reads `condition_cleared` as objective recovery.
+ */
+export const PROVIDER_ALERT_PARKED_NOTE = 'Device parked in the backup provider; protection stopped on purpose';
 export const PROVIDER_ALERT_CONFIG_ITEM = 'backup_provider';
 
 const ADVISORY_LOCK_NAMESPACE = 'backup-provider-sync';
@@ -34,6 +41,15 @@ export const PROVIDER_CONDITION_META: Record<
   no_backups: { severity: 'high', title: (n) => `No backups recorded for ${n}` },
   completed_with_errors: { severity: 'medium', title: (n) => `Backup completed with errors on ${n}` },
   stale: { severity: 'high', title: (n) => `No successful backup in 48 hours on ${n}` },
+};
+
+const SAAS_CONDITION_PHRASES: Record<BackupProviderAlertCondition, string> = {
+  failed: 'failed',
+  over_quota: 'over quota',
+  no_selection: 'has nothing selected',
+  no_backups: 'has no backups recorded',
+  completed_with_errors: 'completed with errors',
+  stale: 'has no successful run in 48 hours',
 };
 
 const CONDITIONS = Object.keys(PROVIDER_CONDITION_META) as BackupProviderAlertCondition[];
@@ -76,6 +92,10 @@ export function decodeConditionState(value: string | null): ProviderConditionSta
  * their own (`completed`, `in_progress`, `not_started`, `unknown`) but whose
  * last SUCCESS is older than 48 h or absent — independent evidence that does
  * not depend on parsing this session's outcome.
+ *
+ * `paused` raises nothing, not even `stale`: it means an operator parked the
+ * device on purpose (Axcient `PARKED`). It still renders as uncovered; it just
+ * does not page anyone. `not_started` (Cove, Dropsuite) keeps alerting.
  */
 export function computeProviderCondition(
   input: { status: ExternalBackupStatus; lastSuccessAt: Date | null; errorsCount: number },
@@ -88,6 +108,7 @@ export function computeProviderCondition(
     case 'no_backups': return 'no_backups';
     case 'completed_with_errors':
     case 'interrupted': return 'completed_with_errors';
+    case 'paused': return null;
     default: break;
   }
   const { recency } = deriveBackupHealth({
@@ -133,6 +154,8 @@ interface ProviderAlertRow {
   provider: string;
   vendorDeviceId: string;
   vendorDeviceName: string;
+  accountType: string;
+  dataSources: string[];
   status: ExternalBackupStatus;
   lastSuccessAt: Date | null;
   errorsCount: number;
@@ -141,10 +164,12 @@ interface ProviderAlertRow {
   deviceDisplayName: string | null;
   deviceHostname: string | null;
   customerName: string | null;
+  orgName: string | null;
 }
 
 interface OpenProviderAlert {
   id: string;
+  orgId: string;
   status: string;
   suppressedUntil: Date | null;
   providerDeviceId: string | null;
@@ -195,6 +220,8 @@ export async function evaluateProviderAlerts(
         provider: backupProviderDevices.provider,
         vendorDeviceId: backupProviderDevices.vendorDeviceId,
         vendorDeviceName: backupProviderDevices.vendorDeviceName,
+        accountType: backupProviderDevices.accountType,
+        dataSources: backupProviderDevices.dataSources,
         status: backupProviderDevices.status,
         lastSuccessAt: backupProviderDevices.lastSuccessAt,
         errorsCount: backupProviderDevices.errorsCount,
@@ -203,16 +230,17 @@ export async function evaluateProviderAlerts(
         deviceDisplayName: devices.displayName,
         deviceHostname: devices.hostname,
         customerName: backupProviderCustomers.vendorCustomerName,
+        orgName: organizations.name,
       })
       .from(backupProviderDevices)
       .leftJoin(devices, eq(devices.id, backupProviderDevices.breezeDeviceId))
       .leftJoin(backupProviderCustomers, eq(backupProviderCustomers.id, backupProviderDevices.customerId))
+      .leftJoin(organizations, eq(organizations.id, backupProviderDevices.orgId))
       .where(and(
         eq(backupProviderDevices.connectionId, connectionId),
-        // M365 backup accounts are never linked to a Breeze device and raise no
-        // alerts (spec, Non-goals). They are excluded here rather than filtered
-        // later so they never even acquire a pending_condition.
-        eq(backupProviderDevices.accountType, 'backup_manager'),
+        // SaaS workloads share endpoint condition evaluation and hysteresis.
+        // Their alerts belong to the workload rather than a linked device.
+        inArray(backupProviderDevices.accountType, ['backup_manager', 'm365', 'gws']),
         // No provider alert is raised under the holding org.
         notInHoldingOrgCondition(backupProviderDevices.orgId),
       ))) as ProviderAlertRow[];
@@ -223,6 +251,7 @@ export async function evaluateProviderAlerts(
     const openAlerts = (await db
       .select({
         id: alerts.id,
+        orgId: alerts.orgId,
         status: alerts.status,
         suppressedUntil: alerts.suppressedUntil,
         providerDeviceId: sql<string | null>`${alerts.context}->>'providerDeviceId'`,
@@ -235,17 +264,26 @@ export async function evaluateProviderAlerts(
         sql`${alerts.context}->>'connectionId' = ${connectionId}`,
       ))) as OpenProviderAlert[];
 
+    // The org is part of the key: a re-mapped customer keeps its provider row
+    // ids but moves to another org, and its old-org alerts must not survive.
+    const alertKey = (providerDeviceId: string | null, orgId: string, condition: string | null) =>
+      `${providerDeviceId ?? ''}|${orgId}|${condition ?? ''}`;
     const openByKey = new Set(
-      openAlerts.map((a) => `${a.providerDeviceId ?? ''}|${a.condition ?? ''}`),
+      openAlerts.map((a) => alertKey(a.providerDeviceId, a.orgId, a.condition)),
     );
 
     const pendingWrites: Array<{ id: string; value: string | null }> = [];
     const toRaise: Array<{ row: ProviderAlertRow; condition: BackupProviderAlertCondition }> = [];
     const pendingEvents: Array<{ type: typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY | typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED; orgId: string; payload: Record<string, unknown> }> = [];
-    /** "<providerDeviceId>|<condition>" pairs that must SURVIVE this pass. */
+    /** "<providerDeviceId>|<orgId>|<condition>" keys that must SURVIVE this pass. */
     const keep = new Set<string>();
+    /** Provider rows parked in the vendor console: their alerts retire, they do not recover. */
+    const parked = new Set<string>();
 
     for (const row of rows) {
+      // Even a legacy link cannot turn a SaaS workload into a device subject.
+      const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+      const deviceId = isSaas ? null : row.breezeDeviceId;
       const computed = computeProviderCondition(row, now);
       const prev = decodeConditionState(row.pendingCondition);
       const { next, raise, recoveredFrom } = nextConditionState(prev, computed);
@@ -260,7 +298,10 @@ export async function evaluateProviderAlerts(
         now,
       });
 
-      if (recoveredFrom) {
+      if (row.status === 'paused') parked.add(row.id);
+
+      // Parking is not a recovery, so a parked row announces nothing.
+      if (recoveredFrom && row.status !== 'paused') {
         pendingEvents.push({
           type: EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED,
           orgId: row.orgId,
@@ -269,7 +310,7 @@ export async function evaluateProviderAlerts(
             providerKey: row.provider,
             providerDeviceId: row.id,
             orgId: row.orgId,
-            deviceId: row.breezeDeviceId,
+            deviceId,
             vendorDeviceName: row.vendorDeviceName,
             status: row.status,
             health,
@@ -287,7 +328,7 @@ export async function evaluateProviderAlerts(
             providerKey: row.provider,
             providerDeviceId: row.id,
             orgId: row.orgId,
-            deviceId: row.breezeDeviceId,
+            deviceId,
             vendorDeviceName: row.vendorDeviceName,
             status: row.status,
             health,
@@ -296,12 +337,11 @@ export async function evaluateProviderAlerts(
         });
       }
 
-      // Alerts require a device (D3): an unlinked row gets the events above and
-      // nothing else. A LINKED row in the raised phase keeps (or gets) exactly
-      // one alert for its current condition.
-      if (next.phase !== 'raised' || !row.breezeDeviceId) continue;
-      keep.add(`${row.id}|${next.condition}`);
-      if (!openByKey.has(`${row.id}|${next.condition}`)) {
+      // Raised SaaS workloads and linked endpoints keep (or get) an alert.
+      // Unlinked endpoints still get events only.
+      if (next.phase !== 'raised' || (!isSaas && !deviceId)) continue;
+      keep.add(alertKey(row.id, row.orgId, next.condition));
+      if (!openByKey.has(alertKey(row.id, row.orgId, next.condition))) {
         toRaise.push({ row, condition: next.condition });
       }
     }
@@ -326,14 +366,17 @@ export async function evaluateProviderAlerts(
     // ACTIVE alert (warrantyAlertEvaluator.ts:227-252, #2110). Timed
     // suppressions still resolve.
     const resolvable = openAlerts.filter((alert) => {
-      if (keep.has(`${alert.providerDeviceId ?? ''}|${alert.condition ?? ''}`)) return false;
+      if (keep.has(alertKey(alert.providerDeviceId, alert.orgId, alert.condition))) return false;
       if (alert.status === 'suppressed' && alert.suppressedUntil === null) return false;
       return true;
     });
 
     let resolved = 0;
     for (const alert of resolvable) {
-      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+      const done = alert.providerDeviceId !== null && parked.has(alert.providerDeviceId)
+        ? await resolveAlert(alert.id, PROVIDER_ALERT_PARKED_NOTE, undefined, false, 'source_retired')
+        : await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared');
+      if (done) resolved += 1;
     }
     // Losing an individual compare-and-swap is normal (a technician got there
     // first). Losing EVERY candidate is the shape an RLS write-policy divergence
@@ -353,17 +396,48 @@ export async function evaluateProviderAlerts(
       const name = deviceLabel(row);
       const label = providerLabel(row.provider);
       const lastSuccess = row.lastSuccessAt ? row.lastSuccessAt.toISOString() : 'never';
+      const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+      const title = (isSaas
+        ? `${saasWorkloadLabel(row.dataSources[0] ?? null)} backup ${SAAS_CONDITION_PHRASES[condition]} — ${row.customerName || row.orgName || row.vendorDeviceName}`
+        : meta.title(name)).slice(0, 500);
+      const message = `${label} reports status "${row.status}" for ${row.vendorDeviceName}`
+        + `${row.customerName ? ` (customer ${row.customerName})` : ''}. `
+        + `Last successful backup: ${lastSuccess}. Errors in the last session: ${row.errorsCount}.`;
+      // A Forever suppression is never auto-resolved, so it still holds the
+      // workload's one open-owner slot when the condition changes. Move it to
+      // the new condition in place, keeping the mute, instead of colliding with
+      // the open-owner unique index. Only a real Forever suppression in the
+      // row's current org qualifies; anything else goes through the insert.
+      const foreverMuted = isSaas ? openAlerts.find((alert) =>
+        alert.providerDeviceId === row.id
+        && alert.orgId === row.orgId
+        && alert.condition !== condition
+        && alert.status === 'suppressed'
+        && alert.suppressedUntil === null,
+      ) : undefined;
+      if (foreverMuted) {
+        const updated = await db.update(alerts).set({
+          context: sql`jsonb_set(${alerts.context}, '{condition}', to_jsonb(${condition}::text))`,
+          title,
+          severity: meta.severity,
+          message,
+        }).where(and(
+          eq(alerts.id, foreverMuted.id),
+          eq(alerts.status, 'suppressed'),
+          isNull(alerts.suppressedUntil),
+        )).returning({ id: alerts.id });
+        if (updated.length > 0) continue;
+        // A technician changed the alert since it was read: raise normally.
+      }
       const alertId = await createSourcedAlert({
-        deviceId: row.breezeDeviceId!,
-        // The provider row's org IS the linked device's org: the composite FK
-        // (breeze_device_id, org_id) -> devices(id, org_id) enforces it.
+        ...(isSaas
+          ? { deviceId: null, owner: { kind: 'backup_workload' as const, ref: row.id } }
+          : { deviceId: row.breezeDeviceId! }),
+        // For endpoints the composite device/org FK enforces the same org.
         orgId: row.orgId,
         severity: meta.severity,
-        title: meta.title(name).slice(0, 500),
-        message:
-          `${label} reports status "${row.status}" for ${row.vendorDeviceName}`
-          + `${row.customerName ? ` (customer ${row.customerName})` : ''}. `
-          + `Last successful backup: ${lastSuccess}. Errors in the last session: ${row.errorsCount}.`,
+        title,
+        message,
         context: {
           source: BACKUP_PROVIDER_ALERT_SOURCE,
           connectionId,
@@ -384,8 +458,10 @@ export async function evaluateProviderAlerts(
       if (alertId) {
         raised += 1;
       } else {
-        // The insert produced no row or the publish rolled it back, so nothing
-        // was announced. The row still sits in the `raised` phase, and the next
+        // The insert produced no row, so nothing will be announced (a failed
+        // publish no longer returns null: the outbox keeps the row and retries,
+        // #10926). For a workload, a null can also mean another open alert
+        // holds the owner slot unseen by this pass, which is a bug worth a report. The row still sits in the `raised` phase, and the next
         // sync's dedupe finds no open alert and retries — which is why the
         // hysteresis state is NOT rolled back here.
         console.error(

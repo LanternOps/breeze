@@ -1,6 +1,8 @@
 // Translated copy for the caller-verification card. All values are plain
 // strings rendered as React text -- never HTML.
 
+import { resolveLocale } from '../i18n';
+
 export type Copy = {
   title: string;
   notMe: string;
@@ -85,16 +87,7 @@ export const messages: Record<string, Copy> = {
   },
 };
 
-const BASE_LOCALES: Record<string, string> = {
-  en: 'en',
-  de: 'de-DE',
-  es: 'es-419',
-  fr: 'fr-FR',
-  it: 'it-IT',
-  pt: 'pt-BR',
-  tr: 'tr-TR',
-};
-
+/** Copy for any OS / BCP 47 tag, via the shared negotiation (en when unknown). */
 export function copyFor(locale: string): Copy {
-  return messages[locale] ?? messages[BASE_LOCALES[locale.split('-')[0]!.toLowerCase()] ?? 'en']!;
+  return messages[resolveLocale(locale)] ?? messages.en!;
 }

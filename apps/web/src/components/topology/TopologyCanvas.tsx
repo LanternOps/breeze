@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { canvasFillHeight, chipModes, edgeEnd, fitFocus, nextFit, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type FitState, type ZoomTier } from './semanticZoom';
+import { canvasFillHeight, wheelScrollsPage, chipModes, edgeEnd, fitFocus, nextFit, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type FitState, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 import NodeChipOverlay, { overviewChips, type NodeChip } from './NodeChipOverlay';
 
@@ -153,7 +153,7 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
   ];
 }
 
-export default function TopologyCanvas({ render, positions, boxes, selection, editable, onSelect, onMove, fitRef, fitKey, fitInsetTop = 0 }: {
+export default function TopologyCanvas({ render, positions, boxes, selection, editable, onSelect, onMove, fitRef, fitKey, fitInsetTop = 0, placement = 'page', onHeight }: {
   render: TopologyRender; positions: LayoutPosition[]; boxes: LayoutBox[]; selection?: TopologySelection; editable: boolean;
   onSelect: (selection: TopologySelection) => void;
   /** One call per drop: a dragged card reports all its members at once, so the explorer re-arranges once. */
@@ -162,9 +162,13 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   fitKey: string;
   /** Pixels at the top that floating controls cover; Fit map frames the content below them. */
   fitInsetTop?: number;
+  /** Where the map sits: the page, or the expanded view (TopologyEntry). A change re-fits the map once its new size lands. */
+  placement?: 'page' | 'expanded';
+  /** The canvas height once measured, so the inspector beside it can stop at the same line (TopologyExplorer). */
+  onHeight?: (height: number) => void;
 }) {
   const { t } = useTranslation('topology');
-  const container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), chipLayer = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
+  const wrapper = useRef<HTMLDivElement>(null), container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), chipLayer = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
   const callbacks = useRef({ onSelect, onMove }); callbacks.current = { onSelect, onMove };
   const insetRef = useRef(fitInsetTop); insetRef.current = fitInsetTop;
   const fitState = useRef<FitState>({});
@@ -176,20 +180,38 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   const frame = useRef(0), schedule = useRef<() => void>(() => {});
   /** Canvas height (canvasFillHeight): fills the window below the canvas, recomputed on resize and when content above it changes. */
   const [fillHeight, setFillHeight] = useState<number>();
+  const fittedPlacement = useRef(placement);
+  const onHeightRef = useRef(onHeight); onHeightRef.current = onHeight;
+  useEffect(() => { if (fillHeight) onHeightRef.current?.(fillHeight); }, [fillHeight]);
   useEffect(() => {
-    const element = container.current;
-    if (!element) return;
-    // The app scrolls inside <main>; measure as if it were scrolled to the top.
-    let scroller: HTMLElement | null = element.parentElement;
-    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    const renderer = cy.current;
+    if (!renderer || fittedPlacement.current === placement) return;
+    fittedPlacement.current = placement;
+    renderer.resize(); fitRef.current?.();
+  }, [fillHeight]);
+  useEffect(() => {
+    const element = container.current, host = wrapper.current;
+    if (!element || !host) return;
+    /**
+     * The scroller the map sits in: <main> on a page, the entry itself in the expanded view (TopologyEntry).
+     * Looked up per use, since expanding the map changes it without remounting the canvas.
+     */
+    const findScroller = () => {
+      let scroller: HTMLElement | null = element.parentElement;
+      while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+      return scroller;
+    };
     let pending = 0;
     const measure = () => {
       pending = 0;
-      const rect = element.getBoundingClientRect();
+      const rect = element.getBoundingClientRect(), scroller = findScroller();
       if (scroller) {
         const box = scroller.getBoundingClientRect();
+        // The frame's bottom border (the map region's) sits under the canvas too: count it, or the page overflows by it.
+        let borders = 0;
+        for (let node = element.parentElement; node && node !== scroller; node = node.parentElement) borders += parseFloat(getComputedStyle(node).borderBottomWidth) || 0;
         setFillHeight(canvasFillHeight({ viewportHeight: scroller.clientHeight, canvasTop: rect.top - box.top + scroller.scrollTop,
-          bottomGap: parseFloat(getComputedStyle(scroller).paddingBottom) || 0 }));
+          bottomGap: (parseFloat(getComputedStyle(scroller).paddingBottom) || 0) + borders }));
       } else setFillHeight(canvasFillHeight({ viewportHeight: window.innerHeight, canvasTop: rect.top + window.scrollY, bottomGap: 16 }));
     };
     const queue = () => { if (!pending) pending = requestAnimationFrame(measure); };
@@ -198,7 +220,23 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     // Content above the canvas (operations panel, warnings, the inspector stacking on mobile) moves its top.
     const section = element.closest('section') ?? element.parentElement!;
     const observer = new ResizeObserver(queue); observer.observe(section);
-    return () => { cancelAnimationFrame(pending); window.removeEventListener('resize', queue); observer.disconnect(); };
+    // Captured above Cytoscape's own wheel listener (on the container): stopping the event there leaves the
+    // browser's default, a page scroll, while the map is partly off screen (wheelScrollsPage).
+    const wheel = (event: WheelEvent) => {
+      const scroller = findScroller();
+      if (scroller && wheelScrollsPage({ deltaY: event.deltaY, zoomKey: event.ctrlKey || event.metaKey, map: element.getBoundingClientRect(),
+        viewport: scroller.getBoundingClientRect(), scroll: { top: scroller.scrollTop, height: scroller.scrollHeight, client: scroller.clientHeight } })) { event.stopPropagation(); return; }
+      // Zoomed out, the cards and chips are HTML over the canvas, so Cytoscape never saw a wheel over them and the
+      // page scrolled instead of the map zooming. Hand that wheel to Cytoscape, which zooms at the pointer as usual.
+      const target = event.target as Node;
+      if (overlay.current?.contains(target) || chipLayer.current?.contains(target)) {
+        event.preventDefault();
+        element.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ, deltaMode: event.deltaMode,
+          clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey }));
+      }
+    };
+    host.addEventListener('wheel', wheel, { capture: true, passive: false });
+    return () => { cancelAnimationFrame(pending); window.removeEventListener('resize', queue); observer.disconnect(); host.removeEventListener('wheel', wheel, { capture: true }); };
   }, []);
   const chips = useMemo<NodeChip[]>(() => overviewChips(render), [render]);
   const summaries = useMemo<SummaryCard[]>(() => {
@@ -454,9 +492,9 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   };
   const showAll = () => { const renderer = cy.current; if (renderer) { renderer.fit(undefined, FIT_PADDING); outsideRef.current = []; setOffscreen(0); } };
 
-  return <div className="relative min-w-0 flex-1">
+  return <div ref={wrapper} className="relative min-w-0 flex-1">
     <div ref={container} data-testid="topology-canvas" aria-hidden="true" className="min-w-0 bg-card text-card-foreground"
-      style={{ height: fillHeight ? `${fillHeight}px` : 'max(480px, calc(100vh - 300px))', backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
+      style={{ height: fillHeight ? `${fillHeight}px` : 'max(320px, calc(100vh - 300px))', backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
     <CardSummaryOverlay ref={overlay} cards={summaries} visible={tier === 'summary'} onZoom={zoomToCard} />
     <NodeChipOverlay ref={chipLayer} chips={chips} visible={tier === 'summary'} selectedId={selection?.kind === 'node' ? selection.id : undefined} onSelect={(id) => onSelect({ kind: 'node', id })} />
     {offscreen > 0 && <button type="button" data-testid="topology-show-all" onClick={showAll}

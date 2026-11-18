@@ -21,6 +21,8 @@ vi.mock('./userRiskScoring', () => ({
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerUserRiskTools } from './aiToolsUserRisk';
+import { getUserRiskDetail } from './userRiskScoring';
+import { toolInputSchemas } from './aiToolSchemas';
 
 function tool(): AiTool {
   const reg = new Map<string, AiTool>();
@@ -155,5 +157,86 @@ describe('get_fleet_health output shape (#6745)', () => {
       expect(issues[0]).not.toBe('[truncated: max depth reached]');
       expect(issues[0]).toMatchObject({ type: expect.any(String), severity: expect.any(String) });
     }
+  });
+});
+
+// #6734 (A-W05 D12b follow-up): get_user_risk_detail returned up to 100 risk
+// events, each with its free-form `details` jsonb, in one response.
+describe('get_user_risk_detail output shape (#6734)', () => {
+  const USER_ID = '33333333-3333-4333-8333-333333333333';
+  function riskTool(): AiTool {
+    const reg = new Map<string, AiTool>();
+    registerUserRiskTools(reg);
+    return reg.get('get_user_risk_detail')!;
+  }
+  function detail(eventCount: number) {
+    return {
+      user: { id: USER_ID, name: 'Dana Whitfield', email: 'dana.whitfield@example.com', mfaEnabled: false, lastLoginAt: '2026-09-20T08:00:00.000Z' },
+      latestScore: {
+        score: 82, trendDirection: 'up', calculatedAt: '2026-09-20T09:00:00.000Z', deltaFromPrevious: 9, severity: 'high',
+        factors: { mfaRisk: 100, authFailureRisk: 64, sessionAnomalyRisk: 22, threatExposureRisk: 71, softwareViolationRisk: 40, deviceSecurityRisk: 35, staleAccessRisk: 10, recentImpactRisk: 55 },
+      },
+      recentEvents: Array.from({ length: eventCount }, (_, i) => ({
+        ...fixtureRow(i, { id: 'id', occurredAt: 'ts' }),
+        eventType: 'auth_failure_burst', severity: 'high', scoreImpact: 6,
+        description: `Repeated failed sign-ins from an unfamiliar network against the user's mailbox (${i}).`,
+        details: {
+          sourceIp: '203.0.113.42', country: 'NL', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36',
+          failures: 14, windowMinutes: 10, deviceId: '44444444-4444-4444-8444-444444444444', hostname: `WKSTN-ACCOUNTING-${i}`,
+        },
+      })),
+      history: Array.from({ length: 30 }, (_, i) => ({ score: 60 + (i % 25), trendDirection: 'up', calculatedAt: new Date(Date.UTC(2026, 8, 20 - i)).toISOString() })),
+      policy: {
+        orgId: 'org-1', updatedAt: '2026-09-01T00:00:00.000Z', updatedBy: null,
+        weights: { mfaRisk: 0.14, authFailureRisk: 0.2, sessionAnomalyRisk: 0.1, threatExposureRisk: 0.2, softwareViolationRisk: 0.15, deviceSecurityRisk: 0.1, staleAccessRisk: 0.06, recentImpactRisk: 0.05 },
+        thresholds: { medium: 50, high: 70, critical: 85, spikeDelta: 15, autoAssignTrainingAtOrAbove: 80 },
+        interventions: { autoAssignTraining: false, trainingModuleId: 'security-awareness-baseline', notifyOnHighRisk: true, notifyOnRiskSpike: true },
+      },
+    };
+  }
+  beforeEach(() => { vi.mocked(getUserRiskDetail).mockReset(); });
+
+  it('declares limit with the "(default N, max M)" text on the registry and Zod surfaces', () => {
+    const props = (riskTool().definition.input_schema as { properties: Record<string, { description: string }> }).properties;
+    expect(props.limit!.description).toBe('Max recent events (default 10, max 100)');
+    expect(Object.keys((toolInputSchemas.get_user_risk_detail as unknown as { shape: Record<string, unknown> }).shape)).toEqual(expect.arrayContaining(['limit', 'includeDetails']));
+  });
+
+  it('a default response for a user with 100 events fits the budget uncompacted and drops event details', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(100) as never);
+    const raw = await riskTool().handler({ userId: USER_ID }, auth());
+    expectDefaultPageFits('get_user_risk_detail', raw);
+    const out = JSON.parse(raw).userRisk as Record<string, any>;
+    expect(out.recentEvents).toHaveLength(10);
+    expect(out.recentEventCount).toBe(100);
+    expect(out.recentEvents[0]).not.toHaveProperty('details');
+    expect(out.recentEvents[0]).toMatchObject({ eventType: 'auth_failure_burst', scoreImpact: 6 });
+    expect(out.latestScore.factors.mfaRisk).toBe(100);
+    expect(out.history).toHaveLength(30);
+  });
+
+  it('out-of-range or non-numeric limits fall back to the default or clamp to the max', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(100) as never);
+    const lengthFor = async (limit: unknown) =>
+      JSON.parse(await riskTool().handler({ userId: USER_ID, limit }, auth())).userRisk.recentEvents.length;
+    expect(await lengthFor(0)).toBe(10);
+    expect(await lengthFor(-1)).toBe(10);
+    expect(await lengthFor('abc')).toBe(10);
+    expect(await lengthFor(500)).toBe(100);
+    expect(await lengthFor(2.7)).toBe(2);
+  });
+
+  it('reports the real count when the user has fewer events than the limit, or none', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(3) as never);
+    expect(JSON.parse(await riskTool().handler({ userId: USER_ID }, auth())).userRisk).toMatchObject({ recentEventCount: 3 });
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(0) as never);
+    expect(JSON.parse(await riskTool().handler({ userId: USER_ID }, auth())).userRisk).toMatchObject({ recentEventCount: 0, recentEvents: [] });
+  });
+
+  it('limit and includeDetails widen the event list and restore details', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(100) as never);
+    const out = JSON.parse(await riskTool().handler({ userId: USER_ID, limit: 40, includeDetails: true }, auth())).userRisk;
+    expect(out.recentEvents).toHaveLength(40);
+    expect(out.recentEvents[0].details).toMatchObject({ sourceIp: '203.0.113.42', failures: 14 });
   });
 });

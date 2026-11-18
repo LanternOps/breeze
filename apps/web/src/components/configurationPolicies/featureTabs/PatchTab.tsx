@@ -5,6 +5,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
@@ -360,7 +361,7 @@ export default function PatchTab({
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
-    });
+    }, { successMessage: null });
     // The save POST returned 201 with no UI feedback before — confirm success
     // (the hook surfaces failures via `error` → FeatureTabShell).
     if (result) {
@@ -395,7 +396,7 @@ export default function PatchTab({
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
       inlineSettings: settings,
-    });
+    }, { successMessage: null });
     if (result) {
       showToast({
         message: i18n.t(
@@ -458,6 +459,7 @@ export default function PatchTab({
           autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
           appRules: values.appRules,
+          featureUpdates: values.featureUpdates,
         }),
       });
       if (!response.ok) {
@@ -549,9 +551,10 @@ export default function PatchTab({
                 </option>
               )}
               {rings.map((ring) => (
+                // #9565: the ring's name, as everywhere else — no bracketed
+                // rollout order. Order and hold are spelled out below.
                 <option key={ring.id} value={ring.id}>
-                  [{ring.ringOrder}] {ring.name}
-                  {ring.deferralDays > 0 ? ` (${ring.deferralDays}d hold)` : ""}
+                  {ring.name}
                 </option>
               ))}
             </select>
@@ -578,6 +581,22 @@ export default function PatchTab({
               )}
             </button>
           </div>
+        )}
+        {selectedRing && (
+          <p
+            data-testid="approval-ring-details"
+            className="mt-1.5 text-xs text-muted-foreground"
+          >
+            {selectedRing.deferralDays > 0
+              ? i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringDetailsWithHold",
+                  { order: selectedRing.ringOrder, count: selectedRing.deferralDays },
+                )
+              : i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringDetailsNoHold",
+                  { order: selectedRing.ringOrder },
+                )}
+          </p>
         )}
         {ringsError && (
           <p className="mt-2 text-xs text-destructive">{ringsError}</p>
@@ -1121,6 +1140,8 @@ export default function PatchTab({
                 {promptError}
               </p>
             )}
+            {/* #10190 W05: what the person at the computer will see. */}
+            <RebootPromptPreview settings={settings} />
           </div>
         )}
       </div>
@@ -1221,6 +1242,7 @@ export default function PatchTab({
               ringEditorMode === "edit" ? (selectedRing?.id ?? "edit") : "new"
             }
             onSubmit={handleRingEditorSubmit}
+            existingRingOrders={rings.map((ring) => ring.ringOrder)}
             onCancel={() => setRingEditorOpen(false)}
             loading={ringSubmitting}
             submitLabel={
@@ -1253,6 +1275,7 @@ export default function PatchTab({
                     },
                     categoryRules: selectedRing.categoryRules,
                     appRules: selectedRing.appRules ?? [],
+                    featureUpdates: selectedRing.featureUpdates,
                   }
                 : undefined
             }

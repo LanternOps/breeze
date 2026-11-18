@@ -315,10 +315,19 @@ export async function createTenantVariable(
 export async function updateTenantVariable(
   auth: AuthContext,
   id: string,
-  input: UpdateTenantVariableInput
+  input: UpdateTenantVariableInput,
+  /**
+   * `requirePlain` (the W13 AI tool, #6783 W13-D7): refuse a secret row, and pin `is_secret = false` into the guarded
+   * UPDATE so a row turned secret between this read and the write is never overwritten (it becomes a 409). REST omits
+   * it and is unchanged.
+   */
+  options: { requirePlain?: boolean } = {}
 ): Promise<TenantVariableRow> {
   const row = await getVariableForWrite(id, auth);
   if (!row) throw new TenantVariableError('Variable not found', 404);
+  if (options.requirePlain && row.isSecret) {
+    throw new TenantVariableError('Secret variables are changed in the web app', 403);
+  }
 
   if (row.orgId === null && !canManagePartnerWidePolicies(auth)) {
     throw new TenantVariableError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 403);
@@ -373,6 +382,7 @@ export async function updateTenantVariable(
   // N+1, breaking the pinning PR 4's effect digest depends on. No row matching
   // means the row moved out from under us, which is a 404/409, never a 500.
   const conditions: SQL[] = [eq(tenantVariables.id, id), eq(tenantVariables.version, row.version)];
+  if (options.requirePlain) conditions.push(eq(tenantVariables.isSecret, false));
   const accessCondition = tenantVariableWriteCondition(auth);
   if (accessCondition) conditions.push(accessCondition);
 

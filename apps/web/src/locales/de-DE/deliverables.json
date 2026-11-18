@@ -231,7 +231,13 @@
       "submit": "Anwenden",
       "created_one": "{{count}} Leistung erstellt",
       "created_other": "{{count}} Leistungen erstellt",
-      "skipped": "Übersprungen (bereits vorhanden): {{names}}"
+      "skipped": "Übersprungen (bereits vorhanden): {{names}}",
+      "items": "Leistungen in diesem Set",
+      "noItems": "Dieses Set enthält noch keine Leistungen."
+    },
+    "portal": {
+      "shown": "Im Portal sichtbar",
+      "hidden": "Im Portal ausgeblendet"
     },
     "errors": {
       "collision": "Diese Leistungen existieren bereits im Ziel: {{names}}",

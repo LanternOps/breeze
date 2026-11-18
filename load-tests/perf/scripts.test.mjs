@@ -75,6 +75,7 @@ function makeFixture({ envExample = true } = {}) {
       'prev=""; for a in "$@"; do [ "$prev" = --report ] && echo "{}" > "$a"; prev="$a"; done\n' +
       'echo "run.sh pid $$" >> "$STUB_LOG"\n' +
       '[ -n "${STUB_RUN_SLEEP:-}" ] && sleep "$STUB_RUN_SLEEP"\n' +
+      '[ -n "${STUB_EXIT_MARK:-}" ] && date +%s > "$STUB_EXIT_MARK"\n' +
       '[ -n "${STUB_RUN_FAIL:-}" ] && exit 1\nexit 0\n',
   );
   script(path.join(agentsim, 'lab-setup.sh'), '#!/usr/bin/env bash\necho "lab-setup" >> "$STUB_LOG"\necho "AGENTSIM_STORE=/stub/store.json"\n');
@@ -126,6 +127,7 @@ function run(fx, file, args, extraEnv = {}) {
       INTERVAL: '0',
       MAX_SAMPLES: '2',
       IDLE_SECONDS: '0',
+      TAIL_SECONDS: '0',
       ...extraEnv,
     },
   });
@@ -255,6 +257,74 @@ test('run-perf.sh rejects unknown profiles and labels (64)', () => {
   assert.equal(run(fx, 'run-perf.sh', ['--profile', 'bogus', '--out-dir', path.join(fx.root, 'o')]).code, 64);
   assert.equal(run(fx, 'run-perf.sh', ['--profile', 'smoke', '--label', 'x', '--out-dir', path.join(fx.root, 'o')]).code, 64);
   assert.equal(run(fx, 'run-perf.sh', ['--profile', 'smoke']).code, 64);
+});
+
+// --- inject acceptance allowance --------------------------------------------
+const ACCEPT = path.join(HERE, '..', 'agentsim', 'check-acceptance.sh');
+
+function acceptanceReport(non2xx) {
+  const r = JSON.parse(readFileSync(path.join(HERE, 'fixtures', 'agentsim-report.json'), 'utf8'));
+  if (non2xx > 0) r.routes[0].status = { ...r.routes[0].status, 502: non2xx };
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+  writeFileSync(file, JSON.stringify(r));
+  return file;
+}
+
+function accept(non2xx, extra = []) {
+  const r = spawnSync('bash', [ACCEPT, 'report', ...extra, acceptanceReport(non2xx)], { encoding: 'utf8', cwd: HERE });
+  return { code: r.status, out: r.stdout + r.stderr };
+}
+
+test('check-acceptance.sh report: 3 non-2xx fail at the default (zero) allowance', () => {
+  const r = accept(3);
+  assert.match(r.out, /^FAIL {2}non-2xx outside crawl-config: 3$/m);
+  assert.doesNotMatch(r.out, /allowance/);
+});
+
+test('check-acceptance.sh report: --allow-non2xx 20 passes 3 non-2xx and prints the allowance', () => {
+  const r = accept(3, ['--allow-non2xx', '20']);
+  assert.match(r.out, /^PASS {2}non-2xx outside crawl-config: 3 \(relaxed allowance: 20\)$/m);
+  assert.equal(r.code, 0, r.out);
+  assert.notEqual(accept(3).code, 0);
+});
+
+test('check-acceptance.sh report: the allowance boundary is inclusive and scoped to the non-2xx check', () => {
+  assert.equal(accept(20, ['--allow-non2xx', '20']).code, 0);
+  assert.notEqual(accept(1, ['--allow-non2xx', '0']).code, 0);
+  // A bad crawl-config answer still fails under an allowance.
+  const rep = JSON.parse(readFileSync(acceptanceReport(0), 'utf8'));
+  rep.routes[1].status = { 200: 1600, 500: 2 };
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+  writeFileSync(file, JSON.stringify(rep));
+  const r = spawnSync('bash', [ACCEPT, 'report', '--allow-non2xx', '20', file], { encoding: 'utf8', cwd: HERE });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stdout, /^FAIL {2}crawl-config answers only 200\/401\/404: 2 others$/m);
+});
+
+test('check-acceptance.sh report: a count over the allowance still fails', () => {
+  const r = accept(21, ['--allow-non2xx', '20']);
+  assert.match(r.out, /^FAIL {2}non-2xx outside crawl-config: 21 \(relaxed allowance: 20\)$/m);
+});
+
+test('check-acceptance.sh report: --allow-non2xx rejects a non-numeric value (64)', () => {
+  assert.equal(accept(0, ['--allow-non2xx', 'lots']).code, 64);
+});
+
+test('run-perf.sh passes --allow-non2xx only for the inject label', () => {
+  for (const [label, expectFlag] of [['inject', true], ['clean', false]]) {
+    const fx = makeFixture();
+    const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'out'), '--label', label]);
+    assert.equal(r.code, 0, r.err);
+    const line = r.log.split('\n').find((l) => l.startsWith('check-acceptance report'));
+    assert.ok(line, r.log);
+    assert.equal(/--allow-non2xx 20\b/.test(line), expectFlag, `${label}: ${line}`);
+  }
+});
+
+test('run-perf.sh never relaxes acceptance for the default label', () => {
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'out')]);
+  assert.doesNotMatch(r.log, /--allow-non2xx/);
 });
 
 test('run-perf.sh always tears the stack down, also when a step fails', () => {
@@ -399,8 +469,148 @@ test('run-perf.sh --storm runs storm.sh with admission enforce and a pinned cadd
   assert.equal(red.code, 3, red.err);
 });
 
+test("run-perf.sh keeps sampling past the simulator's exit so the window end edge is covered", () => {
+  const fx = makeFixture();
+  const out = path.join(fx.root, 'tail');
+  const mark = path.join(fx.root, 'sim-exit');
+  // The simulator exits at the window end; kpi.mjs needs a sample after it.
+  const r = run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', out], {
+    INTERVAL: '2', MAX_SAMPLES: '', TAIL_SECONDS: '3', STUB_RUN_SLEEP: '3', STUB_EXIT_MARK: mark,
+  });
+  assert.equal(r.code, 0, r.err);
+  const exitSec = Number(readFileSync(mark, 'utf8').trim());
+  const rows = readFileSync(path.join(out, 'samples.csv'), 'utf8').trim().split('\n').slice(1);
+  const lastTs = Date.parse(rows[rows.length - 1].split(',')[0]) / 1000;
+  assert.ok(lastTs > exitSec, `last sample ${lastTs} must be after simulator exit ${exitSec}`);
+});
+
 test('run-perf.sh refuses --storm together with --profile', () => {
   const fx = makeFixture();
   const r = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--profile', 'smoke', '--out-dir', path.join(fx.root, 'o')]);
   assert.equal(r.code, 64);
+});
+
+test('run-perf.sh rebuilds the dev images for the checked-out commit before anything is measured (#11623)', () => {
+  // wt-stack up without --rebuild reuses whatever breeze-{api,web,portal}:dev
+  // images the persistent runner already has; on 2026-11-10 those were five days
+  // old and lacked a file the astro configs import, so web/portal crash-looped.
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'kpi')]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.log, /^pnpm wt-stack up --rebuild$/m);
+  const up = r.log.indexOf('pnpm wt-stack up');
+  assert.ok(up >= 0 && up < r.log.indexOf('run.sh '), 'the build happens before the measured simulator run');
+
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(
+    path.join(agentsim, 'storm.sh'),
+    '#!/usr/bin/env bash\n' +
+      'echo "storm.sh $*" >> "$STUB_LOG"\n' +
+      'mkdir -p "$(dirname "$0")/reports"; echo "{}" > "$(dirname "$0")/reports/storm-$1-stub.json"\n',
+  );
+  const s = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', path.join(fx.root, 'storm')]);
+  assert.equal(s.code, 0, s.err);
+  assert.match(s.log, /^pnpm wt-stack up --rebuild$/m);
+  assert.ok(s.log.indexOf('pnpm wt-stack up') < s.log.indexOf('storm.sh '), 'storm mode builds first too');
+});
+
+// ---- storm-measured.sh (#11623): is an exit-3 storm report a measured gate miss?
+// storm.sh exits 3 whenever .storm.pass is false, and pass is also false when the
+// harness broke (a fault step failed, an event never ran or was cut short, a gate
+// had no data). Only a measured miss may stay warn-only in the workflow.
+function stormReport(overrides = {}) {
+  const ev = (name, extra = {}) => ({
+    name,
+    heartbeat: { storm: { count: 120 }, recovery: { count: 300 } },
+    pool: { samples: 6, okSamples: 6, recoveryS: null },
+    ...extra,
+  });
+  return {
+    storm: {
+      scenario: 'storm-suite',
+      eventsPlanned: 2,
+      stepsFailed: 0,
+      events: [ev('api-kill'), ev('socket-drop')],
+      gates: [
+        { gate: 'heartbeat-p95', event: 'api-kill', threshold: 1, value: 2.4, pass: false },
+        // Pool seen but never recovered in the window: a real miss with no value.
+        { gate: 'pool-recovery', event: 'api-kill', threshold: 30, value: null, pass: false },
+        { gate: 'pool-min-ratio', event: 'socket-drop', threshold: 0.8, value: 0.9, pass: true },
+      ],
+      pass: false,
+      ...overrides,
+    },
+  };
+}
+
+function measured(report) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'storm-measured-'));
+  const file = path.join(dir, 'storm.json');
+  if (report !== undefined) writeFileSync(file, typeof report === 'string' ? report : JSON.stringify(report));
+  const r = spawnSync('bash', [path.join(HERE, 'storm-measured.sh'), file], { encoding: 'utf8' });
+  return { code: r.status, err: r.stderr };
+}
+
+test('storm-measured.sh: every fault fired and every failing gate has data → measured miss (0)', () => {
+  const r = measured(stormReport());
+  assert.equal(r.code, 0, r.err);
+});
+
+test('storm-measured.sh: harness failures are not a measured miss (1), each named', () => {
+  const base = stormReport().storm;
+  const cases = [
+    [{ stepsFailed: 1 }, /1 fault step\(s\) failed/],
+    [{ events: [base.events[0]] }, /1 of 2 planned events ran/],
+    [{ eventsPlanned: 0, events: [] }, /0 of 0 planned events ran/],
+    [{ events: [base.events[0], { ...base.events[1], truncated: true }] }, /socket-drop: cut short/],
+    [
+      { events: [base.events[0], { ...base.events[1], heartbeat: { storm: { count: 0 }, recovery: { count: 0 } } }] },
+      /socket-drop: no heartbeats/,
+    ],
+    [
+      { gates: [...base.gates, { gate: 'pool-min-ratio', event: 'api-kill', threshold: 0.8, value: null, pass: false }] },
+      /pool-min-ratio on api-kill: no data/,
+    ],
+    [
+      { events: [{ ...base.events[0], pool: { samples: 6, okSamples: 0, recoveryS: null } }, base.events[1]] },
+      /pool-recovery on api-kill: no data/,
+    ],
+  ];
+  for (const [storm, why] of cases) {
+    const r = measured({ storm: { ...base, ...storm } });
+    assert.equal(r.code, 1, `${JSON.stringify(storm)}: ${r.err}`);
+    assert.match(r.err, why);
+  }
+});
+
+test('storm-measured.sh: a missing, unreadable or storm-less report is not a measured miss (1); no argument is usage (64)', () => {
+  assert.equal(measured(undefined).code, 1);
+  assert.equal(measured('{not json').code, 1);
+  assert.equal(measured({ agents: {} }).code, 1);
+  const r = spawnSync('bash', [path.join(HERE, 'storm-measured.sh')], { encoding: 'utf8' });
+  assert.equal(r.status, 64);
+});
+
+test('run-perf.sh: a failed wt-stack down after a storm gate miss is a harness failure (1), not 3 (#11623)', () => {
+  const fx = makeFixture();
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(
+    path.join(agentsim, 'storm.sh'),
+    '#!/usr/bin/env bash\n' +
+      'mkdir -p "$(dirname "$0")/reports"; echo "{}" > "$(dirname "$0")/reports/storm-$1-stub.json"\nexit 3\n',
+  );
+  const r = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', path.join(fx.root, 'storm')], { STUB_DOWN_FAIL: '1' });
+  assert.equal(r.code, 1, r.err);
+  assert.match(r.err, /wt-stack down failed/);
+});
+
+test('run-perf.sh --storm never leaves an earlier storm.json in place when no new report is written (#11623)', () => {
+  const fx = makeFixture();
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(path.join(agentsim, 'storm.sh'), '#!/usr/bin/env bash\nmkdir -p "$(dirname "$0")/reports"\nexit 3\n');
+  const out = path.join(fx.root, 'storm');
+  mkdirSync(out, { recursive: true });
+  writeFileSync(path.join(out, 'storm.json'), '{"storm":{"pass":false}}');
+  run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', out]);
+  assert.equal(existsSync(path.join(out, 'storm.json')), false, 'stale storm.json removed');
 });

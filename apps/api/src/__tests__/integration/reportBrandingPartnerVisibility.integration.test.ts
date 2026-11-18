@@ -29,7 +29,7 @@ import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { organizations, partners } from '../../db/schema';
+import { organizations, partners, portalBranding } from '../../db/schema';
 import { loadReportBrandingForOrg } from '../../services/reportBranding';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -98,6 +98,7 @@ afterEach(async () => {
   // lock once an organization lock is held, so batching two tenants' deletes
   // into one transaction raises P0001.
   for (const id of createdOrgIds) {
+    await withSystemDbAccessContext(() => db.delete(portalBranding).where(eq(portalBranding.orgId, id)));
     await withSystemDbAccessContext(() => db.delete(organizations).where(eq(organizations.id, id)));
   }
   for (const id of createdPartnerIds) {
@@ -124,6 +125,25 @@ describe('report branding — partner visibility under a portal org-scoped conte
       expect(branding.accentColor).toBe('#123456');
       expect(branding.contactEmail).toBe(CONTACT.email);
       expect(branding.contactName).toBe(CONTACT.name);
+    },
+  );
+
+  // #9673: the org override is read in the caller's own context. Only a real
+  // org-scoped session proves that read sees the row.
+  runDb(
+    "the org's portal_branding colours override the partner's for an org-scoped portal caller",
+    async () => {
+      const { orgId } = await seedTenant('override');
+      await withSystemDbAccessContext(() =>
+        db.insert(portalBranding).values({ orgId, primaryColor: '#0f766e', secondaryColor: null }),
+      );
+
+      const branding = await withDbAccessContext(portalOrgContext(orgId), () =>
+        loadReportBrandingForOrg(orgId),
+      );
+
+      expect(branding.primaryColor).toBe('#0f766e');
+      expect(branding.accentColor).toBe('#123456');
     },
   );
 

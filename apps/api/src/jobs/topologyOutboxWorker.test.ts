@@ -49,6 +49,33 @@ describe('topology database outbox repair worker', () => {
     expect(mocks.drain).toHaveBeenCalledOnce(); expect(mocks.execute).toHaveBeenCalledTimes(3); expect(mocks.capture).toHaveBeenCalledOnce();
     expect(mocks.prune).not.toHaveBeenCalled();
   });
+  it('backs a permanently failing site off instead of replaying it every tick (BREEZE-4C)', async () => {
+    vi.useFakeTimers();
+    mocks.drain.mockRejectedValue(new Error('Conflicting pins stop canonical merge'));
+    await runTopologyRepairTick();
+    await runTopologyRepairTick();
+    expect(mocks.drain).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(2000);
+    await runTopologyRepairTick();
+    expect(mocks.drain).toHaveBeenCalledTimes(2);
+    // The second consecutive failure doubles the wait.
+    vi.advanceTimersByTime(2000);
+    await runTopologyRepairTick();
+    expect(mocks.drain).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(2000);
+    await runTopologyRepairTick();
+    expect(mocks.drain).toHaveBeenCalledTimes(3);
+    expect(mocks.capture).toHaveBeenCalledWith(expect.any(Error), undefined, { worker: 'topologyOutbox' });
+  });
+  it('drains a backed-off site normally once it succeeds again', async () => {
+    vi.useFakeTimers();
+    mocks.drain.mockRejectedValueOnce(new Error('transient'));
+    await runTopologyRepairTick();
+    vi.advanceTimersByTime(2000);
+    await runTopologyRepairTick();
+    await runTopologyRepairTick();
+    expect(mocks.drain).toHaveBeenCalledTimes(3);
+  });
   it('runs the first-snapshot bootstrap (#7557) on its slower cadence after repair, even when repair throws', async () => {
     vi.useFakeTimers();
     mocks.execute.mockRejectedValueOnce(new Error('candidate query failed'));

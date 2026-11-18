@@ -9,7 +9,8 @@ import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
@@ -24,7 +25,7 @@ import { resolveWritableToolOrgId } from './aiToolWriteOrg';
  * `isAgentPrincipalCaller` (#6206).
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /** #6911: the refusal `manage_saved_filters:create` returns to an agent principal. */
@@ -82,6 +83,8 @@ export function registerUITools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_saved_filters', action, auth);
+      if (mfaError) return mfaError;
 
       if (action === 'list') {
         const conditions: SQL[] = [];

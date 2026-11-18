@@ -154,6 +154,7 @@ vi.mock('../../db', () => {
     },
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   };
 });
 
@@ -1276,7 +1277,7 @@ describe('recipients of a partner-owned definition', () => {
     const res = await app().request(`/reports/${REPORT_ID}/recipients`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [] });
+    expect(await res.json()).toEqual({ data: [], ruleContactIds: null });
   });
 
   it('GET /:id/recipients 404s a selected-access partner user', async () => {

@@ -33,6 +33,9 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema/actionIntents', () => ({
   actionIntents: { id: 'action_intents.id' },
 }));
+vi.mock('../db/schema/approvals', () => ({
+  approvalRequests: { id: 'approval_requests.id', intentId: 'approval_requests.intent_id', userId: 'approval_requests.user_id' },
+}));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
 }));
@@ -93,7 +96,11 @@ function mockIntentSelect(rows: unknown[]) {
   });
 }
 
-function buildApp(userId = 'user-1', scope: 'organization' | 'system' = 'organization'): Hono {
+function buildApp(
+  userId = 'user-1',
+  scope: 'organization' | 'system' = 'organization',
+  principal: Record<string, unknown> = { kind: 'user_session' },
+): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -101,6 +108,7 @@ function buildApp(userId = 'user-1', scope: 'organization' | 'system' = 'organiz
       orgId: scope === 'system' ? null : ORG_ID,
       partnerId: null,
       accessibleOrgIds: [ORG_ID],
+      principal,
       user: { id: userId, email: 'tech@example.com', name: 'Tech' },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
@@ -300,6 +308,87 @@ describe('POST /action-intents/:id/reveal-secret', () => {
   it('non-uuid id is rejected with 400 before any db access', async () => {
     const res = await reveal(buildApp(), 'not-a-uuid');
     expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /action-intents/:id/status', () => {
+  const statusReq = (app: Hono, id = INTENT_ID) => app.request(`/action-intents/${id}/status`);
+  const statusIntent = (o: Record<string, unknown> = {}) =>
+    baseIntent({
+      status: 'approved',
+      actionName: 'manage_patches',
+      targetSummary: 'Install patches on 3 devices',
+      approvalScope: 'four_eyes',
+      requestingClientLabel: 'MCP · Claude Code',
+      expiresAt: new Date('2026-10-23T00:00:00Z'),
+      createdAt: new Date('2026-10-22T00:00:00Z'),
+      ...o,
+    });
+  function mockApproverSelect(rows: unknown[]) {
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    });
+  }
+
+  it('requester sees the mapped status and display fields, no result/arguments', async () => {
+    mockIntentSelect([statusIntent()]);
+    const res = await statusReq(buildApp('user-1'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      id: INTENT_ID,
+      status: 'in_progress',
+      actionLabel: 'manage_patches',
+      targetSummary: 'Install patches on 3 devices',
+      approvalScope: 'four_eyes',
+      requestingClientLabel: 'MCP · Claude Code',
+      expiresAt: '2026-10-23T00:00:00.000Z',
+      createdAt: '2026-10-22T00:00:00.000Z',
+    });
+    expect(JSON.stringify(body)).not.toContain('enc:v3');
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fanned-out approver (approval_requests row) sees the status', async () => {
+    mockIntentSelect([statusIntent({ requestedByUserId: 'someone-else', status: 'pending_approval' })]);
+    mockApproverSelect([{ id: 'ar-1' }]);
+    const res = await statusReq(buildApp('approver-1'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('pending_approval');
+  });
+
+  it('another org member who is neither requester nor approver gets the uniform 404', async () => {
+    mockIntentSelect([statusIntent({ requestedByUserId: 'someone-else' })]);
+    mockApproverSelect([]);
+    const res = await statusReq(buildApp('bystander'));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('unknown id returns the identical 404 body', async () => {
+    mockIntentSelect([]);
+    const res = await statusReq(buildApp('user-1'));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('malformed id returns the identical 404 body without touching the db', async () => {
+    const res = await statusReq(buildApp('user-1'), 'not-a-uuid');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('an API-key / MCP principal is refused before any db read', async () => {
+    const res = await statusReq(buildApp('user-1', 'organization', { kind: 'api_key', apiKeyId: 'k1' }));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+    expect(selectMock).not.toHaveBeenCalled();
+    const oauth = await statusReq(buildApp('user-1', 'organization', { kind: 'oauth_grant' }));
+    expect(oauth.status).toBe(404);
     expect(selectMock).not.toHaveBeenCalled();
   });
 });

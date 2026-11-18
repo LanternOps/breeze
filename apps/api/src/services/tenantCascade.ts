@@ -29,7 +29,10 @@
  *   - `audit_logs` is in the cascade list (it has an `org_id` column).
  *   - `breeze_app` cannot DELETE from `audit_logs` (Task 29 trigger);
  *     the cascade runs `SET LOCAL ROLE breeze_audit_admin` +
- *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table.
+ *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table
+ *     (and the other AUDIT_ADMIN_REQUIRED_TABLES), or, when
+ *     AUDIT_ADMIN_DATABASE_URL is set, runs those steps on the dedicated
+ *     breeze_audit_admin connection instead (#11929).
  *   - The `tenant.erasure` audit event itself is written with
  *     `org_id = NULL` BEFORE the cascade so it survives the cascade.
  *
@@ -39,8 +42,10 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
+import { hasDedicatedAuditAdminPool, withAuditAdminTransaction } from '../db/auditAdminPool';
 import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
+import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from './networkIsolation/lifecycle';
 // Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
 // topologicalCascadeOrder through the module namespace. This keeps those
 // internal calls interceptable by `vi.spyOn(mod, ...)` (an ESM live-binding
@@ -323,6 +328,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_credit_debits (#9451): keyed credit debit outbox, shape 1, NOT NULL
+  // org_id ON DELETE CASCADE. Leaf: no FKs in, and source_id deliberately has
+  // no FK (ai_agent_runs / ai_invocations), so its position is alphabetical.
+  'ai_credit_debits',
   // AI device file read policy: only the org override row cascades; the
   // partner default has org_id NULL and never participates.
   'ai_data_policies',
@@ -359,6 +368,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //     sort's job, not this array's — the alphabetical position is cosmetic
   //     here exactly as it is for the two entries above. Stated only so a
   //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
+  // #9981: per-provider-account reservations. Shape 1, NOT NULL org_id; a
+  // composite (task_id, org_id) FK to ai_operator_tasks ON DELETE CASCADE.
+  'ai_operator_account_reservations',
   'ai_operator_operations',
   'ai_operator_plan_approval_effects',
   'ai_operator_plan_approvals',
@@ -417,6 +429,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_usage_charges',
   'alert_correlation_groups',
   'alert_correlation_members',
+  // Principal-namespaced external ticket refs cascade with their alert/org.
+  'alert_external_refs',
   'alert_rules',
   'alert_templates',
   'alerts',
@@ -433,6 +447,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_policy_states',
   'audit_retention_policies',
   'automation_action_results',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): automation-wide occurrence
+  // claims; org XOR partner (partner-wide rows, org_id NULL, are untouched by
+  // an org erasure). automation_id -> automations is ON DELETE CASCADE.
+  'automation_occurrence_claims',
   'automation_policies',
   'automation_resource_bindings',
   'automation_run_device_results',
@@ -489,6 +507,18 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'browser_extensions',
   'browser_policies',
   'browser_policy_violations',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config tables; the three children copy the owner pair. Every
+  // child FK is ON DELETE CASCADE to its parent, and the children sort before
+  // the parent under localeCompare ('business_calendar_…' < 'business_calendars').
+  // tickets.sla_calendar_revision_id and org_ticket_settings.business_calendar_id
+  // are ON DELETE SET NULL back-edges that close no cycle, so the topological
+  // order already deletes those referencing rows first and no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry is needed.
+  'business_calendar_holidays',
+  'business_calendar_intervals',
+  'business_calendar_revisions',
+  'business_calendars',
   'c2c_backup_configs',
   'c2c_backup_items',
   'c2c_backup_jobs',
@@ -535,6 +565,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
+  'contract_skipped_billing_periods',
   // contract_template_versions sorts before contract_templates: localeCompare
   // puts '_' (versions) before 's' (templates) at the diverging character —
   // same prefix-extension trap as custom_field_definitions/customer_email_domains
@@ -598,6 +629,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // verifies it against pg_constraint at runtime regardless.
   'device_mtls_certificates',
   'device_network',
+  // Network-isolation episodes (#10089, feature #10088). Composite FKs to
+  // devices (ON DELETE CASCADE), incidents and incident_actions (ON DELETE
+  // SET NULL (col)), all DEFERRABLE INITIALLY IMMEDIATE; this alphabetical
+  // slot already precedes all three parents. Erasure while an episode is
+  // unresolved is refused upstream (W1c, spec §3.6 item 6).
+  'device_network_isolations',
+  // Vendor update policy side (#11242): composite FK onto devices, leaf table.
+  'device_oem_policy_side',
+  // Vendor update status (#11068): composite FK onto devices, leaf table.
+  'device_oem_update_status',
   // PAM ownership-epoch lineage (#8203). Closures FK -> epochs
   // (device_id, org_id, epoch) ON DELETE CASCADE, so closures sort (and
   // delete) first. Epochs carry no FK to devices (spec §4.4).
@@ -616,6 +657,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_warranty',
   // #3834 — workload host inventory. Composite FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf tables, no children.
@@ -662,6 +705,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // ai_memory_blocks: deliberately absent — no `org_id` column (owner_org_id); owner rows cascade by FK; see migration 2027-01-04-110100-ai-memory-blocks.sql header (Wisp W03, w00 A9).
   // AI Suggested Fixes W1: fix_memory is dual-owner (org_id XOR partner_id).
   // Org rows cascade with the org; partner rows (org_id NULL) are untouched by
   // an org erasure and are rebuilt by jobs/tenantErasure.ts afterwards. FKs out
@@ -678,6 +722,26 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql). flow_run_steps
+  // -> flow_runs (run_id, org_id) and flow_runs -> flow_versions are ON DELETE
+  // CASCADE; action_intents(requesting_flow_run_id, org_id) -> flow_runs is
+  // ON DELETE RESTRICT, so topologicalCascadeOrder() (live pg_constraint)
+  // deletes action_intents before flow_runs whatever the position here.
+  // flow_versions is org XOR partner like flows: partner-wide publications
+  // (org_id NULL) are untouched by an org erasure.
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_usage_counters and
+  // flow_webhook_deliveries both cascade from flows and carry org_id (nullable:
+  // partner-wide flows). flow_webhook_deliveries(run_id, org_id) -> flow_runs is
+  // a composite FK; the runtime order is computed topologically.
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger, org XOR
+  // partner; automation_id -> automations and flow_id -> flows are ON DELETE
+  // CASCADE, so the runtime order is computed topologically.
+  'flow_automation_conversions',
+  'flow_run_steps',
+  'flow_runs',
+  'flow_usage_counters',
+  'flow_versions',
+  'flow_webhook_deliveries',
   // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
   // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
   // child-before-parent constraint of its own.
@@ -831,7 +895,6 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // every org_id-columned public table be enumerated for auditability).
   'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
-  'patch_compliance_snapshots',
   'patch_jobs',
   'pax8_company_mappings',
   'pax8_contract_line_links',
@@ -847,7 +910,29 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'plugin_installations',
   'plugin_instances',
   'plugins',
+  // portal_access_requests (W3 #11380): shape 1; its (portal_user_id, org_id) FK
+  // to portal_users is ON DELETE CASCADE, so it goes before its parent
+  // 'portal_users' (child before parent). localeCompare: 'portal_access_policies'
+  // < 'portal_access_requests' < 'portal_branding'.
+  // portal_access_policies (W3 #11380): dual-axis sign-in policy (org XOR
+  // partner). Only org-override rows carry org_id; partner-default rows are
+  // swept by cascadeDeletePartner's partner_id pass. Cascade leaf.
+  'portal_access_policies',
+  'portal_access_requests',
   'portal_branding',
+  // portal_directory_actions / portal_directory_runs (W8 #11385): shape 1.
+  // Actions carry composite (x, org_id) FKs to runs, portal_user_identities and
+  // portal_users (all ON DELETE CASCADE), so they go before every parent; runs
+  // go before nothing they reference. localeCompare: 'portal_branding' <
+  // 'portal_directory_actions' < 'portal_directory_runs' < 'portal_user_identities'.
+  'portal_directory_actions',
+  'portal_directory_runs',
+  // portal_scim_tokens (W9 #11386): shape 1, a cascade leaf (references only
+  // organizations and users). localeCompare: 'portal_directory_runs' <
+  // 'portal_scim_tokens' < 'portal_user_identities'.
+  'portal_scim_tokens',
+  // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
+  'portal_user_identities',
   'portal_users',
   'provision_credential_handles',
   'psa_connections',
@@ -907,6 +992,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',
+  'security_scan_sweeps',
   'security_scans',
   'security_status',
   'security_threats',
@@ -1028,6 +1114,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
+  // ticket_import_org_maps (#8313 W4, 2027-01-20-100000): partner-axis, but
+  // its org_id is the Breeze org a source org imports into, so erasing the org
+  // drops it from every source's map. It references organizations (deleted
+  // last) and ticket_import_sources (a partner table, not in this list).
+  // localeCompare: 'ticket_forms' < 'ticket_import_org_maps' < 'ticket_links'.
+  'ticket_import_org_maps',
   // ticket_links (#7900 W02): typed ticket-to-ticket links, shape 1 (direct
   // org_id). Both legs are composite (ticket_id, org_id) FKs to
   // tickets(id, org_id) ON DELETE CASCADE, so it is a child of `tickets` and
@@ -1050,6 +1142,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ticket_outbox',
   'offline_transition_effects',
   'ticket_parts',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000). Dual-axis XOR config
+  // table plus its org-links FK child (whose org_id is the allowlisted org).
+  // localeCompare: 'ticket_parts' < 'ticket_routing_rule_org_links' <
+  // 'ticket_routing_rules' < 'tickets' ('p' < 'r'; 'rule_' < 'rules'), so the
+  // child precedes its parent. tickets.routing_rule_id -> rules is ON DELETE
+  // SET NULL and closes no FK cycle, so it needs no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry (the delete order is topological).
+  'ticket_routing_rule_org_links',
+  'ticket_routing_rules',
   'tickets',
   'time_entries',
   'time_series_metrics',
@@ -1116,7 +1217,51 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'user_risk_scores',
   'users',
   'vault_snapshot_inventory',
+  'webhook_deliveries',
   'webhooks',
+  // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
+  // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a
+  // grant with ON DELETE RESTRICT FKs, so they must (and do) precede it; the
+  // revisions go with the grant via ON DELETE CASCADE.
+  'wisp_grants',
+  // Wisp W04 (#9910). wisp_thread_attachments is shape 1 (its artifact's org);
+  // wisp_thread_sessions is partner-axis but carries the attached session's
+  // org_id. Both reference ai_run_artifacts / ai_sessions / organizations with
+  // ON DELETE CASCADE and wisp_threads (a partner table, not in this list);
+  // topologicalCascadeOrder() puts them before their parents.
+  // wisp_threads.focus_org_id needs no step: its FK is ON DELETE SET NULL
+  // (focus_org_id).
+  // Wisp W05a (#9911). All three are partner-anchored / org-optional
+  // (DUAL_AXIS_TENANT_TABLES): this pass deletes their org rows only; a
+  // partner-level row (org_id NULL) leaves with the partner. Recipients
+  // reference wisp_concerns ON DELETE CASCADE, and recipients + watches
+  // reference wisp_grants ON DELETE CASCADE; topologicalCascadeOrder() puts
+  // them before their parents.
+  // Wisp check-in timers W01 (#10992). wisp_check_ins is the same
+  // partner-anchored / org-optional shape (DUAL_AXIS_TENANT_TABLES): this pass
+  // deletes its org rows only; a check-in on a partner-level thread (org_id
+  // NULL) leaves with its thread / grant / partner. It references
+  // wisp_threads, wisp_grants, users and organizations ON DELETE CASCADE;
+  // topologicalCascadeOrder() puts it before its parents.
+  'wisp_check_ins',
+  'wisp_concern_recipients',
+  'wisp_concerns',
+  'wisp_thread_attachments',
+  // Wisp W08a (#9914). Partner-anchored / org-optional like wisp_concerns
+  // (DUAL_AXIS_TENANT_TABLES): this pass deletes its org rows only; a
+  // partner-level link (org_id NULL) leaves with its thread / partner. It
+  // references wisp_threads, users and organizations ON DELETE CASCADE and
+  // wisp_grants ON DELETE SET NULL (added_by_grant_id).
+  'wisp_thread_links',
+  // Wisp companion W02a (#10212). Same partner-anchored / org-optional shape:
+  // this pass deletes its org posts only; a partner-level post (brief, digest,
+  // org-less concern) leaves with its thread / partner. It references
+  // wisp_threads and wisp_grants ON DELETE CASCADE, and wisp_concerns and
+  // user_notifications ON DELETE SET NULL; topologicalCascadeOrder() puts it
+  // before its parents.
+  'wisp_thread_posts',
+  'wisp_thread_sessions',
+  'wisp_watches',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
   // so deleting the parent first is FK-safe; built-in rows (org_id NULL) are
   // never matched by an org erasure.
@@ -1399,6 +1544,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_invocations_append_only() (2026-11-14-100300, #7600 W02), so erasure has
   // to run as breeze_audit_admin with breeze.allow_audit_retention=1.
   'ai_invocations',
+  // Signed agreements (#9075 W4b): REVOKE UPDATE/DELETE from breeze_app (only
+  // column UPDATE on contract_id/org_id stays) plus
+  // contract_documents_append_only() (2027-01-06-150000), so erasure has to
+  // run as breeze_audit_admin with breeze.allow_audit_retention=1.
+  'contract_documents',
 ]);
 
 interface FkEdge {
@@ -1431,6 +1581,16 @@ interface FkEdge {
  */
 export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
   'report_runs_artifact_id_ai_run_artifacts_id_fk',
+  // Wisp W02: wisp_grants.current_revision_id -> wisp_grant_revisions is ON
+  // DELETE SET NULL (current_revision_id); the reverse edge (revisions ->
+  // grants, CASCADE) is the real ownership, so the partner-axis sweep deletes
+  // revisions first and the grant's pointer falls to NULL.
+  'wisp_grants_current_revision_fk',
+  // Wisp W07: ai_operator_tasks.requested_by_run_id -> ai_agent_runs is ON
+  // DELETE SET NULL (requested_by_run_id) — a lineage back-pointer. The
+  // reverse edge (ai_agent_runs.task_id -> ai_operator_tasks) is the real
+  // ordering, so runs go first and a specialist task's pointer falls to NULL.
+  'ai_operator_tasks_requested_by_run_fk',
 ]);
 
 /**
@@ -1679,7 +1839,7 @@ async function detachSharedIdentitiesFromOrg(orgId: string): Promise<string[]> {
   return detachedIds;
 }
 
-export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE';
+export type TenantCascadeRefusalCode = 'LEGAL_HOLD_ACTIVE' | 'isolation_unresolved';
 
 /**
  * Thrown by `cascadeDeleteOrg` when the erasure is refused before any row is
@@ -1718,6 +1878,41 @@ export async function hasActiveLegalHoldSnapshots(orgId: string): Promise<boolea
     `),
   );
   return rowsFromExecute<{ id: string }>(result).length > 0;
+}
+
+/** Network recovery must remain possible until every episode is resolved. */
+export async function hasUnresolvedNetworkIsolations(orgId: string): Promise<boolean> {
+  return dbModule.withSystemDbAccessContext(async () =>
+    (await findUnresolvedIsolations(dbModule.db, { orgId })).length > 0,
+  );
+}
+
+/** Recheck inside each transaction that can erase recovery state. */
+export async function assertIsolationErasureSafe(orgId: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await dbModule.withDbTransaction(async () => {
+        // Device-first: let existing starts finish before taking the org FK fence.
+        // NOWAIT avoids a cycle with a new device/start holding org KEY SHARE;
+        // the second scan catches devices committed after the first scan. It must
+        // not wait on a new start that now needs our org lock. A failed savepoint
+        // releases ALL these locks before retry; success retains them until delete commits.
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE`);
+        await dbModule.db.execute(sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE NOWAIT`);
+        await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} ORDER BY id FOR NO KEY UPDATE NOWAIT`);
+        await assertNoUnresolvedIsolation(dbModule.db, { orgId }, 'organization_erasure', { lockDevices: false });
+      });
+      return;
+    } catch (error) {
+      if (error instanceof NetworkIsolationUnresolvedError) {
+        throw new TenantCascadeRefusalError(error.code, error.message);
+      }
+      // Bound contention retries: preserve the refusal/error and never delete
+      // when the fence could not be established. Drizzle wraps SQLSTATE in cause.
+      if (pgErrorCode(error) === '55P03' && attempt < 2) continue;
+      throw error;
+    }
+  }
 }
 
 /**
@@ -1895,6 +2090,22 @@ async function cascadeDeleteOrgInternal(
   const retainedTables: ReadonlySet<string> = scopedHold
     ? new Set<string>([...EVIDENCE_HOLD_RETAINED_TABLES, 'organizations'])
     : new Set<string>();
+
+  if (await hasUnresolvedNetworkIsolations(orgId)) {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: 'tenant.erasure.refused_isolation',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: { reason: 'isolation_unresolved' },
+      result: 'failure',
+      errorMessage: 'Release network isolation first',
+    });
+    throw new TenantCascadeRefusalError('isolation_unresolved', 'Release network isolation first');
+  }
 
   const holdSource: BackupLegalHoldSource | null = await findActiveBackupLegalHold(orgId);
   if (holdSource) {
@@ -2330,6 +2541,15 @@ async function cascadeDeleteOrgInternal(
         ? await deleteAiScreenshotsCascadeStep(orgId)
         : table === 'patch_compliance_reports'
         ? await deletePatchComplianceReportsCascadeStep(orgId)
+        : AUDIT_ADMIN_REQUIRED_TABLES.has(table) && hasDedicatedAuditAdminPool()
+        // AUDIT_ADMIN_DATABASE_URL set: run this table's step on the dedicated
+        // breeze_audit_admin login, which keeps working after breeze_app's
+        // membership is revoked (#915, #11929). Same one-transaction-per-table
+        // shape and the same erasure marker as the branch below.
+        ? await withAuditAdminTransaction(async (adminTx) => {
+            await adminTx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${orgId}, true)`);
+            return extractRowCount(await adminTx.execute(orgRowsDeleteSql(table, orgId)));
+          })
         : await dbModule.withSystemDbAccessContext(async () => {
             // Every walk transaction is marked as this org's erasure, so the
             // on-delete fence trigger records any backup source row deleted in
@@ -2345,6 +2565,9 @@ async function cascadeDeleteOrgInternal(
               await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
             }
 
+            if (table === 'device_network_isolations' || table === 'devices' || table === 'organizations') {
+              await assertIsolationErasureSafe(orgId);
+            }
             const result = await deleteOrgRows(table, orgId);
             return extractRowCount(result);
           });
@@ -2361,13 +2584,14 @@ async function cascadeDeleteOrgInternal(
       // `err instanceof TenantCascadeRefusalError` check (tenantErasure.ts)
       // still recognizes it as a skip rather than a generic job failure.
       if (err instanceof TenantCascadeRefusalError) {
+        const isolationRefusal = err.code === 'isolation_unresolved';
         try {
           await createAuditLog({
             orgId: null,
             actorType: 'user',
             actorId: performedBy,
             actorEmail: performedByEmail,
-            action: 'tenant.erasure.refused_legal_hold',
+            action: isolationRefusal ? 'tenant.erasure.refused_isolation' : 'tenant.erasure.refused_legal_hold',
             resourceType: 'organization',
             resourceId: orgId,
             details: {
@@ -2379,12 +2603,17 @@ async function cascadeDeleteOrgInternal(
             errorMessage: err.message,
           });
         } catch (auditErr) {
-          console.warn('[tenantCascade] refused-legal-hold audit write failed:', auditErr);
+          console.warn('[tenantCascade] refusal audit write failed:', auditErr);
         }
-        captureMessage(
-          `[tenantCascade] erasure refused for org=${orgId}: active legal hold appeared mid-cascade`,
-          { eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'mid_cascade' } },
-        );
+        if (isolationRefusal) {
+          captureMessage(`[tenantCascade] erasure refused for org=${orgId}: network isolation appeared mid-cascade`, {
+            eventCode: 'tenant_erasure_refused_isolation', level: 'warning', tags: { stage: 'mid_cascade' },
+          });
+        } else {
+          captureMessage(`[tenantCascade] erasure refused for org=${orgId}: active legal hold appeared mid-cascade`, {
+            eventCode: 'tenant_erasure_refused_legal_hold', level: 'warning', tags: { stage: 'mid_cascade' },
+          });
+        }
         throw err;
       }
       // A single table failure aborts the WALK. It does NOT roll the erasure
@@ -2511,18 +2740,20 @@ async function writeErasureFailedAudit(
   }
 }
 
+function orgRowsDeleteSql(table: string, orgId: string) {
+  // `organizations` is id-keyed (its own primary key IS the org id);
+  // every other table in the list has an `org_id` column.
+  if (table === 'organizations') {
+    return sql`DELETE FROM organizations WHERE id = ${orgId}`;
+  }
+  return sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`;
+}
+
 function deleteOrgRows(
   table: string,
   orgId: string,
 ): ReturnType<typeof dbModule.db.execute> {
-  // `organizations` is id-keyed (its own primary key IS the org id);
-  // every other table in the list has an `org_id` column.
-  if (table === 'organizations') {
-    return dbModule.db.execute(sql`DELETE FROM organizations WHERE id = ${orgId}`);
-  }
-  return dbModule.db.execute(
-    sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`,
-  );
+  return dbModule.db.execute(orgRowsDeleteSql(table, orgId));
 }
 
 function isUndefinedTable(err: unknown): boolean {
@@ -2769,6 +3000,35 @@ export async function cascadeDeletePartner(
                 JOIN software_catalog c ON c.id = m.catalog_id
                 WHERE c.partner_id = ${partnerId}
               )
+      `,
+    },
+    // #10521 W1, plan D9: group_membership_log and device_group_memberships
+    // reference device_groups without ON DELETE. Clear by group ownership so
+    // rows outside the per-org cascade list (reparented orgs or held shells
+    // skipped above) cannot block the partner's group deletion. A still-targeted
+    // group also makes its delete statement trigger raise: assignments go first.
+    {
+      table: 'config_policy_assignments',
+      clearSql: sql`
+        DELETE FROM config_policy_assignments
+        WHERE level = 'device_group'
+          AND target_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'group_membership_log',
+      clearSql: sql`
+        DELETE FROM group_membership_log
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'device_group_memberships',
+      // The statement-level membership-delete touch trigger (2026-07-18)
+      // pre-locks the complete sorted DISTINCT org set before updating devices.
+      clearSql: sql`
+        DELETE FROM device_group_memberships
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
       `,
     },
   ];

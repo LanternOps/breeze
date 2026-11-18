@@ -20,6 +20,7 @@
 import { z } from 'zod';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AuthContext } from '../../middleware/auth';
+import { isFlowPrincipal } from '../../middleware/principalKind';
 import type { AiTool } from '../aiTools';
 import { captureException } from '../sentry';
 import { WorkspaceToolError } from './workspaceErrors';
@@ -54,6 +55,9 @@ function requiresRun(): WorkspaceToolError {
  * tools, by design.
  */
 function resolveWorkspace(auth: AuthContext): WorkspaceService {
+  // Tool catalog W04 (#5219): a flow run's `runId` is a flow_runs id, never an
+  // analysis run — refused explicitly rather than trusted to miss the lookup.
+  if (isFlowPrincipal(auth)) throw requiresRun();
   const principal = auth.principal as { kind?: string; runId?: string } | undefined;
   const runId = principal?.kind === 'ai_agent' ? principal.runId : undefined;
   if (!runId) throw requiresRun();

@@ -56,6 +56,27 @@ describe('admitTunnelHostRequest (spec §4a)', () => {
     expect(admit({ secFetchSite: 'same-origin', origin: APP })).toMatchObject({ ok: false, reason: 'foreign_origin' });
   });
 
+  // #11458: under `Referrer-Policy: no-referrer` (which every tunnel-host
+  // response carries) a browser serializes a same-origin form POST's Origin
+  // as `null`. Sec-Fetch-Site is browser-computed, so `same-origin` there
+  // proves the request came from this tunnel's own page.
+  it('admits Origin: null only when Sec-Fetch-Site is same-origin', () => {
+    expect(admit({ method: 'POST', origin: 'null', secFetchSite: 'same-origin' })).toEqual({ ok: true });
+    expect(admit({ method: 'POST', origin: 'null', secFetchSite: 'Same-Origin' })).toEqual({ ok: true });
+    expect(admit({ origin: 'null', secFetchSite: 'same-origin' })).toEqual({ ok: true });
+  });
+
+  it.each(['same-site', 'cross-site', 'none', 'bogus', ''])('refuses Origin: null with Sec-Fetch-Site %j', (site) => {
+    expect(admit({ method: 'POST', origin: 'null', secFetchSite: site })).toMatchObject({ ok: false, status: 403, reason: 'foreign_origin' });
+    expect(admit({ origin: 'null', secFetchSite: site })).toMatchObject({ ok: false, status: 403, reason: 'foreign_origin' });
+  });
+
+  it('matches the opaque origin exactly: only the literal `null` gets the same-origin exception', () => {
+    for (const origin of ['Null', 'NULL', ' null', 'null ', 'null,null']) {
+      expect(admit({ method: 'POST', origin, secFetchSite: 'same-origin' }), origin).toMatchObject({ ok: false, reason: 'foreign_origin' });
+    }
+  });
+
   it('404s service-worker script fetches before anything else', () => {
     expect(admit({ serviceWorker: 'script', secFetchSite: 'same-origin' })).toEqual({ ok: false, status: 404, reason: 'service_worker' });
     expect(admit({ serviceWorker: ' Script ', secFetchSite: 'cross-site' })).toEqual({ ok: false, status: 404, reason: 'service_worker' });

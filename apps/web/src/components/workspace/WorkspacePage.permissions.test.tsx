@@ -1,7 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// #6498: /workspace is the full-page AI Assistant. #6396/#6399 gated the header
+// #6498: /ai/chat (was /workspace, then /wisp/chat) is the full-page multi-tab chat. #6396/#6399 gated the header
 // button and the docked sidebar on `ai_sessions:use` but not this page, so a
 // role holding only devices:read got a composer that 403s on send. The page
 // must render the AccessDenied state instead — and must not touch /ai/sessions.
@@ -29,14 +29,26 @@ const store = vi.hoisted(() => ({
   switchTab: vi.fn(),
   renameTab: vi.fn(),
   restoreWorkspace: vi.fn(async () => undefined),
+  checkWispGrant: vi.fn(async () => undefined),
+  wispGrantAvailable: false,
   cleanupAllStreams: vi.fn(),
+  // #9840 W3: the deep link (#session=) and the move controls.
+  openSession: vi.fn(async () => 'opened'),
+  setComposerDraft: vi.fn(),
+  resetForLogout: vi.fn(),
 }));
-vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
+vi.mock('@/stores/workspaceStore', () => ({
+  useWorkspaceStore: Object.assign(
+    (selector?: (s: typeof store) => unknown) => (selector ? selector(store) : store),
+    { getState: () => store },
+  ),
+}));
 vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
 vi.mock('./WorkspaceChatPanel', () => ({ default: () => <div data-testid="workspace-chat-panel" /> }));
 vi.mock('./WorkspaceEmptyState', () => ({ default: () => <div data-testid="workspace-empty-state" /> }));
 
 import WorkspacePage from './WorkspacePage';
+import { useOrgStore } from '@/stores/orgStore';
 
 const AI_USE: Perm = { resource: 'ai_sessions', action: 'use' };
 const DEVICES_READ: Perm = { resource: 'devices', action: 'read' };
@@ -63,6 +75,18 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
 
     expect(store.restoreWorkspace).not.toHaveBeenCalled();
     expect(store.createTab).not.toHaveBeenCalled();
+    expect(store.checkWispGrant).not.toHaveBeenCalled();
+  });
+
+  it('never acts on a #session= deep link without the permission (#9840 W3)', () => {
+    state.permissions = [DEVICES_READ];
+    window.history.replaceState(null, '', '/ai/chat#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    render(<WorkspacePage />);
+
+    expect(screen.getByTestId('workspace-access-denied')).toBeInTheDocument();
+    expect(store.openSession).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe('#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    window.history.replaceState(null, '', '/');
   });
 
   it('keeps the workspace hidden while permissions are still loading', () => {
@@ -80,6 +104,16 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
     expect(screen.getByTestId('workspace-empty-state')).toBeInTheDocument();
     expect(screen.queryByTestId('workspace-access-denied')).not.toBeInTheDocument();
     expect(store.restoreWorkspace).toHaveBeenCalled();
+    expect(store.checkWispGrant).toHaveBeenCalled();
+  });
+
+  it('asks again whether a Wisp grant is active when the header org changes (#10289)', () => {
+    state.permissions = [DEVICES_READ, AI_USE];
+    act(() => useOrgStore.setState({ currentOrgId: 'org-a' }));
+    render(<WorkspacePage />);
+    expect(store.checkWispGrant).toHaveBeenCalledTimes(1);
+    act(() => useOrgStore.setState({ currentOrgId: 'org-b' }));
+    expect(store.checkWispGrant).toHaveBeenCalledTimes(2);
   });
 
   it('renders the tab bar and chat panel for a wildcard admin', () => {

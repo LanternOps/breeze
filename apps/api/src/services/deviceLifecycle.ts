@@ -16,7 +16,10 @@
  *
  * Purge additionally REFUSES while a `device_remove` self_uninstall is still
  * pending/sent and unexpired: device_commands is in the device cascade, so
- * purging would destroy the only thing that will ever clean the endpoint. The
+ * purging would destroy the only thing that will ever clean the endpoint. It
+ * also refuses (#11153) when the agent never confirmed it came off — a failed,
+ * expired or cancelled uninstall, or none at all — unless the caller passes
+ * `force` (`devicePurgeUninstallGate.ts` owns that predicate). The
  * legacy fire-and-forget WS uninstall the permanent-delete route used to send
  * is gone — it only ever reached a CONNECTED agent, which a removed device
  * usually is not, and it raced the cascade that deleted its own command row.
@@ -36,6 +39,7 @@ import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
 import {
   admitPartnerDeviceCapacity,
@@ -48,11 +52,18 @@ import {
   UNINSTALL_REASON_DEVICE_REMOVE,
   type Tx,
 } from './deviceUninstallDrain';
+import {
+  isPurgeUninstallConfirmed,
+  readPurgeUninstallState,
+  type PurgeUninstallState,
+} from './devicePurgeUninstallGate';
 
 export type DeviceLifecycleCode =
   | 'NOT_FOUND'
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
+  /** #11153 — the agent never confirmed it was uninstalled; `force` overrides. */
+  | 'UNINSTALL_NOT_CONFIRMED'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'BACKUP_PROTECTED'
@@ -63,8 +74,11 @@ export class DeviceLifecycleError extends Error {
     public readonly code: DeviceLifecycleCode,
     message: string,
     /** Extra response fields. DEVICE_LIMIT_REACHED carries the partner's count
-     *  and limit, the same fields the enrollment refusal returns. */
-    public readonly details?: { currentDevices: number; maxDevices: number },
+     *  and limit, the same fields the enrollment refusal returns;
+     *  UNINSTALL_NOT_CONFIRMED carries the uninstall state it refused on. */
+    public readonly details?:
+      | { currentDevices: number; maxDevices: number }
+      | { uninstallState: PurgeUninstallState },
   ) {
     super(message);
     this.name = 'DeviceLifecycleError';
@@ -107,9 +121,13 @@ export interface PurgeResult {
   linkGroupDissolved: boolean;
   /**
    * Site-owned topology alerts this device originated that the cascade
-   * removed (possibly owned by another org after a move-org). Audited.
+   * detached (possibly owned by another org after a move-org). Audited.
    */
-  removedTopologyAlerts: number;
+  detachedTopologyAlerts: number;
+  /** #11153 — the uninstall state read under the lock. Audited by every caller. */
+  uninstallState: PurgeUninstallState;
+  /** True only when `force` was what let an unconfirmed device through. */
+  forced: boolean;
 }
 
 /**
@@ -220,6 +238,17 @@ export async function restoreRemovedDevice(
     .where(eq(devices.id, deviceId))
     .returning();
 
+  // #9933 — removed devices are left out of dynamic groups, and decommission
+  // re-evaluated them out (deviceDecommission.ts). Bring the device back into
+  // every dynamic group it matches once this commits. `authorized.orgId` is the
+  // locked row's org (checked above).
+  requestDeviceGroupReevaluationAfterCommit({
+    deviceId,
+    orgId: authorized.orgId,
+    eventType: 'device.created',
+    reason: 'device_restored',
+  });
+
   return { device, uninstallAlreadyDispatched: release.alreadyDispatched > 0 };
 }
 
@@ -309,6 +338,9 @@ async function hasPendingDeviceRemoveUninstall(tx: Tx, deviceId: string): Promis
 export const UNINSTALL_PENDING_MESSAGE =
   'An agent uninstall is still queued for this device. Wait for it to check in, or restore the device and remove it again choosing "Leave the agent installed".';
 
+export const UNINSTALL_NOT_CONFIRMED_MESSAGE =
+  'The agent on this device has not confirmed it was uninstalled. Deleting the record now can leave the agent installed and running with nobody managing it. Send force: true to delete it anyway.';
+
 /**
  * Backup snapshots explicitly preserved — under legal hold, or inside their
  * immutability window — must survive an ordinary device purge, the same way
@@ -375,6 +407,14 @@ export async function hasProtectedBackupSnapshots(tx: Tx, deviceId: string): Pro
  * destroys the only thing that will ever remove the agent from the endpoint,
  * leaving a zombie agent nobody can see or reach.
  *
+ * Refuses (`UNINSTALL_NOT_CONFIRMED`, #11153) when the agent never confirmed
+ * it came off — see `devicePurgeUninstallGate.ts` for the states — unless
+ * `options.force` is set. Only the human single-device route passes `force`,
+ * and only after the operator chose "delete anyway"; bulk and unattended
+ * purges never do. `force` does not override `UNINSTALL_PENDING` or a backup
+ * hold. The state is read under the devices row lock and returned, so every
+ * caller can write it to its audit row.
+ *
  * A defined site ceiling is re-applied to any sibling devices an implicit
  * dissolve would unlink. The check happens in this transaction; denial throws
  * so callers must translate it only after the transaction rolls back.
@@ -383,6 +423,7 @@ export async function purgeRemovedDevice(
   tx: Tx,
   deviceId: string,
   allowedSiteIds?: readonly string[],
+  options: { force?: boolean } = {},
 ): Promise<PurgeResult> {
   const row = await lockDevice(tx, deviceId);
 
@@ -405,11 +446,20 @@ export async function purgeRemovedDevice(
     throw new DeviceLifecycleError('UNINSTALL_PENDING', UNINSTALL_PENDING_MESSAGE);
   }
 
+  const uninstallState = await readPurgeUninstallState(tx, deviceId);
+  const confirmed = isPurgeUninstallConfirmed(uninstallState);
+  if (!confirmed && options.force !== true) {
+    throw new DeviceLifecycleError('UNINSTALL_NOT_CONFIRMED', UNINSTALL_NOT_CONFIRMED_MESSAGE, {
+      uninstallState,
+    });
+  }
+  const forced = !confirmed;
+
   if (await hasProtectedBackupSnapshots(tx, deviceId)) {
     throw new DeviceLifecycleError('BACKUP_PROTECTED', BACKUP_PROTECTED_MESSAGE);
   }
 
-  const { removedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
+  const { detachedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
 
   // #2138/#2308 — the deleted device's link_group_id went with its row. If the
   // group now has a lone survivor, or a vm_host group was left headless,
@@ -443,5 +493,11 @@ export async function purgeRemovedDevice(
     }
   }
 
-  return { linkGroupId: row.link_group_id, linkGroupDissolved, removedTopologyAlerts };
+  return {
+    linkGroupId: row.link_group_id,
+    linkGroupDissolved,
+    detachedTopologyAlerts,
+    uninstallState,
+    forced,
+  };
 }

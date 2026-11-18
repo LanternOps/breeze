@@ -12,6 +12,7 @@
         "low": "Low",
         "medium": "Medium"
       },
+      "customRangeIncomplete": "Choose a start and end date, start first and at most 366 days apart, to apply a custom range.",
       "dashboardOptions": {
         "capacity": "Capacity Planning",
         "operations": "Operations Overview",
@@ -32,7 +33,8 @@
       "subtitle": "Insights across your fleet and services",
       "title": "Analytics",
       "trend": {
-        "operationalHealth": "Operational health"
+        "operationalHealth": "Operational health",
+        "weekOf": "Week of {{date}}"
       },
       "widgets": {
         "alertTable": {
@@ -41,7 +43,7 @@
           "title": "Alert Statistics"
         },
         "capacity": {
-          "title": "Capacity Forecast"
+          "title": "Disk Capacity Forecast"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} policies evaluated",
@@ -62,7 +64,7 @@
           "title": "Remote Sessions"
         },
         "uptime": {
-          "label": "Fleet uptime",
+          "label": "Online now",
           "title": "Uptime"
         }
       }
@@ -104,6 +106,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Critical {{value}}",
+      "noData": "No compliance checks to evaluate",
       "warnValue": "Warn {{value}}"
     },
     "queryBuilder": {
@@ -114,7 +117,8 @@
         "p95": "P95",
         "sum": "Sum"
       },
-      "description": "Configure metrics and aggregation for your dashboard",
+      "coverageNote": "Queries cover the first {{count}} online devices only. Offline devices and the rest of a larger fleet are not included.",
+      "description": "Choose a metric and aggregation to query across your online devices",
       "errors": {
         "failedToExecuteQuery": "Failed to execute query",
         "noDevicesSelected": "No devices selected for query"
@@ -150,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Last 30 days",
       "downtime": "Downtime {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Maintenance windows excluded",
+        "maintenanceSkipped": "Maintenance windows not excluded: too many devices to check",
+        "maintenanceUnavailable": "Maintenance windows not excluded: status unavailable",
+        "none": "No exclusions",
+        "title": "Exclusions",
+        "weekends": "Weekends excluded"
+      },
       "incidents": "{{count}} incidents",
+      "noDevices": "No devices measured yet",
       "status": {
         "atRisk": "At risk",
         "breach": "Breach",
@@ -158,6 +171,34 @@
       },
       "targetUptime": "Target {{target}}% uptime",
       "title": "SLA Compliance"
+    },
+    "slaEmptyState": {
+      "create": "Create SLA definition",
+      "created": "SLA definition created",
+      "description": "An SLA definition sets the uptime target this tab measures your devices against. Create one to start tracking compliance.",
+      "errors": {
+        "create": "Failed to create SLA definition"
+      },
+      "form": {
+        "cancel": "Cancel",
+        "excludeMaintenance": "Exclude devices in a maintenance window",
+        "excludeWeekends": "Exclude weekends",
+        "measurementWindow": "Measurement window",
+        "name": "Name",
+        "organization": "Organization",
+        "scopeNote": "Measures every device in the organization.",
+        "selectOrganization": "Select an organization",
+        "submit": "Create",
+        "uptimeTarget": "Uptime target (%)",
+        "uptimeTargetInvalid": "Enter a value from 0 to 100.",
+        "windows": {
+          "daily": "Daily",
+          "monthly": "Monthly",
+          "weekly": "Weekly"
+        }
+      },
+      "noPermission": "Ask an administrator with organization management access to create an SLA definition.",
+      "title": "No SLA definition yet"
     },
     "tableWidget": {
       "filterPlaceholder": "Filter",
@@ -336,14 +377,18 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "threatDetection": {
-        "agents": "Endpoints with a detection agent",
         "breezeDevices": "Devices Breeze manages",
         "carriedIn": "Carried in, still open",
         "coverage": "Limits of this report",
-        "devicesWithoutAgent": "Managed devices with no agent",
+        "devicesWithAgent": "Managed devices with a detection agent",
+        "devicesWithoutAgent": "Managed devices with no detection agent",
         "notMeasured": "N/A",
         "opened": "Detections raised",
         "resolved": "Detections resolved"
@@ -365,6 +410,29 @@
         "noncompliant": "Not compliant",
         "notMeasured": "N/A",
         "staleEnrolments": "Stale enrolments"
+      },
+      "slaPerformance": {
+        "priority": "Priority",
+        "ticketsOpened": "Tickets opened",
+        "firstResponse": "First response",
+        "resolution": "Resolution",
+        "target": "Target",
+        "measured": "Measured",
+        "withinSla": "% within SLA",
+        "median": "Median",
+        "mean": "Mean",
+        "varies": "varies",
+        "breaches": "Breaches",
+        "breachCount_one": "{{count}} breach",
+        "breachCount_other": "{{count}} breaches",
+        "unavailable": "This run’s SLA summary could not be read, so it cannot be shown here. Generate the report again.",
+        "notes": "What this measures",
+        "priorities": {
+          "urgent": "Urgent",
+          "high": "High",
+          "normal": "Normal",
+          "low": "Low"
+        }
       },
       "identityAccess": {
         "notMeasured": "N/A",
@@ -439,6 +507,10 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "runsTable": {
@@ -765,6 +837,7 @@
           "os": "OS",
           "owner": "Owner",
           "patch_level": "Patch level",
+          "product_number": "Product Number",
           "serial": "Serial",
           "site": "Site",
           "status": "Status"
@@ -988,6 +1061,10 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "schedules": {
@@ -1061,6 +1138,22 @@
           "name": "AI usage by client",
           "description": "Platform AI usage per client for the period: requests, tokens, Breeze cost, the amount to charge from the client's billing profile, and what has already been invoiced. Included usage and unpriced models are shown separately, never blended in."
         },
+        "mrr_renewals": {
+          "name": "MRR & renewals",
+          "description": "Monthly and annual recurring revenue from active contracts, measured on the day the report runs, with the contracts renewing inside the chosen horizon and what has actually been billed as recurring. One set of totals per currency, never converted."
+        },
+        "quote_win_rate": {
+          "name": "Quote win rate",
+          "description": "The share of sent quotes that were won, counted per opportunity so a revised and re-sent quote counts once. The headline rate covers decided opportunities only, with the still-open count beside it. Values are pre-tax, one set per currency, never converted."
+        },
+        "ticket_sla_performance": {
+          "name": "SLA performance",
+          "description": "Customer-ready response and resolution times against SLA, by priority, with breaches."
+        },
+        "client_profitability": {
+          "name": "Client profitability",
+          "description": "Billed revenue per client for the period by source (recurring, labor, product, AI, other), with the hours logged against it and an optional labor-cost estimate from one blended hourly rate. Figures using that rate are labelled as estimates. One set of totals per currency, never converted."
+        },
         "backup_status": {
           "name": "Backup Status Report",
           "description": "Every device's backup status across Breeze and connected backup providers, in one snapshot: coverage buckets, last successful backup, and a 28-day history per device."
@@ -1072,7 +1165,7 @@
       "groups": {
         "business": "Business",
         "general": "General",
-        "businessDescription": "MSP-facing numbers — SLA attainment, technician billability, and accounts receivable — for staff only."
+        "businessDescription": "Numbers about your own MSP business rather than your clients’ devices — for staff only."
       },
       "delivery": {
         "contactsLoading": "Loading organization contacts…",
@@ -1186,6 +1279,52 @@
       "cancel": "Cancel",
       "createReport": "Create report"
     },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "This report is always measured on the day the report runs. It has no period or as-of date to set.",
+      "groupBy": "Group by",
+      "groupByValues": {
+        "organization": "Organization",
+        "contract": "Contract"
+      },
+      "renewalHorizon": "Renewal horizon",
+      "renewalHorizonOption": "Next {{days}} days",
+      "renewalHorizonHelp": "Contracts whose term ends within this window are listed as renewals.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by author for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "author": "Author",
+        "currency": "Currency"
+      },
+      "periodNote": "The period applies to the date each quote was first sent. A quote that is revised and re-sent counts once, as one opportunity.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Include ticket subjects",
+      "includeSubjectsHelp": "Delivered reports are visible to every portal user of this organization. Leave off unless every user may see every ticket subject.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Group by",
+      "groupByDefault": "Default for the report's scope",
+      "groupByValues": {
+        "organization": "Organization",
+        "source": "Source"
+      },
+      "groupByHelp": "The default groups by organization for an all-organizations report and by source for a single organization.",
+      "laborEnabled": "Estimate labor cost",
+      "laborAmount": "Labor cost per hour",
+      "laborCurrency": "Currency",
+      "laborHelp": "One blended rate for every technician. Figures using it are labelled as estimates.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
     "ownerScope": {
       "legend": "Report covers",
       "allOrganizations": "All organizations",
@@ -1211,8 +1350,7 @@
         "series": "One report per organization",
         "seriesHint": "One definition, with a separate copy for every organization it covers, each sent to that organization's contacts.",
         "combined": "All organizations combined",
-        "combinedHint": "One combined report across all your organizations, for your own team.",
-        "seriesUnavailableType": "This report type can't be sent as one report per organization."
+        "combinedHint": "One combined report across all your organizations, for your own team."
       },
       "schedule": {
         "label": "How often each organization's copy is sent",

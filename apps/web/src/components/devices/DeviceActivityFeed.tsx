@@ -17,6 +17,7 @@ import {
   Loader2,
   Sparkles,
   ShieldCheck,
+  RefreshCcw,
   type LucideIcon,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -71,6 +72,14 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.permanent_delete", icon: Trash2 },
   { prefix: "device.restore", icon: RotateCcw },
   { prefix: "device.reliability", icon: ShieldCheck }, // baseline set / cleared (#5876)
+  // #8318: device.reinstall_suspected and device.reinstall.* on the target
+  // record. The feed's server-side actor filter (actor_type <> 'agent',
+  // services/deviceEventFeed.ts) drops the rows the agent's own calls write
+  // (device.reinstall.staged, and the cancelled/expired rows its phase-1 or
+  // confirm call writes), so what shows here is `requested` and `reattached`
+  // (both written as the requesting user) plus system rows
+  // (reinstall_suspected, the expiry sweep).
+  { prefix: "device.reinstall", icon: RefreshCcw },
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
   // from ACTION_PREFIXES below. The server surfaces these solely via the
@@ -246,10 +255,13 @@ export default function DeviceActivityFeed({
   // the rail when it's empty. Skip while loading OR errored: an error is not
   // "no content", and collapsing on error would shove the "Couldn't load /
   // Retry" pane into a narrow strip. On error the parent keeps its prior layout.
+  // Open alerts alone do not count: they already have a home in the Overview
+  // state card beside this rail, so a device with an alert and no recent
+  // actions collapses to the bar instead of opening a near-empty column.
   useEffect(() => {
     if (loading || error) return;
-    onHasContentChange?.(events.length > 0 || activeAlerts > 0);
-  }, [loading, error, events.length, activeAlerts, onHasContentChange]);
+    onHasContentChange?.(events.length > 0);
+  }, [loading, error, events.length, onHasContentChange]);
 
   // Retry the whole pane from page 1 on a fresh controller (the mount effect's
   // controller is aborted once its cleanup runs).

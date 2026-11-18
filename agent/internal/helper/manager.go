@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -16,7 +15,9 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,9 @@ type Settings struct {
 	ShowDeviceInfo     bool   `json:"showDeviceInfo" yaml:"show_device_info"`
 	ShowRequestSupport bool   `json:"showRequestSupport" yaml:"show_request_support"`
 	PortalUrl          string `json:"portalUrl,omitempty" yaml:"portal_url,omitempty"`
+	// Branding is the heartbeat branding decision; nil = not sent, keep the
+	// last-known branding (never cleared by absence).
+	Branding *BrandingDecision `json:"branding,omitempty" yaml:"-"`
 }
 
 const watcherStopTimeout = 2 * time.Second
@@ -48,14 +52,20 @@ type Config struct {
 	DeviceName         string `yaml:"device_name,omitempty"`
 	DeviceStatus       string `yaml:"device_status,omitempty"`
 	LastCheckin        string `yaml:"last_checkin,omitempty"`
+	// Branding is the persisted runtime branding (OD3); omitted when unset so
+	// an unbranded config is byte-identical to before.
+	Branding *Branding `yaml:"branding,omitempty"`
 }
 
 // SpawnFunc launches a helper in the given session with extra CLI args.
 // Returns the PID of the spawned process and any error.
 type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid int, err error)
 
-// ErrNoActiveSession is returned by SpawnFunc when no user session is available.
-var ErrNoActiveSession = fmt.Errorf("no active user session")
+// ErrNoActiveSession is returned (wrapped) by SpawnFunc when nobody is signed
+// in to the target session, so there is no user to launch Assist as. It is the
+// sessionbroker sentinel so the Windows spawn path's error matches as-is.
+// Callers treat it as a wait for a signed-in user, never as a crash (#10379).
+var ErrNoActiveSession = sessionbroker.ErrNoInteractiveUser
 
 // ErrNotInstalled: Breeze Assist is enabled by policy but the helper binary is
 // not on disk (never installed, or a failed in-place update removed it).
@@ -63,6 +73,11 @@ var ErrNoActiveSession = fmt.Errorf("no active user session")
 // as an error on every heartbeat — the server's HelperUpgradeTo bootstrap
 // offer is the only thing that resolves it (#6872).
 var ErrNotInstalled = errors.New("breeze assist is not installed")
+
+// errCrashLoop: the session's watcher gave up on a crash-looping Assist and
+// the retry is not due yet. The give-up was logged once (ERROR) and the
+// heartbeat reports crash_loop, so callers must not log it every heartbeat.
+var errCrashLoop = errors.New("breeze assist keeps crashing, not respawning until the crash-loop retry or a new version")
 
 // Option configures a Manager.
 type Option func(*Manager)
@@ -246,9 +261,34 @@ type Manager struct {
 	// line per transition instead of one per heartbeat (#6872).
 	notInstalledWarned bool
 
-	// installIssue: the install-issue code (install_retry.go) the last Apply
-	// observed; "" when none. Reported in the heartbeat (#6925). Guarded by mu.
+	// installIssue: the machine-level install-issue code (install_retry.go)
+	// the last Apply observed; "" when none. Reported in the heartbeat (#6925)
+	// together with the per-session codes; see InstallIssue. Guarded by mu.
 	installIssue string
+	// lastApplyEnabled: the policy's deploy toggle at the last Apply. Session
+	// codes (webview2_outdated, crash_loop) are reported only while it is on.
+	lastApplyEnabled bool
+
+	// readWebView2Func reads the WebView2 runtime version available to a
+	// session's user (webview2.go). Tests inject a fake.
+	readWebView2Func func(sessionKey string) (string, bool)
+
+	// unmanagedNoticeLogged: the "leaving an Assist the agent did not
+	// install" line fired for the current episode (ownership.go).
+	unmanagedNoticeLogged bool
+	// ownershipErrLogged dedupes the unreadable-ownership-record warning.
+	ownershipErrLogged bool
+	// ownershipMismatchLogged dedupes the version-mismatch warning:
+	// "<recorded>><installed>" of the mismatch last logged.
+	ownershipMismatchLogged string
+	// pendingOwnershipMark is a marker whose write failed after the agent
+	// installed Assist; installIsOursLocked retries it.
+	pendingOwnershipMark *ownershipMarker
+	// sidecarRejectLogged dedupes the "requirements sidecar ignored" warning.
+	sidecarRejectLogged string
+	// noSignedInUserLogged: the "no session with a signed-in user" DEBUG
+	// line fired for the current episode (wait_for_user.go).
+	noSignedInUserLogged bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -267,6 +307,7 @@ func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureS
 		isOurProcessFunc:  isOurProcess,
 		stopIfOursFunc:    stopByPIDIfOurs,
 		binaryVersionFunc: readBinaryVersion,
+		readWebView2Func:  readInstalledWebView2,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -327,7 +368,7 @@ func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) (int, error
 	if len(args) >= 2 && args[0] == "--config" {
 		return spawnWithConfig(binaryPath, sessionKey, args[1])
 	}
-	cmd := exec.Command(binaryPath, args...)
+	cmd := procspawn.Command(binaryPath, args...)
 	cmd.Dir = filepath.Dir(binaryPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -368,6 +409,18 @@ func (m *Manager) Apply(settings *Settings) {
 	// finish uninstall cleanup exactly once for a legacy box upgrading with
 	// Assist disabled.
 	wasInstalled := m.isInstalled()
+	m.lastApplyEnabled = settings.Enabled
+
+	// #10185 (OD-8 a): with deploy off, an install the agent did not make is
+	// not the agent's to migrate, stop, sweep or uninstall. Checked before any
+	// of those steps: the per-session migration below alone stops every
+	// running helper and rewrites autostart.
+	if ours := m.installIsOursLocked(wasInstalled, settings.Enabled); wasInstalled && !settings.Enabled && !ours {
+		m.leaveUnmanagedInstallLocked()
+		return
+	}
+	m.unmanagedNoticeLogged = false
+
 	m.migrateFromLegacyName()
 	// Only run the one-time per-session migration when Assist is (or was)
 	// actually present. When the policy is off and nothing is installed,
@@ -435,7 +488,7 @@ func (m *Manager) Apply(settings *Settings) {
 		}
 		m.clearInstallFailuresLocked()
 		for _, state := range m.sessions {
-			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
+			state.freshCrashTracking() // new binary — give it a fresh chance (#6872)
 		}
 	}
 	if !settings.Enabled || m.isInstalled() {
@@ -444,8 +497,9 @@ func (m *Manager) Apply(settings *Settings) {
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
+	m.noteSignedInSessionsLocked(len(activeSessions), settings.Enabled)
 	activeKeys := make(map[string]bool, len(activeSessions))
-	cfg := settingsToConfig(settings)
+	baseCfg := settingsToConfig(settings)
 
 	for _, si := range activeSessions {
 		activeKeys[si.Key] = true
@@ -456,13 +510,19 @@ func (m *Manager) Apply(settings *Settings) {
 		}
 
 		if settings.Enabled {
+			// Each session keeps its own branding, read from its own file so a
+			// missing decision keeps the last-known value across restarts.
+			cfg := m.sessionConfig(state, baseCfg, settings.Branding)
 			if !state.configUnchanged(cfg) {
 				if err := m.writeSessionConfig(state, cfg, si); err != nil {
 					log.Error("failed to write per-session config", "session", si.Key, "error", err.Error())
 					continue
 				}
 				if !m.helperSupportsConfigFlag() {
-					if err := m.writeLegacyConfig(cfg); err != nil {
+					// The legacy file is shared by all sessions, so it carries no branding.
+					legacyCfg := *cfg
+					legacyCfg.Branding = nil
+					if err := m.writeLegacyConfig(&legacyCfg); err != nil {
 						log.Warn("failed to write legacy helper config fallback", "error", err.Error())
 					}
 				}
@@ -499,9 +559,18 @@ func (m *Manager) Apply(settings *Settings) {
 			}
 
 			if err := m.ensureRunningSession(state); err != nil {
-				if errors.Is(err, ErrNotInstalled) {
+				switch {
+				case errors.Is(err, ErrNotInstalled):
 					log.Debug("breeze assist not installed; skipping spawn", "session", si.Key)
-				} else {
+				case errors.Is(err, errWebView2Outdated), errors.Is(err, errCrashLoop):
+					// Logged once when it began; reported by InstallIssue.
+					log.Debug("breeze assist not started", "session", si.Key, "reason", err.Error())
+				case errors.Is(err, ErrNoActiveSession):
+					// #10379: no user token in a session the enumerator lists.
+					// A wait, not a launch failure; the next heartbeat tries
+					// again, and a wait that lasts is reported at WARN.
+					m.noteNoUserTokenLocked(state, err)
+				default:
 					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
 				}
 			} else {
@@ -593,7 +662,34 @@ func (m *Manager) uninstallLocked() {
 	m.abandonedAt = time.Time{}
 	m.clearInstallFailuresLocked()
 
+	// Once the agent's install is gone, a copy installed by other means later
+	// is not the agent's (#10185); tracking stays on, so the upgrade-time rule
+	// never adopts it either. While the binary is still there (the package
+	// uninstall failed) the marker stays, so the next tick retries.
+	if !m.isInstalled() {
+		m.pendingOwnershipMark = nil
+		m.resetOwnershipRecordLocked()
+	}
+
 	log.Info("breeze assist uninstalled")
+}
+
+// leaveUnmanagedInstallLocked is Apply with deploy off and an Assist the agent
+// did not install (#10185): report it and stop the agent's own watchers, which
+// would otherwise respawn it, but leave the install, its autostart, its
+// per-session state and any running instance alone. Must be called with m.mu
+// held.
+func (m *Manager) leaveUnmanagedInstallLocked() {
+	m.installIssue = InstallIssueUnmanagedInstall
+	m.notInstalledWarned = false
+	if !m.unmanagedNoticeLogged {
+		log.Info("leaving a Breeze Assist the agent did not install: deploy is off for this device",
+			"path", m.binaryPath)
+		m.unmanagedNoticeLogged = true
+	}
+	for _, state := range m.sessions {
+		m.stopSessionWatcher(state)
+	}
 }
 
 // hasResidualState reports whether per-session helper state still exists on
@@ -613,6 +709,46 @@ func settingsToConfig(s *Settings) *Config {
 		ShowRequestSupport: s.ShowRequestSupport,
 		PortalUrl:          s.PortalUrl,
 	}
+}
+
+// sessionConfig returns the config to write for one session: the shared
+// settings plus that session's branding after applying the decision. An
+// invalid decision is logged once and leaves the last valid branding. If the
+// stored branding cannot be read, the last branding this Manager wrote stands
+// in for it: an absent decision must never clear on a transient read failure.
+//
+// Known gap (follow-up): the read here and the write that follows are not
+// serialized with ClearBranding, which re-enrollment runs in another process.
+// A heartbeat landing in that window can rewrite the old tenant's branding;
+// it is corrected by the next set/cleared decision for the new scope.
+func (m *Manager) sessionConfig(state *sessionState, base *Config, d *BrandingDecision) *Config {
+	cfg := *base
+	// Perf note: this reads each session's helper_config.yaml on every
+	// heartbeat. Cheap today (small, size-capped file); revisit at 10k agents.
+	current, readErr := readBranding(state.configPath)
+	if readErr != nil {
+		current = nil
+		if state.lastConfig != nil {
+			current = state.lastConfig.Branding
+		}
+		if !state.brandingReadLogged {
+			log.Warn("could not read stored helper branding; keeping last known", "session", state.key, "error", readErr.Error())
+			state.brandingReadLogged = true
+		}
+	} else {
+		state.brandingReadLogged = false
+	}
+	next, err := resolveBranding(current, d)
+	if err != nil {
+		if !state.brandingRejectLogged {
+			log.Warn("rejected helper branding from server", "session", state.key, "error", err.Error())
+			state.brandingRejectLogged = true
+		}
+	} else {
+		state.brandingRejectLogged = false
+	}
+	cfg.Branding = next
+	return &cfg
 }
 
 func (m *Manager) legacyConfigPath() string {
@@ -656,16 +792,15 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	tmp := state.configPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := os.Rename(tmp, state.configPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
+	if err := writeHelperConfigFile(state.configPath, data, 0600); err != nil {
+		return err
 	}
 
 	copied := *cfg
+	if cfg.Branding != nil {
+		b := *cfg.Branding
+		copied.Branding = &b
+	}
 	state.lastConfig = &copied
 	state.lastApplied = time.Now()
 	return nil
@@ -677,16 +812,23 @@ var minConfigFlagVersion = [3]int{0, 14, 0}
 func (m *Manager) ensureRunningSession(state *sessionState) error {
 	// First check: scan the process table for breeze-helper.exe in this
 	// session. This is the reliable check that the old code used (by process
-	// name) — immune to PID tracking failures from cmd.exe wrappers, Tauri
-	// re-exec, or missing status files.
-	if isHelperRunningInSession(state.key, m.binaryPath) {
-		return nil
-	}
-	// Fallback: check by tracked PIDs.
-	if state.spawnedPID > 0 && m.isOurProcessFunc(state.spawnedPID, m.binaryPath) {
-		return nil
-	}
-	if state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath) {
+	// name) — immune to PID tracking failures from launches whose PID is
+	// unknown (the user-helper IPC path), Tauri re-exec, or missing status
+	// files.
+	// A running Assist is never stopped by the checks below: they gate only a
+	// new launch.
+	if isHelperRunningInSession(state.key, m.binaryPath) ||
+		(state.spawnedPID > 0 && m.isOurProcessFunc(state.spawnedPID, m.binaryPath)) ||
+		(state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath)) {
+		// Running again (relaunched by the user, or the cause was fixed):
+		// whatever kept it from starting no longer applies.
+		state.launchIssue = ""
+		state.webview2Refusal = ""
+		state.clearUserWait()
+		if state.watcherGaveUp {
+			log.Info("breeze assist is running again; clearing its crash-loop state", "session", state.key)
+			state.watcherGaveUp = false
+		}
 		return nil
 	}
 	// #6872: nothing to spawn. Checked BEFORE watcherGaveUp so a device that
@@ -695,7 +837,16 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		return ErrNotInstalled
 	}
 	if state.watcherGaveUp {
-		return fmt.Errorf("helper keeps crashing, not respawning until next update")
+		reason := m.crashLoopRetryReasonLocked(state)
+		if reason == "" {
+			return errCrashLoop
+		}
+		log.Warn("retrying breeze assist after its watcher gave up", "session", state.key, "reason", reason)
+		state.watcherGaveUp = false
+	}
+	// #10183: an Assist that cannot render would crash-loop silently.
+	if !m.webview2GateLocked(state) {
+		return errWebView2Outdated
 	}
 	// Kill any lingering helper that we lost track of (e.g. status file had
 	// stale PID, so we kept spawning new ones). This prevents accumulating
@@ -705,19 +856,48 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	var pid int
 	var err error
-	if m.helperSupportsConfigFlag() {
-		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
-	} else {
+	// #10755: the helper reads a launch without --config as a person opening
+	// Assist and shows its window (or tells a running instance to). Every
+	// agent launch must stay hidden, so --config is dropped only for a helper
+	// known to predate it, never because the version could not be read.
+	if m.helperKnownToPredateConfigFlag() {
 		pid, err = m.spawnFunc(state.key, m.binaryPath)
+	} else {
+		pid, err = m.spawnFunc(state.key, m.binaryPath, "--config", state.configPath)
 	}
 	if err != nil {
 		return err
 	}
+	m.noteUserPresentLocked(state)
 	state.pid = pid
 	state.spawnedPID = pid
+	// #10302: the heartbeat relaunches Assist outside the watcher; stamping
+	// every launch keeps that relaunch from looking like a healthy run.
+	state.lastSpawnAt = m.nowTime()
+	// Watch the new process for its exit code (assist_exit.go). On the
+	// user-helper launch path Assist exists by the time the spawn returns.
+	m.trackAssistExitsLocked(state)
 	return nil
 }
 
+// crashLoopRetryReasonLocked reports why a given-up session should try Assist
+// again, or "" while it should stay given up: a different Assist version is
+// installed (whoever installed it), or watcherGiveUpRetry has passed since the
+// watcher gave up. Must be called with m.mu held.
+func (m *Manager) crashLoopRetryReasonLocked(state *sessionState) string {
+	if installed := m.installedVersionLocked(); installed != "" && state.gaveUpVersion != "" &&
+		!helperVersionsMatch(installed, state.gaveUpVersion) {
+		return "assist version changed from " + state.gaveUpVersion + " to " + installed
+	}
+	if m.nowTime().Sub(state.gaveUpAt) >= watcherGiveUpRetry {
+		return "crash-loop retry after " + watcherGiveUpRetry.String()
+	}
+	return ""
+}
+
+// helperSupportsConfigFlag reports whether the installed helper is KNOWN to
+// read --config. False when the version is unknown: callers use it to also
+// write the shared legacy config, which is harmless for a current helper.
 func (m *Manager) helperSupportsConfigFlag() bool {
 	v := m.installedVersionLocked()
 	if v == "" {
@@ -726,31 +906,53 @@ func (m *Manager) helperSupportsConfigFlag() bool {
 	return semverAtLeast(v, minConfigFlagVersion)
 }
 
+// helperKnownToPredateConfigFlag reports whether the installed helper has a
+// parseable version older than minConfigFlagVersion. An empty or unparseable
+// version is not "old": the spawn keeps --config so Assist starts hidden
+// (#10755).
+func (m *Manager) helperKnownToPredateConfigFlag() bool {
+	v, ok := parseSemverCore(m.installedVersionLocked())
+	return ok && !semverCoreAtLeast(v, minConfigFlagVersion)
+}
+
 func semverAtLeast(version string, target [3]int) bool {
-	v := strings.TrimPrefix(version, "v")
+	v, ok := parseSemverCore(version)
+	return ok && semverCoreAtLeast(v, target)
+}
+
+// parseSemverCore parses the major.minor.patch core of "[v]X.Y.Z[-pre]".
+func parseSemverCore(version string) ([3]int, bool) {
+	var core [3]int
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if idx := strings.IndexByte(v, '-'); idx >= 0 {
 		v = v[:idx]
 	}
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) < 3 {
-		return false
+		return core, false
 	}
 	for i := 0; i < 3; i++ {
 		n, err := strconv.Atoi(parts[i])
 		if err != nil {
-			return false
+			return core, false
 		}
-		if n > target[i] {
-			return true
-		}
-		if n < target[i] {
-			return false
+		core[i] = n
+	}
+	return core, true
+}
+
+func semverCoreAtLeast(v, target [3]int) bool {
+	for i := 0; i < 3; i++ {
+		if v[i] != target[i] {
+			return v[i] > target[i]
 		}
 	}
 	return true
 }
 
 func (m *Manager) ensureStoppedSession(state *sessionState) error {
+	// The exits this causes are the agent's doing, not crashes.
+	m.dropAssistExitProbesLocked(state)
 	// Kill by spawned PID (authoritative) and status-file PID if different.
 	// stopIfOursFunc verifies helper identity on the same handle it terminates
 	// with, so PID reuse can't redirect the kill (#2531).
@@ -870,6 +1072,8 @@ func (m *Manager) downloadAndInstall(version string) error {
 	}
 
 	log.Info("helper installed", "path", m.binaryPath, "version", version)
+	// The agent made this install, so deploy off may remove it (#10185).
+	m.markInstalledLocked(version)
 	// The binary at an allowlisted path just changed. Let the session broker
 	// re-hash it before any session spawns the new build (#7043).
 	m.notifyInstalledLocked()
@@ -937,6 +1141,7 @@ func (m *Manager) installedVersionLocked() string {
 	// invalid_current, and made helperSupportsConfigFlag spawn the helper
 	// without --config, so it wrote its status to the legacy root file this
 	// function ignores once sessions/ exists: the version could never recover.
+	// (Since #10755 an unknown version no longer drops --config from the spawn.)
 	if v, err := m.readBinaryVersion(); err == nil && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	} else if err != nil && !errors.Is(err, errBinaryVersionUnsupported) && m.isInstalled() {
@@ -988,6 +1193,10 @@ func (m *Manager) applyPendingUpdate() {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
 		m.clearInstallFailuresLocked()
+		// The target build reached the disk without this install path
+		// recording it (msiexec deferred the replacement to a reboot, #6252):
+		// keep the agent's marker on the version now installed (#10185).
+		m.remarkInstalledLocked()
 		return
 	}
 
@@ -1069,8 +1278,16 @@ func (m *Manager) applyPendingUpdate() {
 
 	for i, state := range stopped {
 		state.pid = 0
-		state.watcherGaveUp = false // new binary — give it a fresh chance
-		if err := m.ensureRunningSession(state); err != nil {
+		state.freshCrashTracking() // new binary — give it a fresh chance
+		if err := m.ensureRunningSession(state); errors.Is(err, errWebView2Outdated) {
+			// The new build installed; this device's WebView2 runtime is what
+			// keeps it from starting, and rolling back cannot fix that. Keep
+			// it: the gate logged the refusal, the heartbeat reports
+			// webview2_outdated, and it launches once the runtime is updated.
+			// Counting it as a failed update would reinstall and roll back
+			// every heartbeat until the version is abandoned.
+			continue
+		} else if err != nil {
 			// A new build that will not start is a failed attempt, the same as
 			// a failed msiexec, so it counts toward the retry cap (#7049).
 			m.recordInstallFailureLocked(m.pendingHelperVersion)
@@ -1088,6 +1305,8 @@ func (m *Manager) applyPendingUpdate() {
 				started.pid = 0
 			}
 			m.rollbackBinaryLocked(backup)
+			// The marker names the build just rolled back (#10185).
+			m.remarkInstalledLocked()
 			// The install already told the broker about the new build, and
 			// the rollback just put the previous one back. Refresh again
 			// before respawning it, or the broker rejects it (#7043).

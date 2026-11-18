@@ -9,16 +9,21 @@ import (
 // Cadence of the Windows security-posture probes (#9267).
 //
 // security.CollectStatus runs on every 5-minute security tick, and on Windows
-// each probe is a PowerShell spawn (+ conhost.exe). Probes whose answer rarely
-// changes go through a slowProbe and are re-run at most every slowProbeTTL:
+// each probe is a process spawn (PowerShell + conhost.exe, or secedit.exe).
+// Probes whose answer rarely changes go through a slowProbe and are re-run at
+// most every slowProbeTTL:
 //
 //	BitLocker system-drive status   Get-BitLockerVolume -MountPoint $env:SystemDrive
 //	BitLocker volume details        Get-BitLockerVolume | ConvertTo-Json
-//	Account password policy         Get-CimInstance Win32_AccountPolicy
+//	Account password policy         secedit /export /areas SECURITYPOLICY (#9597)
 //
 // Probes that report state an attacker or user can toggle at any moment stay
 // on the 5-minute tick: Windows Security Center products, Defender status,
 // firewall profiles and local Administrators membership.
+//
+// All three BitLocker reads (the two above and recovery-key collection) are
+// skipped when bitlocker_availability.go has confirmed BitLocker is not
+// installed (#10902).
 //
 // BitLocker recovery-key escrow is rate-limited separately in the heartbeat
 // (recoveryKeyCollectInterval) so key material is never held in a cache.
@@ -29,8 +34,8 @@ const (
 	slowProbeTTL = 30 * time.Minute
 	// slowProbeErrorTTL is shorter so a transient failure (PowerShell cold
 	// start after boot hitting its timeout) does not report "unknown" for the
-	// full half hour, while a persistent failure (no BitLocker module on Home
-	// editions) is still not re-spawned on every tick.
+	// full half hour, while a persistent failure is still not re-spawned on
+	// every tick. (A missing BitLocker module is gated before the spawn.)
 	slowProbeErrorTTL = 10 * time.Minute
 )
 
@@ -120,7 +125,9 @@ func collectPasswordPolicySummaryWindowsCached() (map[string]any, error) {
 }
 
 func invalidateSlowPostureProbes() {
+	bitLockerAvailability.invalidate()
 	bitLockerStatusProbe.Invalidate()
 	bitLockerDetailsProbe.Invalidate()
 	passwordPolicyProbe.Invalidate()
+	linuxFirewallTools.invalidate()
 }

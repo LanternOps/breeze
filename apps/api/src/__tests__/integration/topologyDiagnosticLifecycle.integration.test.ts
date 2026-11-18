@@ -426,6 +426,7 @@ describe('topology diagnostic dispatch', () => {
       validateTopologyCommandAuthority(
         { id: command!.id, type: command!.type, deviceId: f.deviceId, payload: command!.payload },
         command!.payload,
+        { permissionVersions: 'live' },
       ),
     );
     expect(decision.allow).toBe(true);
@@ -501,6 +502,7 @@ describe('topology diagnostic cancellation', () => {
       validateTopologyCommandAuthority(
         { id: command!.id, type: command!.type, deviceId: f.deviceId, payload: command!.payload },
         command!.payload,
+        { permissionVersions: 'live' },
       ),
     );
     expect(decision).toEqual({ allow: false, reason: 'scope_changed' });

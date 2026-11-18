@@ -201,18 +201,18 @@ describe('backup provider partner fan-out (real Postgres)', () => {
 
     listDevices.mockImplementation(async (_creds: unknown, _baseUrl: string, vendorRootId: string) => {
       if (vendorRootId === partnerA.vendorRootId) {
-        return [
+        return { devices: [
           // Same hostname as org B1's device — proves matching stays inside org A.
           vendorDeviceFor(customerA1Id, 'vd-a1', orgA1.hostname),
           vendorDeviceFor(customerA2Id, 'vd-a2', orgA2.hostname),
           vendorDeviceFor(customerCrossId, 'vd-a-cross', 'irrelevant-cross-host'),
-        ];
+        ], failedCustomerIds: [] };
       }
       if (vendorRootId === partnerB.vendorRootId) {
-        return [
+        return { devices: [
           vendorDeviceFor(customerB1Id, 'vd-b1', orgB1.hostname),
           vendorDeviceFor(customerB2Id, 'vd-b2', orgB2.hostname),
-        ];
+        ], failedCustomerIds: [] };
       }
       throw new Error(`unexpected vendorRootId ${vendorRootId}`);
     });

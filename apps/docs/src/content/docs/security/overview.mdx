@@ -213,6 +213,8 @@ Breeze uses Redis-backed sliding window rate limiting. The implementation is **f
 
 The implementation uses Redis sorted set (ZSET) sliding windows with `MULTI` pipelines for race-condition-free counting. Standard `X-RateLimit-*` headers and `429 Too Many Requests` with `Retry-After` are returned when limits are exceeded.
 
+Per-user limits are checked right after authentication, before the request's database transaction opens and before permission and validation middleware run. This keeps a limited request from holding a database connection while Redis answers. It also means a request that permission or validation would have rejected still spends one unit of the caller's budget.
+
 ---
 
 ## Input Validation
@@ -255,6 +257,8 @@ Content-Security-Policy:
     base-uri 'self';
     form-action 'self'
 ```
+
+Capability URLs, where the address itself is the secret, send `Referrer-Policy: no-referrer` instead of the default: the caller-verification links under `/api/v1/verify/*` and the web `/verify/<token>` page, public invoice and payment links, and email unsubscribe links. The route's own value wins over the application default, and `docker/Caddyfile.prod` sets the global `Referrer-Policy` only when the upstream response carries none (`?Referrer-Policy`), so a self-maintained Caddy config must do the same or it will overwrite the stricter value.
 
 `script-src`/`style-src` never carry `'unsafe-inline'` in production, regardless of `CSP_ALLOW_UNSAFE_INLINE` — that override only applies outside production. The `connect-src` allowlist comes from `CSP_CONNECT_HOSTS` (comma-separated `wss://` hosts, e.g. `wss://*.2breeze.app,wss://us.2breeze.app`); self-hosters should set it to their own domain(s) — it falls back to Breeze's own `wss://*.2breeze.app` wildcard if unset.
 

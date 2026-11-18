@@ -23,6 +23,7 @@ import {
   normalizeToolRateLimitMultiplier,
   resolveToolRateLimitMultiplier,
   scaleToolRateLimit,
+  TOOL_RATE_LIMITS,
 } from './aiToolRateLimits';
 
 function primePartnerSettings(settings: unknown) {
@@ -121,4 +122,16 @@ describe('resolveToolRateLimitMultiplier', () => {
     await expect(resolveToolRateLimitMultiplier({ orgId: 'org-1' })).resolves.toBe(1);
     expect(warn).toHaveBeenCalled();
   });
+});
+
+// W04 quorum QW11 (#6758): spec wiring checklist item 3 — every tool that
+// touches a device or a vendor carries a TOOL_RATE_LIMITS entry. These four
+// W04 tools queue device commands or arm recurring scans and had none.
+describe('W04 device-touching tools are rate limited (#6758)', () => {
+  it.each(['manage_browser_policy', 'manage_peripheral_policy', 'remediate_sensitive_data', 'configure_network_baseline'])(
+    '%s has a rate limit',
+    (tool) => {
+      expect(TOOL_RATE_LIMITS[tool], tool).toBeDefined();
+    },
+  );
 });

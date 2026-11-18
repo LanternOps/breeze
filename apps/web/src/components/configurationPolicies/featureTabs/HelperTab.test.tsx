@@ -31,8 +31,42 @@ const helperLink = (enabled: boolean): FeatureLink => ({
 });
 
 describe('HelperTab', () => {
-  it('keeps tray-menu options visible but disabled when deploy is off (#1863)', () => {
+  // OD-11 (#10190): a helper policy being created deploys Breeze Assist unless
+  // the technician turns it off. Existing links keep what they store.
+  it('defaults deploy on for a new helper policy and saves enabled: true', async () => {
+    saveMock.mockClear();
     render(<HelperTab {...baseProps} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => !c.disabled)).toBe(true);
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.enabled).toBe(true);
+  });
+
+  it('exposes the deploy toggle as a named switch with its state (on for a new policy, off for a stored off)', () => {
+    const { unmount } = render(<HelperTab {...baseProps} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('true');
+    unmount();
+    render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows deploy off when a link without settings arrives after the first render', () => {
+    const { rerender } = render(<HelperTab {...baseProps} />);
+    rerender(<HelperTab {...baseProps} existingLink={{ ...helperLink(false), inlineSettings: null }} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => c.disabled)).toBe(true);
+  });
+
+  it('shows deploy off for an existing link that does not decide enabled', () => {
+    render(<HelperTab {...baseProps} existingLink={{ ...helperLink(false), inlineSettings: { showOpenPortal: true } }} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => c.disabled)).toBe(true);
+  });
+
+  it('keeps tray-menu options visible but disabled when deploy is off (#1863)', () => {
+    render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
 
     // The toggles are discoverable (rendered), not hidden...
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
@@ -194,5 +228,112 @@ describe('HelperTab', () => {
     await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
     const call = saveMock.mock.calls[0] as unknown as [unknown, { featurePolicyId: string | null }];
     expect(call[1].featurePolicyId).toBeNull();
+  });
+  describe('branding', () => {
+    const lastPayload = () => {
+      const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+      return call[1].inlineSettings;
+    };
+    const type = (field: string, value: string) =>
+      fireEvent.change(screen.getByTestId(`helper-branding-${field}`), { target: { value } });
+
+    it('renders text and colour fields and no asset, URL, CSS or HTML field', () => {
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      const ids = Array.from(
+        screen.getByTestId('helper-branding').querySelectorAll('[data-testid^="helper-branding-"]'),
+      ).map((e) => e.getAttribute('data-testid'));
+      expect(ids).toEqual(
+        [
+          'displayName', 'companyName', 'welcomeTitle', 'welcomeMessage',
+          'supportLabel', 'portalLabel', 'primaryColor', 'accentColor',
+        ].map((f) => `helper-branding-${f}`),
+      );
+    });
+
+    it('omits branding from the payload when every field is blank', async () => {
+      saveMock.mockClear();
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      type('displayName', 'x');
+      type('displayName', '');
+      fireEvent.click(screen.getByText('Save'));
+      await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect('branding' in lastPayload()).toBe(false);
+    });
+
+    it('saves only filled fields; blank fields are omitted (inherit)', async () => {
+      saveMock.mockClear();
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      type('displayName', 'Example Assist');
+      type('primaryColor', '#1A3C8F');
+      fireEvent.click(screen.getByText('Save'));
+      await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(lastPayload().branding).toEqual({ displayName: 'Example Assist', primaryColor: '#1A3C8F' });
+      expect(Object.keys(lastPayload())).not.toEqual(
+        expect.arrayContaining(['logoUrl', 'customCss', 'html']),
+      );
+    });
+
+    it('loads stored branding and drops unknown stored keys on the next save', async () => {
+      saveMock.mockClear();
+      render(
+        <HelperTab
+          {...baseProps}
+          existingLink={{
+            ...helperLink(true),
+            inlineSettings: { enabled: true, branding: { companyName: 'Contoso', logoUrl: 'https://x/y.png' } },
+          }}
+        />,
+      );
+      expect((screen.getByTestId('helper-branding-companyName') as HTMLInputElement).value).toBe('Contoso');
+      fireEvent.click(screen.getByText('Save'));
+      await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(lastPayload().branding).toEqual({ companyName: 'Contoso' });
+    });
+
+    it('shows the inherited value and its source for a blank field on an own override', () => {
+      render(
+        <HelperTab
+          {...baseProps}
+          existingLink={helperLink(true)}
+          parentLink={{ ...helperLink(true), id: 'p', inlineSettings: { enabled: true, branding: { displayName: 'Parent Assist' } } }}
+        />,
+      );
+      expect(screen.getByText(/Inherited from parent policy: Parent Assist/)).toBeTruthy();
+    });
+
+    it('counts length by code points: 60 emoji pass, 61 fail and block save', async () => {
+      saveMock.mockClear();
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      type('displayName', '😀'.repeat(60));
+      expect(screen.queryByTestId('helper-branding-displayName-error')).toBeNull();
+      type('displayName', '😀'.repeat(61));
+      expect(screen.getByTestId('helper-branding-displayName-error')).toBeTruthy();
+      fireEvent.click(screen.getByText('Save'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(saveMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['red'],
+      ['#FFF'],
+      ['#12345G'],
+      ['#1A3C8F80'],
+      ['rgb(0,0,0)'],
+    ])('rejects non-strict colour %s', (value) => {
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      type('accentColor', value);
+      expect(screen.getByTestId('helper-branding-accentColor-error')).toBeTruthy();
+    });
+
+    it('rejects an unreadable colour and control or bidi characters', () => {
+      render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+      type('primaryColor', '#808080');
+      expect(screen.getByTestId('helper-branding-primaryColor-error')).toBeTruthy();
+      type('welcomeTitle', 'Hi\u202Ethere');
+      expect(screen.getByTestId('helper-branding-welcomeTitle-error')).toBeTruthy();
+      // welcomeMessage is a textarea, the only field that can carry a line break.
+      type('welcomeMessage', 'Hi\nthere');
+      expect(screen.getByTestId('helper-branding-welcomeMessage-error')).toBeTruthy();
+    });
   });
 });

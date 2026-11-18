@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRequestsTab from './PamRequestsTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -104,6 +104,20 @@ describe('PamRequestsTab', () => {
     });
     expect(screen.getByText('WS-ALPHA')).toBeInTheDocument();
     expect(screen.getByTestId('pam-respond-btn-req-1')).toBeInTheDocument();
+  });
+
+  it('keeps request rows visible during a background refresh and displays the new status', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(listResponse([pendingRequest]));
+    const { rerender } = render(<PamRequestsTab liveTick={0} />);
+    await waitFor(() => screen.getByTestId('pam-request-row-req-1'));
+    let resolveRefresh!: (response: Response) => void;
+    fetchWithAuthMock.mockReturnValueOnce(new Promise<Response>((resolve) => { resolveRefresh = resolve; }));
+    rerender(<PamRequestsTab liveTick={1} />);
+    expect(screen.getByTestId('pam-request-row-req-1')).toBeInTheDocument();
+    expect(screen.getByTestId('pam-respond-btn-req-1')).toBeInTheDocument();
+    await act(async () => resolveRefresh(listResponse([{ ...pendingRequest, status: 'denied' }])));
+    expect(screen.getByTestId('pam-request-row-req-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('pam-respond-btn-req-1')).not.toBeInTheDocument();
   });
 
   it('approves a pending request through the modal and refetches', async () => {
@@ -253,6 +267,96 @@ describe('PamRequestsTab', () => {
     render(<PamRequestsTab liveTick={0} />);
     await waitFor(() => screen.getByTestId('pam-request-row-req-revoked'));
     expect(screen.getByTestId('pam-decided-by-req-revoked')).toHaveTextContent('by Jane Admin');
+  });
+
+  // #9517: the agent reported it could not act; the request was closed as
+  // expired, so it leaves the default Pending view and shows under Expired.
+  it('shows why the device could not act, with the agent detail as the tooltip', async () => {
+    const pendingOnly = listResponse([{ ...pendingRequest, id: 'req-ok' }]);
+    const expiredRows = listResponse([
+      {
+        ...pendingRequest,
+        id: 'req-unable',
+        status: 'expired',
+        deviceUnableAt: '2026-06-10T12:00:05.000Z',
+        deviceUnableReason: 'session_unavailable',
+        deviceUnableDetail: 'session 7 cannot host a SYSTEM helper (not active or connected)',
+      },
+      { ...pendingRequest, id: 'req-future', status: 'expired', deviceUnableAt: '2026-06-10T12:00:05.000Z', deviceUnableReason: 'some_new_category' },
+    ]);
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const requested = new URLSearchParams(String(url).split('?')[1] ?? '').get('status');
+      return requested === 'expired' ? expiredRows : pendingOnly;
+    });
+    render(<PamRequestsTab liveTick={0} />);
+
+    // The default Pending view no longer lists the closed request.
+    await screen.findByTestId('pam-request-row-req-ok');
+    expect(screen.queryByTestId('pam-request-row-req-unable')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pam-respond-btn-req-ok')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('pam-filter-status'), { target: { value: 'expired' } });
+    const line = await screen.findByTestId('pam-device-unable-req-unable');
+    expect(line).toHaveTextContent("Device could not act: user's session unavailable");
+    expect(line).toHaveAttribute('title', 'session 7 cannot host a SYSTEM helper (not active or connected)');
+    // An unknown category from a newer agent still says the device could not act.
+    expect(screen.getByTestId('pam-device-unable-req-future')).toHaveTextContent('Device could not act on this request');
+    expect(screen.queryByTestId('pam-device-unable-req-ok')).not.toBeInTheDocument();
+    expect(String(fetchWithAuthMock.mock.calls.at(-1)?.[0])).toContain('status=expired');
+    // A closed request offers no Respond action.
+    expect(screen.queryByTestId('pam-respond-btn-req-unable')).not.toBeInTheDocument();
+  });
+
+  // #8971: a request the device user declined (or ignored) is withdrawn.
+  it('offers a Withdrawn status filter and shows the withdraw reason under the badge', async () => {
+    const pendingOnly = listResponse([{ ...pendingRequest, id: 'req-ok' }]);
+    const at = '2026-06-10T12:00:05.000Z';
+    const withdrawnRows = listResponse([
+      { ...pendingRequest, id: 'w-denied', status: 'withdrawn', withdrawnAt: at, withdrawnReason: 'user_denied' },
+      { ...pendingRequest, id: 'w-timeout', status: 'withdrawn', withdrawnAt: at, withdrawnReason: 'user_timeout' },
+      { ...pendingRequest, id: 'w-error', status: 'withdrawn', withdrawnAt: at, withdrawnReason: 'dialog_error' },
+    ]);
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const requested = new URLSearchParams(String(url).split('?')[1] ?? '').get('status');
+      return requested === 'withdrawn' ? withdrawnRows : pendingOnly;
+    });
+    render(<PamRequestsTab liveTick={0} />);
+    await screen.findByTestId('pam-request-row-req-ok');
+
+    const filter = screen.getByTestId('pam-filter-status') as HTMLSelectElement;
+    expect(Array.from(filter.options).map((o) => o.value)).toContain('withdrawn');
+    fireEvent.change(filter, { target: { value: 'withdrawn' } });
+
+    expect(await screen.findByTestId('pam-withdraw-reason-w-denied')).toHaveTextContent('Declined by the user');
+    expect(screen.getByTestId('pam-withdraw-reason-w-timeout')).toHaveTextContent('No answer on the device');
+    expect(screen.getByTestId('pam-withdraw-reason-w-error')).toHaveTextContent('Prompt failed on the device');
+    expect(screen.getAllByText('Withdrawn').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('pam-respond-btn-w-denied')).not.toBeInTheDocument();
+  });
+
+  it('shows the device-side decline line on approved and auto_approved rows', async () => {
+    const approvedRows = listResponse([
+      { ...pendingRequest, id: 'a-declined', status: 'approved', enforcementReason: 'user_declined' },
+      { ...pendingRequest, id: 'a-auto', status: 'auto_approved', enforcementReason: 'user_declined' },
+      { ...pendingRequest, id: 'a-pending', status: 'approved', enforcementReason: 'user_decision_pending' },
+      { ...pendingRequest, id: 'a-untrusted', status: 'approved', enforcementReason: 'user_decline_record_untrusted' },
+      { ...pendingRequest, id: 'a-clean', status: 'approved', enforcementReason: null },
+    ]);
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const requested = new URLSearchParams(String(url).split('?')[1] ?? '').get('status');
+      return requested === 'approved' ? approvedRows : listResponse([{ ...pendingRequest, id: 'req-ok' }]);
+    });
+    render(<PamRequestsTab liveTick={0} />);
+    await screen.findByTestId('pam-request-row-req-ok');
+    fireEvent.change(screen.getByTestId('pam-filter-status'), { target: { value: 'approved' } });
+
+    expect(await screen.findByTestId('pam-enforcement-reason-a-declined')).toHaveTextContent('Declined on the device');
+    expect(screen.getByTestId('pam-enforcement-reason-a-auto')).toHaveTextContent('Declined on the device');
+    expect(screen.getByTestId('pam-enforcement-reason-a-pending')).toHaveTextContent('No answer on the device');
+    expect(screen.getByTestId('pam-enforcement-reason-a-untrusted')).toHaveTextContent(
+      'Refused: device decision record unavailable',
+    );
+    expect(screen.queryByTestId('pam-enforcement-reason-a-clean')).not.toBeInTheDocument();
   });
 
   it('fetches page=2 on Next and updates the footer range', async () => {

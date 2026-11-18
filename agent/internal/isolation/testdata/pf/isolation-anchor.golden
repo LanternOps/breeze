@@ -1,0 +1,20 @@
+pass out quick inet proto tcp from any to 198.51.100.7/32 port 443 flags S/SA keep state
+pass out quick inet proto tcp from any to 203.0.113.9/32 port { 3478 5349 } flags S/SA keep state
+pass out quick inet proto udp from any to 198.51.100.0/24 port 51820 keep state
+pass out quick inet proto udp from any to 203.0.113.9/32 port { 3478 5349 } keep state
+pass out quick inet6 proto tcp from any to 2001:db8::7/128 port 443 flags S/SA keep state
+pass quick on lo0 all no state
+pass out quick inet proto udp from any port 68 to any port 67 no state
+pass in quick inet proto udp from any port 67 to any port 68 no state
+pass out quick inet6 proto udp from any port 546 to any port 547 no state
+pass in quick inet6 proto udp from any port 547 to any port 546 no state
+pass quick inet proto icmp icmp-type 3 code 4 no state
+pass quick inet proto icmp icmp-type 0 no state
+pass quick inet6 proto icmp6 icmp6-type { 2 129 130 131 132 133 134 135 136 137 } no state
+pass out quick inet proto tcp from any to 192.0.2.53 port 53 flags S/SA keep state
+pass out quick inet proto udp from any to 192.0.2.53 port 53 keep state
+pass out quick inet6 proto tcp from any to 2001:db8::53 port 53 flags S/SA keep state
+pass out quick inet6 proto udp from any to 2001:db8::53 port 53 keep state
+pass out quick on en0 inet6 proto tcp from any to fe80::1%en0 port 53 flags S/SA keep state
+pass out quick on en0 inet6 proto udp from any to fe80::1%en0 port 53 keep state
+block drop quick all label "breeze_drop"

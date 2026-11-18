@@ -1,0 +1,48 @@
+---
+title: AI tasks
+description: Hand a long-running job to the workers with Start an AI task - recipes from the Library, the task page, approvals, and the flags that turn it on.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An [agent run](/features/ai-agents/#runs) is a single pass: it fires on a trigger, does what it can, and finishes. An **AI task** is the other shape: a long-running job you hand off and walk away from. Start an AI task for a service-recovery incident and it keeps working through investigation, action and verification after you close the browser, waiting for your approval at the step that needs it.
+
+An AI task is not a separate actor. It is **handled by** an [agent](/features/ai-agents/), and when [Wisp](/features/wisp/#specialists) hands a job to a specialist, the result shows up as a run or an AI task that says who it was done for.
+
+<Aside type="caution" title="Off by default, and a thin first slice">
+  AI tasks ship **disabled**, behind two flags of their own *and* the main
+  `BREEZE_AI_AGENTS_ENABLED` kill switch. Exactly one recipe, **service
+  recovery**, is shipped in this release. Nothing appears in the UI and no task
+  can be created until an operator turns it on. See
+  [Environment Variables](/deploy/environment/#ai).
+</Aside>
+
+## Recipes and the Library
+
+A **recipe** is a task template. The **Library** is where recipes live. Each recipe is an ordered list of steps and states which of them change anything. Starting an AI task means choosing a recipe and filling in what it needs.
+
+## Starting an AI task
+
+With the feature on, a **Start an AI task** button appears on the device page and on alert detail. Choose it, name the service that needs recovering, confirm, and Breeze opens the task's own page and starts work. Starting one needs **`ai_agents:write`** and a multi-factor confirmation, the same bar as moving an agent to Act mode.
+
+## What the task page shows
+
+The task page is the record of the whole hand-off: the task's current state and phase, what it is waiting on if it is waiting, each operation it has performed, its final outcome, **Handled by** (the agent doing the work), and links to the underlying agent runs so you can read the detail of any single step. The device page also carries an **AI Tasks** feed so you can see task activity in the device's own timeline.
+
+Reading tasks needs **`ai_agents:read`**. A task belonging to an organization or site you cannot see is reported as not found rather than as forbidden, so the route never confirms that someone else's task exists.
+
+## The service-recovery recipe
+
+The one shipped recipe walks five ordered steps: **investigate, execute, observe, verify, document**. Only the `execute` step changes anything, and it is **always supervised**: the AI task raises a service-restart request into your existing [Approvals](/features/ai-agents/#approving-what-an-agent-proposes) page and waits there. There is no path in this recipe where an AI task restarts a service without a human approving it.
+
+A service you have listed as a protected resource is refused **at start time**, before any request reaches Approvals, so a domain controller's critical services can never become a pending approval someone might wave through.
+
+## What runs in the background
+
+Two background workers ship with the feature: a task coordinator that ticks every 15 seconds, and a publisher that drains task events every 5 seconds. Both are registered whether or not the flags are on, deliberately, so that a task already in flight when you turn the feature off still finishes cleanly rather than stranding an approval. With the flags off no new task is ever admitted, so neither worker has anything to do. No new queue is added.
+
+## Related
+
+- [AI in Breeze](/features/ai/): how AI tasks fit with agents, Breeze AI and Wisp
+- [AI computer control](/features/ai-computer-control/): the screen and input tools an AI task can use
+- [Environment Variables](/deploy/environment/#ai-operator-preview-off-by-default): the flags

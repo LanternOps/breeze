@@ -4,6 +4,8 @@ import type { TFunction } from 'i18next';
 import { Loader2, RefreshCw, Save, Trash2 } from 'lucide-react';
 import {
   AI_MODEL_REQUIRED_PERMISSION_CHOICES,
+  CONTEXT_WINDOW_OVERRIDE_MAX,
+  CONTEXT_WINDOW_OVERRIDE_MIN,
   EFFORT_LEVELS,
   MODEL_SPEEDS,
   THINKING_DISPLAYS,
@@ -19,6 +21,7 @@ import { navigateTo } from '@/lib/navigation';
 import { Drawer } from '../../shared/Drawer';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { registryFriendly } from './surfaceLabels';
+import OfferingToolsSection, { buildToolsPatch, toolsDraftFrom, type ToolGaps, type ToolsDraft } from './OfferingToolsSection';
 
 const PREMIUM_PERMISSION = AI_MODEL_REQUIRED_PERMISSION_CHOICES[0];
 
@@ -189,6 +192,9 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
   const [verifying, setVerifying] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const initialTools = useMemo(() => toolsDraftFrom(offering), [offering]);
+  const [tools, setTools] = useState<ToolsDraft>(initialTools);
+  const [toolGaps, setToolGaps] = useState<ToolGaps | null>(null);
   const friendly = registryFriendly(t);
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -204,7 +210,10 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
   const fallbackCandidates = offerings.filter((x) => x.id !== null && x.id !== offering.id && x.enabled && x.connectionId === offering.connectionId);
 
   const patchOrInvalid = buildPatch(offering, draft, initial);
-  const dirty = patchOrInvalid === 'invalid_prices' || Object.keys(patchOrInvalid).length > 1;
+  // #11398: tool profile / allow-list / window override (only on a stored row).
+  const toolsPatch = offering.id !== null ? buildToolsPatch(offering, tools) : {};
+  const toolsDirty = typeof toolsPatch === 'string' || Object.keys(toolsPatch).length > 0;
+  const dirty = patchOrInvalid === 'invalid_prices' || Object.keys(patchOrInvalid).length > 1 || toolsDirty;
 
   const toggleEffort = (level: Effort, on: boolean) => {
     const efforts = EFFORT_LEVELS.filter((l) => (l === level ? on : draft.efforts.includes(l)));
@@ -276,10 +285,20 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
       showToast({ type: 'error', message: t('aiModels.offering.invalidPrices') });
       return;
     }
+    if (toolsPatch === 'invalid_custom') {
+      showToast({ type: 'error', message: t('aiModels.offering.tools.invalidCustom') });
+      return;
+    }
+    if (toolsPatch === 'invalid_window') {
+      showToast({ type: 'error', message: t('aiModels.offering.tools.invalidWindow', { min: CONTEXT_WINDOW_OVERRIDE_MIN, max: CONTEXT_WINDOW_OVERRIDE_MAX }) });
+      return;
+    }
+    const body = { ...patchOrInvalid, ...toolsPatch };
     setSaving(true);
+    setToolGaps(null);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/ai/models/offerings/${offering.id}`, { method: 'PATCH', body: JSON.stringify(patchOrInvalid) }),
+        request: () => fetchWithAuth(`/ai/models/offerings/${offering.id}`, { method: 'PATCH', body: JSON.stringify(body) }),
         successMessage: t('aiModels.offering.saved'),
         errorFallback: t('aiModels.offering.saveFailed'),
         friendly,
@@ -295,6 +314,11 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
         onClose();
         return;
       }
+      if (err instanceof ActionError && err.code === 'tool_profile_underpowered') {
+        // Already toasted; also list each feature and its missing tools next to the profile.
+        const surfaces = (err.body as { details?: { surfaces?: ToolGaps } } | undefined)?.details?.surfaces;
+        setToolGaps(Array.isArray(surfaces) ? surfaces : null);
+      }
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.saveFailed') });
       // other ActionErrors (incl. the 403 approvals:decide) already toasted; the drawer stays open
     } finally {
@@ -307,8 +331,8 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
 
   return (
     <Drawer open onClose={onClose} title={offering.displayName}
-      dataTestId="ai-offering-drawer" closeDisabled={saving}>
-      <div className="space-y-5">
+      width="max-w-lg" dataTestId="ai-offering-drawer" closeDisabled={saving}>
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4" data-testid="ai-offering-drawer-body">
         {envManaged && (
           <p data-testid="ai-offering-env-managed" className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
             {t('aiModels.offering.envManaged')}
@@ -361,7 +385,7 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
           </fieldset>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           {support.effort.length > 0 && (
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="ai-offering-default-effort">{t('aiModels.offering.defaultEffort')}</label>
@@ -430,38 +454,43 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
           <p className="text-xs text-muted-foreground">{t('aiModels.offering.refusalHint')}</p>
         </div>
 
+        {offering.id !== null && (
+          <OfferingToolsSection offering={offering} draft={tools} disabled={saving} gaps={toolGaps}
+            onChange={(patch) => { setToolGaps(null); setTools((d) => ({ ...d, ...patch })); }} />
+        )}
+
         {canVerify && offering.verification !== null && (
           <p data-testid="ai-offering-verify-hint" className="text-xs text-muted-foreground">{t('aiModels.offering.verifyGatewayHint')}</p>
         )}
+      </div>
 
-        <div className="flex items-center justify-between gap-2 border-t pt-4">
-          <div>
-            {canVerify && (
-              <button type="button" data-testid="ai-offering-verify" onClick={() => { void handleVerify(); }} disabled={saving || verifying}
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
-                {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                {t('aiModels.offering.verify')}
-              </button>
-            )}
-            {canRemove && (
-              <button type="button" data-testid="ai-offering-remove" onClick={() => setConfirmRemove(true)} disabled={saving || removing}
-                className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
-                <Trash2 className="h-4 w-4" />
-                {t('aiModels.offering.remove')}
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2">
-          <button type="button" data-testid="ai-offering-cancel" onClick={onClose} disabled={saving}
-            className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
-            {t('common:actions.cancel')}
-          </button>
-          <button type="button" data-testid="ai-offering-save" onClick={() => { void handleSave(); }} disabled={!dirty || saving}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {saving ? t('common:states.saving') : t('common:actions.save')}
-          </button>
-          </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-4" data-testid="ai-offering-drawer-footer">
+        <div className="flex flex-wrap gap-2">
+          {canVerify && (
+            <button type="button" data-testid="ai-offering-verify" onClick={() => { void handleVerify(); }} disabled={saving || verifying}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+              {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {t('aiModels.offering.verify')}
+            </button>
+          )}
+          {canRemove && (
+            <button type="button" data-testid="ai-offering-remove" onClick={() => setConfirmRemove(true)} disabled={saving || removing}
+              className="inline-flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
+              <Trash2 className="h-4 w-4" />
+              {t('aiModels.offering.remove')}
+            </button>
+          )}
+        </div>
+        <div className="flex gap-2">
+        <button type="button" data-testid="ai-offering-cancel" onClick={onClose} disabled={saving}
+          className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+          {t('common:actions.cancel')}
+        </button>
+        <button type="button" data-testid="ai-offering-save" onClick={() => { void handleSave(); }} disabled={!dirty || saving}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {saving ? t('common:states.saving') : t('common:actions.save')}
+        </button>
         </div>
       </div>
 

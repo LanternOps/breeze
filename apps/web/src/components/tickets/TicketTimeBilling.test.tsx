@@ -777,4 +777,103 @@ describe('TicketTimeBilling customer approval', () => {
     expect((await screen.findByTestId('ticket-billing-approval-required')).textContent).toMatch(/Approvals panel/);
     expect(screen.queryByTestId('ticket-billing-start-non-billable')).toBeNull();
   });
+
+});
+
+// #9561: the 2-decimal-hours labour rule is by design; the rail makes every
+// labour figure explainable — rounded hours × rate = amount per entry, and
+// the rule itself under the ticket's time amount.
+describe('labour rule visibility (#9561)', () => {
+  const rated = (over: Record<string, unknown>) => ({ ...entries[0], hourlyRate: '135.00', currencyCode: 'USD', ...over });
+  const withEntries = (rows: unknown[]) => fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url.startsWith('/tickets/tk-1/time-entries')) return { ok: true, status: 200, json: async () => ({ data: rows, total: rows.length }) } as Response;
+    return route(url);
+  });
+
+  it('shows rounded hours × rate = amount for a rated billable entry (25 min at $135.00 → 0.42 h, $56.70)', async () => {
+    withEntries([rated({ id: 'e25', durationMinutes: 25 })]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-entry-labor-e25')).textContent).toBe('0.42 h × $135.00 = $56.70');
+  });
+
+  it('prices the billed quantity (billable_minutes), not the worked duration', async () => {
+    withEntries([rated({ id: 'emin', durationMinutes: 5, billableMinutes: 15, hourlyRate: '100.00' })]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-entry-labor-emin')).textContent).toBe('0.25 h × $100.00 = $25.00');
+  });
+
+  it('shows no breakdown for a non-billable, unrated or running entry', async () => {
+    withEntries([
+      rated({ id: 'nb', isBillable: false }),
+      rated({ id: 'nr', hourlyRate: null, currencyCode: null }),
+      rated({ id: 'run', endedAt: null, durationMinutes: null }),
+    ]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-entries');
+    expect(screen.queryByTestId('ticket-billing-entry-labor-nb')).toBeNull();
+    expect(screen.queryByTestId('ticket-billing-entry-labor-nr')).toBeNull();
+    expect(screen.queryByTestId('ticket-billing-entry-labor-run')).toBeNull();
+  });
+
+  it('states the rule under the time amount when there is one, and not otherwise', async () => {
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-labor-rule')).textContent).toMatch(/rounded to hours \(2 decimals\) × its rate/);
+  });
+
+  it('omits the rule when the ticket has no time amount', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: { ...summary, time: { ...summary.time, billableAmounts: [] } } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-amount');
+    expect(screen.queryByTestId('ticket-billing-labor-rule')).toBeNull();
+  });
+});
+
+// #10073: a merged tombstone answers every time write with 409 TICKET_MERGED,
+// so the rail keeps its totals and entries but offers no write that would fail.
+describe('read-only (merged tombstone)', () => {
+  it('keeps totals and entries visible but disables or hides every write', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/time-entries')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          entries[0],
+          { ...entries[0], id: 'te-held', billingStatus: 'awaiting_approval' },
+        ], total: 2 }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    expect((await screen.findByTestId('ticket-billing-time-total')).textContent).toContain('1h 30m');
+    expect(await screen.findByTestId('ticket-billing-entries')).toHaveTextContent('diag');
+    expect(screen.getByTestId('ticket-billing-start-timer')).toBeDisabled();
+    expect(screen.getByTestId('ticket-billing-quick-add-toggle')).toBeDisabled();
+    expect(screen.getByTestId('timer-work-type')).toBeDisabled();
+    expect(screen.queryByTestId('ticket-billing-delete-te-1')).toBeNull();
+    expect(screen.queryByTestId('time-entry-write-off-te-held')).toBeNull();
+    fireEvent.click(screen.getByTestId('ticket-billing-start-timer'));
+    fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.queryByTestId('ticket-billing-quick-add')).toBeNull();
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
+  });
+
+  it('closes an open quick-add form when the ticket becomes read-only', async () => {
+    const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.getByTestId('ticket-billing-quick-add')).toBeInTheDocument();
+    rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    expect(screen.queryByTestId('ticket-billing-quick-add')).toBeNull();
+  });
+
+  it('drops an open delete confirm when the ticket becomes read-only', async () => {
+    const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-delete-te-1'));
+    expect(await screen.findByTestId('ticket-billing-delete-confirm')).toBeInTheDocument();
+    rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('ticket-billing-delete-confirm')).toBeNull());
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+  });
 });

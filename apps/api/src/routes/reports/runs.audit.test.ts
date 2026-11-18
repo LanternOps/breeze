@@ -1,18 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import JSZip from 'jszip';
 
 const {
   auditSensitiveReadMock,
   getReportRunMock,
   selectRows,
   rowsToCsvMock,
-  rowsToTsvMock,
+  rowsToXlsxMock,
 } = vi.hoisted(() => ({
   auditSensitiveReadMock: vi.fn(),
   getReportRunMock: vi.fn(),
   selectRows: [] as unknown[][],
-  rowsToCsvMock: vi.fn((rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
-  rowsToTsvMock: vi.fn((rows: unknown[]) => `tsv:${JSON.stringify(rows)}`),
+  rowsToCsvMock: vi.fn((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
+  rowsToXlsxMock: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -121,11 +122,16 @@ vi.mock('./helpers', () => ({
   getPagination: vi.fn(),
 }));
 
-vi.mock('@breeze/shared', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@breeze/shared')>()),
-  rowsToCsv: rowsToCsvMock,
-  rowsToTsv: rowsToTsvMock,
-}));
+vi.mock('@breeze/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@breeze/shared')>();
+  // Real .xlsx writer by default so the Excel test inspects actual workbook bytes.
+  rowsToXlsxMock.mockImplementation(actual.rowsToXlsx);
+  return {
+    ...actual,
+    reportRunRowsToCsv: rowsToCsvMock,
+    rowsToXlsx: rowsToXlsxMock,
+  };
+});
 
 vi.mock('../../services/sensitiveReadAudit', () => ({
   auditSensitiveRead: auditSensitiveReadMock,
@@ -164,8 +170,7 @@ describe('report run sensitive-read audit', () => {
     vi.clearAllMocks();
     selectRows.length = 0;
     getReportRunMock.mockResolvedValue(runAccess());
-    rowsToCsvMock.mockImplementation((rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
-    rowsToTsvMock.mockImplementation((rows: unknown[]) => `tsv:${JSON.stringify(rows)}`);
+    rowsToCsvMock.mockImplementation((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
   });
 
   it('audits the exact CSV response bytes and actual result-row count', async () => {
@@ -228,8 +233,9 @@ describe('report run sensitive-read audit', () => {
     },
   );
 
-  it('audits TSV-backed Excel output after serialization', async () => {
-    const rows = [{ hostname: 'pc-1' }];
+  // #9956: "Excel" used to be TSV text saved as .xls (Excel warned on open).
+  it('serves Excel as a real .xlsx workbook and audits its byte length', async () => {
+    const rows = [{ hostname: 'pc-1', cpuPercent: 12 }];
     selectRows.push([{
       id: RUN_ID,
       orgId: ORG_ID,
@@ -241,15 +247,151 @@ describe('report run sensitive-read audit', () => {
     }]);
 
     const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
-    const body = await res.text();
+    const body = new Uint8Array(await res.arrayBuffer());
 
     expect(res.status).toBe(200);
-    expect(body).toBe(`tsv:${JSON.stringify(rows)}`);
+    expect(res.headers.get('content-type')).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(res.headers.get('content-disposition')).toMatch(
+      /^attachment; filename="device_inventory-report-\d{4}-\d{2}-\d{2}\.xlsx"$/,
+    );
+    expect(rowsToXlsxMock).toHaveBeenCalledWith(rows);
+    const sheet = await (await JSZip.loadAsync(body)).file('xl/worksheets/sheet1.xml')!.async('string');
+    expect(sheet).toContain('>hostname</t>');
+    expect(sheet).toContain('>cpuPercent</t>');
+    expect(sheet).toContain('>pc-1</t>');
+    expect(sheet).toContain('<c r="B2"><v>12</v></c>');
     expect(auditSensitiveReadMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       format: 'excel',
       rowCount: 1,
-      byteCount: Buffer.byteLength(body, 'utf8'),
+      byteCount: body.byteLength,
     }));
+  });
+
+  it('answers 409 without auditing when the rows do not fit an Excel worksheet', async () => {
+    const { XlsxLimitError } = await import('@breeze/shared');
+    rowsToXlsxMock.mockImplementationOnce(() => {
+      throw new XlsxLimitError('too many rows');
+    });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: [{ hostname: 'pc-1' }] },
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: expect.stringContaining('CSV') });
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report an unexpected writer failure as "too large" (no 409, no audit)', async () => {
+    rowsToXlsxMock.mockImplementationOnce(() => {
+      // An engine RangeError (not the writer's limit error) must not map to 409.
+      throw new RangeError('Maximum call stack size exceeded');
+    });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: [{ hostname: 'pc-1' }] },
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(500);
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
+  });
+
+  // #11277: a stored SLA performance run downloaded as Excel was a one-sheet
+  // "Report" of priority rows, so every breach was missing from a workbook
+  // that read as complete.
+  it('serves an SLA performance run as the Priorities / Breaches / Notes workbook', async () => {
+    const { emptyTicketSlaPerformanceSummary } = await import('@breeze/shared');
+    const base = emptyTicketSlaPerformanceSummary('Business hours follow each ticket calendar.');
+    const summary = {
+      ...base,
+      breaches: {
+        cap: 1000,
+        stored: 1,
+        available: 1400,
+        truncated: true,
+        rows: [{
+          ticketId: 't1', ticketNumber: 'T-1001', subject: 'Printer jam', priority: 'urgent', target: 'response',
+          targetMinutes: 60, createdAt: '2026-10-05T09:00:00.000Z', dueAt: '2026-10-05T10:00:00.000Z',
+          completedAt: '2026-10-05T11:00:00.000Z', elapsedSlaMinutes: 120, overByMinutes: 60,
+        }],
+      },
+    };
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: summary.rows, summary },
+      reportType: 'ticket_sla_performance',
+      reportName: 'SLA performance',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+    const body = new Uint8Array(await res.arrayBuffer());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    const zip = await JSZip.loadAsync(body);
+    const workbook = await zip.file('xl/workbook.xml')!.async('string');
+    expect([...workbook.matchAll(/<sheet name="([^"]+)"/g)].map((m) => m[1])).toEqual(['Priorities', 'Breaches', 'Notes']);
+    const priorities = await zip.file('xl/worksheets/sheet1.xml')!.async('string');
+    expect(priorities).toContain('>urgent</t>');
+    const breaches = await zip.file('xl/worksheets/sheet2.xml')!.async('string');
+    expect(breaches).toContain('>T-1001</t>');
+    // includeSubjects is false on the stored summary: no subject column at all.
+    expect(breaches).not.toContain('>subject</t>');
+    expect(breaches).not.toContain('Printer jam');
+    const notes = await zip.file('xl/worksheets/sheet3.xml')!.async('string');
+    expect(notes).toContain('Breaches: showing 1 of 1400.');
+    expect(notes).toContain('Business hours follow each ticket calendar.');
+    expect(rowsToXlsxMock).not.toHaveBeenCalled();
+    expect(auditSensitiveReadMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      format: 'excel',
+      rowCount: summary.rows.length,
+      byteCount: body.byteLength,
+    }));
+  });
+
+  it('refuses an SLA performance Excel download whose stored summary is unreadable (409, no audit)', async () => {
+    const { emptyTicketSlaPerformanceSummary } = await import('@breeze/shared');
+    const { rows } = emptyTicketSlaPerformanceSummary('x');
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows, summary: { notes: [] } },
+      reportType: 'ticket_sla_performance',
+      reportName: 'SLA performance',
+      reportFormat: 'excel',
+    }]);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: expect.stringMatching(/breach/i) });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unreadable summary'), expect.objectContaining({ runId: RUN_ID }));
+    warn.mockRestore();
+    expect(rowsToXlsxMock).not.toHaveBeenCalled();
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
   });
 
   it('does not query or audit a missing or unauthorized run', async () => {
@@ -398,5 +540,25 @@ describe('report run sensitive-read audit', () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(`csv:${JSON.stringify(rows)}`);
+  });
+
+  // #11282: the staff CSV goes through the same serializer as the portal CSV,
+  // keyed by report type, so SLA performance gets its labelled headers.
+  it('serializes the staff CSV with the run report type so labelled headers apply', async () => {
+    const rows = [{ priority: 'high' }];
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows },
+      reportType: 'ticket_sla_performance',
+      reportName: 'SLA performance',
+      reportFormat: 'csv',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download`);
+
+    expect(res.status).toBe(200);
+    expect(rowsToCsvMock).toHaveBeenCalledWith('ticket_sla_performance', rows);
   });
 });

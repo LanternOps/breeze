@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { mergeUploadedContractPdfs, PdfMergeError, MAX_MERGED_PAGES } from './pdfMerge';
+import { pdfWithExpandingStreams } from './__fixtures__/expandingPdf';
 
 async function makePdf(pageCount: number): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -82,6 +83,30 @@ describe('mergeUploadedContractPdfs', () => {
     ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_UNREADABLE' });
   });
 
+  it('throws a typed PdfMergeError when an upload inflates past the read limit', async () => {
+    const main = await makePdf(1);
+    const upload = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    await expect(
+      mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: upload }]),
+    ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_TOO_LARGE' });
+  });
+
+  it('throws a typed PdfMergeError when the main document inflates past the read limit', async () => {
+    const main = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    await expect(
+      mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: await makePdf(1) }]),
+    ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_TOO_LARGE' });
+  });
+
+  it('merges uploads that use object streams', async () => {
+    const main = await makePdf(1);
+    const merged = await mergeUploadedContractPdfs(main, [
+      { afterMarker: 'MSA — attached below', data: await makePdf(2) },
+      { afterMarker: 'SOW — attached below', data: pdfWithExpandingStreams([{ inflatesTo: 1024 * 1024 }]) },
+    ]);
+    expect(await pageCountOf(merged)).toBe(4);
+  });
+
   it('throws a typed PdfMergeError when the aggregate page count exceeds the cap', async () => {
     const main = await makePdf(1);
     const hugeUpload = await makePdf(MAX_MERGED_PAGES); // main(1) + upload(cap) > cap
@@ -95,5 +120,39 @@ describe('mergeUploadedContractPdfs', () => {
     const upload = await makePdf(MAX_MERGED_PAGES - 1); // main(1) + upload = exactly the cap
     const merged = await mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: upload }]);
     expect(await pageCountOf(merged)).toBe(MAX_MERGED_PAGES);
+  });
+});
+
+describe('mergeUploadedContractPdfs — pinDates (#9075 W2c certified copy)', () => {
+  const PIN = new Date('2027-01-11T09:30:00.000Z');
+
+  it('pins CreationDate/ModDate and yields identical bytes whatever the wall clock says', async () => {
+    const main = await makePdf(1);
+    const upload = await makePdf(1);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+      const a = await mergeUploadedContractPdfs(main, [{ afterMarker: 'cert', data: upload }], { pinDates: PIN });
+      vi.setSystemTime(new Date('2031-06-06T06:06:06.000Z'));
+      const b = await mergeUploadedContractPdfs(main, [{ afterMarker: 'cert', data: upload }], { pinDates: PIN });
+      expect(a.equals(b)).toBe(true);
+      const loaded = await PDFDocument.load(a, { updateMetadata: false });
+      expect(loaded.getCreationDate()?.toISOString()).toBe(PIN.toISOString());
+      expect(loaded.getModificationDate()?.toISOString()).toBe(PIN.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('without pinDates the existing quote behaviour is unchanged (ModDate is the merge time)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+      const merged = await mergeUploadedContractPdfs(await makePdf(1), [{ afterMarker: 'x', data: await makePdf(1) }]);
+      const mod = (await PDFDocument.load(merged, { updateMetadata: false })).getModificationDate();
+      expect(mod?.toISOString()).toBe('2030-01-01T00:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

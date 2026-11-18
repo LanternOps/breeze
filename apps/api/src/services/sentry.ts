@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
@@ -59,7 +60,12 @@ const ALLOWED_TAG_NAMES = new Set([
   'user_id',
   'scope',
   'org_id',
+  // Sourced alert ownership: a bounded kind and the local workload row UUID.
+  'ownerKind',
+  'ownerRef',
   'partner_id',
+  'psa_connection_id',
+  'psa_provider',
   'stripe_reconcile_stage',
   // Restore-point ledger ingest (#4757): a closed set of literals written at
   // fixed call sites ('tenant_mismatch', 'write_failed', 'call_site'); never an id.
@@ -219,6 +225,10 @@ const ALLOWED_TAG_NAMES = new Set([
   // per-job counter — unbounded by construction, exactly the high-cardinality
   // tag the captureMessage doc comment warns against.
   'worker',
+  // oauth/log.ts: a closed set of ERROR_IDS constants. Its doc says Sentry
+  // groups OAuth warnings by this tag; until it was listed here every one of
+  // them collapsed into a single "Error: [redacted]" issue (BREEZE-4D).
+  'errorId',
   // Set by fix/sentry-worker-job-failures (#3912), which deliberately does not
   // touch this file. Inert until that lands — an allowlist entry only ever
   // preserves a tag something else sets, so listing it early cannot leak
@@ -237,6 +247,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #9632: closest-wins patch scheduling. `patch_scheduler_stage` is a closed
+  // 2-value set (closest_wins_resolve_failed | closest_wins_winner_unschedulable)
+  // and `update_ring_stage` a closed 1-value set (device_count_failed), all
+  // string literals at fixed call sites in jobs/patchSchedulerWorker.ts and
+  // routes/updateRingsHelpers.ts. No policy, ring, tenant or device id: those
+  // stay in the console line next to each capture.
+  'patch_scheduler_stage',
+  'update_ring_stage',
   // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
   // processDispatchBackup commits per-target child `backup_jobs` rows, so a
   // retry duplicates them. Two consequences of that trade are things an
@@ -461,7 +479,9 @@ const ALLOWED_TAG_NAMES = new Set([
   // unexpected Graph failure (graph_response_invalid, graph_request_timeout,
   // graph_transport_failed, graph_license_required, graph_not_found,
   // graph_response_too_large, the refusal codes) degraded silently to
-  // `last_status='error'` with no alert. `m365_sync_domain` is the closed
+  // `last_status='error'` with no alert. (#9394 later took graph_request_timeout
+  // out of that set: it is retried on the BullMQ ladder and, if it outlasts it,
+  // recorded on the row as `error` without a per-run Sentry event.) `m365_sync_domain` is the closed
   // `M365SyncDomain` union and `m365_sync_failure_code` is the closed
   // `M365SyncCallFailureCode` union — both string-literal unions from
   // services/m365Sync/types.ts / m365ControlPlane/readActionService.ts, never
@@ -481,6 +501,16 @@ const ALLOWED_TAG_NAMES = new Set([
   'ai_reservation_id',
   'ai_invocation_id',
   'ai_agent_run_id',
+  // #9451 / #7717: the keyed credit debit outbox. `ai_credit_debit_id` =
+  // ai_credit_debits.id (opaque UUID, what /admin/ai-billing re-drives by);
+  // `ai_credit_debit_source` is the enum 'compute' | 'invocation'. The two
+  // counts are the sweep's operator-backlog alert: small integers.
+  // (three counts: failed debits, dead settlements, stale undelivered debits)
+  'ai_credit_debit_id',
+  'ai_credit_debit_source',
+  'ai_failed_credit_debits',
+  'ai_dead_pending_settlements',
+  'ai_stale_undelivered_credit_debits',
   // AI chargeback W10 (#7608): the UTC billing month ('YYYY-MM-01') of a
   // monthly close that failed or found expired usage — with `org_id`, the key
   // an operator needs to find the ai_usage_charge_runs slot. A date, one value
@@ -488,7 +518,40 @@ const ALLOWED_TAG_NAMES = new Set([
   // rather than `period_start` for the same reason as the mobile pair above:
   // the allowlist is keyed by NAME.
   'ai_charge_period_start',
+  // Tool Catalog W04 (#5219): the flow runner. Every flow capture carries the
+  // run it is about, because `scrubEvent` deletes message/extra and a flow
+  // failure with no ids cannot be found again. `flow_id` = flows.id and
+  // `flow_run_id` = flow_runs.id are local row UUIDs (the `schedule_id` /
+  // `attempt_id` precedent); `flow_site` is a hardcoded string literal at each
+  // call site (e.g. 'reconciler.enqueue', 'runEvents.publish'), the
+  // `cas_label` precedent. None carries free text, a device or host id.
+  'flow_id',
+  'flow_run_id',
+  'flow_site',
 ]);
+// Isolation diagnostics carry only local UUIDs and closed server labels. Keep the generic
+// names unavailable to unrelated callers, and never admit report paths or agent prose.
+const ISOLATION_DIAGNOSTIC_PHASES = new Set([
+  'isolation_heartbeat_block', 'isolation_report_dropped', 'isolation_allowlist_fallback',
+  'isolation_result_ignored', 'isolation_verify_tamper', 'isolation_secret_unavailable',
+  'isolation_outcome_publish',
+]);
+const ISOLATION_DIAGNOSTIC_REASONS = new Set([
+  'stdout_missing', 'stdout_oversize', 'stdout_not_json', 'identity_schema',
+  'identity_mismatch', 'episode_mismatch', 'transport_timeout',
+]);
+const ISOLATION_UUID_TAGS = new Set(['deviceId', 'isolationId', 'incidentId', 'incidentActionId', 'commandId', 'agentId']);
+const LOCAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isIsolationDiagnosticTag(key: string, value: unknown, tags: Record<string, unknown> | undefined): boolean {
+  if (!(typeof tags?.phase === 'string' && ISOLATION_DIAGNOSTIC_PHASES.has(tags.phase))
+    && !(typeof tags?.isolationId === 'string' && LOCAL_UUID.test(tags.isolationId))) return false;
+  if (typeof value !== 'string') return false;
+  if (ISOLATION_UUID_TAGS.has(key)) return LOCAL_UUID.test(value);
+  if (key === 'phase') return ISOLATION_DIAGNOSTIC_PHASES.has(value);
+  if (key === 'reason') return ISOLATION_DIAGNOSTIC_REASONS.has(value);
+  if (key === 'source') return value === 'configuration' || value === 'builder';
+  return false;
+}
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
 
@@ -510,7 +573,7 @@ function pickAllowedTags(
 ): Record<string, string | number | boolean> {
   const picked: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(tags ?? {})) {
-    if (!ALLOWED_TAG_NAMES.has(key)) continue;
+    if (!ALLOWED_TAG_NAMES.has(key) && !isIsolationDiagnosticTag(key, value, tags)) continue;
     if (key === 'route_template') {
       if (isSafeRouteTemplateTag(value)) picked[key] = value;
       continue;
@@ -586,7 +649,7 @@ function setCallerTags(
 ): void {
   for (const [key, value] of Object.entries(tags ?? {})) {
     if (
-      ALLOWED_TAG_NAMES.has(key) &&
+      (ALLOWED_TAG_NAMES.has(key) || isIsolationDiagnosticTag(key, value, tags)) &&
       key !== 'route_template' &&
       isBoundedTagValue(value)
     ) {
@@ -688,6 +751,83 @@ export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
   return 'all';
 }
 
+/**
+ * Group key for the outbound event throttle. Built from the SCRUBBED event:
+ * exception values are all '[redacted]', so the throw site (type plus the
+ * full stack, transaction and route) and the bounded discriminator tags are what tell two
+ * failures apart. Exported for test.
+ */
+export function eventThrottleSignature(event: Record<string, any>): string {
+  const fingerprint = Array.isArray(event.fingerprint) ? event.fingerprint.filter((p: unknown) => p !== '{{ default }}') : [];
+  if (fingerprint.length) return `fp:${fingerprint.join('|')}`;
+  const tags = event.tags ?? {};
+  const parts: string[] = [
+    String(event.level ?? 'error'), String(tags.event_code ?? ''), String(tags.worker ?? ''), String(tags.errorId ?? ''),
+    String(event.transaction ?? ''), String(tags.route_template ?? ''),
+  ];
+  for (const value of Array.isArray(event.exception?.values) ? event.exception.values : []) {
+    // ALL frames, not just the innermost: a PostgresError / DrizzleQueryError has the
+    // same innermost frames for every DB failure in the process, so the callers are
+    // what separate unrelated errors. Still stable for a true storm (same stack).
+    const frames: Record<string, unknown>[] = Array.isArray(value?.stacktrace?.frames) ? value.stacktrace.frames : [];
+    parts.push(
+      String(value?.type ?? ''),
+      normalizeThrottleMessage(value?.value),
+      ...frames.map(f => `${f.function ?? '?'}:${f.lineno ?? ''}:${f.colno ?? ''}`),
+    );
+  }
+  // Hash so the key stays small however long the stack or transaction name is.
+  return createHash('sha1').update(parts.join('\u0000')).digest('hex');
+}
+
+/** Collapse ids so a storm with varying values still shares one key. */
+function normalizeThrottleMessage(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/"[^"]*"|'[^']*'/g, '?')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '?')
+    .replace(/\d+/g, '?');
+}
+
+/**
+ * Process-wide safety net under every error event, after scrubbing. Call sites
+ * are expected to bound themselves (see sentryThrottle.ts), but one that does
+ * not — a worker capturing a permanent failure on a 2 s tick — burned the
+ * monthly error quota in days (BREEZE-4B/4C, ~85k events in 60 h, with the SDK
+ * backing off another ~90k/day client side). The SDK's Dedupe integration only
+ * drops an event identical to the one immediately before it, so two loops that
+ * interleave defeat it.
+ *
+ * Token bucket per signature: `burst` events immediately, then one per
+ * `refillMs`. Per-process, like throttledReporter; the server log keeps the
+ * unthrottled signal. Exported for test.
+ */
+export function createEventThrottle(options: { burst: number; refillMs: number; maxKeys?: number }) {
+  const maxKeys = options.maxKeys ?? 1000;
+  const buckets = new Map<string, { tokens: number; updatedAt: number }>();
+  return <T extends Record<string, any>>(event: T): T | null => {
+    const key = eventThrottleSignature(event);
+    const now = Date.now();
+    let bucket = buckets.get(key);
+    if (bucket) {
+      const refill = Math.floor((now - bucket.updatedAt) / options.refillMs);
+      if (refill > 0) bucket = { tokens: Math.min(options.burst, bucket.tokens + refill), updatedAt: bucket.updatedAt + refill * options.refillMs };
+      buckets.delete(key);
+    } else {
+      bucket = { tokens: options.burst, updatedAt: now };
+      if (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value!);
+    }
+    // Re-insert so Map order tracks recency for eviction.
+    buckets.set(key, bucket);
+    if (bucket.tokens <= 0) return null;
+    bucket.tokens -= 1;
+    return event;
+  };
+}
+
+const EVENT_THROTTLE_BURST = 10;
+const EVENT_THROTTLE_REFILL_MS = 5 * 60_000;
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -706,6 +846,7 @@ export function initSentry(): void {
   }
 
   const tracesSampleRate = parseSampleRate(process.env.SENTRY_TRACES_SAMPLE_RATE);
+  const throttleEvent = createEventThrottle({ burst: EVENT_THROTTLE_BURST, refillMs: EVENT_THROTTLE_REFILL_MS });
 
   Sentry.init({
     dsn,
@@ -717,7 +858,7 @@ export function initSentry(): void {
     release: API_VERSION,
     tracesSampleRate,
     profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
-    beforeSend: (event) => scrubEvent(event),
+    beforeSend: (event) => throttleEvent(scrubEvent(event)),
     beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
 
@@ -848,6 +989,8 @@ export interface CaptureMessageOptions {
   eventCode: SentryEventCode;
   level?: 'info' | 'warning' | 'error';
   tags?: Record<string, string>;
+  /** Group every event of this call site under fixed, BOUNDED literals (never an id), as `captureException` does. */
+  fingerprint?: readonly string[];
 }
 
 // There is deliberately NO `extra` field. The old one was dead twice over: this
@@ -865,11 +1008,12 @@ export function captureMessage(message: string, options: CaptureMessageOptions):
     return;
   }
 
-  const { eventCode, level = 'warning', tags } = options;
+  const { eventCode, level = 'warning', tags, fingerprint } = options;
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
     setCallerTags(scope, tags);
+    if (fingerprint) scope.setFingerprint([...fingerprint]);
     // Set AFTER the caller's tags so a `tags: { event_code: ... }` bag can never
     // override the call site's own code, and guarded so an unregistered value
     // arriving from untyped JS degrades to a named sentinel rather than an

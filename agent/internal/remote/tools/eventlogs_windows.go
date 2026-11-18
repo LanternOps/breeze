@@ -8,31 +8,22 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func listEventLogsOS(startTime time.Time) CommandResult {
 	// Use PowerShell to get event log names
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(`Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Select-Object LogName, RecordCount, MaximumSizeInBytes | ConvertTo-Json`))
 	output, err := cmd.Output()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to list event logs: %w", err), time.Since(startTime).Milliseconds())
 	}
 
-	// Default logs if PowerShell fails
-	logs := []EventLog{
-		{Name: "System", DisplayName: "System"},
-		{Name: "Application", DisplayName: "Application"},
-		{Name: "Security", DisplayName: "Security"},
-		{Name: "Setup", DisplayName: "Setup"},
-	}
-
-	// Parse PowerShell output if available
-	truncated := false
-	if len(output) > 0 {
-		logs = parseEventLogList(string(output))
-		logs, truncated = sanitizeEventLogs(logs)
-	}
+	// parseEventLogList falls back to the default list (no counts) when the
+	// output is empty or names no log.
+	logs, truncated := sanitizeEventLogs(parseEventLogList(string(output)))
 
 	response := EventLogListResponse{
 		Logs:      logs,
@@ -46,7 +37,7 @@ func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, pag
 	maxEvents := page * limit
 	script := buildEventLogQueryScript(logName, source, xpathQuery, levelNum, eventID, maxEvents)
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(script))
 
 	output, err := cmd.Output()
@@ -93,7 +84,7 @@ func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, pag
 }
 
 func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) CommandResult {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(buildEventLogGetEntryScript(logName, recordID)))
 
 	output, err := cmd.Output()
@@ -109,40 +100,4 @@ func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) Com
 	}
 
 	return NewSuccessResult(entries[0], time.Since(startTime).Milliseconds())
-}
-
-func parseEventLogList(output string) []EventLog {
-	// Basic parsing - in production, use proper JSON parsing
-	var logs []EventLog
-
-	// Parse lines for log names
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "LogName") {
-			// Extract log name
-			parts := strings.Split(line, ":")
-			if len(parts) >= 2 {
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, `",`)
-				if name != "" {
-					logs = append(logs, EventLog{
-						Name:        name,
-						DisplayName: name,
-					})
-				}
-			}
-		}
-	}
-
-	// Return default logs if parsing failed
-	if len(logs) == 0 {
-		return []EventLog{
-			{Name: "System", DisplayName: "System"},
-			{Name: "Application", DisplayName: "Application"},
-			{Name: "Security", DisplayName: "Security"},
-		}
-	}
-
-	return logs
 }

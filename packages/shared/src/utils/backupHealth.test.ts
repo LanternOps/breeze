@@ -5,10 +5,15 @@ import {
   BACKUP_STATUS_BUCKET_MEMBERS,
   BACKUP_WARNING_AFTER_HOURS,
   EXTERNAL_BACKUP_STATUS_SEVERITY,
+  bucketForBackupRow,
   bucketForBackupStatus,
   deriveBackupHealth,
+  isOverdueBackup,
   mapBackupJobStatus,
   worstBackupStatus,
+  saasWorkloadLabel,
+  verifiedBootableState,
+  VERIFIED_BOOTABLE_PROVIDER_KEYS,
 } from './backupHealth';
 import { EXTERNAL_BACKUP_STATUSES, type ExternalBackupStatus } from '../types/backupHealth';
 
@@ -17,10 +22,11 @@ const NOW = new Date('2026-09-15T12:00:00.000Z');
 const ago = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
 
 describe('EXTERNAL_BACKUP_STATUSES', () => {
-  it('carries exactly the ten pg enum labels, in the enum order', () => {
+  it('carries exactly the eleven pg enum labels, in the enum order', () => {
     // The order is the contract with the `external_backup_status` pg type
-    // (migration 2026-10-17-120000). backupProviderRls.integration.test.ts
-    // compares this tuple against live pg_enum; keep them in step.
+    // (migration 2026-10-17-120000, plus `paused` appended by
+    // 2027-01-22-205900). backupProviderRls.integration.test.ts compares this
+    // tuple against live pg_enum; keep them in step.
     expect(EXTERNAL_BACKUP_STATUSES).toEqual([
       'completed',
       'completed_with_errors',
@@ -32,6 +38,7 @@ describe('EXTERNAL_BACKUP_STATUSES', () => {
       'not_started',
       'no_backups',
       'unknown',
+      'paused',
     ]);
   });
 
@@ -43,11 +50,12 @@ describe('EXTERNAL_BACKUP_STATUSES', () => {
 });
 
 describe('worstBackupStatus', () => {
-  it('orders failed > over_quota > no_selection > no_backups > interrupted > completed_with_errors > not_started > unknown > in_progress > completed', () => {
+  it('orders failed > over_quota > no_selection > no_backups > interrupted > completed_with_errors > not_started > paused > unknown > in_progress > completed', () => {
     const descending: ExternalBackupStatus[] = [
       'failed', 'over_quota', 'no_selection', 'no_backups', 'interrupted',
-      'completed_with_errors', 'not_started', 'unknown', 'in_progress', 'completed',
+      'completed_with_errors', 'not_started', 'paused', 'unknown', 'in_progress', 'completed',
     ];
+    expect(descending).toHaveLength(EXTERNAL_BACKUP_STATUSES.length);
     for (let i = 0; i < descending.length - 1; i++) {
       const worse = descending[i]!;
       const better = descending[i + 1]!;
@@ -67,9 +75,9 @@ describe('worstBackupStatus', () => {
 });
 
 describe('BACKUP_STATUS_BUCKET_MEMBERS', () => {
-  it('declares the six bucket ids in the order the Cove-email layout renders them', () => {
+  it('declares the bucket ids in the order the Cove-email layout renders them, overdue beside completed', () => {
     expect(BACKUP_STATUS_BUCKET_IDS).toEqual([
-      'no_backups', 'completed', 'completed_with_errors', 'in_progress', 'unsuccessful', 'other',
+      'no_backups', 'completed', 'overdue', 'completed_with_errors', 'in_progress', 'unsuccessful', 'other',
     ]);
     expect(Object.keys(BACKUP_STATUS_BUCKET_MEMBERS)).toEqual([...BACKUP_STATUS_BUCKET_IDS]);
   });
@@ -101,8 +109,8 @@ describe('BACKUP_STATUS_BUCKET_MEMBERS', () => {
     expect(members).toHaveLength(EXTERNAL_BACKUP_STATUSES.length);
   });
 
-  it('collects not_started and unknown into `other`', () => {
-    expect([...BACKUP_STATUS_BUCKET_MEMBERS.other].sort()).toEqual(['not_started', 'unknown']);
+  it('collects not_started, unknown and paused into `other`', () => {
+    expect([...BACKUP_STATUS_BUCKET_MEMBERS.other].sort()).toEqual(['not_started', 'paused', 'unknown']);
   });
 });
 
@@ -140,6 +148,30 @@ describe('bucketForBackupStatus', () => {
     // A future ALTER TYPE ... ADD VALUE reaches the read model before this file
     // is updated; a throw there would 500 the whole overview.
     expect(bucketForBackupStatus('brand_new_vendor_status' as ExternalBackupStatus)).toBe('other');
+  });
+
+  it('gives `overdue` no static members — no vendor status means "overdue" on its own', () => {
+    expect(BACKUP_STATUS_BUCKET_MEMBERS.overdue).toEqual([]);
+  });
+});
+
+describe('isOverdueBackup / bucketForBackupRow (#12025)', () => {
+  it.each([
+    ['over_48h', true],
+    ['never', true],
+    ['under_48h', false],
+    ['under_24h', false],
+  ] as const)('a completed last session with recency %s is overdue: %s', (recency, overdue) => {
+    expect(isOverdueBackup({ status: 'completed', recency })).toBe(overdue);
+    expect(bucketForBackupRow({ status: 'completed', recency })).toBe(overdue ? 'overdue' : 'completed');
+  });
+
+  it('never marks a non-completed status overdue — its own bucket already says it is not fine', () => {
+    for (const status of EXTERNAL_BACKUP_STATUSES) {
+      if (status === 'completed') continue;
+      expect(isOverdueBackup({ status, recency: 'over_48h' }), status).toBe(false);
+      expect(bucketForBackupRow({ status, recency: 'over_48h' })).toBe(bucketForBackupStatus(status));
+    }
   });
 });
 
@@ -265,13 +297,23 @@ describe('deriveBackupHealth — covered semantics (D4)', () => {
     expect(r).toEqual({ health: 'critical', recency: 'under_24h', covered: true });
   });
 
-  it('covered is true for exactly {under_24h, under_48h} across every status', () => {
-    for (const status of EXTERNAL_BACKUP_STATUSES) {
+  it('covered is true for exactly {under_24h, under_48h} across every status except paused', () => {
+    for (const status of EXTERNAL_BACKUP_STATUSES.filter((s) => s !== 'paused')) {
       expect(deriveBackupHealth({ status, lastSuccessAt: ago(1), errorsCount: 0, now: NOW }).covered).toBe(true);
       expect(deriveBackupHealth({ status, lastSuccessAt: ago(40), errorsCount: 0, now: NOW }).covered).toBe(true);
       expect(deriveBackupHealth({ status, lastSuccessAt: ago(72), errorsCount: 0, now: NOW }).covered).toBe(false);
       expect(deriveBackupHealth({ status, lastSuccessAt: null, errorsCount: 0, now: NOW }).covered).toBe(false);
     }
+    // A parked device is deliberately unprotected, so a fresh restore point
+    // from before it was parked never counts as coverage.
+    expect(deriveBackupHealth({ status: 'paused', lastSuccessAt: ago(1), errorsCount: 0, now: NOW }).covered).toBe(false);
+  });
+
+  it.each([1, 30, 60, null])('paused is warning and uncovered regardless of recency (lastSuccess %s h ago)', (hours) => {
+    const r = deriveBackupHealth({ status: 'paused', lastSuccessAt: hours === null ? null : ago(hours), errorsCount: 0, now: NOW });
+    expect(r.health).toBe('warning');
+    expect(r.covered).toBe(false);
+    expect(r.recency).toBe(hours === null ? 'never' : hours < 24 ? 'under_24h' : hours < 48 ? 'under_48h' : 'over_48h');
   });
 
   it('an unknown status with a fresh success is still covered but never healthy', () => {
@@ -288,7 +330,7 @@ describe('deriveBackupHealth — exhaustive status x recency matrix', () => {
     ['never', null],
   ] as const;
 
-  it('produces the documented health for all 40 cells', () => {
+  it('produces the documented health for all 44 cells', () => {
     const CRITICAL_STATUSES = new Set(['failed', 'over_quota', 'no_selection', 'no_backups']);
     const WARNING_STATUSES = new Set(['completed_with_errors', 'interrupted']);
     const RECENCY_STATUSES = new Set(['completed', 'in_progress', 'not_started']);
@@ -301,12 +343,56 @@ describe('deriveBackupHealth — exhaustive status x recency matrix', () => {
           CRITICAL_STATUSES.has(status) ? 'critical'
           : WARNING_STATUSES.has(status) ? 'warning'
           : status === 'unknown' ? 'unknown'
+          : status === 'paused' ? 'warning'
           : RECENCY_STATUSES.has(status)
             ? (recency === 'under_24h' ? 'healthy' : recency === 'under_48h' ? 'warning' : 'critical')
             : (() => { throw new Error(`unclassified status ${status}`); })();
         expect(r.health, `${status} @ ${recency}`).toBe(expected);
-        expect(r.covered, `${status} @ ${recency}`).toBe(recency === 'under_24h' || recency === 'under_48h');
+        expect(r.covered, `${status} @ ${recency}`).toBe(
+          status !== 'paused' && (recency === 'under_24h' || recency === 'under_48h'),
+        );
       }
     }
+  });
+});
+
+describe('saasWorkloadLabel', () => {
+  it.each([
+    ['m365_mail', 'Microsoft 365 mail'],
+    ['m365_onedrive', 'Microsoft 365 OneDrive'],
+    ['m365_sharepoint', 'Microsoft 365 SharePoint'],
+    ['m365_teams', 'Microsoft 365 Teams'],
+    ['gws_mail', 'Google Workspace mail'],
+    ['gws_drive', 'Google Drive'],
+    ['gws_shared_drive', 'Google shared drives'],
+    ['future_workload', 'SaaS'],
+    ['__proto__', 'SaaS'],
+    ['constructor', 'SaaS'],
+    [undefined, 'SaaS'],
+  ])('labels %s as %s', (source, label) => {
+    expect(saasWorkloadLabel(source)).toBe(label);
+  });
+});
+
+describe('verifiedBootableState', () => {
+  it('only Axcient supplies the evidence in phase 1', () => {
+    expect(VERIFIED_BOOTABLE_PROVIDER_KEYS).toEqual(['axcient']);
+  });
+
+  it.each([
+    [{ providerKey: 'axcient', verifiedBootable: true }, 'passed'],
+    [{ providerKey: 'axcient', verifiedBootable: false }, 'failed'],
+    [{ providerKey: 'axcient', verifiedBootable: null }, 'never_run'],
+    [{ providerKey: 'cove', verifiedBootable: null }, 'not_applicable'],
+    // A provider outside the list cannot read as passed even if a value appears.
+    [{ providerKey: 'cove', verifiedBootable: true }, 'not_applicable'],
+    [{ providerKey: 'dropsuite', verifiedBootable: false }, 'not_applicable'],
+    [{ providerKey: null }, 'not_applicable'], // first-party row
+    [{ providerKey: 'cove' }, 'not_applicable'], // field absent: old persisted report row
+    // A report saved before W02 can already hold an Axcient row (W01 shipped the
+    // adapter first). No field means nobody recorded a check, not "never run".
+    [{ providerKey: 'axcient' }, 'not_applicable'],
+  ] as const)('verifiedBootableState(%j) => %s', (row, expected) => {
+    expect(verifiedBootableState(row)).toBe(expected);
   });
 });

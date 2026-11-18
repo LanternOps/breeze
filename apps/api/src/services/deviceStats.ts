@@ -28,19 +28,31 @@ export const EMPTY_DEVICE_STATS: DeviceStats = {
 };
 
 /**
- * Exact fleet-wide device counts by status, computed in SQL.
- *
- * Shared by GET /devices/stats and the `get_fleet_device_stats` AI tool so the
- * two cannot drift. The caller supplies ONLY the tenant/site/device narrowing
- * (`scope`); the exclusions common to every tech-facing count (decommissioned,
- * ephemeral Quick Support devices, parked devices) are applied here.
+ * The exclusions common to every tech-facing device count: decommissioned
+ * devices, ephemeral Quick Support devices, and parked (unassigned-pool)
+ * devices. Shared by the device KPIs (`queryDeviceStats`) and the patch
+ * compliance population (GET /patches/compliance and its exported report) so
+ * a dashboard card can never count a device the Total Devices tile omits
+ * (#9611). Returns a fresh array; callers append their own scope.
  */
-export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceStats> {
-  const conditions: SQL[] = [
+export function techFacingDeviceConditions(): SQL[] {
+  return [
     sql`${devices.status} != 'decommissioned'`,
     eq(devices.isEphemeral, false),
     notParkedDeviceCondition(),
   ];
+}
+
+/**
+ * Exact fleet-wide device counts by status, computed in SQL.
+ *
+ * Shared by GET /devices/stats and the `get_fleet_device_stats` AI tool so the
+ * two cannot drift. The caller supplies ONLY the tenant/site/device narrowing
+ * (`scope`); the exclusions common to every tech-facing count are applied here
+ * via `techFacingDeviceConditions`.
+ */
+export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceStats> {
+  const conditions: SQL[] = techFacingDeviceConditions();
   if (scope) conditions.push(scope);
 
   const rows = await db

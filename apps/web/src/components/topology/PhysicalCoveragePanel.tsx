@@ -11,14 +11,15 @@ const KNOWN = new Set<string>(TOPOLOGY_COVERAGE_REASON_CODES);
  * A complete-empty scope, a timeout and an unmapped controller site never read
  * alike. A reason code this build does not know falls back to the server text.
  * Compact (2026-10-03): the state is one inline status; the reasons sit behind a disclosure
- * button (keyboard-operable, Escape closes and returns focus) so the toolbar stays one row.
+ * button (keyboard-operable, Escape closes and returns focus) so the toolbar stays one row. It sits at the
+ * row's right end (2026-10-25), so the reasons open right-aligned; on a phone they anchor to the status row.
  */
 export default function PhysicalCoveragePanel({ coverage }: { coverage: GraphResponse['coverage'] }) {
   const { t } = useTranslation('topology');
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
   const close = () => { setOpen(false); toggle.current?.focus(); };
-  return <span data-testid="topology-coverage-panel" className="relative inline-flex items-center gap-1" onKeyDown={(event) => { if (open && event.key === 'Escape') close(); }}>
+  return <span data-testid="topology-coverage-panel" className="inline-flex items-center gap-1 sm:relative" onKeyDown={(event) => { if (open && event.key === 'Escape') { event.preventDefault(); close(); } }}>
     <span role="status" data-testid="topology-coverage">{t('coverage', { state: t(/* i18n-dynamic */ `coveragePanel.state.${coverage.state}`) })}</span>
     {coverage.reasons.length > 0 && <>
       <button ref={toggle} type="button" aria-expanded={open} aria-controls="topology-coverage-reasons" aria-label={t('coveragePanel.title')} title={t('coveragePanel.title')}
@@ -26,7 +27,7 @@ export default function PhysicalCoveragePanel({ coverage }: { coverage: GraphRes
         <Info className="h-4 w-4" aria-hidden="true" />
       </button>
       <ul id="topology-coverage-reasons" data-testid="topology-coverage-reasons" hidden={!open} aria-label={t('coveragePanel.title')} tabIndex={-1}
-        className="absolute left-0 top-full z-30 mt-1 w-[26rem] max-w-[calc(100vw-2rem)] list-inside list-disc space-y-1 rounded-md border bg-popover p-3 text-sm text-popover-foreground shadow-lg">
+        className="absolute left-0 top-full z-30 mt-1 w-[26rem] sm:left-auto sm:right-0 max-w-[calc(100vw-2rem)] list-inside list-disc space-y-1 rounded-md border bg-popover p-3 text-sm text-popover-foreground shadow-lg">
         {coverage.reasons.map((reason) => <li key={reason.code} data-testid={`topology-coverage-reason-${reason.code}`} className="break-words">
           {KNOWN.has(reason.code) ? t(/* i18n-dynamic */ `coveragePanel.reasons.${reason.code}`) : reason.message}
           {reason.count !== undefined && <> {t('coveragePanel.scopeCount', { count: reason.count })}</>}

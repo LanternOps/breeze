@@ -25,6 +25,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 // Identifiable markers so we can assert which sub-view rendered.
 vi.mock('./ContractEditor', () => ({ default: () => <div data-testid="mock-contract-editor" /> }));
 vi.mock('./ContractDetail', () => ({ default: () => <div data-testid="mock-contract-detail" /> }));
+vi.mock('../agreements/RecordSignedAgreementDialog', () => ({ default: () => null }));
 
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api/contracts')>();
@@ -83,5 +84,23 @@ describe('ContractWorkspace permission gating', () => {
     mockContract('draft');
     render(<ContractWorkspace contractId="c1" />);
     await waitFor(() => expect(screen.getByTestId('mock-contract-editor')).toBeInTheDocument());
+  });
+
+  // #9075 W2a (OD7 B): recording a client's signature is an agreements:send
+  // act, no longer agreements:write. The server re-checks; this hides the entry.
+  it('shows Record signed agreement to a holder of agreements:send', async () => {
+    state.permissions = [{ resource: 'agreements', action: 'send' }];
+    mockContract('active');
+    render(<ContractWorkspace contractId="c1" />);
+    await screen.findByTestId('contract-workspace-title');
+    expect(screen.getByTestId('contract-record-signed-open')).toBeInTheDocument();
+  });
+
+  it('hides Record signed agreement from a holder of agreements:write alone', async () => {
+    state.permissions = [{ resource: 'agreements', action: 'write' }];
+    mockContract('active');
+    render(<ContractWorkspace contractId="c1" />);
+    await screen.findByTestId('contract-workspace-title');
+    expect(screen.queryByTestId('contract-record-signed-open')).toBeNull();
   });
 });

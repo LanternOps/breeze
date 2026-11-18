@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransactionIfHeld } from '../../db';
 import { monitorDeviceState, networkMonitors, organizations } from '../../db/schema';
 import { evaluateNetworkCheckAlertsForDevice } from '../alertService';
 import { detachMonitorFromDevice } from './episodeService';
@@ -212,22 +212,28 @@ export async function evaluateNetworkCheckAlertsForOrg(orgId: string): Promise<N
   const monitorIds = [...evaluatedMonitorIds];
   if (monitorIds.length > 0) {
     try {
-      const open = await db
-        .select({ monitorId: monitorDeviceState.monitorId, deviceId: monitorDeviceState.deviceId })
-        .from(monitorDeviceState)
-        .where(and(
-          eq(monitorDeviceState.orgId, orgId),
-          inArray(monitorDeviceState.monitorId, monitorIds),
-          isNotNull(monitorDeviceState.currentEpisodeId),
-        ));
-      for (const row of open) {
-        // Belt and braces with the inArray above: never touch a monitor that
-        // was not evaluated this tick.
-        if (!evaluatedMonitorIds.has(row.monitorId)) continue;
-        if (alertDeviceByMonitor.get(row.monitorId) === row.deviceId) continue;
-        await detachMonitorFromDevice(row.monitorId, row.deviceId);
-        result.staleEpisodesDetached++;
-      }
+      // One savepoint, counted after it: a failure rolls back every detach here,
+      // so none of them may stay in the count (#11225).
+      result.staleEpisodesDetached += await withDbTransactionIfHeld(async () => {
+        let detached = 0;
+        const open = await db
+          .select({ monitorId: monitorDeviceState.monitorId, deviceId: monitorDeviceState.deviceId })
+          .from(monitorDeviceState)
+          .where(and(
+            eq(monitorDeviceState.orgId, orgId),
+            inArray(monitorDeviceState.monitorId, monitorIds),
+            isNotNull(monitorDeviceState.currentEpisodeId),
+          ));
+        for (const row of open) {
+          // Belt and braces with the inArray above: never touch a monitor that
+          // was not evaluated this tick.
+          if (!evaluatedMonitorIds.has(row.monitorId)) continue;
+          if (alertDeviceByMonitor.get(row.monitorId) === row.deviceId) continue;
+          await detachMonitorFromDevice(row.monitorId, row.deviceId);
+          detached++;
+        }
+        return detached;
+      });
     } catch (error) {
       console.error(`[NetworkCheckSweep] Failed to detach stale network check episodes for org ${orgId}:`, error);
       captureException(error, undefined, {

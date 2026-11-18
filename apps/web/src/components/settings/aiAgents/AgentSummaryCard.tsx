@@ -4,6 +4,7 @@ import type { AgentPreviewDto } from '@breeze/shared';
 import { badgeClass, modeTone } from '../../aiAgents/statusBadge';
 import { formatCurrency, formatPercent, resolvedFormattingLocale } from '@/lib/i18n/format';
 import type { OperationOutcome } from './capabilityModel';
+import { catalogActionLabel, catalogToolLabel, sentenceCase } from './catalogLabels';
 
 export interface AgentSummaryCardProps {
   preview: AgentPreviewDto;
@@ -48,14 +49,6 @@ const OUTCOME_TONE: Record<OperationOutcome, 'warning' | 'info' | 'danger'> = {
   logged_proposal: 'info',
   unattended: 'danger',
 };
-
-/** `manage_startup_items` -> "Manage startup items" — last-resort label for a
- *  tool/action this catalog namespace has no translation for yet. Mirrors
- *  CapabilityPicker.tsx's own `sentenceCase`. */
-function sentenceCase(token: string): string {
-  const words = token.replace(/[_:-]+/g, ' ').trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
 
 /** `'manage_services:restart'` -> `{ tool: 'manage_services', action: 'restart' }`; a bare entry -> `action: null`. */
 function splitOpKey(key: string): { tool: string; action: string | null } {
@@ -124,12 +117,8 @@ export default function AgentSummaryCard({
 }: AgentSummaryCardProps) {
   const { t } = useTranslation('settings');
 
-  const toolLabel = (toolName: string) =>
-    t(/* i18n-dynamic */ `aiAgentsPage.catalog.tools.${toolName}`, { defaultValue: sentenceCase(toolName) });
-  const actionLabel = (toolName: string, action: string | null) =>
-    action === null
-      ? toolLabel(toolName)
-      : t(/* i18n-dynamic */ `aiAgentsPage.catalog.actions.${toolName}.${action}`, { defaultValue: sentenceCase(action) });
+  const toolLabel = (toolName: string) => catalogToolLabel(t, toolName);
+  const actionLabel = (toolName: string, action: string | null) => catalogActionLabel(t, toolName, action);
   /** Standalone (not tool-grouped) chip/list label: combines tool + action
    *  since, unlike CapabilityPicker's nested rows, nothing else on this card
    *  names the tool a bare action label belongs to. */

@@ -74,6 +74,15 @@ export const MANAGED_EVIDENCE_REGISTRY = Object.freeze({
     definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}Identity and access review`,
     defaultConfig: { dormantDays: 45, homeCountries: [], adminDetail: true },
   },
+  // #11018 W2. Customer SLA performance over the org's tickets. Subjects are off
+  // because a delivered run reaches every portal user of the org, while a portal
+  // user may only read their own tickets. No `period`: an evidence run always
+  // reports its occurrence's period. No `sites` key: tickets have no site axis.
+  ticket_sla_performance: {
+    type: 'ticket_sla_performance',
+    definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}SLA performance`,
+    defaultConfig: { includeSubjects: false },
+  },
 } as const satisfies Readonly<Record<string, ManagedEvidenceEntry>>);
 
 export type ManagedEvidenceType = keyof typeof MANAGED_EVIDENCE_REGISTRY & ReportType;

@@ -654,6 +654,7 @@ describe('command allowlist', () => {
       'peripheral_policy_sync',
       'peripheral_policy_sync_v2',
       'filesystem_analysis',
+      'force_reboot',
     ]) expect(isLifecycleCommand(type)).toBe(false);
     for (const type of [
       'self_uninstall',

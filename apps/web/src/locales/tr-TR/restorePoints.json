@@ -15,6 +15,7 @@
     "verificationFailed": "Doğrulanamadı",
     "failed": "Başarısız — {{message}}",
     "failedNoMessage": "Başarısız",
+    "interrupted": "Bilinmiyor — aracı, bu geri yükleme noktasını bildiremeden durdu",
     "unknown": "Sonuç, konsolun bu sürümü tarafından tanınmıyor"
   },
   "list": {

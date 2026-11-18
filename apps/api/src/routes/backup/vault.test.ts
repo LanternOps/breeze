@@ -92,10 +92,10 @@ vi.mock('../../db/schema', () => ({
 }));
 
 const buildVaultConfigurePayloadMock = vi.fn();
-const resolveLatestVaultSyncSnapshotIdMock = vi.fn();
+const resolveVaultSyncSourceMock = vi.fn();
 vi.mock('../../services/vaultDeviceCommands', () => ({
   buildVaultConfigurePayload: (...args: unknown[]) => buildVaultConfigurePayloadMock(...(args as [])),
-  resolveLatestVaultSyncSnapshotId: (...args: unknown[]) => resolveLatestVaultSyncSnapshotIdMock(...(args as [])),
+  resolveVaultSyncSource: (...args: unknown[]) => resolveVaultSyncSourceMock(...(args as [])),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -165,7 +165,9 @@ describe('vault routes', () => {
     };
     permissionsState = undefined;
     buildVaultConfigurePayloadMock.mockResolvedValue({ vaultPath: 'D:/Backups/Vault', retentionCount: 7, enabled: true });
-    resolveLatestVaultSyncSnapshotIdMock.mockResolvedValue('snap-latest');
+    resolveVaultSyncSourceMock.mockImplementation(async (_deviceId: string, _orgId: string, snapshotId?: string) => ({
+      ok: true, snapshotId: snapshotId ?? 'snap-latest', destination: null,
+    }));
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'command-default' } });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -341,6 +343,38 @@ describe('vault routes', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: true, id: VAULT_ID, deviceConfig: { status: 'queued' } });
+  });
+
+  // W03-D12 (#6757) regression: the shared updateVaultWithinCurrentSite takes
+  // the site allowlist, not the permissions object — an unrestricted caller
+  // WITH a permissions object (every real user) must still deactivate.
+  it('deactivates a vault for an unrestricted caller that carries a permissions object', async () => {
+    permissionsState = { allowedSiteIds: undefined };
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('locks the current selected-site device before DELETE for a site-restricted caller (W03-D12)', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const vaultLookup = chainMock([{ deviceId: DEVICE_ID }]);
+    const deviceLock = chainMock([{ id: DEVICE_ID }]);
+    selectMock.mockReturnValueOnce(vaultLookup).mockReturnValueOnce(deviceLock);
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(deviceLock.for).toHaveBeenCalledWith('update');
+    expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
   it('hides DELETE from a caller with an empty site ceiling before database or audit work', async () => {
@@ -670,7 +704,7 @@ describe('vault routes', () => {
 
       expect(res.status).toBe(200);
       expect((await res.json()).snapshotId).toBe('snap-latest');
-      expect(resolveLatestVaultSyncSnapshotIdMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID);
+      expect(resolveVaultSyncSourceMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, undefined);
       expect(pendingChain.set).toHaveBeenCalledWith(expect.objectContaining({
         lastSyncStatus: 'pending',
         lastSyncSnapshotId: 'snap-latest',
@@ -681,7 +715,9 @@ describe('vault routes', () => {
       selectMock
         .mockReturnValueOnce(chainMock([makeVault()]))
         .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
-      resolveLatestVaultSyncSnapshotIdMock.mockResolvedValueOnce(null);
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: false, status: 400, error: 'No backup snapshot to sync yet: run a file backup on this device first',
+      });
 
       const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
         method: 'POST',
@@ -694,7 +730,7 @@ describe('vault routes', () => {
       expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
     });
 
-    it('does not look up a default when the caller names a snapshot', async () => {
+    it('resolves the named snapshot on this device in this org', async () => {
       selectMock
         .mockReturnValueOnce(chainMock([makeVault()]))
         .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
@@ -706,12 +742,112 @@ describe('vault routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(resolveLatestVaultSyncSnapshotIdMock).not.toHaveBeenCalled();
+      expect(resolveVaultSyncSourceMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'snap-chosen');
+    });
+
+    // #11858: Sync now read the helper's default store, not the device's
+    // policy-linked local destination.
+    it('names the destination the snapshot was written to in the command', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeVault()]))
+        .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+      updateMock.mockReturnValueOnce(chainMock([]));
+      const ref = { configId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', orgId: ORG_ID };
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: true, snapshotId: 'snap-dest', destination: { provider: 'local', providerConfigRef: ref },
+      });
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'VAULT_SYNC',
+        { vaultId: VAULT_ID, vaultPath: 'D:/Backups/Vault', snapshotId: 'snap-dest', provider: 'local', providerConfigRef: ref },
+        expect.objectContaining({ expectedOrgId: ORG_ID }),
+      );
+    });
+
+    it('refuses a sync whose snapshot destination no longer resolves, without marking the vault pending', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeVault()]))
+        .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: false, status: 422, error: 'Backup destination configuration not found for this snapshot',
+      });
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe('Backup destination configuration not found for this snapshot');
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
     });
   });
 
   // #8385 UI bug 3: the Device column showed a UUID prefix because the list
   // never carried a device name.
+  describe('network share vaults are not supported', () => {
+    it.each([
+      ['an SMB share type', { vaultType: 'smb', vaultPath: 'D:/Backups/Vault' }],
+      ['a UNC path', { vaultType: 'local', vaultPath: '\\\\nas\\vault' }],
+      ['an extended UNC path', { vaultType: 'usb', vaultPath: '\\\\?\\UNC\\nas\\vault' }],
+      ['a forward-slash UNC path', { vaultPath: '//nas/vault' }],
+      ['a GLOBALROOT device path', { vaultType: 'local', vaultPath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\Vault' }],
+      ['a relative path', { vaultType: 'usb', vaultPath: 'Vault' }],
+    ])('refuses to create a vault with %s', async (_label, target) => {
+      selectMock.mockReturnValue(chainMock([{ siteId: SITE_A }]));
+      insertMock.mockReturnValue(chainMock([makeVault(target)]));
+
+      const res = await app.request('/backup/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceId: DEVICE_ID, retentionCount: 7, ...target }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an SMB share type', { vaultType: 'smb' }],
+      ['a UNC path', { vaultPath: '\\\\nas\\vault' }],
+    ])('refuses to update a vault to %s', async (_label, target) => {
+      updateMock.mockReturnValue(chainMock([makeVault(target)]));
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(target),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
+    it('still deactivates a saved SMB share vault', async () => {
+      updateMock.mockReturnValueOnce(chainMock([makeVault({ vaultType: 'smb', vaultPath: '\\\\nas\\vault', isActive: false })]));
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('returns each vault device name (display name, else hostname)', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       { ...makeVault(), deviceDisplayName: 'File Server', deviceHostname: 'fs01' },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { computeTrendPoint, scoreAvHealth, scoreEncryption } from './securityPosture';
+import { computeTrendPoint, scoreAvHealth, scoreEncryption, scorePasswordPolicy } from './securityPosture';
 
 function deviceInputWithEncryption(encryptionStatus: string | null, encryptionDetails: unknown = null) {
   return {
@@ -117,6 +117,33 @@ describe('computeTrendPoint', () => {
   });
 });
 
+describe('computeTrendPoint — device weighting (#9643)', () => {
+  const entry = (overallScore: number, devicesAudited: number) => ({
+    overallScore,
+    devicesAudited,
+    patchComplianceScore: overallScore,
+    encryptionScore: overallScore,
+    avHealthScore: overallScore,
+    firewallScore: overallScore,
+    openPortsScore: overallScore,
+    passwordPolicyScore: overallScore,
+    osCurrencyScore: overallScore,
+    adminExposureScore: overallScore
+  });
+
+  it('weights org snapshots by device count so the trend matches the device-weighted overview score', () => {
+    // 90 devices at 100 + 10 devices at 0 => device-weighted 90 (unweighted would be 50).
+    const point = computeTrendPoint('2026-02-22', [entry(100, 90), entry(0, 10)]);
+    expect(point.overall).toBe(90);
+    expect(point.antivirus).toBe(90);
+  });
+
+  it('falls back to an equal average when every snapshot has zero devices', () => {
+    const point = computeTrendPoint('2026-02-22', [entry(100, 0), entry(0, 0)]);
+    expect(point.overall).toBe(50);
+  });
+});
+
 describe('scoreAvHealth — unknown real-time protection (#8252)', () => {
   function withRtp(realTimeProtection: boolean | null) {
     const input = deviceInputWithEncryption('encrypted');
@@ -135,5 +162,25 @@ describe('scoreAvHealth — unknown real-time protection (#8252)', () => {
     expect(unknown.dataGap).toBe('Real-time AV status is unavailable.');
     expect(off.score).toBe(20);
     expect(on.score).toBe(85);
+  });
+});
+
+describe('scorePasswordPolicy — maximum password age (#9597)', () => {
+  function withMaxAge(maxAgeDays: number) {
+    const input = deviceInputWithEncryption('encrypted');
+    return {
+      ...input,
+      security: {
+        ...input.security,
+        passwordPolicySummary: { minLength: 14, complexityEnabled: true, lockoutThreshold: 5, maxAgeDays }
+      }
+    };
+  }
+
+  // The agent reports 0 for "passwords never expire"; that must not count as
+  // meeting the 90-day rule.
+  it('does not credit a never-expiring policy for the max-age check', () => {
+    expect(scorePasswordPolicy(withMaxAge(0) as never).score).toBe(75);
+    expect(scorePasswordPolicy(withMaxAge(60) as never).score).toBe(100);
   });
 });

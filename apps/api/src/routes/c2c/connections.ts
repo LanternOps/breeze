@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { c2cConnections } from '../../db/schema';
 import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -183,10 +183,11 @@ connectionsRoutes.post(
         if (tokenResult) {
           // Update stored token if refreshed (scoped to orgId for defense-in-depth)
           const tokenExpiresAt = new Date(Date.now() + tokenResult.expiresIn * 1000);
-          await db
+          // Savepoint so a failed update rolls back and the request transaction survives the catch (#11203).
+          await withDbTransaction(async () => db
             .update(c2cConnections)
             .set({ accessToken: encryptSecret(tokenResult.accessToken), tokenExpiresAt, updatedAt: new Date() })
-            .where(and(eq(c2cConnections.id, row.id), eq(c2cConnections.orgId, orgId)));
+            .where(and(eq(c2cConnections.id, row.id), eq(c2cConnections.orgId, orgId))));
 
           testStatus = 'success';
           message = 'Platform app token is valid and Graph API is accessible';

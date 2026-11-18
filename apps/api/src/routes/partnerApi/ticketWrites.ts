@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   assignTicketSchema,
@@ -13,13 +13,14 @@ import {
 } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { ticketComments } from '../../db/schema';
+import { alerts, ticketComments } from '../../db/schema';
 import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../middleware/partnerApiAuth';
 import {
   addTicketComment,
   assignTicket,
   changeTicketStatus,
   createTicket,
+  linkAlertToTicket,
   TicketServiceError,
   updateTicketFields,
   type TicketActor,
@@ -106,6 +107,7 @@ export const partnerCreateTicketSchema = createTicketBaseSchema
   .extend({
     subject: text(255).trim().min(1),
     description: text(50_000).optional(),
+    alertId: z.string().guid().optional(),
     externalTicketId: externalTicketIdSchema.optional(),
     externalTicketUrl: externalTicketUrlSchema.optional(),
   })
@@ -287,7 +289,7 @@ partnerTicketWriteRoutes.post(
   zValidator('json', partnerCreateTicketSchema),
   async (c) => {
     const principal = c.get('partnerApiPrincipal');
-    const { externalTicketId, externalTicketUrl, ...input } = c.req.valid('json');
+    const { externalTicketId, externalTicketUrl, alertId, ...input } = c.req.valid('json');
     if (!principal.accessibleOrgIds.includes(input.orgId)) return orgDenied(c);
     const header = validateIdempotencyHeader(c, IDEMPOTENCY_CODES.invalid);
     if (!header.ok) return header.response;
@@ -301,7 +303,17 @@ partnerTicketWriteRoutes.post(
           return row ? { row, ref: await refFor(principal, resourceId) } : null;
         },
         async () => {
+          if (alertId) {
+            const [alert] = await db.select({ id: alerts.id, orgId: alerts.orgId }).from(alerts)
+              .where(and(eq(alerts.id, alertId), inArray(alerts.orgId, principal.accessibleOrgIds)))
+              .limit(1);
+            if (!alert) throw new TicketServiceError('Alert not found.', 404, 'partner_alert_not_found');
+            if (alert.orgId !== input.orgId) throw new TicketServiceError(
+              'Alert and ticket must belong to the same organization.', 422, 'partner_ticket_alert_org_mismatch',
+            );
+          }
           const ticket = await createTicket({ ...input, source: 'api' }, actorFrom(principal));
+          if (alertId) await linkAlertToTicket(ticket.id, alertId, actorFrom(principal), 'created_from');
           // Same transaction as the create: a 409 on the external id rolls
           // the ticket back too, so a conflict never leaves a duplicate.
           const ref = externalTicketId
@@ -456,10 +468,14 @@ partnerTicketWriteRoutes.post(
         const outcome = await withIdempotency(
           principal, route, header.key, { orgId, ticketId: id }, fingerprint,
           async (resourceId) => {
+            // Resolved by comment id: a merge re-points the comment to the
+            // survivor, so the stored claim's path ticket no longer owns it.
             const [row] = await db.select().from(ticketComments).where(eq(ticketComments.id, resourceId)).limit(1);
-            if (row && row.ticketId !== id) {
-              // The claim is bound to the path ticket and the fingerprint
-              // includes it: a linked comment on another ticket is corrupt state.
+            if (row && row.ticketId !== id && row.ticketId !== found.mergedIntoTicketId) {
+              // A path ticket's claim is bound to it and the fingerprint
+              // includes it: a linked comment on another ticket is corrupt
+              // state. The one legitimate exception is a merge tombstone's
+              // comment, moved to its survivor (one hop: merge compresses paths).
               throw new Error(`partner API idempotency claim for ticket ${id} names a comment of ticket ${row.ticketId}`);
             }
             return row ?? null;

@@ -779,7 +779,10 @@ describe('deferred event sources found in the real migrations', () => {
 
   it('include FKs from CREATE TABLE, ALTER TABLE ADD CONSTRAINT and the VALUES-loop EXECUTE', () => {
     expect(fk('device_group_memberships', 'devices')).toMatchObject({ parentDelete: true });
-    expect(fk('device_group_memberships', 'device_groups')).toMatchObject({ parentDelete: true });
+    // 2026-10-09-000200 added the deferred group-axis composite FK with ALTER
+    // TABLE ADD CONSTRAINT; 2027-01-12-200100 drops it (replaced by a deferred
+    // constraint trigger), so the source must be gone: DROP CONSTRAINT is seen.
+    expect(fk('device_group_memberships', 'device_groups')).toBeUndefined();
     expect(fk('users', 'organizations')).toMatchObject({ cols: ['org_id', 'partner_id'], parentDelete: true });
     expect(fk('agent_rollback_directives', 'devices')).toMatchObject({ parentDelete: false });
     expect(fk('device_hardware', 'devices')).toMatchObject({ parentDelete: true });
@@ -788,6 +791,9 @@ describe('deferred event sources found in the real migrations', () => {
 
   it('include deferred constraint triggers', () => {
     expect(sources).toContainEqual(expect.objectContaining({ kind: 'trigger', table: 'audit_logs' }));
+    // #10521 W1: the membership owner check and its reverse revalidation.
+    expect(sources).toContainEqual(expect.objectContaining({ kind: 'trigger', table: 'device_group_memberships' }));
+    expect(sources).toContainEqual(expect.objectContaining({ kind: 'trigger', table: 'device_groups' }));
   });
 
   it('drop an FK later made NOT DEFERRABLE', () => {

@@ -276,3 +276,51 @@ describe('bulkSelectableValueRows / defaultValueImportSelection', () => {
     expect(defaultValueImportSelection(rows)).toEqual(new Set([matched.index, linkMatch.index]));
   });
 });
+
+describe('device labels (#9679)', () => {
+  it('shows the hostname, not the raw uuid, for a picked candidate and in the Device column', () => {
+    render(
+      <CustomFieldImportPreviewTable
+        rows={[ambiguous]}
+        selected={new Set()}
+        onSelectedChange={vi.fn()}
+        picks={new Map([[2, CANDIDATE_0_ID]])}
+        onPick={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId('cf-import-row-2');
+    expect(within(row).getByTestId('cf-import-picked-2')).toHaveTextContent('WKS-01');
+    expect(row).not.toHaveTextContent(CANDIDATE_0_ID);
+  });
+
+  it('keeps "unresolved" for a row with no resolved device even when a file label exists', () => {
+    const notFound: AnnotatedValueRow = { ...matched, index: 5, outcome: 'not-found', deviceId: null, method: null };
+    render(
+      <CustomFieldImportPreviewTable
+        rows={[notFound]}
+        selected={new Set()}
+        onSelectedChange={vi.fn()}
+        picks={new Map()}
+        onPick={vi.fn()}
+        rowLabels={new Map([[5, 'WKS-77']])}
+      />,
+    );
+    expect(screen.getByTestId('cf-import-row-5')).not.toHaveTextContent('WKS-77');
+  });
+
+  it('shows a caller-supplied label for matched rows instead of the uuid', () => {
+    render(
+      <CustomFieldImportPreviewTable
+        rows={[matched]}
+        selected={new Set()}
+        onSelectedChange={vi.fn()}
+        picks={new Map()}
+        onPick={vi.fn()}
+        rowLabels={new Map([[0, 'WKS-09']])}
+      />,
+    );
+    const row = screen.getByTestId('cf-import-row-0');
+    expect(row).toHaveTextContent('WKS-09');
+    expect(row).not.toHaveTextContent('dev-1');
+  });
+});

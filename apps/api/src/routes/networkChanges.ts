@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   alerts,
   devices,
@@ -363,10 +363,12 @@ networkChangeRoutes.post(
 
     if (updated.alertId) {
       try {
-        await db
+        // Savepoint so a failed alert update rolls back and the request transaction
+        // keeps the primary link (#11203).
+        await withDbTransaction(async () => db
           .update(alerts)
           .set({ deviceId: body.deviceId })
-          .where(eq(alerts.id, updated.alertId));
+          .where(eq(alerts.id, updated.alertId!)));
       } catch (error) {
         console.warn(
           `[NetworkChanges] Failed to update alert ${updated.alertId} deviceId during link-device:`,

@@ -1,0 +1,59 @@
+{
+  "comment": "Break-glass code vectors (#10089, plan W1a Task 2). code = RFC 4648 base32 (no padding) of the first 5 bytes of HMAC-SHA256(secret, \"<isolationId lowercase>|<generation>|<hourBucket>\"), hourBucket = floor(unixSeconds / 3600). Generated once with Python's hmac + base64 (an implementation independent of the API and agent code); the API (breakGlass.test.ts) and the agent (W1d) both assert against this file.",
+  "vectors": [
+    {
+      "description": "zero secret, generation 1, bucket 0",
+      "secretHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "isolationId": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f",
+      "generation": 1,
+      "hourBucket": 0,
+      "message": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f|1|0",
+      "code": "FM24RB56"
+    },
+    {
+      "description": "zero secret, generation 7, bucket 493000",
+      "secretHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "isolationId": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f",
+      "generation": 7,
+      "hourBucket": 493000,
+      "message": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f|7|493000",
+      "code": "HA2UB5NH"
+    },
+    {
+      "description": "sequential secret, generation 1, bucket 493000",
+      "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "isolationId": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f",
+      "generation": 1,
+      "hourBucket": 493000,
+      "message": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f|1|493000",
+      "code": "QWOVGLXM"
+    },
+    {
+      "description": "sequential secret, generation 7, bucket 0",
+      "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "isolationId": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f",
+      "generation": 7,
+      "hourBucket": 0,
+      "message": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f|7|0",
+      "code": "US6HWKHK"
+    },
+    {
+      "description": "uppercase isolationId is lowercased before signing (same code as the vector above it)",
+      "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "isolationId": "6F1C2A9E-4B3D-4C5E-8F70-1A2B3C4D5E6F",
+      "generation": 1,
+      "hourBucket": 493000,
+      "message": "6f1c2a9e-4b3d-4c5e-8f70-1a2b3c4d5e6f|1|493000",
+      "code": "QWOVGLXM"
+    },
+    {
+      "description": "random secret, generation 2, bucket 493001",
+      "secretHex": "9f2c4e81b7d03a65c1e8f4092b7d6ea3540c19f8a2e67b3d0c5f81e9a4b26d17",
+      "isolationId": "0b9e7d6c-5a4f-4e3d-9c2b-1a0f9e8d7c6b",
+      "generation": 2,
+      "hourBucket": 493001,
+      "message": "0b9e7d6c-5a4f-4e3d-9c2b-1a0f9e8d7c6b|2|493001",
+      "code": "4I2X2LF6"
+    }
+  ]
+}

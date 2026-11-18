@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono } from 'hono';
 import { ERROR_CODES, SUPPORTED_LOCALES, resolveTicketPushPrefs, updateTicketPushPreferencesSchema } from '@breeze/shared';
 import type { SupportedLocale } from '@breeze/shared';
@@ -5,12 +6,12 @@ import { zValidator } from '../lib/validation';
 import { jsonError } from '../lib/jsonError';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { PUSHOVER_USER_KEY_PATTERN, sealPushoverUserKey } from '../services/ticketPushover';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
@@ -44,19 +45,16 @@ import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
+import { activeTotpFactorSql } from './auth/mfaFactorPredicates';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { resetAllFactorsAndInvalidate, sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
-import {
-  combineMfaPolicyFacts,
-  getScopeSecuritySettings,
-  getEffectiveMfaPolicy,
-  type MfaSecuritySettings,
-} from '../services/mfaPolicy';
-import { previewMfaEnrollmentGrace, resolveMfaGraceDays } from '../services/mfaEnrollmentGrace';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import { getScopedUser, hasFullPartnerMembership, listScopedUsers } from '../services/userDirectory';
 import { requestPendingEmailChange } from '../services/pendingEmail';
+import { cancelPendingEmailChange } from '../services/pendingEmailCancellation';
 import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
 import { clearEmailOptOut, isOptedOut, setEmailOptOut } from '../services/emailOptouts';
 
@@ -104,27 +102,11 @@ userRoutes.use('*', async (c, next) => {
     return;
   }
 
-  // Partner-wide user management requires a FULL-access partner membership.
-  // Gate directly on partnerUsers.orgAccess === 'all' — the same field the
-  // middleware uses to compute accessibleOrgIds (auth.ts). Do NOT infer this by
-  // comparing accessibleOrgIds against the partner's org list: accessibleOrgIds
-  // is filtered to active/trial, non-deleted orgs, so a full-access admin of a
-  // partner that has any suspended/soft-deleted org (or zero orgs yet) would be
-  // false-denied, while the org-list read under request RLS is itself narrowed
-  // (the RLS-vacuous trap). orgAccess is the authoritative, status-independent
-  // signal that distinguishes 'all' from the 'selected'/'none' escalation case.
-  const [membership] = await db
-    .select({ orgAccess: partnerUsers.orgAccess })
-    .from(partnerUsers)
-    .where(
-      and(
-        eq(partnerUsers.userId, auth.user.id),
-        eq(partnerUsers.partnerId, auth.partnerId)
-      )
-    )
-    .limit(1);
-
-  if (membership?.orgAccess !== 'all') {
+  // Partner-wide user management requires a FULL-access partner membership
+  // (partner_users.orgAccess === 'all'; see hasFullPartnerMembership for why
+  // accessibleOrgIds is not the signal). Shared with the W18 identity tools
+  // (#6789) so a tool can never ask for less than this router does.
+  if (!(await hasFullPartnerMembership(auth))) {
     throw new HTTPException(403, { message: 'Full partner organization access required' });
   }
 
@@ -164,6 +146,40 @@ const updateOrgAccessSchema = z.object({
 }).strict();
 
 type PartnerOrgAccess = 'all' | 'selected' | 'none';
+
+/**
+ * Restriction fields POST /users/invite accepts but cannot honour in the
+ * caller's scope (#10315). Returns the 400 message, or null when none apply.
+ *
+ * - Partner scope: `partner_users` has no site or device-group axis — partner
+ *   staff reach is `orgAccess`/`orgIds` only.
+ * - Organization scope: `orgIds` is partner-only. `deviceGroupIds` would be
+ *   stored on `organization_users` but nothing reads it for authorization, so
+ *   the invitee would see every device group — reject until it is enforced.
+ *   `siteIds` is enforced and stays allowed.
+ */
+function inviteRestrictionError(
+  scope: ScopeContext['scope'],
+  data: { orgIds?: string[]; siteIds?: string[]; deviceGroupIds?: string[] },
+): string | null {
+  if (scope === 'partner') {
+    if (data.siteIds !== undefined) {
+      return 'siteIds is only valid for organization scope; partner users are scoped with orgAccess/orgIds';
+    }
+    if (data.deviceGroupIds !== undefined) {
+      return 'deviceGroupIds is only valid for organization scope; partner users are scoped with orgAccess/orgIds';
+    }
+  }
+  if (scope === 'organization') {
+    if (data.orgIds !== undefined) {
+      return 'orgIds is only valid for partner scope';
+    }
+    if (data.deviceGroupIds !== undefined) {
+      return 'deviceGroupIds restrictions are not supported yet; restrict the user with siteIds instead';
+    }
+  }
+  return null;
+}
 
 /**
  * Shape rules for a partner membership's organization reach, shared by
@@ -211,49 +227,6 @@ async function allOrgsOwnedByPartner(partnerId: string, orgIds: string[]): Promi
   return orgIds.every((id) => owned.has(id));
 }
 
-async function getScopedUser(userId: string, scopeContext: ScopeContext) {
-  if (scopeContext.scope === 'partner') {
-    const [record] = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status,
-        roleId: roles.id,
-        roleName: roles.name,
-        roleIsSystem: roles.isSystem,
-        orgAccess: partnerUsers.orgAccess,
-        orgIds: partnerUsers.orgIds
-      })
-      .from(partnerUsers)
-      .innerJoin(users, eq(partnerUsers.userId, users.id))
-      .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-      .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
-      .limit(1);
-
-    return record || null;
-  }
-
-  const [record] = await db
-    .select({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      status: users.status,
-      roleId: roles.id,
-      roleName: roles.name,
-      roleIsSystem: roles.isSystem,
-      siteIds: organizationUsers.siteIds,
-      deviceGroupIds: organizationUsers.deviceGroupIds
-    })
-    .from(organizationUsers)
-    .innerJoin(users, eq(organizationUsers.userId, users.id))
-    .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
-    .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
-    .limit(1);
-
-  return record || null;
-}
 
 /**
  * The target's CURRENT membership in the caller's own tenant — role and (org
@@ -286,8 +259,8 @@ async function getScopedMembership(
   return row ?? null;
 }
 
-/** Thrown inside the MFA-reset transaction when the target's membership no
- * longer matches the row the rank + scope check was made against. */
+/** Thrown inside the MFA-reset or resend-invite transaction when the target's
+ * membership no longer matches the row the rank + scope check was made against. */
 class ScopedMembershipChangedError extends Error {
   constructor(readonly removed: boolean) {
     super(removed ? 'membership removed' : 'membership changed');
@@ -403,11 +376,12 @@ async function resolveInvitePartnerBranding(
     if (scopeContext.scope === 'partner') {
       partnerId = scopeContext.partnerId;
     } else {
-      const [org] = await db
+      // Savepoint so a failed lookup rolls back and the request transaction survives (#11203).
+      const [org] = await withDbTransaction(async () => db
         .select({ partnerId: organizations.partnerId })
         .from(organizations)
         .where(eq(organizations.id, scopeContext.orgId))
-        .limit(1);
+        .limit(1));
       partnerId = org?.partnerId ?? null;
     }
     if (!partnerId) return { custom: null };
@@ -476,7 +450,15 @@ async function generateAndDeliverInvite(
   invitee: { email: string; name: string },
   inviter: { name?: string; email?: string }
 ): Promise<{ inviteEmailSent: boolean; inviteUrl?: string; warning?: string }> {
-  const inviteToken = await generateInviteToken(userId);
+  return deliverInvite(scopeContext, invitee, inviter, await generateInviteToken(userId));
+}
+
+async function deliverInvite(
+  scopeContext: ScopeContext,
+  invitee: { email: string; name: string },
+  inviter: { name?: string; email?: string },
+  inviteToken: string | null
+): Promise<{ inviteEmailSent: boolean; inviteUrl?: string; warning?: string }> {
   if (!inviteToken) {
     return {
       inviteEmailSent: false,
@@ -537,6 +519,10 @@ userRoutes.get('/me', async (c) => {
       // #2707: lets the profile UI pick the approver-register re-auth tier
       // (passkey → TOTP code → password) without a second endpoint.
       mfaMethod: users.mfaMethod,
+      // #10650: whether an authenticator app is enrolled — as the primary or
+      // as the backup beside a primary passkey. Computed in SQL from the
+      // shared predicate so the secret column itself is never selected here.
+      totpEnrolled: activeTotpFactorSql(),
       // Exposed so the web sidebar can hide platform-admin-only nav (e.g.
       // account-deletion-requests) and skip its badge fetch — otherwise that
       // fetch 403s ("platform admin access required") on every page load for
@@ -562,7 +548,7 @@ userRoutes.get('/me', async (c) => {
 
   // Never spread `user` directly into the response from here on: it carries the
   // password hash. `userWithoutSecrets` is the only safe shape.
-  const { passwordHash, ...userWithoutSecrets } = user;
+  const { passwordHash, totpEnrolled, ...userWithoutSecrets } = user;
 
   const requiresSetup = userRequiresSetup(user);
 
@@ -605,9 +591,16 @@ userRoutes.get('/me', async (c) => {
   // `?? []` is correct fail-closed behavior. It must NEVER swallow a transient
   // cache/DB fault into null: those throw, so /me 500s and the client keeps its
   // last-known grants rather than silently blanking every gated control.
+  //
+  // #11621: resolved exactly as requirePermission resolves it — same axis AND
+  // the token scope — so a control the web shows is one the route admits. The
+  // scope is what lets a system-scope platform-admin session (no partner/org
+  // axis) resolve; without it this answered [] and the web hid every gated
+  // control from a user the routes themselves admit.
   const userPerms = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined
+    orgId: auth.orgId || undefined,
+    scope: auth.scope
   });
 
   return c.json({
@@ -617,6 +610,9 @@ userRoutes.get('/me', async (c) => {
     // auth store carries this through so UI that today says "set up MFA and
     // sign in again" can offer the IdP road instead of a dead end.
     hasPassword: passwordHash != null,
+    // Strict boolean: the driver hands back the SQL predicate's value; anything
+    // but `true` reads as "not enrolled".
+    totpEnrolled: totpEnrolled === true,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,
@@ -1327,171 +1323,15 @@ userRoutes.get('/:id/avatar', async (c) => {
   });
 });
 
-/**
- * RMM-QA-166 (D11): `mfaProtected` = mfa_enabled OR a live (non-disabled)
- * user_passkeys row — the same predicate `userIsMfaProtected` applies — so the
- * operator UI can offer "Reset MFA" for a passkey-only leftover whose
- * mfa_enabled flag was already cleared. The passkey probe runs under system
- * context (user_passkeys RLS is self-or-system) but ONLY over the ids the
- * caller's own tenant-scoped membership join just returned — it never widens
- * the row set (precedent: routes/sso.ts member passkey annotation).
- */
-async function annotateMfaProtected<T extends { id: string; mfaEnabled: boolean }>(
-  rows: T[]
-): Promise<Array<T & { mfaProtected: boolean }>> {
-  if (rows.length === 0) return [];
-  const ids = rows.map((row) => row.id);
-  const passkeyRows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ userId: userPasskeys.userId })
-        .from(userPasskeys)
-        .where(and(inArray(userPasskeys.userId, ids), isNull(userPasskeys.disabledAt)))
-    )
-  );
-  const withPasskey = new Set(passkeyRows.map((row) => row.userId));
-  return rows.map((row) => ({ ...row, mfaProtected: row.mfaEnabled === true || withPasskey.has(row.id) }));
-}
-
-/** One of these per row on the Admin → Users list MFA status column (#5690). */
-export type MfaStatusColumn = 'enrolled' | 'pending' | 'overdue' | 'not_required';
-
-/**
- * #5690 — derives the Admin → Users list MFA status column from facts already
- * in hand: `mfaProtected` (from `annotateMfaProtected`, above) plus each row's
- * `roleForceMfa`, `mfaEpoch` and persisted grace columns. One settings read
- * for the whole scope (`getScopeSecuritySettings`), not one per row, and
- * `previewMfaEnrollmentGrace` (read-only — never grants) rather than
- * `evaluateMfaEnrollmentGrace`, because a GET must not have the side effect of
- * granting enrolment windows to every role-forced user it lists.
- *
- * Reuses `combineMfaPolicyFacts` — the same rule `getEffectiveMfaPolicy`
- * applies at login/middleware — so this column can never disagree with live
- * enforcement about whether a user is actually gated right now.
- */
-function annotateMfaStatus<
-  T extends {
-    id: string;
-    mfaEnabled: boolean;
-    mfaProtected: boolean;
-    roleForceMfa: boolean;
-    mfaEpoch: number;
-    mfaEnrollmentDeadline: Date | string | null;
-    mfaEnrollmentGraceGrantedAt: Date | string | null;
-  }
->(rows: T[], security: MfaSecuritySettings | undefined): Array<
-  Omit<T, 'roleForceMfa' | 'mfaEpoch' | 'mfaEnrollmentDeadline' | 'mfaEnrollmentGraceGrantedAt'> & {
-    mfaStatus: MfaStatusColumn;
-    mfaEnrollmentDeadline: string | null;
-  }
-> {
-  const graceDays = resolveMfaGraceDays(security);
-  const now = new Date();
-  return rows.map((row) => {
-    const { roleForceMfa, mfaEpoch, mfaEnrollmentDeadline, mfaEnrollmentGraceGrantedAt, ...rest } = row;
-    const toDate = (v: Date | string | null) => (v == null ? null : v instanceof Date ? v : new Date(v));
-    const grace = previewMfaEnrollmentGrace({
-      hasFactor: row.mfaProtected,
-      mfaEpoch,
-      deadline: toDate(mfaEnrollmentDeadline),
-      grantedAt: toDate(mfaEnrollmentGraceGrantedAt),
-      graceDays,
-      now,
-    });
-    const policy = combineMfaPolicyFacts({ roleForceMfa, security, grace });
-
-    // NOTE: during an active grace window `combineMfaPolicyFacts` intentionally
-    // reports `required: false` (that's what keeps the live enforcement gate
-    // from biting) — so `graceWindow === 'active'` must be checked BEFORE
-    // `required`, not after, or a pending user would misreport as
-    // `not_required`.
-    let mfaStatus: MfaStatusColumn;
-    if (row.mfaProtected) {
-      mfaStatus = 'enrolled';
-    } else if (policy.source.graceWindow === 'active') {
-      mfaStatus = 'pending';
-    } else if (!policy.required) {
-      mfaStatus = 'not_required';
-    } else {
-      mfaStatus = 'overdue';
-    }
-
-    return {
-      ...rest,
-      mfaStatus,
-      mfaEnrollmentDeadline: mfaStatus === 'pending' ? (policy.pendingEnrollment?.deadline ?? null) : null,
-    };
-  });
-}
-
 userRoutes.get(
   '/',
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
-
-    if (scopeContext.scope === 'partner') {
-      const data = await db
-        .select({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          status: users.status,
-          lastLoginAt: users.lastLoginAt,
-          mfaEnabled: users.mfaEnabled,
-          mfaEpoch: users.mfaEpoch,
-          mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
-          mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
-          roleId: roles.id,
-          roleName: roles.name,
-          roleForceMfa: roles.forceMfa,
-          orgAccess: partnerUsers.orgAccess,
-          orgIds: partnerUsers.orgIds
-        })
-        .from(partnerUsers)
-        .innerJoin(users, eq(partnerUsers.userId, users.id))
-        .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-        .where(eq(partnerUsers.partnerId, scopeContext.partnerId));
-
-      const withProtected = await annotateMfaProtected(data);
-      const security = await getScopeSecuritySettings({
-        scope: 'partner',
-        partnerId: scopeContext.partnerId,
-        orgId: null,
-      });
-      return c.json({ data: annotateMfaStatus(withProtected, security) });
-    }
-
-    const data = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status,
-        lastLoginAt: users.lastLoginAt,
-        mfaEnabled: users.mfaEnabled,
-        mfaEpoch: users.mfaEpoch,
-        mfaEnrollmentDeadline: users.mfaEnrollmentDeadline,
-        mfaEnrollmentGraceGrantedAt: users.mfaEnrollmentGraceGrantedAt,
-        roleId: roles.id,
-        roleName: roles.name,
-        roleForceMfa: roles.forceMfa,
-        siteIds: organizationUsers.siteIds,
-        deviceGroupIds: organizationUsers.deviceGroupIds
-      })
-      .from(organizationUsers)
-      .innerJoin(users, eq(organizationUsers.userId, users.id))
-      .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
-      .where(eq(organizationUsers.orgId, scopeContext.orgId));
-
-    const withProtected = await annotateMfaProtected(data);
-    const security = await getScopeSecuritySettings({
-      scope: 'organization',
-      orgId: scopeContext.orgId,
-      partnerId: null,
-    });
-    return c.json({ data: annotateMfaStatus(withProtected, security) });
+    // W18 (#6789): the query and MFA-status annotation live in
+    // services/userDirectory.ts, shared with the list_users AI tool.
+    return c.json({ data: await listScopedUsers(scopeContext) });
   }
 );
 
@@ -1571,7 +1411,8 @@ userRoutes.post(
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const data = c.req.valid('json');
-
+    const partnerGroupIds = await findPartnerOwnedGroupIds(data.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
     const partnerOrgAccess = scopeContext.scope === 'partner'
       ? normalizePartnerOrgAccess(data.orgAccess ?? 'none', data.orgIds)
       : null;
@@ -1581,6 +1422,15 @@ userRoutes.post(
 
     if (scopeContext.scope === 'organization' && data.orgAccess) {
       return c.json({ error: 'orgAccess is only valid for partner scope' }, 400);
+    }
+
+    // #10315: a restriction the invite cannot store or enforce must be a 400,
+    // never silently dropped — dropping it creates a user broader than the
+    // caller asked for. Presence (even []) is rejected: an empty list is a
+    // restriction to nothing, which is just as unenforceable.
+    const restrictionError = inviteRestrictionError(scopeContext.scope, data);
+    if (restrictionError) {
+      return c.json({ error: restrictionError }, 400);
     }
 
     const role = await getScopedRole(data.roleId, scopeContext);
@@ -1743,6 +1593,11 @@ userRoutes.post(
             mfaRecoveryCodes: null,
             phoneNumber: null,
             phoneVerified: false,
+            // The invitee is a new holder of this row: nothing the previous
+            // holder proved or was granted carries over. Platform-admin is
+            // granted only by the startup bootstrap, to an eligible account.
+            isPlatformAdmin: false,
+            emailVerifiedAt: null,
             updatedAt: new Date()
           })
           .where(eq(users.id, user.id))
@@ -1797,7 +1652,9 @@ userRoutes.post(
           userId: user.id,
           roleId: data.roleId,
           siteIds: delegatedSiteIds,
-          deviceGroupIds: data.deviceGroupIds ?? null
+          // Always unrestricted: deviceGroupIds is rejected up front (#10315)
+          // because no authorization path reads this column yet.
+          deviceGroupIds: null
         })
         .returning();
 
@@ -1851,7 +1708,7 @@ userRoutes.post(
         orgAccess: scopeContext.scope === 'partner' ? data.orgAccess ?? 'none' : undefined,
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
         siteIds: scopeContext.scope === 'organization' ? result.delegatedSiteIds : undefined,
-        deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
+        deviceGroupIds: scopeContext.scope === 'organization' ? null : undefined,
         inviteEmailSent: invite.inviteEmailSent
       }
     });
@@ -1892,11 +1749,52 @@ userRoutes.post(
       return c.json({ error: 'User is not in invited status' }, 400);
     }
 
-    const invite = await generateAndDeliverInvite(
-      record.id,
+    // A resent link grants the pending membership's role and site access, so
+    // the caller gets the same rank + scope check as other member management:
+    // it must be able to assign that role and, when site-restricted, reach
+    // every site the membership carries. A role that does not resolve in the
+    // caller's scope is refused.
+    const inviteRole = await getScopedRole(record.roleId, scopeContext);
+    const inviteManageError = inviteRole
+      ? await assertCanManageTarget(c, auth, scopeContext, {
+          roleId: record.roleId,
+          isSystem: record.roleIsSystem,
+          siteIds: 'siteIds' in record ? record.siteIds : undefined,
+        })
+      : 'Cannot resolve the invited user\'s role for this scope';
+    if (inviteManageError) {
+      return c.json({ error: inviteManageError }, 403);
+    }
+
+    // Issue the new token while the membership row is locked and still
+    // carries the role and site allowlist checked above. A concurrent change
+    // takes the same row lock, so the check and the token issue are atomic.
+    // System context for the FOR UPDATE, as in the MFA reset; the WHERE pins
+    // the caller's own partner/org.
+    let inviteToken: string | null;
+    try {
+      inviteToken = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.transaction(async (tx) => {
+            await lockAndVerifyScopedMembership(tx, record.id, scopeContext, record);
+            return generateInviteToken(record.id);
+          })
+        )
+      );
+    } catch (err) {
+      if (err instanceof ScopedMembershipChangedError) {
+        return err.removed
+          ? jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found')
+          : c.json({ error: 'User membership changed; retry the resend' }, 409);
+      }
+      throw err;
+    }
+
+    const invite = await deliverInvite(
       scopeContext,
       { email: record.email, name: record.name },
-      auth.user
+      auth.user,
+      inviteToken
     );
 
     writeUserAudit(c, auth, scopeContext, {
@@ -1967,6 +1865,8 @@ userRoutes.patch(
       name?: string;
       status?: 'active' | 'invited' | 'disabled';
       disabledReason?: string | null;
+      isPlatformAdmin?: SQL<boolean>;
+      emailVerifiedAt?: SQL<Date | null>;
       updatedAt: Date;
     } = {
       updatedAt: new Date()
@@ -1983,6 +1883,15 @@ userRoutes.patch(
       // "disabled for another reason" (partner unsuspend must not re-enable it)
       // and so reactivation never leaves a stale marker behind. See #917 L-5.
       updates.disabledReason = null;
+      if (data.status !== 'disabled') {
+        // Reactivating a removed account (disabled, no password) makes its
+        // holder a new holder of the row, as on re-invite: nothing the previous
+        // holder proved or was granted carries over. Evaluated against the row
+        // as it is when the UPDATE runs, so it cannot race a concurrent change.
+        const removedAccount = sql`(${users.status} = 'disabled' AND ${users.passwordHash} IS NULL)`;
+        updates.isPlatformAdmin = sql<boolean>`CASE WHEN ${removedAccount} THEN false ELSE ${users.isPlatformAdmin} END`;
+        updates.emailVerifiedAt = sql<Date | null>`CASE WHEN ${removedAccount} THEN NULL ELSE ${users.emailVerifiedAt} END`;
+      }
     }
 
     const [updated] = await runOutsideDbContext(() =>
@@ -2008,6 +1917,7 @@ userRoutes.patch(
             // account does not resurrect keys minted before it (#7489).
             await advanceUserEpochs(tx, userId, { auth: true, credential: true });
             await revokeAllRefreshFamilies(tx, userId, `status:${row.status ?? 'changed'}`);
+            await cancelPendingEmailChange(tx, userId);
           }
           return [row];
         })
@@ -2134,6 +2044,7 @@ async function removeMembershipForScope(
         // never bumps epochs itself, so there is exactly one bump per removal.
         await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
         await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+        await cancelPendingEmailChange(tx, userId);
         await neutralizeUserIfOrphaned(tx, userId);
         return { deleted: true };
       })

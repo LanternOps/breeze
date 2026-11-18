@@ -25,6 +25,7 @@ const hoursAhead = (h: number) => new Date(NOW.getTime() + h * 3_600_000);
 function device(overrides: Partial<CredentialMaintenanceDevice> = {}): CredentialMaintenanceDevice {
   return {
     id: 'device-1',
+    agentId: 'agent-1',
     mtlsCertIssuedAt: null,
     mtlsCertExpiresAt: null,
     agentTokenHash: 'current-hash',
@@ -132,7 +133,7 @@ describe('computeCredentialMaintenance', () => {
     const result = await computeCredentialMaintenance({ ...base, pendingTokenPresented: true, device: d });
     expect(result).toEqual({});
     expect(promoteMock).toHaveBeenCalledWith({
-      deviceId: 'device-1',
+      agent: { deviceId: 'device-1', agentId: 'agent-1' },
       pendingTokenHash: 'pending-hash',
       expectedAgentTokenHash: 'current-hash',
       pendingWatchdogTokenHash: 'pending-watchdog',

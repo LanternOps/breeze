@@ -99,3 +99,30 @@ export const AUTO_CONTRACT_VARIABLES: readonly string[] = [
   'dates.effective',
   'dates.expiry',
 ];
+
+// The auto variables only a quote can fill. A standalone agreement (sent for
+// signature or recorded as signed elsewhere, #8865) renders with no quote, so
+// the API's resolveAutoVariables omits these keys and a template declaring one
+// fails the unresolved-variable gate unless a signed copy is attached (#9296).
+// Pinned against the resolver by contractTemplateRender.quoteOnly.test.ts.
+export const QUOTE_ONLY_CONTRACT_VARIABLES: readonly string[] = [
+  'quote.number',
+  'quote.title',
+  'totals.one_time',
+  'totals.monthly',
+  'totals.annual',
+  'totals.total',
+  'dates.expiry',
+];
+
+/** Declared AUTO variables a render without a quote cannot fill, in declared
+ *  order: the quote-only keys, plus any auto name the resolver does not know.
+ *  Manual variables are never included — the user can type those. */
+export function autoVariablesNeedingQuote(
+  declared: ReadonlyArray<Pick<ContractVariable, 'name' | 'kind'>> | null | undefined,
+): string[] {
+  return (declared ?? [])
+    .filter((v) => v.kind === 'auto'
+      && (QUOTE_ONLY_CONTRACT_VARIABLES.includes(v.name) || !AUTO_CONTRACT_VARIABLES.includes(v.name)))
+    .map((v) => v.name);
+}

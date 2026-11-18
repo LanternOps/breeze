@@ -1,4 +1,4 @@
-import { Fragment, useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Fragment, useState, useCallback, useMemo, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   MessageSquare,
@@ -34,7 +34,6 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
-  DraftingCompass,
   Bot,
   History,
   Activity,
@@ -46,7 +45,6 @@ import {
   ScanSearch,
   ArrowRightLeft,
   Usb,
-  MessagesSquare,
   Ticket,
   X,
   Cloud,
@@ -59,14 +57,15 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  MapPin,
   Cpu,
   TrendingUp,
-  BookCheck,
   Power,
   ServerCog,
   Inbox,
   Sparkles,
   Workflow,
+  Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -75,16 +74,19 @@ import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
-import { isNavGateVisible } from '../../lib/navGates';
-import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
+import { isNavGateVisible, type NavGateContext } from '../../lib/navGates';
+import { SETTINGS_CATALOG, sidebarSettingsEntries, type SettingsGroup } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import { REOPEN_EVENT } from '../whatsNew/WhatsNewSplash';
 import BrandHeader from './BrandHeader';
+import RailSectionFlyout from './RailSectionFlyout';
+import { tabbableNodes } from '../shared/tabbable';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
@@ -97,6 +99,9 @@ interface SidebarProps {
 }
 
 type SidebarMode = 'open' | 'hover' | 'collapsed';
+/** Where a nav link renders: the desktop sidebar (labels follow its mode), the
+ *  mobile drawer, or a rail section's flyout (both always labelled). */
+type NavSurface = 'sidebar' | 'mobile' | 'flyout';
 
 // ---------------------------------------------------------------------------
 // Hash tracking (#7900 W3): the Service Desk's typed entries share `/tickets`
@@ -215,6 +220,8 @@ type NavItem = {
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
   requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
+  /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
+  requiresAiOperatorTasks?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -235,7 +242,22 @@ type NavItem = {
   requiresPartnerWideAdmin?: boolean;
   // Additional permissions the user must all hold (see navGates.ts).
   alsoRequiredPermissions?: readonly PermissionGrant[];
+  // #10135: the in-section heading this item sits under (declared once in the
+  // section's `headings`). Members of one heading are contiguous; the heading
+  // renders only while at least one member passes its gates, so a user who can
+  // see none of them never gets a label over nothing.
+  heading?: NavHeadingId;
+  // #10135: rendered locked (lock icon, reason as title and screen-reader text)
+  // when /orgs/partners/me answers wispEnabled: false. Only the Wisp home sets it.
+  lockedWhenWispOff?: boolean;
+  // #10135: this link is a settings hub for the named catalogue group; it is
+  // hidden while none of that group's cards would be visible (see isNavItemVisible).
+  hubGroup?: SettingsGroup;
 };
+
+// In-section group headings. A heading is a label, never a link or a page.
+type NavHeadingId = 'workers';
+type NavHeading = { label: string; labelKey: string };
 
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
@@ -257,7 +279,7 @@ export const topLevelNav: NavItem[] = [
   { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
-  { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Security Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
@@ -280,6 +302,8 @@ interface NavSection {
   // section does not have to repeat `requiresModule` on each entry (and cannot
   // half-hide if a later item forgets it).
   requiresModule?: 'service_management';
+  // Labels for the headings this section's items reference (`NavItem.heading`).
+  headings?: Partial<Record<NavHeadingId, NavHeading>>;
 }
 
 // Exported for structural nav tests (see Sidebar.nav.test.tsx).
@@ -289,30 +313,40 @@ export const navSections: NavSection[] = [
     label: 'AI',
     labelKey: 'nav.sectionAi',
     icon: BrainCircuit,
+    // AI surface cohesion W04 (#10135, spec §5): the section reads as the
+    // sentence "Operators run Breeze. The workers do the work. Wisp runs your
+    // day." Settings-like AI pages (usage, script authoring, tool sources) live
+    // under Settings → AI (/settings/ai); fix memory and fleet design are
+    // reports reached from the agents that write them (Agents, Runs).
+    headings: {
+      workers: { label: 'Workers', labelKey: 'nav.workersHeading' },
+    },
     items: [
-      { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
-      // #6498: /workspace drives the own-session /ai/* routes, every one of
-      // which requires ai_sessions:use (#6396). Without this gate a role holding
-      // only devices:read saw the full AI Workspace and a bare "Permission
-      // denied" on send.
-      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
-      { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Wisp W08 (#9921): the Wisp home. #6498: Wisp and the chat drive the
+      // own-session /ai/* routes, every one of which requires ai_sessions:use
+      // (#6396). Without this gate a role holding only devices:read saw the full
+      // chat page and a bare "Permission denied" on send.
+      // #10200: partner tokens only — grants are partner-staff only, so for
+      // anyone else /wisp just forwards to /ai/chat.
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, lockedWhenWispOff: true, partnerScopeOnly: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      // The full-page multi-tab chat (formerly "AI Assistant" at /workspace,
+      // then /wisp/chat — both redirect here, AI surface cohesion W05 #10136).
+      { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/ai/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      { name: 'Agents', labelKey: 'nav.agents', href: '/settings/ai-agents', icon: Bot, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
-      { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'Runs', labelKey: 'nav.runs', href: '/ai-agents/runs', icon: History, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Operator Recipe Library W06 R1b (#6171): AI tasks + the recipe library.
+      // Same server flag as the "Delegate" action that starts one.
+      { name: 'AI Tasks', labelKey: 'nav.aiTasks', href: '/operator', icon: ListChecks, heading: 'workers', requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Cross-device patterns the workers found (formerly "Fleet Orchestration").
+      { name: 'Findings', labelKey: 'nav.findings', href: '/fleet', icon: Sparkles, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
-      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // AI Suggested Fixes W2 — observed fix track records (data, not settings).
-      { name: 'Fix memory', labelKey: 'nav.fixMemory', href: '/ai-agents/fix-memory', icon: BookCheck, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
-      // Design report, so it sits beside the other AI-report reads.
-      { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
-      { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
+      { name: 'Impact', labelKey: 'nav.impact', href: '/ai-agents/impact', icon: TrendingUp, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // A door for other people (end users in Office), not a worker.
+      { name: 'Breeze AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -323,6 +357,7 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sites', labelKey: 'nav.sites', href: '/settings/sites', icon: MapPin, testId: 'nav-sites', requiredPermission: { resource: 'sites', action: 'read' } },
       // Parked devices waiting for assignment — full partner admins only; the
       // pre-assignment routes also require devices:write and organizations:write.
       { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },
@@ -351,6 +386,8 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Overview', labelKey: 'nav.securityOverview', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'IOC Scans', labelKey: 'nav.securityScans', href: '/security/scans', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      // YARA rule sets used by IOC scans (#6267).
+      { name: 'Detection Rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: FileCode, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
         ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
@@ -445,7 +482,9 @@ export const navSections: NavSection[] = [
       // Daily-use subset of the settings catalogue (lib/settingsCatalog.ts —
       // gates are defined once there). Everything else lives on /settings, which
       // is reached through the "More settings" entry below (#6220).
-      ...sidebarSettingsEntries(),
+      // A `sidebarOnly` entry is a group hub (Settings → AI, #10135); it carries
+      // its group so visibility can require a card in that group.
+      ...sidebarSettingsEntries().map((entry) => (entry.sidebarOnly ? { ...entry, hubGroup: entry.group } : entry)),
       { name: 'More settings', labelKey: 'nav.moreSettings', href: '/settings', icon: Settings },
     ],
   },
@@ -469,6 +508,7 @@ export const navSections: NavSection[] = [
       // adds the console path once one exists. The SQL fallback documented in
       // docs/deploy/ai-kill-switch.md still works and remains the runbook.
       { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/admin/wisp', icon: Sparkles, platformAdminOnly: true },
       // System page (spec 2026-09-23-system-connections-page-design.md, D7):
       // deployment-wide Connections status plus the #6605 Deprecations report
       // as tabs. Replaces the standalone Deprecations entry; its old settings
@@ -547,7 +587,39 @@ const pathAliases: Record<string, string> = {
   // sibling route, not a child, so prefix matching would leave the item
   // unhighlighted there.
   '/agreements/signed': '/agreements/templates',
+  // #10135: fix memory and fleet design are reports reached from the agents
+  // that write them, so the roster entry stays lit (and the AI section open).
+  '/ai-agents/fix-memory': '/settings/ai-agents',
+  '/ai-agents/fleet-design': '/settings/ai-agents',
+  // #10135: the AI settings screens are cards on the Settings → AI hub, so the
+  // hub's sidebar link stays lit on them (and on their detail pages).
+  '/settings/ai-usage': '/settings/ai',
+  '/settings/ai-script-authoring': '/settings/ai',
+  '/settings/tool-sources': '/settings/ai',
+  '/settings/wisp-memory': '/settings/ai',
 };
+
+// Exact alias first, then the alias of the nearest aliased ancestor path
+// (`/settings/tool-sources/<id>` → the tool-sources alias).
+function resolvePathAlias(path: string): string {
+  if (pathAliases[path]) return pathAliases[path];
+  for (const [from, to] of Object.entries(pathAliases)) {
+    if (path.startsWith(`${from}/`)) return to;
+  }
+  return path;
+}
+
+// Splits a section's items into consecutive runs that share a heading (or have
+// none), in order, so the renderer can label each headed run.
+function groupByHeading(items: NavItem[]): Array<{ heading?: NavHeadingId; items: NavItem[] }> {
+  const runs: Array<{ heading?: NavHeadingId; items: NavItem[] }> = [];
+  for (const item of items) {
+    const last = runs[runs.length - 1];
+    if (last && last.heading === item.heading) last.items.push(item);
+    else runs.push({ heading: item.heading, items: [item] });
+  }
+  return runs;
+}
 
 // Determine which section a given href belongs to (for auto-expand)
 function sectionForHref(href: string): string | null {
@@ -694,16 +766,26 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [isTablet, setIsTablet] = useState(false);  // < 1024px
   const [isMobile, setIsMobile] = useState(false);   // < 768px
   const { isMobileMenuOpen, closeMobileMenu } = useUiStore();
+  // Tablet only: the labelled sidebar shown over the rail until dismissed.
+  // Never persisted — the saved mode is the desktop preference.
+  const [peek, setPeek] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
 
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  // #10135: 'unknown' until /orgs/partners/me answers (or for a non-partner
+  // token, which never asks). Only a real 'off' answer locks the Wisp entry, so
+  // a hosted page never flashes "not available" while the read is in flight.
+  const [wispServer, setWispServer] = useState<'unknown' | 'on' | 'off'>('unknown');
+  const wispEnabled = wispServer === 'on';
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
   const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const { enabled: flowsEnabled } = useFlowsGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
+  const { enabled: aiOperatorTasksEnabled } = useAiOperatorTasksGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -742,7 +824,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (jwtScope !== 'partner') return;
 
     let cancelled = false;
-    fetchWithAuth('/orgs/partners/me')
+    // Shared with the other islands reading partners/me at load (#9172).
+    getPartnersMe()
       .then((r) => {
         if (!r.ok) {
           if (r.status !== 403 && r.status !== 404) {
@@ -750,18 +833,20 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{
+        return r.data as {
           name?: string;
           aiForOfficeEnabled?: boolean;
+          wispEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
-        }>;
+        };
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
         setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
+        setWispServer(data.wispEnabled === true ? 'on' : 'off');
         // Fail OPEN on anything unexpected: an older API that does not send the
         // field, or a value this build does not know, falls back to `native`
         // rather than withdrawing a module the partner is paying for. A failed
@@ -806,17 +891,111 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return () => document.removeEventListener('astro:after-swap', handleNav);
   }, [closeMobileMenu]);
 
-  // Compute the effective mode: on tablet force collapsed, on mobile hide entirely
-  const effectiveMode: SidebarMode = isMobile ? 'collapsed' : isTablet ? 'collapsed' : mode;
+  // The drawer exists only below 768px. Close it when the viewport grows past
+  // that (rotation, window resize) so it does not reappear unasked on the way
+  // back, and the menu button never reports an open drawer nobody can see.
+  useEffect(() => {
+    if (!isMobile && isMobileMenuOpen) closeMobileMenu();
+  }, [isMobile, isMobileMenuOpen, closeMobileMenu]);
+
+  // Mobile drawer is a modal dialog: focus moves in on open (the current page's
+  // link, else the first stop) and returns on close to whatever opened it —
+  // the header's menu button, which a tap on iOS never focuses, so it is also
+  // the fallback.
+  const mobileDrawerOpen = isMobile && isMobileMenuOpen;
+  const mobileDrawerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+    const opener = document.activeElement;
+    const raf = requestAnimationFrame(() => {
+      const panel = mobileDrawerRef.current;
+      if (!panel) return;
+      const stops = tabbableNodes(panel);
+      const current = panel.querySelector<HTMLElement>('nav a[aria-current="page"]');
+      (current && stops.includes(current) ? current : stops[0] ?? panel).focus();
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      const target =
+        opener instanceof HTMLElement && opener !== document.body && opener.isConnected
+          ? opener
+          : document.querySelector<HTMLElement>('[data-testid="mobile-menu-toggle"]');
+      target?.focus();
+    };
+  }, [mobileDrawerOpen]);
+
+  const handleMobileDrawerKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      closeMobileMenu();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const stops = tabbableNodes(event.currentTarget);
+    if (stops.length === 0) return;
+    const first = stops[0]!;
+    const last = stops[stops.length - 1]!;
+    const active = document.activeElement;
+    if (active === event.currentTarget) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  // Compute the effective mode. Mobile renders only the drawer. Tablet ignores
+  // the saved desktop mode: the rail stays narrow (a 256px sidebar would eat a
+  // quarter of the viewport) and the toggle peeks the labelled sidebar over it.
+  const isTabletRail = isTablet && !isMobile;
+  const tabletPeek = isTabletRail && peek;
+  const effectiveMode: SidebarMode = isMobile ? 'collapsed' : isTablet ? (tabletPeek ? 'hover' : 'collapsed') : mode;
+  // Hover mode and the tablet rail float the sidebar over a fixed 64px spacer.
+  const overlayShell = effectiveMode === 'hover' || isTabletRail;
 
   // --- Derived state -------------------------------------------------------
-  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
-  const isNarrow = effectiveMode !== 'open';
+  const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && (hovered || tabletPeek));
+
+  // `hovered` only means something in hover mode. Leaving hover mode while the
+  // pointer is over the sidebar (the `[` shortcut, the toggle) never fires a
+  // mouseleave, so clear it — otherwise the next switch back to hover mode
+  // opens expanded with the pointer elsewhere.
+  useEffect(() => {
+    if (effectiveMode !== 'hover') setHovered(false);
+  }, [effectiveMode]);
+
+  useEffect(() => {
+    if (!isTabletRail) setPeek(false);
+  }, [isTabletRail]);
+
+  // The peek closes on Escape, a click outside the sidebar, or navigation.
+  useEffect(() => {
+    if (!tabletPeek) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPeek(false);
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      if (!asideRef.current?.contains(event.target as Node)) setPeek(false);
+    };
+    const onNavigate = () => setPeek(false);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('astro:after-swap', onNavigate);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('astro:after-swap', onNavigate);
+    };
+  }, [tabletPeek]);
 
   // Find the best matching active href. Includes the runtime-extension items
   // (not part of the static `allNavItems`) so an extension's own page/nav
   // link highlights correctly while it's active.
-  const resolvedPath = pathAliases[currentPath] ?? currentPath;
+  const resolvedPath = resolvePathAlias(currentPath);
   const recentEntries = useMemo(
     () => selectRecentEntries({ devices: recentDevices, pages: recentPages }, resolvedPath),
     [recentDevices, recentPages, resolvedPath],
@@ -894,9 +1073,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [activeSectionId, extensionsSection]);
 
   // --- Sidebar mode cycling ------------------------------------------------
-  // Reads the ref (not `mode`) so the one-time window listener below never
-  // goes stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT.
+  // Reads refs (not state) so the one-time window listener below never goes
+  // stale — the `[` shortcut dispatches SIDEBAR_CYCLE_MODE_EVENT. On the tablet
+  // rail the same control toggles the peek instead of the desktop preference.
+  const isTabletRailRef = useRef(isTabletRail);
+  isTabletRailRef.current = isTabletRail;
   const cycleMode = useCallback(() => {
+    if (isTabletRailRef.current) {
+      setPeek((prev) => !prev);
+      return;
+    }
     const current = modeRef.current;
     const next: SidebarMode = current === 'open' ? 'hover' : current === 'hover' ? 'collapsed' : 'open';
     setMode(next);
@@ -925,25 +1111,42 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // `renderNavItem` below so section-header visibility (renderCollapsibleSection)
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
-  const isNavItemVisible = (item: NavItem): boolean =>
-    isNavGateVisible(item, {
-      isPlatformAdmin,
-      permissions,
-      getScope: () => jwtScope,
-      autopayEnabled,
-      toolSourcesEnabled,
-      flowsEnabled,
-      preAssignmentEnabled,
-      aiForOfficeEnabled,
-      serviceManagementMode,
-      canManagePartnerWide,
-    });
+  const navGateContext: NavGateContext = {
+    isPlatformAdmin,
+    permissions,
+    getScope: () => jwtScope,
+    autopayEnabled,
+    toolSourcesEnabled,
+    flowsEnabled,
+    preAssignmentEnabled,
+    aiForOfficeEnabled,
+    wispEnabled,
+    serviceManagementMode,
+    canManagePartnerWide,
+    // Extension names from the validated `/extensions/<name>/…` nav hrefs.
+    loadedExtensions: extensionNavLinks.map((link) => link.href.split('/')[2]).filter(Boolean),
+  };
+  const isNavItemVisible = (item: NavItem): boolean => {
+    if (item.requiresAiOperatorTasks && !aiOperatorTasksEnabled) return false;
+    if (!isNavGateVisible(item, navGateContext)) return false;
+    // #10135: a settings hub link (Settings → AI) never leads to an empty page —
+    // it shows only while one of the hub's cards passes the same gates.
+    if (item.hubGroup) {
+      // The hub has no permission of its own, so keep it hidden until the
+      // permission set is known (like every permission-gated item) rather than
+      // flashing it on the server render for users who can open none of it.
+      if (permissions === undefined) return false;
+      return SETTINGS_CATALOG.some(
+        (entry) => entry.group === item.hubGroup && !entry.sidebarOnly && isNavGateVisible(entry, navGateContext),
+      );
+    }
+    return true;
+  };
 
-  const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
+  const renderNavItem = (item: NavItem, surface: NavSurface = 'sidebar') => {
     if (!isNavItemVisible(item)) return null;
     const isActive = item.href === activeHref;
-    const labels = forMobileOverlay ? true : showLabels;
-    const narrow = forMobileOverlay ? false : isNarrow;
+    const labels = surface === 'sidebar' ? showLabels : true;
     const badgeCount =
       item.badgeKind === 'deletion-requests'
         ? deletionRequestsCount
@@ -952,15 +1155,19 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
+    // #10135 (Review Focus 1): Wisp is never hidden and never plain chat — when
+    // the server has it off the entry stays, locked, with the reason. The link
+    // still opens /wisp, which shows the same lock.
+    const lockedReason = item.lockedWhenWispOff && wispServer === 'off' ? t('nav.wispLockedServer') : null;
     return (
       <a
-        data-testid={item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined)}
+        data-testid={lockedReason ? 'nav-wisp-locked' : (item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined))}
         key={item.name}
         href={item.href}
         aria-current={isActive ? 'page' : undefined}
-        title={narrow && !hovered ? label : undefined}
+        title={lockedReason ?? (labels ? undefined : label)}
         onClick={(event) => {
-          if (forMobileOverlay) closeMobileMenu();
+          if (surface === 'mobile') closeMobileMenu();
           // `/tickets#type=<t>` while already on /tickets: Astro's router would
           // pushState it silently (no hashchange), leaving TicketsPage's
           // useHashState filter stale (#8682 sweep). Cross-page clicks fall
@@ -978,8 +1185,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         )}
       >
-        <item.icon className="h-5 w-5 shrink-0" />
-        {labels && <span className="truncate flex-1">{label}</span>}
+        <item.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+        {/* The icon rail still names every link: the tooltip (`title`) is not
+            reliably announced, and is absent on touch. */}
+        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{label}</span>}
+        {lockedReason && (
+          <>
+            {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+            <span className="sr-only">{lockedReason}</span>
+          </>
+        )}
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
@@ -1051,10 +1266,37 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const renderTopLevelNav = (forMobileOverlay = false) =>
     topLevelNav.map((item) => (
       <Fragment key={item.name}>
-        {renderNavItem(item, forMobileOverlay)}
+        {renderNavItem(item, forMobileOverlay ? 'mobile' : 'sidebar')}
         {item.href === '/' && renderRecentGroup(forMobileOverlay)}
       </Fragment>
     ));
+
+  // --- A section's links, grouped under their headings ----------------------
+  const renderSectionItems = (section: NavSection, surface: NavSurface) =>
+    groupByHeading(section.items).map((run) => {
+      if (!run.heading) return run.items.map((item) => renderNavItem(item, surface));
+      // A heading over nothing is noise (Review Focus 3): drop it
+      // when every member is hidden by its gates.
+      if (!run.items.some(isNavItemVisible)) return null;
+      const heading = section.headings?.[run.heading];
+      const headingId = `nav-heading-${section.id}-${run.heading}${surface === 'sidebar' ? '' : `-${surface}`}`;
+      return (
+        <div key={`heading:${run.heading}`} role="group" aria-labelledby={headingId}>
+          <div
+            id={headingId}
+            data-testid={`nav-heading-${run.heading}`}
+            className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground/80"
+          >
+            {heading
+              ? t(/* i18n-dynamic */ heading.labelKey, { defaultValue: heading.label })
+              : run.heading}
+          </div>
+          <div className="ml-3 border-l pl-1">
+            {run.items.map((item) => renderNavItem(item, surface))}
+          </div>
+        </div>
+      );
+    });
 
   // --- Render a collapsible section ----------------------------------------
   const renderCollapsibleSection = (section: NavSection, forMobileOverlay = false) => {
@@ -1068,22 +1310,32 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
     const expanded = isSectionExpanded(section.id);
     const labels = forMobileOverlay ? true : showLabels;
+    const surface: NavSurface = forMobileOverlay ? 'mobile' : 'sidebar';
+    const sectionLabel = section.labelKey
+      ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label })
+      : section.label;
 
     return (
-      <div key={section.id}>
+      <div key={section.id} data-testid={`nav-section-${section.id}`}>
         <div className="my-2 border-t" />
-        {/* In collapsed mode (no labels), show only the section icon */}
+        {/* Icon rail: the section icon opens the section beside the sidebar. */}
         {!labels ? (
-          <div className="flex justify-center py-1.5">
-            <section.icon className="h-4 w-4 text-muted-foreground/70" />
-          </div>
+          <RailSectionFlyout
+            sectionId={section.id}
+            label={sectionLabel}
+            icon={section.icon}
+            active={section.id === activeSectionId}
+            renderLinks={() => renderSectionItems(section, 'flyout')}
+          />
         ) : (
           <button
+            data-testid={`nav-section-toggle-${section.id}`}
+            aria-expanded={expanded}
             onClick={() => toggleSection(section.id)}
             className="flex items-center justify-between w-full px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
             style={{ fontSize: '12px' }}
           >
-            <span>{section.labelKey ? t(/* i18n-dynamic */ section.labelKey, { defaultValue: section.label }) : section.label}</span>
+            <span>{sectionLabel}</span>
             <ChevronDown
               className={cn(
                 'h-3.5 w-3.5 transition-transform duration-200',
@@ -1102,9 +1354,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             aria-hidden={!expanded}
             inert={!expanded || undefined}
           >
-            <div>
-              {section.items.map((item) => renderNavItem(item, forMobileOverlay))}
-            </div>
+            <div>{renderSectionItems(section, surface)}</div>
           </div>
         )}
         {/* In collapsed mode, show nothing for children */}
@@ -1113,8 +1363,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   };
 
   // --- Toggle button icon --------------------------------------------------
-  const ToggleIcon = effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
-  const toggleTitle = effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
+  const ToggleIcon = isTabletRail
+    ? (tabletPeek ? ChevronLeft : ChevronRight)
+    : effectiveMode === 'open' ? ChevronLeft : effectiveMode === 'hover' ? ChevronsLeft : ChevronRight;
+  const toggleTitle = isTabletRail
+    ? (tabletPeek ? t('layout.sidebar.collapse') : t('layout.sidebar.expand'))
+    : effectiveMode === 'open' ? t('layout.sidebar.autoHide') : effectiveMode === 'hover' ? t('layout.sidebar.collapse') : t('layout.sidebar.expand');
 
   // --- Shared CSS for expand/collapse animation ----------------------------
   const sectionAnimCss = (
@@ -1136,6 +1390,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // --- Desktop sidebar shell -----------------------------------------------
   const sidebarContent = (
     <aside
+      ref={asideRef}
       className={cn(
         'flex h-full flex-col border-r bg-card transition-shadow duration-200',
         // Hide completely on mobile — the overlay handles it
@@ -1144,8 +1399,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         // invoice workspace header at z-20) must slide UNDER the popped-out
         // sidebar, not over it; page content < in-page sticky (10–20) <
         // chrome overlays (30–40) < modals/menus (50).
-        effectiveMode === 'hover' && 'absolute inset-y-0 left-0 z-30',
-        effectiveMode === 'hover' && hovered && 'shadow-xl',
+        overlayShell && 'absolute inset-y-0 left-0 z-30',
+        overlayShell && showLabels && 'shadow-xl',
         showLabels ? 'w-64' : 'w-16'
       )}
       onMouseEnter={effectiveMode === 'hover' ? () => setHovered(true) : undefined}
@@ -1168,16 +1423,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
               <ChevronsDownUp className="h-5 w-5" />
             </button>
           )}
-          {/* Only show mode toggle on non-tablet viewports */}
-          {!isTablet && (
-            <button
-              onClick={cycleMode}
-              title={toggleTitle}
-              className="rounded-md p-1.5 hover:bg-muted"
-            >
-              <ToggleIcon className="h-5 w-5" />
-            </button>
-          )}
+          {/* Desktop: cycles the saved mode. Tablet: peeks the labelled sidebar. */}
+          <button
+            type="button"
+            data-testid="sidebar-mode-toggle"
+            onClick={cycleMode}
+            title={toggleTitle}
+            aria-label={toggleTitle}
+            aria-expanded={isTabletRail ? tabletPeek : undefined}
+            className="rounded-md p-1.5 hover:bg-muted"
+          >
+            <ToggleIcon className="h-5 w-5" aria-hidden="true" />
+          </button>
         </div>
       </div>
 
@@ -1220,34 +1477,47 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   );
 
   // --- Mobile overlay sidebar ----------------------------------------------
-  const mobileOverlay = isMobile && isMobileMenuOpen && (
+  const mobileOverlay = mobileDrawerOpen && (
     <>
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-background/80 backdrop-blur-xs"
         onClick={closeMobileMenu}
+        aria-hidden="true"
       />
       {/* Slide-out sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-card border-r shadow-lg overflow-y-auto">
+      <aside
+        ref={mobileDrawerRef}
+        id="mobile-nav-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('layout.header.menu')}
+        tabIndex={-1}
+        onKeyDown={handleMobileDrawerKeyDown}
+        className="fixed inset-y-0 left-0 z-50 w-64 overflow-y-auto border-r bg-card shadow-lg focus:outline-hidden"
+      >
         {sectionAnimCss}
 
         <div className="flex h-16 items-center justify-between border-b px-4">
           <BrandHeader logoUrl={brandLogoUrl} name={brandName} showLabel />
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={collapseAllExceptActive}
               title={t('layout.sidebar.collapseSections')}
               aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
-              <ChevronsDownUp className="h-5 w-5" />
+              <ChevronsDownUp className="h-5 w-5" aria-hidden="true" />
             </button>
             <button
+              type="button"
               onClick={closeMobileMenu}
               className="rounded-md p-1.5 hover:bg-muted"
               title={t('layout.sidebar.closeMenu')}
+              aria-label={t('layout.sidebar.closeMenu')}
             >
-              <X className="h-5 w-5" />
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -1268,16 +1538,15 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return <>{mobileOverlay}</>;
   }
 
-  // In hover mode, wrap with a fixed-width spacer so content doesn't shift
-  if (effectiveMode === 'hover') {
-    return (
-      <div className="relative w-16 shrink-0">
-        {sidebarContent}
-      </div>
-    );
-  }
-
-  return sidebarContent;
+  // One wrapper in every desktop mode so switching modes never remounts the
+  // sidebar (a remount drops focus from the toggle the user just pressed and
+  // resets the nav's scroll). Overlay modes float the sidebar over a fixed
+  // 64px spacer so the page doesn't shift.
+  return (
+    <div data-testid="sidebar-shell" className={cn('relative flex shrink-0', overlayShell && 'w-16')}>
+      {sidebarContent}
+    </div>
+  );
 }
 
 export function VersionSpan({

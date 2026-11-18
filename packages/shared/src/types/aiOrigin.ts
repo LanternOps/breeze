@@ -4,12 +4,15 @@
  * `ai_assistant` — a human asked, in chat or over MCP; the human stays
  *   accountable and `triggered_by` / `created_by` are unchanged.
  * `ai_agent`     — an autonomous agent run decided; no human was in the loop.
+ * `flow`         — a published flow's run decided (tool catalog W04, #5219,
+ *   Open Decision 16): deterministic automation a human enabled, NOT an AI
+ *   decision — never tag it `ai_agent`. The UI renders it as "Flow".
  *
  * Absent (undefined here, NULL in the database) means "AI initiation not
  * recorded" — NEVER "a human did this". Consumers must render absence as the
  * absence of a marker.
  */
-export const AI_INITIATOR_KINDS = ['ai_assistant', 'ai_agent'] as const;
+export const AI_INITIATOR_KINDS = ['ai_assistant', 'ai_agent', 'flow'] as const;
 export type AiInitiatorKind = (typeof AI_INITIATOR_KINDS)[number];
 
 export interface AiOriginRef {
@@ -18,6 +21,14 @@ export interface AiOriginRef {
   sessionId?: string;
   /** ai_agent_runs.id */
   agentRunId?: string;
+  /**
+   * flow_runs.id — the flow variant (`kind: 'flow'`), set iff kind is 'flow'.
+   * Minted by `services/flows/flowAuthContext.ts`. Not serialized into the
+   * `ai_origin_*` columns: a flow-origin intent records its run on
+   * `action_intents.requesting_flow_run_id`, and the release path rebuilds the
+   * origin from there (plan Task A5).
+   */
+  flowRunId?: string;
 }
 
 export function isAiInitiatorKind(value: unknown): value is AiInitiatorKind {

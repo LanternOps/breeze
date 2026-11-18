@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -233,7 +235,7 @@ func (h *Heartbeat) installUserHelperBinary(tempPath, installPath, version strin
 	// ("process not found") is the benign no-helper-running case; any other
 	// non-zero (access denied, could-not-terminate) predicts an imminent
 	// sharing-violation on copy, so log it at WARN rather than hiding it.
-	killCmd := exec.Command("taskkill", "/F", "/IM", "breeze-user-helper.exe")
+	killCmd := procspawn.Command("taskkill", "/F", "/IM", "breeze-user-helper.exe")
 	killOut, killErr := killCmd.CombinedOutput()
 	switch {
 	case killErr == nil:
@@ -306,6 +308,18 @@ func applyDevUpdateAutoUpdatePolicy(h *Heartbeat, preserveAutoUpdate bool) {
 }
 
 func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, version string, preserveAutoUpdate bool) tools.CommandResult {
+	// First, so a refused push has not already turned auto-update off.
+	done, err := flashguard.Default().AdmitPowerAction("dev_update_agent")
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("dev_update refused: %w", err), time.Since(start).Milliseconds())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			done()
+		}
+	}()
+
 	applyDevUpdateAutoUpdatePolicy(h, preserveAutoUpdate)
 
 	// Resolve current binary path
@@ -331,12 +345,16 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	u := updater.New(updaterCfg)
 
 	// Run the update in a goroutine since UpdateFromURL triggers a restart
+	handedOff = true
 	go func() {
 		h.sendUpdateStatus(version)
 		// dev_push is agent-only — no user-helper swap on this path. If a
 		// future dev-push surface needs to swap a companion binary too, pass
 		// updater.UpdateOptions{UserHelper: ...} here.
-		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
+		updateErr := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{})
+		// Success has started a restart that can finish after this returns.
+		flashguard.ReleaseAfterHandoff(done, updateErr == nil)
+		if err := updateErr; err != nil {
 			// See updater.SafeDownloadErrorFields: this must not log
 			// err.Error() directly. net/http wraps EVERY transport-level
 			// failure — not just a policy rejection — in a *url.Error that
@@ -429,7 +447,7 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 	// Also kickstart any other helpers that may be loaded but weren't hit by
 	// the post-update kickstart routine above (e.g. a helper running in a
 	// disconnected user session).
-	_ = exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run()
+	_ = procspawn.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run()
 
 	return tools.NewSuccessResult(map[string]any{
 		"message":   "desktop helper replaced and kickstarted",

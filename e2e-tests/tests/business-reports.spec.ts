@@ -97,4 +97,203 @@ test.describe('Business reports — partner-owned AR aging', () => {
       expect(download.suggestedFilename()).toMatch(/\.pdf$/);
     });
   });
+
+  test('mrr_renewals: create from the Business card, generate, download', async ({ authedPage: page }) => {
+    test.setTimeout(180_000);
+    const reports = new ReportsPage(page);
+    await reports.gotoList();
+    await expect(reports.orgSwitcherTrigger()).toHaveAttribute('data-scope', 'org');
+
+    await test.step('open the MRR & renewals Business card and choose its options', async () => {
+      await reports.gotoTemplates();
+      await expect(reports.businessGroup()).toBeVisible();
+      await expect(reports.businessCardOfType('mrr_renewals')).toBeVisible();
+
+      await reports.useBusinessTemplateOfType('mrr_renewals').click();
+      await expect(reports.optionsModal()).toBeVisible();
+      await expect(reports.mrrRenewalsCreate()).toBeVisible();
+
+      await expect(reports.ownerScope()).toBeVisible();
+      await reports.ownerScopePartner().check();
+      await reports.mrrRenewalsGroupBy().selectOption('contract');
+      await reports.mrrRenewalsHorizon().selectOption('180');
+    });
+
+    const createResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith('/api/v1/reports'),
+    );
+    await reports.mrrRenewalsCreate().click();
+    const created = await createResponse;
+    expect(created.status(), await created.text()).toBe(201);
+    const body = (await created.json()) as { id?: string; data?: { id?: string } };
+    const reportId = body.data?.id ?? body.id;
+    expect(reportId, 'POST /reports returned an id').toBeTruthy();
+
+    await page.waitForURL('**/reports');
+    await expect(reports.reportRow(reportId!)).toBeVisible({ timeout: 15_000 });
+
+    const generateResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith(`/reports/${reportId}/generate`),
+    );
+    await reports.generate(reportId!).click();
+    const generated = await generateResponse;
+    expect(generated.ok(), `generate → ${generated.status()} ${await generated.text()}`).toBeTruthy();
+    const genBody = (await generated.json()) as { runId?: string; id?: string; data?: { runId?: string; id?: string } };
+    const runId = genBody.runId ?? genBody.data?.runId ?? genBody.data?.id ?? genBody.id;
+    expect(runId, `generate response carries the run id: ${JSON.stringify(genBody)}`).toBeTruthy();
+
+    await test.step('the run completes (async worker)', async () => {
+      await expect(async () => {
+        await reports.gotoList();
+        await reports.runsTab().click();
+        await expect(reports.runStatus(runId!)).toHaveAttribute('data-status', 'completed', { timeout: 3_000 });
+      }).toPass({ timeout: 90_000, intervals: [2_000, 3_000, 5_000] });
+    });
+
+    await test.step('download renders the stored snapshot to a PDF', async () => {
+      const downloadResponse = page.waitForResponse(
+        (res) => new URL(res.url()).pathname.endsWith(`/reports/runs/${runId}/download`),
+      );
+      const downloadEvent = page.waitForEvent('download', { timeout: 30_000 });
+      await reports.runDownload(runId!).click();
+      const res = await downloadResponse;
+      expect(res.status(), await res.text()).toBe(200);
+      const download = await downloadEvent;
+      expect(download.suggestedFilename()).toMatch(/\.pdf$/);
+    });
+  });
+
+  test('quote_win_rate: create from the Business card, generate, download', async ({ authedPage: page }) => {
+    test.setTimeout(180_000);
+    const reports = new ReportsPage(page);
+    await reports.gotoList();
+    await expect(reports.orgSwitcherTrigger()).toHaveAttribute('data-scope', 'org');
+
+    await test.step('open the Quote win rate Business card and choose its options', async () => {
+      await reports.gotoTemplates();
+      await expect(reports.businessGroup()).toBeVisible();
+      await expect(reports.businessCardOfType('quote_win_rate')).toBeVisible();
+
+      await reports.useBusinessTemplateOfType('quote_win_rate').click();
+      await expect(reports.optionsModal()).toBeVisible();
+      await expect(reports.quoteWinRateCreate()).toBeVisible();
+
+      await expect(reports.ownerScope()).toBeVisible();
+      await reports.ownerScopePartner().check();
+      await expect(reports.quoteWinRatePeriod()).toBeVisible();
+      await reports.quoteWinRateGroupBy().selectOption('author');
+    });
+
+    const createResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith('/api/v1/reports'),
+    );
+    await reports.quoteWinRateCreate().click();
+    const created = await createResponse;
+    expect(created.status(), await created.text()).toBe(201);
+    const body = (await created.json()) as { id?: string; data?: { id?: string } };
+    const reportId = body.data?.id ?? body.id;
+    expect(reportId, 'POST /reports returned an id').toBeTruthy();
+
+    await page.waitForURL('**/reports');
+    await expect(reports.reportRow(reportId!)).toBeVisible({ timeout: 15_000 });
+
+    const generateResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith(`/reports/${reportId}/generate`),
+    );
+    await reports.generate(reportId!).click();
+    const generated = await generateResponse;
+    expect(generated.ok(), `generate → ${generated.status()} ${await generated.text()}`).toBeTruthy();
+    const genBody = (await generated.json()) as { runId?: string; id?: string; data?: { runId?: string; id?: string } };
+    const runId = genBody.runId ?? genBody.data?.runId ?? genBody.data?.id ?? genBody.id;
+    expect(runId, `generate response carries the run id: ${JSON.stringify(genBody)}`).toBeTruthy();
+
+    await test.step('the run completes (async worker)', async () => {
+      await expect(async () => {
+        await reports.gotoList();
+        await reports.runsTab().click();
+        await expect(reports.runStatus(runId!)).toHaveAttribute('data-status', 'completed', { timeout: 3_000 });
+      }).toPass({ timeout: 90_000, intervals: [2_000, 3_000, 5_000] });
+    });
+
+    await test.step('download renders the stored snapshot to a PDF', async () => {
+      const downloadResponse = page.waitForResponse(
+        (res) => new URL(res.url()).pathname.endsWith(`/reports/runs/${runId}/download`),
+      );
+      const downloadEvent = page.waitForEvent('download', { timeout: 30_000 });
+      await reports.runDownload(runId!).click();
+      const res = await downloadResponse;
+      expect(res.status(), await res.text()).toBe(200);
+      const download = await downloadEvent;
+      expect(download.suggestedFilename()).toMatch(/\.pdf$/);
+    });
+  });
+
+  test('client_profitability: create with a labor rate, generate, download', async ({ authedPage: page }) => {
+    test.setTimeout(180_000);
+    const reports = new ReportsPage(page);
+    await reports.gotoList();
+    await expect(reports.orgSwitcherTrigger()).toHaveAttribute('data-scope', 'org');
+
+    await test.step('open the Client profitability Business card and choose its options', async () => {
+      await reports.gotoTemplates();
+      await expect(reports.businessGroup()).toBeVisible();
+      await expect(reports.businessCardOfType('client_profitability')).toBeVisible();
+
+      await reports.useBusinessTemplateOfType('client_profitability').click();
+      await expect(reports.optionsModal()).toBeVisible();
+      await expect(reports.clientProfitabilityCreate()).toBeVisible();
+
+      await expect(reports.ownerScope()).toBeVisible();
+      await reports.ownerScopePartner().check();
+      await reports.clientProfitabilityLaborEnabled().check();
+      await reports.clientProfitabilityLaborAmount().fill('45');
+    });
+
+    const createResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith('/api/v1/reports'),
+    );
+    await reports.clientProfitabilityCreate().click();
+    const created = await createResponse;
+    expect(created.status(), await created.text()).toBe(201);
+    // The labor rate is stored on the report definition, in a real currency.
+    const sent = created.request().postDataJSON() as { config?: { laborCostPerHour?: { amount: string; currencyCode: string } } };
+    expect(sent.config?.laborCostPerHour?.amount).toBe('45');
+    expect(sent.config?.laborCostPerHour?.currencyCode).toMatch(/^[A-Z]{3}$/);
+    const body = (await created.json()) as { id?: string; data?: { id?: string } };
+    const reportId = body.data?.id ?? body.id;
+    expect(reportId, 'POST /reports returned an id').toBeTruthy();
+
+    await page.waitForURL('**/reports');
+    await expect(reports.reportRow(reportId!)).toBeVisible({ timeout: 15_000 });
+
+    const generateResponse = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && new URL(res.url()).pathname.endsWith(`/reports/${reportId}/generate`),
+    );
+    await reports.generate(reportId!).click();
+    const generated = await generateResponse;
+    expect(generated.ok(), `generate → ${generated.status()} ${await generated.text()}`).toBeTruthy();
+    const genBody = (await generated.json()) as { runId?: string; id?: string; data?: { runId?: string; id?: string } };
+    const runId = genBody.runId ?? genBody.data?.runId ?? genBody.data?.id ?? genBody.id;
+    expect(runId, `generate response carries the run id: ${JSON.stringify(genBody)}`).toBeTruthy();
+
+    await test.step('the run completes (async worker)', async () => {
+      await expect(async () => {
+        await reports.gotoList();
+        await reports.runsTab().click();
+        await expect(reports.runStatus(runId!)).toHaveAttribute('data-status', 'completed', { timeout: 3_000 });
+      }).toPass({ timeout: 90_000, intervals: [2_000, 3_000, 5_000] });
+    });
+
+    await test.step('download renders the stored snapshot to a PDF', async () => {
+      const downloadResponse = page.waitForResponse(
+        (res) => new URL(res.url()).pathname.endsWith(`/reports/runs/${runId}/download`),
+      );
+      const downloadEvent = page.waitForEvent('download', { timeout: 30_000 });
+      await reports.runDownload(runId!).click();
+      const res = await downloadResponse;
+      expect(res.status(), await res.text()).toBe(200);
+      const download = await downloadEvent;
+      expect(download.suggestedFilename()).toMatch(/\.pdf$/);
+    });
+  });
 });

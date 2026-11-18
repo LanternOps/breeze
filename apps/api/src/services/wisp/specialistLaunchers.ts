@@ -1,0 +1,876 @@
+/**
+ * Wisp W07 — specialist launchers (Wisp design §7.5; plan Task 3).
+ *
+ * One function per `SpecialistKind`. Each turns an ALREADY-GATED request (the
+ * coordinator ran every grant / entitlement / depth / budget / permission
+ * gate) into the existing admission path for that agent, pinned to the grant
+ * revision and carrying the requesting assessment run as lineage. Nothing here
+ * decides whether a request may run; that is `coordinator.ts`. The launchers
+ * are reachable ONLY from the coordinator — no tool or route imports them.
+ *
+ * Idempotency (Review Focus 3): every launcher derives its admission key from
+ * the request id (`specialistDedupeKey`), so a retried finalizer or a
+ * redelivered release lands on the SAME `(org_id, dedupe_key)` row. A
+ * `duplicate` skip resolves the existing row and reports it as admitted.
+ */
+import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { AI_SWEEP_KINDS, bulkTicketReplyParamsSchema, type AiAgentKind } from '@breeze/shared';
+import { envFlag } from '../../config/env';
+import { captureException } from '../sentry';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { aiAgentRuns, aiAgents, type AnalysisScopeKind } from '../../db/schema/aiAgents';
+import { devices } from '../../db/schema/devices';
+import { sites } from '../../db/schema/orgs';
+import type { AuthContext } from '../../middleware/auth';
+import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgentSweepScheduler';
+import { admitAnalysisRun, type AdmitAnalysisRunInput } from '../aiAgents/analysisAdmission';
+import {
+  analysisContinuationOf,
+  buildAnalysisContinuationSeed,
+  chainRootOf,
+  deriveChainHandles,
+  type AnalysisContinuationRefusal,
+} from '../aiAgents/analysisContinuation';
+import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
+import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
+import { ensureTroubleshootAgent, TroubleshootBaselineConflictError } from '../aiAgents/troubleshootProvisioning';
+import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
+import { createAndEnqueueAgentRun, GrantDepthExceededError } from '../aiAgents/runService';
+import { effectiveSchedule } from '../aiAgents/scheduleMerge';
+import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService';
+import { RECIPE_AGENT_KINDS } from '../aiOperator/recipeReadiness';
+import { getRecipe } from '../aiOperator/recipes';
+import { admitTask } from '../aiOperator/taskService';
+import { ceilingHoldsPermission, type GrantCeiling } from './grantAuthority';
+import { resolveExportGrants } from '../aiToolsExportPermissions';
+import type { SpecialistKind } from './specialistPolicy';
+import { assessmentParamsSchema, launchAssessment, type AssessmentLaunchReport } from './specialists/assessmentLaunch';
+import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
+import { agentOffMessage, type AgentOffReason } from './specialistRefusalMessages';
+import { buildContinuationSeed, continuationDedupeKey, continuationOf } from './troubleshootContinuation';
+
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
+
+export type SpecialistRefusal =
+  | 'wisp_disabled' | 'not_entitled' | 'grant_inactive' | 'org_out_of_ceiling' | 'depth_exceeded'
+  | 'budget_exhausted' | 'permission_missing' | 'workspace_execute_required' | 'unknown_kind'
+  | 'invalid_params' | 'device_not_in_org' | 'no_sweep_schedule' | 'no_effective_agent'
+  // #10193: the effective agent exists but cannot accept a run (switched off,
+  // mode Off, or the server's agent kill switch); detail is the AgentOffReason.
+  | 'agent_disabled'
+  | 'admission_skipped' | 'too_many_requests'
+  // bulk_ticket_reply: the batch stopped part-way, or sent nothing at all —
+  // never reported as a success (the report travels with the refusal).
+  | 'bulk_reply_incomplete'
+  // device_troubleshooting continueFromRunId (#11085): the prior run may not be
+  // continued from here; detail is the ContinuationRefusalDetail.
+  | 'continuation_refused';
+
+export type LaunchResult =
+  /** `message`: the sentence the model reads back, when the launcher has one (#10406). */
+  | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport; message?: string }
+  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport | AssessmentLaunchReport };
+
+export interface LaunchContext {
+  orgId: string;
+  partnerId: string;
+  grantorUserId: string;
+  grant: { grantId: string; grantRevisionId: string; requestedByRunId: string | null };
+  requestId: string;
+  /** Parsed by `parseSpecialistParams` — the launcher re-narrows to its own shape. */
+  params: Record<string, unknown>;
+  /** The live ceiling the coordinator resolved (bulk reply re-checks every ticket against it). */
+  ceiling: GrantCeiling;
+  /** The acting human on the chat / approval paths; null on the auto-admit run path. */
+  actorAuth: AuthContext | null;
+  /** bulk_ticket_reply: the digest pinned when the request was made / approved. */
+  pinnedDigest: string | null;
+}
+
+/** `wisp-specialist-${requestId}` — the admission idempotency key for every kind. */
+export function specialistDedupeKey(requestId: string): string {
+  return `wisp-specialist-${requestId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Params (coordinator gate 6)
+// ---------------------------------------------------------------------------
+
+export const sweepParamsSchema = z.strictObject({
+  sweepKinds: z.array(z.enum(AI_SWEEP_KINDS)).min(1).max(AI_SWEEP_KINDS.length).optional(),
+});
+/**
+ * Wisp analysis sessions W02 (W00 C1): what an analysis covers. `scope`
+ * omitted with `deviceIds` means `devices`; omitted with only `siteId` means
+ * `site`; omitted with neither is refused (`scope_required`). Admission
+ * expands `site` / `org` under the live ceiling and freezes the device list.
+ */
+export function resolveAnalysisScope(params: {
+  scope?: AnalysisScopeKind;
+  deviceIds?: string[];
+  siteId?: string;
+}): AnalysisScopeKind | null {
+  if (params.scope) return params.scope;
+  if (params.deviceIds !== undefined) return 'devices';
+  if (params.siteId !== undefined) return 'site';
+  return null;
+}
+
+export const analysisParamsSchema = z.strictObject({
+  goal: z.string().trim().min(1).max(2000),
+  scope: z.enum(['devices', 'site', 'org']).optional(),
+  deviceIds: z.array(z.uuid()).min(1).max(200).optional(),
+  siteId: z.uuid().optional(),
+  // Wisp analysis sessions W03 (C1): continue a settled analysis run under the
+  // same grant. Its files are derived server-side; no parameter names a handle.
+  continueFromRunId: z.uuid().optional(),
+}).superRefine((params, issue) => {
+  // Contradictory params are refused with a readable detail, never silently
+  // dropped: an `org` analysis that quietly ignored a `siteId` would read a
+  // whole customer the technician meant to narrow.
+  const scope = resolveAnalysisScope(params);
+  const has = { deviceIds: params.deviceIds !== undefined, siteId: params.siteId !== undefined };
+  if (scope === null) {
+    issue.addIssue({ code: 'custom', path: [], message: 'scope_required' });
+  } else if (scope === 'devices') {
+    if (!has.deviceIds) issue.addIssue({ code: 'custom', path: ['deviceIds'], message: 'required for scope devices' });
+    if (has.siteId) issue.addIssue({ code: 'custom', path: ['siteId'], message: 'not allowed with scope devices' });
+  } else if (scope === 'site') {
+    if (!has.siteId) issue.addIssue({ code: 'custom', path: ['siteId'], message: 'required for scope site' });
+    if (has.deviceIds) issue.addIssue({ code: 'custom', path: ['deviceIds'], message: 'not allowed with scope site' });
+  } else if (has.deviceIds || has.siteId) {
+    issue.addIssue({ code: 'custom', path: ['scope'], message: 'org takes neither deviceIds nor siteId' });
+  }
+});
+export const operatorRecipeParamsSchema = z.strictObject({
+  workflowKey: z.string().trim().min(1).max(100),
+  workflowVersion: z.number().int().min(1),
+  objective: z.string().trim().min(1).max(500),
+  recipeInput: z.unknown(),
+});
+export const patchPlanParamsSchema = z.strictObject({});
+export const researchParamsSchema = z.strictObject({
+  deviceId: z.uuid(),
+  alertId: z.uuid().optional(),
+});
+
+/**
+ * #11084: one device, one goal. The goal is the model's restatement of the
+ * person's ask — untrusted in the run's prompt. #11085: `continueFromRunId`
+ * seeds the run from a settled prior run on the same device and grant.
+ */
+export const troubleshootParamsSchema = z.strictObject({
+  deviceId: z.uuid(),
+  goal: z.string().trim().min(5).max(TROUBLESHOOT_GOAL_MAX_CHARS),
+  continueFromRunId: z.uuid().optional(),
+});
+
+const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freeze({
+  sweep: sweepParamsSchema,
+  analysis: analysisParamsSchema,
+  operator_recipe: operatorRecipeParamsSchema,
+  patch_plan: patchPlanParamsSchema,
+  remediation_research: researchParamsSchema,
+  bulk_ticket_reply: bulkTicketReplyParamsSchema,
+  device_troubleshooting: troubleshootParamsSchema,
+  assessment: assessmentParamsSchema,
+});
+
+/** The parsed params for `kind`, or null when they do not fit its schema. */
+export function parseSpecialistParams(kind: SpecialistKind, params: unknown): Record<string, unknown> | null {
+  const parsed = PARAMS_SCHEMAS[kind].safeParse(params ?? {});
+  return parsed.success ? (parsed.data as Record<string, unknown>) : null;
+}
+
+/**
+ * Why `params` do not fit `kind`, for the model to correct its call (#10144);
+ * null when they parse. Zod's messages name the offending keys (the model's
+ * own input) and the expected shape; capped at 300 chars.
+ */
+export function specialistParamsError(kind: SpecialistKind, params: unknown): string | null {
+  const parsed = PARAMS_SCHEMAS[kind].safeParse(params ?? {});
+  if (parsed.success) return null;
+  return parsed.error.issues
+    .map((i) => (i.path.length > 0 ? `${i.path.join('.')}: ${i.message}` : i.message))
+    .join('; ')
+    .slice(0, 300);
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+const systemRead = <T>(fn: () => Promise<T>): Promise<T> =>
+  runOutsideDbContext(() => withSystemDbAccessContext(fn));
+
+/**
+ * The run a previous attempt of this request admitted, if any. A row left
+ * `failed`/`enqueue_failed` is NOT a replay: no worker will ever pick it up,
+ * and admission reclaims exactly that row as a new attempt.
+ */
+async function existingRunId(orgId: string, dedupeKey: string): Promise<string | null> {
+  const [row] = await systemRead(() => db
+    .select({ id: aiAgentRuns.id, status: aiAgentRuns.status, errorCode: aiAgentRuns.errorCode })
+    .from(aiAgentRuns)
+    .where(and(eq(aiAgentRuns.orgId, orgId), eq(aiAgentRuns.dedupeKey, dedupeKey)))
+    .limit(1));
+  if (!row || isEnqueueFailed(row)) return null;
+  return row.id;
+}
+
+const isEnqueueFailed = (run: { status?: string | null; errorCode?: string | null }) =>
+  run.status === 'failed' && run.errorCode === 'enqueue_failed';
+
+type RunAdmission = Parameters<typeof createAndEnqueueAgentRun>[0];
+
+/**
+ * Admit one grant-bearing run. Admission opens its own context and enqueues
+ * after commit (#1105), so it runs outside any caller context. A `duplicate`
+ * on this request's key is the idempotent replay; a depth-guard throw is a
+ * coordinator bug and refuses.
+ */
+async function admitRun(ctx: LaunchContext, input: RunAdmission): Promise<LaunchResult> {
+  // Every launcher keys on the request (specialistDedupeKey); a continuation
+  // keys on (prior run, chain) instead, so the lookup follows the input.
+  const dedupeKey = input.dedupeKey ?? specialistDedupeKey(ctx.requestId);
+  const prior = await existingRunId(ctx.orgId, dedupeKey);
+  if (prior) return { admitted: true, runId: prior };
+  let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
+  try {
+    result = await runOutsideDbContext(() => createAndEnqueueAgentRun(input));
+  } catch (err) {
+    if (err instanceof GrantDepthExceededError) return { refused: 'depth_exceeded' };
+    throw err;
+  }
+  // `created` with an enqueue failure hands back a row already marked failed
+  // (runService) — nothing will run it, so it is not an admission.
+  if (result.created) {
+    return isEnqueueFailed(result.run)
+      ? { refused: 'admission_skipped', detail: 'enqueue_failed' }
+      : { admitted: true, runId: result.run.id };
+  }
+  if (result.skipped === 'duplicate') {
+    const raced = await existingRunId(ctx.orgId, dedupeKey);
+    if (raced) return { admitted: true, runId: raced };
+  }
+  return { refused: 'admission_skipped', detail: result.skipped };
+}
+
+function triggerRefFor(ctx: LaunchContext, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    source: 'wisp_specialist',
+    requestId: ctx.requestId,
+    requestedByUserId: ctx.grantorUserId,
+    requestedByRunId: ctx.grant.requestedByRunId,
+    ...extra,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Prerequisites (#10144)
+// ---------------------------------------------------------------------------
+
+/**
+ * `message`, when set, is the person-facing sentence for THIS refusal (it can
+ * name the agent); otherwise the caller derives one from the code
+ * (specialistRefusalMessages).
+ */
+export type PrerequisiteRefusal = { refused: SpecialistRefusal; detail?: string; message?: string };
+
+export interface PrerequisiteArgs {
+  orgId: string;
+  partnerId: string;
+  /** Parsed by `parseSpecialistParams` for this kind. */
+  params: Record<string, unknown>;
+}
+
+/** The partner's enabled sweep baseline this org may run (narrowed to any requested kinds), or null. */
+async function findSweepSchedule(partnerId: string, orgId: string, sweepKinds: z.infer<typeof sweepParamsSchema>['sweepKinds']) {
+  const entries = await resolveEffectiveSchedulesForPartner(partnerId);
+  return entries.find((e) => {
+    if (e.baseline.kind !== 'sweep' || !e.baseline.enabled) return false;
+    const eff = effectiveSchedule(
+      { enabled: e.baseline.enabled, sweepKinds: e.baseline.sweepKinds },
+      e.overridesByOrg.get(orgId) ?? null,
+    );
+    if (!eff.enabled || eff.sweepKinds.length === 0) return false;
+    // A requested kind set must overlap what the org's schedule may sweep;
+    // the occurrence intersects, never widens.
+    return !sweepKinds || sweepKinds.some((k) => eff.sweepKinds.includes(k));
+  }) ?? null;
+}
+
+type ResolvedAgent = NonNullable<Awaited<ReturnType<typeof resolveEffectiveAgentSystem>>>;
+
+/**
+ * Run admission rule 1 (runService): with the server's agent kill switch off,
+ * every run is skipped `kill_switch_off` before any agent is resolved. Checked
+ * first here too, so a missing agent reads as the server flag (not "create
+ * one") and an agent provisioned at launch is not assumed to run.
+ */
+const KILL_SWITCH_REFUSAL: PrerequisiteRefusal = Object.freeze({
+  refused: 'agent_disabled',
+  detail: 'kill_switch_off',
+  message: agentOffMessage('kill_switch_off', null),
+});
+
+function agentsKillSwitchOff(): boolean {
+  return !envFlag('BREEZE_AI_AGENTS_ENABLED', false);
+}
+
+/**
+ * Why an existing effective agent would be skipped at run admission (rule 2:
+ * `agent_disabled`, `mode_off`), or null when it can accept a run. Reads the
+ * merged effective policy, so an org override that switches the partner's
+ * agent off counts. The resolver also folds the kill switch into
+ * `enabled: false`; callers check the switch first.
+ */
+function agentOffReason(resolved: ResolvedAgent): AgentOffReason | null {
+  if (!resolved.effective.enabled) return agentsKillSwitchOff() ? 'kill_switch_off' : 'disabled';
+  return resolved.effective.mode === 'off' ? 'mode_off' : null;
+}
+
+/** The agent's configured name for the refusal sentence; null when it cannot be read (the sentence goes generic). */
+async function agentName(agentId: string): Promise<string | null> {
+  try {
+    const [row] = await systemRead(() => db
+      .select({ name: aiAgents.name })
+      .from(aiAgents)
+      .where(eq(aiAgents.id, agentId))
+      .limit(1));
+    return row?.name ?? null;
+  } catch (err) {
+    console.error('[wispSpecialistLaunchers] agent name lookup failed; refusing with a generic sentence', { agentId, err });
+    return null;
+  }
+}
+
+/**
+ * #10193 — `agent_disabled` for an existing agent that cannot accept a run,
+ * naming it and where to turn it on; null when it can. Every agent is created
+ * disabled (the wizard says "Created disabled"), so "an effective agent
+ * exists" is not "a run would be admitted".
+ */
+async function agentOffRefusal(resolved: ResolvedAgent): Promise<PrerequisiteRefusal | null> {
+  const reason = agentOffReason(resolved);
+  if (!reason) return null;
+  if (reason === 'kill_switch_off') return { ...KILL_SWITCH_REFUSAL };
+  return { refused: 'agent_disabled', detail: reason, message: agentOffMessage(reason, await agentName(resolved.agentId)) };
+}
+
+type LaunchableAgent = { ok: true; agentId: string } | { ok: false; refusal: PrerequisiteRefusal };
+
+/** The org's effective agent of `kind`, if one exists AND would be admitted. */
+async function resolveLaunchableAgent(orgId: string, kind: AiAgentKind): Promise<LaunchableAgent> {
+  if (agentsKillSwitchOff()) return { ok: false, refusal: { ...KILL_SWITCH_REFUSAL } };
+  const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+  if (!resolved) return { ok: false, refusal: { refused: 'no_effective_agent' } };
+  const off = await agentOffRefusal(resolved);
+  return off ? { ok: false, refusal: off } : { ok: true, agentId: resolved.agentId };
+}
+
+type ResolvedRecipeAgent =
+  | { ok: true; recipe: NonNullable<ReturnType<typeof getRecipe>>; agentId: string }
+  | { ok: false; refusal: PrerequisiteRefusal };
+
+/** The released recipe and the org's enabled agent of the kind it needs. */
+async function resolveRecipeAgent(orgId: string, params: z.infer<typeof operatorRecipeParamsSchema>): Promise<ResolvedRecipeAgent> {
+  const recipe = getRecipe(params.workflowKey, params.workflowVersion);
+  if (!recipe) return { ok: false, refusal: { refused: 'invalid_params', detail: 'unknown_recipe' } };
+  const agentKind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key] : undefined;
+  if (!agentKind) return { ok: false, refusal: { refused: 'no_effective_agent' } };
+  const agent = await resolveLaunchableAgent(orgId, agentKind);
+  if (!agent.ok) return agent;
+  return { ok: true, recipe, agentId: agent.agentId };
+}
+
+async function siteInOrg(orgId: string, siteId: string): Promise<boolean> {
+  const [site] = await systemRead(() => db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1));
+  return Boolean(site);
+}
+
+async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
+  const [device] = await systemRead(() => db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1));
+  return Boolean(device);
+}
+
+/**
+ * #10487 — a sweep occurrence admits one run of the org's effective TRIAGE
+ * agent (aiAgentSweepScheduler `case 'sweep'`), which per-org admission skips
+ * when that agent is missing, switched off or mode Off. Checked up front so
+ * the request is refused by name instead of "queued" and silently skipped.
+ * (Admission's other skips — trigger filter, cooldown, breaker — stay there.)
+ */
+async function sweepAgentRefusal(orgId: string): Promise<PrerequisiteRefusal | null> {
+  const agent = await resolveLaunchableAgent(orgId, 'triage');
+  return agent.ok ? null : agent.refusal;
+}
+
+/**
+ * The continuation refusal a chat caller may see. "Under another grant" and
+ * "not an analysis run" would confirm that a run the caller may not be allowed
+ * to see exists, so both read as not_found, before AND after approval. The
+ * precise reason is for the server log only.
+ */
+function callerVisibleContinuationRefusal(refusal: AnalysisContinuationRefusal): AnalysisContinuationRefusal {
+  return refusal === 'analysis_continuation_other_grant' || refusal === 'analysis_continuation_wrong_kind'
+    ? 'analysis_continuation_not_found'
+    : refusal;
+}
+
+/**
+ * The cheap, read-only prerequisite each kind needs before it could launch —
+ * the same checks its launcher makes, without enqueueing, admitting or
+ * provisioning anything. Both the chat gate
+ * (`coordinator.precheckSpecialistRequest`) and an assessment's request
+ * (coordinator gate 9, #10487) run these BEFORE raising an approval card, so a
+ * request that would be refused deterministically never asks first. The
+ * launchers still re-check at launch: state can change while the card waits.
+ */
+export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: PrerequisiteArgs) => Promise<PrerequisiteRefusal | null>>> = Object.freeze({
+  sweep: async ({ orgId, partnerId, params }) => {
+    const { sweepKinds } = sweepParamsSchema.parse(params);
+    if (!(await findSweepSchedule(partnerId, orgId, sweepKinds))) return { refused: 'no_sweep_schedule' };
+    return sweepAgentRefusal(orgId);
+  },
+  // The sandbox flag is the coordinator's gate (aiWorkspaceEnabled); admission
+  // owns the rest. W02: a site scope naming a site outside the org is refused
+  // here, before an approval card; admission re-checks it (and the grant's
+  // site allowlist) at launch.
+  analysis: async ({ orgId, params }) => {
+    const parsed = analysisParamsSchema.parse(params);
+    // W03: what can be checked without the grant (the launcher re-checks with it).
+    if (parsed.continueFromRunId) {
+      const cont = await analysisContinuationOf({ orgId, runId: parsed.continueFromRunId });
+      if (!cont.ok) {
+        // Without the grant, "another grant" and "not an analysis run" would
+        // describe a run the caller may not be able to see: answer not_found.
+        // The launcher re-checks with the grant and answers the same way.
+        return { refused: 'continuation_refused', detail: callerVisibleContinuationRefusal(cont.refusal) };
+      }
+    }
+    if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
+    if (!(await siteInOrg(orgId, parsed.siteId))) return { refused: 'admission_skipped', detail: 'site_not_in_scope' };
+    return null;
+  },
+  operator_recipe: async ({ orgId, params }) => {
+    const resolved = await resolveRecipeAgent(orgId, operatorRecipeParamsSchema.parse(params));
+    return resolved.ok ? null : resolved.refusal;
+  },
+  patch_plan: async ({ orgId }) => {
+    const agent = await resolveLaunchableAgent(orgId, 'patch');
+    return agent.ok ? null : agent.refusal;
+  },
+  // The research agent is provisioned at launch (ensureResearchAgent writes
+  // it enabled), so a missing one passes; the kill switch, or an existing one
+  // that is switched off, is doomed.
+  remediation_research: async ({ orgId, params }) => {
+    if (!(await deviceInOrg(orgId, researchParamsSchema.parse(params).deviceId))) return { refused: 'device_not_in_org' };
+    if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
+    const resolved = await resolveEffectiveAgentSystem(orgId, 'research');
+    return resolved ? agentOffRefusal(resolved) : null;
+  },
+  // Deterministic and agent-less: it checks every ticket when it runs.
+  bulk_ticket_reply: async () => null,
+  // #11084: same shape as research — the troubleshoot agent is provisioned at
+  // launch (enabled), so a missing one passes; an existing switched-off one,
+  // or the kill switch, is doomed.
+  device_troubleshooting: async ({ orgId, params }) => {
+    const parsed = troubleshootParamsSchema.parse(params);
+    if (!(await deviceInOrg(orgId, parsed.deviceId))) return { refused: 'device_not_in_org' };
+    // #11085: what can be checked without the grant (the launcher re-checks with it).
+    if (parsed.continueFromRunId) {
+      const cont = await continuationOf({ fromRunId: parsed.continueFromRunId, orgId, deviceId: parsed.deviceId });
+      if (!cont.ok) return { refused: 'continuation_refused', detail: cont.detail };
+    }
+    if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
+    const resolved = await resolveEffectiveAgentSystem(orgId, 'troubleshoot');
+    return resolved ? agentOffRefusal(resolved) : null;
+  },
+  // #10406: each org's own admission (enqueueAssessment) owns the agent and
+  // budget checks; the launcher reports per org.
+  assessment: async () => null,
+});
+
+// ---------------------------------------------------------------------------
+// Launchers
+// ---------------------------------------------------------------------------
+
+/**
+ * A one-off occurrence of the partner's enabled sweep baseline, restricted to
+ * this org and carrying the grant. The org's triage agent must be able to
+ * accept the run (#10487) — otherwise it refuses as the prerequisite does.
+ * `admitted` here means QUEUED: per-org admission (budget, overrides,
+ * duplicate) happens in the occurrence job, and
+ * its outcome lands on the sweep run, not on this result. Going through the sweep queue keeps the
+ * system-collected evidence step a sweep run depends on. The run itself is
+ * admitted by `processSweepOccurrence` (dedupe
+ * `sweep-<scheduleId>-<orgId>-wisp-<requestId>`), so no run id comes back.
+ */
+export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = sweepParamsSchema.parse(ctx.params);
+  const entry = await findSweepSchedule(ctx.partnerId, ctx.orgId, params.sweepKinds);
+  if (!entry) return { refused: 'no_sweep_schedule' };
+  // #10487: an occurrence whose run admission would skip is a refusal, not `admitted`.
+  const agentRefusal = await sweepAgentRefusal(ctx.orgId);
+  if (agentRefusal) return agentRefusal;
+
+  const scheduleId = entry.baseline.id;
+  const occurrenceKey = `wisp-${ctx.requestId}`;
+  // Deterministic job id: a re-add of the same request is a BullMQ no-op.
+  await getAiAgentSweepQueue().add('occurrence', {
+    scheduleId,
+    occurrenceKey,
+    orgIds: [ctx.orgId],
+    grant: { ...ctx.grant },
+    ...(params.sweepKinds ? { sweepKinds: params.sweepKinds } : {}),
+  }, {
+    jobId: getSweepOccurrenceJobId(scheduleId, occurrenceKey),
+    // Removed on completion AND failure: a retained job would make a later
+    // re-add under this deterministic id a silent BullMQ no-op.
+    removeOnComplete: true,
+    removeOnFail: true,
+  });
+  return { admitted: true };
+}
+
+/**
+ * A sandbox analysis run (`launch_analysis` — the coordinator-only path, w00).
+ * Follows the troubleshooting hand-off path (#11084): `originSessionId` is the
+ * chat session that launched it (null on the run/approval paths), recorded on
+ * the run as `trigger_ref.originSessionId`; when set, that chat's bridge
+ * streams the run and the next turn is handed its result.
+ */
+export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = analysisParamsSchema.parse(ctx.params);
+  // The schema's refine guarantees a scope; a null here is a schema bug.
+  const scope = resolveAnalysisScope(params);
+  if (!scope) return { refused: 'invalid_params', detail: 'scope_required' };
+  const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
+  // Both replay lookups use the key admission stores, never the raw request id.
+  const dedupeKey = specialistDedupeKey(ctx.requestId);
+  const prior = await existingRunId(ctx.orgId, dedupeKey);
+  if (prior) return reattach(ctx, admittedAnalysis(prior, null, null), originSessionId);
+  // W02 (spec §4.4 "Permission"): the run's export authority, evaluated once
+  // against the live ceiling the coordinator just resolved and gated on, and
+  // frozen at admission. A run principal has no role, so this is the only
+  // place a human permission bounds what `export_dataset` may read.
+  const exportGrants = resolveExportGrants((resource, action) =>
+    ceilingHoldsPermission(ctx.ceiling, ctx.orgId, resource, action));
+
+  // W03 (spec §4.2): a continuation. Validated under THIS live grant — the
+  // same grant is the whole session check (no session ancestry), so any chat
+  // under the grant may continue a run another launched; the new run still
+  // records the launching session as its own origin. Its inputs are derived
+  // here from the prior run and re-validated against this launch's export
+  // grants; admission re-checks the lineage and the chain bounds under its
+  // lock. The dedupe key stays per request, so branching a chain (two
+  // continuations of one run) admits both rather than replaying the first.
+  let stagedHandles: string[] = [];
+  let continuation: AdmitAnalysisRunInput['continuation'];
+  if (params.continueFromRunId) {
+    const cont = await analysisContinuationOf({
+      orgId: ctx.orgId, runId: params.continueFromRunId, grantId: ctx.grant.grantId,
+    });
+    if (!cont.ok) {
+      // Same caller-visible answer as the precheck: "under another grant" and
+      // "not an analysis run" describe a run this caller may not be allowed to
+      // see, so the chat only ever learns not_found. The precise reason goes
+      // to the server log for support.
+      const detail = callerVisibleContinuationRefusal(cont.refusal);
+      if (detail !== cont.refusal) {
+        console.warn('[specialistLaunchers] analysis continuation refused', {
+          orgId: ctx.orgId, continueFromRunId: params.continueFromRunId, reason: cont.refusal,
+        });
+      }
+      return { refused: 'continuation_refused', detail };
+    }
+    const { prior } = cont;
+    // A prior whose chain root was deleted cannot have its chain counted.
+    const root = chainRootOf(prior);
+    if (root === null) return { refused: 'admission_skipped', detail: 'analysis_chain_too_long' };
+    const derived = await deriveChainHandles({ orgId: ctx.orgId, prior, grantId: ctx.grant.grantId, exportGrants });
+    // The seed follows the same producer-grants rule as the carried files.
+    const seed = await buildAnalysisContinuationSeed({ orgId: ctx.orgId, prior, exportGrants });
+    stagedHandles = derived.handles;
+    continuation = {
+      fromRunId: prior.id, chainRootRunId: root, chainDepth: prior.chainDepth + 1, seed, dropped: derived.dropped,
+    };
+  }
+
+  const result = await runOutsideDbContext(() => admitAnalysisRun({
+    orgId: ctx.orgId,
+    requestedByUserId: ctx.grantorUserId,
+    sessionId: originSessionId,
+    goal: params.goal,
+    scope,
+    deviceIds: params.deviceIds ?? [],
+    siteId: params.siteId ?? null,
+    stagedHandles,
+    dedupeKey,
+    grant: { ...ctx.grant },
+    exportGrants,
+    ...(continuation ? { continuation } : {}),
+  }));
+  if (result.created) {
+    return reattach(ctx, admittedAnalysis(result.runId, result.chainDepth ?? null, result.scope ?? null), originSessionId);
+  }
+  if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };
+  // The prior changed under the lock (deleted, or its lineage moved).
+  if (result.refusal === 'analysis_continuation_not_found') {
+    return { refused: 'continuation_refused', detail: 'analysis_continuation_not_found' };
+  }
+  // `duplicate` collapses into `analysis_rate`; resolve a raced replay first.
+  const raced = await existingRunId(ctx.orgId, dedupeKey);
+  if (raced) return reattach(ctx, admittedAnalysis(raced, null, null), originSessionId);
+  return { refused: 'admission_skipped', detail: result.refusal };
+}
+
+function admittedAnalysis(
+  runId: string,
+  chainDepth: number | null,
+  scope: { kind: AnalysisScopeKind; deviceCount: number } | null,
+): LaunchResult {
+  return { admitted: true, runId, message: analysisLaunchMessage({ runId, chainDepth, scope }) };
+}
+
+function analysisScopePhrase(scope: { kind: AnalysisScopeKind; deviceCount: number }): string {
+  const n = scope.deviceCount;
+  const devices = `${n} ${n === 1 ? 'device' : 'devices'}`;
+  if (scope.kind === 'org') return `the whole organization (${devices})`;
+  if (scope.kind === 'site') return `one site (${devices})`;
+  return `${n} selected ${n === 1 ? 'device' : 'devices'}`;
+}
+
+/**
+ * Wisp analysis sessions W06 — the sentence an admitted analysis launch hands
+ * back to the chat model. It carries the guidance the capped tool texts have
+ * no room for (how to continue, when to start fresh, that a chain is bounded),
+ * at the moment the model holds the run id it would continue from. Same
+ * channel as `assessmentLaunchMessage`. A replayed launch passes null depth
+ * and scope (the replay lookup does not read them) and still gets the rules.
+ */
+export function analysisLaunchMessage(input: {
+  runId: string;
+  chainDepth: number | null;
+  scope: { kind: AnalysisScopeKind; deviceCount: number } | null;
+}): string {
+  const step = input.chainDepth !== null && input.chainDepth > 0
+    ? ` as step ${input.chainDepth + 1} of this investigation`
+    : '';
+  const over = input.scope ? ` over ${analysisScopePhrase(input.scope)}` : '';
+  return `Analysis run ${input.runId} started${step}${over}. Its result arrives on a later turn. `
+    + `To build on it, launch analysis again with continueFromRunId ${input.runId}; its files carry forward. `
+    + 'When the question changes, start a fresh analysis without continueFromRunId. '
+    + 'A chain has a step limit and a spend limit.';
+}
+
+/** An AI Operator task for a released recipe, requested by the grantor. */
+export async function launchOperatorRecipe(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = operatorRecipeParamsSchema.parse(ctx.params);
+  const resolved = await resolveRecipeAgent(ctx.orgId, params);
+  if (!resolved.ok) return resolved.refusal;
+  const { recipe } = resolved;
+
+  let result: Awaited<ReturnType<typeof admitTask>>;
+  try {
+    result = await runOutsideDbContext(() => admitTask({
+      orgId: ctx.orgId,
+      agentId: resolved.agentId,
+      objective: params.objective,
+      originKind: 'chat',
+      requesterUserId: ctx.grantorUserId,
+      workflowKey: recipe.key,
+      workflowVersion: recipe.version,
+      recipeInput: params.recipeInput,
+      // Unique per org: a replay returns the first task (`replayed: true`).
+      clientIdempotencyKey: specialistDedupeKey(ctx.requestId),
+      grant: { ...ctx.grant },
+    }));
+  } catch (err) {
+    if (err instanceof GrantDepthExceededError) return { refused: 'depth_exceeded' };
+    throw err;
+  }
+  if (result.ok) return { admitted: true, taskId: result.taskId };
+  if (result.refusal === 'invalid_input' || result.refusal === 'unknown_recipe' || result.refusal === 'recipe_version_mismatch') {
+    return { refused: 'invalid_params', detail: result.refusal };
+  }
+  return { refused: 'admission_skipped', detail: result.refusal };
+}
+
+/** A device-less patch-plan run (same shape as `routes/patchPlan.ts`). */
+export async function launchPatchPlan(ctx: LaunchContext): Promise<LaunchResult> {
+  patchPlanParamsSchema.parse(ctx.params);
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'patch');
+  if (!agent.ok) return agent.refusal;
+  return admitRun(ctx, {
+    orgId: ctx.orgId,
+    kind: 'patch',
+    triggerKind: 'manual',
+    deviceId: null,
+    profile: 'patch',
+    dedupeKey: specialistDedupeKey(ctx.requestId),
+    triggerRef: triggerRefFor(ctx, { agentId: agent.agentId }),
+    grant: { ...ctx.grant },
+  });
+}
+
+/** Remediation research on one device of the org. */
+export async function launchRemediationResearch(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = researchParamsSchema.parse(ctx.params);
+  if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
+  // The research policy does not exist until the partner baseline does
+  // (fixMemory/research.ts). Opens and commits its own system transaction.
+  await runOutsideDbContext(() => ensureResearchAgent(ctx.partnerId));
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'research');
+  if (!agent.ok) return agent.refusal;
+  return admitRun(ctx, {
+    orgId: ctx.orgId,
+    kind: 'research',
+    triggerKind: 'manual',
+    deviceId: params.deviceId,
+    alertId: params.alertId,
+    profile: 'remediation_research',
+    dedupeKey: specialistDedupeKey(ctx.requestId),
+    triggerRef: triggerRefFor(ctx),
+    grant: { ...ctx.grant },
+  });
+}
+
+/**
+ * Wisp delegation W1 (#11084) — a background, device-pinned troubleshooting
+ * run owned by the partner's built-in troubleshoot agent. Admission forces it
+ * to shadow and pins it to this device (runService), so every change it wants
+ * becomes an approval intent. `originSessionId` is the chat session that
+ * handed the work off (null on the run/approval paths, which have no live
+ * chat); when set, that chat's bridge streams the run's progress and result.
+ */
+export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = troubleshootParamsSchema.parse(ctx.params);
+  if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
+  // #11085: a continuation must name a settled troubleshooting run of this
+  // org, device and grant, below the chain limit — checked before anything
+  // is provisioned or read into a seed.
+  let continuation: { fromRunId: string; chain: number } | null = null;
+  if (params.continueFromRunId) {
+    const cont = await continuationOf({
+      fromRunId: params.continueFromRunId, orgId: ctx.orgId, deviceId: params.deviceId, grantId: ctx.grant.grantId,
+    });
+    if (!cont.ok) return { refused: 'continuation_refused', detail: cont.detail };
+    continuation = { fromRunId: params.continueFromRunId, chain: cont.chain };
+  }
+  // Opens and commits its own system transaction (outside any caller context).
+  try {
+    await runOutsideDbContext(() => ensureTroubleshootAgent(ctx.partnerId));
+  } catch (err) {
+    if (err instanceof TroubleshootBaselineConflictError) return { refused: 'no_effective_agent', detail: err.code };
+    throw err;
+  }
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'troubleshoot');
+  if (!agent.ok) return agent.refusal;
+  const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
+  const dedupeKey = continuation
+    ? continuationDedupeKey(continuation.fromRunId, continuation.chain)
+    : specialistDedupeKey(ctx.requestId);
+  // A replayed continuation resolves before the seed is built (admitRun
+  // checks again, for the request-keyed path and the race).
+  if (continuation) {
+    const replay = await existingRunId(ctx.orgId, dedupeKey);
+    if (replay) return reattach(ctx, { admitted: true, runId: replay }, originSessionId);
+  }
+  const seed = continuation ? await buildContinuationSeed(continuation.fromRunId) : null;
+  const result = await admitRun(ctx, {
+    orgId: ctx.orgId,
+    kind: 'troubleshoot',
+    triggerKind: 'manual',
+    deviceId: params.deviceId,
+    profile: 'device_troubleshooting',
+    dedupeKey,
+    triggerRef: triggerRefFor(ctx, {
+      kind: 'device_troubleshooting',
+      deviceId: params.deviceId,
+      goal: params.goal,
+      originSessionId,
+      ...(continuation && seed !== null ? { continuation: { ...continuation, seed } } : {}),
+    }),
+    grant: { ...ctx.grant },
+  });
+  return reattach(ctx, result, originSessionId);
+}
+
+/** Attach the origin chat's live stream to an admitted (or replayed) run. */
+async function reattach(ctx: LaunchContext, result: LaunchResult, originSessionId: string | null): Promise<LaunchResult> {
+  // Idempotent per runId, so a replay from the same chat simply re-attaches.
+  // Lazy: the bridge pulls in the streaming session manager, which imports the
+  // chat tool graph that reaches this module (import cycle otherwise).
+  //
+  // A failed attach costs the live stream only (the card polls and the Workers
+  // panel lists the run). It must not surface as a failed launch: each chat
+  // call has its own request id, so a retry would start a second run.
+  if ('admitted' in result && result.runId && originSessionId) {
+    try {
+      const { watchRunForOriginSession } = await import('../workspace/chatRunBridge');
+      watchRunForOriginSession({ runId: result.runId, sessionId: originSessionId, orgId: ctx.orgId });
+    } catch (err) {
+      console.error('[wispSpecialistLaunchers] run admitted but its chat bridge did not attach', { runId: result.runId, err });
+      captureException(err);
+    }
+  }
+  return result;
+}
+
+/**
+ * The pinned bulk ticket reply (w00 A30). Deterministic, no agent: it runs at
+ * the moment of launch under the ACTING HUMAN (the chat user, or the approver
+ * of the card) and the grant ceiling. The auto-admit run path never reaches
+ * here — the kind is not auto-admitted, so a run raises a card instead.
+ */
+export async function launchBulkTicketReply(ctx: LaunchContext): Promise<LaunchResult> {
+  if (!ctx.actorAuth || !ctx.pinnedDigest) return { refused: 'invalid_params', detail: 'actor_required' };
+  const result = await executeBulkTicketReply({
+    executionId: ctx.requestId,
+    ceiling: ctx.ceiling,
+    actorAuth: ctx.actorAuth,
+    params: ctx.params,
+    pinnedDigest: ctx.pinnedDigest,
+  });
+  if (!result.ok) return { refused: 'invalid_params', detail: result.refused };
+  const { report } = result;
+  // A batch that stopped part-way, or sent nothing, must not read as done: the
+  // carrier release then terminalizes `failed` with the report stored, so a
+  // person looks before anything else is sent. A redelivery that finds every
+  // ticket already sent is a success.
+  if (report.stoppedAt) {
+    return { refused: 'bulk_reply_incomplete', detail: report.stoppedAt.error, report };
+  }
+  if (report.sent.length === 0 && report.alreadySent.length === 0) {
+    return { refused: 'bulk_reply_incomplete', detail: 'nothing_sent', report };
+  }
+  // A ticket an earlier delivery may already have replied to: a person checks.
+  if (report.skipped.some((s) => s.reason === 'uncertain')) {
+    return { refused: 'bulk_reply_incomplete', detail: 'uncertain', report };
+  }
+  return { admitted: true, report };
+}
+
+export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchContext) => Promise<LaunchResult>>> = Object.freeze({
+  sweep: launchSweep,
+  analysis: launchAnalysis,
+  operator_recipe: launchOperatorRecipe,
+  patch_plan: launchPatchPlan,
+  remediation_research: launchRemediationResearch,
+  bulk_ticket_reply: launchBulkTicketReply,
+  device_troubleshooting: launchDeviceTroubleshooting,
+  assessment: launchAssessment,
+});

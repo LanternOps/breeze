@@ -24,8 +24,11 @@ describe('DnsSecurityOverviewTab', () => {
 
   it('renders stat counters from /stats and top-blocked list from /top-blocked in parallel', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
+      // The real /dns-security/stats shape (#10054: the tab used to read
+      // `data.total` etc., which the API never sent, so every counter was 0).
       makeJsonResponse({
-        data: { total: 12345, blocked: 234, allowed: 12100, redirected: 7 },
+        summary: { totalQueries: 12345, blockedQueries: 234, allowedQueries: 12100, redirectedQueries: 7, blockedRate: 1.9 },
+        allowedTraffic: 'all',
       }),
     );
     fetchWithAuthMock.mockResolvedValueOnce(
@@ -52,7 +55,10 @@ describe('DnsSecurityOverviewTab', () => {
 
   it('renders empty-state for top-blocked when API returns []', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ data: { total: 0, blocked: 0, allowed: 0, redirected: 0 } }),
+      makeJsonResponse({
+        summary: { totalQueries: 0, blockedQueries: 0, allowedQueries: 0, redirectedQueries: 0, blockedRate: 0 },
+        allowedTraffic: 'all',
+      }),
     );
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
 
@@ -72,5 +78,54 @@ describe('DnsSecurityOverviewTab', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(/Failed to load overview/);
     });
+  });
+
+  // #10054 — sync stores allowed traffic only for integrations that opted in.
+  it('shows "Not stored" instead of a zero allowed count when no integration stores allowed traffic', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        summary: { totalQueries: 240, blockedQueries: 234, allowedQueries: null, redirectedQueries: 6, blockedRate: null },
+        allowedTraffic: 'none',
+      }),
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+
+    render(<DnsSecurityOverviewTab />);
+
+    await waitFor(() => expect(screen.getByText('234')).toBeInTheDocument());
+    expect(screen.getByTestId('dns-overview-allowed-value')).toHaveTextContent('Not stored');
+    expect(screen.getByTestId('dns-overview-allowed-traffic-note')).toHaveTextContent(
+      /Allowed queries are not stored/,
+    );
+  });
+
+  it('flags a partial allowed count when only some integrations store allowed traffic', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        summary: { totalQueries: 1240, blockedQueries: 234, allowedQueries: 1000, redirectedQueries: 6, blockedRate: 18.87 },
+        allowedTraffic: 'some',
+      }),
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+
+    render(<DnsSecurityOverviewTab />);
+
+    await waitFor(() => expect(screen.getByTestId('dns-overview-allowed-value')).toHaveTextContent('1,000'));
+    expect(screen.getByTestId('dns-overview-allowed-traffic-note')).toHaveTextContent(/some integrations/);
+  });
+
+  it('shows no allowed-traffic note when every integration stores allowed traffic', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        summary: { totalQueries: 10, blockedQueries: 1, allowedQueries: 9, redirectedQueries: 0, blockedRate: 10 },
+        allowedTraffic: 'all',
+      }),
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+
+    render(<DnsSecurityOverviewTab />);
+
+    await waitFor(() => expect(screen.getByTestId('dns-overview-allowed-value')).toHaveTextContent('9'));
+    expect(screen.queryByTestId('dns-overview-allowed-traffic-note')).not.toBeInTheDocument();
   });
 });

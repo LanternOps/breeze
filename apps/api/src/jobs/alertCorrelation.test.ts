@@ -240,6 +240,24 @@ describe('alert correlation queue helpers', () => {
     );
   });
 
+  it('skips device-less correlation enqueue with an explicit reason', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    expect(await enqueueAlertCorrelation({ orgId: 'org-1', deviceId: null })).toBeNull();
+    expect(addMock).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: 'alert_has_no_device' }));
+  });
+
+  it('excludes device-less rows from every correlation candidate pair', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    dbState.targetDevice = [{ siteId: 'site-1' }];
+    dbState.recentAlerts = [alertAt({ id: 'device-alert' }), { ...alertAt({ id: 'workload-alert' }), deviceId: null }];
+    const result = await runAlertCorrelationForDevice({ orgId: 'org-1', deviceId: 'device-1' });
+    expect(result).toEqual({ scanned: 1, created: 0, createdGroups: [] });
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(persistGroupsMock).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ alertId: 'workload-alert', reason: 'alert_has_no_device' }));
+  });
+
   it('reuses an already queued device correlation job in the same slot', async () => {
     getJobMock.mockResolvedValue({
       id: 'existing-correlation-job',

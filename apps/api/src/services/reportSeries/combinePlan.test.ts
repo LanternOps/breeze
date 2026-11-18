@@ -103,6 +103,21 @@ describe('combineExclusionReason — spec §5 W04 exclusion list', () => {
     }
   });
 
+  it('client_profitability (#9828 W3) is excluded from series like every business type', () => {
+    expect(BUSINESS_REPORT_TYPES).toContain('client_profitability');
+    expect(combineExclusionReason(row({ type: 'client_profitability', config: {} }))).not.toBeNull();
+  });
+
+  it('mrr_renewals (#9828) is excluded from series like every business type', () => {
+    expect(BUSINESS_REPORT_TYPES).toContain('mrr_renewals');
+    expect(combineExclusionReason(row({ type: 'mrr_renewals', config: {} }))).not.toBeNull();
+  });
+
+  it('quote_win_rate (#9828 W2) is excluded from series like every business type', () => {
+    expect(BUSINESS_REPORT_TYPES).toContain('quote_win_rate');
+    expect(combineExclusionReason(row({ type: 'quote_win_rate', config: {} }))).not.toBeNull();
+  });
+
   // Review Focus #3 — every way a builder config can name a site or device.
   it.each([
     ['filters.siteIds', { filters: { siteIds: [SITE] } }],

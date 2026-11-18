@@ -24,13 +24,12 @@ export class NetworkDevicePage {
   settingsButton = () => this.page.getByTestId('network-detail-settings');
 
   // Stat strip
-  statReachability = () => this.page.getByTestId('network-detail-stat-reachability');
-  statLastPoll = () => this.page.getByTestId('network-detail-stat-last-poll');
   statType = () => this.page.getByTestId('network-detail-stat-type');
   statPorts = () => this.page.getByTestId('network-detail-stat-ports');
-  checkNow = () => this.page.getByTestId('network-detail-check-now');
-  probeStatus = () => this.page.getByTestId('network-detail-probe-status');
-  probeError = () => this.page.getByTestId('network-detail-probe-error');
+  // Check now lives on the Reachability card (Overview tab).
+  checkNow = () => this.page.getByTestId('network-detail-card-check-now');
+  probeStatus = () => this.page.getByTestId('network-detail-card-probe-status');
+  probeError = () => this.page.getByTestId('network-detail-card-probe-error');
 
   // Overview
   reachabilityCard = () => this.page.getByTestId('network-detail-reachability-card');

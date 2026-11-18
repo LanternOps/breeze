@@ -82,7 +82,7 @@ discoveryAssetPlacementRoutes.get(
     return c.json({
       subject: subjectBody(subject),
       authority: { kind: authority.kind, id: authority.id, linked },
-      placement: await readPlacement(authority.kind, authority.id),
+      placement: await readPlacement(authority.kind, authority.id, authority.orgId),
     });
   },
 );
@@ -125,7 +125,7 @@ discoveryAssetPlacementRoutes.put(
       );
     }
 
-    const before = await readPlacement('discovered', asset.id);
+    const before = await readPlacement('discovered', asset.id, asset.orgId);
     let placement;
     try {
       placement = await savePlacement(subject, c.req.valid('json'));
@@ -189,7 +189,7 @@ discoveryAssetPlacementRoutes.delete(
       );
     }
 
-    const before = await readPlacement('discovered', asset.id);
+    const before = await readPlacement('discovered', asset.id, asset.orgId);
     await deletePlacement({ kind: 'discovered', id: asset.id });
 
     writeRouteAudit(c, {

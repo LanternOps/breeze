@@ -8,7 +8,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import type { ActionPlanStep } from "@breeze/shared";
-import { cn, widthPercentClass } from "@/lib/utils";
+import { cn, formatToolName, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 
 const AUTO_REJECT_MS = 10 * 60 * 1000; // 10 minutes
@@ -22,11 +22,6 @@ function filterInput(input: Record<string, unknown>): Record<string, unknown> {
     if (!HIDDEN_INPUT_KEYS.has(k)) filtered[k] = v;
   }
   return filtered;
-}
-
-/** Human-readable tool name */
-function formatToolName(name: string): string {
-  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 interface AiPlanReviewCardProps {

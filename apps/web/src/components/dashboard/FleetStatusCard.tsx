@@ -2,6 +2,7 @@ import { CheckCircle2, WifiOff } from 'lucide-react';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { useTranslation } from 'react-i18next';
 import SegmentedBar from './SegmentedBar';
+import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { DeviceStats, OfflineDevice } from './types';
 
@@ -39,9 +40,9 @@ export default function FleetStatusCard({
   if (!stats && devices.error && !devices.unavailable) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-fleet-status">
-        <a href="/devices" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="fleet.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.fleetStatus.title')}
-        </a>
+        </DashboardMetric>
         <p className="mt-3 text-xs text-muted-foreground">{t('dashboard.stats.loadFailed')}</p>
       </div>
     );
@@ -64,24 +65,27 @@ export default function FleetStatusCard({
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-fleet-status">
       <div className="mb-3 flex items-center justify-between">
-        <a href="/devices" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="fleet.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.fleetStatus.title')}
-        </a>
+        </DashboardMetric>
         <span className="text-xs font-medium tabular-nums text-muted-foreground">
-          {t('dashboard.fleetStatus.onlineCount', { online: stats.online, total: stats.total })}
+          <DashboardMetric metric="fleet.headerOnline">
+            {t('dashboard.fleetStatus.onlineCount', { online: stats.online, total: stats.total })}
+          </DashboardMetric>
         </span>
       </div>
 
       <SegmentedBar
+        data={{ devices: stats }}
         ariaLabel={t('dashboard.fleetStatus.onlineCount', { online: stats.online, total: stats.total })}
         segments={[
-          { key: 'online', label: t('states.online'), count: stats.online, colorClass: 'bg-success' },
-          { key: 'offline', label: t('states.offline'), count: offlineExact, colorClass: 'bg-chart-neutral' },
+          { key: 'online', metric: 'fleet.legend.online', label: t('states.online'), count: stats.online, colorClass: 'bg-success' },
+          { key: 'offline', metric: 'fleet.legend.offline', label: t('states.offline'), count: offlineExact, colorClass: 'bg-chart-neutral' },
           // Deliberately omitted when zero (unlike SegmentedBar's stable-legend
           // default): "Other" is rare, and a permanent 0-count legend entry
           // would beg the question of what it means.
           ...(other > 0
-            ? [{ key: 'other', label: t('dashboard.fleetStatus.other'), count: other, colorClass: 'bg-info' }]
+            ? [{ key: 'other', metric: 'fleet.legend.other' as const, label: t('dashboard.fleetStatus.other'), count: other, colorClass: 'bg-info' }]
             : []),
         ]}
       />
@@ -120,12 +124,11 @@ export default function FleetStatusCard({
             );
           })}
           {offlineExact > offlineDevices.length && (
-            <a
-              href="/devices?status=offline"
-              className="block pt-2 text-center text-xs font-medium text-primary hover:underline"
-            >
-              {t('dashboard.fleetStatus.viewOffline', { count: offlineExact })}
-            </a>
+            <div className="pt-2 text-center text-xs font-medium text-primary">
+              <DashboardMetric metric="fleet.viewOffline" data={{ devices: stats }}>
+                {t('dashboard.fleetStatus.viewOffline', { count: offlineExact })}
+              </DashboardMetric>
+            </div>
           )}
         </div>
       )}

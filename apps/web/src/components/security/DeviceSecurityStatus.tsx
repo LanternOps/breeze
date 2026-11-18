@@ -101,6 +101,11 @@ export default function DeviceSecurityStatus({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scanType: "quick" }),
       });
+      // #10057 gap 2: a Scan now already waiting for a slot on this device.
+      if (response.status === 409) {
+        setError(t("errors:SCAN_ALREADY_QUEUED"));
+        return;
+      }
       throwIfNotOk(response);
       await fetchStatus();
     } catch (err) {

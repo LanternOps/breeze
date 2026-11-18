@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,12 +9,14 @@ import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi'
 import type { TicketSummary } from './ticketConfig';
 import { claimSamePageHashClick } from '../../lib/samePageHashClick';
 import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
+import { resetTypingCadence } from '@/lib/keyboard/bareKeyGuard';
+import { useUiStore } from '../../stores/uiStore';
 
 // Mutable grant set the mocked auth store reads from. usePermissions() reads
 // `user.permissions` via the selector form; assignMe reads `getState().user.id`.
 type Perm = { resource: string; action: string };
-const authState = vi.hoisted(() => ({ permissions: [] as Perm[] }));
-const userState = () => ({ id: 'user-1', permissions: authState.permissions });
+const authState = vi.hoisted(() => ({ permissions: [] as Perm[], canManagePartnerWide: undefined as boolean | undefined }));
+const userState = () => ({ id: 'user-1', permissions: authState.permissions, canManagePartnerWide: authState.canManagePartnerWide });
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
@@ -44,15 +46,24 @@ import type { JwtClaims } from '../../lib/authScope';
 const mockGetJwtClaims = vi.fn((): JwtClaims => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }));
 vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => mockGetJwtClaims(),
+  useJwtClaims: () => ({ status: 'resolved', claims: mockGetJwtClaims() }),
   loginPathWithNext: () => '/login?next=%2F'
 }));
 
 // Keep the page test focused on the queue: the workbench fetch/load cycle has its own suite.
 // Extended to accept refreshToken so the pane-refresh assertion can inspect props.
-const capturedWorkbenchProps: Array<{ ticketId: string; refreshToken?: number }> = [];
+type WorkbenchProps = {
+  ticketId: string;
+  refreshToken?: number;
+  onTicketPatched?: (id: string, patch: Partial<TicketSummary>) => void;
+  onChanged?: () => void;
+  onDeleted?: (id: string) => void;
+};
+const capturedWorkbenchProps: WorkbenchProps[] = [];
+const lastWorkbenchProps = () => capturedWorkbenchProps[capturedWorkbenchProps.length - 1];
 vi.mock('./TicketWorkbench', () => ({
-  default: (props: { ticketId: string; refreshToken?: number }) => {
-    capturedWorkbenchProps.push({ ticketId: props.ticketId, refreshToken: props.refreshToken });
+  default: (props: WorkbenchProps) => {
+    capturedWorkbenchProps.push(props);
     return <div data-testid="ticket-workbench-mock" data-refresh={props.refreshToken}>{props.ticketId}</div>;
   }
 }));
@@ -188,9 +199,35 @@ describe('TicketsPage', () => {
     // Default to partner scope so existing tests behave as before.
     mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
     fetchConfigMock.mockResolvedValue(null);
-    // jsdom defaults to 1024, which is below the 1100px split-pane breakpoint;
-    // select() would navigate to the full page instead of selecting in-pane.
+    // Focus is in place at every width; a wide window keeps the old fixtures honest.
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
+  });
+
+  it('shows "Import tickets" only to a partner-scope, partner-wide admin (#8313)', async () => {
+    mockListApi([healthy]);
+    authState.canManagePartnerWide = true;
+    const { unmount } = render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.getByTestId('tickets-import-button')).toHaveAttribute('href', '/tickets/import');
+    unmount();
+
+    // A partner user with selected-org access: no button.
+    authState.canManagePartnerWide = false;
+    const second = render(<TicketsPage />);
+    await screen.findAllByTestId('ticket-row-tk-healthy');
+    expect(screen.queryByTestId('tickets-import-button')).toBeNull();
+    second.unmount();
+
+    // A system or organization session: no button, whatever the flag says.
+    authState.canManagePartnerWide = true;
+    for (const scope of ['system', 'organization'] as const) {
+      mockGetJwtClaims.mockReturnValue({ scope, orgId: scope === 'organization' ? 'org-1' : null, partnerId: null });
+      const view = render(<TicketsPage />);
+      await screen.findAllByTestId('ticket-row-tk-healthy');
+      expect(screen.queryByTestId('tickets-import-button')).toBeNull();
+      view.unmount();
+    }
+    authState.canManagePartnerWide = undefined;
   });
 
   it('breaching tab requests slaState=breaching from the API', async () => {
@@ -267,17 +304,30 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk');
   });
 
-  it('auto-selects the first row when the hash matches nothing', async () => {
-    window.location.hash = '#garbage-hash';
-    mockListApi([healthy, atRisk, breached]);
+  it('does not auto-select another ticket when the hash names a ticket absent from the list, and says so', async () => {
+    window.location.hash = '#T-2026-0099';
+    mockListApi((url) => (url.includes('search=') ? [] : [healthy, atRisk, breached]));
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
 
+    expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0099');
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+    expect(window.location.hash).toBe('#T-2026-0099');
+  });
+
+  it('opens an absent-from-list ticket directly when the lookup by number finds it', async () => {
+    window.location.hash = '#T-2026-0099';
+    const closedOne = makeTicket({ id: 'tk-closed', internalNumber: 'T-2026-0099', status: 'closed', subject: 'Old one' });
+    mockListApi((url) => (url.includes('search=') ? [closedOne] : [healthy, atRisk, breached]));
+    render(<TicketsPage />);
+
     await waitFor(() => {
-      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-closed');
     });
-    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
   });
 
   it('picking a priority adds priority= to the fetch and re-renders from the result', async () => {
@@ -339,18 +389,28 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      // Auto-select writes the selection hash first; sort must coexist with it.
-      await waitFor(() => {
-        expect(window.location.hash).toContain('T-2026-0001');
-      });
+      // The board opens nothing on its own: the hash carries only the sort.
+      expect(window.location.hash).toBe('');
 
       fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
 
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('sort=newest');
       });
-      expect(window.location.hash).toContain('sort=newest');
-      expect(window.location.hash).toContain('T-2026-0001');
+      expect(window.location.hash).toBe('#sort=newest');
+
+      // With a ticket in focus, the sort coexists with the focus key.
+      fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&sort=newest'));
+    });
+
+    it('Recently updated sort passes sort=updated to the API and persists in the hash (#12064)', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'updated' } });
+      await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('sort=updated'));
+      expect(window.location.hash).toBe('#sort=updated');
     });
 
     it('restores sort and selection from a combined hash on load', async () => {
@@ -395,12 +455,10 @@ describe('TicketsPage', () => {
         expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
       });
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('problem');
-      // Auto-select picks the first row; the `type=` segment must never be the selection.
-      await waitFor(() => {
-        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
-      });
-      expect(window.location.hash).toContain('type=problem');
-      expect(window.location.hash).toContain('T-2026-0001');
+      // The `type=` segment is never read as a ticket to focus.
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+      expect(window.location.hash).toBe('#type=problem');
     });
 
     it('keeps selection, sort and type from a combined hash', async () => {
@@ -469,11 +527,9 @@ describe('TicketsPage', () => {
       mockListApi([healthy]);
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
-      await waitFor(() => expect(window.location.hash).toContain('T-2026-0001'));
 
       fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
-      await waitFor(() => expect(window.location.hash).toContain('sort=newest'));
-      expect(window.location.hash).toContain('type=problem');
+      await waitFor(() => expect(window.location.hash).toBe('#sort=newest&type=problem'));
       expect(ticketFetchUrls().at(-1)).toContain('ticketType=problem');
 
       // Back to "all tickets": a hash with no type segment resets the filter.
@@ -488,13 +544,8 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('');
-      // Let the mount settle first (#8880): the row can render before the
-      // auto-select effect writes `#T-2026-0001`. A hashchange fired in that gap
-      // is clobbered by the auto-select's hash write (it still holds the old
-      // type), and jsdom's own async hashchange then resets the filter to "All".
-      // That gap is between a commit and its passive effects, so a real
-      // sidebar click is not expected to hit it; the test must not either.
-      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
+      // No auto-select writes the hash on mount any more (#8880's gap is gone).
+      expect(window.location.hash).toBe('');
 
       window.location.hash = '#type=incident';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -505,9 +556,9 @@ describe('TicketsPage', () => {
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
       });
-      // The re-run auto-select keeps the type segment in the hash it rewrites,
-      // so the filter survives the selection write.
-      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=incident'));
+      // Nothing rewrites the hash behind the sidebar's back.
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(window.location.hash).toBe('#type=incident');
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('incident');
       expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
     });
@@ -620,13 +671,101 @@ describe('TicketsPage', () => {
 
         await waitFor(() => expect(screen.getByTestId('tickets-filter-type')).toHaveValue('change'));
         await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('ticketType=change'));
-        // The change queue's first row is auto-selected under the NEW type.
-        await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
-        expect(window.location.hash).toBe('#T-2026-0002&type=change');
+        // The typed link names no ticket, so the queue shows that board.
+        await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+        expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+        expect(window.location.hash).toBe('#type=change');
         expect(router.intercepted).toHaveLength(0);
       } finally {
         router.uninstall();
       }
+    });
+  });
+
+  describe('queue keyboard and screen-reader feedback', () => {
+    // The board loads with no active row; j makes the first one active.
+    const settleOnFirstRow = async () => {
+      await screen.findByTestId('ticket-row-tk-healthy');
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true'));
+    };
+
+    it('j/k move DOM focus with the selection and announce the ticket politely', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      const announcer = screen.getByTestId('tickets-queue-announcer');
+      expect(announcer).toHaveAttribute('role', 'status');
+      // Loading the board is not a user move: no active row, no announcement, no focus theft.
+      expect(announcer).toBeEmptyDOMElement();
+      expect(document.body).toHaveFocus();
+
+      fireEvent.keyDown(document.body, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveFocus());
+      expect(announcer).toHaveTextContent('T-2026-0001 Healthy ticket, Normal priority');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.activeElement!, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true'));
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus();
+      expect(announcer).toHaveTextContent('T-2026-0002 At-risk ticket, Normal priority');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.activeElement!, { key: 'j' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-breach')).toHaveFocus());
+      expect(announcer).toHaveTextContent('T-2026-0003 Breached ticket, Normal priority, SLA breached');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.activeElement!, { key: 'k' });
+      await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveFocus());
+      // Moving the active row never opens a ticket.
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+      // Roving tab stop follows the active row.
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('tabindex', '0');
+      expect(screen.getByTestId('ticket-row-tk-breach')).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('x adds and removes the active ticket from the bulk selection and says so', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await settleOnFirstRow();
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'x' });
+      await waitFor(() => expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('1 selected'));
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByTestId('tickets-queue-announcer')).toHaveTextContent('1 selected');
+
+      resetTypingCadence();
+      fireEvent.keyDown(document.body, { key: 'x' });
+      await waitFor(() => expect(screen.queryByTestId('tickets-bulk-bar')).toBeNull());
+      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('Enter on a focused button belongs to the button, not to "open the ticket"', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await settleOnFirstRow();
+      const selectAll = screen.getByTestId('tickets-select-all-header');
+      selectAll.focus();
+      // fireEvent returns false when a handler called preventDefault — which
+      // cancels the button's own Enter activation.
+      expect(fireEvent.keyDown(selectAll, { key: 'Enter' })).toBe(true);
+      expect(navigateTo).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
+    });
+
+    it('offers the keyboard shortcuts card from the queue header', async () => {
+      useUiStore.setState({ isShortcutsHelpOpen: false });
+      mockListApi([healthy]);
+      render(<TicketsPage />);
+      const button = await screen.findByTestId('tickets-shortcuts-hint');
+      expect(button).toHaveAccessibleName('Keyboard shortcuts');
+      expect(button).toHaveAttribute('aria-keyshortcuts', '?');
+      fireEvent.click(button);
+      expect(useUiStore.getState().isShortcutsHelpOpen).toBe(true);
+      useUiStore.setState({ isShortcutsHelpOpen: false });
     });
   });
 
@@ -636,17 +775,14 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      // Auto-select picks the first row for the workbench.
-      await waitFor(() => {
-        expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
-      });
 
       fireEvent.click(screen.getByTestId('ticket-select-tk-healthy'));
       fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
 
       expect(screen.getByTestId('tickets-bulk-bar')).toHaveTextContent('2 selected');
-      // Checkbox clicks must NOT drive row selection (stopPropagation / sibling layout).
-      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      // Checkbox clicks must NOT open a ticket (stopPropagation / sibling layout).
+      expect(screen.queryByTestId('tickets-focus')).toBeNull();
+      expect(window.location.hash).toBe('');
       expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'false');
     });
 
@@ -1032,19 +1168,112 @@ describe('TicketsPage', () => {
 
     it('falls back to the core label when statusName is null', async () => {
       fetchConfigMock.mockResolvedValue(CONFIG);
-      const legacy = makeTicket({ id: 'tk-legacy', internalNumber: 'T-2026-0010', status: 'open', statusName: null });
+      const legacy = makeTicket({ id: 'tk-legacy', internalNumber: 'T-2026-0010', status: 'pending', statusName: null });
       mockListApi([legacy]);
       render(<TicketsPage />);
 
-      const row = await screen.findByTestId('ticket-row-tk-legacy');
+      await screen.findByTestId('ticket-row-tk-legacy');
       await waitFor(() => {
-        expect(row).toHaveTextContent('Open');
+        expect(screen.getByTestId('ticket-status-chip-tk-legacy')).toHaveTextContent('Pending');
       });
+    });
+
+    it('shows no status chip for Open, the default', async () => {
+      fetchConfigMock.mockResolvedValue(CONFIG);
+      mockListApi([makeTicket({ id: 'tk-plain', internalNumber: 'T-2026-0011', status: 'open', statusName: null })]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-plain');
+      expect(screen.queryByTestId('ticket-status-chip-tk-plain')).toBeNull();
+    });
+  });
+
+  // #9564: resolving from an open-only view used to drop the row on the
+  // reconcile, and the auto-select effect then swapped the workbench to the
+  // next ticket — the resolution note the user just wrote vanished.
+  describe('keeps the resolved ticket in the workbench (#9564)', () => {
+    async function resolveSelectedFromOpenView() {
+      window.location.hash = '#T-2026-0001';
+      let resolved = false;
+      mockListApi((url) => (url.includes('statusGroup=closed') ? [{ ...healthy, status: 'resolved' }] : resolved ? [atRisk, breached] : [healthy, atRisk, breached]));
+      render(<TicketsPage />);
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      });
+      const listCallsBefore = ticketFetchUrls().length;
+      resolved = true;
+      act(() => {
+        lastWorkbenchProps().onTicketPatched?.('tk-healthy', { status: 'resolved' });
+        lastWorkbenchProps().onChanged?.();
+      });
+      // The debounced reconcile refetches the list without the resolved row.
+      await waitFor(() => expect(ticketFetchUrls().length).toBeGreaterThan(listCallsBefore));
+      await waitFor(() => expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull());
+    }
+
+    it('does not auto-select the next row when the resolved ticket drops out of the list', async () => {
+      await resolveSelectedFromOpenView();
+      // Give the auto-select effect every chance to run.
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      expect(window.location.hash).toBe('#T-2026-0001');
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('shows an inline "now under Closed" note whose link opens the Closed tab on that ticket', async () => {
+      await resolveSelectedFromOpenView();
+      const note = await screen.findByTestId('tickets-moved-to-closed');
+      expect(note).toHaveTextContent(/Resolved/);
+      expect(note).toHaveTextContent(/Closed/);
+      fireEvent.click(screen.getByTestId('tickets-moved-to-closed-view'));
+      await waitFor(() => expect(ticketFetchUrls().some((u) => u.includes('statusGroup=closed'))).toBe(true));
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      });
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold when the held ticket is deleted from the workbench', async () => {
+      await resolveSelectedFromOpenView();
+      act(() => {
+        lastWorkbenchProps().onDeleted?.('tk-healthy');
+        lastWorkbenchProps().onChanged?.();
+      });
+      // The deleted ticket must not linger: the page goes back to the board.
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+      expect(window.location.hash).toBe('');
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold after a bulk action', async () => {
+      await resolveSelectedFromOpenView();
+      // Bulk lives on the board.
+      fireEvent.click(screen.getByTestId('ticket-focus-back'));
+      await waitFor(() => expect(screen.queryByTestId('tickets-focus')).toBeNull());
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+      await waitFor(() => expect(showToast).toHaveBeenCalled());
+      // Re-opening the resolved ticket's key no longer finds the stale snapshot:
+      // the page looks it up and, outside this view, says so.
+      window.location.hash = '#T-2026-0001';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0001');
+      expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+    });
+
+    it('releases the held ticket once the user selects another row', async () => {
+      await resolveSelectedFromOpenView();
+      fireEvent.click(screen.getByTestId('ticket-row-tk-risk'));
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
     });
   });
 
   describe('pane refresh after bulk', () => {
     it('increments refreshToken on TicketWorkbench after a successful bulk apply', async () => {
+      window.location.hash = '#T-2026-0001';
       mockListApi([healthy, atRisk, breached]);
       render(<TicketsPage />);
 
@@ -1075,7 +1304,7 @@ describe('TicketsPage', () => {
   // moved onto the shared OverflowTabs component; the search box moved to
   // its own row below the tabs (full-width on mobile, right-aligned at lg+).
   describe('tab row overflow (#7148)', () => {
-    it('renders the tabs as an OverflowTabs tablist and the search box on its own row', async () => {
+    it('renders the tabs as an OverflowTabs tablist and the search box on the filter row', async () => {
       mockListApi([healthy]);
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
@@ -1085,9 +1314,9 @@ describe('TicketsPage', () => {
 
       const search = screen.getByTestId('tickets-search-input');
       expect(search.className).toContain('w-full');
-      expect(search.className).toContain('lg:w-56');
-      // The search box's row is not the tablist's row.
+      // The search box's row is not the tablist's row: it leads the filter row.
       expect(search.closest('[role="tablist"]')).toBeNull();
+      expect(search.closest('[data-testid="tickets-filter-bar"]')).not.toBeNull();
     });
 
     // Code review (#7233): OverflowTabs' `count` prop renders via CountBadge,
@@ -1259,5 +1488,169 @@ describe('TicketsPage', () => {
         expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Ticket restored' });
       });
     });
+  });
+});
+
+describe('TicketsPage — merged tickets (#8972)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearHash();
+    capturedWorkbenchProps.length = 0;
+    authState.permissions = [];
+    mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
+    fetchConfigMock.mockResolvedValue(null);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
+  });
+
+  it('"Show merged" sends showMerged=true and carries merged=1 in the hash; off removes both', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
+
+    const toggle = screen.getByTestId('ticket-list-show-merged');
+    expect(toggle).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('showMerged'))).toBe(true);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    expect(window.location.hash).toBe('#T-2026-0001&merged=1');
+    expect(screen.getByTestId('ticket-list-show-merged')).toBeChecked();
+
+    fireEvent.click(screen.getByTestId('ticket-list-show-merged'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('showMerged'));
+    expect(window.location.hash).toBe('#T-2026-0001');
+  });
+
+  it('"Imported only" sends imported=true and carries imported=1 in the hash; off removes both (#8313)', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    const toggle = screen.getByTestId('ticket-list-imported-only');
+    expect(toggle).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('imported'))).toBe(true);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('imported=true'));
+    expect(window.location.hash).toBe('#imported=1');
+
+    // Other hash writers keep the segment, and it composes with merged=1.
+    fireEvent.click(screen.getByTestId('ticket-list-show-merged'));
+    await waitFor(() => expect(window.location.hash).toBe('#merged=1&imported=1'));
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1&imported=1'));
+
+    fireEvent.click(screen.getByTestId('ticket-list-imported-only'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('imported'));
+    expect(window.location.hash).toBe('#T-2026-0001&merged=1');
+  });
+
+  it('"Imported only" counts as a filter, and clearing the filters turns it off (#8313)', async () => {
+    window.location.hash = '#imported=1';
+    mockListApi((url) => (url.includes('imported=true') ? [] : [healthy]));
+    render(<TicketsPage />);
+    await screen.findByTestId('tickets-queue-empty');
+    // Filtered-empty, not onboarding: filtersActive counts it.
+    expect(screen.queryByTestId('tickets-empty')).toBeNull();
+    fireEvent.click(screen.getByTestId('tickets-filters-clear'));
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(ticketFetchUrls().at(-1)).not.toContain('imported');
+    expect(window.location.hash).not.toContain('imported=');
+    expect(screen.getByTestId('ticket-list-imported-only')).not.toBeChecked();
+  });
+
+  it('a reload with #imported=1 restores the filter and is not read as a selection (#8313)', async () => {
+    window.location.hash = '#imported=1';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('imported=true'));
+    expect(screen.getByTestId('ticket-list-imported-only')).toBeChecked();
+    expect(screen.queryByTestId('tickets-focus')).toBeNull();
+  });
+
+  it('applies on every tab (closed included)', async () => {
+    window.location.hash = '#merged=1';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await selectTicketsTab('closed');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('statusGroup=closed'));
+    expect(ticketFetchUrls().at(-1)).toContain('showMerged=true');
+  });
+
+  it('a reload with #…&merged=1 restores the toggle and is not read as a selection', async () => {
+    window.location.hash = '#T-2026-0002&sort=oldest&merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-risk');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    expect(screen.getByTestId('ticket-list-show-merged')).toBeChecked();
+    expect(screen.getByTestId('ticket-sort')).toHaveValue('oldest');
+    await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true'));
+    // Other hash writers keep the segment.
+    fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&sort=newest&merged=1'));
+  });
+
+  it('#merged=1 alone is not a selection: opening a ticket keeps the segment', async () => {
+    window.location.hash = '#merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.queryByTestId('tickets-focus')).toBeNull();
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1'));
+  });
+
+  it('merged=0 or another value reads as off', async () => {
+    window.location.hash = '#T-2026-0001&merged=true';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.getByTestId('ticket-list-show-merged')).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('showMerged'))).toBe(true);
+  });
+
+  it('the type filter and row selection keep merged=1', async () => {
+    window.location.hash = '#T-2026-0001&merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-risk');
+    fireEvent.change(screen.getByTestId('tickets-filter-type'), { target: { value: 'problem' } });
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=problem&merged=1'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-risk'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&type=problem&merged=1'));
+  });
+
+  it('onMerged moves the selection to the survivor and reconciles the queue', async () => {
+    window.location.hash = '#T-2026-0001';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-healthy'));
+    const before = ticketFetchUrls().length;
+
+    const onMerged = (lastWorkbenchProps() as WorkbenchProps & { onMerged?: (id: string, n: string | null) => void }).onMerged;
+    expect(onMerged).toBeTypeOf('function');
+    act(() => onMerged!('tk-risk', 'T-2026-0002'));
+
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002'));
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-risk'));
+    await waitFor(() => expect(ticketFetchUrls().length).toBeGreaterThan(before));
+  });
+
+  it('onMerged without a survivor number selects by id', async () => {
+    window.location.hash = '#T-2026-0001';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-healthy'));
+    const onMerged = (lastWorkbenchProps() as WorkbenchProps & { onMerged?: (id: string, n: string | null) => void }).onMerged;
+    act(() => onMerged!('tk-risk', null));
+    await waitFor(() => expect(window.location.hash).toBe('#tk-risk'));
   });
 });

@@ -47,6 +47,13 @@ export type PostureControls = {
   anyAvCoveragePct?: number | null;
   /** In-scope devices Breeze has no endpoint evidence for (excluded from anyAvCoveragePct). */
   anyAvUnknownCount?: number;
+  /**
+   * Devices with protection evidence (#12044). Its presence marks a snapshot
+   * whose `unprotectedCount` covers assessed devices only. Legacy snapshots
+   * lack it: there `unprotectedCount` also folded in devices with no evidence,
+   * so the renderer must not subtract `anyAvUnknownCount` from it again.
+   */
+  avAssessedCount?: number;
   unprotectedCount?: number;
   avDefinitionsCurrentPct?: number | null;
   encryptionPct?: number | null;
@@ -89,8 +96,47 @@ export type PostureSummary = {
   org?: { id?: string; name?: string };
   generatedAt?: string;
   deviceCount?: number;
+  /**
+   * Managed devices of the org that the report's site filter left out, so the
+   * in-scope count reconciles with the org's other reports. Set only for an
+   * unrestricted (org-wide) caller: a site-restricted one is never told about
+   * devices outside its sites. Absent on legacy snapshots.
+   */
+  excludedBySiteFilterCount?: number;
   controls?: PostureControls;
   privilegedAccess?: PosturePrivilegedAccess;
   securityProducts?: PostureProduct[];
   postureScore?: number | null;
 };
+
+/**
+ * Header label for each column of the posture report's per-device rows
+ * (`ReportResult.rows`), used where the rows are exported as a customer-facing
+ * CSV (#9964). The keys are the row's keys: the API generator builds each row
+ * with `satisfies Record<PostureDeviceRowKey, unknown>`, so adding, renaming or
+ * dropping a column without updating this map is a compile error. Wording
+ * follows the PDF device table, flattened: the PDF's "Patches" and
+ * "Vulnerabilities" group headers become part of each count's label.
+ */
+export const POSTURE_DEVICE_ROW_CSV_LABELS = {
+  hostname: 'Hostname',
+  site: 'Site',
+  os: 'OS',
+  protection: 'Protection',
+  protectionManaged: 'Managed protection',
+  realTimeProtection: 'Real-time protection',
+  avDefinitionsAgeDays: 'AV definitions age (days)',
+  encryption: 'Encryption',
+  firewall: 'Firewall',
+  localAdmins: 'Local admins',
+  patchAssessed: 'Patches assessed',
+  pendingPatches: 'Pending patches',
+  criticalPatches: 'Critical patches',
+  openVulnCritical: 'Critical vulnerabilities',
+  openVulnHigh: 'High vulnerabilities',
+  cisPassRate: 'CIS pass rate (%)',
+  lastSeenAt: 'Last seen',
+  posture: 'Posture',
+} as const;
+
+export type PostureDeviceRowKey = keyof typeof POSTURE_DEVICE_ROW_CSV_LABELS;

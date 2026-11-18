@@ -13,18 +13,15 @@ import (
 func TestRootCmd_VersionFlagRendersStablePrefix(t *testing.T) {
 	origVersion := version
 	version = "9.9.9-test"
-	rootCmd.Version = version
-	defer func() {
-		version = origVersion
-		rootCmd.Version = origVersion
-	}()
+	t.Cleanup(func() { version = origVersion })
+	root := newRootCmd()
 
 	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetArgs([]string{"--version"})
+	root.SetOut(&out)
+	root.SetArgs([]string{"--version"})
 
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(--version): %v", err)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(--version): %v", err)
 	}
 
 	want := "Breeze Backup Version: 9.9.9-test\n"

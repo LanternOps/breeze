@@ -65,6 +65,12 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'system_protection',
   // #6960. APPENDED, matching the migration's ADD VALUE order.
   'security_agents',
+  // #10100 — network-isolation containment tuning, inline-only, partner-wide
+  'containment',
+  // #11065 — vendor updates, inline-only, partner-wide. APPENDED, matching the migration.
+  'oem_updates',
+  // #10838 — Wake-on-LAN button mode, inline-only, partner-wide. APPENDED, matching the migration.
+  'wake_on_lan',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -350,6 +356,11 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
   /** ISO-8601 datetime for 'once' recurrence (e.g. "2026-03-15T02:00:00"). Ignored for other recurrence types. */
   windowStart: varchar('window_start', { length: 30 }),
+  // #9574: the weekday a 'weekly' window opens on and the day a 'monthly' one
+  // opens on (clamped to the month's last day), in `timezone`. Defaults are
+  // the days the evaluator pinned before these columns existed.
+  dayOfWeek: varchar('day_of_week', { length: 3 }).notNull().default('sun'),
+  dayOfMonth: integer('day_of_month').notNull().default(1),
   suppressAlerts: boolean('suppress_alerts').notNull().default(true),
   suppressPatching: boolean('suppress_patching').notNull().default(false),
   suppressAutomations: boolean('suppress_automations').notNull().default(false),
@@ -360,7 +371,13 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   notifyOnEnd: boolean('notify_on_end').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => [
+  check(
+    'config_policy_maintenance_settings_day_of_week_check',
+    sql`${t.dayOfWeek} IN ('sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat')`,
+  ),
+  check('config_policy_maintenance_settings_day_of_month_check', sql`${t.dayOfMonth} BETWEEN 1 AND 31`),
+]);
 
 // Single-item: one row per feature link (event log settings)
 export const configPolicyEventLogSettings = pgTable('config_policy_event_log_settings', {
@@ -369,6 +386,7 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   retentionDays: integer('retention_days').notNull().default(30),
   maxEventsPerCycle: integer('max_events_per_cycle').notNull().default(100),
   collectCategories: text('collect_categories').array().notNull().default(['security', 'hardware', 'application', 'system']),
+  applicationProviders: text('application_providers').array().notNull().default(sql`'{}'::text[]`),
   minimumLevel: eventLogLevelEnum('minimum_level').notNull().default('info'),
   // 15m default (was 5m) — issue #2390. Shadowed in practice (writes always go
   // through eventLogInlineSettingsSchema, which supplies the value), but kept in
@@ -379,7 +397,9 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   enableCorrelation: boolean('enable_correlation').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => [
+  check('config_policy_event_log_settings_app_providers_max', sql`cardinality(${t.applicationProviders}) <= 20`),
+]);
 
 // Single-item: one row per feature link (inherited RAID/disk-health
 // collection settings, #6856). Inline-only — no linked-policy variant.
@@ -543,6 +563,9 @@ export const configPolicyRemoteAccessSettings = pgTable('config_policy_remote_ac
   notifyOnSessionEnd: boolean('notify_on_session_end').notNull().default(true),
   showActiveIndicator: boolean('show_active_indicator').notNull().default(true),
   technicianIdentityLevel: text('technician_identity_level').notNull().default('name_email'),
+  // #10190 W06 (OD-5 (c)): the person at the keyboard may end the session from
+  // the on-screen indicator (with confirmation; audited remote.session.ended_by_user).
+  allowUserEndSession: boolean('allow_user_end_session').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

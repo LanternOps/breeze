@@ -15,6 +15,15 @@ const RESET = {
 beforeEach(() => { vi.mocked(fetchWithAuth).mockReset(); useAiStore.setState(RESET as never); });
 const calls = () => vi.mocked(fetchWithAuth).mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${String(url)}`);
 
+/** #9427: the attach a hydrate opens; no turn running. */
+const idleAttach = (): Response => {
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'attach_state', turn: 'idle', turnId: null, lastSeq: 0, turnUserMessageId: null, partial: false, replay: [], pendingCards: [], activePlan: null, turnModel: null })}\n\n`);
+  return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+};
+/** The stored session for GET /ai/sessions/:id, and an idle attach for its /stream. */
+const reopen = (body: unknown) => vi.mocked(fetchWithAuth).mockImplementation(async (input) =>
+  String(input).endsWith('/stream') ? idleAttach() : jsonResponse(body));
+
 const storedSession = (selection = aiSelection()) => ({
   session: { id: AI.session, status: 'active', orgId: 'org-1', type: 'topology', topologySiteId: AI.site, contextSnapshot: { type: 'topology', ...selection } },
   messages: [
@@ -45,25 +54,29 @@ describe('useTopologyInvestigation (M4 Task 5)', () => {
   });
 
   it('reopens a stored investigation read-only (no POST) and marks it historical when the selection differs', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession(aiSelection({ graphRevision: '0' }))));
+    reopen(storedSession(aiSelection({ graphRevision: '0' })));
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
     await waitFor(() => expect(result.current.status).toBe('complete'));
-    // W05 (#7603): loadSession also loads the composer's model choices (a read).
-    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`]);
+    // W05 (#7603): loadSession also loads the composer's model choices (a read);
+    // #9427: then attaches to the session's turn (a read).
+    await waitFor(() => expect(calls()).toHaveLength(3));
+    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`, `GET /ai/sessions/${AI.session}/stream`]);
     expect(result.current.historical).toBe(true);
   });
 
   it('reopens after a page reload, when only the persisted session id survived', async () => {
     useAiStore.setState({ sessionId: AI.session, hydratedSessionId: null, messages: [] } as never);
-    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession()));
+    reopen(storedSession());
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
     await waitFor(() => expect(result.current.status).toBe('complete'));
-    // W05 (#7603): loadSession also loads the composer's model choices (a read).
-    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`]);
+    // W05 (#7603): loadSession also loads the composer's model choices (a read);
+    // #9427: then attaches to the session's turn (a read).
+    await waitFor(() => expect(calls()).toHaveLength(3));
+    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`, `GET /ai/sessions/${AI.session}/stream`]);
   });
 
   it('a reopened answer for the same selection is current, not historical', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession()));
+    reopen(storedSession());
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
     await waitFor(() => expect(result.current.status).toBe('complete'));
     expect(result.current.historical).toBe(false);

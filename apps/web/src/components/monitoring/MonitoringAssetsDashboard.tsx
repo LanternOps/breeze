@@ -22,6 +22,7 @@ import { ActionError } from '@/lib/runAction';
 import { useNetworkAssetMutations } from '../devices/networkDevice/settings/useNetworkAssetMutations';
 import { buildDetailHash } from '../devices/networkDevice/settings/settingsHash';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { typeConfig, type DiscoveredAssetType } from '../discovery/DiscoveredAssetList';
 
 /** W01 (spec §4.2). Absent on a pre-W01 API — treat every field as optional. */
 type Reachability = {
@@ -260,7 +261,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${COLLECTION_STYLES[state]}`}>
           {t(/* i18n-dynamic */ `longTail.monitoring.MonitoringAssetsDashboard.collectionState.${state}`)}
         </span>
-        {asset.snmp.configured && asset.snmp.lastPolled && (
+        {/* The reachability cell already says "SNMP <age>" when SNMP is the
+            source; repeating the age here is the same fact twice in a row. */}
+        {asset.snmp.configured && asset.snmp.lastPolled && asset.reachability?.source !== 'snmp' && (
           <div className="text-xs text-muted-foreground">
             {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', {
               time: formatRelativeTime(asset.snmp.lastPolled, t),
@@ -273,6 +276,13 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
 
   // Row pieces shared by the desktop table and the mobile cards so the two
   // representations can never drift. Each takes a single asset.
+  // Same translated labels Discovery uses; an out-of-enum value from the API
+  // falls back to the raw string rather than throwing during render.
+  const renderAssetType = (assetType: string) => {
+    const meta = typeConfig[assetType as DiscoveredAssetType];
+    return meta ? t(/* i18n-dynamic */ meta.labelKey) : assetType;
+  };
+
   const renderOverallBadge = (asset: MonitoringAsset) => {
     const overall = asset.monitoring.configured
       ? (asset.monitoring.active ? 'active' : 'paused')
@@ -304,9 +314,6 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           <span className="text-xs text-muted-foreground">
             {asset.snmp.snmpVersion ?? '—'} • {t('longTail.monitoring.MonitoringAssetsDashboard.everyInterval', { interval: formatInterval(asset.snmp.pollingInterval) })}
           </span>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {t('longTail.monitoring.MonitoringAssetsDashboard.lastPolled', { time: formatRelativeTime(asset.snmp.lastPolled, t) })}
         </div>
       </div>
     );
@@ -526,13 +533,10 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                           <p className="truncate text-sm font-medium">
                             {asset.hostname || asset.ipAddress || '—'}
                           </p>
-                          <p className="truncate text-xs text-muted-foreground">
-                            {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
-                          </p>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm font-mono">{asset.ipAddress || '—'}</td>
-                      <td className="px-4 py-3 text-sm capitalize">{asset.assetType}</td>
+                      <td className="px-4 py-3 text-sm">{renderAssetType(asset.assetType)}</td>
                       <td className="px-4 py-3">{renderOverallBadge(asset)}</td>
                       <td className="px-4 py-3">{renderReachabilityCell(asset)}</td>
                       <td className="px-4 py-3">{renderCollectionCell(asset)}</td>
@@ -560,9 +564,6 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-medium">{asset.hostname || asset.ipAddress || '—'}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {t('longTail.monitoring.MonitoringAssetsDashboard.lastSeen', { time: formatRelativeTime(asset.lastSeenAt, t) })}
-                      </p>
                     </div>
                     {renderOverallBadge(asset)}
                   </div>
@@ -571,7 +572,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
                       <span className="font-mono text-sm">{asset.ipAddress || '—'}</span>
                     </CardField>
                     <CardField label={t('common:labels.type')}>
-                      <span className="text-sm capitalize">{asset.assetType}</span>
+                      <span className="text-sm">{renderAssetType(asset.assetType)}</span>
                     </CardField>
                     <CardField label={t('longTail.monitoring.MonitoringAssetsDashboard.table.reachability')}>
                       {renderReachabilityCell(asset)}

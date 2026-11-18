@@ -64,6 +64,21 @@ describe('BackupHealthOverview', () => {
     expect(unsuccessful.textContent).toContain('3');
   });
 
+  it('counts overdue devices under "No recent backup", not "Completed" (#12025)', async () => {
+    respond({
+      summary: summary({
+        byStatus: { completed: 9, failed: 0, over_quota: 0, no_backups: 0, completed_with_errors: 0, in_progress: 0, interrupted: 0, no_selection: 0, not_started: 0, unknown: 0, paused: 0 },
+        byStatusBucket: { no_backups: 0, completed: 6, overdue: 3, completed_with_errors: 0, in_progress: 0, unsuccessful: 0, other: 0 },
+      }),
+    });
+    render(<BackupHealthOverview orgId="org-1" />);
+    const completed = await screen.findByTestId('backup-health-status-completed');
+    expect(completed.textContent).toContain('6');
+    const overdue = screen.getByTestId('backup-health-status-overdue');
+    expect(overdue.textContent).toContain('3');
+    expect(overdue.textContent).toContain('No recent backup');
+  });
+
   it('renders the four last-successful-backup bars', async () => {
     render(<BackupHealthOverview orgId="org-1" />);
     for (const id of ['never', 'over_48h', 'under_48h', 'under_24h']) {
@@ -76,6 +91,42 @@ describe('BackupHealthOverview', () => {
     const coverage = await screen.findByTestId('backup-health-coverage');
     expect(coverage.textContent).toContain('6');
     expect(coverage.textContent).toContain('10');
+  });
+
+  it('labels the SaaS count for Microsoft 365 and Google Workspace', async () => {
+    respond({ summary: summary({ m365Accounts: 7 }) });
+    render(<BackupHealthOverview orgId="org-1" />);
+    expect(await screen.findByTestId('backup-health-m365')).toHaveTextContent('7 SaaS accounts');
+    expect(screen.getByTestId('backup-health-saas-subtitle')).toHaveTextContent('Microsoft 365 / Google Workspace');
+  });
+
+  it('labels provider sources from their keys and keeps the provider filter contract', async () => {
+    respond({ rows: [row({ source: 'provider', providerKey: 'dropsuite', providerLabel: 'Managed cloud backup' })] });
+    render(<BackupHealthOverview orgId="org-1" />);
+    await screen.findByTestId('backup-health-coverage');
+    const source = screen.getByTestId('backup-health-filter-source');
+    expect(source).toHaveTextContent('NinjaOne SaaS Backup (Dropsuite)');
+    expect(source).not.toHaveTextContent('Cove Data Protection');
+    fireEvent.change(source, { target: { value: 'provider' } });
+    await waitFor(() => expect(String(fetchMock.mock.calls.at(-1)![0])).toContain('source=provider'));
+  });
+
+  it('includes both provider names when the results contain both providers', async () => {
+    respond({ rows: [
+      row({ key: 'provider:cove', source: 'provider', providerKey: 'cove' }),
+      row({ key: 'provider:dropsuite', source: 'provider', providerKey: 'dropsuite' }),
+    ] });
+    render(<BackupHealthOverview orgId="org-1" />);
+    await screen.findByTestId('backup-health-coverage');
+    expect(screen.getByTestId('backup-health-filter-source')).toHaveTextContent('Cove Data Protection');
+    expect(screen.getByTestId('backup-health-filter-source')).toHaveTextContent('NinjaOne SaaS Backup (Dropsuite)');
+  });
+
+  it('explains "recent backup" versus a failed latest run (#9626)', async () => {
+    render(<BackupHealthOverview orgId="org-1" />);
+    const note = await screen.findByTestId('backup-health-definition');
+    expect(note.textContent).toContain('48 hours');
+    expect(note.textContent).toContain('latest run');
   });
 
   it('shows the stale banner only when the API says the data is stale', async () => {

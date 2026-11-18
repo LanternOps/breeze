@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MoreHorizontal } from 'lucide-react';
 import { useMenuKeyboard } from '../billing/shared/menuKeyboard';
@@ -20,6 +20,9 @@ export interface ActionMenuItem {
   /** Draws a divider above this item — grouping without a separate item type. */
   separatorBefore?: boolean;
   testId?: string;
+  /** Shown and announced (`aria-disabled`), still reachable by the arrow keys,
+   *  but a click, Enter or Space does nothing — `description` can say why. */
+  disabled?: boolean;
 }
 
 export interface ActionMenuProps {
@@ -31,6 +34,9 @@ export interface ActionMenuProps {
   triggerClassName?: string;
   /** Tab index of the trigger; a roving-tabindex row passes -1 for every row but the active one. */
   triggerTabIndex?: number;
+  /** Content of the trigger button in place of the default `MoreHorizontal`
+   *  icon (e.g. an icon plus a visible label). `label` stays its accessible name. */
+  trigger?: ReactNode;
 }
 
 /**
@@ -51,7 +57,7 @@ export interface ActionMenuProps {
  */
 const MENU_GAP_PX = 4;
 
-export function ActionMenu({ label, items, testId, triggerClassName, triggerTabIndex }: ActionMenuProps) {
+export function ActionMenu({ label, items, testId, triggerClassName, triggerTabIndex, trigger }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -121,9 +127,14 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
   const itemClass = (item: ActionMenuItem) =>
     `block w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent ${
       item.tone === 'destructive' ? 'text-destructive' : ''
-    }`;
+    } ${item.disabled ? 'cursor-not-allowed opacity-50' : ''}`;
 
-  const activate = (item: ActionMenuItem) => {
+  const activate = (item: ActionMenuItem, event?: ReactMouseEvent) => {
+    if (item.disabled) {
+      // A disabled link must not navigate either.
+      event?.preventDefault();
+      return;
+    }
     // Focus the trigger BEFORE the item unmounts and before the handler runs:
     // a dialog opened by `onSelect` captures `document.activeElement` on mount
     // as its restore target, and without this it captured <body> (the
@@ -150,7 +161,7 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
           'inline-flex h-9 items-center justify-center rounded-md border bg-background px-2.5 text-sm font-medium transition hover:bg-muted'
         }
       >
-        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+        {trigger ?? <MoreHorizontal className="h-4 w-4" aria-hidden="true" />}
       </button>
       {open && createPortal(
         <div
@@ -172,11 +183,11 @@ export function ActionMenu({ label, items, testId, triggerClassName, triggerTabI
               <Fragment key={item.id}>
                 {item.separatorBefore && <div role="separator" className="my-1 border-t" />}
                 {item.href ? (
-                  <a role="menuitem" tabIndex={-1} href={item.href} data-testid={item.testId} onClick={() => activate(item)} className={itemClass(item)}>
+                  <a role="menuitem" tabIndex={-1} href={item.href} data-testid={item.testId} aria-disabled={item.disabled ? 'true' : undefined} onClick={(e) => activate(item, e)} className={itemClass(item)}>
                     {body}
                   </a>
                 ) : (
-                  <button type="button" role="menuitem" tabIndex={-1} data-testid={item.testId} onClick={() => activate(item)} className={itemClass(item)}>
+                  <button type="button" role="menuitem" tabIndex={-1} data-testid={item.testId} aria-disabled={item.disabled ? 'true' : undefined} onClick={(e) => activate(item, e)} className={itemClass(item)}>
                     {body}
                   </button>
                 )}

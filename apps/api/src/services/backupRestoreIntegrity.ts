@@ -97,7 +97,7 @@ export type IntegrityAttestationInput = {
 };
 
 /** Attestation statuses under which an index built from the attested manifest bytes may authorize reads. */
-const INDEX_BINDABLE_ATTESTATION_STATUSES = new Set(['pending', 'verified', 'producer_only']);
+export const INDEX_BINDABLE_ATTESTATION_STATUSES: ReadonlySet<string> = new Set(['pending', 'verified', 'producer_only']);
 
 export function controlObjectKey(snapshotId: string, role: IntegrityObjectRole): string {
   switch (role) {
@@ -272,6 +272,35 @@ export function boundIndexCondition(boundDigest: string | null): SQL {
   )!;
 }
 
+/**
+ * Whether a snapshot's `backup_snapshot_files` rows may be shown to a person or
+ * resolve a selective restore (#11026), for a statement that reads
+ * backup_snapshots LEFT JOINed to backup_snapshot_attestations. Wider than
+ * boundIndexCondition, which authorizes object reads: inline rows reported by
+ * the agent and rows of an index being rebuilt may be listed. It is true exactly
+ * for the rows snapshotIndexView (backupSnapshotIndexView.ts) may call ready:
+ *
+ *  - never for a snapshot that failed its integrity check, whatever the status;
+ *  - never for a failed index whose failure was the attestation itself;
+ *  - never for rows whose recorded digest is not the attested one. A complete
+ *    index must carry that digest; inline rows carry none and are unaffected.
+ */
+export function readableIndexCondition(): SQL {
+  // Built from the same constants the JS rules read, so the two cannot drift.
+  const inList = (values: Iterable<string>) => sql.join([...values].map((v) => sql`${v}`), sql`, `);
+  const failureCode = sql`split_part(coalesce(${backupSnapshots.fileIndexError}, ''), ':', 1)`;
+  return and(
+    sql`${backupSnapshots.integrityStatus} <> 'attestation_failed'`,
+    sql`(${backupSnapshotAttestations.id} IS NULL OR ${backupSnapshotAttestations.status} IN (${inList(INDEX_BINDABLE_ATTESTATION_STATUSES)}))`,
+    sql`NOT (${backupSnapshots.fileIndexStatus} = 'failed' AND ${failureCode} IN (${inList(ATTESTATION_INDEX_FAILURES)}))`,
+    sql`(
+      ${backupSnapshotAttestations.id} IS NULL
+      OR ${backupSnapshots.fileIndexManifestSha256} = ${backupSnapshotAttestations.manifestSha256}
+      OR (${backupSnapshots.fileIndexManifestSha256} IS NULL AND ${backupSnapshots.fileIndexStatus} <> 'complete')
+    )`,
+  )!;
+}
+
 /** Columns for an attestation LEFT JOINed onto backup_snapshots (all null when there is none). */
 export const attestationJoinColumns = () => ({
   status: backupSnapshotAttestations.status,
@@ -318,16 +347,35 @@ export function joinedAttestation(value: unknown): IntegrityAttestationInput | n
  * #8318 §5.4: the snapshot row was taken before its device's current install
  * incarnation began. Read in the snapshot's own statement. False for a device
  * that was never reattached (NULL `incarnation_started_at`).
+ *
+ * FAILS CLOSED under RLS (#8318 wave 1b, review note on #9385). The predicate
+ * runs in the caller's DB context, and `devices` is RLS-guarded: a caller that
+ * cannot see the device row would otherwise read `false` — the "snapshot is
+ * current" answer that grants the producer-only same-device free pass in
+ * decideRestoreGate. It is therefore phrased as "NOT (a visible device row
+ * says the snapshot is current)", so an invisible or missing device reads as
+ * "predates": the restore is not refused, it just needs a confirmed
+ * authorization like any other snapshot an earlier install produced. This was
+ * preferred over a SECURITY DEFINER resolver because it adds no function that
+ * reads `devices` past RLS, and a legitimate caller (an agent in its own org,
+ * a user with access to the device's org, the delivery path's system context)
+ * always sees the row.
+ *
+ * `deviceId` and `timestamp` default to the `backup_snapshots` columns; a
+ * caller may pass other expressions (the RLS test passes literals).
  */
-export function snapshotPredatesDeviceIncarnationSql(): SQL<boolean> {
+export function snapshotPredatesDeviceIncarnationSql(
+  deviceId: SQL | typeof backupSnapshots.deviceId = backupSnapshots.deviceId,
+  timestamp: SQL | typeof backupSnapshots.timestamp = backupSnapshots.timestamp,
+): SQL<boolean> {
   // backup_snapshots.timestamp is `timestamp` holding UTC wall-clock time;
   // compare it with the timestamptz as UTC wall-clock too, so the session
   // TimeZone never shifts the boundary.
-  return sql<boolean>`EXISTS (
+  return sql<boolean>`NOT EXISTS (
     SELECT 1 FROM devices incarnation_device
-     WHERE incarnation_device.id = ${backupSnapshots.deviceId}
-       AND incarnation_device.incarnation_started_at IS NOT NULL
-       AND ${backupSnapshots.timestamp} < (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC'))`;
+     WHERE incarnation_device.id = ${deviceId}
+       AND (incarnation_device.incarnation_started_at IS NULL
+            OR ${timestamp} >= (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC')))`;
 }
 
 /**

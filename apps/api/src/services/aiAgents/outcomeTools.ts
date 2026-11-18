@@ -59,6 +59,18 @@ import {
   type SweepFindingsOutcome,
   type TicketTriageProposal,
   type SubmitTaskStepPayload,
+  nudgeSchema,
+  proposeActionSchema,
+  raiseConcernSchema,
+  requestSpecialistSchema,
+  updateConcernSchema,
+  updateConcernToolShape,
+  validateRequestSpecialist,
+  type NudgeInput,
+  type ProposeActionInput,
+  type RaiseConcernInput,
+  type RequestSpecialistInput,
+  type UpdateConcernInput,
 } from '@breeze/shared';
 import {
   SUBMIT_TASK_STEP_DESCRIPTION,
@@ -86,6 +98,18 @@ export const OUTCOME_TOOL_NAMES = [
   'submit_task_step',
   // AI Suggested Fixes W2 — see outcomeToolsForProfile's 'remediation_research' arm.
   'submit_suggestions',
+  // Wisp W05b — the `assessment` profile's FIVE outcome tools (the first
+  // profile with more than one). Unlike every `submit_*` tool above, each may
+  // be called many times per run: capture APPENDS to `outcome.assessment.<list>`
+  // and `finalizeAssessment` (assessmentFinalizer.ts) applies them after the
+  // run. `record_concern`, not `raise_concern`: that name is the CHAT tool in
+  // TOOL_TIERS (W05a Task 11b), and `createBreezeMcpServer` refuses an extra
+  // tool whose name is a TOOL_TIERS key.
+  'record_concern',
+  'update_concern',
+  'nudge',
+  'propose_action',
+  'request_specialist',
 ] as const;
 export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // `ReturnType<typeof tool>` does not resolve usefully here: `tool` is generic
@@ -95,6 +119,10 @@ export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // that instantiation. The SDK's own `CreateSdkMcpServerOptions.tools` field
 // sidesteps this the same way: `Array<SdkMcpToolDefinition<any>>`.
 export type SdkTool = SdkMcpToolDefinition<any>;
+
+/** Wisp W05b — what one assessment outcome-tool call validates to. */
+export type AssessmentToolInput =
+  | RaiseConcernInput | UpdateConcernInput | NudgeInput | ProposeActionInput | RequestSpecialistInput;
 
 export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_task_step: 'mcp__breeze__submit_task_step',
@@ -106,6 +134,11 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_patch_plan: 'mcp__breeze__submit_patch_plan',
   submit_analysis: 'mcp__breeze__submit_analysis',
   submit_suggestions: 'mcp__breeze__submit_suggestions',
+  record_concern: 'mcp__breeze__record_concern',
+  update_concern: 'mcp__breeze__update_concern',
+  nudge: 'mcp__breeze__nudge',
+  propose_action: 'mcp__breeze__propose_action',
+  request_specialist: 'mcp__breeze__request_specialist',
 };
 
 /**
@@ -205,6 +238,16 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // AI Suggested Fixes W2 — a research run's ONE output channel.
     case 'remediation_research':
       return ['submit_suggestions'];
+    // Wisp W05b — five tools, in the order the assessment prompt lists the
+    // outcomes. The drill-down floor (`assessmentProfile.ts`'s
+    // `ASSESSMENT_TOOL_ALLOWLIST`) is not an outcome tool and is never
+    // returned here.
+    case 'assessment':
+      return ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'];
+    // Wisp delegation W1 (#11084) — no outcome tool: the run's output is its
+    // summary plus the approval intents its proposals mint.
+    case 'device_troubleshooting':
+      return [];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -291,15 +334,37 @@ export function validateOutcomeToolInput(
  * pinned to 0).
  */
 export function validateOutcomeToolInput(toolName: 'submit_analysis', input: unknown): AnalysisOutcome;
+/**
+ * Wisp W05b — the five assessment tools' validated outcome IS the raw tool
+ * input, parsed by the shared W05a schemas (`validators/wispConcerns.ts`).
+ * Every id in it is model-supplied and therefore untrusted: `finalizeAssessment`
+ * re-reads each concern under the grant ceiling and pins it to the run's org
+ * before it writes anything.
+ */
+export function validateOutcomeToolInput(toolName: 'record_concern', input: unknown): RaiseConcernInput;
+export function validateOutcomeToolInput(toolName: 'update_concern', input: unknown): UpdateConcernInput;
+export function validateOutcomeToolInput(toolName: 'nudge', input: unknown): NudgeInput;
+export function validateOutcomeToolInput(toolName: 'propose_action', input: unknown): ProposeActionInput;
+export function validateOutcomeToolInput(toolName: 'request_specialist', input: unknown): RequestSpecialistInput;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs | ResearchToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome;
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome | AssessmentToolInput;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs | ResearchToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome {
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome | AssessmentToolInput {
   switch (toolName) {
+    case 'record_concern':
+      return raiseConcernSchema.parse(input);
+    case 'update_concern':
+      return updateConcernSchema.parse(input);
+    case 'nudge':
+      return nudgeSchema.parse(input);
+    case 'propose_action':
+      return proposeActionSchema.parse(input);
+    case 'request_specialist':
+      return validateRequestSpecialist(input);
     case 'submit_analysis':
       return analysisOutcomeSchema.parse(input);
     case 'submit_suggestions':
@@ -781,9 +846,19 @@ const SUBMIT_PATCH_PLAN_SHAPE = {
   })).max(PATCH_PLAN_MAX_ITEMS).describe('The plan items, most important first. An empty array is valid.'),
 };
 
+/** Wisp assessment — the run's own org, the only id an `org` concern subject may name (#10387). */
+export interface AssessmentToolRefs {
+  orgId: string;
+}
+
 export function buildOutcomeSdkTools(
   names: readonly OutcomeToolName[],
-  refs?: { design?: FleetDesignOutcomeRefs; patch?: PatchPlanToolRefs; research?: ResearchToolRefs },
+  refs?: {
+    design?: FleetDesignOutcomeRefs;
+    patch?: PatchPlanToolRefs;
+    research?: ResearchToolRefs;
+    assessment?: AssessmentToolRefs;
+  },
 ): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -909,6 +984,88 @@ export function buildOutcomeSdkTools(
           },
         ) as SdkTool;
       }
+      // Wisp W05b — the assessment tools. Raw shapes come straight from the
+      // shared W05a schemas; the AUTHORITY is still the full schema's `.parse()`
+      // in `validateOutcomeToolInput`, which carries what a raw shape cannot
+      // (`update_concern`'s refine and its outcome-implies-resolved transform,
+      // #11427). The handlers validate only; the run loop captures the parsed
+      // value, so the finalizer always sees the transformed call. Validate-only, static ack, no DB — `finalizeAssessment`
+      // applies the captured calls after the run.
+      case 'record_concern': {
+        // #10387: an `org` subject can only be the run's org; `finalizeAssessment`
+        // drops any other (`raise_subject_not_in_org`). Refuse it HERE as an
+        // error result naming the right id, so the model can correct the call
+        // instead of being told `recorded` for a concern that will never exist.
+        // The run loop's post hook never captures an error result, and the
+        // finalizer's check stays the authority. Same wiring-time refusal as
+        // submit_fleet_design: no run org, no tool.
+        const assessment = refs?.assessment;
+        if (!assessment) throw new Error("[buildOutcomeSdkTools] record_concern requires the run's org id");
+        return tool(
+          'record_concern',
+          'Record something Wisp should keep tracking for this org. One subject per call. A concern about the '
+          + 'organization as a whole uses subject kind "org" with the organization id from the task.',
+          raiseConcernSchema.shape,
+          async (input) => {
+            const raise = validateOutcomeToolInput('record_concern', input); // throws → model retries
+            if (raise.subject.kind === 'org' && raise.subject.id !== assessment.orgId) {
+              const error = `Not recorded: an org subject must be this assessment's organization id ${assessment.orgId}. `
+                + `Call record_concern again with subject { kind: 'org', id: '${assessment.orgId}' }.`;
+              return { content: [{ type: 'text', text: JSON.stringify({ error }) }], isError: true };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      }
+      case 'update_concern':
+        return tool(
+          'update_concern',
+          'Change severity/summary/evidence of an open concern, or close it. To close a concern send '
+          + "status: 'resolved' with an outcome (one sentence on how it ended); a summary edit alone keeps it open.",
+          updateConcernToolShape,
+          async (input) => {
+            validateOutcomeToolInput('update_concern', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'nudge':
+        return tool(
+          'nudge',
+          'Tell the person Wisp works for about one concern with one suggested next step. Respect the eligibility '
+          + 'shown in the concerns list.',
+          nudgeSchema.shape,
+          async (input) => {
+            validateOutcomeToolInput('nudge', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'propose_action':
+        return tool(
+          'propose_action',
+          'Propose a Tier-2/3 tool call for approval. Never executes directly.',
+          proposeActionSchema.shape,
+          async (input) => {
+            validateOutcomeToolInput('propose_action', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'request_specialist':
+        // Wisp W07 (spec §7.5): validate-only, like its siblings. The post-hook
+        // captures the call into `outcome.assessment.specialistRequests`; the
+        // deterministic coordinator admits it AFTER the model's turn
+        // (`wisp/specialistDispatch.ts`). No model-callable tool launches a run.
+        return tool(
+          'request_specialist',
+          'Ask Wisp for a specialist (sweep, analysis, operator_recipe, patch_plan, remediation_research, '
+          + 'bulk_ticket_reply, device_troubleshooting) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
+          + 'the assessment ends — nothing launches during this run. Kinds that ask first become an approval card '
+          + 'for the person Wisp works for. At most 3 requests per assessment; extra requests are refused.',
+          requestSpecialistSchema.shape,
+          async (input) => {
+            validateOutcomeToolInput('request_specialist', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
       case 'submit_analysis':
         return tool(
           'submit_analysis',

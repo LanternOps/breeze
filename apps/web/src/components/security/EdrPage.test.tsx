@@ -24,6 +24,15 @@ beforeEach(() => {
 });
 
 describe('EdrPage', () => {
+  it('links to Breeze IOC scans (spec §8)', async () => {
+    fetchWithAuth.mockResolvedValue(statusResponse([]));
+    render(<EdrPage />);
+    const link = screen.getByTestId('edr-ioc-scans-link');
+    expect(link.getAttribute('href')).toBe('/security/scans');
+    expect(link.textContent).toContain('IOC scans');
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+  });
+
   it('defaults to the SentinelOne tab and switches to Huntress', async () => {
     fetchWithAuth.mockResolvedValue(statusResponse([]));
     render(<EdrPage />);

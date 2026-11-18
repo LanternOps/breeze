@@ -374,7 +374,7 @@ fn validate(show: &ChatShow) -> Result<Branding, String> {
         if m.body.trim().is_empty() || count_chars(&m.body) > BODY_MAX {
             return Err("invalid body".into());
         }
-        if chrono::DateTime::parse_from_rfc3339(&m.sent_at).is_err() {
+        if crate::timestamp::parse_rfc3339_millis(&m.sent_at).is_none() {
             return Err("invalid sentAt".into());
         }
         match m.direction.as_str() {
@@ -636,7 +636,7 @@ impl ChatTracker {
                     direction: "from_user".into(),
                     body: text.to_string(),
                     sender_name: String::new(),
-                    sent_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    sent_at: crate::timestamp::now_rfc3339_secs(),
                     client_nonce: Some(nonce.clone()),
                     status: Some("pending".into()),
                     retryable: false,

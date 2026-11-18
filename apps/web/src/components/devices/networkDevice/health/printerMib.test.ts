@@ -119,6 +119,13 @@ describe('summariseDeltas', () => {
     expect(summariseDeltas(points)).toEqual({ yesterday: 30, lastWeek: 420 });
   });
 
+  it('reports whole pages even when a series arrives with fractions', () => {
+    // An older API averaged the counter per day, and "49.88780487804797 since
+    // yesterday" reached the printer card. A page is never fractional.
+    const points: Array<[string, number]> = Array.from({ length: 7 }, (_, i) => [`2026-09-0${i + 1}`, 25.6]);
+    expect(summariseDeltas(points)).toEqual({ yesterday: 26, lastWeek: 179 });
+  });
+
   it('returns nulls when there is not enough history to claim either number', () => {
     expect(summariseDeltas([])).toEqual({ yesterday: null, lastWeek: null });
     expect(summariseDeltas([['2026-09-15', 30]])).toEqual({ yesterday: 30, lastWeek: null });

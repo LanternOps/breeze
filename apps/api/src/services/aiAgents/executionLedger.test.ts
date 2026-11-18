@@ -122,9 +122,14 @@ import {
   closeAgentRunSession,
   completeToolExecution,
   createAgentRunSession,
+  LEDGER_ERROR_WITHOUT_TEXT,
   reconcileHungExecutions,
+  recordRunAssistantTurn,
+  recordRunTaskPrompt,
   startToolExecution,
+  toolErrorTextForLedger,
 } from './executionLedger';
+import { redactSensitiveToolInput } from '../aiToolOutput';
 
 const dialect = new PgDialect();
 function compiled(cond: SQL | undefined): string {
@@ -251,6 +256,44 @@ describe('startToolExecution / completeToolExecution round-trip', () => {
     const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
     expect(completion!.values).toMatchObject({ status: 'failed', durationMs: 50 });
   });
+
+  // #10411: a failed row used to carry no reason at all.
+  it('persists the error text on a failed call', async () => {
+    await completeToolExecution({
+      executionId: EXECUTION_ID, isError: true, durationMs: 50,
+      output: JSON.stringify({ error: 'Device is offline', stdout: 'device output' }),
+    });
+    const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
+    expect(completion!.values).toMatchObject({ status: 'failed', errorMessage: 'Device is offline' });
+    expect(completion!.values).not.toHaveProperty('toolOutput');
+  });
+
+  it('never writes error text onto a completed call', async () => {
+    await completeToolExecution({
+      executionId: EXECUTION_ID, isError: false, durationMs: 50,
+      output: JSON.stringify({ error: 'a field named error on a success' }),
+    });
+    const completion = dbMockState.updates.find((u) => u.table === 'ai_tool_executions');
+    expect(completion!.values).not.toHaveProperty('errorMessage');
+    expect(completion!.values).not.toHaveProperty('toolOutput');
+  });
+});
+
+describe('toolErrorTextForLedger (#10411)', () => {
+  it('takes the result\'s own `error` string', () => {
+    expect(toolErrorTextForLedger(JSON.stringify({ error: 'Device is offline', stdout: 'secret-ish output' })))
+      .toBe('Device is offline');
+  });
+
+  it('bounds a long error string', () => {
+    const text = toolErrorTextForLedger(JSON.stringify({ error: 'x'.repeat(5_000) }));
+    expect(text.length).toBeLessThanOrEqual(1_000);
+  });
+
+  it('never falls back to the raw output when there is no `error` string', () => {
+    expect(toolErrorTextForLedger('plain stdout that happened to fail')).toBe(LEDGER_ERROR_WITHOUT_TEXT);
+    expect(toolErrorTextForLedger(JSON.stringify({ status: 'failed', stdout: 'device output' }))).toBe(LEDGER_ERROR_WITHOUT_TEXT);
+  });
 });
 
 describe('reconcileHungExecutions', () => {
@@ -288,5 +331,82 @@ describe('closeAgentRunSession', () => {
     await closeAgentRunSession(SESSION_ID, 'failed');
     const update = dbMockState.updates.find((u) => u.table === 'ai_sessions');
     expect(update!.values).toMatchObject({ status: 'closed' });
+  });
+});
+
+describe('run transcript (#11971)', () => {
+  const rowsWritten = () => dbMockState.inserts
+    .filter((i) => i.table === 'ai_messages')
+    .flatMap((i) => (Array.isArray(i.values) ? i.values : [i.values]) as Array<Record<string, unknown>>);
+
+  it('recordRunTaskPrompt stores what the run was told as the session\'s user message, in a system context', async () => {
+    dbMockState.selectQueues.ai_messages = [[]]; // no user row yet
+    await recordRunTaskPrompt(SESSION_ID, 'Investigate alert A on device D.');
+
+    expect(rowsWritten()).toEqual([
+      expect.objectContaining({ sessionId: SESSION_ID, role: 'user', content: 'Investigate alert A on device D.' }),
+    ]);
+    expect(dbMockState.contextDuringWrites).toEqual(['system']);
+  });
+
+  it('recordRunTaskPrompt writes once per session: a failover hop (or a resumed run) does not store the prompt again (#12133)', async () => {
+    dbMockState.selectQueues.ai_messages = [[{ id: 'existing-user-row' }]];
+    await recordRunTaskPrompt(SESSION_ID, 'Investigate alert A on device D.');
+
+    expect(rowsWritten()).toEqual([]);
+  });
+
+  it('recordRunAssistantTurn stores the answer and each Breeze tool call, inputs redacted, in turn order', async () => {
+    await recordRunAssistantTurn(SESSION_ID, {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'private reasoning', signature: 'sig' },
+          { type: 'text', text: 'Checking the device.' },
+          { type: 'tool_use', id: 'tu-1', name: 'mcp__breeze__get_device_details', input: { deviceId: DEVICE_ID, password: 'hunter2' } },
+          { type: 'tool_use', id: 'tu-2', name: 'ToolSearch', input: { query: 'disk' } },
+          { type: 'text', text: 'Then deciding.' },
+        ],
+        usage: { input_tokens: 1200, output_tokens: 80 },
+      },
+    });
+
+    const rows = rowsWritten();
+    expect(dbMockState.inserts.filter((i) => i.table === 'ai_messages')).toHaveLength(1);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      sessionId: SESSION_ID,
+      role: 'assistant',
+      content: 'Checking the device.\n\nThen deciding.',
+      contentBlocks: [
+        { type: 'text', text: 'Checking the device.' },
+        { type: 'tool_use', id: 'tu-1', name: 'mcp__breeze__get_device_details', input: redactSensitiveToolInput({ deviceId: DEVICE_ID, password: 'hunter2' }) },
+        { type: 'tool_use', id: 'tu-2', name: 'ToolSearch', input: { query: 'disk' } },
+        { type: 'text', text: 'Then deciding.' },
+      ],
+      inputTokens: 1200,
+      outputTokens: 80,
+    });
+    // The SDK's own ToolSearch builtin gets no tool row (same as chat, A-W04).
+    expect(rows[1]).toMatchObject({
+      sessionId: SESSION_ID,
+      role: 'tool_use',
+      toolName: 'get_device_details',
+      toolInput: redactSensitiveToolInput({ deviceId: DEVICE_ID, password: 'hunter2' }),
+      toolUseId: 'tu-1',
+    });
+    const written = JSON.stringify(rows.map(({ createdAt: _c, ...rest }) => rest));
+    expect(written).not.toContain('hunter2');
+    expect(written).not.toContain('private reasoning');
+    // One statement, so the rows' order must come from the row clock, not now().
+    for (const row of rows) expect(compiled(row.createdAt as SQL)).toBe('clock_timestamp()');
+    expect(dbMockState.contextDuringWrites).toEqual(['system']);
+  });
+
+  it('recordRunAssistantTurn writes nothing for a message with no content', async () => {
+    await recordRunAssistantTurn(SESSION_ID, { type: 'assistant', message: {} });
+    await recordRunAssistantTurn(SESSION_ID, { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'x' }] } });
+
+    expect(rowsWritten()).toEqual([]);
   });
 });

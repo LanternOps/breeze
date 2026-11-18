@@ -231,7 +231,13 @@
       "submit": "Applica",
       "created_one": "Creato {{count}} deliverable",
       "created_other": "Creati {{count}} deliverable",
-      "skipped": "Saltati (già presenti): {{names}}"
+      "skipped": "Saltati (già presenti): {{names}}",
+      "items": "Deliverable in questo set",
+      "noItems": "Questo set non contiene ancora deliverable."
+    },
+    "portal": {
+      "shown": "Visibile nel portale",
+      "hidden": "Nascosto nel portale"
     },
     "errors": {
       "collision": "Questi deliverable esistono già sulla destinazione: {{names}}",

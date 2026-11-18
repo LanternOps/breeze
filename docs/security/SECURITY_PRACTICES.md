@@ -119,7 +119,7 @@ Platform admin is a separate authorization axis from the partner/organization RB
 | Property | Implementation |
 |---|---|
 | **Schema** | `users.is_platform_admin` boolean column (defaults to `false`) |
-| **Bootstrap** | `BREEZE_PLATFORM_ADMINS` env var — comma-separated email allowlist, applied on API startup |
+| **Bootstrap** | `BREEZE_PLATFORM_ADMINS` env var — comma-separated email allowlist, applied on API startup to an account that is `active`, has a verified address (`email_verified_at` set), is partner-level (`org_id` NULL) and is the only account with that address ignoring case. Each promotion writes a `platform_admin.bootstrap_promote` audit row in the same transaction. Never demotes; the startup log names listed addresses with no account, shared by several accounts or not eligible, and flagged accounts that are not listed (also when the list is empty). A removed account re-invited later starts without the flag or a verified address |
 | **Middleware** | `platformAdminMiddleware` (`apps/api/src/middleware/platformAdmin.ts`) — runs `authMiddleware` then enforces `isPlatformAdmin === true`, fails closed with 403 |
 | **Audit** | Every authorized request is recorded as `platform_admin.<route>` in `audit_logs`, including method, path, actor, and trusted client IP |
 
@@ -460,12 +460,14 @@ Breeze now includes a structured incident lifecycle API with auditable transitio
 
 - **Lifecycle states**: `detected` -> `analyzing` -> `contained` -> `recovering` -> `closed`
 - **Evidence chain**: evidence entries record who collected it, when, where it is stored, and optional integrity hash
-- **Containment governance**: high-risk actions (`network_isolation`, `account_disable`, `usb_block`) require an `approvalRef`
+- **Containment governance**: AI high-risk actions (`network_isolation`, `account_disable`, `usb_block`) require an `approvalRef`. Manual incident `/contain` calls record actions only; they do not execute endpoint isolation. Human network-isolation routes require an interactive session, device execution permission, site access, and MFA when enabled. A self-host with 2FA disabled provides password-only assurance.
 - **Timeline integrity**: incident timeline entries are appended for creation, containment, evidence collection, closure, and SLA escalation
 - **Eventing**: `incident.created`, `incident.contained`, `incident.escalated`, and `incident.closed` are emitted for downstream automations and integrations
 - **Auditability**: all mutating incident endpoints emit structured route audit events with actor identity and action metadata
 
 Core endpoints are exposed under `/api/v1/incidents/*` for creation, triage, containment, evidence handling, closure, and report generation.
+
+Network isolation is off by default behind `NETWORK_ISOLATION_ENABLED` and is Windows-only until Linux and macOS support ship. Every episode has a mandatory expiry (72 hours by default, up to 720 hours) and an audited offline break-glass code. Start gates never prevent console release, extension, acknowledgement, or code viewing for an existing episode. Disabling the feature flag blocks new starts; it does not release devices. Emergency fleet release uses a scripted release request for each episode. See the [network-isolation runbook](../../apps/docs/src/content/docs/features/network-isolation.mdx) for the permitted traffic and residual risks.
 
 ---
 
@@ -553,7 +555,7 @@ All scanners run in CI and **block merges** on failure.
 | `MFA_RECOVERY_CODE_PEPPER` | Server-side pepper for SHA-256 recovery-code hashes | 32+ characters |
 | `AGENT_ENROLLMENT_SECRET` | Shared secret presented at agent enrollment | 32-byte hex |
 | `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | Base64 SPKI Ed25519 key(s) used to verify signed agent release manifests; **required when `BINARY_SOURCE=github` in production** — the API config validator refuses to boot without it | base64 SPKI |
-| `BREEZE_PLATFORM_ADMINS` | Optional. Comma-separated email allowlist applied on startup to bootstrap `users.is_platform_admin`. Without it, no user has cross-tenant admin access. | n/a |
+| `BREEZE_PLATFORM_ADMINS` | Optional. Comma-separated email allowlist applied on startup to bootstrap `users.is_platform_admin` for active, partner-level accounts with a verified address. Without it, no user has cross-tenant admin access. List only accounts in the operator's own partner, created before they are listed. | n/a |
 
 ### Production Enforcement
 

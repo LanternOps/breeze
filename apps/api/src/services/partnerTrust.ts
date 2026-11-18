@@ -45,6 +45,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'restart_agent',
   // Endpoint messaging W02 (#8742): carries only a message id, no content.
   'retract_message',
+  // Reduces only Breeze-owned capability; reason is audit text.
+  'release_containment',
   'script_cancel',
   'script_list_running',
   'security_collect_status',
@@ -111,6 +113,8 @@ export const GATED_COMMAND_TYPES = [
   'file_trash_restore',
   'file_write',
   'filesystem_analysis',
+  // #8729: operator-directed, disruptive (force-closes apps).
+  'force_reboot',
   'get_process',
   'get_service',
   'hardware_profile',
@@ -139,8 +143,14 @@ export const GATED_COMMAND_TYPES = [
   'network_ping',
   'network_tcp_check',
   'notify_user',
+  // Vendor updates (#11065): operator-directed, can flash firmware and require a reboot.
+  'oem_update_run',
+  // Vendor updates (#11065): operator-directed; runs the vendor binary as SYSTEM to hand its schedule back.
+  'oem_update_release',
   'pam_apply_v2',
   'pam_reconcile_v2',
+  // #8928: carries the technician's deny reason to the end user's screen.
+  'pam_request_notify',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',

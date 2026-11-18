@@ -85,6 +85,7 @@ When an approver acts on a request from any surface (the [Privileged Access](/fe
 
 - **PAM elevations** -- UAC intercepts and Tech JIT admin requests are risk-tiered, so the assurance floor you set here is what an approver must clear to grant them.
 - **AI tool actions** -- privileged actions proposed by the Breeze AI agent or Helper carry a risk tier (for example T2 / T3) and are held for a human; the approver must meet the matching assurance level to sign off.
+- **Microsoft 365 identity actions** -- the eight account actions added in v0.124.0 (revoke sessions, assign or remove a licence, add to or remove from a group, retire an Intune device, create a user, set an auto-reply) are always **four-eyes**: the requester never approves their own request, and the second approver takes a fresh ceremony every time. A password reset or account disable additionally needs a current [caller verification](/security/caller-verification/) of the target account; without one it is refused -- in chat, over MCP, and again when an approved request is released -- until a verification exists.
 
 Because an approval always requires a *separate* human identity from the requester, Approval Security is what makes "confirmed with MFA" concrete: it defines exactly how strong that confirmation has to be for the risk at hand.
 

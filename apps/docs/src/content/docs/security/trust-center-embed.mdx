@@ -35,6 +35,10 @@ The card never shows individual controls, documents, the method section or anyth
 
 Until at least one website is listed, the embed URL answers 404 and nothing can frame it.
 
+<Aside type="caution" title="Reserved partner slugs">
+The embed lives at `/portal/trust/embed/…`, so the partner slug `embed` is reserved, alongside `preview` and `access`. A partner whose slug is one of these cannot publish a trust page, and a page already published under such a slug stops serving. Rename the partner slug to publish again.
+</Aside>
+
 ## Rules for allowed websites
 
 Each entry is an exact **origin**: `https://`, a host name, and an optional port.

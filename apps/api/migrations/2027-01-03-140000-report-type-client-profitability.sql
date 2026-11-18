@@ -1,0 +1,11 @@
+-- Business reports phase 2 W3 (#9831, feature #9828): the `client_profitability`
+-- business report type — per-client billed revenue, cost from the invoice-line
+-- cost snapshot with its coverage, the revenue mix, hours by coverage and an
+-- optional uniform-rate labor estimate.
+-- Generator: services/businessReports/clientProfitabilityReport.ts.
+--
+-- Enum add ONLY, in its own file: a label added by ALTER TYPE cannot be used
+-- until the transaction that added it commits (precedent:
+-- 2026-11-26-100400-report-type-ai-usage-by-client.sql).
+-- No DML, so no breeze.scope election. Idempotent via IF NOT EXISTS.
+ALTER TYPE report_type ADD VALUE IF NOT EXISTS 'client_profitability';

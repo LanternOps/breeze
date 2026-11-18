@@ -25,16 +25,16 @@ function serve(compliance: Record<string, unknown>) {
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url === '/patches/compliance') return ok({ data: compliance });
-    if (url === '/devices?limit=200') {
-      return ok({ devices: [D1, D2, D3].map((id, i) => ({ id, hostname: `host-${i + 1}`, osType: 'linux' })) });
-    }
     return ok({});
   });
 }
 
-const row = (id: string, name: string, over: Record<string, unknown> = {}) => ({
-  id, name, os: 'linux', missingCount: 0, approvedMissing: 0, unapprovedMissing: 0, failedMissing: 0,
-  criticalCount: 0, importantCount: 0, osMissing: 0, thirdPartyMissing: 0, pendingReboot: false, ...over,
+// One GET /patches/compliance device row (#9791 C); fields mirror the API.
+const row = (id: string, hostname: string, over: Record<string, unknown> = {}) => ({
+  id, hostname, displayName: null, osType: 'linux', lastSeenAt: null, status: 'online', orgId: 'org-1',
+  pendingPatches: 0, approvedMissing: 0, unapprovedMissing: 0, failedMissing: 0, criticalMissing: 0,
+  importantMissing: 0, osMissing: 0, thirdPartyMissing: 0, staleImages: 0, pendingReboot: false,
+  lastInstalledAt: null, lastScannedAt: null, compliant: true, ...over,
 });
 
 describe('PatchComplianceView container image term (W06)', () => {
@@ -44,22 +44,30 @@ describe('PatchComplianceView container image term (W06)', () => {
     serve({
       totalDevices: 3,
       compliantDevices: 1,
-      devicesNeedingPatches: [
-        row(D1, 'host-1', { missingCount: 2, unapprovedMissing: 2, osMissing: 2 }),
-        row(D2, 'host-2', { staleImages: 1, unknownImages: 0 }),
+      devices: [
+        row(D1, 'host-1', { pendingPatches: 2, unapprovedMissing: 2, osMissing: 2, compliant: false }),
+        // listed only for a stale image: no pending patch, still not compliant
+        row(D2, 'host-2', { staleImages: 1, compliant: false }),
+        row(D3, 'host-3'),
       ],
       containerImages: { stale: 1, current: 0, unknown: 2 },
     });
     render(<PatchComplianceView ringId={null} />);
     expect(await screen.findByText('1 of 3 devices')).toBeTruthy();
     expect(screen.getByText('2 container images not checked')).toBeTruthy();
+    // the stale-image-only row reads as outstanding, not "OK"
+    expect(screen.getAllByText('OK')).toHaveLength(1);
   });
 
   it('is unchanged without container images', async () => {
     serve({
       totalDevices: 3,
       compliantDevices: 2,
-      devicesNeedingPatches: [row(D1, 'host-1', { missingCount: 2, unapprovedMissing: 2, osMissing: 2 })],
+      devices: [
+        row(D1, 'host-1', { pendingPatches: 2, unapprovedMissing: 2, osMissing: 2, compliant: false }),
+        row(D2, 'host-2'),
+        row(D3, 'host-3'),
+      ],
     });
     render(<PatchComplianceView ringId={null} />);
     expect(await screen.findByText('2 of 3 devices')).toBeTruthy();

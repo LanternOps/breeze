@@ -67,6 +67,8 @@ type skippedReparsePoint struct {
 func (s skippedReparsePoint) String() string {
 	var desc string
 	switch s.kind {
+	case reparseKindNotLocal:
+		return s.path + " (" + s.detail + ")"
 	case reparseKindJunction, reparseKindMountPoint:
 		desc = string(s.kind)
 		if s.target != "" {
@@ -94,6 +96,11 @@ type reparseSkips struct {
 	byKind    map[reparseKind]int
 	sample    []skippedReparsePoint
 	junctions []SnapshotJunction
+	// notLocalTotal/notLocalSample record files and directories skipped
+	// because their data is not on this machine (#7326, placeholder.go).
+	// They are not reparse-point skips and do not count toward total.
+	notLocalTotal  int
+	notLocalSample []skippedReparsePoint
 }
 
 func newReparseSkips() *reparseSkips {
@@ -208,7 +215,11 @@ func summarizeSkippedReparsePoints(r *reparseSkips) string {
 // skip is deliberate, so it adds nothing to ErrorCount and cannot downgrade
 // the run to partial.
 func reportSkippedReparsePoints(job *BackupJob, r *reparseSkips) {
-	if r == nil || r.total == 0 {
+	if r == nil {
+		return
+	}
+	reportNotStoredLocally(job, r)
+	if r.total == 0 {
 		return
 	}
 	for _, sp := range r.sample {

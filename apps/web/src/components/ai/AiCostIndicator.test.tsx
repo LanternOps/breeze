@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AiCostIndicator from './AiCostIndicator';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { formatCurrency } from '@/lib/i18n/format';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -52,6 +53,70 @@ describe('AiCostIndicator polling behavior', () => {
 
     // After a 401, polling should have stopped — still only 1 call
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #10108: the count is the month's billed usage, not the open conversation's
+// messages; "0 msgs" beside a 2-message chat read as a session count.
+describe('AiCostIndicator message count label (#10108)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('says the message count is for this month', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 7 },
+        budget: null,
+      }),
+    );
+
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('7 msgs this month');
+  });
+});
+
+// Critique: the 10px gray-400 message count read ~2.5:1 on white. Text in the
+// indicator is at least 12px and uses the muted-foreground token.
+describe('AiCostIndicator text size and contrast', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders no 10px or gray-400 text', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 7 },
+        budget: null,
+      }),
+    );
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const count = Array.from(container.querySelectorAll('span')).find((el) => el.textContent === '7 msgs this month')!;
+    expect(count.className).toContain('text-xs');
+    expect(count.className).toContain('text-muted-foreground');
+    expect(container.innerHTML).not.toContain('text-[10px]');
+    expect(container.innerHTML).not.toContain('text-gray-400');
   });
 });
 
@@ -108,6 +173,24 @@ describe('AiCostIndicator credit balance (#4388 W04)', () => {
     });
 
     expect(container.textContent).toContain('0 credits');
+  });
+
+  it('uses the singular for one credit and the catalogue "this month" wording', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 250, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 1, includedBalance: 0, purchasedBalance: 1, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('$2.50 this month');
+    expect(container.textContent).toContain('1 credit');
+    expect(container.textContent).not.toContain('1 credits');
   });
 
   it('does not append anything when usage.credits is null', async () => {
@@ -210,5 +293,44 @@ describe('AiCostIndicator post-turn refresh (defect: stale header through a comp
       await Promise.resolve();
     });
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #9450: a Buy credits link sits next to the balance, hosted billing only.
+describe('AiCostIndicator Buy credits link (#9450)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const setHosted = (billing: boolean) =>
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+  it('links to the billing credits page when hosted billing is configured', async () => {
+    setHosted(true);
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('a[href="/billing/credits"]')?.textContent).toBe('Buy credits');
+  });
+
+  it('shows no link when billing is not configured (self-hosted)', async () => {
+    setHosted(false);
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain('0 credits');
+    expect(container.querySelector('a[href="/billing/credits"]')).toBeNull();
   });
 });

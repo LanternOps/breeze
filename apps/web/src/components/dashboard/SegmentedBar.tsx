@@ -1,4 +1,6 @@
 import { cn } from '@/lib/utils';
+import { DashboardMetric } from './DashboardMetric';
+import type { DashboardData, MetricKey } from './dashboardLinks';
 
 export interface BarSegment {
   key: string;
@@ -6,6 +8,8 @@ export interface BarSegment {
   count: number;
   /** Tailwind bg-* class for the segment fill and its legend dot. */
   colorClass: string;
+  /** Registry key for this legend entry's count (R1). */
+  metric: MetricKey;
 }
 
 /**
@@ -17,9 +21,12 @@ export interface BarSegment {
 export default function SegmentedBar({
   segments,
   ariaLabel,
+  data,
 }: {
   segments: BarSegment[];
   ariaLabel: string;
+  /** Data the legend href builders may read. */
+  data?: DashboardData;
 }) {
   const total = segments.reduce((sum, s) => sum + s.count, 0);
   const visible = segments.filter((s) => s.count > 0);
@@ -49,8 +56,14 @@ export default function SegmentedBar({
             )}
           >
             <span className={cn('h-2 w-2 shrink-0 rounded-full', s.colorClass)} aria-hidden="true" />
-            {s.label}
-            <span className="font-medium tabular-nums">{s.count}</span>
+            <DashboardMetric
+              metric={s.metric}
+              label={s.label}
+              data={data}
+              valueClassName="font-medium tabular-nums"
+            >
+              {s.count}
+            </DashboardMetric>
           </span>
         ))}
       </div>

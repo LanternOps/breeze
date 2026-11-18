@@ -1,8 +1,9 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments, sites } from '../db/schema';
 import { isHiddenOrgType } from './unassignedPool/visibility';
 import { workTypes } from '../db/schema/workTypes';
+import { catalogItems } from '../db/schema/catalog';
 import { emitTimeEntryEvent } from './timeEntryEvents';
 import { loadCardsForOrg } from './billingProfileService';
 import { resolveBillingRule, type BillingRule } from './billingRuleResolver';
@@ -11,11 +12,13 @@ import { computeBillableMinutes, billableMinutesSql, BILLABLE_MINUTES_CHECK_NAME
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { captureException } from './sentry';
 import { readOrgStampingDefaults } from './orgCurrencyCore';
-import { minorUnitScaleSql } from './currencySql';
+import { laborAmountSql, minorUnitScaleSql } from './currencySql';
 import { isMissingRateGap } from './invoiceAssembly';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits, laborAmount, laborHours, billedLaborMinutes } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 import { emitTicketEvent } from './ticketEvents';
+import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketNotMerged, assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   peekEntry, peekRunningEntry, planGatedWrite, settleGatedWrite, settleRemovedEntry,
   type GatedWritePlan,
@@ -45,6 +48,7 @@ export type TimeEntryServiceErrorCode =
   /** 409 — a block-of-hours period close drew this entry (#8181); as frozen as `billed`. */
   | 'ENTRY_DRAWN_BY_BLOCK'
   | 'PART_BILLED'
+  | 'CATALOG_ITEM_NOT_FOUND'
   // Wave-6 release gate (W6-G4-2/3): a rate or part price that cannot be expressed
   // in the row's stamped currency (¥100.50). Refused, never silently rounded.
   | 'PRICE_NOT_REPRESENTABLE'
@@ -547,14 +551,14 @@ export async function getTicketTimeEntryDefaults(
  * the new row under its guard. RLS still scopes the read to the caller's axis.
  */
 async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: string }> {
-  const rows = await db
-    .select({ id: tickets.id, orgId: tickets.orgId })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1)
-    .for('update');
-  const row = rows[0];
+  // Same SQL as before #8972 W0, now shared by every ticket-child writer
+  // (services/ticketRowLock.ts); the 404 shape stays this service's own.
+  const row = await lockTicketForWrite(db, ticketId);
   if (!row) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+  // #8972 W1: no time or part write lands on a merged tombstone (409
+  // TICKET_MERGED), checked under the lock; every time-entry and part lock
+  // in this file funnels through here.
+  assertTicketNotMerged(row);
   return row;
 }
 
@@ -670,7 +674,7 @@ async function insertTimeEntryFeedComment(
 ): Promise<void> {
   if (!ticketId) return;
   try {
-    await db.insert(ticketComments).values({
+    await withDbTransactionIfHeld(() => db.insert(ticketComments).values({
       ticketId,
       userId: actor.userId,
       authorName: actor.name ?? null,
@@ -680,7 +684,7 @@ async function insertTimeEntryFeedComment(
       isPublic: false,
       oldValue: null,
       newValue: null
-    });
+    }));
   } catch (err) {
     console.error('[timeEntryService] feed comment insert failed', err);
   }
@@ -1729,6 +1733,9 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
     ticketId: string | null;
   }[] = [];
   if (eligible.length > 0) {
+    // #8972 W0: the entries' tickets first, ascending, in one statement. The
+    // UPDATE below then never waits on a ticket while holding an entry.
+    assertTicketsNotMerged((await lockTicketsForWrite(db, eligible.map((id) => found.get(id)?.ticketId))).values());
     updated = await db
       .update(timeEntries)
       .set(approve
@@ -1772,10 +1779,25 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
 
 // ── Parts ────────────────────────────────────────────────────────────────
 
+/**
+ * A part's catalog item must belong to the partner of the org the part lives
+ * in. The ticket_parts FK only proves the item exists, and catalog_items RLS
+ * does not apply under system scope — same rule as the quote and invoice
+ * catalog lookups (getOwnedItemOr404).
+ */
+async function assertPartCatalogItemInOrgPartner(catalogItemId: string, orgId: string): Promise<void> {
+  const [row] = await db.select({ id: catalogItems.id }).from(catalogItems)
+    .innerJoin(organizations, eq(organizations.partnerId, catalogItems.partnerId))
+    .where(and(eq(catalogItems.id, catalogItemId), eq(organizations.id, orgId)))
+    .limit(1);
+  if (!row) throw new TimeEntryServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+}
+
 export async function addTicketPart(ticketId: string, input: TicketPartInput, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
   // Lock order tickets → ticket_parts (see lockTicketRow).
   const link = await resolveAndLockTicketLink(ticketId, actor);
+  if (input.catalogItemId) await assertPartCatalogItemInOrgPartner(input.catalogItemId, link.ticket.orgId);
   const partUnitPrice = (input.unitPrice ?? 0).toFixed(2);
   const partCostBasis = input.costBasis != null ? input.costBasis.toFixed(2) : null;
   assertRepresentable(partUnitPrice, link.currencyCode);
@@ -1828,14 +1850,31 @@ function assertCanMutatePart(part: { addedBy: string | null }, actor: TimeEntryA
   }
 }
 
+/**
+ * #8972 W0: a part edit locks the part's TICKET first — read the part
+ * unlocked, lock its ticket (lockTicketRow), then lock-and-re-read the part
+ * (getPartOr404). A part that moved to another ticket in between is answered
+ * with the writer's existing "reload and retry" 409, never written without
+ * its ticket's lock.
+ */
+async function lockPartForWrite(id: string, lost: { message: string; code: 'PART_UPDATE_LOST' | 'PART_DELETE_LOST' }) {
+  const [peek] = await db.select({ ticketId: ticketParts.ticketId }).from(ticketParts).where(eq(ticketParts.id, id)).limit(1);
+  if (!peek) throw new TimeEntryServiceError('Part not found', 404, 'PART_NOT_FOUND');
+  await lockTicketRow(peek.ticketId);
+  const part = await getPartOr404(id);
+  if (part.ticketId !== peek.ticketId) throw new TimeEntryServiceError(lost.message, 409, lost.code);
+  return part;
+}
+
 /** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
-  const part = await getPartOr404(id);
+  const part = await lockPartForWrite(id, { message: 'Part could not be updated — reload and retry', code: 'PART_UPDATE_LOST' });
   assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
   }
+  if (input.catalogItemId) await assertPartCatalogItemInOrgPartner(input.catalogItemId, part.orgId);
   const set: Record<string, unknown> = {};
   if (input.description !== undefined) set.description = input.description;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
@@ -1872,7 +1911,7 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
 }
 
 export async function deleteTicketPart(id: string, actor: TimeEntryActor) {
-  const part = await getPartOr404(id);
+  const part = await lockPartForWrite(id, { message: 'Part could not be deleted — reload and retry', code: 'PART_DELETE_LOST' });
   assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed') {
     throw new TimeEntryServiceError(
@@ -2094,8 +2133,7 @@ export async function getTimesheet(userId: string, weekStart: Date, accessibleOr
     // summary) and rows are summed as integer minor units, never as floats.
     // Only the minutes source moved to the billed quantity (§3.5). The day-total
     // loop above deliberately keeps ACTUAL minutes — that figure is utilization.
-    const hours = (((entry.billableMinutes ?? entry.durationMinutes) ?? 0) / 60).toFixed(2);
-    const amount = multiplyToCurrency(hours, entry.hourlyRate, entry.currencyCode);
+    const amount = laborAmount(billedLaborMinutes(entry), entry.hourlyRate, entry.currencyCode);
     money.set(entry.currencyCode, (money.get(entry.currencyCode) ?? 0) + toMinorUnits(amount, entry.currencyCode));
   }
   const billableAmounts: CurrencyAmount[] = [...money].map(([currencyCode, minor]) => ({
@@ -2139,7 +2177,7 @@ export async function getTicketBillingSummary(ticketId: string) {
       // Labor rule unchanged: round hours to 2 dp first, then × rate, then ONE
       // round per row at the currency's minor unit (the invoice-line figure)
       // before summing. Only the MINUTES source changed (§3.5).
-      amount: sql<string>`COALESCE(SUM(ROUND(ROUND(COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})::numeric / 60, 2) * ${timeEntries.hourlyRate}, ${minorUnitScaleSql(timeEntries.currencyCode)})), 0)::numeric(12,2)`
+      amount: sql<string>`COALESCE(SUM(${laborAmountSql(sql`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes})`, timeEntries.hourlyRate, minorUnitScaleSql(timeEntries.currencyCode))}), 0)::numeric(12,2)`
     })
     .from(timeEntries)
     .where(and(
@@ -2327,7 +2365,8 @@ export async function listBillables(
   for (const r of timeRows) {
     // Billed quantity (§3.5). NULL billable_minutes = pre-feature row or a row
     // with no card terms — bill the actual duration.
-    const hours = (((r.billableMinutes ?? r.minutes) ?? 0) / 60).toFixed(2);
+    const billed = billedLaborMinutes({ billableMinutes: r.billableMinutes, durationMinutes: r.minutes });
+    const hours = laborHours(billed);
     const rate = toFinite(r.rate);
     // A row with no resolvable rate is a genuine assembly gap (#6461),
     // regardless of billing_status, EXCEPT `contract`/`no_charge` where a
@@ -2352,7 +2391,7 @@ export async function listBillables(
       amount: missingRate
         ? null
         : rate != null
-          ? multiplyToCurrency(hours, rate, r.currencyCode ?? 'USD')
+          ? laborAmount(billed, rate, r.currencyCode ?? 'USD')
           : '0.00',
       missingRate,
       currencyCode: r.currencyCode,

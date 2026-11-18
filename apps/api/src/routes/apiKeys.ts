@@ -14,6 +14,7 @@ import {
   requiredPermissionsForApiKeyScopes,
   validateApiKeyScopeDelegation,
 } from '../services/apiKeyScopes';
+import { revokeApiKey } from '../services/apiKeyRevocation';
 import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import {
@@ -271,7 +272,13 @@ const createApiKeySchema = z.object({
   orgId: z.string().guid(),
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).default([]),
-  expiresAt: z.string().datetime().nullable().optional(),
+  // A real ISO timestamp (a bare YYYY-MM-DD is rejected; the web form
+  // normalises its date picker to end-of-day local time, #9654) that is still
+  // in the future — minting an already-expired credential is always a mistake.
+  expiresAt: z.string().datetime()
+    .refine((v) => new Date(v).getTime() > Date.now(), { message: 'expiresAt must be in the future' })
+    .nullable()
+    .optional(),
   rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000),
   mcpDomains: mcpDomainsInputSchema.optional()
 });
@@ -718,33 +725,12 @@ apiKeyRoutes.delete(
     if (ceilingDenial) return ceilingDenial.response;
 
     // Soft delete by setting status to revoked
-    const [revoked] = await db
-      .update(apiKeys)
-      .set({
-        status: 'revoked',
-        updatedAt: new Date()
-      })
-      .where(eq(apiKeys.id, keyId))
-      .returning({
-        id: apiKeys.id,
-        name: apiKeys.name,
-        keyPrefix: apiKeys.keyPrefix,
-        status: apiKeys.status,
-        updatedAt: apiKeys.updatedAt
-      });
-
-    if (revoked) {
-      writeApiKeyAudit(c, auth, {
-        orgId: existingKey.orgId,
-        action: 'api_key.revoke',
-        keyId: existingKey.id,
-        keyName: revoked.name,
-        details: {
-          keyPrefix: revoked.keyPrefix,
-          previousStatus: existingKey.status
-        }
-      });
-    }
+    const { apiKey: revoked } = await revokeApiKey(keyId, auth.user.id, 'api_key.delete', {
+      existing: { orgId: existingKey.orgId, status: existingKey.status },
+      actorEmail: auth.user.email,
+      ipAddress: getTrustedClientIpOrUndefined(c),
+      userAgent: c.req.header('user-agent'),
+    });
 
     return c.json({
       success: true,

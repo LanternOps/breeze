@@ -368,6 +368,18 @@ describe('fleet software rollup (#2262)', () => {
     // And the device tab / CVE drawer rows (fetchFleetFindingRows) agree.
     const cveRows = await get<{ findings: Array<{ deviceId: string; patchAvailable: boolean }> }>(env, '/CVE-2026-71001/devices');
     expect(Object.fromEntries(cveRows.body.findings.map((f) => [f.deviceId, f.patchAvailable]))).toEqual({ [dA]: false, [dB]: false, [dC]: true });
+
+    // #9533: the By-CVE lens agrees too — Ready is the resolver, the catalog
+    // flag is only the vendor-fix signal ("Update to latest").
+    const byCve = await get<{ items: Array<{ cveId: string; patchAvailable: boolean; patchReadyDeviceCount: number }> }>(env, '?status=open');
+    const cveRow = (id: string) => byCve.body.items.find((r) => r.cveId === id)!;
+    expect(cveRow('CVE-2026-71001')).toMatchObject({ patchAvailable: true, patchReadyDeviceCount: 1 });
+    expect(cveRow('CVE-2026-71002')).toMatchObject({ patchAvailable: true, patchReadyDeviceCount: 0 });
+    const byCveReady = await get<{ items: Array<{ cveId: string }> }>(env, '?status=open&patchAvailable=true');
+    expect(byCveReady.body.items.map((r) => r.cveId)).toEqual(['CVE-2026-71001']);
+    // A group with no Ready finding still reports its vendor fix.
+    const lonelyRow = list.body.items.find((g) => g.groupKey === key('Lonely Tool', 'Lonely')) as unknown as { vendorFixAvailable: boolean };
+    expect(lonelyRow.vendorFixAvailable).toBe(true);
   });
 
   runDb('GET /software/:groupKey 404s for a group the caller has no findings in', async () => {

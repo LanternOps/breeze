@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 const serving = vi.hoisted(() => ({ isServing: vi.fn(), readCachedSnapshotPayload: vi.fn(async () => null), cacheSnapshotPayload: vi.fn() }));
 vi.mock('../services/trustPage/servingSet', () => ({ ...serving, trustServingMember: (p: string, o?: string) => (o ? `${p}/${o}` : p) }));
@@ -161,6 +161,35 @@ describe('payload', () => {
     resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED, searchIndexable: true });
     const res = await app.request('/trust/public/nw/acme');
     expect(res.headers.get('X-Robots-Tag')).not.toMatch(/noindex/);
+  });
+  describe('#9087: the CIS framework-view gate applies when serving a stored snapshot', () => {
+    /** Built while BREEZE_TRUST_CIS_FRAMEWORK_VIEW was ON. */
+    const CIS_PAYLOAD = {
+      ...PAYLOAD, schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: ['cis_v8', 'nist_csf_2'], subprocessors: [], faq: [], history: [], access: null,
+      controls: [{ id: 'hardening_baseline', frameworkRefs: [], safeguards: [{ framework: 'cis_v8', ref: '4.1', status: 'met' }] }],
+      footer: { poweredByBreeze: true, frameworkAttributions: ['cis_v8', 'nist_csf_2'] },
+    };
+    const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    beforeEach(() => { process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false'; });
+    afterEach(() => { if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev; });
+    const served = async () => (await (await app.request('/trust/public/nw/acme')).json()).data.payload;
+    it('a cached snapshot built while the CIS flag was on is served without cis_v8 once the flag is off', async () => {
+      serving.readCachedSnapshotPayload.mockResolvedValueOnce(CIS_PAYLOAD as never);
+      const p = await served();
+      expect(p.frameworks).toEqual(['nist_csf_2']);
+      expect(p.controls[0]).not.toHaveProperty('safeguards');
+      expect(p.footer.frameworkAttributions).toEqual(['nist_csf_2']);
+    });
+    it('the same through the DB path (cache miss)', async () => {
+      resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED, payload: CIS_PAYLOAD });
+      expect((await served()).frameworks).toEqual(['nist_csf_2']);
+      expect(serving.cacheSnapshotPayload).toHaveBeenCalledWith('s1', CIS_PAYLOAD); // the stored payload is cached ungated
+    });
+    it('flag back on: served as stored', async () => {
+      process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+      serving.readCachedSnapshotPayload.mockResolvedValueOnce(CIS_PAYLOAD as never);
+      expect((await served()).frameworks).toEqual(['cis_v8', 'nist_csf_2']);
+    });
   });
 });
 

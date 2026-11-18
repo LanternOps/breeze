@@ -147,6 +147,9 @@ vi.mock('../../middleware/auth', () => ({
   ),
 }));
 
+const { mcpOrigin } = vi.hoisted(() => ({ mcpOrigin: { rebuild: vi.fn() } }));
+vi.mock('../mcpPrincipalAuth', () => ({ rebuildMcpOriginAuthContext: mcpOrigin.rebuild }));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
 }));
@@ -155,7 +158,7 @@ vi.mock('drizzle-orm', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor } from './actorContext';
+import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor, PARTNER_AXIS_RELEASE_ACTIONS, releaseCarriesSessionEpochs } from './actorContext';
 import { IntentScopeLostError } from './intentTargetScope';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
@@ -914,6 +917,43 @@ describe('originPrincipalFor — ai_agent', () => {
   });
 });
 
+// Tool catalog W04 (#5219), plan Task A5: a flow-origin intent rebuilds the
+// RUN's flow principal (flowId = originPrincipalId, runId = the FK column).
+const { flowAuthority } = vi.hoisted(() => ({ flowAuthority: vi.fn() }));
+vi.mock('../flows/releaseAuthority', () => ({ checkFlowReleaseAuthority: flowAuthority }));
+
+describe('flow-origin intents (#5219)', () => {
+  const flowIntent = (over: Partial<ActionIntent> = {}) => baseIntent({
+    requestedByUserId: null,
+    requestingFlowRunId: 'run-f',
+    originPrincipalKind: 'flow',
+    originPrincipalId: 'flow-1',
+    source: 'flow',
+    ...over,
+  } as Partial<ActionIntent>);
+
+  it('originPrincipalFor maps a flow intent to { kind: flow, flowId, runId }', () => {
+    expect(originPrincipalFor(flowIntent())).toEqual({ kind: 'flow', flowId: 'flow-1', runId: 'run-f' });
+  });
+
+  it('originPrincipalFor falls to unknown when the run or flow id is missing', () => {
+    expect(originPrincipalFor(flowIntent({ requestingFlowRunId: null }))).toEqual({ kind: 'unknown' });
+    expect(originPrincipalFor(flowIntent({ originPrincipalId: null }))).toEqual({ kind: 'unknown' });
+  });
+
+  it('buildAuthContextForIntent rebuilds through checkFlowReleaseAuthority', async () => {
+    const auth = { principal: { kind: 'flow', flowId: 'flow-1', runId: 'run-f' } };
+    flowAuthority.mockResolvedValueOnce({ ok: true, auth });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBe(auth);
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('buildAuthContextForIntent fails closed (null) on a refused flow rebuild', async () => {
+    flowAuthority.mockResolvedValueOnce({ ok: false, code: 'ownership_mismatch' });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBeNull();
+  });
+});
+
 // ============================================================================
 // #5022 W01 Task 12 — the AI origin survives the approval boundary.
 //
@@ -1030,6 +1070,28 @@ describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
     expect(permState.getUserPermissions).toHaveBeenCalledWith('approver-1', { partnerId: 'partner-1', orgId: 'org-1' });
   });
 
+  // Full-control W14 PR B (#6784, PR B quorum QB6): the partner-wide gate (canManagePartnerWidePolicies) reads
+  // partnerOrgAccess; a released partner-axis context must carry the CURRENT membership's value.
+  it.each(['all', 'selected'] as const)('carries the live partner membership orgAccess (%s) as partnerOrgAccess', async (orgAccess) => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess,
+      ...(orgAccess === 'selected' ? { allowedOrgIds: ['org-1'] } : {}),
+    });
+    const result = await buildApproverAuthContextForIntent(agentIntent(), 'approver-1');
+    expect(result!.partnerOrgAccess).toBe(orgAccess);
+  });
+
+  it('an org-scoped user-owned release carries no partnerOrgAccess, even for an orgAccess:all partner member', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: 'org-1', roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
+    expect(result!.scope).toBe('organization');
+    expect(result!.partnerOrgAccess ?? null).toBeNull();
+  });
+
   it('returns null for an org-axis approver — never widens an org member to partner scope', async () => {
     dbState.selectUsersResults.push([approver]);
     permState.getUserPermissions.mockResolvedValueOnce({
@@ -1068,5 +1130,214 @@ describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
     const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
     expect(result!.scope).toBe('organization');
     expect(result!.principal).toEqual({ kind: 'user_session' });
+  });
+});
+
+// B-W04 (#6158, D-B26): every caller of buildAuthContextForIntent — release
+// revalidation, the worker's M365 headless dispatch (m365ToolsHeadless) and the
+// supervised approve-time RBAC re-check (decideApprovalRequest) — gets the
+// origin-credential context for an MCP-origin intent, never the user rebuild.
+describe('buildAuthContextForIntent — mcp_api origin intents', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+  });
+
+  it.each(['api_key', 'oauth_grant'])('%s origin → the rebuilt origin context (token {}, key org pin)', async (kind) => {
+    const originAuth = { principal: { kind }, token: {}, accessibleOrgIds: ['org-1'] };
+    mcpOrigin.rebuild.mockResolvedValueOnce({ auth: originAuth, credential: {} });
+    const result = await buildAuthContextForIntent(baseIntent({
+      source: 'mcp_api', originPrincipalKind: kind as never, originPrincipalId: 'origin-1',
+    }));
+    expect(result).toBe(originAuth);
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('origin rebuild failure → null (actor_invalid), never a fallback to the user rebuild', async () => {
+    mcpOrigin.rebuild.mockResolvedValueOnce({ error: 'mcp_origin_revoked' });
+    dbState.selectUsersResults.push([activeUser]);
+    const result = await buildAuthContextForIntent(baseIntent({
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1',
+    }));
+    expect(result).toBeNull();
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('chat and user-session mcp_api intents never reach the origin rebuild', async () => {
+    for (const overrides of [
+      { source: 'chat', originPrincipalKind: 'user_session' },
+      { source: 'mcp_api', originPrincipalKind: 'user_session' },
+    ] as const) {
+      dbState.selectUsersResults.push([]);
+      await buildAuthContextForIntent(baseIntent(overrides as never));
+    }
+    expect(mcpOrigin.rebuild).not.toHaveBeenCalled();
+  });
+});
+
+// Full-control W08 (#6778, quorum QW4/QW5): the ONE release that carries the requester's live session epochs.
+describe('buildAuthContextForIntent — apply_topology_template session epochs (W08-D2)', () => {
+  const applyIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    actionName: 'apply_topology_template', arguments: { action: 'apply', token: 't' },
+    originPrincipalKind: 'user_session', partnerId: 'partner-1', ...overrides,
+  } as never);
+  const withEpochs = { ...activeUser, authEpoch: 7, mfaEpoch: 3 };
+  const orgPerms = { scope: 'organization', partnerId: null, orgId: 'org-1', roleId: 'role-1' };
+  const partnerPerms = { scope: 'partner', partnerId: 'partner-1', orgId: null, roleId: 'role-1', orgAccess: 'all' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+  });
+
+  it("carries the requester's current epochs for apply, on a user_session origin", async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
+    const result = await buildAuthContextForIntent(applyIntent({ partnerId: null }));
+    expect(result?.token).toMatchObject({ aep: 7, mep: 3 });
+    expect(result?.principal).toEqual({ kind: 'user_session' });
+    expect(result?.scope).toBe('organization');
+  });
+
+  it('a partner-axis requester keeps the partner axis (an organization-scoped actor is revalidated against users.orgId)', async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(applyIntent());
+    expect(result?.scope).toBe('partner');
+    expect(result?.partnerId).toBe('partner-1');
+    expect(result?.accessibleOrgIds).toEqual(['org-1']);
+    expect(result?.token).toMatchObject({ aep: 7, mep: 3 });
+  });
+
+  it('a partner-axis requester of ANOTHER partner is not widened to partner scope', async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce({ ...partnerPerms, partnerId: 'partner-2' });
+    const result = await buildAuthContextForIntent(applyIntent());
+    expect(result?.scope).toBe('organization');
+  });
+
+  it.each([
+    ['another action of the same tool', { arguments: { action: 'preview' } }],
+    ['another tool', { actionName: 'manage_topology_templates', arguments: { action: 'apply' } }],
+    ['an agent origin', { originPrincipalKind: 'ai_agent' }],
+  ])('%s never carries epochs', async (_label, overrides) => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
+    const result = await buildAuthContextForIntent(applyIntent(overrides as never));
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    const token = result!.token as unknown as Record<string, unknown>;
+    expect(token.mfa).toBe(true);
+    expect(token.aep).toBeUndefined();
+    expect(token.mep).toBeUndefined();
+  });
+
+  it('the policy is one entry and pinned', () => {
+    expect(releaseCarriesSessionEpochs({ actionName: 'apply_topology_template', arguments: { action: 'apply' } }, { kind: 'user_session' })).toBe(true);
+    expect(releaseCarriesSessionEpochs({ actionName: 'apply_topology_template', arguments: { action: 'apply' } }, { kind: 'api_key' } as never)).toBe(false);
+    expect(releaseCarriesSessionEpochs({ actionName: 'run_script', arguments: { action: 'apply' } }, { kind: 'user_session' })).toBe(false);
+  });
+});
+
+describe('buildAuthContextForIntent — named partner-axis release (W16 Decision 8, #11135)', () => {
+  const scheduleIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    actionName: 'manage_ai_agent_schedules',
+    arguments: { action: 'create', ownerScope: 'partner' },
+    originPrincipalKind: 'user_session',
+    partnerId: 'partner-1',
+    ...overrides,
+  } as never);
+  const partnerPerms = { scope: 'partner', partnerId: 'partner-1', orgId: null, roleId: 'role-1', orgAccess: 'all' };
+  const orgPerms = { scope: 'organization', partnerId: null, orgId: 'org-1', roleId: 'role-1' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+    dbState.selectUsersResults.push([activeUser]);
+  });
+
+  it.each([
+    ['manage_ai_agent_schedules', 'create'],
+    ['manage_ai_agent_schedules', 'update'],
+    ['manage_ai_agent_schedules', 'delete'],
+    ['manage_org_portal_settings', 'set_sensitive_access'],
+  ])('a full-partner requester releases %s:%s on the partner axis with live partnerOrgAccess', async (actionName, action) => {
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(scheduleIntent({ actionName, arguments: { action } } as never));
+    expect(result?.scope).toBe('partner');
+    expect(result?.token).toMatchObject({ scope: 'partner', partnerId: 'partner-1' });
+    expect(result?.partnerId).toBe('partner-1');
+    expect(result?.partnerOrgAccess).toBe('all');
+    expect(result?.accessibleOrgIds).toEqual(['org-1']);
+  });
+
+  it("carries the membership's CURRENT access, so a member narrowed to selected fails the partner-wide gate", async () => {
+    permState.getUserPermissions.mockResolvedValueOnce({ ...partnerPerms, orgAccess: 'selected', allowedOrgIds: ['org-1'] });
+    const result = await buildAuthContextForIntent(scheduleIntent());
+    expect(result?.scope).toBe('partner');
+    expect(result?.partnerOrgAccess).toBe('selected');
+  });
+
+  it('an org-axis requester keeps organization scope and no partner authority', async () => {
+    permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
+    const result = await buildAuthContextForIntent(scheduleIntent());
+    expect(result?.scope).toBe('organization');
+    expect(result?.partnerOrgAccess).toBeNull();
+  });
+
+  it('a requester of another partner never takes the partner axis', async () => {
+    permState.getUserPermissions.mockResolvedValueOnce({ ...partnerPerms, partnerId: 'partner-2' });
+    const result = await buildAuthContextForIntent(scheduleIntent());
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    expect(result?.scope).toBe('organization');
+    expect(result?.partnerOrgAccess).toBeNull();
+  });
+
+  it('an intent with no partner id never takes the partner axis', async () => {
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(scheduleIntent({ partnerId: null }));
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    expect(result?.scope).toBe('organization');
+  });
+
+  it.each([
+    ['a read action of a listed tool', { arguments: { action: 'list' } }],
+    ['an unlisted action of a listed tool', { actionName: 'manage_org_portal_settings', arguments: { action: 'update' } }],
+    ['an unlisted tool', { actionName: 'run_script', arguments: { action: 'create' } }],
+    ['no action at all', { arguments: {} }],
+  ])('%s keeps the exact organization-axis context', async (_label, overrides) => {
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(scheduleIntent(overrides as never));
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    expect(result?.scope).toBe('organization');
+    expect(result?.partnerOrgAccess).toBeNull();
+    const token = result!.token as unknown as Record<string, unknown>;
+    expect(token.scope).toBe('organization');
+    expect(token.aep).toBeUndefined();
+    expect(token.mep).toBeUndefined();
+  });
+
+  it.each(['client_user', 'unknown', 'helper', 'agent'])('a recorded %s origin never takes the axis', async (originPrincipalKind) => {
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(scheduleIntent({ originPrincipalKind } as never));
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    expect(result?.scope).toBe('organization');
+    expect(result?.partnerOrgAccess).toBeNull();
+  });
+
+  it('carries no session epochs', async () => {
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    dbState.selectUsersResults.length = 0;
+    dbState.selectUsersResults.push([{ ...activeUser, authEpoch: 7, mfaEpoch: 3 }]);
+    const result = await buildAuthContextForIntent(scheduleIntent());
+    const token = result!.token as unknown as Record<string, unknown>;
+    expect(token.aep).toBeUndefined();
+    expect(token.mep).toBeUndefined();
+  });
+
+  it('the registry names exactly these actions', () => {
+    expect([...PARTNER_AXIS_RELEASE_ACTIONS.entries()]).toEqual([
+      ['manage_ai_agent_schedules', ['create', 'update', 'delete']],
+      ['manage_org_portal_settings', ['set_sensitive_access']],
+    ]);
   });
 });

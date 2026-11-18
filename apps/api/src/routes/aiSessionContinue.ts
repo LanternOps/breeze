@@ -29,6 +29,7 @@ import { withSystemDbAccessContext } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { checkBudgetDetailed } from '../services/aiCostTracker';
+import { aiDenialBody } from '../services/aiDenialCode';
 import {
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
@@ -75,8 +76,10 @@ export async function continueAiSession(
   if (!loaded) return c.json({ error: 'Session not found' }, 404);
   const { session, messages } = loaded;
   // Only a general chat continues (topology and script builder sessions have
-  // no such switch).
-  if (session.type !== 'general') {
+  // no such switch). Wisp W04 (w00 A10): neither does a Wisp chat — the new
+  // session would be inserted without the grant columns and so run outside
+  // the delegation ceiling. Carrying the grant across is a follow-up.
+  if (session.type !== 'general' || session.wispGrantId) {
     return c.json({ error: 'This chat cannot be continued in a new chat.', code: 'continuation_unsupported' }, 400);
   }
   // A reply in flight on this replica, or on ANY replica (an active
@@ -125,7 +128,7 @@ export async function continueAiSession(
   // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
   // check them with the resolved funding before reserving.
   const denial = await checkBudgetDetailed(session.orgId, summaryModel.funding);
-  if (denial) return c.json({ error: denial.message }, 402);
+  if (denial) return c.json(aiDenialBody(denial), 402);
 
   const binding = turnBindingFrom(summaryModel);
   // SESSIONLESS on purpose (ticket-draft precedent): the summary is not a

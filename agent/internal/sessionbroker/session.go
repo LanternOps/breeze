@@ -18,27 +18,51 @@ type pendingResponse struct {
 	ch           chan *ipc.Envelope
 	expectedType string
 	validate     func(*ipc.Envelope) error
+	// discard marks a tombstone left by sendCommandAbandoningLateReply: the
+	// sender stopped waiting at abandonedAt, so HandleResponse consumes a
+	// late reply (keeping it from being forwarded as unsolicited) and drops
+	// the entry. A tombstone has no ch.
+	discard     bool
+	abandonedAt time.Time
+	// cmdType is the command this registration answers, recorded by
+	// startCommand for the Linux desktop helper's inbound filter.
+	cmdType string
 }
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID            uint32 // Numeric UID (0 on Windows; kept for logging/compat)
-	IdentityKey    string // Platform identity: UID string on Unix, SID on Windows
-	Username       string
-	DisplayEnv     string
-	SessionID      string
-	PID            int // OS process ID of the helper process
-	Capabilities   *ipc.Capabilities
-	TCCStatus      *ipc.TCCStatus
-	AllowedScopes  []string
-	WinSessionID   string         // Windows session ID string (e.g., "1", "2") for targeting
+	UID         uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey string // Platform identity: UID string on Unix, SID on Windows
+	// Username is the name of the account the helper's verified identity
+	// belongs to, resolved by the broker (see account_identity.go); "" when
+	// it could not be resolved.
+	Username      string
+	DisplayEnv    string
+	SessionID     string
+	PID           int // OS process ID of the helper process
+	Capabilities  *ipc.Capabilities
+	TCCStatus     *ipc.TCCStatus
+	AllowedScopes []string
+	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
 	// WinSessionVerified is true when WinSessionID came from the kernel (the
 	// peer PID's session) rather than the helper's self-report. Caller
 	// verification (#6354) only targets verified sessions on Windows.
 	WinSessionVerified bool
-	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
-	BinaryKind     string
-	DesktopContext string
+	HelperRole         ipc.HelperRole // "system" or "user" — determines scopes and capabilities
+	BinaryKind         string
+	DesktopContext     string
+	// LinuxDesktop is the spawn-ticket binding of an admitted Linux
+	// per-session desktop helper (#12117), nil for every other helper. Set
+	// once before the session is registered and read-only afterwards.
+	LinuxDesktop *LinuxDesktopBinding
+	// linuxInbound filters what this helper may send, and
+	// linuxCaptureAuthorized is root's decision on its capture claim. Both
+	// are set with LinuxDesktop by enableLinuxDesktopInbound; nil otherwise.
+	linuxInbound           *linuxDesktopInboundState
+	linuxCaptureAuthorized func() bool
+	// linuxDesktopOrigin is the per-uid endpoint this session was admitted
+	// on (#12117), nil for the shared socket. Set once before registration.
+	linuxDesktopOrigin *linuxDesktopListener
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
@@ -47,7 +71,11 @@ type Session struct {
 	// can dismiss one specific consent.exe (ipc.PamDismissConsentRequest.Instance).
 	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
 	SupportsTargetedPamDismiss bool
-	ConnectedAt                time.Time
+	// SupportsPamDialogClose is true when this SYSTEM helper advertised it
+	// honours pam_close_dialog (#10370). Set once at auth by
+	// pamDialogCloseFromAuth, never changed afterwards.
+	SupportsPamDialogClose bool
+	ConnectedAt            time.Time
 	LastSeen               time.Time
 
 	conn    *ipc.Conn
@@ -56,13 +84,57 @@ type Session struct {
 	closed  bool
 	pending map[string]pendingResponse // command ID -> response channel + expected response type
 
-	// lastPongAt is the UnixNano timestamp of the most recent pong received
-	// from the helper in response to a broker-initiated keepalive ping.
-	// Read/written atomically so the keepalive goroutine doesn't need s.mu.
-	lastPongAt atomic.Int64
+	// lastPongAt is when the most recent pong arrived from the helper in
+	// response to a broker-initiated keepalive ping. Read/written atomically
+	// so the keepalive goroutine doesn't need s.mu. It holds a time.Time, not
+	// a UnixNano, so the value keeps its monotonic clock reading: a wall-clock
+	// step (an NTP correction after resume, a manual clock change) must not
+	// age a pong by itself (#11044). A fresh pointer per pong also lets the
+	// keepalive loop see that a pong arrived by pointer comparison.
+	lastPongAt atomic.Pointer[time.Time]
+
+	// clock, when non-nil, replaces time.Now for keepalive bookkeeping (pong
+	// times and the keepalive loop's tick gaps). Tests set it before the
+	// keepalive goroutine starts to drive a fake clock; nil in production.
+	clock func() time.Time
+
+	// closeReason is set by CloseWithReason when that call is the one that
+	// closes the session (under mu, with closed), so the teardown can report
+	// what happened instead of guessing (#11044). Nil for any other close.
+	closeReason atomic.Pointer[string]
+
+	// backupHelperExited closes once the backup helper process behind this
+	// session has exited and been reaped (#12193). ClearBackupSession sets it;
+	// nil when the agent tracked no process for the session. Guarded by the
+	// broker's backup.mu.
+	backupHelperExited <-chan struct{}
 
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
+
+	// accountIdentity is the kernel-verified identity of the helper's
+	// account (SID on Windows, UID elsewhere), without the per-session
+	// admission suffix IdentityKey may carry. Set once at auth.
+	accountIdentity string
+
+	// Prompt host advertisement (#10190), set once at auth by
+	// applyAuthAdvertisements and never changed afterwards: the clamped
+	// prompt protocol, the granted "<kind>@<n>" entries, and the renderer
+	// build version. Read through PromptProtocol / PromptKindAds /
+	// PromptKindVersion / RendererVersion.
+	promptProtocol  int
+	promptKinds     []string
+	rendererVersion string
+	// uiLocale is the UI language the helper probed (AuthRequest.UILocale,
+	// sanitized by uiLocaleFromAuth); set once at auth, read through UILocale.
+	uiLocale string
+	// agentHandlesTCCNotice is what this session's auth response told the
+	// helper (AuthResponse.AgentHandlesTCCNotice, #10190 W04): the agent
+	// shows the macOS permission notice from this helper's tcc_status.
+	agentHandlesTCCNotice atomic.Bool
+	// tccForward orders this session's tcc_status reports to the agent's
+	// handler (tcc_notice.go).
+	tccForward tccForwardQueue
 
 	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
 	helperLogOnce sync.Once
@@ -84,24 +156,49 @@ func NewSession(conn *ipc.Conn, uid uint32, identityKey, username, displayEnv, s
 		done:          make(chan struct{}),
 		pending:       make(map[string]pendingResponse),
 	}
-	// Seed so NoteKeepalivePong is not needed before the first ping fires.
-	s.lastPongAt.Store(time.Now().UnixNano())
+	// Seed so NotePong is not needed before the first ping fires.
+	s.NotePong()
 	return s
+}
+
+// now is the session's keepalive clock: time.Now unless a test installed one.
+func (s *Session) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
 }
 
 // NotePong records that a keepalive pong has just been received.
 func (s *Session) NotePong() {
-	s.lastPongAt.Store(time.Now().UnixNano())
+	at := s.now()
+	s.lastPongAt.Store(&at)
+}
+
+// lastPong returns the record of the most recent pong, or nil for a session
+// that was never seeded (struct-literal test sessions). Each NotePong stores a
+// new pointer, so two reads that return the same pointer saw no pong between.
+func (s *Session) lastPong() *time.Time {
+	return s.lastPongAt.Load()
+}
+
+// CloseReason returns why the agent itself closed this session, or "" when
+// it was closed for any other reason (the helper hung up, shutdown, reaper).
+func (s *Session) CloseReason() string {
+	if r := s.closeReason.Load(); r != nil {
+		return *r
+	}
+	return ""
 }
 
 // LastPongAge returns how long it has been since the helper last responded
 // to a broker-initiated keepalive ping.
 func (s *Session) LastPongAge() time.Duration {
-	t := s.lastPongAt.Load()
-	if t == 0 {
+	t := s.lastPong()
+	if t == nil {
 		return 0
 	}
-	return time.Since(time.Unix(0, t))
+	return s.now().Sub(*t)
 }
 
 // Done returns the channel that is closed when the session is Close()d.
@@ -155,6 +252,7 @@ func (s *Session) startCommand(id, cmdType string, payload any) (func(timeout ti
 		ch:           ch,
 		expectedType: expectedResponseType(cmdType),
 		validate:     responseValidator(cmdType, payload),
+		cmdType:      cmdType,
 	}
 	done := s.done
 	s.mu.Unlock()
@@ -165,6 +263,7 @@ func (s *Session) startCommand(id, cmdType string, payload any) (func(timeout ti
 		s.mu.Unlock()
 	}
 
+	s.noteLinuxDesktopCommand(cmdType, payload)
 	if err := s.conn.SendTyped(id, cmdType, payload); err != nil {
 		unregister()
 		return nil, err
@@ -397,6 +496,10 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 			)
 			return true
 		}
+		if pending.discard {
+			s.discardLateReply(env, pending.abandonedAt)
+			return true
+		}
 		if pending.validate != nil && env.Error == "" {
 			if err := pending.validate(env); err != nil {
 				log.Warn("response payload validation failed, dropping",
@@ -408,9 +511,24 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 				return true
 			}
 		}
+		// Deliver under s.mu, re-reading the registration: abandonPending may
+		// have swapped in a tombstone since the read above, and a reply sent to
+		// the abandoned channel after its last check would be lost unlogged and
+		// strand the tombstone. The send never blocks, so holding s.mu is cheap.
+		s.mu.Lock()
+		if current, still := s.pending[env.ID]; still && current.discard {
+			s.mu.Unlock()
+			s.discardLateReply(env, current.abandonedAt)
+			return true
+		}
+		dropped := false
 		select {
 		case pending.ch <- env:
 		default:
+			dropped = true
+		}
+		s.mu.Unlock()
+		if dropped {
 			log.Warn("response channel full, dropping", "id", env.ID)
 		}
 		return true
@@ -485,6 +603,19 @@ func (s *Session) HasScope(scope string) bool {
 	return false
 }
 
+// CloseWithReason closes the session on the agent's own initiative and records
+// why, so the teardown (the backup helper's death report) can say the agent
+// closed it rather than that the helper exited. The reason is recorded in the
+// same critical section that marks the session closed, so it is kept only when
+// this call is the one that closes it: a session the helper's own hang-up (or
+// anything else) closed first keeps no reason, and is reported as before.
+func (s *Session) CloseWithReason(reason string) error {
+	if s.broker != nil {
+		return s.broker.closeSessionWithReason(s, reason)
+	}
+	return s.closeTransportAndPeerWithReason(reason)
+}
+
 // Close closes the underlying connection and cancels all pending commands.
 func (s *Session) Close() error {
 	if s.broker != nil {
@@ -494,7 +625,13 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) closeTransportAndPeer() error {
-	transportErr := s.closeTransport()
+	return s.closeTransportAndPeerWithReason("")
+}
+
+// closeTransportAndPeerWithReason is closeTransportAndPeer that, when it is the
+// call that closes the session, records reason (non-empty) as CloseReason.
+func (s *Session) closeTransportAndPeerWithReason(reason string) error {
+	transportErr := s.closeTransportWithReason(reason)
 	peerErr := s.peerProcess.close()
 	if transportErr != nil {
 		return transportErr
@@ -503,12 +640,19 @@ func (s *Session) closeTransportAndPeer() error {
 }
 
 func (s *Session) closeTransport() error {
+	return s.closeTransportWithReason("")
+}
+
+func (s *Session) closeTransportWithReason(reason string) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
+	if reason != "" {
+		s.closeReason.Store(&reason)
+	}
 	for id := range s.pending {
 		delete(s.pending, id)
 	}
@@ -571,6 +715,15 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err.Error())
 			return
 		}
+		// A Linux desktop helper is filtered before anything else sees the
+		// message, including the pending-response match.
+		if s.linuxInbound != nil && !s.admitLinuxDesktopInbound(env) {
+			// Struck out ends the loop even if the close itself failed.
+			if s.IsClosed() || s.linuxInbound.struckOut() {
+				return
+			}
+			continue
+		}
 		s.Touch()
 
 		// Try to match to a pending command response first
@@ -602,6 +755,8 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypePamDialogResult
 	case ipc.TypePamDismissConsent:
 		return ipc.TypePamDismissConsentResult
+	case ipc.TypePamCloseDialog:
+		return ipc.TypePamCloseDialogResult
 	case ipc.TypeClipboardGet:
 		return ipc.TypeClipboardData
 	case ipc.TypeClipboardSet:

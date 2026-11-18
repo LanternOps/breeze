@@ -49,7 +49,7 @@
  * retrying against a row that can never advance.
  */
 
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -62,8 +62,21 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
-import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
+import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
+import {
+  isIdentityOffboardingCheckpoint,
+  isIdentityOnboardingCheckpoint,
+  isServiceRecoveryCheckpoint,
+  serviceRecoveryCheckpointSchema,
+  type ServiceRecoveryCheckpoint,
+  type TaskCheckpoint,
+} from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
+import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_ONBOARDING_WORKFLOW_KEY } from './recipes/identityOnboarding';
+import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
+import { IDENTITY_ONBOARDING_ADVANCERS } from './onboardingAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -72,13 +85,13 @@ import {
   classifyDeviceCommandEvidence,
   readDeviceCommandEvidence,
 } from './deviceCommandEvidence';
-import { nextTaskState, type TaskTransitionEvent } from './taskTransitions';
+import { admissionFenced, leasedWriteTargetStates, nextTaskState, type TaskTransitionEvent } from './taskTransitions';
 import {
   recordAiOperatorLeaseReclaim,
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
-import { requesterAccessLost } from './requesterAccessGate';
+import { requesterAccessLost, requesterAccessLostForTargets } from './requesterAccessGate';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { planEffectStep, planProbeStep, type EffectStepDirective } from './effectDispatch';
@@ -280,6 +293,11 @@ async function writeLeased(args: {
   taskId: string;
   revision: number;
   leaseEpoch: number;
+  /**
+   * The task state the writer's snapshot holds (#9979). Part of the CAS; see
+   * `leasedWriteTargetStates` for why and for which states it admits.
+   */
+  observedState: string;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
   /**
    * Task-graph writes (step rows, events — Recipe Library wave E2) to run in
@@ -308,6 +326,7 @@ async function writeLeased(args: {
           eq(aiOperatorTasks.orgId, args.orgId),
           eq(aiOperatorTasks.revision, args.revision),
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+          inArray(aiOperatorTasks.state, [...leasedWriteTargetStates(args.observedState)]),
         ))
         .returning({ id: aiOperatorTasks.id });
       if (rows.length !== 1) return false;
@@ -327,8 +346,9 @@ async function writeLeased(args: {
   // healthy race, and the only symptom would be the waiting-age gauge drifting
   // up with no explanation anywhere.
   if (!committed) {
-    console.warn('[aiOperator] stale coordinator lost its lease CAS; another holder owns this task', {
+    console.warn('[aiOperator] stale coordinator lost its lease CAS; another holder owns this task, or it was stopped', {
       taskId: args.taskId, orgId: args.orgId, revision: args.revision, leaseEpoch: args.leaseEpoch,
+      observedState: args.observedState,
     });
   }
   return committed;
@@ -351,6 +371,7 @@ async function yieldToWait(args: {
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: args.task.state as string,
     patch: {
       state: nextTaskState(args.task.state as string, 'wait'),
       waitReason: args.reason,
@@ -388,19 +409,30 @@ async function yieldToWait(args: {
 async function settle(args: {
   task: AiOperatorTaskRow;
   leaseEpoch: number;
-  event: Extract<TaskTransitionEvent, 'complete' | 'partial' | 'hand_off' | 'fail'>;
+  /**
+   * A live-state terminal (`complete` | `partial` | `hand_off` | `fail`) or,
+   * for a `stopping` task only, a stopping-path settle (#9980). The table
+   * decides which is legal from the task's state; `settleStoppingTask` is the
+   * one caller of the `settle_*` events.
+   */
+  event: Extract<
+    TaskTransitionEvent,
+    'complete' | 'partial' | 'hand_off' | 'fail' | 'settle_handed_off' | 'settle_expired' | 'settle_cancelled'
+  >;
   outcome: AiOperatorTaskOutcome;
   detail: string;
   handoffSummary?: string;
   checkpoint?: TaskCheckpoint;
 }): Promise<boolean> {
+  const terminalState = nextTaskState(args.task.state as string, args.event);
   const committed = await writeLeased({
     orgId: args.task.orgId,
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: args.task.state as string,
     patch: {
-      state: nextTaskState(args.task.state as string, args.event),
+      state: terminalState,
       outcome: args.outcome,
       outcomeDetail: args.detail.slice(0, 4000),
       ...(args.handoffSummary ? { handoffSummary: args.handoffSummary.slice(0, 4000) } : {}),
@@ -449,7 +481,39 @@ async function settle(args: {
   // independently re-derived the same verdict. An alerting metric that
   // over-reports is worse than none: it trains the reader to ignore it.
   if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
+  // Wisp W05: tell the triage engine the task reached a terminal state.
+  // The payload's states are completed | partial | handed_off | failed; a
+  // stopping-path `settle_handed_off` lands in `handed_off` and IS announced
+  // (a human now owns the remainder), while `cancelled` / `expired` are not a
+  // "finished" signal and are not published. Fire-and-forget, after the commit, outside any DB
+  // context (#1105): a bus outage must not fail a settled task.
+  // publishEvent is `async`, so in production it only ever rejects; the outer
+  // catch covers a non-async stand-in (test doubles) that throws.
+  if (committed && isFinishedEventState(terminalState)) {
+    try {
+      void publishEvent('ai.operator.task.finished', args.task.orgId, {
+        taskId: args.task.id,
+        orgId: args.task.orgId,
+        state: terminalState,
+        outcome: args.outcome,
+        grantId: args.task.grantId ?? null,
+      }, 'ai-operator').catch(reportTaskFinishedPublishFailure);
+    } catch (err) {
+      reportTaskFinishedPublishFailure(err);
+    }
+  }
   return committed;
+}
+
+const FINISHED_EVENT_STATES = ['completed', 'partial', 'handed_off', 'failed'] as const;
+function isFinishedEventState(state: string): state is (typeof FINISHED_EVENT_STATES)[number] {
+  return (FINISHED_EVENT_STATES as readonly string[]).includes(state);
+}
+
+/** A lost `ai.operator.task.finished` is a lost Wisp wake: report it, never fail the settle. */
+function reportTaskFinishedPublishFailure(err: unknown): void {
+  console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'aiOperator', op: 'publish_task_finished' });
 }
 
 /**
@@ -504,6 +568,7 @@ async function admitReasoningRun(args: {
     taskId: task.id,
     revision: task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: task.state as string,
     patch: {
       revision: nextRevision,
       attemptOrdinal,
@@ -556,7 +621,9 @@ async function admitReasoningRun(args: {
     kind: task.agentKind as never,
     triggerKind: task.originKind === 'alert' ? 'alert' : 'manual',
     deviceId: task.deviceId,
-    alertId: checkpoint.recipeInput.triggeringAlertId ?? null,
+    // Only the service-recovery arm carries a triggering alert; any other
+    // recipe's reasoning run is not alert-linked.
+    alertId: isServiceRecoveryCheckpoint(checkpoint) ? checkpoint.recipeInput.triggeringAlertId ?? null : null,
     // Derived from the task admission identity, so a retried or
     // lease-recovered admission converges on the SAME row rather than minting
     // a second attempt (`ai_agent_runs_task_admission_uq` says the same thing
@@ -569,6 +636,13 @@ async function admitReasoningRun(args: {
       agentId: task.agentId,
       promptVersion: args.recipe.promptVersion,
     },
+    // Wisp W02 (Wisp design §4.3, §4.5): runs the coordinator creates for a
+    // grant-bearing task inherit the task's pinned ceiling. No
+    // requestedByRunId: these are the coordinator's own deterministic steps,
+    // not a run spawning a run.
+    ...(task.grantId && task.grantRevisionId
+      ? { grant: { grantId: task.grantId, grantRevisionId: task.grantRevisionId } }
+      : {}),
   });
 
   if (!result.created) {
@@ -626,7 +700,7 @@ export function resolveTaskRecipe(
 }
 
 /** How the coordinator advances ONE step of ONE recipe. */
-type StepAdvancer = (args: {
+export type StepAdvancer = (args: {
   task: AiOperatorTaskRow;
   leaseEpoch: number;
   checkpoint: TaskCheckpoint;
@@ -646,12 +720,67 @@ type StepAdvancer = (args: {
  */
 const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdvancer>>>> = {
   [SERVICE_RECOVERY_WORKFLOW_KEY]: {
-    investigate: (a) => advanceInvestigate(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
-    execute: (a) => advanceExecute(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
-    observe: (a) => advanceObserve(a.task, a.leaseEpoch, a.checkpoint, a.recipe, a.now),
-    verify: (a) => advanceVerify(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
+    investigate: withServiceRecoveryCheckpoint((a, c) => advanceInvestigate(a.task, a.leaseEpoch, c, a.recipe)),
+    execute: withServiceRecoveryCheckpoint((a, c) => advanceExecute(a.task, a.leaseEpoch, c, a.recipe)),
+    observe: withServiceRecoveryCheckpoint((a, c) => advanceObserve(a.task, a.leaseEpoch, c, a.recipe, a.now)),
+    verify: withServiceRecoveryCheckpoint((a, c) => advanceVerify(a.task, a.leaseEpoch, c, a.recipe)),
   },
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
+  [IDENTITY_ONBOARDING_WORKFLOW_KEY]: IDENTITY_ONBOARDING_ADVANCERS,
 };
+
+/**
+ * Narrow once, at the `service_recovery` advancer entry, instead of casting
+ * inside each advancer. `advanceTask`'s `checkpointMatchesRecipe` already
+ * refuses a mismatched arm, so a miss here cannot happen for an admitted task —
+ * but if it ever did it terminalizes with a named reason rather than reading a
+ * field the checkpoint does not have.
+ */
+function withServiceRecoveryCheckpoint(
+  fn: (a: Parameters<StepAdvancer>[0], checkpoint: ServiceRecoveryCheckpoint) => Promise<string>,
+): StepAdvancer {
+  return async (a) => {
+    if (!isServiceRecoveryCheckpoint(a.checkpoint)) {
+      await settle({
+        task: a.task, leaseEpoch: a.leaseEpoch, event: 'fail', outcome: 'unresolved',
+        detail: `service_recovery step '${a.task.currentStepKey ?? 'investigate'}' reached without a service-recovery checkpoint`,
+      });
+      return 'failed: checkpoint arm mismatch';
+    }
+    return fn(a, a.checkpoint);
+  };
+}
+
+/**
+ * Each production recipe's checkpoint arm guard (plan Amendment A.4). R1a
+ * appends `identity_offboarding: isIdentityOffboardingCheckpoint`.
+ *
+ * Every key in the production registry (`RECIPES`) MUST have an entry here.
+ * `taskCoordinatorPlanApproval.test.ts` pins that, so a shipped recipe can
+ * never skip the agreement check below.
+ */
+export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: isIdentityOffboardingCheckpoint,
+  [IDENTITY_ONBOARDING_WORKFLOW_KEY]: isIdentityOnboardingCheckpoint,
+});
+
+/**
+ * A task's checkpoint arm must agree with its recipe (plan Amendment A.4).
+ * Checked in `advanceTask` before any advancer or gate runs, so a production
+ * task can never borrow another arm's requester gate or advancers.
+ *
+ * A recipe that declares an arm must hold it. A recipe with no entry in
+ * `RECIPE_CHECKPOINT_ARMS` is not checked and keeps the pre-R1a-0 behaviour.
+ * Only test-local recipes reach that branch, because every registered recipe
+ * is pinned to declare an arm. One example is the E3 human-work fixture
+ * `fixture_identity`, which holds the only checkpoint shape that exists until
+ * R1a adds the identity arm.
+ */
+function checkpointMatchesRecipe(recipeKey: string, checkpoint: TaskCheckpoint): boolean {
+  const holdsOwnArm = RECIPE_CHECKPOINT_ARMS[recipeKey];
+  return holdsOwnArm ? holdsOwnArm(checkpoint) : true;
+}
 
 /**
  * Step kinds whose execution is IDENTICAL for every recipe (Recipe Library
@@ -695,6 +824,16 @@ export function stepNeedsRequesterAccessRecheck(step: StepDefinition | undefined
 }
 
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
+  // The task's OWN fence, before anything else (#9979). A `stopping` task is
+  // never advanced: no gate, no advancer, no reasoning run, no child intent.
+  // It only settles, and it settles even when its checkpoint no longer parses
+  // (the `fail` below is not a legal arm from `stopping`, #9980).
+  if (task.state === 'stopping') return settleStoppingTask(task, leaseEpoch);
+  // Unreachable through `claimTaskLease`, whose door admits only queued /
+  // running / waiting / stopping. Kept so a future caller that hands this a
+  // paused or terminal row gets a no-op, never an advance.
+  if (admissionFenced(task.state)) return `skipped (task is ${task.state})`;
+
   const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
   if (!parsedCheckpoint.ok) {
     await settle({
@@ -775,7 +914,15 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   }
   const recipe = resolved.recipe;
 
-  const stepKey = task.currentStepKey ?? 'investigate';
+  if (!checkpointMatchesRecipe(recipe.key, checkpoint)) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved',
+      detail: `checkpoint does not match workflow '${recipe.key}'`,
+    });
+    return `failed: checkpoint does not match workflow ${recipe.key}`;
+  }
+
+  const stepKey = task.currentStepKey ?? recipe.entryStepKey ?? 'investigate';
   const advance =
     RECIPE_ADVANCERS[recipe.key]?.[stepKey]
     ?? KIND_ADVANCERS[recipe.steps[stepKey]?.kind as StepKind];
@@ -795,8 +942,18 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   // resume that jumps straight to a step by name), passes through this same
   // check before anything below it can run. No-op for a task with no human
   // requester (automatic origins have nothing to re-check).
+  //
+  // Selected by checkpoint ARM (R1a-0): the service-recovery arm keeps the
+  // device-keyed gate, call and arguments unchanged; every other arm re-checks
+  // the task's live target rows. For every recipe that declares an arm,
+  // `checkpointMatchesRecipe` above already guarantees the arm belongs to it.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
-    const accessCheck = await requesterAccessLost(task, checkpoint.recipeInput.deviceId);
+    // Wisp W02: the device-keyed gate re-checks a grant-bearing task for
+    // `devices:execute` (its default effect — it only ever guards a device
+    // command) inside the pinned ceiling.
+    const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
+      ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)
+      : await requesterAccessLostForTargets(task);
     if (accessCheck.lost) {
       await settle({
         task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
@@ -814,13 +971,133 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
 }
 
 /**
+ * Settle a `stopping` task (#9979, #9980). The only thing the coordinator ever
+ * does with one.
+ *
+ * Every writer of `stopping` today is an authority loss — the org-merge fence
+ * and the device delete / move / reinstall detach hooks — so the honest
+ * terminal is `handed_off`: a person now owns whatever remains. In order:
+ *
+ *  1. An effect that was DISPATCHED and has not reported (`unknown_effect`).
+ *     Spec §7.3: a stop "preserves observation of in-flight work"; the task
+ *     cannot wait from `stopping`, so it hands off saying the effect may still
+ *     land, and the reconciler's set 4 keeps chasing a device command's result
+ *     onto the operation row after the task is terminal.
+ *  2. Past the deadline with nothing in flight: `expired`.
+ *  3. Otherwise: `handed_off`, `unresolved`, naming why it stopped.
+ *
+ * `settle_cancelled` is deliberately not reached: no cancel route exists yet
+ * (P3-5). When one does, it must record that the stop was a cancel so this
+ * function can tell a human's cancel from an authority loss.
+ *
+ * A minted-but-undispatched child intent needs nothing here: the dispatch
+ * claim (`dispatchClaim.ts`) refuses any task not in a live state, so it can
+ * never execute once this settle commits.
+ */
+async function settleStoppingTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
+  const reason = await describeStopReason(task);
+  const priorNote = task.outcomeDetail?.trim();
+  const detail = `stopped: ${reason}${priorNote ? `\n${priorNote}` : ''}`;
+
+  // A lost CAS (another holder, or the row left `stopping`) wrote nothing;
+  // say so rather than reporting a settle that did not happen.
+  const lost = 'skipped (stopping settle lost its lease CAS)';
+
+  if (await hasInFlightEffect(task.orgId, task.id)) {
+    const ok = await settle({
+      task, leaseEpoch, event: 'settle_handed_off', outcome: 'unknown_effect', detail,
+      handoffSummary:
+        `Operator stopped this task before it finished (${reason}) while an action it had already sent `
+        + 'had not reported a result. That action may still complete. Confirm its result before redoing '
+        + 'or undoing anything, then finish the remaining work by hand or start a new task.',
+    });
+    return ok ? `handed off: stopped with an effect in flight (${reason})` : lost;
+  }
+
+  if (task.deadlineAt && task.deadlineAt.getTime() <= Date.now()) {
+    const ok = await settle({
+      task, leaseEpoch, event: 'settle_expired', outcome: 'unresolved', detail,
+      handoffSummary:
+        `Operator stopped this task before it finished (${reason}) and its deadline has passed. `
+        + 'Nothing further was started after the stop.',
+    });
+    return ok ? `expired: stopped past the deadline (${reason})` : lost;
+  }
+
+  const ok = await settle({
+    task, leaseEpoch, event: 'settle_handed_off', outcome: 'unresolved', detail,
+    handoffSummary:
+      `Operator stopped this task before it finished (${reason}). Nothing further was started after `
+      + 'the stop. Review the task timeline for what was done, then finish the remaining work by hand '
+      + 'or start a new task.',
+  });
+  return ok ? `handed off: stopped (${reason})` : lost;
+}
+
+/** Why a `stopping` task stopped, from the rows the stop writers stamp. */
+async function describeStopReason(task: AiOperatorTaskRow): Promise<string> {
+  if (task.targetDetachedReason) {
+    return `the task's device target was detached (${task.targetDetachedReason})`;
+  }
+  const detached = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => db
+      .select({
+        kind: aiOperatorTaskTargets.targetKind,
+        label: aiOperatorTaskTargets.targetLabel,
+        reason: aiOperatorTaskTargets.detachedReason,
+      })
+      .from(aiOperatorTaskTargets)
+      .where(and(
+        eq(aiOperatorTaskTargets.orgId, task.orgId),
+        eq(aiOperatorTaskTargets.taskId, task.id),
+        eq(aiOperatorTaskTargets.state, 'detached'),
+      ))
+      .orderBy(aiOperatorTaskTargets.targetOrdinal)
+      .limit(5)));
+  if (detached.length > 0) {
+    return detached
+      .map((d) => `task target ${d.label} (${d.kind}) was detached (${d.reason ?? 'unknown reason'})`)
+      .join('; ');
+  }
+  return 'the task was stopped';
+}
+
+/**
+ * An effect that LEFT Breeze and has not reported: dispatched (or carrying an
+ * execution reference) with a `pending` / `unknown` result. Wider than
+ * `hasUnsettledOperation`, which only counts rows with an execution reference
+ * — identity effects are dispatched through the release worker and carry
+ * none, but a dispatched provider write is just as able to land after a stop.
+ * A `reserved` row that was never claimed sent nothing and is not counted.
+ */
+async function hasInFlightEffect(orgId: string, taskId: string): Promise<boolean> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select({ id: aiOperatorOperations.id })
+        .from(aiOperatorOperations)
+        .where(and(
+          eq(aiOperatorOperations.orgId, orgId),
+          eq(aiOperatorOperations.taskId, taskId),
+          inArray(aiOperatorOperations.resultState, ['pending', 'unknown']),
+          or(
+            eq(aiOperatorOperations.dispatchState, 'dispatched'),
+            sql`${aiOperatorOperations.executionRefId} IS NOT NULL`,
+          ),
+        ))
+        .limit(1);
+      return rows.length > 0;
+    }));
+}
+
+/**
  * `investigate` — admit a bounded reasoning run, or read the one that just
  * finished and act on its proposal.
  */
 async function advanceInvestigate(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const run = await readLatestTaskRun(task.orgId, task.id, 'investigate');
@@ -864,7 +1141,7 @@ async function advanceInvestigate(
       });
       return 'handed off: awaiting_approval with no operation';
     }
-    const next: TaskCheckpoint = taskCheckpointSchema.parse({
+    const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
       ...checkpoint,
       findings: mergeFindings(checkpoint, run.outcome),
       lastOperationKey: operation.operationKey,
@@ -884,7 +1161,7 @@ async function advanceInvestigate(
   // Terminal without an approval: the run either proposed a handoff/question,
   // proposed nothing, or failed.
   const proposal = run.outcome?.taskStep;
-  const withFindings: TaskCheckpoint = taskCheckpointSchema.parse({
+  const withFindings: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
     ...checkpoint,
     findings: mergeFindings(checkpoint, run.outcome),
   });
@@ -964,7 +1241,7 @@ async function advanceInvestigate(
 async function advanceExecute(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   // Spec §5.1's requester-access recheck ("rechecks current access before
@@ -1015,7 +1292,7 @@ async function advanceExecute(
   // status CAS (baseline §4), so it is the authoritative signal that something
   // was actually sent.
   if (operation.executionRefId) {
-    const next: TaskCheckpoint = taskCheckpointSchema.parse({
+    const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
       ...checkpoint,
       mutationAttempts: checkpoint.mutationAttempts + 1,
     });
@@ -1053,7 +1330,7 @@ async function advanceExecute(
 async function advanceObserve(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
   now: Date,
 ): Promise<string> {
@@ -1131,7 +1408,7 @@ async function advanceObserve(
 async function advanceVerify(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const operation = await readLatestOperation(task.orgId, task.id);
@@ -1150,7 +1427,7 @@ async function advanceVerify(
     intentId: operation?.intentId ?? null,
   });
 
-  const next: TaskCheckpoint = taskCheckpointSchema.parse({
+  const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
     ...checkpoint,
     lastVerification: {
       result: evaluation.result,
@@ -1250,6 +1527,7 @@ async function writeLeasedStep(
     taskId: task.id,
     revision: task.revision,
     leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: stepKey,
       phase,
@@ -1315,6 +1593,7 @@ async function settleStepAndMove(args: {
     taskId: task.id,
     revision: task.revision,
     leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: toStepKey,
       phase,
@@ -1405,6 +1684,7 @@ export async function advanceHumanWork(args: {
       taskId: task.id,
       revision: task.revision,
       leaseEpoch,
+      observedState: task.state as string,
       patch: {
         state: nextTaskState(task.state as string, 'wait'),
         waitReason: 'information',
@@ -1781,4 +2061,17 @@ export async function handleTaskWake(args: {
  *  writers, and the test that pins their task-graph writes needs to call them
  *  directly — the alternative is a test that drives `advanceTask` through a
  *  fake DB, which would assert the fake and not the wiring. */
+/**
+ * The ONLY coordinator surface a per-recipe advancer module outside this file
+ * may call (R1a-0). Frozen; each member IS the existing lease-safe function,
+ * unchanged — not a wrapper. An advancer module must import this LAZILY
+ * (`const { COORDINATOR_STEP_OPS } = await import('./taskCoordinator')` inside
+ * the advancer body): this file imports the advancer table at load, so a
+ * static import back is a load-time cycle in which the table captures
+ * `undefined`.
+ */
+export const COORDINATOR_STEP_OPS = Object.freeze({
+  settle, yieldToWait, admitReasoningRun, settleStepAndMove, writeLeasedStep, readLatestTaskRun,
+});
+
 export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun, advanceVerify };

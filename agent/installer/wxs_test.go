@@ -368,3 +368,33 @@ func TestRecoveryActionsAlsoCoverNonCrashFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestIsolationReleaseOnUninstall(t *testing.T) {
+	wxs := readWxs(t)
+	const id = "IsolationReleaseOnUninstall"
+	// A never-isolated device has no isolation journal (the agent writes one
+	// only once an episode or recovery exists), so uninstall proceeds without
+	// running the agent at all; this also covers a binary raw-swapped to a
+	// build that predates release-all. When a journal (or a set-aside corrupt
+	// one) exists, release-all must succeed: a crashing, blocked or outdated
+	// binary fails the uninstall instead of removing the agent while
+	// Breeze-owned filters may remain.
+	const want = "&quot;[System64Folder]cmd.exe&quot; /c (if not exist &quot;[ProgramDataBreezeDataDir]isolation.json&quot; if not exist &quot;[ProgramDataBreezeDataDir]isolation.json.corrupt&quot; exit /b 0) &amp; &quot;[#filBreezeAgentExe]&quot; containment release-all --reason uninstall"
+	if got := quietExecCmd(t, wxs, id); got != want {
+		t.Fatalf("release command = %q\nwant            %q", got, want)
+	}
+	attrs := customActionAttrs(wxs, id)
+	for key, want := range map[string]string{"DllEntry": "WixQuietExec", "Execute": "deferred", "Impersonate": "no", "Return": "check"} {
+		if attrs[key] != want {
+			t.Errorf("%s = %q, want %q", key, attrs[key], want)
+		}
+	}
+	if !regexp.MustCompile(`<Custom\s+Action="IsolationReleaseOnUninstall"\s+Before="RemoveFiles"\s+Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"\s*/>`).MatchString(wxs) {
+		t.Error("release must run before RemoveFiles only on full uninstall, never nested upgrade removal")
+	}
+	// The server must not be told "uninstalled" by a run whose release then
+	// fails and rolls the uninstall back.
+	if !regexp.MustCompile(`<Custom\s+Action="UninstallNotify"\s+After="IsolationReleaseOnUninstall"\s+Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"\s*/>`).MatchString(wxs) {
+		t.Error("UninstallNotify must run after IsolationReleaseOnUninstall")
+	}
+}

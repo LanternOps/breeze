@@ -121,6 +121,27 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
+  it('persists the signup intent in the partner creation transaction without granting entitlements', async () => {
+    const purchaseSelection = { intent: 'wisp' as const, offer: 'founding' };
+    await createPartner({ orgName: 'Selected', adminEmail: 'selected@example.com', adminName: 'Admin', passwordHash: 'hashed', origin: { mcp: false }, status: 'pending', purchaseSelection });
+    const partner = insertCalls.find((call) => (call.table as { __t: string }).__t === 'partners')!;
+    expect(partner.values).toMatchObject({ purchaseSelection, plan: 'free', status: 'pending' });
+    expect(partner.values).not.toHaveProperty('maxDevices');
+  });
+
+  it.each([false, true])('persists the cloud intent for omitted intent (MCP origin: %s) without granting entitlements', async (mcp) => {
+    await createPartner({ orgName: 'Unselected', adminEmail: 'unselected@example.com', adminName: 'Admin', passwordHash: mcp ? null : 'hashed', origin: { mcp }, status: 'pending' });
+    const partner = insertCalls.find((call) => (call.table as { __t: string }).__t === 'partners')!;
+    expect(partner.values).toMatchObject({ purchaseSelection: { intent: 'cloud' }, plan: 'free', status: 'pending' });
+    expect(partner.values).not.toHaveProperty('maxDevices');
+  });
+
+  it.each([null, {}, { intent: 'hosting' }, { intent: 'cloud', priceId: 'price_untrusted' }])(
+    'rejects malformed service intent before any tenant is created: %j', async (purchaseSelection) => {
+      await expect(createPartner({ orgName: 'Invalid', adminEmail: 'invalid@example.com', adminName: 'Admin', passwordHash: 'hashed', origin: { mcp: false }, status: 'pending', purchaseSelection: purchaseSelection as never })).rejects.toThrow();
+      expect(insertCalls).toEqual([]);
+    },
+  );
   it('creates exactly one default card in the partner currency in the creation transaction', async () => {
     await createPartner({ orgName: 'Rates', adminEmail: 'rates@example.com', adminName: 'Rates', passwordHash: null, origin: { mcp: false }, status: 'active' });
     expect(ensureDefaultProfile).toHaveBeenCalledExactlyOnceWith('partners-id', 'CAD', dbTestState.lastTransaction);

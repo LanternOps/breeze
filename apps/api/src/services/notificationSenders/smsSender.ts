@@ -4,6 +4,8 @@
  * Sends alert notifications via Twilio Programmable Messaging.
  */
 
+import type { AlertOwnerKind } from '@breeze/shared';
+
 import { getTwilioService } from '../twilio';
 import type { AlertSeverity } from '../email';
 
@@ -21,6 +23,8 @@ export interface SmsNotificationPayload {
   severity: AlertSeverity;
   summary: string;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   occurredAt?: Date | string;
   dashboardUrl?: string;
   orgName?: string;
@@ -89,7 +93,8 @@ export function validateSmsConfig(config: unknown): { valid: boolean; errors: st
 
 function buildSmsBody(payload: SmsNotificationPayload): string {
   const severity = payload.severity.toUpperCase();
-  const devicePart = payload.deviceName ? ` on ${payload.deviceName}` : '';
+  const subjectName = payload.subjectName || payload.deviceName;
+  const devicePart = subjectName ? ` on ${subjectName}` : '';
   const orgPart = payload.orgName ? ` (${payload.orgName})` : '';
   const base = `[${severity}] ${payload.alertName}${devicePart}${orgPart}: ${payload.summary}`;
   const withLink = payload.dashboardUrl ? `${base} ${payload.dashboardUrl}` : base;

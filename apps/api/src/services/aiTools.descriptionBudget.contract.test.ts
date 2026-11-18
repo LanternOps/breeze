@@ -113,7 +113,7 @@ describe('AI tool description budget (A-W03)', () => {
 
   it('covers disabled and enabled factories, including the Delegant fallback', () => {
     const [disabled, enabled, fallback] = emitted.map(tools => tools.map(t => t.name));
-    const gated = [...Object.keys(m365ToolTiers), ...Object.keys(googleToolTiers), 'propose_script', 'get_script_proposal', 'draft_flow', 'validate_flow', 'get_flow', 'list_flows'];
+    const gated = [...Object.keys(m365ToolTiers), ...Object.keys(googleToolTiers), 'propose_script', 'get_script_proposal', 'draft_flow', 'validate_flow', 'get_flow', 'list_flows', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'];
     for (const name of gated) {
       expect(disabled).not.toContain(name);
       expect(enabled).toContain(name);

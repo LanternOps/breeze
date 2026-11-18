@@ -149,6 +149,8 @@ describe.runIf(RUN)('customer-document quote assembler on Postgres (#9418)', () 
     expect(draft.lines.map((l) => l.name)).toEqual(['Backup']);
     expect(JSON.stringify(draft)).not.toContain(HIDDEN);
     expect(draft.quote.sellerSnapshot?.name).toBeTruthy();
+    // #9957: no tech-entered bill-to → the org name sending would freeze (the cover's "Prepared for").
+    expect(draft.quote.billToName).toMatch(/^CustDoc Q Org /);
     // No presentation snapshot on a draft: the partner's live theme applies.
     expect(draft.branding).toMatchObject({ theme: 'condensed', pageSize: 'a4' });
     expect(draft.documentLocale).toBe('pt-BR');

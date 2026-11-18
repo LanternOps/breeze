@@ -5,7 +5,11 @@
  * These appear in the user's notification center within the application.
  */
 
-import { db } from '../../db';
+import type { AlertOwnerKind } from '@breeze/shared';
+import { captureException } from '../sentry';
+import { safeErrorMessage } from '../aiModels/safeDbError';
+
+import { db, withDbTransactionIfHeld } from '../../db';
 import { userNotifications, organizationUsers, users, partnerUsers, organizations } from '../../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { toSafeRelativePath } from '@breeze/shared';
@@ -18,8 +22,10 @@ export interface InAppNotificationPayload {
   severity: AlertSeverity;
   message: string;
   orgId: string;
-  deviceId?: string;
+  deviceId?: string | null;
   deviceName?: string;
+  subjectName?: string;
+  ownerKind?: AlertOwnerKind;
   link?: string;
 }
 
@@ -55,114 +61,123 @@ function severityToPriority(severity: AlertSeverity): 'low' | 'normal' | 'high' 
  */
 export async function sendInAppNotification(payload: InAppNotificationPayload): Promise<SendResult> {
   try {
-    // Get org's partner ID to find partner users
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, payload.orgId))
-      .limit(1);
+    // Savepoint: the dispatcher reads success: false and carries on in this same
+    // transaction (#11225).
+    return await withDbTransactionIfHeld(async (): Promise<SendResult> => {
+      // Get org's partner ID to find partner users
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, payload.orgId))
+        .limit(1);
 
-    // Get all active users in the organization
-    const orgUserResults = await db
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .innerJoin(users, eq(organizationUsers.userId, users.id))
-      .where(
-        and(
-          eq(organizationUsers.orgId, payload.orgId),
-          eq(users.status, 'active')
-        )
-      );
-
-    // Get partner users with access to this org's partner
-    let partnerUserResults: { userId: string }[] = [];
-    if (org?.partnerId) {
-      partnerUserResults = await db
-        .select({ userId: partnerUsers.userId })
-        .from(partnerUsers)
-        .innerJoin(users, eq(partnerUsers.userId, users.id))
+      // Get all active users in the organization
+      const orgUserResults = await db
+        .select({ userId: organizationUsers.userId })
+        .from(organizationUsers)
+        .innerJoin(users, eq(organizationUsers.userId, users.id))
         .where(
           and(
-            eq(partnerUsers.partnerId, org.partnerId),
-            eq(users.status, 'active'),
-            // Include users with full access or selected access that explicitly includes this org.
-            or(
-              eq(partnerUsers.orgAccess, 'all'),
-              and(
-                eq(partnerUsers.orgAccess, 'selected'),
-                sql`${payload.orgId} = ANY(${partnerUsers.orgIds})`
-              )
-            )
+            eq(organizationUsers.orgId, payload.orgId),
+            eq(users.status, 'active')
           )
         );
-    }
 
-    // Combine and deduplicate user IDs
-    const userIdSet = new Set<string>();
-    for (const { userId } of orgUserResults) {
-      userIdSet.add(userId);
-    }
-    for (const { userId } of partnerUserResults) {
-      userIdSet.add(userId);
-    }
+      // Get partner users with access to this org's partner
+      let partnerUserResults: { userId: string }[] = [];
+      if (org?.partnerId) {
+        partnerUserResults = await db
+          .select({ userId: partnerUsers.userId })
+          .from(partnerUsers)
+          .innerJoin(users, eq(partnerUsers.userId, users.id))
+          .where(
+            and(
+              eq(partnerUsers.partnerId, org.partnerId),
+              eq(users.status, 'active'),
+              // Include users with full access or selected access that explicitly includes this org.
+              or(
+                eq(partnerUsers.orgAccess, 'all'),
+                and(
+                  eq(partnerUsers.orgAccess, 'selected'),
+                  sql`${payload.orgId} = ANY(${partnerUsers.orgIds})`
+                )
+              )
+            )
+          );
+      }
 
-    if (userIdSet.size === 0) {
+      // Combine and deduplicate user IDs
+      const userIdSet = new Set<string>();
+      for (const { userId } of orgUserResults) {
+        userIdSet.add(userId);
+      }
+      for (const { userId } of partnerUserResults) {
+        userIdSet.add(userId);
+      }
+
+      if (userIdSet.size === 0) {
+        return {
+          success: true,
+          notificationCount: 0
+        };
+      }
+
+      // Build notification link
+      // Defense-in-depth: a caller-supplied link must be a safe same-origin
+      // relative path, else it collapses to the alert URL (mirrors getSafeNext).
+      const link = toSafeRelativePath(payload.link, `/alerts/${payload.alertId}`);
+
+      // Build metadata
+      const metadata = {
+        alertId: payload.alertId,
+        severity: payload.severity,
+        deviceId: payload.deviceId,
+        deviceName: payload.deviceName,
+        subjectName: payload.subjectName,
+        ownerKind: payload.ownerKind
+      };
+
+      // Create notifications for all users
+      const notifications = Array.from(userIdSet).map(userId => ({
+        userId,
+        orgId: payload.orgId,
+        type: 'alert' as const,
+        priority: severityToPriority(payload.severity),
+        title: payload.alertName,
+        message: payload.ownerKind && payload.ownerKind !== 'device' && payload.subjectName
+          ? `${payload.subjectName}: ${payload.message}` : payload.message,
+        link,
+        metadata,
+        // Durable backstop for a redelivered alert.triggered. The stable job id
+        // on `process-alert` only holds while BullMQ retains the completed job;
+        // this is enforced by the partial unique index
+        // user_notifications_user_dedupe_key_uq (user_id, dedupe_key), added in
+        // 2026-09-04-ai-agent-notifications.sql.
+        //
+        // PER-USER, not per-alert: the index is keyed on (user_id, dedupe_key),
+        // but a key of `alert:<id>` alone would still be wrong the moment this
+        // table is read or exported by key — and more importantly it reads as if
+        // one alert may notify only one person. Keep the user in the key so the
+        // intent is legible at the call site.
+        dedupeKey: `alert:${payload.alertId}:${userId}`,
+        read: false
+      }));
+
+      // Redelivery is expected, not exceptional: collide-and-continue.
+      await db.insert(userNotifications).values(notifications).onConflictDoNothing();
+
+      console.log(`[InAppSender] Created ${notifications.length} in-app notifications for alert ${payload.alertId} (${orgUserResults.length} org users, ${partnerUserResults.length} partner users)`);
+
       return {
         success: true,
-        notificationCount: 0
+        notificationCount: notifications.length
       };
-    }
-
-    // Build notification link
-    // Defense-in-depth: a caller-supplied link must be a safe same-origin
-    // relative path, else it collapses to the alert URL (mirrors getSafeNext).
-    const link = toSafeRelativePath(payload.link, `/alerts/${payload.alertId}`);
-
-    // Build metadata
-    const metadata = {
-      alertId: payload.alertId,
-      severity: payload.severity,
-      deviceId: payload.deviceId,
-      deviceName: payload.deviceName
-    };
-
-    // Create notifications for all users
-    const notifications = Array.from(userIdSet).map(userId => ({
-      userId,
-      orgId: payload.orgId,
-      type: 'alert' as const,
-      priority: severityToPriority(payload.severity),
-      title: payload.alertName,
-      message: payload.message,
-      link,
-      metadata,
-      // Durable backstop for a redelivered alert.triggered. The stable job id
-      // on `process-alert` only holds while BullMQ retains the completed job;
-      // this is enforced by the partial unique index
-      // user_notifications_user_dedupe_key_uq (user_id, dedupe_key), added in
-      // 2026-09-04-ai-agent-notifications.sql.
-      //
-      // PER-USER, not per-alert: the index is keyed on (user_id, dedupe_key),
-      // but a key of `alert:<id>` alone would still be wrong the moment this
-      // table is read or exported by key — and more importantly it reads as if
-      // one alert may notify only one person. Keep the user in the key so the
-      // intent is legible at the call site.
-      dedupeKey: `alert:${payload.alertId}:${userId}`,
-      read: false
-    }));
-
-    // Redelivery is expected, not exceptional: collide-and-continue.
-    await db.insert(userNotifications).values(notifications).onConflictDoNothing();
-
-    console.log(`[InAppSender] Created ${notifications.length} in-app notifications for alert ${payload.alertId} (${orgUserResults.length} org users, ${partnerUserResults.length} partner users)`);
-
-    return {
-      success: true,
-      notificationCount: notifications.length
-    };
+    });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // Returned to callers and logged: never the failed query's values.
+    const errorMessage = error instanceof Error ? safeErrorMessage(error) : 'Unknown error';
     console.error('[InAppSender] Failed to send in-app notification:', errorMessage);
+    captureException(error, undefined, { alertId: payload.alertId, orgId: payload.orgId });
 
     return {
       success: false,
@@ -192,7 +207,9 @@ export async function sendInAppNotificationToUsers(
       alertId: payload.alertId,
       severity: payload.severity,
       deviceId: payload.deviceId,
-      deviceName: payload.deviceName
+      deviceName: payload.deviceName,
+      subjectName: payload.subjectName,
+      ownerKind: payload.ownerKind
     };
 
     const notifications = userIds.map(userId => ({
@@ -201,7 +218,8 @@ export async function sendInAppNotificationToUsers(
       type: 'alert' as const,
       priority: severityToPriority(payload.severity),
       title: payload.alertName,
-      message: payload.message,
+      message: payload.ownerKind && payload.ownerKind !== 'device' && payload.subjectName
+        ? `${payload.subjectName}: ${payload.message}` : payload.message,
       link,
       metadata,
       read: false

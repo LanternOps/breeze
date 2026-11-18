@@ -69,7 +69,8 @@
           "executing": "Executing",
           "completed": "Completed",
           "failed": "Failed",
-          "rejected": "Rejected"
+          "rejected": "Denied",
+          "stopped": "Stopped"
         }
       },
       "intents": {
@@ -79,6 +80,10 @@
         "categoryLabel": "Category",
         "categoryUnresolved": "Suggested — name not available on this view"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Fix memory",
+      "fleetDesignReport": "Fleet design"
     }
   },
   "aiDataPolicy": {
@@ -118,7 +123,15 @@
     "retentionKeepDays": "Keep for (days)",
     "retentionKeepForever": "Keep forever",
     "retentionBreezeDefault": "Breeze default: {{days}} days",
-    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run.",
+    "transcriptLabel": "Keep technician AI conversations for (days)",
+    "transcriptHelp": "Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run; the session record keeps its cost, model and turn count. Flagged conversations are kept. Blank inherits.",
+    "transcriptAuditNote": "Audit log entries about a technician session, including tool inputs, follow the audit retention window, not this one.",
+    "transcriptClientNote": "Client AI (AI for Office) conversations have their own window.",
+    "transcriptClientLink": "Client AI retention settings",
+    "transcriptAboveCeiling": "Your partner keeps technician AI conversations for at most {{days}} days.",
+    "partnerTranscriptHelp": "Choose how long technician AI conversations are kept, or keep them forever. Organizations can only shorten this. Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run.",
+    "invalidDays": "Enter a whole number of days."
   },
   "partnerServicePrincipals": {
     "title": "Service principals",
@@ -213,6 +226,7 @@
       "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
       "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
       "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "alerts_write": "Acknowledge and resolve alerts in every org the principal can reach. Does not grant reading alert details (alerts:read), suppress, dismiss or delete.",
       "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
       "ai_write": "MCP tools that change data.",
       "ai_execute": "MCP tools that run actions on devices.",
@@ -254,45 +268,21 @@
       "twelveHour": "12-hour",
       "twentyFourHour": "24-hour",
       "language": "Language",
-      "languageDescription": "Default language for partner settings.",
-      "businessHours": {
-        "title": "Business Hours",
-        "description": "Set your standard operating hours for support and alerts.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Always available"
-          },
-          "business": {
-            "label": "Business Hours",
-            "description": "Mon-Fri 9am-5pm"
-          },
-          "extended": {
-            "label": "Extended Hours",
-            "description": "Mon-Fri 7am-7pm, Sat 9am-1pm"
-          },
-          "custom": {
-            "label": "Custom",
-            "description": "Set your own schedule"
-          }
-        },
-        "customSchedule": "Custom Schedule",
-        "open": "Open",
-        "to": "to"
-      },
-      "days": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
-      }
+      "languageDescription": "Default language for partner settings."
     }
   },
   "partnerAiBudgets": {
-    "enable": "Enable AI budget enforcement",
+    "aiAccess": "AI for all organizations",
+    "aiAccessOptions": {
+      "notSet": "Not set, each organization decides",
+      "on": "On for every organization",
+      "off": "Off for every organization"
+    },
+    "aiAccessHelp": "This is the AI on/off switch for your clients, not a budget setting. When set, it replaces each organization's own AI switch. The budget fields below apply either way.",
+    "offWarning": "AI is off for every organization under this partner. Chat, the helper, Office add-ins, AI agents and enrichment are refused until you change this.",
+    "offConfirmTitle": "Turn off AI for every organization?",
+    "offConfirmMessage": "Every organization under this partner loses AI: chat, the helper, Office add-ins, AI agents and enrichment are refused, and organizations can't turn it back on themselves. Nothing changes until you save.",
+    "offConfirmAction": "Turn off AI",
     "monthlyBudget": "Monthly Budget ($)",
     "dailyBudget": "Daily Budget ($)",
     "approvalMode": "Approval Mode",
@@ -302,14 +292,13 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
     "notSet": "Not set, orgs configure individually",
-    "description": "Budget values are enforced across all child organizations. Dollar amounts are stored in cents internally.",
+    "description": "A value you set here applies to every organization and locks it. A field you leave empty is configured per organization. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
       "actionPlan": "Action Plan",
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
-    },
-    "overridesOrgTab": "Fields you set here override and lock the same field on every organization's AI tab."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
@@ -319,7 +308,7 @@
     "subtitle": "Connect providers, choose which models are available, and set the default model for each AI feature.",
     "forbidden": "You don't have permission to manage AI providers and models.",
     "loadFailed": "Couldn't load AI providers and models.",
-    "workspaceNote": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "workspaceNote": "Knowledge indexing uses your configured AI provider and appears in your AI usage.",
     "connections": {
       "title": "Connections",
       "subtitle": "Where your AI requests are sent and who pays for them.",
@@ -536,7 +525,8 @@
         "unverified": "Not verified",
         "failed": "Verification failed",
         "failedWithSummary": "Verification failed: {{summary}}",
-        "stale": "Re-verify: endpoint changed"
+        "stale": "Re-verify: endpoint changed",
+        "invalid": "Verification record unreadable: verify again"
       },
       "setPriceToEnable": "Set a price to enable",
       "manual": {
@@ -606,12 +596,79 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "verifyGatewayHint": "Runs a tool-calling test against your endpoint. See the cost note above.",
       "remove": "Remove model",
       "removeTitle": "Remove this model?",
       "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
       "removed": "Model removed",
-      "removeFailed": "Couldn’t remove the model. Try again."
+      "removeFailed": "Couldn’t remove the model. Try again.",
+      "tools": {
+        "title": "Tools and context",
+        "partnerOnly": "Set by the partner on the model. Organizations choose models; they cannot override this.",
+        "profileLabel": "Tool profile",
+        "profile": {
+          "auto": "Auto (fit the context window)",
+          "full": "Full (every tool)",
+          "standard": "Standard",
+          "minimal": "Minimal (read-only)",
+          "custom": "Custom"
+        },
+        "profileHint": {
+          "auto": "Breeze picks the largest profile that fits the model's known context window. While the window is unknown, every tool stays available.",
+          "full": "Every tool each feature offers today.",
+          "standard": "Everyday helpdesk tools and a shorter prompt (about 40 tools in chat, fewer in the helper, script builder and Office).",
+          "minimal": "About a dozen read-only tools and a short prompt, for small local models.",
+          "custom": "Only the tool areas and tools you list, on every feature that uses this model."
+        },
+        "appliesWhen": "When a change alters what a feature uses, open conversations on this model restart their AI session on the next message and ask the user to send it again.",
+        "domainsLabel": "Tool areas",
+        "domainCore": "Core context tools",
+        "toolsLabel": "Individual tools",
+        "toolsHint": "Tool names, separated by commas or new lines. Breeze checks every name when you save.",
+        "droppedTools": "These tools no longer exist and are ignored: {{tools}}.",
+        "underpowered": "This change would take away tools a feature using this model needs:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacity unknown: nothing is constrained. Auto keeps every tool until the endpoint lists or reports a context window, or you set one below.",
+        "windowNotLearned": "Breeze learns context windows only on your own OpenAI-compatible endpoints, so Auto keeps every tool on this model.",
+        "windowKnown": "Context window: {{tokens}} tokens ({{source}}).",
+        "windowSource": {
+          "override": "set here",
+          "discovered": "listed by the endpoint"
+        },
+        "windowObserved": "Context window: {{tokens}} tokens (reported by the endpoint {{age}}).",
+        "observedStale": "The endpoint last reported {{tokens}} tokens {{age}}. A later endpoint setup or the model listing has replaced that report, so it no longer limits anything.",
+        "overrideLabel": "Context window override (tokens)",
+        "overrideHint": "For models on your own OpenAI-compatible endpoint only. Leave blank to use what the endpoint lists or reports. New conversations use a changed value; open ones keep their current limit unless the profile they use changes.",
+        "surfacesTitle": "What each feature uses now",
+        "reason": {
+          "explicit": "chosen here",
+          "auto_window": "auto, from the context window",
+          "auto_unknown_window": "auto, window unknown",
+          "auto_unmeasured": "auto; this feature is not narrowed yet"
+        },
+        "missingRequired": "Refuses this model: it would lack {{tools}}.",
+        "tooSmall": "Window too small",
+        "tooSmallHint": "No profile fits this window, so this feature refuses the model.",
+        "fitSuggestion": "At {{tokens}} tokens, Auto would pick {{profile}} here; this profile may not fit.",
+        "readiness": {
+          "tokens": "{{tokens}} prompt tokens",
+          "passed": "Tool round trip passed.",
+          "failed": "Tool round trip failed, so this feature refuses the model. {{summary}}",
+          "inconclusive": "Inconclusive: the endpoint failed, not the model. Nothing is refused. {{summary}}",
+          "stale": "Out of date: the endpoint or tool profile changed since. Re-verify to check again.",
+          "absent": "No tool round trip yet. Verify runs one for each feature this model is assigned to.",
+          "absentVerified": "Verified (basic). Re-verify to check a real tool round trip on {{surface}}.",
+          "officeNotChecked": "Not checked: Verify does not run an Office round trip."
+        },
+        "verifyCost": "Verify sends real requests to your endpoint, billed by your provider: a basic check, then one tool round trip for each feature this model is assigned to. A round trip can take up to 4 model turns, each resending the whole prompt: on chat with the Full profile one request is about 128,000 tokens, so one chat check can approach 500,000.",
+        "invalidCustom": "Choose at least one tool area or tool for a custom profile.",
+        "invalidWindow": "Enter a whole number of tokens from {{min}} to {{max}}, or leave it blank.",
+        "ageMinutes": "{{n}} min ago",
+        "ageHours": "{{n}} h ago",
+        "ageDays": "{{n}} d ago",
+        "missingRequiredTroubleshooting": "Device troubleshooting runs refuse this model: they would lack {{tools}}. Other agent runs are not affected.",
+        "underpoweredTooSmall": "{{surface}}: no tool profile fits this context window"
+      }
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -700,7 +757,13 @@
         "quality": "Quality"
       },
       "failovers": "Failovers",
-      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable",
+      "titleBy": {
+        "model": "AI usage by model",
+        "organization": "AI usage by organization",
+        "technician": "AI usage by technician",
+        "feature": "AI usage by feature"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -716,12 +779,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Feature",
-        "prompt_profile": "Model family"
+        "prompt_profile": "Model family",
+        "tool_profile": "Tool profile"
       },
       "columns": {
         "conversations": "Conversations",
         "costPerConversation": "Cost / conversation",
         "refusalRate": "Refusal rate",
+        "refusedToolBatches": "Unusable tool calls",
         "failoverRate": "Failover rate",
         "flagRate": "Flag rate",
         "leftRate": "Left for another model",
@@ -732,6 +797,7 @@
         "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
         "costPerConversation": "Average spend on this row for each conversation that used it.",
         "refusalRate": "Model calls the model declined, per call.",
+        "refusedToolBatches": "Model calls in a turn where the model asked to run a tool in a form Breeze could not use (a tool it was not offered, or inputs that did not match), per call. Nothing was run.",
         "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
         "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
         "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
@@ -743,6 +809,12 @@
         "claude-standard": "Standard Claude",
         "claude-small": "Small Claude",
         "generic": "Other models"
+      },
+      "toolProfiles": {
+        "full": "Full",
+        "standard": "Standard",
+        "minimal": "Minimal",
+        "custom": "Custom"
       },
       "unrecorded": "Not recorded",
       "unattributed": "Not attributed to a model",
@@ -756,6 +828,8 @@
       "leftBreakdown": "{{switched}} switched, {{continued}} continued",
       "resolvedCount_one": "{{count}} resolved",
       "resolvedCount_other": "{{count}} resolved",
+      "refusedToolBatchCount_one": "{{count}} refused",
+      "refusedToolBatchCount_other": "{{count}} refused",
       "loading": "Loading quality…",
       "empty": "No model calls in this period.",
       "error": "Couldn't load the quality view.",
@@ -770,6 +844,8 @@
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
+    "notSetTtl": "Not set — platform default; organizations can set their own",
+    "notSetMaxTtl": "Not set — platform maximum applies to all organizations",
     "updatePolicy": "Agent Update Policy",
     "automatic": "Automatic",
     "manual": "Manual (block automatic updates)",
@@ -777,20 +853,17 @@
     "maintenancePlaceholder": "e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7",
     "maintenanceInvalid": "Use a UTC window like <first>Sun 02:00-04:00</first> or <second>02:00-04:00</second>, or <always>24/7</always> for always-on. Leave empty to let orgs configure it.",
     "maintenanceHelp": "Time window (UTC) for automatic updates and reboots. Use <always>24/7</always> for always-on, or leave empty so orgs configure it individually.",
-    "deviceGroup": "Default Device Group",
-    "alertThreshold": "Default Alert Threshold",
     "autoEnrollment": {
       "title": "Auto-Enrollment",
       "enable": "Enable auto-enrollment for new devices",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome notification"
+      "requireApproval": "Require admin approval"
     },
     "enrollment": {
       "title": "Device enrollment",
       "ttl": "Default link expiry",
-      "ttlHint": "Pre-selects how long new enrollment links and installers stay valid. Organizations can pick a different default for themselves.",
+      "ttlHint": "Pre-selects how long new enrollment links and installers stay valid.",
       "deviceCount": "Default devices per link",
-      "deviceCountHint": "How many machines one enrollment link may enroll by default. Organizations can pick a different default for themselves.",
+      "deviceCountHint": "How many machines one enrollment link may enroll by default.",
       "maxTtl": "Maximum link lifetime",
       "maxTtlHint": "A ceiling on key lifetime, not just on what an admin may request: nothing minted under this partner stays usable for longer — enrollment links, MCP deployment invites, and the child credentials issued when an installer is redeemed.",
       "maxTtlWarning": "Organizations cannot raise this. A short cap also shortens the time a machine has to finish enrolling after redeeming a link, not just the time to download it."
@@ -816,16 +889,19 @@
   "agentVersionPins": {
     "title": "Update version targets",
     "description": "Pin the agent and watchdog to a specific registered version, or leave on <strong>Latest promoted</strong> to track the globally promoted release. Agent and watchdog are independent.",
-    "partnerDescription": " A pin here is the default for all your organizations; an organization can override it.",
     "organizationDescription": " An organization pin overrides the partner default.",
     "components": {
       "agent": "Agent target",
       "watchdog": "Watchdog target"
     },
     "inheritDefault": "Inherit partner default ({{version}})",
+    "inheritDefaultLatest": "Inherit partner default (latest promoted)",
+    "latestOverride": "Always latest promoted, ignore partner pin",
+    "latestOverrideVersion": "Always latest promoted ({{version}}), ignore partner pin",
+    "latestOrganization": "Set for this organization: always latest promoted",
     "latestVersion": "Latest promoted ({{version}})",
     "latest": "Latest promoted",
-    "pinnedAll": "Pinned for all organizations",
+    "pinnedAll": "Partner default — organizations can override",
     "overridesDefault": "Overrides partner default ({{version}})",
     "pinnedOrganization": "Pinned for this organization",
     "inherited": "Inherited from partner: {{version}}",
@@ -934,12 +1010,13 @@
     "logoPreview": "Logo preview",
     "noLogo": "No logo",
     "uploadImage": "Upload image",
-    "imageHelp": "PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256",
+    "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
+    "logoLowRes": "This logo is {{width}} × {{height}} px. Reports, quotes and invoices print it up to about 2.5 in (64 mm) wide, so it will look soft in print. Upload a version at least 600 px on its long side.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
     "customCssPlaceholder": "/* Custom CSS applied to all child organizations */",
-    "customCssHelp": "CSS overrides applied to the portal for all child organizations."
+    "customCssHelp": "Added to every client's portal, before that organization's own Custom CSS, which can override it. @import and non-HTTPS url() are not allowed."
   },
   "partnerSecurity": {
     "notSet": "Not set — orgs configure individually",
@@ -960,7 +1037,11 @@
     "allowlistPlaceholder": "Enter one IP or CIDR range per line. Leave blank to let each org decide.",
     "allowlistHelp": "Leave blank to let each organization configure individually. Use CIDR notation for ranges. Requires a configured reverse proxy so the API can see real client IPs.",
     "ipListed": "Your IP ({{ip}}) is listed",
-    "addCurrentIp": "Add my current IP ({{ip}})"
+    "addCurrentIp": "Add my current IP ({{ip}})",
+    "errors": {
+      "range": "Enter a whole number from {{min}} to {{max}}.",
+      "atLeast": "Enter a whole number of {{min}} or more."
+    }
   },
   "partnerNotifications": {
     "notSet": "Not set — orgs configure individually",
@@ -1024,14 +1105,16 @@
     "networkProxy": {
       "title": "Network Proxy",
       "label": "Serve Network Proxy from a dedicated origin",
-      "help": "Applies to all organizations; organizations cannot override it. Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
+      "help": "Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
     }
   },
   "partnerSettingsPage": {
     "groups": {
       "company": "Company",
+      "devices": "Devices & agents",
       "security": "Security & Access",
       "communications": "Communications",
+      "ai": "AI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1143,11 @@
       },
       "company": {
         "label": "Company",
-        "description": "Name, address, contacts"
+        "description": "Name, address, contacts, email signature"
       },
       "regional": {
         "label": "Regional",
-        "description": "Timezone, formats, hours"
+        "description": "Timezone, language, formats, hours"
       },
       "defaults": {
         "label": "Defaults",
@@ -1072,7 +1155,7 @@
       },
       "security": {
         "label": "Security",
-        "description": "IP allowlist and access"
+        "description": "Passwords, sessions, MFA and IP allowlist"
       },
       "remoteAccess": {
         "label": "Remote Access",
@@ -1080,11 +1163,11 @@
       },
       "eventLogs": {
         "label": "Event Logs",
-        "description": "Forwarding and retention"
+        "description": "Forward device event logs to Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Email and webhook alerts"
+        "description": "Sender address, SMTP, Slack and Pushover defaults"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1100,8 +1183,8 @@
         "description": "Send email from your own domain"
       },
       "aiBudgets": {
-        "label": "AI Budgets",
-        "description": "AI spending limits"
+        "label": "AI Budgets & Limits",
+        "description": "AI spending caps, alerts and rate limits"
       },
       "aiProvider": {
         "label": "AI Providers & Models",
@@ -1109,7 +1192,7 @@
       },
       "aiFeatures": {
         "label": "AI Features",
-        "description": "Anomaly detection and suggested fixes defaults"
+        "description": "AI data policy, anomaly detection and suggested fixes"
       },
       "branding": {
         "label": "Branding",
@@ -1124,12 +1207,25 @@
         "description": "Service desk, billing and topology on/off"
       },
       "aiApprovals": {
-        "label": "AI Approval Timeout",
-        "description": "How long AI chat waits for gated action approval"
+        "label": "AI Approvals",
+        "description": "Approval mode and how long Breeze AI waits for approval"
+      },
+      "callerVerification": {
+        "label": "Caller verification",
+        "description": "Caller identity checks for support requests"
+      },
+      "knownGuests": {
+        "label": "Known guests",
+        "description": "Approved visitor and technician devices by MAC address"
+      },
+      "customerPortal": {
+        "label": "Customer portal",
+        "description": "Default sign-in and registration rules for your customers' portals, and access requests waiting for a decision"
       }
     },
     "saved": "Partner settings saved",
     "saveFailed": "Failed to save settings",
+    "fieldRejected": "Settings not saved. Fix the highlighted field and save again.",
     "permissionDenied": "You do not have permission to view partner settings",
     "fetchFailed": "Failed to fetch partner settings",
     "genericError": "An error occurred",
@@ -1141,9 +1237,7 @@
     "title": "Partner Settings",
     "description": "Configure defaults for {{name}}.",
     "yourMsp": "your MSP",
-    "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
-    "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
     "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
     "modules": {
       "title": "Modules",
@@ -1170,6 +1264,129 @@
       "topologyAiDescription": "Let Breeze AI summarise the map and flag unusual changes in a site's topology.",
       "saved": "Modules updated",
       "saveFailed": "Failed to update modules"
+    },
+    "status": {
+      "clean": "All changes saved · {{time}}",
+      "cleanNoTime": "All changes saved",
+      "dirty": "Unsaved changes in <tabs></tabs>.",
+      "invalid_one": "Fix {{count}} field in {{tab}} to save.",
+      "invalid_other": "Fix {{count}} fields in {{tab}} to save.",
+      "saving": "Saving…",
+      "partial": "Couldn't save <tabs></tabs>. Other changes saved.",
+      "failed": "Couldn't save <tabs></tabs>.",
+      "autosaved": "Saved · {{time}}",
+      "autosaveFailed": "Couldn't save — try again",
+      "readOnly": "Saving needs full partner access"
+    },
+    "validation": {
+      "retentionDays": "Enter a whole number of days from 1 to 3650."
+    },
+    "unsavedConfirm": "You have unsaved changes. Leave this page and discard them?",
+    "knownGuests": {
+      "added": "Known guest added",
+      "removed": "Known guest removed"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Locks orgs",
+        "locksConditional": "Locks orgs when enabled",
+        "locksWhenSet": "Locks orgs when set",
+        "overridable": "Org can override",
+        "overridableCap": "Org can override, up to {{limit}}",
+        "partnerOnly": "Partner-wide"
+      },
+      "badgeHelp": {
+        "locks": "While this is set, every organization uses your value. An organization's own value is ignored.",
+        "locksConditional": "While enabled, every organization uses your value instead of its own. While disabled, organizations use their own.",
+        "locksWhenSet": "Once you set a value, every organization uses it and its own value is ignored. While empty, each organization configures its own.",
+        "overridable": "Your value is the default. An organization that sets its own value uses that instead.",
+        "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
+        "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
+      },
+      "badgeHelpLabel": "About “{{badge}}” ({{field}})",
+      "legend": {
+        "title": "How settings apply:",
+        "locks": "every organization uses your value",
+        "overridable": "your value is the default; an organization can set its own",
+        "partnerOnly": "applies to all organizations; there is no organization setting"
+      },
+      "value": {
+        "on": "On",
+        "off": "Off",
+        "minutes_one": "{{count}} min",
+        "minutes_other": "{{count}} min",
+        "hours_one": "{{count}} hour",
+        "hours_other": "{{count}} hours",
+        "days_one": "{{count}} day",
+        "days_other": "{{count}} days"
+      },
+      "line": {
+        "appliesToAll_one": "Applies to {{count}} org",
+        "appliesToAll_other": "Applies to all {{count}} orgs",
+        "hadOwnValue_one": "{{count}} had its own value",
+        "hadOwnValue_other": "{{count}} had their own value",
+        "notSet": "Not set.",
+        "someSetOwn_one": "{{count}} of {{total}} orgs sets its own",
+        "someSetOwn_other": "{{count}} of {{total}} orgs set their own",
+        "restUsePlatformDefault": "the rest use the platform default ({{value}})",
+        "orgsUsePlatformDefault": "Orgs use the platform default ({{value}})",
+        "noneSetOwn": "No org has its own value",
+        "defaultFor_one": "Default for {{count}} org",
+        "defaultFor_other": "Default for {{count}} orgs",
+        "override_one": "{{count}} org overrides",
+        "override_other": "{{count}} override",
+        "setOwn_one": "{{count}} sets its own",
+        "setOwn_other": "{{count}} set their own",
+        "clamped_one": "{{count}} is clamped to your ceiling",
+        "clamped_other": "{{count}} are clamped to your ceiling",
+        "notInForce": "Not in force (destination disabled).",
+        "orgsUseOwnDestination": "Orgs use their own destination",
+        "haveOne_one": "{{count}} has one",
+        "haveOne_other": "{{count}} have one",
+        "partnerOnlyDefault": "Platform default ({{value}}) applies to all orgs",
+        "partnerOnlyBlank": "Not set. The platform default applies to all orgs",
+        "consumerAll": "{{consumer}}: applies to all orgs",
+        "consumerOwn_one": "{{consumer}}: {{count}} org uses its own value",
+        "consumerOwn_other": "{{consumer}}: {{count}} orgs use their own value",
+        "noOrgs": "No organizations yet",
+        "savedValue": "Saved value:",
+        "restricted": "Org breakdown requires full partner access"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Orgs with their own value",
+          "overrides": "Orgs that override your default",
+          "shadowed": "Orgs whose own value is not in effect",
+          "clamped": "Orgs clamped to your ceiling"
+        },
+        "loading": "Loading organizations…",
+        "error": "Couldn't load the organizations.",
+        "empty": "No organizations in this list.",
+        "loadMore": "Load more",
+        "set": "Set",
+        "notSet": "Not set",
+        "inEffect": "In effect",
+        "notInEffect": "Not in effect",
+        "ownValue": "Own value:",
+        "channels": "Channels",
+        "readOnly": "Read-only. Change an organization's value from its own settings."
+      },
+      "summary": {
+        "title": "Across your organizations",
+        "locks_one": "{{count}} setting locks orgs",
+        "locks_other": "{{count}} settings lock orgs",
+        "overridable_one": "{{count}} can be overridden",
+        "overridable_other": "{{count}} can be overridden",
+        "differ_one": "{{count}} has orgs that differ from your defaults",
+        "differ_other": "{{count}} have orgs that differ from your defaults",
+        "noneDiffer": "Every organization uses your values on this tab.",
+        "hint": "Select a setting, or a count under a field, to list its organizations.",
+        "unavailable": "The org breakdown is unavailable right now.",
+        "back": "Back to summary"
+      },
+      "fields": {
+        "defaultProvider": "Default remote-tool provider"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1388,6 +1605,14 @@
     "never": "Never",
     "downloadInstaller": "Download pre-configured installer",
     "downloading": "Downloading...",
+    "installerDialogTitle": "Download installer for \"{{name}}\"",
+    "installerDialogDescription": "The installer is built for a set number of devices. Each device that runs it uses one.",
+    "installerDeviceCount": "Number of devices",
+    "installerDeviceCountRemaining": "This key has {{count}} enrollments left.",
+    "installerDeviceCountRemaining_one": "This key has {{count}} enrollment left.",
+    "installerDeviceCountRemaining_other": "This key has {{count}} enrollments left.",
+    "installerDeviceCountUnlimited": "This key has no usage limit.",
+    "installerDeviceCountRange": "Enter a whole number from 1 to {{max}}.",
     "rotate": "Rotate",
     "page": "Page {{current}} of {{total}}",
     "previous": "Previous",
@@ -1401,7 +1626,10 @@
     "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
-    "defaultDeviceLimit": "50 (default)",
+    "defaultDeviceLimit": "{{count}} (org default)",
+    "expiresAtHelp": "Leave blank for {{duration}} (org default).",
+    "usageFromDefault": "default",
+    "usageFromDefaultTitle": "Device limit came from the organization default.",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
     "expiresAt": "Expires At (optional)",
     "creating": "Creating...",
@@ -1485,7 +1713,9 @@
       "approval_ask": "Approval ask",
       "approval_snapshot": "Approval figures",
       "approval_expires": "Approval deadline",
-      "approval_status": "Approval status"
+      "approval_status": "Approval status",
+      "merged_into_number": "Merged-into ticket number",
+      "agreement_name": "Agreement name"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1500,7 +1730,19 @@
       "payment_failed": "Payment could not be completed",
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
-      "ticket_approval_decided": "Work approval decision"
+      "ticket_approval_decided": "Work approval decision",
+      "ticket_merged": "Ticket merged",
+      "ticket_comment_notification": "Public reply notice",
+      "ticket_autoresponse": "Ticket received acknowledgement",
+      "ticket_resolved": "Ticket resolved",
+      "quote_send": "Quote / proposal",
+      "agreement_request_send": "Agreement request",
+      "invoice_send": "Invoice",
+      "portal_invite": "Portal invite",
+      "staff_invite": "Staff invite",
+      "invoice_autopay": "Invoice with automatic payment notice",
+      "payment_reminder": "Payment reminder",
+      "payment_overdue": "Overdue payment reminder"
     }
   },
   "inboundEmail": {
@@ -1534,9 +1776,6 @@
     "dropUnverifiedDescription": "When off, unverified mail is quarantined for review. When on, it's dropped silently. This applies to <all>all</all> unverified senders — including mapped customers whose individual message fails the check.",
     "staffForwardRouting": "File staff forwards under the original sender's customer",
     "staffForwardRoutingDescription": "When one of your partner-level staff forwards a customer's email to the support address, the new ticket is filed under the organization mapped to the original sender's domain, not your own. The staff member must have access to that organization. Works only for forwards made in Gmail and received by a connected Gmail mailbox; not for the native inbound address, Microsoft 365 mailboxes or Outlook forwards.",
-    "defaultAssignee": "Default assignee for new inbound tickets",
-    "defaultAssigneeDescription": "Every new ticket created from inbound email is assigned to this person, unless something else already assigned it. If they can't access the ticket's organization, the ticket stays unassigned.",
-    "defaultAssigneeUnavailable": "Unavailable user",
     "defaultAssigneeNotAssignable": "That user can't be the default assignee. Pick an active member of your team who has ticket access.",
     "enableAutoresponse": "Send an autoresponse acknowledging new email tickets",
     "editEmailTemplates": "The acknowledgement email is edited under Email templates.",
@@ -1595,7 +1834,20 @@
     "scopeMailbox": "Scope this mailbox (Application Access Policy)",
     "reauthRequired": "Administrator re-consent is required before Microsoft 365 polling and replies resume.",
     "pollFailing": "The last {{failures}} checks of this mailbox failed with a temporary Microsoft 365 error. Breeze keeps retrying; new mail is picked up once Microsoft 365 responds again.",
+    "baselineRunning": "Reading this inbox to set a starting point. Mail already in it will not be imported; only mail received after you connected becomes tickets.",
+    "baselineSkipped_one": "{{count}} message already in this inbox will not be imported. Only mail received after you connected becomes tickets.",
+    "baselineSkipped_other": "{{count}} messages already in this inbox will not be imported. Only mail received after you connected becomes tickets.",
     "retest": "Re-test",
+    "gatewayTitle": "Mail gateway (optional)",
+    "gatewayHint": "If mail reaches this mailbox through an inline gateway such as Avanan, Mimecast, Proofpoint or Barracuda, Microsoft's own check may fail legitimate mail. List the gateway's ARC sealing domain, the d= value in the ARC-Seal header of a message it delivered, and Breeze uses the gateway's verdict instead. Leave this empty if you have no gateway.",
+    "gatewayWarning": "Only add a gateway that all of this tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Otherwise Breeze can't tell mail the gateway delivered from mail sent directly to Exchange.",
+    "gatewayLabel": "Trusted ARC sealing domains",
+    "gatewayPlaceholder": "gateway.example.com",
+    "gatewaySave": "Save gateway list",
+    "gatewaySaved": "Mail gateway list saved",
+    "gatewaySaveFailed": "Could not save the mail gateway list.",
+    "gatewayInvalid": "\"{{value}}\" is not a domain name.",
+    "gatewayTooMany": "Enter at most {{max}} domains.",
     "reconnect": "Reconnect",
     "disconnect": "Disconnect",
     "empty": "No mailbox connected yet.",
@@ -1693,7 +1945,8 @@
       "load": "Failed to load approval-security policy.",
       "save": "Could not save the approval-security policy.",
       "unavailable": "No policy available."
-    }
+    },
+    "scopeNote": "These settings apply to every organization under your partner account."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit Log Retention",
@@ -1715,59 +1968,43 @@
     },
     "issues": {
       "range": "Enter a whole number of days between 1 and 3650."
-    }
+    },
+    "aiStubsHelp": "AI conversations emptied by transcript retention keep a stripped session record (cost, model, turn count) until their last activity is older than this window. An organization with no saved audit retention policy keeps those records."
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Customize the portal experience for {{organization}}.",
+    "description": "Logo, colors and custom CSS for {{organization}}'s customer portal and documents.",
     "save": "Save branding",
     "saved": "Branding settings saved.",
+    "saveError": "Failed to save branding.",
     "managedByPartner": "Managed by partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Organization logo preview",
       "uploadNew": "Upload a new logo",
-      "recommendation": "SVG or PNG, recommended 512x512",
-      "selected": "Selected: {{name}}"
+      "selected": "Selected: {{name}}",
+      "help": "Shown in this organization's customer portal and on its quotes, invoices and reports. Leave empty to use the partner's logo.",
+      "inheritedSource": "Partner logo",
+      "remove": "Remove",
+      "loadError": "Could not load the saved logo. Uploading is disabled until this loads.",
+      "legacyNotice": "This logo was saved earlier but was never shown to customers. Save to start using it, or remove it."
     },
     "colors": {
       "primary": "Primary color",
-      "secondary": "Secondary color"
-    },
-    "theme": {
-      "title": "Theme",
-      "description": "System respects user OS preference when available.",
-      "options": {
-        "light": "Light",
-        "dark": "Dark",
-        "system": "System"
-      }
-    },
-    "subdomain": {
-      "title": "Portal subdomain",
-      "previewUrl": "Available preview URL: {{url}}"
+      "secondary": "Secondary color",
+      "primaryInheritedSource": "Partner brand color",
+      "primaryHelp": "Accent color on this organization's quotes, invoices and other customer documents. Leave blank to use the partner's brand color.",
+      "primaryInvalid": "Enter a hex color such as #2563eb.",
+      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads.",
+      "secondaryInheritedSource": "Partner secondary color",
+      "secondaryHelp": "Heading color on this organization's quote PDFs, when dark enough to read, and accent color on its report PDFs. Leave blank to use the partner's secondary color.",
+      "secondaryLoadError": "Could not load the saved secondary color. Editing is disabled until this loads."
     },
     "customCss": {
       "title": "Custom CSS (advanced)",
       "description": "Use custom styles to fine tune spacing, typography, or layout.",
-      "saveError": "Failed to save custom CSS.",
       "loadError": "Could not load your currently saved custom CSS. Editing is disabled until this loads.",
       "saveBlockedByLoadError": "Custom CSS was not saved: the current value could not be verified. Reload the page and try again."
-    },
-    "preview": {
-      "action": "Preview",
-      "title": "Portal preview",
-      "description": "Live draft based on current branding inputs",
-      "close": "Close preview",
-      "logoAlt": "Preview logo",
-      "portalName": "{{organization}} Portal",
-      "welcome": "Welcome back",
-      "body": "This preview reflects your current portal branding draft, including colors and logo choices.",
-      "openTicket": "Open support ticket",
-      "viewDevices": "View device list",
-      "urlLabel": "Preview URL",
-      "cssPayload": "Custom CSS payload",
-      "noCustomCss": "/* No custom CSS */"
     }
   },
   "orgDefaultsEditor": {
@@ -1775,6 +2012,12 @@
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
     "managedByPartner": "Managed by partner",
+    "inheritance": {
+      "inherited": "Inherited default",
+      "overridden": "Set for this organization",
+      "reset": "Reset to default",
+      "resetLabel": "Reset {{setting}} to default"
+    },
     "policies": {
       "title": "Default policies",
       "fields": {
@@ -1792,27 +2035,13 @@
     "deviceGroup": {
       "title": "Default device group",
       "description": "Newly enrolled devices are added to this group automatically.",
-      "options": {
-        "AllManagedDevices": "All Managed Devices",
-        "CriticalInfrastructure": "Critical Infrastructure",
-        "RemoteStaff": "Remote Staff",
-        "Contractors": "Contractors"
-      }
-    },
-    "alertSeverity": {
-      "title": "Default alert severity",
-      "description": "Alerts below this severity are delivered to the summary feed only.",
-      "options": {
-        "critical": "Critical only",
-        "high": "High and critical",
-        "medium": "Medium and above"
-      }
+      "none": "None",
+      "unavailable": "Selected group (unavailable)"
     },
     "autoEnrollment": {
       "title": "Auto-enrollment",
       "enable": "Enable automatic enrollment",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome message"
+      "requireApproval": "Require admin approval"
     },
     "agentUpdates": {
       "title": "Agent update policy",
@@ -1863,7 +2092,7 @@
     "disabledDescription": "Enable log forwarding above to configure connection settings.",
     "enable": {
       "title": "Enable log forwarding",
-      "description": "When enabled, event logs are forwarded to your log store on a recurring schedule."
+      "description": "When enabled, event logs are forwarded to your log store as each device reports them."
     },
     "connection": {
       "title": "Connection",
@@ -1952,6 +2181,75 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Customer view",
+      "subtitle": "Preview: what {{who}} sees",
+      "whoOrganization": "your customer",
+      "pickerLabel": "View as",
+      "pickerAll": "Whole organization",
+      "loading": "Loading preview…",
+      "loadFailed": "The customer view failed to load.",
+      "on": "On",
+      "off": "Off",
+      "notAvailable": "A detailed preview of this section isn't available yet.",
+      "permissionWithheld": "Not shown: you need {{permissions}} to preview this.",
+      "tilesWithheld": "Some tiles are not shown: you need {{permissions}} to preview them.",
+      "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
+      "readinessTitle": "Readiness checks",
+      "readinessNone": "No issues found.",
+      "fix": "Fix",
+      "readiness": {
+        "documents_empty": "Documents is on, but no document is marked Visible in portal, so your customer sees an empty library.",
+        "reports_empty": "Reports is on, but there are no report runs yet, so your customer sees an empty list.",
+        "service_one_time_visible": "Service is on and one-time items are still visible to your customer.",
+        "backups_no_data": "Backups is on, but there is no backup data to show yet.",
+        "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
+        "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      },
+      "tiles": {
+        "awaitingYou": "Awaiting your customer",
+        "devicesProtected": "Endpoint protection",
+        "securityScore": "Security score",
+        "actionItems": "Action items",
+        "patchesApplied": "Patches applied this month",
+        "backup": "Last backup verified",
+        "service": "Service delivered (90 days)",
+        "support": "Support"
+      },
+      "tileStatus": {
+        "noData": "Not yet available",
+        "notConfigured": "Not set up",
+        "stale": "May be out of date"
+      },
+      "bands": {
+        "strong": "Strong",
+        "good": "Good",
+        "fair": "Fair",
+        "at_risk": "At risk"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} of {{total}} protected",
+        "awaitingCounts": "Proposals: {{proposals}} · Invoices: {{invoices}}",
+        "serviceCounts": "On time: {{onTime}} · Late: {{late}} · Missed: {{missed}}",
+        "nextDue": "Next due: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} open request",
+        "openRequests_other": "{{count}} open requests",
+        "threatCounts": "Detected: {{detected}} · Resolved: {{resolved}}",
+        "unknownAll": "Not yet known for all {{total}} devices",
+        "unknownSome_one": "{{count}} not yet known",
+        "unknownSome_other": "{{count}} not yet known"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Open vulnerabilities",
+        "knownExploited": "Known exploited (KEV)",
+        "threatEvents": "Endpoint threat events"
+      },
+      "backupRows": {
+        "devices": "Devices backed up",
+        "breaches": "Open RPO / RTO breaches",
+        "providers": "Third-party backup"
+      }
+    },
     "loading": "Loading portal settings…",
     "save": "Save portal settings",
     "toasts": {
@@ -2064,6 +2362,10 @@
           "label": "Vulnerability detail",
           "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
         },
+        "enablePhysicalPlacement": {
+          "label": "Physical placement",
+          "description": "Show every portal login of this organization where each device is physically placed (rack and room). This reveals the physical layout of the environment. Not turned on by Enable all visibility."
+        },
         "enableHourBlock": {
           "label": "Support hours",
           "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."
@@ -2090,6 +2392,7 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
+      "welcomeMessageHelp": "Shown at the top of the customer's home page in the portal, and on the portal sign-in page when the organization uses a verified custom domain. Plain text; line breaks are kept.",
       "footerText": "Footer text",
       "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
       "footerTextInheritedSource": "Partner document footer"
@@ -2114,7 +2417,8 @@
     "actions": {
       "resend": "Resend",
       "reactivate": "Reactivate",
-      "sendInvite": "Send invite"
+      "sendInvite": "Send invite",
+      "grantBrowserAccess": "Give browser access"
     },
     "fields": {
       "nameOptional": "Name (optional)",
@@ -2136,13 +2440,19 @@
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
       "disabled": "User disabled",
-      "removed": "User removed"
+      "removed": "User removed",
+      "browserAccessGranted": "Browser access granted"
     },
     "errors": {
       "load": "Portal users failed to load.",
       "sendInvite": "Failed to send invite",
       "action": "Action failed",
       "invalidEmail": "Enter a valid email address"
+    },
+    "badges": {
+      "noBrowserAccess": "No browser access",
+      "microsoft": "Microsoft sign-in",
+      "google": "Google sign-in"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2376,7 +2686,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "AI Usage",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor AI assistant usage and configure budget limits",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor Breeze AI usage and configure budget limits",
     "budgetConfiguration": "Budget Configuration",
     "aIEnabled": "AI Enabled",
     "enabled": "Enabled",
@@ -2420,7 +2730,7 @@
     "failedToLoadData": "Failed to load data",
     "failedToSaveBudget": "Failed to save budget",
     "failedToSave": "Failed to save",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or rejects.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or denies it.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
@@ -2430,7 +2740,7 @@
     "creditsRemaining": "Breeze AI credits remaining",
     "defaultValue": "Default ({{value}})",
     "viewPartnerWideBudgets": "Partner AI budgets",
-    "monitorAIAssistantUsage": "Monitor AI assistant usage",
+    "monitorAIAssistantUsage": "Monitor Breeze AI usage",
     "effectiveBudget": "Effective budget",
     "effectiveBudgetHelp": "The limits in force for this organization right now, and where each one was set.",
     "sourcePartner": "Set by partner",
@@ -2439,7 +2749,11 @@
     "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
     "editPartnerWideDefaults": "Edit partner-wide defaults",
     "thresholdsOff": "Off",
-    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again.",
+    "todaysCost": "Today's cost",
+    "monthlyCost": "Monthly cost",
+    "messagesToday": "Messages today",
+    "tokensThisMonth": "Tokens this month"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2535,7 +2849,10 @@
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
       "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
-      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+      "troubleshoot": "Built in. Works one device in the background when Wisp hands it off. Every change it wants is a request a person approves.",
+      "researchLink": "Open fix memory",
+      "designerLink": "Open fleet design"
     },
     "emptyState": {
       "title": "No agents yet",
@@ -2682,7 +2999,8 @@
       "patch": "Patching",
       "helpdesk": "Help desk",
       "designer": "Fleet designer",
-      "research": "Fix research"
+      "research": "Fix research",
+      "troubleshoot": "Device troubleshooting"
     },
     "modes": {
       "off": "Off",
@@ -2753,7 +3071,8 @@
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
-      "recipientRoleNoMembers": "no active members"
+      "recipientRoleNoMembers": "no active members",
+      "enabledHintNoMode": "When this is off, the agent does not run."
     },
     "policyKeys": {
       "tools": {
@@ -2950,11 +3269,14 @@
           "blocked_by_source": "Excluded by the policy's update sources",
           "held_by_deferral": "Held by the deferral window",
           "blocked_by_category": "Excluded by the ring's category rules",
+          "managed_by_vendor_updates": "Managed by Vendor updates",
           "blocked_by_app_rule": "Blocked by an app rule",
+          "blocked_by_feature_update_policy": "Excluded by the ring's Windows feature-update policy",
           "awaiting_manual_approval": "Awaiting manual approval",
           "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
+          "unsupported_user_scope": "Per-user install Breeze cannot apply yet",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {
@@ -3020,13 +3342,16 @@
           "cost": "Cost",
           "duration": "Duration",
           "trigger": "Trigger",
+          "requestedBy": "Requested by",
+          "wispFor": "Wisp for {{name}}",
           "queuedAt": "Queued",
           "startedAt": "Started",
           "finishedAt": "Finished",
           "turnCount": "Turns",
           "summary": "Summary",
           "computeCost": "Compute",
-          "computeEstimated": "(estimated)"
+          "computeEstimated": "(estimated)",
+          "scope": "Scope"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -3105,13 +3430,31 @@
         },
         "anomalyLink": "Open device anomalies",
         "budget": {
-          "title": "Exposure budget",
+          "title": "Action budget",
           "caption": "Recorded exposure — trailing {{hours}}h",
           "devices": "{{count}} of {{allowance}} devices",
           "decisionsToday": "{{count}} of {{max}} policy decisions today",
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "scope": {
+          "org_one": "Whole organization ({{count}} device as of launch)",
+          "org_other": "Whole organization ({{count}} devices as of launch)",
+          "site_one": "Site {{name}} ({{count}} device as of launch)",
+          "site_other": "Site {{name}} ({{count}} devices as of launch)",
+          "siteUnnamed_one": "One site ({{count}} device as of launch)",
+          "siteUnnamed_other": "One site ({{count}} devices as of launch)",
+          "devices_one": "{{count}} selected device",
+          "devices_other": "{{count}} selected devices"
+        },
+        "chain": {
+          "title": "This investigation",
+          "description": "Each step continued from an earlier one and could use the files earlier steps produced.",
+          "step": "Step {{step}}",
+          "current": "This run",
+          "open": "Open run",
+          "noGoal": "No goal recorded"
         }
       },
       "triage": {
@@ -3333,7 +3676,7 @@
       "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
       "byOrgTruncated": "Showing the first {{limit}} organizations by name. Choose a single organization in the organization switcher to see the rest.",
       "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
-      "approvalsLink": "Track this request in the approvals inbox",
+      "approvalsLink": "Track this request in Approvals",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
       "grantOnlyHint": "Pre-authorized keys on an organization agent are granted only through the Graduation panel by a second approver, and are revoked there too.",
       "promote": "Promote",
@@ -3472,6 +3815,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Acknowledge a network change",
         "analyze_boot_performance": "Boot performance analysis",
         "analyze_disk_usage": "Disk usage analysis",
         "analyze_fleet_metrics": "Fleet metrics analysis",
@@ -3479,55 +3823,160 @@
         "analyze_screen": "Screen analysis",
         "apply_cis_remediation": "CIS remediation",
         "apply_configuration_policy": "Apply a configuration policy",
+        "assign_security_training": "Assign security training",
+        "browse_device_event_log": "Browse a device's event log",
+        "browse_snapshots": "Backup snapshots",
+        "cancel_check_in": "Cancel a Wisp check-in",
         "cancel_script_execution": "Cancel a script run",
         "capture_agent_pprof": "Capture agent diagnostics",
+        "collect_evidence": "Collect incident evidence",
         "computer_control": "Remote control",
         "configuration_policy_compliance": "Configuration policy compliance",
+        "configure_backup_sla": "Configure backup SLAs",
+        "configure_network_baseline": "Configure a network baseline",
+        "configure_vault": "Configure local vaults",
+        "create_incident": "Create a security incident",
+        "create_remote_session": "Start a remote session",
+        "create_watch": "Create a Wisp watch",
         "delete_tenant": "Delete an organization",
         "detect_log_correlations": "Detect log correlations",
+        "diagnose_connectivity": "Run a connectivity check",
         "disk_cleanup": "Disk cleanup",
         "edr_endpoint_action": "EDR: isolate, release or scan a device",
         "execute_command": "Run a system command",
+        "execute_containment": "Contain a device",
+        "execute_dr_plan": "Run a DR plan",
         "execute_playbook": "Run a playbook",
+        "export_dataset": "Export a dataset",
         "file_operations": "File operations",
+        "find_proven_fixes": "Find proven fixes",
+        "generate_incident_report": "Incident report",
         "generate_report": "Reports",
         "get_active_users": "Active users",
+        "get_ai_agent_run": "AI agent run details",
+        "get_alert_correlations": "Alert correlations",
+        "get_audit_retention": "Read audit-log retention",
+        "get_backup_health": "Backup health",
+        "get_backup_status": "Backup status",
+        "get_browser_security": "Browser security",
         "get_catalog_item": "Catalog item lookup",
         "get_cis_compliance": "CIS compliance report",
         "get_cis_device_report": "CIS device report",
+        "get_compliance_status": "Device compliance status",
         "get_configuration_policy": "Configuration policy details",
         "get_contract": "Contract details",
+        "get_device_ai_activity": "AI activity on a device",
+        "get_device_billing": "Device billing lines",
         "get_device_context": "Device context",
         "get_device_details": "Device details",
+        "get_device_events": "Device activity timeline",
+        "get_device_hardware_health": "Hardware health",
+        "get_device_health": "Agent-reported device health",
+        "get_device_software": "Installed software",
+        "get_device_time_status": "Time sync status",
         "get_device_vulnerabilities": "Device vulnerabilities",
+        "get_diagnostic_run": "Topology diagnostic run",
         "get_dns_security": "DNS security activity",
+        "get_dr_execution_status": "DR execution status",
+        "get_dr_plan_details": "DR plan details",
+        "get_edr_status": "EDR status",
         "get_effective_configuration": "Effective configuration",
+        "get_elevation_history": "Elevation request history",
+        "get_executive_summary": "Executive summary",
+        "get_fleet_design": "Fleet Design report",
+        "get_fleet_device_stats": "Fleet device counts",
         "get_fleet_findings": "Fleet findings",
         "get_fleet_health": "Fleet health",
+        "get_flow": "Flow details",
+        "get_flow_run": "Flow run details",
+        "get_huntress_agents": "Huntress agents",
         "get_huntress_incidents": "Huntress incidents",
         "get_huntress_status": "Huntress status",
+        "get_hyperv_vm_details": "Hyper-V VM details",
+        "get_incident_timeline": "Incident timeline",
+        "get_interface_history": "Network interface history",
         "get_invite_funnel": "Deployment invite funnel",
         "get_invoice": "Invoice details",
+        "get_ip_history": "IP address history",
+        "get_link_evidence": "Network link evidence",
+        "get_link_health": "Network link health",
         "get_log_trends": "Log trends",
+        "get_management_posture": "Management tool coverage",
+        "get_monitor": "Monitor details",
+        "get_monitor_activity": "Monitor breach activity",
+        "get_mssql_backup_status": "MSSQL backup status",
+        "get_network_asset": "Network asset details",
+        "get_network_asset_reachability": "Network asset reachability",
+        "get_network_changes": "Network changes",
+        "get_partner_settings_inheritance": "Partner settings inheritance",
+        "get_pax8_status": "Pax8 status",
+        "get_peripheral_activity": "USB and peripheral activity",
         "get_playbook_history": "Playbook run history",
+        "get_process_samples": "Process snapshot",
         "get_quote": "Quote details",
+        "get_recent_network_changes": "Recent topology changes",
+        "get_running_timer": "Running timer",
         "get_s1_status": "SentinelOne status",
         "get_s1_threats": "SentinelOne threats",
         "get_script_details": "Script details",
         "get_script_execution": "Script run details",
         "get_script_execution_history": "Script run history",
+        "get_script_proposal": "Script proposal details",
+        "get_security_compliance": "Security compliance views",
         "get_security_posture": "Security posture",
         "get_service_monitoring_status": "Service monitoring status",
+        "get_site": "Site details",
+        "get_sla_breaches": "Backup SLA breaches",
+        "get_sla_compliance_report": "Backup SLA compliance report",
+        "get_snmp_metrics": "SNMP metrics",
+        "get_software_compliance": "Software compliance",
+        "get_ticket_approval_status": "Ticket approval status",
+        "get_timesheet": "Timesheet",
+        "get_topology": "Network topology",
+        "get_topology_impact": "Topology failure impact",
+        "get_topology_monitoring_status": "Topology monitoring status",
+        "get_trust_page_status": "Trust page status",
         "get_user_experience_metrics": "User experience metrics",
+        "get_vault_status": "Vault status",
+        "get_vm_restore_estimate": "VM restore estimate",
+        "get_vss_status": "VSS writer status",
         "get_vulnerability_report": "Vulnerability report",
+        "instant_boot_vm": "Instant-boot a backup as a VM",
+        "link_entity": "Link an item to a Wisp thread",
+        "list_ai_agent_runs": "AI agent runs",
+        "list_ai_agent_schedules": "AI agent schedules",
+        "list_ai_agents": "AI agents list",
+        "list_bmr_recoveries": "Bare-metal recoveries",
+        "list_business_calendars": "Business-hours calendars",
+        "list_check_ins": "Wisp check-ins",
+        "list_concerns": "Wisp concerns",
         "list_configuration_policies": "Configuration policies list",
         "list_contracts": "Contracts list",
+        "list_deliverable_templates": "Deliverable templates",
+        "list_deliverables": "Service deliverables",
+        "list_device_restore_point_attempts": "Restore point attempts",
+        "list_edr_detections": "EDR detections",
+        "list_fleet_designs": "Fleet Design reports",
+        "list_flow_runs": "Flow runs",
+        "list_flows": "Flows list",
+        "list_incidents": "Security incidents",
         "list_invoices": "Invoices list",
+        "list_links": "Wisp thread links",
+        "list_monitors": "Monitors list",
+        "list_network_assets": "Network assets",
+        "list_org_contacts": "Organization contacts",
+        "list_org_documents": "Organization documents",
         "list_organizations": "Organizations list",
         "list_playbooks": "Playbooks list",
         "list_quotes": "Quotes list",
+        "list_remediation_suggestions": "Remediation suggestions",
+        "list_remote_sessions": "Remote sessions",
         "list_script_templates": "Script templates list",
         "list_scripts": "Scripts list",
+        "list_sites": "Sites list",
+        "list_ticket_routing_rules": "Ticket routing rules",
+        "list_time_entries": "Time entries",
+        "list_time_sync_issues": "Time sync issues",
         "lookup_distributor_product": "Distributor product lookup",
         "m365_query_groups": "Microsoft 365 groups",
         "m365_query_intune_devices": "Microsoft Intune devices",
@@ -3535,54 +3984,168 @@
         "m365_query_signins": "Microsoft 365 sign-ins",
         "m365_query_sites": "Microsoft 365 sites",
         "m365_query_users": "Microsoft 365 users",
+        "manage_accounting_sync": "Manage accounting sync",
         "manage_alert_rules": "Manage alert rules",
         "manage_alerts": "Manage alerts",
+        "manage_audit_baselines": "Manage audit baselines",
         "manage_automations": "Manage automations",
         "manage_backup_configs": "Manage backup configurations",
+        "manage_backup_profiles": "Manage backup profiles",
+        "manage_backup_verification": "Backup verification",
+        "manage_billing_catalog": "Manage the billing price book",
+        "manage_billing_profiles": "Manage billing rate cards",
+        "manage_billing_settings": "Manage billing settings",
+        "manage_browser_policy": "Manage browser policies",
+        "manage_compliance_policies": "Manage compliance policies",
         "manage_configuration_policy": "Manage configuration policies",
+        "manage_contract_documents": "Manage signed agreements",
+        "manage_contract_templates": "Manage agreement templates",
         "manage_contracts": "Manage contracts",
+        "manage_deliverables": "Manage service deliverables",
+        "manage_delivery": "Manage alert delivery",
         "manage_deployments": "Manage deployments",
+        "manage_device_anomalies": "Manage device anomalies",
+        "manage_device_function": "Manage a device's function",
+        "manage_device_links": "Manage linked device records",
+        "manage_device_software": "Manage installed software",
+        "manage_device_warranty": "Manage device warranty",
         "manage_dns_policy": "Manage DNS policy",
+        "manage_dr_plan": "Manage DR plans",
+        "manage_fleet_findings": "Manage fleet findings",
         "manage_groups": "Manage device groups",
+        "manage_hyperv_checkpoints": "Manage Hyper-V checkpoints",
+        "manage_hyperv_vm": "Manage Hyper-V VMs",
         "manage_invoices": "Manage invoices",
+        "manage_key_dates": "Manage key dates",
         "manage_maintenance_windows": "Manage maintenance windows",
+        "manage_manual_assets": "Manage manual assets",
+        "manage_monitor_definitions": "Manage monitor definitions",
         "manage_monitors": "Manage uptime monitors",
+        "manage_notification_channels": "Manage notification channels",
+        "manage_org_documents": "Manage organization documents",
         "manage_organizations": "Manage organizations",
         "manage_patches": "Manage patches",
+        "manage_pax8_orders": "Manage Pax8 orders",
+        "manage_pax8_subscriptions": "Manage Pax8 subscriptions",
         "manage_peripheral_policies": "Manage peripheral policies",
+        "manage_peripheral_policy": "Edit peripheral policies and exceptions",
         "manage_policy_feature_link": "Link a policy to a feature",
+        "manage_processes": "Manage processes",
+        "manage_quotes": "Manage quotes",
+        "manage_recovery_keys": "Manage recovery keys",
+        "manage_saved_filters": "Manage saved filters",
+        "manage_scheduled_tasks": "Manage scheduled tasks",
+        "manage_security_policies": "Manage security policies",
+        "manage_security_recommendations": "Manage security recommendations",
         "manage_service_monitors": "Manage service monitors",
         "manage_services": "Manage services",
+        "manage_snmp_templates": "Manage SNMP templates",
+        "manage_software_catalog": "Manage the software catalog",
+        "manage_software_deployments": "Manage software deployments",
+        "manage_software_inventory": "Manage software inventory",
         "manage_software_policies": "Manage software policies",
+        "manage_software_policy": "Manage software allow and block lists",
         "manage_startup_items": "Manage startup items",
+        "manage_support_sessions": "Manage Quick Support sessions",
+        "manage_tags": "Manage device tags",
+        "manage_tenant_variables": "Manage script variables",
+        "manage_ticket_attachments": "Manage ticket attachments",
+        "manage_ticket_checklist": "Manage ticket checklists",
+        "manage_ticket_checklist_templates": "Manage checklist templates for tickets",
+        "manage_ticket_config": "Manage ticket settings",
+        "manage_ticket_forms": "Manage ticket forms",
+        "manage_ticket_inbox": "Manage the ticket mailbox",
+        "manage_ticket_response_templates": "Manage ticket reply templates",
+        "manage_ticket_routing_rules": "Manage routing rules for tickets",
+        "manage_tickets": "Manage tickets",
+        "manage_time_suggestions": "Manage time suggestions",
         "manage_update_rings": "Manage update rings",
         "network_discovery": "Network discovery",
         "preview_configuration_change": "Preview a configuration change",
+        "probe_network_asset": "Ping a network asset",
+        "propose_script": "Propose a script",
+        "query_agent_versions": "Agent versions",
+        "query_analytics": "Analytics",
         "query_audit_log": "Query the audit log",
+        "query_backup_sla": "Backup SLA configurations",
+        "query_backups": "Backups",
+        "query_c2c_connections": "Cloud-to-cloud connections",
         "query_change_log": "Query the change log",
+        "query_compliance_policies": "Compliance policies",
+        "query_custom_fields": "Custom fields",
+        "query_device_workloads": "Containers and VMs on a device",
         "query_devices": "Query devices",
+        "query_dr_plans": "DR plans list",
+        "query_hyperv_vms": "Hyper-V VMs list",
         "query_monitors": "Query monitors",
+        "query_mssql_instances": "MSSQL instances",
+        "query_psa_status": "PSA connection status",
+        "query_vaults": "Local vaults",
+        "query_webhooks": "Webhooks list",
+        "raise_concern": "Raise a Wisp concern",
+        "read_artifact": "Read a stored result",
+        "recall": "Wisp memory",
+        "registry_operations": "Windows registry",
+        "reliability_feedback": "Reliability score feedback",
+        "remediate_sensitive_data": "Remediate sensitive data",
+        "remediate_software_violation": "Remediate a software violation",
         "remediate_vulnerability": "Remediate a vulnerability",
+        "remember": "Save a Wisp memory",
         "remove_configuration_policy_assignment": "Remove a configuration policy assignment",
+        "request_elevation": "Request PAM elevation",
+        "reset_monitor_escalation": "Reset monitor escalation",
+        "resolve_concern": "Resolve a Wisp concern",
         "resolve_device_context": "Resolve a device",
+        "restore_as_vm": "Restore a snapshot as a VM",
+        "restore_c2c_items": "Restore cloud-to-cloud items",
+        "restore_hyperv_vm": "Restore a Hyper-V VM",
+        "restore_mssql_database": "Restore an MSSQL database",
+        "restore_snapshot": "Restore a snapshot",
+        "revoke_elevation": "Revoke PAM elevation",
         "run_script": "Run a script",
         "s1_isolate_device": "SentinelOne: isolate device",
         "s1_threat_action": "SentinelOne threat actions",
+        "schedule_check_in": "Schedule a Wisp check-in",
         "search_agent_logs": "Search agent logs",
         "search_catalog": "Search the product catalog",
+        "search_documentation": "Search documentation",
         "search_logs": "Search device logs",
+        "search_packages": "Search software packages",
+        "search_pax8_products": "Search Pax8 products",
+        "search_script_library": "Search the script library",
         "security_scan": "Security scan",
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
+        "snooze_concern": "Snooze a Wisp concern",
         "sync_edr_data": "Sync EDR data",
         "sync_huntress_data": "Sync Huntress data",
         "system_cleanup": "System cleanup",
-        "take_screenshot": "Take a screenshot"
+        "take_screenshot": "Take a screenshot",
+        "test_ticket_routing_rule": "Test a ticket routing rule",
+        "test_webhook": "Send a test webhook",
+        "trigger_agent_restart": "Restart an agent",
+        "trigger_agent_upgrade": "Upgrade an agent",
+        "trigger_backup": "Run a backup",
+        "trigger_c2c_sync": "Run a cloud-to-cloud sync",
+        "trigger_hyperv_backup": "Back up a Hyper-V VM",
+        "trigger_mssql_backup": "Back up an MSSQL database",
+        "trigger_vault_sync": "Sync a local vault",
+        "validate_flow": "Validate a flow",
+        "verify_mssql_backup": "Verify an MSSQL backup",
+        "workspace_cancel": "Cancel the analysis sandbox",
+        "workspace_collect": "Collect sandbox files",
+        "workspace_run": "Run a sandbox script",
+        "workspace_stage": "Stage files in the sandbox"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "Apply CIS remediation",
           "rollback": "Roll back CIS remediation"
+        },
+        "browse_device_event_log": {
+          "get_event": "Event details",
+          "list_logs": "List event logs",
+          "query": "Query event log entries"
         },
         "computer_control": {
           "double_click": "Double-click",
@@ -3599,9 +4162,22 @@
           "status": "Compliance status",
           "summary": "Compliance summary"
         },
+        "configure_backup_sla": {
+          "create": "Create a backup SLA",
+          "update": "Update a backup SLA"
+        },
+        "configure_vault": {
+          "create": "Create a local vault",
+          "update": "Update a local vault"
+        },
         "disk_cleanup": {
           "execute": "Run disk cleanup",
           "preview": "Preview disk cleanup"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Isolate a device",
+          "scan": "Run an EDR scan",
+          "unisolate": "Release a device from isolation"
         },
         "execute_command": {
           "event_logs_list": "List event logs",
@@ -3633,16 +4209,48 @@
           "list": "List reports",
           "update": "Update a report"
         },
+        "get_alert_correlations": {
+          "analyze": "Analyze alerts for correlation",
+          "by_alert": "Correlations for an alert",
+          "evaluation": "Correlation quality",
+          "explain": "Explain a correlation group",
+          "get": "Correlation group details",
+          "groups": "List correlation groups",
+          "links": "Correlation links"
+        },
         "get_dns_security": {
           "allowed": "Allowed DNS activity",
           "blocked": "Blocked DNS activity",
           "redirected": "Redirected DNS activity"
+        },
+        "get_fleet_health": {
+          "evaluation": "Reliability evaluation",
+          "history": "Reliability history",
+          "list": "List device reliability scores",
+          "offenders": "Reliability offenders",
+          "org_summary": "Organization reliability summary"
         },
         "get_service_monitoring_status": {
           "known_services": "Known services",
           "results": "Monitoring results",
           "status": "Monitoring status",
           "summary": "Monitoring summary"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "SNMP dashboard",
+          "history": "SNMP metric history"
+        },
+        "list_bmr_recoveries": {
+          "get": "Bare-metal recovery details",
+          "list": "List bare-metal recoveries"
+        },
+        "manage_accounting_sync": {
+          "customers": "List accounting customers",
+          "income_accounts": "List income accounts",
+          "mappings": "List accounting mappings",
+          "owed_operations": "List pending sync operations",
+          "remote_candidates": "Search provider records to link",
+          "status": "Show accounting sync status"
         },
         "manage_alert_rules": {
           "alert_summary": "Alert summary",
@@ -3662,6 +4270,11 @@
           "resolve": "Resolve an alert",
           "suppress": "Suppress an alert"
         },
+        "manage_audit_baselines": {
+          "compliance": "Audit baseline compliance",
+          "device_results": "Device audit results",
+          "list": "List audit baselines"
+        },
         "manage_automations": {
           "create": "Create an automation",
           "delete": "Delete an automation",
@@ -3679,12 +4292,76 @@
           "list": "List backup configurations",
           "update": "Update a backup configuration"
         },
+        "manage_backup_profiles": {
+          "create": "Create a backup profile",
+          "delete": "Delete a backup profile",
+          "get": "Backup profile details",
+          "list": "List backup profiles",
+          "update": "Update a backup profile"
+        },
+        "manage_backup_verification": {
+          "health": "Verification health",
+          "list": "List backup verifications",
+          "readiness": "Recovery readiness",
+          "run": "Run a backup verification"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Archive a price book item",
+          "create_item": "Create a price book item",
+          "remove_org_price": "Remove an organization price",
+          "remove_price": "Remove a price",
+          "set_bundle_components": "Set bundle components",
+          "set_org_price": "Set an organization price",
+          "set_price": "Set a price",
+          "update_item": "Update a price book item"
+        },
+        "manage_billing_profiles": {
+          "archive": "Archive a rate card",
+          "clear_org_profile": "Clear an organization's rate card",
+          "clone": "Clone a rate card",
+          "create": "Create a rate card",
+          "create_work_type": "Create a work type",
+          "get": "Rate card details",
+          "get_org_profile": "Organization rate card",
+          "list": "List rate cards",
+          "list_work_types": "List work types",
+          "set_org_profile": "Set an organization's rate card",
+          "set_rows": "Set rate card rows",
+          "update": "Update a rate card",
+          "update_work_type": "Update a work type"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Preview a currency change",
+          "get_org": "Organization billing settings",
+          "get_partner": "Partner billing settings",
+          "reporting_totals": "Billing reporting totals",
+          "update_org": "Update organization billing settings",
+          "update_partner": "Update partner billing settings"
+        },
+        "manage_browser_policy": {
+          "apply": "Apply a browser policy",
+          "create": "Create a browser policy",
+          "list": "List browser policies",
+          "update": "Update a browser policy"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Deactivate a compliance policy"
+        },
         "manage_configuration_policy": {
           "activate": "Activate a configuration policy",
           "create": "Create a configuration policy",
           "deactivate": "Deactivate a configuration policy",
           "delete": "Delete a configuration policy",
           "update": "Update a configuration policy"
+        },
+        "manage_contract_documents": {
+          "list": "List signed agreements"
+        },
+        "manage_contract_templates": {
+          "get": "Agreement template details",
+          "get_version": "Agreement template version",
+          "list": "List agreement templates",
+          "usage": "Agreement template usage"
         },
         "manage_contracts": {
           "activate": "Activate a contract",
@@ -3693,10 +4370,34 @@
           "create_draft": "Create a draft contract",
           "delete_draft": "Delete a draft contract",
           "pause": "Pause a contract",
+          "preview_invoice": "Preview the next contract invoice",
           "remove_line": "Remove a contract line",
           "resume": "Resume a contract",
           "update": "Update a contract",
           "update_line": "Update a contract line"
+        },
+        "manage_deliverables": {
+          "apply_template": "Apply a deliverable template",
+          "create": "Create a deliverable",
+          "deactivate": "Deactivate a deliverable",
+          "deliver": "Mark a deliverable delivered",
+          "link_evidence": "Link delivery evidence",
+          "reopen": "Reopen a deliverable",
+          "reschedule": "Reschedule a deliverable",
+          "update": "Update a deliverable",
+          "waive": "Waive a deliverable"
+        },
+        "manage_delivery": {
+          "create_escalation": "Create an escalation rule",
+          "create_routing": "Create a delivery route",
+          "delete_escalation": "Delete an escalation rule",
+          "delete_routing": "Delete a delivery route",
+          "list_escalation": "List escalation rules",
+          "list_routing": "List delivery routes",
+          "resolve": "Resolve alert delivery",
+          "set_default": "Set the default delivery route",
+          "update_escalation": "Update an escalation rule",
+          "update_routing": "Update a delivery route"
         },
         "manage_deployments": {
           "cancel": "Cancel a deployment",
@@ -3708,11 +4409,48 @@
           "resume": "Resume a deployment",
           "start": "Start a deployment"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Dismiss an anomaly",
+          "list": "List anomalies",
+          "promote": "Promote an anomaly to an alert",
+          "resolve": "Resolve an anomaly"
+        },
+        "manage_device_function": {
+          "get": "Device function"
+        },
+        "manage_device_links": {
+          "create": "Link device records",
+          "dissolve": "Dissolve a device link",
+          "for_device": "Links for a device",
+          "get": "Device link details",
+          "list": "List device links",
+          "update": "Update a device link"
+        },
+        "manage_device_software": {
+          "update": "Update an application"
+        },
+        "manage_device_warranty": {
+          "expiring": "List expiring warranties",
+          "get": "Device warranty",
+          "refresh": "Refresh a device warranty"
+        },
         "manage_dns_policy": {
           "add_allow": "Allow a domain",
           "add_block": "Block a domain",
           "remove_allow": "Remove an allowed domain",
           "remove_block": "Remove a blocked domain"
+        },
+        "manage_dr_plan": {
+          "add_group": "Add a plan group",
+          "create_plan": "Create a DR plan",
+          "delete_group": "Delete a plan group",
+          "update_group": "Update a plan group",
+          "update_plan": "Update a DR plan"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Acknowledge a fleet finding",
+          "dismiss": "Dismiss a fleet finding",
+          "reopen": "Reopen a fleet finding"
         },
         "manage_groups": {
           "add_devices": "Add devices to a group",
@@ -3724,6 +4462,19 @@
           "preview": "Preview group membership",
           "remove_devices": "Remove devices from a group",
           "update": "Update a device group"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Apply a checkpoint",
+          "create": "Create a checkpoint",
+          "delete": "Delete a checkpoint"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Force-stop a VM",
+          "pause": "Pause a VM",
+          "resume": "Resume a VM",
+          "save": "Save a VM's state",
+          "start": "Start a VM",
+          "stop": "Stop a VM"
         },
         "manage_invoices": {
           "add_bundle_line": "Add a bundle line",
@@ -3737,11 +4488,18 @@
           "delete_draft": "Delete a draft invoice",
           "issue": "Issue an invoice",
           "record_payment": "Record a payment",
+          "refresh_time_lines": "Refresh time lines",
           "remove_line": "Remove an invoice line",
           "update_header": "Update invoice details",
           "update_line": "Update an invoice line",
           "void": "Void an invoice",
           "void_payment": "Void a payment"
+        },
+        "manage_key_dates": {
+          "create": "Create a key date",
+          "delete": "Delete a key date",
+          "list": "List key dates",
+          "update": "Update a key date"
         },
         "manage_maintenance_windows": {
           "active_now": "Active maintenance windows",
@@ -3751,11 +4509,41 @@
           "list": "List maintenance windows",
           "update": "Update a maintenance window"
         },
+        "manage_manual_assets": {
+          "create": "Create a manual asset",
+          "delete": "Delete a manual asset",
+          "link": "Link a manual asset",
+          "list": "List manual assets",
+          "unlink": "Unlink a manual asset",
+          "update": "Update a manual asset"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Attach a monitor definition",
+          "create": "Create a monitor definition",
+          "delete": "Delete a monitor definition",
+          "describe": "Describe monitor definition options",
+          "detach": "Detach a monitor definition",
+          "disable": "Disable a monitor definition",
+          "enable": "Enable a monitor definition",
+          "update": "Update a monitor definition"
+        },
         "manage_monitors": {
           "create": "Create a monitor",
           "delete": "Delete a monitor",
           "get": "Monitor details",
           "update": "Update a monitor"
+        },
+        "manage_notification_channels": {
+          "create": "Create a notification channel",
+          "delete": "Delete a notification channel",
+          "list": "List notification channels",
+          "test": "Test a notification channel",
+          "update": "Update a notification channel"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Set portal visibility",
+          "supersede": "Supersede a document",
+          "update_metadata": "Update document details"
         },
         "manage_organizations": {
           "add_contact": "Add an organization contact",
@@ -3769,6 +4557,7 @@
           "compliance": "Patch compliance",
           "decline": "Decline a patch",
           "defer": "Defer a patch",
+          "device_history": "Device patch history",
           "install": "Install a patch",
           "list": "List patches",
           "rollback": "Roll back a patch",
@@ -3781,11 +4570,68 @@
           "list": "List peripheral policies",
           "update": "Update a peripheral policy"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Add a peripheral exception",
+          "create": "Create a peripheral policy",
+          "disable": "Disable a peripheral policy",
+          "remove_exception": "Remove a peripheral exception",
+          "update": "Update a peripheral policy"
+        },
         "manage_policy_feature_link": {
           "add": "Link a policy to a feature",
+          "describe": "Describe policy feature links",
           "list": "List policy feature links",
           "remove": "Remove a policy feature link",
           "update": "Update a policy feature link"
+        },
+        "manage_processes": {
+          "kill": "Kill a process",
+          "list": "List processes"
+        },
+        "manage_quotes": {
+          "add_block": "Add a quote block",
+          "add_catalog_line": "Add a catalog line",
+          "add_manual_line": "Add a manual line",
+          "create_draft": "Create a draft quote",
+          "create_pay_link": "Create a payment link",
+          "decline": "Decline a quote",
+          "delete_block": "Delete a quote block",
+          "delete_draft": "Delete a draft quote",
+          "move_line": "Move a quote line",
+          "remove_line": "Remove a quote line",
+          "reorder_blocks": "Reorder quote blocks",
+          "reorder_lines": "Reorder quote lines",
+          "send": "Send a quote",
+          "update": "Update a quote",
+          "update_block": "Update a quote block",
+          "update_line": "Update a quote line"
+        },
+        "manage_recovery_keys": {
+          "collect": "Collect recovery keys",
+          "list": "List recovery keys",
+          "rotate": "Rotate a recovery key"
+        },
+        "manage_saved_filters": {
+          "create": "Create a saved filter",
+          "delete": "Delete a saved filter",
+          "get": "Saved filter details",
+          "list": "List saved filters"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Disable a scheduled task",
+          "enable": "Enable a scheduled task",
+          "list": "List scheduled tasks",
+          "run": "Run a scheduled task"
+        },
+        "manage_security_policies": {
+          "create": "Create a security policy",
+          "list": "List security policies",
+          "update": "Update a security policy"
+        },
+        "manage_security_recommendations": {
+          "complete": "Complete a recommendation",
+          "dismiss": "Dismiss a recommendation",
+          "list": "List recommendations"
         },
         "manage_service_monitors": {
           "list": "List service monitors"
@@ -3796,8 +4642,55 @@
           "start": "Start a service",
           "stop": "Stop a service"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "Browse SNMP OIDs",
+          "create": "Create an SNMP template",
+          "delete": "Delete an SNMP template",
+          "get": "SNMP template details",
+          "list": "List SNMP templates",
+          "update": "Update an SNMP template",
+          "validate_oids": "Validate SNMP OIDs"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Add an install method",
+          "add_version": "Add a version",
+          "archive": "Archive a catalog item",
+          "create": "Create a catalog item",
+          "delete_install_method": "Delete an install method",
+          "get": "Catalog item details",
+          "import_package": "Import a package",
+          "list": "List catalog items",
+          "promote_version": "Promote a version",
+          "update": "Update a catalog item",
+          "update_install_method": "Update an install method",
+          "update_version": "Update a version"
+        },
+        "manage_software_deployments": {
+          "cancel": "Cancel a software deployment",
+          "create": "Create a software deployment",
+          "get": "Software deployment details",
+          "list": "List software deployments",
+          "results": "Software deployment results",
+          "retry": "Retry a software deployment",
+          "summary": "Software deployment summary"
+        },
+        "manage_software_inventory": {
+          "approve": "Approve software",
+          "clear": "Clear a software decision",
+          "deny": "Block software",
+          "devices": "Devices with software",
+          "list": "List software inventory",
+          "names": "Search software names"
+        },
         "manage_software_policies": {
           "create": "Create a software policy",
+          "get": "Software policy details",
+          "list": "List software policies",
+          "update": "Update a software policy"
+        },
+        "manage_software_policy": {
+          "create": "Create a software policy",
+          "delete": "Delete a software policy",
           "get": "Software policy details",
           "list": "List software policies",
           "update": "Update a software policy"
@@ -3806,11 +4699,160 @@
           "disable": "Disable a startup item",
           "enable": "Enable a startup item"
         },
+        "manage_support_sessions": {
+          "end": "End a support session",
+          "get": "Support session details",
+          "list": "List support sessions"
+        },
+        "manage_tags": {
+          "list": "List device tags"
+        },
+        "manage_tenant_variables": {
+          "list": "List script variables"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Attach a stored result",
+          "delete": "Delete an attachment",
+          "list": "List attachments",
+          "read_content": "Read an attachment"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Add a checklist item",
+          "apply_template": "Apply a checklist template",
+          "delete_item": "Delete a checklist item",
+          "duplicate_template": "Duplicate a checklist template",
+          "get_template": "Checklist template details",
+          "list": "List checklist items",
+          "list_templates": "List checklist templates",
+          "reorder": "Reorder checklist items",
+          "save_as_template": "Save as a checklist template",
+          "update_item": "Update a checklist item"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Add a template item",
+          "create": "Create a checklist template",
+          "delete": "Delete a checklist template",
+          "get": "Checklist template details",
+          "list": "List checklist templates",
+          "remove_item": "Remove a template item",
+          "reorder_items": "Reorder template items",
+          "update": "Update a checklist template",
+          "update_item": "Update a template item"
+        },
+        "manage_ticket_config": {
+          "create_category": "Create a ticket category",
+          "create_domain": "Create a ticket domain",
+          "create_status": "Create a ticket status",
+          "delete_category": "Delete a ticket category",
+          "delete_domain": "Delete a ticket domain",
+          "get_config": "Ticket configuration",
+          "get_org_settings": "Organization ticket settings",
+          "list_categories": "List ticket categories",
+          "list_domains": "List ticket domains",
+          "reorder_categories": "Reorder ticket categories",
+          "reorder_statuses": "Reorder ticket statuses",
+          "set_priorities": "Set ticket priorities",
+          "update_category": "Update a ticket category",
+          "update_domain": "Update a ticket domain",
+          "update_org_settings": "Update organization ticket settings",
+          "update_status": "Update a ticket status"
+        },
+        "manage_ticket_forms": {
+          "available": "Available ticket forms",
+          "create": "Create a ticket form",
+          "delete": "Delete a ticket form",
+          "list": "List ticket forms",
+          "update": "Update a ticket form"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Convert an email to a ticket",
+          "dismiss": "Dismiss an email",
+          "list": "List unplaced emails"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Create a reply template",
+          "delete": "Delete a reply template",
+          "list": "List reply templates",
+          "update": "Update a reply template"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Create a routing rule",
+          "delete": "Delete a routing rule",
+          "reorder": "Reorder routing rules",
+          "update": "Update a routing rule"
+        },
+        "manage_tickets": {
+          "assign": "Assign a ticket",
+          "bulk_update": "Update tickets in bulk",
+          "comment": "Comment on a ticket",
+          "create": "Create a ticket",
+          "create_from_alert": "Create a ticket from an alert",
+          "delete_comment": "Delete a ticket comment",
+          "draft": "Draft a ticket",
+          "edit_comment": "Edit a ticket comment",
+          "get": "Ticket details",
+          "link_alert": "Link an alert to a ticket",
+          "link_device": "Link a device to a ticket",
+          "link_ticket": "Link related tickets",
+          "list": "List tickets",
+          "list_links": "List ticket links",
+          "list_work_types": "List work types",
+          "log_time_entry": "Log a time entry",
+          "merge": "Merge tickets",
+          "merge_preview": "Preview a ticket merge",
+          "move_org": "Move a ticket to another organization",
+          "start_timer": "Start a ticket timer",
+          "stop_timer": "Stop a ticket timer",
+          "unlink_alert": "Unlink an alert from a ticket",
+          "unlink_ticket": "Unlink related tickets",
+          "update_fields": "Update ticket fields",
+          "update_status": "Update ticket status",
+          "update_time_entry": "Update a time entry"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Confirm a time suggestion",
+          "dismiss": "Dismiss a time suggestion",
+          "list": "List time suggestions",
+          "undo": "Restore a dismissed suggestion"
+        },
         "manage_update_rings": {
           "create": "Create an update ring",
           "get": "Update ring details",
           "list": "List update rings",
           "update": "Update an update ring"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Check devices for upgrades",
+          "list_versions": "List agent versions"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Capacity predictions",
+          "sla_compliance": "SLA compliance",
+          "sla_definitions": "SLA definitions"
+        },
+        "query_backups": {
+          "list_configs": "List backup configurations",
+          "list_jobs": "List backup jobs",
+          "list_policies": "List backup policies"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Custom field values for a device",
+          "list_definitions": "List custom field definitions"
+        },
+        "registry_operations": {
+          "create_key": "Create a registry key",
+          "delete_key": "Delete a registry key",
+          "get_value": "Read a registry value",
+          "read_key": "Read a registry key",
+          "set_value": "Set a registry value"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Accept the risk",
+          "encrypt": "Encrypt a file",
+          "false_positive": "Mark as false positive",
+          "mark_remediated": "Mark as remediated",
+          "quarantine": "Quarantine a file",
+          "secure_delete": "Securely delete a file"
         },
         "s1_threat_action": {
           "kill": "Kill a threat process",
@@ -3828,7 +4870,32 @@
         "system_cleanup": {
           "list": "List system cleanup actions",
           "run": "Run system cleanup",
-          "status": "System cleanup run status"
+          "status": "System cleanup run status",
+          "cancel": "Cancel system cleanup run"
+        },
+        "manage_pax8_orders": {
+          "list": "List Pax8 orders",
+          "get": "Get Pax8 order",
+          "create_draft": "Create Pax8 draft order",
+          "add_line": "Add Pax8 order line",
+          "update_line": "Update Pax8 order line",
+          "remove_line": "Remove Pax8 order line",
+          "preview": "Preview Pax8 order",
+          "preflight": "Run Pax8 order preflight",
+          "reconcile": "Reconcile Pax8 order"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "List Pax8 subscriptions",
+          "drift": "Check Pax8 subscription drift",
+          "sync": "Sync Pax8 subscriptions",
+          "link": "Link Pax8 subscription",
+          "unlink": "Unlink Pax8 subscription"
+        },
+        "search_pax8_products": {
+          "search": "Search Pax8 products",
+          "provision_details": "Get Pax8 provisioning details",
+          "dependencies": "Get Pax8 product dependencies",
+          "pricing": "Get Pax8 product pricing"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",
@@ -3932,10 +4999,10 @@
       "runsPerHourCount_other": "{{count}} runs per hour",
       "minuteCount_one": "{{count}} minute",
       "minuteCount_other": "{{count}} minutes",
-      "approvers_one": "{{roles}} is asked, via inbox, chat and mobile push. First decision wins.",
-      "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
-      "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
-      "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
+      "approvers_one": "{{roles}} is asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approvers_other": "{{roles}} are asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approversCount_one": "{{count}} role is asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approversCount_other": "{{count}} roles are asked in Approvals, in chat and by mobile push. First decision wins.",
       "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request.",
       "scriptsAuthorized_one": "{{count}} script is authorized to run unattended.",
       "scriptsAuthorized_other": "{{count}} scripts are authorized to run unattended."
@@ -4132,7 +5199,9 @@
     "active": "Active",
     "revoked": "Revoked",
     "expired": "Expired",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "expires": "Expires",
+    "neverExpires": "Never"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4173,7 +5242,8 @@
     "rotating": "Rotating...",
     "rotateKey": "Rotate Key",
     "revoking": "Revoking...",
-    "revokeKey": "Revoke Key"
+    "revokeKey": "Revoke Key",
+    "revokedToast": "API key \"{{name}}\" revoked"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "This device can now approve requests",
@@ -4217,12 +5287,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use your passkey or authenticator code instead — reload the page to update your options.",
     "pendingActivatesOnFirstApproval": "Pending — activates on first approval",
     "sessionExpiredReloadAndTryAgain": "Session expired — reload the page and try again.",
-    "registrationCancelled": "Registration was cancelled."
+    "registrationCancelled": "Registration was cancelled.",
+    "ssoVerificationExpired": "Your identity provider verification has expired or was already used. Verify again to register this device.",
+    "signInOptionsChanged": "Your sign-in options changed. Reload the page and try again."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
-    "confirmYourPassword": "Confirm your password"
+    "confirmYourPassword": "Confirm your password",
+    "switchToAuthenticatorCode": "Use authenticator app instead",
+    "usePasskeyInstead": "Use your passkey instead",
+    "ssoVerifyFirst": "This account signs in through your identity provider and has no password. Verify with your provider first, then register this device.",
+    "ssoVerifyButton": "Verify with your identity provider",
+    "ssoVerified": "Identity verified. Register this device within 5 minutes."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
@@ -4351,6 +5428,13 @@
     "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
+    "viewActive": "Active",
+    "viewArchived": "Archived",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Service"
+    },
     "itemArchived": "Item archived",
     "itemRestored": "Item restored",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",
@@ -4468,12 +5552,16 @@
     "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
+    "revokeTitle": "Revoke connected app",
+    "revokeSuccess": "Revoked access for {{name}}",
+    "revokeFailedGeneric": "Revoke failed",
     "networkError": "Network error",
     "networkErrorDuringRevoke": "Network error during revoke",
     "revoking": "Revoking…",
     "revoke": "Revoke"
   },
   "mFASettings": {
+    "done": "Done",
     "verifyYourPhoneNumber": "Verify your phone number",
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Enter your phone number in E.164 format to receive a verification code.",
     "phoneNumber": "Phone number",
@@ -4499,12 +5587,16 @@
     "sMSCodes": "SMS codes",
     "phoneVerifiedLast4": "(phone verified: ...{{last4}})",
     "recoveryCodes": "Recovery codes",
-    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use these codes to access your account if you lose your authenticator.",
+    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use a recovery code to access your account if you can’t use your passkey or authenticator app.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Recovery codes are shown once and cannot be displayed again.",
-    "regenerateRecoveryCodes": "Regenerate recovery codes",
-    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
-    "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated. Your other signed-in devices are signed out; this one stays signed in.",
+    "saveRecoveryCodes": "Save your recovery codes",
+    "saveRecoveryCodesDescription": "Store these codes somewhere safe. Each code can be used once. These codes cannot be shown again.",
+    "recoveryGenerationTitle": "Generate new recovery codes",
+    "generateNewCodesQuestion": "Generate new codes?",
+    "saveGeneratedRecoveryCodes": "Save these codes somewhere safe. Each code can be used once, and these codes cannot be shown again.",
+    "generateNewCodesWarning": "Your current recovery codes will stop working. The new codes will be shown once. Your other signed-in devices will be signed out, but this device will stay signed in.",
+    "regenerateRecoveryCodes": "Generate new codes",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Generate new codes to replace them.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
@@ -4521,11 +5613,9 @@
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Enter the 6-digit code generated by your authenticator app.",
     "disableMFA": "Disable MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
-    "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Save these codes in a safe place. You can use them to access your account if you lose your authenticator device.",
     "copyCodes": "Copy codes",
     "copiedCodes": "Copied",
     "copyCodesFailed": "Couldn't copy to the clipboard. Select the codes above and copy them by hand.",
-    "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Each code can only be used once. Generating new codes will invalidate any previously generated codes.",
     "back": "Back",
     "smsSentToPhone": "SMS codes sent to phone ending in {{last4}}.",
     "currentPasswordIsRequired": "Current password is required",
@@ -4538,7 +5628,7 @@
     "verifyPhone": "Verify phone",
     "enabling": "Enabling...",
     "yourAccountIsProtectedWithAnAuthenticatorApp": "Your account is protected with an authenticator app.",
-    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use an authenticator app to generate verification codes. (Recommended)",
+    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use an authenticator app to generate verification codes.",
     "receiveVerificationCodesViaSMSAsABackup": "Receive verification codes via SMS as a backup.",
     "continue": "Continue",
     "verifyAndEnable": "Verify and enable",
@@ -4547,13 +5637,26 @@
     "enterThe6DigitCodeFromYourAuthenticatorApp": "Enter the 6-digit code from your authenticator app.",
     "disabling": "Disabling...",
     "generating": "Generating...",
-    "regenerateCodes": "Regenerate codes",
     "verifyYourIdentity": "Verify your identity",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
     "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
-    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change.",
+    "notSetUp": "Not set up",
+    "notAvailable": "Not available",
+    "backup": "Backup",
+    "addBackup": "Add backup",
+    "totpBackupAddHint": "Add an authenticator app as a backup, so you can still sign in if your passkey isn't available.",
+    "totpPolicyDisallowed": "Your organization's policy doesn't allow authenticator apps.",
+    "totpBackupActiveHint": "Use a code from your authenticator app if your passkey isn't available.",
+    "totpBackupVerifyNote": "When you press Verify, you'll confirm with your passkey.",
+    "confirmBackupButton": "Verify and add backup",
+    "removeTotpTitle": "Remove authenticator app",
+    "removeTotpBackupDescription": "You'll keep signing in with your passkey. Your recovery codes stay the same.",
+    "removeTotpPrimaryDescription": "Your passkey becomes your primary sign-in method. Your recovery codes stay the same.",
+    "removeTotpConfirmWithPasskey": "You'll confirm with your passkey.",
+    "removing": "Removing..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -4565,15 +5668,20 @@
     "couldNotImportThePax8Product": "Could not import the Pax8 product."
   },
   "profilePage": {
-    "nameMustBeAtLeast2Characters": "Name must be at least 2 characters",
+    "factorProofLabel": "Current MFA code or recovery code",
+    "passkeyRecoveryCodeHint": "Enter an unused recovery code.",
+    "recoveryCode": "Recovery code",
+    "nameIsRequired": "Name is required.",
+    "nameMustBeAtMost255Characters": "Name must be at most 255 characters",
     "loadingProfile": "Loading profile...",
     "profileSettings": "Profile settings",
     "manageYourAccountSettingsAndSecurityPreferences": "Manage your account settings and security preferences.",
     "profileInformation": "Profile information",
     "updateYourPersonalDetails": "Update your personal details.",
     "avatar": "Avatar",
-    "uploadNewPicture": "Upload new picture",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG, or WebP. Max 5 MB. Drag and drop onto the circle, or click Upload.",
+    "changePicture": "Change picture",
+    "undoAvatarChange": "Undo",
+    "pictureRemovalPending": "Picture removal pending",
     "cancel": "Cancel",
     "name": "Name",
     "yourName": "Your name",
@@ -4596,8 +5704,7 @@
     "failedToFetchUserData": "Failed to fetch user data",
     "failedToLoadProfileData": "Failed to load profile data",
     "profileUpdatedSuccessfully": "Profile updated successfully",
-    "avatarUpdated": "Avatar updated.",
-    "avatarRemoved": "Avatar removed.",
+    "avatarSavedButNameUpdateFailed": "Picture change saved, but your name could not be updated: {{error}}",
     "passwordChangedSuccessfully": "Password changed successfully",
     "multiFactorAuthenticationEnabledSuccessfully": "Multi-factor authentication enabled successfully",
     "multiFactorAuthenticationDisabled": "Multi-factor authentication disabled",
@@ -4628,10 +5735,7 @@
     "fileIsEmpty": "File is empty.",
     "failedToRenamePasskeyHttp": "Failed to rename passkey (HTTP {{status}})",
     "failedToDeletePasskeyHttp": "Failed to delete passkey (HTTP {{status}})",
-    "removing": "Removing...",
     "remove": "Remove",
-    "uploading": "Uploading...",
-    "upload": "Upload",
     "saving": "Saving...",
     "saveChanges": "Save changes",
     "passkey": "Passkey",
@@ -4662,7 +5766,9 @@
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
     "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
     "deletePasskeyConfirmTitle": "Delete this passkey?",
-    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone.",
+    "deletePasskeyConfirmMessage": "This permanently removes <strong>{{name}}</strong> so it can no longer be used to sign in. Deleting this multi-factor method also signs out your other sessions on every device. This cannot be undone.",
+    "usePasskeyVerification": "Use passkey verification instead",
+    "useRecoveryCode": "Can’t access your passkey? Use a recovery code",
     "passkeyStepUpHeading": "Verify your existing sign-in factor",
     "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
@@ -4675,7 +5781,13 @@
     "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
     "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
     "deletePasskeySsoReauth": "Verify identity to remove a passkey",
-    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove.",
+    "authenticatorBackupAdded": "Authenticator app added as a backup. Your recovery codes haven't changed",
+    "authenticatorAppRemoved": "Authenticator app removed. You'll sign in with your passkey",
+    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works only once, so if you just used it, wait for the next code from your authenticator app.",
+    "passkeyConfirmationCanceled": "Passkey confirmation was canceled or timed out.",
+    "passkeyProofRejected": "Your passkey couldn't be verified. Please try again.",
+    "failedToRemoveAuthenticatorApp": "Failed to remove the authenticator app"
   },
   "roleManager": {
     "roles": "Roles",
@@ -4699,6 +5811,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "No roles found. Try adjusting your search or filters.",
     "cloneRole": "Clone Role: {{name}}",
+    "cloneDescription": "Copy of {{name}}",
     "clone": "Clone",
     "edit": "Edit",
     "delete": "Delete",
@@ -4816,6 +5929,11 @@
     "eGOktaProduction": "e.g., Okta Production",
     "providerPreset": "Provider preset",
     "selectAPresetToAutoFillRecommendedSettings": "Select a preset to auto-fill recommended settings",
+    "replacePresetFields": {
+      "title": "Replace with the {{preset}} defaults?",
+      "message": "Applying the {{preset}} preset replaces the current scopes and attribute mapping, including your changes, and clears any claim the preset does not set, such as the groups attribute. Nothing is saved until you save the provider.",
+      "confirm": "Replace"
+    },
     "connectionSettings": "Connection Settings",
     "issuerURL": "Issuer URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -5240,7 +6358,8 @@
     "timeTracking": "Time Tracking",
     "email": "Email",
     "templates": "Templates",
-    "timeCapture": "Time capture"
+    "timeCapture": "Time capture",
+    "routing": "Routing"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -5419,6 +6538,8 @@
       "generalDescription": "Profile and defaults",
       "contacts": "Contacts",
       "contactsDescription": "People to reach at this customer, by site or organization-wide",
+      "domains": "Domains",
+      "domainsDescription": "Customer email domains and proof of ownership",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
@@ -5431,7 +6552,7 @@
       "extensionsDescription": "Third-party extension sections",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
-      "brandingDescription": "Portal theme and visuals",
+      "brandingDescription": "Logo, colors and custom CSS",
       "portal": "Customer Portal",
       "portalDescription": "Features and support",
       "securityAccess": "Security & Access",
@@ -5451,7 +6572,7 @@
       "ticketing": "Ticketing",
       "ticketingDescription": "SLA and billing overrides",
       "ai": "AI",
-      "aiDescription": "AI assistant budget, rate limits and approval mode"
+      "aiDescription": "Breeze AI budget, rate limits and approval mode"
     },
     "overview": {
       "title": "Organization overview",
@@ -5742,6 +6863,20 @@
       "sourceOrg": "Organization override",
       "sourcePartner": "Partner default",
       "sourceDefault": "Built-in default"
+    },
+    "businessCalendar": {
+      "title": "Business hours",
+      "description": "The calendar this organization's SLA clocks are counted on. Leave on Inherit to follow the partner default.",
+      "label": "Business calendar",
+      "inherit": "Inherit",
+      "inheritedDefault": "Inherited: {{name}} (partner default)",
+      "inheritedNone": "Inherited: 24×7 (no partner default)",
+      "partnerWideOption": "{{name}} (all orgs)",
+      "archivedOverride": "Archived calendar (no longer applies)",
+      "loadFailed": "Business calendar failed to load.",
+      "errors": {
+        "save": "Couldn't save the business calendar. Retry."
+      }
     }
   },
   "organizationForm": {
@@ -5919,7 +7054,8 @@
         "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
         "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
         "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
-        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth.",
+        "entra_tenant_conflict": "The organization being merged away has a proven Microsoft tenant, and the surviving organization is also linked to a Microsoft tenant. Remove one of the tenant links, then try the merge again."
       }
     },
     "archive": {
@@ -5964,8 +7100,10 @@
   "siteDetailPage": {
     "loading": "Loading site...",
     "backToOrganizations": "Back to organizations",
+    "backToSites": "Back to sites",
     "breadcrumbs": {
       "settings": "Settings",
+      "sites": "Sites",
       "organizations": "Organizations"
     },
     "errors": {
@@ -6052,6 +7190,24 @@
     },
     "primaryContact": "Primary contact"
   },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locations where your devices live. Open a site to see its details and devices.",
+      "organizationColumn": "Organization",
+      "pickOrg": "Organization",
+      "pickOrgPlaceholder": "Choose an organization",
+      "pickOrgRequired": "Choose the organization this site belongs to.",
+      "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
+      "empty": "No sites yet. Add a site to an organization to get started.",
+      "viewDevicesAt": "view devices at {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} created",
+      "saved": "Site {{name}} saved",
+      "deleted": "Site {{name}} deleted"
+    }
+  },
   "siteList": {
     "title": "Sites",
     "count": "{{filtered}} of {{total}} sites",
@@ -6074,28 +7230,166 @@
   },
   "customerDomainsCard": {
     "title": "Customer email domains",
-    "description": "Route verified customer email domains to the right organization.",
+    "managedPerOrg": "Domains are managed per organization. Open an organization to add, verify, move or remove its domains.",
+    "emptySummary": "No customer email domains yet. Add them under each organization's Domains tab.",
     "errors": {
-      "load": "Customer domain mappings failed to load.",
-      "save": "Could not save customer domain mapping. Retry."
-    },
-    "toasts": {
-      "added": "Customer domain mapping added",
-      "saved": "Customer domain mapping saved",
-      "deleted": "Customer domain mapping deleted"
+      "load": "Customer domain mappings failed to load."
     },
     "columns": {
       "domain": "Domain",
+      "status": "Status"
+    },
+    "actions": {
+      "manage": "Manage"
+    }
+  },
+  "orgDomains": {
+    "title": "Domains",
+    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which features such as portal self-registration rely on.",
+    "forbidden": "Managing customer domains requires an admin role with access to every organization.",
+    "partnerOnly": "Customer domains are managed by your service provider.",
+    "checkingAccess": "Checking access…",
+    "empty": "No domains yet. Add the customer's email domain below.",
+    "neverChecked": "Never",
+    "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
+    "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "stale": "The list may be out of date: it could not be reloaded after your change.",
+    "columns": {
+      "domain": "Domain",
+      "status": "Status",
+      "lastChecked": "Last checked",
       "autoCreateContact": "Auto-create contact"
     },
-    "empty": "No customer domain mappings yet.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Select organization..."
+    "aria": {
+      "active": "{{domain}} is active",
+      "autoCreateContact": "Auto-create contacts for {{domain}}",
+      "verify": "Verification for {{domain}}",
+      "move": "Move {{domain}}",
+      "delete": "Delete {{domain}}"
     },
-    "new": "New",
+    "states": {
+      "declared": "Declared — mail routing only",
+      "pending_dns": "Pending DNS",
+      "verified": "Verified · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS TXT record",
+      "entra_tenant": "Microsoft (the organization's proven Entra tenant)",
+      "google_directory": "Google Workspace directory"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "The organization's Microsoft tenant is not proven yet.",
+        "connection_missing": "Needs a Microsoft 365 connection for the proven tenant. Connect Microsoft 365 for this organization, or use DNS.",
+        "not_enabled": "Microsoft verification is not available on this server."
+      },
+      "google_directory": {
+        "connection_missing": "Needs a Google Workspace connection for this organization.",
+        "not_enabled": "Google Workspace is not enabled on this server."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verification lost: the DNS record was not found.",
+      "not_in_directory": "Verification lost: the domain is no longer in the directory.",
+      "tenant_not_proven": "Verification lost: the Microsoft tenant is no longer proven.",
+      "connection_missing": "Verification lost: the directory connection was removed.",
+      "stale": "Verification lost: it could not be re-checked for 7 days.",
+      "repointed": "Verification lost: the domain was moved to another organization.",
+      "msp_removed": "Verification removed.",
+      "displaced": "Verification lost: the domain was verified by another organization."
+    },
+    "checkReasons": {
+      "record_missing": "The DNS record was not found. DNS changes can take a while to appear; check again later.",
+      "not_in_directory": "The domain is not a verified domain in the directory.",
+      "tenant_not_proven": "The organization's Microsoft tenant is not proven.",
+      "connection_missing": "The organization has no matching directory connection.",
+      "dns_error": "DNS could not be queried. Try again later.",
+      "timeout": "The check timed out. Try again later.",
+      "graph_unavailable": "Microsoft 365 could not be reached. Try again later.",
+      "graph_tenant_mismatch": "Microsoft 365 answered for a different tenant than the proven one.",
+      "google_scope_missing": "The Google Workspace delegation grant is missing the scope {{scope}}. Add it in the Google Admin console, then check again.",
+      "google_access_denied": "Google Workspace refused access. Check the admin email and the delegation grant.",
+      "google_unavailable": "Google Workspace could not be reached. Try again later.",
+      "unknown": "The check did not pass."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "This domain is no longer in this organization. Reload the page.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "The domain's verification changed while this check ran. Check again.",
+      "DOMAIN_INACTIVE": "Turn the domain on before verifying it.",
+      "DOMAIN_DNS_NOT_STARTED": "Get the DNS record first.",
+      "DOMAIN_ALREADY_VERIFIED": "This domain is verified by another method. Remove that verification first."
+    },
+    "verify": {
+      "methodLegend": "Verification method",
+      "panelTitle": "Verify {{domain}}",
+      "methodLocked": "To switch methods, remove the current verification first.",
+      "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
+      "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
+      "startDns": "Get DNS record",
+      "starting": "Getting record…",
+      "dnsInstructions": "Ask the customer's DNS admin to add this TXT record, then check it.",
+      "recordName": "Record name (host)",
+      "recordValue": "Record value",
+      "copy": "Copy",
+      "copied": "Copied",
+      "googleScopeHint": "The organization's Google Workspace delegation grant must include {{scope}}.",
+      "inactive": "This domain is turned off. Turn it on to verify it.",
+      "verify": "Verify",
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "resultFailed": "Not verified. {{reason}}",
+      "resultUnavailable": "The check could not finish. {{reason}}",
+      "removeVerification": "Remove verification",
+      "removeTitle": "Remove verification for {{domain}}?",
+      "removeMessage": "The domain stays on this organization for mail routing. Features that rely on verified domains, such as self-registration, stop trusting it until it is verified again."
+    },
     "actions": {
-      "addDomain": "Add domain"
+      "verify": "Verify",
+      "manageVerification": "Verification",
+      "move": "Move"
+    },
+    "add": {
+      "label": "Add a domain",
+      "placeholder": "contoso.com",
+      "submit": "Add domain"
+    },
+    "move": {
+      "title": "Move {{domain}} to another organization?",
+      "message": "Inbound email from this domain will route to the organization you choose.",
+      "messageVerified": "The domain will lose its verification. The new organization must verify it again, and a DNS record must be published again with a new value.",
+      "targetLabel": "Organization",
+      "targetPlaceholder": "Select an organization…",
+      "orgsFailed": "Organizations failed to load. Close this and try again."
+    },
+    "delete": {
+      "title": "Delete {{domain}}?",
+      "message": "Inbound email from this domain will no longer route to this organization.",
+      "messageVerified": "Inbound email from this domain will no longer route to this organization, and its verification is removed."
+    },
+    "toasts": {
+      "added": "{{domain}} added",
+      "saved": "{{domain}} saved",
+      "deleted": "{{domain}} deleted",
+      "moved": "{{domain}} moved to {{org}}",
+      "verified": "{{domain}} verified",
+      "verificationRemoved": "Verification removed for {{domain}}",
+      "copyFailed": "Could not copy. Select the text and copy it manually."
+    },
+    "errors": {
+      "load": "Domains failed to load.",
+      "save": "Could not save the domain. Retry.",
+      "delete": "Could not delete the domain. Retry.",
+      "add": "Could not add the domain. Retry.",
+      "alreadyMapped": "This domain is already added to an organization in your account.",
+      "startDns": "Could not get the DNS record. Retry.",
+      "check": "Could not run the check. Retry.",
+      "removeVerification": "Could not remove the verification. Retry."
     }
   },
   "customFieldsPage": {
@@ -6225,7 +7519,11 @@
       "label": "Label",
       "notes": "Notes"
     },
-    "empty": "No known guests yet."
+    "empty": "No known guests yet.",
+    "removeConfirm": {
+      "title": "Remove known guest?",
+      "message": "Remove {{label}} ({{mac}})? Devices with this MAC address will no longer be approved automatically across your managed organizations."
+    }
   },
   "userInviteForm": {
     "title": "Invite user",
@@ -6246,7 +7544,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Choose a role"
     },
     "orgAccess": {
       "title": "Organization access",
@@ -6302,6 +7601,7 @@
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
     "sessionTimeoutPointer": "Session idle timeout is configured under Security",
+    "linkedUserMissing": "The linked user isn't in this list. They may have been removed, or they're outside the users you can see.",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",
@@ -6346,7 +7646,8 @@
       "copyLink": "Copy link",
       "mfaReset": "MFA reset for {{email}}",
       "roleUpdated": "Role updated",
-      "orgAccessUpdated": "Organization access updated"
+      "orgAccessUpdated": "Organization access updated",
+      "userRemoved": "{{name}} removed"
     },
     "resetMfa": {
       "title": "Reset MFA?",
@@ -6647,11 +7948,50 @@
       "create": "Could not add the contact.",
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "No access",
+        "invited": "Invited",
+        "active": "Active",
+        "disabled": "Disabled",
+        "requested": "Requested"
+      },
+      "actions": {
+        "give": "Give portal access",
+        "resend": "Resend invite",
+        "bulkGive": "Give portal access ({{count}})",
+        "selectAll": "Select all contacts on this page",
+        "selectRow": "Select {{name}}"
+      },
+      "form": {
+        "giveAccess": "Give portal access (sends an invite to this email address)",
+        "needsEmail": "Add an email address to give portal access."
+      },
+      "toasts": {
+        "invited": "Portal invite sent",
+        "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
+        "bulkSummary": "Portal access: {{details}}",
+        "resendEmailFailed": "The invite email could not be sent. Try Resend invite again later."
+      },
+      "outcomes": {
+        "invited": "Invited: {{count}}",
+        "already_has_access": "Already has access: {{count}}",
+        "no_email": "No email address: {{count}}",
+        "email_bound_to_other_contact": "Email used by another contact: {{count}}",
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}",
+        "emailNotSent": "Invite emails not sent: {{count}}"
+      },
+      "errors": {
+        "invite": "Could not give portal access.",
+        "bulkInvite": "Could not give portal access to the selected contacts."
+      }
     }
   },
   "scriptAuthoringPage": {
     "title": "Script authoring",
-    "subtitle": "Let the assistant and your agents write, review and — when you allow it — run scripts without a card.",
+    "subtitle": "Let Breeze AI and your agents write, review and, when you allow it, run scripts without a card.",
     "partnerCard": {
       "title": "Partner ceiling",
       "description": "The widest setting any organization under this partner may use. Individual organizations can only narrow it.",
@@ -6729,8 +8069,8 @@
     "loadFailed": "Script authoring settings could not be loaded."
   },
   "orgAiBudgetSettings": {
-    "title": "AI budget",
-    "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "title": "AI budget & limits",
+    "description": "Spending caps, alerts and rate limits for Breeze AI in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
     "selectOrganization": "Select an organization to configure its AI budget."
   },
   "ticketingHubPage": {
@@ -6824,13 +8164,13 @@
     "timeoutLabel": "Interactive approval timeout",
     "productDefault": "Product default ({{minutes}} minutes)",
     "range": "Choose {{min}}-{{max}} minutes.",
-    "description": "How long a live AI chat turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
-    "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
-    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
+    "description": "How long a live Breeze AI turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
+    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry.",
+    "modeDescription": "How Breeze AI asks before running gated actions in a conversation. Applies whether or not any spending cap is set."
   },
   "orgAiApprovalTimeout": {
     "title": "AI Approval Timeout",
-    "description": "How long an AI chat waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
+    "description": "How long Breeze AI waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
     "fieldLabel": "Interactive approval timeout",
     "inherit": "Inherit",
     "inheritLabel": "Inherit ({{minutes}} minutes, {{source}})",
@@ -6871,5 +8211,803 @@
     "enabledToast": "Character-key shortcuts turned on",
     "disabledToast": "Character-key shortcuts turned off",
     "saveFailed": "Could not save character-key shortcuts."
+  },
+  "businessHoursCard": {
+    "title": "Business hours",
+    "description": "Calendars that response and resolution SLA clocks are counted on. A ticket uses its organization's calendar, or your default calendar, or runs around the clock when neither is set.",
+    "newTicketsOnly": "Editing hours or the time zone applies to new tickets only. Use \"Apply to open tickets\" to update tickets that are already open.",
+    "create": "New calendar",
+    "loading": "Loading business hours…",
+    "loadError": "Business hours failed to load.",
+    "retry": "Retry",
+    "empty": "No business-hours calendars yet. Tickets run around the clock (24×7) until you create one and set it as the default.",
+    "allOrgs": "All orgs",
+    "default": "Default",
+    "archived": "Archived",
+    "edit": "Edit",
+    "setDefault": "Set as default",
+    "clearDefault": "Clear default",
+    "applyOpen": "Apply to open tickets",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "delete": "Delete",
+    "deleteTitle": "Delete {{name}}?",
+    "deleteMessage": "This permanently deletes the calendar and its holidays. A calendar that tickets or organizations still use cannot be deleted; archive it instead.",
+    "name": "Name",
+    "timezone": "Time zone",
+    "appliesTo": "Applies to",
+    "ownerPartner": "All organizations (partner-wide)",
+    "ownerOrg": "One organization",
+    "organization": "Organization",
+    "chooseOrg": "Choose an organization",
+    "weeklyHours": "Weekly hours",
+    "closed": "Closed",
+    "to": "to",
+    "addInterval": "Add hours",
+    "intervalStart": "{{day}} opens at",
+    "intervalEnd": "{{day}} closes at",
+    "removeInterval": "Remove {{day}} hours",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "holidays": "Holidays",
+    "holidayHint": "Holidays dated today or earlier won't change open tickets.",
+    "noHolidays": "No holidays.",
+    "holidayDate": "Date",
+    "holidayName": "Name",
+    "holidayAdd": "Add holiday",
+    "holidayRemove": "Remove holiday {{name}}",
+    "weekdays": {
+      "0": "Sunday",
+      "1": "Monday",
+      "2": "Tuesday",
+      "3": "Wednesday",
+      "4": "Thursday",
+      "5": "Friday",
+      "6": "Saturday"
+    },
+    "errors": {
+      "nameRequired": "Enter a name.",
+      "orgRequired": "Choose an organization.",
+      "invalidTime": "Enter times as HH:MM (for example 09:00); the end can be 24:00.",
+      "order": "Each interval must end after it starts.",
+      "overlap": "Intervals on the same day must not overlap.",
+      "empty": "Add at least one open interval.",
+      "timezone": "Choose a valid time zone.",
+      "save": "Couldn't save the calendar. Retry.",
+      "holidayInvalid": "Enter a valid date and a name for the holiday.",
+      "holidayAdd": "Couldn't add the holiday. Retry.",
+      "holidayRemove": "Couldn't remove the holiday. Retry.",
+      "inUse": "This calendar is in use by tickets or organizations and can't be deleted. Archive it instead.",
+      "isDefault": "This calendar is the default. Clear the default before deleting it.",
+      "default": "Couldn't change the default calendar. Retry.",
+      "archive": "Couldn't change the archive state. Retry.",
+      "delete": "Couldn't delete the calendar. Retry.",
+      "apply": "Couldn't apply the calendar to open tickets. Retry."
+    },
+    "toasts": {
+      "created": "Calendar created",
+      "updated": "Calendar updated",
+      "defaultSet": "Default calendar set",
+      "defaultCleared": "Default cleared; tickets without an override run 24×7",
+      "archived": "Calendar archived",
+      "unarchived": "Calendar restored",
+      "deleted": "Calendar deleted",
+      "holidayAdded": "Holiday added",
+      "holidayRemoved": "Holiday removed",
+      "recompute": "Open tickets' deadlines are being updated.",
+      "applied": "Applied to open tickets: {{count}} updated",
+      "appliedPartial": "{{skipped}} tickets were being edited and kept their old hours. Apply again to retry them."
+    },
+    "apply": {
+      "title": "Apply {{name}} to open tickets",
+      "explanation": "Tickets that are open and have never been paused will switch to the current hours and have their deadlines recalculated. Tickets with a pause history are left alone.",
+      "loading": "Loading preview…",
+      "loadFailed": "The preview failed to load.",
+      "revisionChanged": "The hours changed since this preview. Review the updated counts before applying.",
+      "eligible": "Tickets that will be updated: {{count}}",
+      "breached": "Of those, would become breached immediately: {{count}}",
+      "paused": "Skipped because they have paused: {{count}}",
+      "confirm": "Apply to open tickets"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan & features",
+    "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
+    "currentPlan": "Current plan",
+    "changePlan": "Change plan",
+    "enrollmentPaused": "New device enrollment is paused: {{active}} of {{limit}} devices.",
+    "enrollmentPausedNoCounts": "New device enrollment is paused because your account has reached its device limit.",
+    "enrollmentPausedChangePlan": "Change your plan to add more.",
+    "plans": {
+      "free": "Free",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unlimited"
+    },
+    "columns": {
+      "feature": "Feature",
+      "state": "Status",
+      "source": "Source",
+      "expires": "Expires",
+      "limits": "Limits"
+    },
+    "state": {
+      "enabled": "Included",
+      "disabled": "Locked"
+    },
+    "source": {
+      "plan": "Plan default",
+      "billing": "Billing",
+      "license": "Licence",
+      "manual": "Manual"
+    },
+    "graceWarning": "Expired {{expiresAt}} — grace until {{graceUntil}}",
+    "noExpiry": "Never",
+    "noLimits": "—",
+    "reason": "Reason: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding supervisor",
+        "why": "An AI supervisor that diagnoses and repairs zero-touch onboarding failures."
+      },
+      "verified_library": {
+        "label": "Verified software library",
+        "why": "Curated, verified packages you can deploy with confidence."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp triages your fleet continuously and nudges the right person; available on Pro and above."
+      }
+    },
+    "loadError": "Could not load your plan.",
+    "retry": "Retry"
+  },
+  "ticketRouting": {
+    "title": "Ticket routing",
+    "description": "Rules run when a ticket is created and fill in the assignee, priority, category, status and tags the creator did not choose. Organization rules run first, then partner-wide rules. The first match wins.",
+    "createRule": "New rule",
+    "loadFailed": "Could not load routing rules.",
+    "lookupsFailed": "Some technicians, categories or statuses could not be loaded, so the pickers may be incomplete. Reload the page to try again.",
+    "empty": "No routing rules yet.",
+    "groupOrg": "Rules for {{org}}",
+    "groupPartner": "Partner-wide rules",
+    "thisOrganization": "This organization",
+    "allOrgs": "All orgs",
+    "limitedOrgs": "{{count}} orgs only",
+    "catchAll": "Matches every ticket",
+    "noActions": "Sets nothing",
+    "enabledLabel": "Enable rule {{name}}",
+    "enabledOn": "Rule enabled",
+    "enabledOff": "Rule disabled",
+    "saveFailed": "Could not save the rule. Try again.",
+    "deleteFailed": "Could not delete the rule. Try again.",
+    "saved": "Rule saved",
+    "created": "Rule created",
+    "deleted": "Rule deleted",
+    "reorderFailed": "Could not save the new order. Try again.",
+    "dragHandle": "Drag to reorder {{name}}, or press the up or down arrow key to move it.",
+    "readOnly": "You can view this rule but not change it.",
+    "chips": {
+      "add": "Add",
+      "remove": "Remove {{value}}"
+    },
+    "errors": {
+      "keywordShort": "Keywords need at least 2 characters.",
+      "keywordLong": "Keywords can be at most 100 characters.",
+      "keywordsMax": "You can add at most 20 keywords.",
+      "domainInvalid": "Use a host like example.com or *.example.com.",
+      "domainsMax": "You can add at most 50 domains.",
+      "tagEmpty": "Enter a tag.",
+      "tagLong": "Tags can be at most 50 characters.",
+      "tagsMax": "You can add at most 20 tags.",
+      "nameRequired": "Enter a name for the rule.",
+      "orgRequired": "Choose an organization.",
+      "orgLinksRequired": "Pick at least one organization, or apply the rule to all organizations."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "Email",
+      "alert": "Alert",
+      "manual": "Manual",
+      "api": "API",
+      "ai": "AI"
+    },
+    "priorities": {
+      "low": "Low",
+      "normal": "Normal",
+      "high": "High",
+      "urgent": "Urgent"
+    },
+    "drawer": {
+      "titleCreate": "New routing rule",
+      "titleEdit": "Edit routing rule",
+      "close": "Close",
+      "owner": "Owner",
+      "ownerOrg": "This organization only",
+      "ownerPartner": "All organizations (partner-wide)",
+      "organization": "Organization",
+      "chooseOrg": "Choose an organization",
+      "appliesTo": "Applies to",
+      "orgLinksAll": "All organizations",
+      "orgLinksSelected": "Only selected organizations",
+      "name": "Name",
+      "conditions": "When a ticket matches",
+      "conditionsHelp": "Every filled-in condition must match. Leave a condition empty to ignore it.",
+      "matchSources": "Source is any of",
+      "matchPriorities": "Priority is any of",
+      "matchCategory": "Category",
+      "any": "Any",
+      "matchKeywords": "Subject contains any of",
+      "matchKeywordsHint": "2 to 100 characters each, up to 20.",
+      "matchDomains": "Requester email domain is any of",
+      "matchDomainsHint": "example.com or *.example.com, up to 50.",
+      "actions": "Then set",
+      "actionsHelp": "Applied only to fields the creator did not choose. Set at least one.",
+      "setAssignee": "Assignee",
+      "setPriority": "Priority",
+      "setCategory": "Category",
+      "setStatus": "Status",
+      "addTags": "Add tags",
+      "noChange": "No change",
+      "unavailableUser": "Unavailable user",
+      "unavailableStatus": "Unavailable status",
+      "enabled": "Enabled",
+      "save": "Save",
+      "saving": "Saving...",
+      "delete": "Delete",
+      "deleteTitle": "Delete this rule?",
+      "deleteMessage": "\"{{name}}\" will stop applying to new tickets. This cannot be undone."
+    },
+    "test": {
+      "title": "Test a ticket",
+      "description": "Dry run: see which rule a new ticket would match and what it would change. Nothing is created.",
+      "org": "Organization",
+      "source": "Source",
+      "subject": "Subject",
+      "email": "Requester email (optional)",
+      "category": "Category (optional)",
+      "priority": "Priority (optional)",
+      "notChosen": "Not chosen",
+      "run": "Run test",
+      "running": "Testing...",
+      "failed": "Could not run the test. Try again.",
+      "matched": "Matched rule: {{name}}",
+      "noMatch": "No rule matched",
+      "applied": "Would apply",
+      "appliedNothing": "Nothing would change",
+      "skipped": "Skipped",
+      "actions": {
+        "set_assignee": "Assignee",
+        "set_category": "Category",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "The assignee cannot access this organization's tickets.",
+        "assignee_deleted": "The assignee no longer exists.",
+        "category_foreign": "The category belongs to a different partner.",
+        "status_foreign": "The status belongs to a different partner.",
+        "status_inactive": "The status is inactive.",
+        "status_core_not_allowed": "This status cannot be set by a rule."
+      }
+    },
+    "fallback": {
+      "title": "If no rule assigns an email ticket",
+      "description": "Every new ticket created from inbound email is assigned to this person when no routing rule assigns it. If they cannot access the ticket's organization, the ticket stays unassigned.",
+      "label": "Default assignee",
+      "unavailable": "Unavailable user",
+      "saveFailed": "Could not save the fallback assignee. Try again.",
+      "saved": "Fallback assignee saved",
+      "loadFailed": "Could not load the fallback assignee."
+    }
+  },
+  "wispMemory": {
+    "title": "Wisp memory",
+    "description": "Review what Wisp has remembered for you, a client, or your whole team, and confirm or retract it.",
+    "tabs": {
+      "mine": "My memory",
+      "org": "Client",
+      "partner": "All clients",
+      "users": "Technicians"
+    },
+    "empty": "No memory blocks here yet.",
+    "loading": "Loading memory…",
+    "loadFailed": "Failed to load memory.",
+    "retry": "Try again",
+    "columns": {
+      "subject": "Subject",
+      "type": "Type",
+      "status": "Status",
+      "confidence": "Confidence",
+      "updated": "Updated",
+      "actions": "Actions"
+    },
+    "expired": "Expired",
+    "statusValue": {
+      "unconfirmed": "Unconfirmed",
+      "confirmed": "Confirmed",
+      "retracted": "Retracted"
+    },
+    "type": {
+      "preference": "Preference",
+      "standing_instruction": "Standing instruction",
+      "fact": "Fact",
+      "decision": "Decision",
+      "concern_outcome": "Concern outcome",
+      "work_summary": "Work summary"
+    },
+    "confidenceValue": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "confirm": "Confirm",
+    "retract": "Retract",
+    "confirmed": "Memory confirmed.",
+    "retracted": "Memory retracted.",
+    "confirmFailed": "Failed to confirm memory.",
+    "retractFailed": "Failed to retract memory.",
+    "fromConversation": "From conversation",
+    "pickOrg": "Select a client",
+    "pickUser": "Select a technician",
+    "pickPrompt": "Choose one above to see its memory.",
+    "showContent": "Show content",
+    "subjectFallback": "Standing instruction",
+    "hideContent": "Hide content",
+    "conversationUnavailable": "This conversation is no longer available.",
+    "usersLoadFailed": "Couldn't load technicians."
+  },
+  "orgAiApprovalMode": {
+    "title": "AI approval mode",
+    "description": "How Breeze AI asks before running gated (Tier 2/3) actions in this organization. Applies whether or not any spending cap is set.",
+    "save": "Save"
+  },
+  "portalAccessPolicy": {
+    "title": "Sign-in & registration",
+    "orgDescription": "How people at this organization sign in to the customer portal, and how new people get browser access. A field left on Inherit follows your partner default.",
+    "partnerDescription": "The default for every customer organization. Each organization can override any field on its Customer Portal tab.",
+    "loading": "Loading sign-in settings…",
+    "readOnly": "You can view these settings but not change them. Changing the partner default needs full partner access.",
+    "save": "Save sign-in settings",
+    "sources": {
+      "partner": "Partner default",
+      "default": "Breeze default"
+    },
+    "signIn": {
+      "title": "How people sign in"
+    },
+    "newPeople": {
+      "title": "How new people get browser access"
+    },
+    "options": {
+      "on": "On",
+      "off": "Off"
+    },
+    "microsoft": {
+      "label": "Microsoft sign-in"
+    },
+    "google": {
+      "label": "Google sign-in",
+      "domainNotVerified": "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in.",
+      "domains": {
+        "verified": "Verified domains: {{domains}}",
+        "none": "No verified domain —",
+        "verify": "verify one under Organization › Domains",
+        "partner": "On wherever a domain is verified"
+      }
+    },
+    "password": {
+      "label": "Password sign-in",
+      "allowed": "Allowed",
+      "ssoOnly": "Off — Microsoft/Google only",
+      "ssoOnlyMicrosoft": "Off — Microsoft only",
+      "ssoOnlyGoogle": "Off — Google only",
+      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on.",
+      "ssoOnlyNeedsSsoMicrosoft": "Available once Microsoft sign-in is turned on.",
+      "ssoOnlyNeedsSsoGoogle": "Available once Google sign-in is turned on."
+    },
+    "fallback": "Password sign-in is on because no Microsoft or Google sign-in is enabled.",
+    "fallbackMicrosoft": "Password sign-in is on because Microsoft sign-in is not enabled.",
+    "fallbackGoogle": "Password sign-in is on because Google sign-in is not enabled.",
+    "invites": {
+      "label": "Invites from the MSP",
+      "value": "Always on"
+    },
+    "selfRegistration": {
+      "label": "Self-registration",
+      "off": "Off",
+      "approval": "Needs approval",
+      "instant": "Instant",
+      "noVerifiedDomain": "No verified domain: nobody can register until you verify one.",
+      "verifyDomain": "Verify a domain"
+    },
+    "ssoNewPerson": {
+      "label": "First Microsoft / Google sign-in",
+      "labelMicrosoft": "First Microsoft sign-in",
+      "labelGoogle": "First Google sign-in",
+      "invitedOnly": "Invited people only",
+      "approval": "Needs approval",
+      "instant": "Instant"
+    },
+    "requests": "Requests ({{count}})",
+    "errors": {
+      "load": "Couldn't load sign-in settings.",
+      "save": "Couldn't save sign-in settings.",
+      "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
+      "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoMicrosoft": "Turn on Microsoft sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoGoogle": "Turn on Google sign-in before turning off password sign-in.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
+      "sessionHours": "Enter a whole number of hours from 1 to 168."
+    },
+    "toasts": {
+      "saved": "Sign-in settings saved."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google session length (hours)",
+      "labelMicrosoft": "Microsoft session length (hours)",
+      "labelGoogle": "Google session length (hours)",
+      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpMicrosoft": "Microsoft sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpGoogle": "Google sign-ins end after this many hours, however active the person is. From 1 to 168."
+    },
+    "entraTenant": {
+      "title": "Microsoft tenant",
+      "loading": "Loading the Microsoft tenant…",
+      "loadError": "Couldn't load the Microsoft tenant.",
+      "status": {
+        "none": "No Microsoft tenant is linked yet. Microsoft sign-in stays off for this organization until its tenant is proven.",
+        "unproven": "Tenant {{tenantId}} is linked but not proven. Microsoft sign-in stays off for this organization until it is.",
+        "proven": "Tenant {{tenantId}} proven {{date}} via {{method}}."
+      },
+      "via": {
+        "m365_connection": "the Microsoft 365 connection",
+        "proof_run": "an admin sign-in"
+      },
+      "proveConnection": "Use Microsoft 365 connection (tenant {{tenantId}})",
+      "tenantLabel": "Tenant ID or domain",
+      "tenantHelp": "Create a link and send it to a Global Administrator or Privileged Role Administrator of the customer's tenant. The link works for 72 hours.",
+      "createLink": "Create proof link",
+      "linkLabel": "Proof link",
+      "linkExpires": "Expires {{date}}. Works only for tenant {{tenantId}}.",
+      "consentLabel": "Admin consent link",
+      "consentHelp": "The tenant's admin opens this once so everyone at the organization can sign in.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "remove": "Remove tenant link",
+      "removeConfirm": {
+        "title": "Remove the Microsoft tenant link?",
+        "message": "Microsoft sign-in stops for this organization and its Microsoft sessions end. This also removes the organization's AI for Office tenant mapping, so AI for Office stops working here until a tenant is linked again."
+      },
+      "toasts": {
+        "proven": "Microsoft tenant proven.",
+        "linkCreated": "Proof link created.",
+        "removed": "Microsoft tenant link removed.",
+        "copyFailed": "Couldn't copy the link. Select it and copy it yourself."
+      },
+      "errors": {
+        "prove": "Couldn't prove the tenant from the Microsoft 365 connection.",
+        "createLink": "Couldn't create the proof link.",
+        "remove": "Couldn't remove the tenant link.",
+        "provenElsewhere": "This Microsoft tenant is already proven for another organization. Only a proof link completed by the tenant's admin can move it.",
+        "orgHasOtherTenant": "This organization is linked to a different Microsoft tenant. Remove that link first.",
+        "noVerifiedConnection": "This organization has no Microsoft 365 connection whose tenant was verified by an admin sign-in.",
+        "hintRequired": "Enter the customer's Microsoft tenant ID or one of its verified domains.",
+        "hintInvalid": "That isn't a Microsoft tenant ID or a domain verified by a Microsoft tenant.",
+        "hintLookupFailed": "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
+        "protectedOrg": "This organization can't be linked to a Microsoft tenant."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal sign-in fell back to password",
+      "body": "Microsoft sign-in is off for this organization's portal, so its users sign in with a password until the tenant is proven again.",
+      "tenant": "(Tenant {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "The Microsoft tenant link was removed on {{date}}.",
+        "ai_for_office_mapping_removed": "The AI for Office tenant mapping, which held the proof, was removed on {{date}}.",
+        "ai_for_office_mapping_changed": "The AI for Office tenant mapping was changed to another tenant on {{date}}, which cleared the proof.",
+        "tenant_displaced": "Another organization proved this Microsoft tenant on {{date}}.",
+        "unknown": "The Microsoft tenant proof was lost on {{date}}."
+      },
+      "rerun": "Re-run the tenant proof",
+      "dismiss": "Dismiss",
+      "toasts": {
+        "dismissed": "Notice dismissed."
+      },
+      "errors": {
+        "dismiss": "Couldn't dismiss the notice."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Turn off password sign-in?",
+      "intro": "Saving turns off password sign-in for the organizations below.",
+      "partnerIntro": "Saving this partner default turns off password sign-in for these organizations. Each organization's page lists the accounts that can't sign in yet.",
+      "explain": "People already connected to Microsoft lose their password and are signed out. People without a Microsoft connection can't sign in until they accept a Microsoft sign-in invite.",
+      "explainGoogle": "People already connected to Google lose their password and are signed out. People without a Google connection can't sign in until they accept a Google sign-in invite.",
+      "explainBoth": "People already connected to Microsoft or Google lose their password and are signed out. People without a Microsoft or Google connection can't sign in until they accept a sign-in invite.",
+      "columns": {
+        "org": "Organization",
+        "passwordsToClear": "Passwords removed",
+        "strandedTotal": "Can't sign in yet"
+      },
+      "openOrg": "Open",
+      "strandedTitle": "Can't sign in yet",
+      "strandedMore": "and {{count}} more",
+      "strandedLoadError": "Couldn't load the names of these accounts.",
+      "sendInvites": "Send Microsoft sign-in invites to these accounts after saving",
+      "sendInvitesGoogle": "Send Google sign-in invites to these accounts after saving",
+      "sendInvitesBoth": "Send sign-in invites to these accounts after saving",
+      "confirm": "Turn off password sign-in",
+      "changed": "The impact changed since you opened this. Review the new numbers."
+    },
+    "stranded": {
+      "title": "Can't sign in yet ({{count}})",
+      "description": "These accounts have no Microsoft connection, so they can't sign in while password sign-in is off. Send each one a Microsoft sign-in invite.",
+      "descriptionGoogle": "These accounts have no Google connection, so they can't sign in while password sign-in is off. Send each one a Google sign-in invite.",
+      "descriptionBoth": "These accounts have no Microsoft or Google connection, so they can't sign in while password sign-in is off. Send each one a sign-in invite.",
+      "loadError": "Couldn't load the accounts that can't sign in.",
+      "invite": "Send Microsoft sign-in invite",
+      "inviteGoogle": "Send Google sign-in invite",
+      "inviteBoth": "Send sign-in invite",
+      "inviteAll": "Invite all",
+      "more": "Showing {{shown}} of {{count}}.",
+      "toasts": {
+        "invited": "Sent {{count}} Microsoft sign-in invite(s).",
+        "invitedGoogle": "Sent {{count}} Google sign-in invite(s).",
+        "invitedBoth": "Sent {{count}} sign-in invite(s).",
+        "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialGoogle": "Sent {{invited}} of {{total}} Google sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialBoth": "Sent {{invited}} of {{total}} sign-in invites. The rest were already connected or couldn't be invited.",
+        "emailFailed": "{{count}} account(s) moved to invited, but their invite email couldn't be sent. Use Resend on the portal users list."
+      },
+      "errors": {
+        "invite": "Couldn't send Microsoft sign-in invites.",
+        "inviteGoogle": "Couldn't send Google sign-in invites.",
+        "inviteBoth": "Couldn't send sign-in invites.",
+        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableGoogle": "Google sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableBoth": "Neither Microsoft nor Google sign-in is on for this organization, so there is nothing to invite with."
+      }
+    },
+    "domains": {
+      "label": "Domains",
+      "none": "No domains yet",
+      "manage": "Manage in Organization › Domains",
+      "loadFailed": "Domains could not be loaded."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Access requests",
+    "description": "People waiting for access to this organization's portal. Approve to give them access, or deny to dismiss the request.",
+    "columns": {
+      "person": "Person",
+      "source": "How they asked",
+      "requested": "Requested"
+    },
+    "sources": {
+      "self": "Self-registration",
+      "entra": "Microsoft sign-in",
+      "google": "Google sign-in",
+      "googleWithDomain": "Google · {{domain}}",
+      "addin_user": "AI for Office add-in"
+    },
+    "selectAll": "Select all requests",
+    "selectOne": "Select the request from {{email}}",
+    "accountExists": "Already has an account — Deny to dismiss",
+    "domainUnverified": "Domain no longer verified",
+    "domainUnverifiedReason": "Approve is unavailable: invite this person directly if they should have access.",
+    "actions": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "approveSelected": "Approve selected ({{count}})",
+      "denySelected": "Deny selected ({{count}})"
+    },
+    "results": {
+      "accountExists": "Already has an account",
+      "notPending": "No longer pending",
+      "notFound": "Request not found",
+      "identityLinked": "Sign-in already linked to another account",
+      "failed": "Couldn't decide this request",
+      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven",
+      "domainNotVerified": "Email domain no longer verified",
+      "googleDomainNotVerified": "Google Workspace domain no longer verified"
+    },
+    "denyDialog": {
+      "title": "Deny access request",
+      "message": "Deny the request from {{email}}? They get an email saying it was not approved.",
+      "bulkMessage_one": "Deny {{count}} request? The person gets an email saying it was not approved.",
+      "bulkMessage_other": "Deny {{count}} requests? Each person gets an email saying it was not approved."
+    },
+    "toasts": {
+      "approved": "Approved access for {{email}}.",
+      "denied": "Denied the request from {{email}}.",
+      "bulkDone_one": "{{count}} request decided.",
+      "bulkDone_other": "{{count}} requests decided.",
+      "bulkPartial": "{{succeeded}} of {{total}} requests decided. The others are marked in the list."
+    },
+    "errors": {
+      "load": "Couldn't load access requests.",
+      "action": "Couldn't update the access request.",
+      "bulk": "Couldn't decide the selected requests.",
+      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+      "googleDomainNotVerified": "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly."
+    },
+    "summary": {
+      "title": "Pending access requests",
+      "description": "Requests waiting in your customer organizations. Open an organization to approve or deny them.",
+      "empty": "No pending requests",
+      "orgPending_one": "{{count}} pending",
+      "orgPending_other": "{{count}} pending",
+      "review": "Review requests",
+      "loadError": "Couldn't load pending access requests."
+    },
+    "refreshFailed": "Couldn't refresh the access requests, so this list may be out of date.",
+    "more": "Showing the first {{count}} requests. Decide these to see the rest."
+  },
+  "portalDirectory": {
+    "title": "Directory deprovisioning",
+    "descriptionMicrosoft": "When your customer disables or deletes someone in Microsoft Entra, that person's Microsoft sign-in is turned off here. Only complete directory reads count.",
+    "descriptionGoogle": "When your customer suspends or deletes someone in Google Workspace, that person's Google sign-in is turned off here. Only complete directory reads count.",
+    "descriptionBoth": "When your customer disables, suspends or deletes someone in Microsoft Entra or Google Workspace, that person's directory sign-in is turned off here. Only complete directory reads count.",
+    "loading": "Loading directory deprovisioning…",
+    "empty": "No one is flagged by the directory.",
+    "mode": {
+      "report": "Report only: nobody is disabled automatically yet. The list below shows what would happen.",
+      "enforce": "On: people the directory disables or removes lose their directory sign-in. The first batch for each directory waits for your decision."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "No directory read yet.",
+      "lastRead": "Last read {{when}}",
+      "evaluated_one": "Read completely: {{count}} person in the directory.",
+      "evaluated_other": "Read completely: {{count}} people in the directory.",
+      "suspectShrink": "The directory shrank sharply since the previous read, so nothing changed. A second read has to confirm it first.",
+      "nothingChanged": "Nothing changed.",
+      "tenantLink": "Prove your Microsoft tenant"
+    },
+    "runReasons": {
+      "tenant_not_proven": "This organization's Microsoft tenant is not proven.",
+      "tenant_mismatch": "The Microsoft 365 connection reads a different tenant than the one proven for this organization.",
+      "connection_inactive": "The directory connection is not active.",
+      "org_inactive": "This organization or its partner is not active.",
+      "sync_incomplete": "The last directory read was incomplete, so nothing changed.",
+      "directory_too_large": "This directory is larger than the sync limit; deprovisioning is unavailable. Use SCIM provisioning instead when it is available.",
+      "scope_missing": "The Google connection's domain-wide delegation is missing the admin.directory.user scope.",
+      "access_denied": "Google refused access to the directory.",
+      "unavailable": "The directory could not be reached.",
+      "connection_invalid": "The Google connection's credentials could not be used.",
+      "admin_not_admin": "The Google connection's admin account is no longer an active admin.",
+      "mixed_customer": "The Google listing mixed users from another Workspace.",
+      "malformed": "The directory returned users it could not read.",
+      "unknown": "The read was not used."
+    },
+    "holdReasons": {
+      "first_enforcement": "first time for this directory",
+      "threshold": "more people than usual"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} person is waiting for your decision.",
+      "summary_other": "{{source}}: {{count}} people are waiting for your decision.",
+      "because": "Held: {{reason}}.",
+      "apply": "Apply",
+      "dismiss": "Dismiss"
+    },
+    "confirm": {
+      "applyTitle": "Turn off these sign-ins?",
+      "applyMessage_one": "This turns off the directory sign-in of {{count}} person, and disables their account when they have no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "applyMessage_other": "This turns off the directory sign-in of {{count}} people, and disables each account that has no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "dismissTitle": "Dismiss this batch?",
+      "dismissMessage_one": "Nobody changes. {{count}} person stays exempt until a newer directory read shows them enabled. Held: {{reason}}.",
+      "dismissMessage_other": "Nobody changes. {{count}} people stay exempt until a newer directory read shows them enabled. Held: {{reason}}."
+    },
+    "columns": {
+      "person": "Person",
+      "provider": "Directory",
+      "reason": "What the directory says",
+      "effect": "Effect"
+    },
+    "actionReasons": {
+      "account_disabled": "Disabled in the directory",
+      "absent": "Removed from the directory",
+      "suspended": "Suspended in the directory",
+      "archived": "Archived in the directory"
+    },
+    "effects": {
+      "identity_and_account": "Disables the account",
+      "identityEntra": "Turns off Microsoft sign-in only",
+      "identityGoogle": "Turns off Google sign-in only"
+    },
+    "tags": {
+      "keepsPassword": "Keeps password access",
+      "rearmed": "Restored or dismissed by your team; the directory still reports this person disabled"
+    },
+    "blockers": {
+      "entra_directory": "Microsoft directory",
+      "google_directory": "Google directory",
+      "scim": "SCIM provisioning",
+      "msp": "your team",
+      "unknown": "another source"
+    },
+    "users": {
+      "disabledEntra": "Microsoft sign-in disabled by {{blockers}}",
+      "disabledGoogle": "Google sign-in disabled by {{blockers}}",
+      "restore": "Restore",
+      "remove": "Remove sign-in",
+      "disabledBy": {
+        "msp": "Disabled by your team",
+        "directory": "Disabled by directory",
+        "scim": "Disabled by SCIM provisioning"
+      }
+    },
+    "restore": {
+      "title": "Restore this sign-in method?",
+      "message": "Turns {{provider}} sign-in back on for {{email}} and clears every block on it: {{blockers}}.",
+      "rearmNote": "The directory will not turn it off again until a newer directory read shows this person enabled.",
+      "reactivate": "Also re-enable the account",
+      "confirmMsp": "Your team disabled this account. I want to re-enable it."
+    },
+    "remove": {
+      "title": "Remove this sign-in method?",
+      "message": "Removes the disabled {{provider}} sign-in from {{email}}. Use this when the person was deleted and recreated in the directory. If it was their only sign-in method, reactivate the account and send an invite."
+    },
+    "toasts": {
+      "applying": "Applying the batch. Changes appear here shortly.",
+      "dismissed": "Batch dismissed",
+      "restored": "Sign-in method restored",
+      "removed": "Sign-in method removed"
+    },
+    "errors": {
+      "load": "Couldn't load directory deprovisioning.",
+      "decide": "Couldn't save your decision.",
+      "stale": "This batch changed since you opened it. Review the refreshed list and try again.",
+      "notHeld": "This batch is no longer waiting for a decision.",
+      "enforcementOff": "Deprovisioning is in report-only mode on this server, so there is nothing to apply."
+    }
+  },
+  "portalScim": {
+    "title": "Microsoft Entra provisioning (SCIM)",
+    "description": "Let the customer's Entra tenant create portal accounts for the people assigned to the Breeze Portal app, and disable them when they leave.",
+    "loading": "Loading provisioning…",
+    "retry": "Try again",
+    "refreshFailed": "Couldn't refresh. What you see may be out of date.",
+    "needsTenant": "Prove this organization's Microsoft tenant above before you set up provisioning.",
+    "tenantUrl": "Tenant URL",
+    "noBaseUrl": "The API's public address is not configured, so the Tenant URL can't be shown. Ask your administrator to set PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisioned · {{deactivated}} deactivated by the directory",
+    "secretOnce": "Copy this token now and paste it into the Entra app's Secret Token field. It won't be shown again.",
+    "secretToken": "Secret token",
+    "secretDone": "I've copied it",
+    "lastUsed": "Last used {{date}}",
+    "neverUsed": "Not used yet",
+    "notWorking": "Not working: this organization's proven tenant has changed",
+    "revoke": "Revoke",
+    "label": "Token name",
+    "create": "Create provisioning token",
+    "createSubmit": "Create",
+    "cancel": "Cancel",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy to the clipboard.",
+    "revokeConfirm": {
+      "title": "Revoke this provisioning token?",
+      "message": "Entra stops provisioning with \"{{label}}\" immediately. People already provisioned keep their accounts."
+    },
+    "toasts": {
+      "created": "Provisioning token created.",
+      "revoked": "Provisioning token revoked."
+    },
+    "errors": {
+      "load": "Couldn't load provisioning.",
+      "create": "Couldn't create the provisioning token.",
+      "revoke": "Couldn't revoke the provisioning token.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before you create a provisioning token.",
+      "limit": "This organization already has two active provisioning tokens. Revoke one first.",
+      "notFound": "That provisioning token no longer exists."
+    }
   }
 }

@@ -28,6 +28,7 @@ import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../db/schema';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
 } from './softwareDeploymentResult';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -57,6 +58,42 @@ function riggedUpdateWithReturning(returningRows: unknown[]) {
   updateMock.mockReturnValue({ set: setMock });
   return { setMock, whereMock, returningMock };
 }
+
+describe('reconcileSoftwareInstallResult installer secrecy (#8170)', () => {
+  const FILE_NAME = 'setupdownloader_[aHR0cHM6Ly9leGFtcGxlLnRlc3Q=-synthetic].exe';
+  const URL_ = 'https://download.example.test/Packages/setupdownloader_%5BaHR0cHM6Ly9leGFtcGxlLnRlc3Q%3D-synthetic%5D.exe';
+  const leak = `fork/exec C:\\Temp\\${FILE_NAME}: fetched from ${URL_}`;
+  const scrubbed = 'fork/exec C:\\Temp\\[installer]: fetched from [installer]';
+  const reconcile = (payload: Record<string, unknown>, result: Record<string, unknown>) => reconcileSoftwareInstallResult(
+    { type: 'software_install', payload: { deploymentId: DEPLOYMENT_ID, retryCount: 0, fileName: FILE_NAME, downloadUrl: URL_, ...payload } },
+    DEVICE_ID,
+    { status: 'failed', exitCode: 1, ...result },
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    applyAutomationActionTerminalMock.mockResolvedValue(true);
+  });
+
+  it('a framework provider result stores no file name or link in output, error or the automation terminal', async () => {
+    const { setMock } = riggedUpdateWithReturning([{ id: 'result-1' }]);
+    await reconcile({ integrationProvider: 'bitdefender' }, { stdout: leak, error: leak });
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ output: scrubbed, errorMessage: scrubbed });
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({ output: scrubbed, error: scrubbed }));
+  });
+
+  it('stderr is scrubbed too when the agent sent no error', async () => {
+    const { setMock } = riggedUpdate();
+    await reconcile({ integrationProvider: 'bitdefender' }, { stderr: leak });
+    expect(setMock.mock.calls[0]![0].errorMessage).toBe(scrubbed);
+  });
+
+  it('a result with no framework provider on its payload is untouched', async () => {
+    const { setMock } = riggedUpdate();
+    await reconcile({}, { stdout: leak, error: leak });
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ output: leak, errorMessage: leak });
+  });
+});
 
 describe('applySoftwareInstallResult', () => {
   beforeEach(() => {
@@ -340,6 +377,28 @@ describe('applySoftwareInstallResult', () => {
     expect(stored.output).toBe('install-log [PRIVATE_KEY_REDACTED] done');
     expect(stored.errorMessage).toBe('install-error [PRIVATE_KEY_REDACTED] boom');
     expect(JSON.stringify(stored)).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('strips ANSI colour escapes from output and errorMessage before persisting (#10307)', async () => {
+    const { setMock } = riggedUpdateWithReturning([{ id: 'dr-ansi' }]);
+    const ESC = '\u001b';
+
+    await applySoftwareInstallResult({
+      deploymentId: DEPLOYMENT_ID,
+      deviceId: DEVICE_ID,
+      status: 'failed',
+      exitCode: 1,
+      stdout: `${ESC}[90m14:03${ESC}[0m ${ESC}[31mERR${ESC}[0m Invalid provisioning code\r\n`,
+      stderr: `${ESC}[31mfatal${ESC}[0m`,
+    });
+
+    const stored = setMock.mock.calls[0]![0];
+    expect(stored.output).toBe('14:03 ERR Invalid provisioning code\n');
+    expect(stored.errorMessage).toBe('fatal');
+    const terminal = applyAutomationActionTerminalMock.mock.calls[0]![0];
+    expect(terminal.output).toBe('14:03 ERR Invalid provisioning code\n');
+    expect(terminal.error).toBe('fatal');
+    expect(JSON.stringify({ stored, terminal })).not.toContain(ESC);
   });
 
   it('normalizes a manager_unavailable-prefixed error to the web-facing badge string', async () => {

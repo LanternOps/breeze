@@ -190,7 +190,16 @@ export function fingerprintAction(action: unknown): string {
   return sha(canonical(stripped));
 }
 
-export function monitorSignature(m: Pick<ProposedMonitor, 'enabled' | 'kind' | 'condition' | 'severity' | 'cooldownMinutes' | 'autoResolve' | 'deliveryMode' | 'deliveryChannelIds' | 'escalationPolicyId' | 'responses'>): string {
+/**
+ * A stored monitor's cooldown / auto-resolve may be `null` (W2 #10765: inherit
+ * the org/partner default). `null` hashes differently from any explicit value
+ * on purpose: an inheriting monitor follows the defaults, so it is never
+ * equivalent to the explicit values a legacy rule converts to.
+ */
+export type MonitorSignatureInput = Pick<ProposedMonitor, 'enabled' | 'kind' | 'condition' | 'severity' | 'deliveryMode' | 'deliveryChannelIds' | 'escalationPolicyId' | 'responses'>
+  & { cooldownMinutes: number | null; autoResolve: boolean | null };
+
+export function monitorSignature(m: MonitorSignatureInput): string {
   return sha(canonical({
     enabled: m.enabled, kind: m.kind, condition: m.condition, severity: m.severity, cooldownMinutes: m.cooldownMinutes, autoResolve: m.autoResolve,
     deliveryMode: m.deliveryMode, deliveryChannelIds: [...m.deliveryChannelIds].sort(), escalationPolicyId: m.escalationPolicyId,

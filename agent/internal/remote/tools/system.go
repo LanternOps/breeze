@@ -6,7 +6,14 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/flashguard"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
+
+// runShutdownCommand is the OS invocation, a seam so a test never runs a real
+// shutdown.
+var runShutdownCommand = func(cmd *exec.Cmd) error { return cmd.Run() }
 
 // maxShutdownDelayMinutes bounds the `delay` payload shared by the reboot,
 // shutdown, and safe-mode-reboot commands. The wire contract is minutes on
@@ -55,14 +62,21 @@ func Reboot(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
+	done, err := flashguard.Default().AdmitPowerAction(CmdReboot)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("reboot refused: %w", err), time.Since(startTime).Milliseconds())
+	}
+	defer done()
+
 	cmd, err := buildShutdownCommand(true, delay)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	if err := cmd.Run(); err != nil {
+	if err := runShutdownCommand(cmd); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to reboot: %w", err), time.Since(startTime).Milliseconds())
 	}
+	flashguard.Default().NoteCountdown(time.Duration(delay) * time.Minute)
 
 	result := map[string]any{
 		"command": CmdReboot,
@@ -70,6 +84,45 @@ func Reboot(payload map[string]any) CommandResult {
 	}
 
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
+}
+
+// ForceRebootArgv is the exact argv ForceReboot runs on goos: an immediate
+// reboot (delay 0) with force. The API shows and audits the same argv.
+func ForceRebootArgv(goos string) (string, []string, error) {
+	return shutdownArgv(goos, true, true, 0)
+}
+
+// ForceReboot reboots immediately, force-closing running apps (#8729). It takes
+// no delay: "Force reboot now" is immediate by definition, and a delayed
+// Windows reboot already implies /f. The payload is ignored.
+//
+// Force closes applications, not firmware installs: during a flash this waits
+// for the section to end rather than being refused, because the operator asked
+// for a reboot and should get one. The wait is bounded by flashguard.MaxTTL;
+// running out returns a refusal and does not reboot.
+func ForceReboot(_ map[string]any) CommandResult {
+	startTime := time.Now()
+	name, args, err := ForceRebootArgv(runtime.GOOS)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+
+	done, err := flashguard.Default().WaitForPowerAction(CmdForceReboot)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("force reboot refused: %w", err), time.Since(startTime).Milliseconds())
+	}
+	defer done()
+
+	if err := runShutdownCommand(procspawn.Command(name, args...)); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to force reboot: %w", err), time.Since(startTime).Milliseconds())
+	}
+	flashguard.Default().NoteCountdown(0)
+
+	return NewSuccessResult(map[string]any{
+		"command": CmdForceReboot,
+		"force":   true,
+		"argv":    append([]string{name}, args...),
+	}, time.Since(startTime).Milliseconds())
 }
 
 // Shutdown schedules a system shutdown after the requested delay.
@@ -81,14 +134,21 @@ func Shutdown(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
+	done, err := flashguard.Default().AdmitPowerAction(CmdShutdown)
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("shutdown refused: %w", err), time.Since(startTime).Milliseconds())
+	}
+	defer done()
+
 	cmd, err := buildShutdownCommand(false, delay)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	if err := cmd.Run(); err != nil {
+	if err := runShutdownCommand(cmd); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to shutdown: %w", err), time.Since(startTime).Milliseconds())
 	}
+	flashguard.Default().NoteCountdown(time.Duration(delay) * time.Minute)
 
 	result := map[string]any{
 		"command": CmdShutdown,
@@ -105,9 +165,9 @@ func Lock(payload map[string]any) CommandResult {
 	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = exec.Command("rundll32.exe", "user32.dll,LockWorkStation").Run()
+		err = procspawn.Command("rundll32.exe", "user32.dll,LockWorkStation").Run()
 	case "darwin":
-		err = exec.Command("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend").Run()
+		err = procspawn.Command("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend").Run()
 	case "linux":
 		err = lockLinuxSession()
 	default:
@@ -140,6 +200,15 @@ func Lock(payload map[string]any) CommandResult {
 // goos is a parameter rather than a direct runtime.GOOS read so the mapping is
 // table-testable from any host platform.
 func shutdownArgs(goos string, isReboot bool, delayMinutes int) (string, []string, error) {
+	return shutdownArgv(goos, isReboot, false, delayMinutes)
+}
+
+// shutdownArgv is shutdownArgs with the force flag (#8729). On Windows, force
+// adds `/f`: Microsoft documents it as implied only when `/t` > 0, so an
+// immediate reboot without it can stall on "this app is preventing shutdown".
+// On linux/darwin `shutdown -r` does not wait on applications, so force
+// changes nothing there.
+func shutdownArgv(goos string, isReboot, force bool, delayMinutes int) (string, []string, error) {
 	delayMinutes = clampShutdownDelayMinutes(delayMinutes)
 
 	switch goos {
@@ -148,7 +217,11 @@ func shutdownArgs(goos string, isReboot bool, delayMinutes int) (string, []strin
 		if isReboot {
 			action = "/r"
 		}
-		return "shutdown", []string{action, "/t", strconv.Itoa(delayMinutes * 60)}, nil
+		args := []string{action}
+		if force {
+			args = append(args, "/f")
+		}
+		return "shutdown", append(args, "/t", strconv.Itoa(delayMinutes*60)), nil
 	case "linux", "darwin":
 		action := "-h"
 		if isReboot {
@@ -165,13 +238,13 @@ func buildShutdownCommand(isReboot bool, delayMinutes int) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	return exec.Command(name, args...), nil
+	return procspawn.Command(name, args...), nil
 }
 
 func lockLinuxSession() error {
 	var loginErr error
 	if path, err := exec.LookPath("loginctl"); err == nil {
-		loginErr = exec.Command(path, "lock-session").Run()
+		loginErr = procspawn.Command(path, "lock-session").Run()
 		if loginErr == nil {
 			return nil
 		}
@@ -181,7 +254,7 @@ func lockLinuxSession() error {
 
 	var dmErr error
 	if path, err := exec.LookPath("dm-tool"); err == nil {
-		dmErr = exec.Command(path, "lock").Run()
+		dmErr = procspawn.Command(path, "lock").Run()
 		if dmErr == nil {
 			return nil
 		}

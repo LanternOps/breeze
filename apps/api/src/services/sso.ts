@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, customFetch, errors as joseErrors } from 'jose';
 import { safeFetch, SsrfBlockedError, isPrivateIp, isAlwaysBlockedIp } from './urlSafety';
+import type { SsoOidcPresetId } from '@breeze/shared';
 
 // ============================================
 // Types
@@ -274,9 +275,11 @@ const IDP_MFA_AMR_VALUES: readonly string[] = ['mfa', 'phr'];
 /**
  * True when the IdP's id_token attests strong authentication — `amr` contains
  * one of `IDP_MFA_AMR_VALUES`. This is only trusted when the provider opts in
- * via `trustsIdpMfa`; an org that does not opt in always gets `mfa:false`
- * (fail-safe). Never used to satisfy the L4 step-up, which independently
- * re-verifies a Breeze-held factor.
+ * via `trustsIdpMfa`; an org that does not opt in never gets MFA credit from
+ * the assertion (fail-safe). A session can still be policy-admitted when the
+ * user holds no factor and policy does not require one (#11889), which does
+ * not depend on this. Never used to satisfy the L4 step-up, which
+ * independently re-verifies a Breeze-held factor.
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
   return Array.isArray(claims.amr) && claims.amr.some((v) => IDP_MFA_AMR_VALUES.includes(v));
@@ -871,7 +874,9 @@ export interface ProviderPreset {
   attributeMapping: AttributeMapping;
 }
 
-export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
+// Keyed by the shared SSO_OIDC_PRESET_IDS tuple (#9601) so this table, the
+// create route's `preset` validation and the web dropdown cannot drift apart.
+export const PROVIDER_PRESETS: Record<SsoOidcPresetId, ProviderPreset> = {
   'azure-ad': {
     name: 'Microsoft Azure AD',
     type: 'oidc',
@@ -1341,7 +1346,8 @@ export const SAML_PROVIDER_PRESETS: Record<string, SAMLProviderPreset> = {
 };
 
 // Combined presets for UI
-export const ALL_SSO_PRESETS = {
+// String-keyed on purpose: a lookup by arbitrary preset id (OIDC or SAML).
+export const ALL_SSO_PRESETS: Record<string, ProviderPreset | SAMLProviderPreset> = {
   ...PROVIDER_PRESETS,
   ...SAML_PROVIDER_PRESETS
 };

@@ -10,6 +10,7 @@ import { db } from '../db';
 import { devices, drExecutions, drPlanGroups, drPlans } from '../db/schema';
 import { eq, and, asc, desc, inArray, lt, or, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { classifyDrExecutionAuthorizationError, createDrExecutionAndEnqueue } from './drExecutionService';
 import { drRestoreConfigSchema, isBareMetalRebuildConfig } from './drBareMetalRebuildStep';
@@ -26,9 +27,22 @@ import {
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { resolveAiCallerPermissions } from './aiToolsRestoreAuthorization';
 import { hasPermission, PERMISSIONS } from './permissions';
+import type { ToolExecutionContext } from './toolExecutionContext';
+import { drExecutionView } from './drExecutionView';
+import {
+  addDrPlanGroup,
+  deleteDrPlanGroup,
+  DEPENDS_ON_GROUP_DENIED,
+  DR_PLAN_EXECUTION_IN_PROGRESS,
+  GROUP_HAS_DEPENDENTS_MESSAGE,
+  updateDrPlan,
+  updateDrPlanGroup,
+  type DrPlanChanges,
+  type DrPlanGroupChanges,
+  type DrPlanWriteResult,
+} from './drPlanWrites';
 
 const DEVICE_ORG_DENIED = 'One or more devices do not belong to this organization';
-const DEPENDS_ON_GROUP_DENIED = 'dependsOnGroupId must reference another group in the same DR plan';
 
 /**
  * A DR group may only hold devices of its PLAN's org. The central `deviceArgs`
@@ -53,30 +67,6 @@ async function proposedDevicesDenied(
     .where(and(inArray(devices.id, ids), eq(devices.orgId, orgId)));
   if (owned.length !== ids.length) return DEVICE_ORG_DENIED;
   return owned.some((row) => deviceSiteDenied(auth, row.siteId, row.id)) ? 'site_access_denied' : null;
-}
-
-/**
- * `depends_on_group_id` is a bare FK to dr_plan_groups.id (not plan- or
- * org-scoped, and FK checks are not subject to RLS), so a predecessor must be proven to be
- * another group of the SAME plan.
- */
-async function dependsOnGroupDenied(
-  dependsOnGroupId: string,
-  planId: string,
-  orgId: string,
-  selfGroupId?: string,
-): Promise<boolean> {
-  if (dependsOnGroupId === selfGroupId) return true;
-  const [row] = await db
-    .select({ id: drPlanGroups.id })
-    .from(drPlanGroups)
-    .where(and(
-      eq(drPlanGroups.id, dependsOnGroupId),
-      eq(drPlanGroups.planId, planId),
-      eq(drPlanGroups.orgId, orgId),
-    ))
-    .limit(1);
-  return !row;
 }
 
 /**
@@ -136,7 +126,11 @@ async function planStoredDevicesDenied(
   return groups.some((group) => holdsForbiddenDevice(forbidden, group.devices));
 }
 
-type DRHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+type DRHandler = (
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context?: ToolExecutionContext,
+) => Promise<string>;
 
 /**
  * W05b: `restoreConfig` goes through the same schema the HTTP routes use, so a
@@ -180,9 +174,9 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof eq> | any): SQL
 
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
 function safeHandler(toolName: string, fn: DRHandler): DRHandler {
-  return async (input, auth) => {
+  return async (input, auth, context) => {
     try {
-      return await fn(input, auth);
+      return await fn(input, auth, context);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[dr:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
@@ -212,6 +206,34 @@ async function loadPlanWithAccess(planId: string, auth: AuthContext) {
 // ============================================
 // Register all DR tools into the aiTools Map
 // ============================================
+
+/**
+ * Plan and group writes go through drPlanWrites.ts, which locks the plan row,
+ * refuses while an execution is pending or running, and moves the plan
+ * revision with the write — the same path the HTTP routes use.
+ */
+export { DR_PLAN_EXECUTION_IN_PROGRESS };
+
+const PLAN_NOT_FOUND = 'Plan not found or access denied';
+const GROUP_NOT_FOUND = 'Group not found or access denied';
+
+/** The tool's JSON reply for a plan write. */
+function planWriteReply<T>(result: DrPlanWriteResult<T>, key: 'plan' | 'group'): string {
+  switch (result.status) {
+    case 'written':
+      return JSON.stringify({ success: true, [key]: result.row });
+    case 'execution_in_progress':
+      return JSON.stringify({ error: DR_PLAN_EXECUTION_IN_PROGRESS });
+    case 'group_not_found':
+      return JSON.stringify({ error: GROUP_NOT_FOUND });
+    case 'plan_not_found':
+      return JSON.stringify({ error: PLAN_NOT_FOUND });
+    case 'invalid_dependency':
+      return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
+    case 'group_has_dependents':
+      return JSON.stringify({ error: GROUP_HAS_DEPENDENTS_MESSAGE });
+  }
+}
 
 export function registerDRTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -395,7 +417,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         // A missing plan is a dangling reference, not an authorization failure —
         // mirrors the HTTP twin in routes/dr.ts, which returns `plan: null`.
         return JSON.stringify({
-          ...execution,
+          ...drExecutionView(execution),
           plan: plan ?? null,
           groups,
         });
@@ -433,7 +455,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       // without one.
       if (drReadUnrestricted(auth)) {
         const rows = await load(undefined, limit);
-        return JSON.stringify({ executions: rows, showing: rows.length });
+        return JSON.stringify({ executions: rows.map(drExecutionView), showing: rows.length });
       }
       const orgId = getOrgId(auth);
       if (!orgId) return JSON.stringify({ executions: [], showing: 0 });
@@ -442,7 +464,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         load,
         filter: (rows) => filterReadableDrExecutions(rows, auth, orgId),
       });
-      return JSON.stringify({ executions: visible, showing: visible.length });
+      return JSON.stringify({ executions: visible.map(drExecutionView), showing: visible.length });
     }),
   });
 
@@ -470,7 +492,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         required: ['planId', 'executionType'],
       },
     },
-    handler: safeHandler('execute_dr_plan', async (input, auth) => {
+    handler: safeHandler('execute_dr_plan', async (input, auth, context) => {
       const planId = input.planId as string;
       const executionType = input.executionType as string;
       if (!planId || !executionType) return JSON.stringify({ error: 'planId and executionType are required' });
@@ -486,21 +508,20 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Plan not found or access denied' });
       }
 
-      const groupConditions: SQL[] = [eq(drPlanGroups.planId, plan.id)];
-      const gc = orgWhere(auth, drPlanGroups.orgId);
-      if (gc) groupConditions.push(gc);
-      const groups = await db
-        .select({
-          id: drPlanGroups.id,
-          name: drPlanGroups.name,
-          sequence: drPlanGroups.sequence,
-          devices: drPlanGroups.devices,
-          restoreConfig: drPlanGroups.restoreConfig,
-          estimatedDurationMinutes: drPlanGroups.estimatedDurationMinutes,
-        })
-        .from(drPlanGroups)
-        .where(and(...groupConditions))
-        .orderBy(asc(drPlanGroups.sequence));
+      // Tier 3 four-eyes: this handler only runs as the release of an approved
+      // intent, and it runs the plan definition that approval's digest covered
+      // (actionIntents/effectDigest.ts), never a fresh read of the live plan.
+      // Execution creation re-checks that definition under the plan row lock.
+      const approved = context?.verifiedDrPlan;
+      if (
+        !context?.actionIntentId
+        || !approved
+        || approved.definition.planId !== plan.id
+        || approved.definition.orgId !== plan.orgId
+      ) {
+        return JSON.stringify({ error: 'approved_definition_required' });
+      }
+      const groups = approved.definition.groups;
 
       // Route parity (routes/dr.ts POST /plans/:id/execute): a BARE_METAL_REBUILD
       // step creates bare-metal recoveries — the same act as POST
@@ -526,6 +547,7 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           executionType: executionType as 'rehearsal' | 'failover' | 'failback',
           initiatedBy: auth.user?.id ?? null,
           auth,
+          verifiedDefinition: approved,
         });
       } catch (error) {
         const failure = classifyDrExecutionAuthorizationError(error);
@@ -599,6 +621,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_dr_plan', async (input, auth) => {
+      const mfaError = mfaGatedToolError('manage_dr_plan', typeof input.action === 'string' ? input.action : undefined, auth);
+      if (mfaError) return mfaError;
       const action = input.action as string;
 
       if (action === 'create_plan') {
@@ -640,20 +664,15 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Plan not found or access denied' });
         }
 
-        const updateData: Record<string, unknown> = { updatedAt: new Date() };
-        if (typeof input.name === 'string') updateData.name = input.name.trim();
-        if (typeof input.description === 'string') updateData.description = input.description;
-        if (typeof input.status === 'string') updateData.status = input.status;
-        if (input.rpoTargetMinutes !== undefined) updateData.rpoTargetMinutes = Number(input.rpoTargetMinutes);
-        if (input.rtoTargetMinutes !== undefined) updateData.rtoTargetMinutes = Number(input.rtoTargetMinutes);
+        const changes: DrPlanChanges = {};
+        if (typeof input.name === 'string') changes.name = input.name.trim();
+        if (typeof input.description === 'string') changes.description = input.description;
+        if (typeof input.status === 'string') changes.status = input.status;
+        if (input.rpoTargetMinutes !== undefined) changes.rpoTargetMinutes = Number(input.rpoTargetMinutes);
+        if (input.rtoTargetMinutes !== undefined) changes.rtoTargetMinutes = Number(input.rtoTargetMinutes);
 
-        const [updatedPlan] = await db
-          .update(drPlans)
-          .set(updateData)
-          .where(eq(drPlans.id, planId))
-          .returning();
-
-        return JSON.stringify({ success: true, plan: updatedPlan });
+        // Never tell the model the update landed when it matched no row.
+        return planWriteReply(await updateDrPlan({ planId: plan.id, orgId: plan.orgId, changes }), 'plan');
       }
 
       if (action === 'add_group') {
@@ -678,31 +697,22 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         if (hostDenied) return JSON.stringify({ error: hostDenied });
         const proposedDenied = await proposedDevicesDenied(auth, input.devices, plan.orgId);
         if (proposedDenied) return JSON.stringify({ error: proposedDenied });
-        if (
-          typeof input.dependsOnGroupId === 'string'
-          && await dependsOnGroupDenied(input.dependsOnGroupId, plan.id, plan.orgId)
-        ) {
-          return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
-        }
-
-        const [group] = await db
-          .insert(drPlanGroups)
-          .values({
-            planId: plan.id,
-            orgId: plan.orgId,
+        // The predecessor is checked by the write path, under the plan lock.
+        return planWriteReply(await addDrPlanGroup({
+          planId: plan.id,
+          orgId: plan.orgId,
+          values: {
             name: input.name.trim(),
             sequence: input.sequence !== undefined ? Number(input.sequence) : 0,
             dependsOnGroupId: typeof input.dependsOnGroupId === 'string' ? input.dependsOnGroupId : null,
-            devices: Array.isArray(input.devices) ? input.devices : [],
+            devices: Array.isArray(input.devices) ? input.devices as string[] : [],
             restoreConfig: restoreConfig.config,
             estimatedDurationMinutes:
               input.estimatedDurationMinutes !== undefined
                 ? Number(input.estimatedDurationMinutes)
                 : null,
-          })
-          .returning();
-
-        return JSON.stringify({ success: true, group });
+          },
+        }), 'group');
       }
 
       if (action === 'update_group') {
@@ -726,43 +736,36 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Group not found or access denied' });
         }
 
-        const updateData: Record<string, unknown> = {};
-        if (typeof input.name === 'string') updateData.name = input.name.trim();
-        if (input.sequence !== undefined) updateData.sequence = Number(input.sequence);
+        const changes: DrPlanGroupChanges = {};
+        if (typeof input.name === 'string') changes.name = input.name.trim();
+        if (input.sequence !== undefined) changes.sequence = Number(input.sequence);
         if (input.dependsOnGroupId !== undefined) {
-          if (
-            typeof input.dependsOnGroupId === 'string'
-            && await dependsOnGroupDenied(input.dependsOnGroupId, planId, existing.orgId, groupId)
-          ) {
-            return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
-          }
-          updateData.dependsOnGroupId =
+          // The predecessor is checked by the write path, under the plan lock.
+          changes.dependsOnGroupId =
             typeof input.dependsOnGroupId === 'string' ? input.dependsOnGroupId : null;
         }
         if (Array.isArray(input.devices)) {
           // The group's org is its plan's org (both written from the plan row).
           const proposedDenied = await proposedDevicesDenied(auth, input.devices, existing.orgId);
           if (proposedDenied) return JSON.stringify({ error: proposedDenied });
-          updateData.devices = input.devices;
+          changes.devices = input.devices as string[];
         }
         if (input.restoreConfig !== undefined) {
           const restoreConfig = parseRestoreConfigInput(input.restoreConfig);
           if ('error' in restoreConfig) return JSON.stringify({ error: restoreConfig.error });
           const hostDenied = await rebuildHostDenied(restoreConfig.config, auth);
           if (hostDenied) return JSON.stringify({ error: hostDenied });
-          updateData.restoreConfig = restoreConfig.config;
+          changes.restoreConfig = restoreConfig.config;
         }
         if (input.estimatedDurationMinutes !== undefined) {
-          updateData.estimatedDurationMinutes = Number(input.estimatedDurationMinutes);
+          changes.estimatedDurationMinutes = Number(input.estimatedDurationMinutes);
         }
-
-        const [group] = await db
-          .update(drPlanGroups)
-          .set(updateData)
-          .where(eq(drPlanGroups.id, groupId))
-          .returning();
-
-        return JSON.stringify({ success: true, group });
+        return planWriteReply(await updateDrPlanGroup({
+          planId,
+          orgId: existing.orgId,
+          groupId,
+          changes,
+        }), 'group');
       }
 
       if (action === 'delete_group') {
@@ -786,7 +789,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Group not found or access denied' });
         }
 
-        await db.delete(drPlanGroups).where(eq(drPlanGroups.id, groupId));
+        const deleted = await deleteDrPlanGroup({ planId, orgId: existing.orgId, groupId });
+        if (deleted.status !== 'written') return planWriteReply(deleted, 'group');
         return JSON.stringify({ success: true, deleted: true, groupId });
       }
 

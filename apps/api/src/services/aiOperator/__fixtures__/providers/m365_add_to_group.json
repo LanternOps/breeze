@@ -1,0 +1,66 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id} and GET /groups/{id}/members?$filter=id eq '{userId}' (read profile); GET /groups/{id} pre-read + POST /groups/{id}/members/$ref (actions executor, m365.group.membership.add)",
+  "_notes": "unsupported_group_type is the executor's group pre-read refusal for a group whose groupTypes contains DynamicMembership OR whose isAssignableToRole is true; NO members call is made. Discovery cannot see isAssignableToRole (Amendment B.0 item 15), so the lab run records both kinds of group (lab-run doc section 6).",
+  "toolName": "m365_add_to_group",
+  "provider": "m365",
+  "preSatisfied": null,
+  "preSatisfiedUnreachable": "the membership index is eventually consistent and the write is idempotent, so an is-a-member read before the write answers unknown by design",
+  "preUnsatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true
+      }
+    },
+    "read:m365.group.member.get": {
+      "ok": true,
+      "kind": "collection",
+      "items": [],
+      "truncated": false
+    }
+  },
+  "writeOk": {
+    "write:m365.group.membership.add": {
+      "ok": true,
+      "result": {
+        "success": true,
+        "action": "m365.group.membership.add",
+        "userId": "00000000-0000-4000-8000-0000000a0101",
+        "groupId": "00000000-0000-4000-8000-0000000b0101",
+        "noop": false
+      }
+    }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true
+      }
+    },
+    "read:m365.group.member.get": {
+      "ok": true,
+      "kind": "collection",
+      "items": [
+        {
+          "id": "00000000-0000-4000-8000-0000000a0101"
+        }
+      ],
+      "truncated": false
+    }
+  },
+  "writeRefusal": {
+    "write:m365.group.membership.add": {
+      "ok": false,
+      "code": "unsupported_group_type",
+      "message": "This group's membership is dynamic or role-assignable and cannot be edited directly."
+    }
+  }
+}

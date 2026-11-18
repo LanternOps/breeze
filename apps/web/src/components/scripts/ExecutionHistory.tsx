@@ -51,6 +51,8 @@ export type ScriptExecution = {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  // #4342 W2 — set once the retention job removed stdout/stderr (ISO).
+  outputPurgedAt?: string | null;
   duration?: number; // in seconds
   // NULL/absent for every run that emitted no `::breeze:custom-fields::`
   // marker. Only present once the execution-detail endpoint has been fetched
@@ -76,6 +78,10 @@ export type ScriptExecution = {
   // "too late" / "stop failed" copy once the execution reaches a terminal
   // status. Absent/null means no cancel was ever requested.
   cancelState?: CancelState | null;
+  // #9563 — the device's own status (devices.status), from both execution read
+  // endpoints. Lets a `queued` run say "device offline" only when the device
+  // really is offline, rather than whenever no agent session took the command.
+  deviceStatus?: string | null;
 };
 
 type ExecutionHistoryProps = {
@@ -414,7 +420,7 @@ export default function ExecutionHistory({
                           'h-3 w-3',
                           (execution.status === 'running' || execution.status === 'cancelling') && 'animate-spin'
                         )} />
-                        {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
+                        {t(/* i18n-dynamic */ `executionHistory.${resolveExecutionStatusLabel(execution.status, execution.cancelState, execution.deviceStatus)}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">

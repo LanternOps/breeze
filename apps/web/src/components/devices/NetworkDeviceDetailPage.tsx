@@ -22,6 +22,8 @@ import { typeConfig, approvalStatusConfig } from '../discovery/DiscoveredAssetLi
 import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { IdentityCard } from './networkDevice/IdentityCard';
+import PhysicalPlacementCard from './PhysicalPlacementCard';
+import AssetCircuitCard from './AssetCircuitCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
 import { ReachabilityCard } from './networkDevice/ReachabilityCard';
 import { resolveHealthCard } from './networkDevice/health';
@@ -267,10 +269,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         asset={asset}
         reachability={extras.reachability ?? null}
         collection={collection}
-        timezone={resolveAssetTimezone(extras.siteTimezone)}
-        probeState={probeState}
         onViewPorts={handleViewPorts}
-        onViewMonitoring={handleViewMonitoring}
       />
 
       <OverflowTabs
@@ -297,6 +296,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 assetType={asset.type}
                 collection={collection}
                 snmpEnabled={!!extras.snmpMonitoringEnabled}
+                hasNetworkCheck={!!extras.reachability?.detail.networkCheck}
                 timezone={timezone}
                 onSetUpMonitoring={() => openSettings('monitoring')}
                 onViewMonitoring={handleViewMonitoring}
@@ -322,6 +322,14 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               onAnnounce={announce}
               onEditIdentity={() => openSettings('identity')}
             />
+
+            <PhysicalPlacementCard
+              subject="discovered"
+              id={asset.id}
+              linkedDeviceName={asset.linkedDeviceName}
+            />
+
+            <AssetCircuitCard subject="discovered" id={asset.id} />
 
             {!asset.linkedDeviceId && extras.autoLinkSuppressedAt && (
               <p className="text-xs text-muted-foreground" data-testid="network-detail-suppressed">

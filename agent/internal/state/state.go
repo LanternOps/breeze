@@ -53,7 +53,14 @@ type AgentState struct {
 	// without fixing anything (#8934). Never written for a transport failure
 	// with no HTTP answer. Zeroed by UpdateHeartbeat.
 	ServerUnavailableAt time.Time `json:"server_unavailable_at,omitempty"`
-	Timestamp           time.Time `json:"timestamp"`
+	// ControlPlaneBlockedAt is the last time the agent's heartbeat loop
+	// failed because a network filter (not the server) is blocking the
+	// control plane: a plaintext-filter signature or a block kind recorded
+	// by the blocked-host tracker (#8868). Liveness evidence while the
+	// heartbeat cannot succeed: the loop is running, and a watchdog restart
+	// cannot lift the filter. Zeroed by UpdateHeartbeat.
+	ControlPlaneBlockedAt time.Time `json:"control_plane_blocked_at,omitempty"`
+	Timestamp             time.Time `json:"timestamp"`
 }
 
 // Rename retry bounds. On Windows 10 1607+ atomicrename.Replace uses
@@ -147,6 +154,7 @@ func UpdateHeartbeat(path string, t time.Time) error {
 	// both "could not heartbeat" markers are obsolete.
 	s.AuthRejectedAt = time.Time{}
 	s.ServerUnavailableAt = time.Time{}
+	s.ControlPlaneBlockedAt = time.Time{}
 	s.Timestamp = time.Now()
 	return Write(path, s)
 }
@@ -182,6 +190,24 @@ func UpdateServerUnavailable(path string, t time.Time) error {
 		s = &AgentState{PID: os.Getpid()}
 	}
 	s.ServerUnavailableAt = t
+	s.Timestamp = time.Now()
+	return Write(path, s)
+}
+
+// UpdateControlPlaneBlocked records that the agent's heartbeat loop is alive
+// but a network filter is blocking its control plane (see
+// AgentState.ControlPlaneBlockedAt). Same contract as UpdateServerUnavailable:
+// LastHeartbeat is untouched and a missing file is recreated with this
+// process's PID.
+func UpdateControlPlaneBlocked(path string, t time.Time) error {
+	s, err := Read(path)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		s = &AgentState{PID: os.Getpid()}
+	}
+	s.ControlPlaneBlockedAt = t
 	s.Timestamp = time.Now()
 	return Write(path, s)
 }

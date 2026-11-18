@@ -110,7 +110,8 @@ describe('dispatchTrackedDbRestore (#6974)', () => {
 
     const res = await dispatchTrackedDbRestore(base);
 
-    expect(res).toEqual({ ok: false, error: 'redis down' });
+    // The raw error stays in the log; callers and target_config get a fixed message.
+    expect(res).toEqual({ ok: false, error: 'Failed to dispatch restore command to agent' });
     expect(failed.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 

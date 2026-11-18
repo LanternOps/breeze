@@ -16,6 +16,8 @@ import { Hono } from 'hono';
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  // Decommission/restore enqueue a dynamic-group re-evaluation after commit (#9933).
+  runAfterDbContextCommit: vi.fn(),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -161,6 +163,7 @@ import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/
 import { ne } from 'drizzle-orm';
 import { deviceCommands } from '../../db/schema';
 import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
+import { NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -229,11 +232,24 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     const txSelect = vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(pendingCommandRows) }),
     });
-    const tx = { update: vi.fn().mockReturnValue({ set }), select: txSelect };
+    const tx = { execute: vi.fn().mockResolvedValue([]), update: vi.fn().mockReturnValue({ set }), select: txSelect };
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
 
     return { set, updWhere, tx, txSelect };
   }
+
+  it('returns an isolation refusal without disconnecting or tearing down the device', async () => {
+    rigDecommission(ONLINE_DEVICE);
+    vi.mocked(db.transaction).mockRejectedValueOnce(new NetworkIsolationUnresolvedError('decommission', [
+      { deviceId: DEVICE_ID, isolationId: '22222222-2222-4222-8222-222222222222' },
+    ]));
+    const res = await app.request(`/devices/${DEVICE_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+    expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+    expect(disconnectAgent).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
 
   it('calls terminateDeviceRemoteSessions with the decommissioned device id', async () => {
     rigDecommission(ONLINE_DEVICE);

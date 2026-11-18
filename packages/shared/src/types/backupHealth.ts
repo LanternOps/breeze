@@ -7,6 +7,8 @@
  * is protected" came to mean three different things.
  */
 
+import type { BackupStatusBucketId } from '../utils/backupHealth';
+
 /**
  * The normalized outcome of a device's most recent backup session, for BOTH
  * first-party Breeze backups (via `mapBackupJobStatus`) and external vendors
@@ -22,6 +24,11 @@
  * actionable state. `unknown` means "the vendor reported something we do not
  * recognise", which is a gap in OUR mapping and must never be rendered as
  * either healthy or failed.
+ *
+ * `paused` (appended by `2027-01-22-205900-external-backup-status-paused.sql`)
+ * means an operator deliberately stopped protecting the device (Axcient
+ * `PARKED`). It is never covered and never alerts. It is distinct from
+ * `not_started`, a backup that never ran, which keeps alerting.
  */
 export const EXTERNAL_BACKUP_STATUSES = [
   'completed',
@@ -34,6 +41,7 @@ export const EXTERNAL_BACKUP_STATUSES = [
   'not_started',
   'no_backups',
   'unknown',
+  'paused',
 ] as const;
 
 export type ExternalBackupStatus = (typeof EXTERNAL_BACKUP_STATUSES)[number];
@@ -88,7 +96,7 @@ export interface BackupHealthRow {
   computerName: string | null;
   osType: 'workstation' | 'server' | 'unknown';
   /** `m365` rows are vendor cloud-mailbox accounts and are never linked to a device. */
-  accountType: 'endpoint' | 'm365';
+  accountType: 'endpoint' | 'm365' | 'gws';
   status: ExternalBackupStatus;
   health: BackupHealth;
   recency: BackupRecency;
@@ -101,10 +109,27 @@ export interface BackupHealthRow {
   usedBytes: number | null;
   errorsCount: number;
   dataSources: string[];
-  /** 28 entries, oldest first. `status: null` = no observation that day (grey). */
+  /**
+   * 28 entries, oldest first. `status: null` = no observation that day (grey).
+   * `completed` means a successful session ran that day. A past provider day
+   * that was polled as `completed` with no new success is `no_backups` (a
+   * missed day), not the stale last-session status; today stays `null` until
+   * a success lands (#12025).
+   */
   history28d: Array<{ day: string; status: ExternalBackupStatus | null }>;
   /** `devices.status` when linked — "backup stale but the device is offline" context. */
   agentOnline: boolean | null;
+  /**
+   * The vendor's own boot check, when the provider supplies one (Axcient
+   * AutoVerify). `verifiedBootable` alone decides the state, through
+   * `verifiedBootableState`: it is null for a first-party row, a provider
+   * without the signal, and a device with no result yet. The date can be null
+   * beside a result when the vendor did not give one. Rows saved in a report
+   * before these fields existed omit all three.
+   */
+  verifiedBootableAt: string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 }
 
 /**
@@ -116,7 +141,14 @@ export interface BackupHealthSummary {
   endpoints: { total: number; covered: number; uncovered: number };
   providerOnly: number;
   m365Accounts: number;
+  /** Raw count of each row's last-session status, as the vendor reported it. */
   byStatus: Record<ExternalBackupStatus, number>;
+  /**
+   * The Status card's counts, one per `BACKUP_STATUS_BUCKET_IDS` entry, folded
+   * with `bucketForBackupRow`. Unlike `byStatus`, an overdue `completed` row
+   * counts under `overdue`, not `completed` (#12025).
+   */
+  byStatusBucket: Record<BackupStatusBucketId, number>;
   byHealth: Record<BackupHealth, number>;
   byRecency: Record<BackupRecency, number>;
 }

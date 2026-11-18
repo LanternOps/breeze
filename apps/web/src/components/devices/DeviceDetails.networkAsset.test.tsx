@@ -48,7 +48,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 404):
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
-const ASSETS_URL = `/discovery/assets?linkedDeviceId=${DEVICE_ID}`;
+const ASSETS_URL = `/discovery/assets?linkedDeviceId=${DEVICE_ID}&orgId=org-1`;
 
 beforeEach(() => {
   fetchWithAuthMock.mockReset();

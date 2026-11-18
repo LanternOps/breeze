@@ -133,7 +133,8 @@ export function parseNvd(doc: unknown): NvdParseResult {
       cvssVersion: asString(cvssData?.version),
       cvssScore,
       cvssVector: asString(cvssData?.vectorString),
-      severity: asString(metric?.baseSeverity) ?? asString(cvssData?.baseSeverity),
+      // Stored lowercase: the API filter, summaries and web contract use lowercase (#11902).
+      severity: (asString(metric?.baseSeverity) ?? asString(cvssData?.baseSeverity))?.toLowerCase() ?? null,
       cpeMatches,
     });
   }

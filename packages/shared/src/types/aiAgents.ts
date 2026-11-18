@@ -1,10 +1,12 @@
-export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer', 'research'] as const;
+export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer', 'research', 'troubleshoot'] as const;
 export type AiAgentKind = (typeof AI_AGENT_KINDS)[number];
 
 /**
  * Kinds that can hold tool actions (and so earn supervised keys / graduation).
  * `research` is read-only with zero actions (AI Suggested Fixes W2), so
  * action-keyed surfaces enumerate this instead of AI_AGENT_KINDS.
+ * `troubleshoot` (#11084) is excluded too: its intents are approval-only
+ * forever (never `act`), so it has no supervised keys and never graduates.
  */
 export const AI_AGENT_ACTING_KINDS = ['triage', 'patch', 'helpdesk', 'designer'] as const satisfies readonly AiAgentKind[];
 
@@ -23,9 +25,20 @@ export const DESIGNER_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'act'] as 
  * (maxActionsPerRun 0), so `shadow` has nothing to shadow; `act` means "on".
  */
 export const RESEARCH_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'act'] as const;
+/**
+ * Wisp delegation W1 (#11084) — the system-provisioned `troubleshoot` agent
+ * owns device-troubleshooting runs, which admission forces to `shadow` so every
+ * change becomes an approval intent. `act` would make those intents
+ * policy-decidable, so it is never an allowed mode; `off` switches it off.
+ */
+export const TROUBLESHOOT_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'shadow'] as const;
+/** The built-in troubleshoot agent's display name and `ai_agents.provisioned_by` value (#11084). */
+export const TROUBLESHOOT_AGENT_NAME = 'Device troubleshooting (built-in)' as const;
+export const TROUBLESHOOT_PROVISIONER = 'system:device_troubleshooting' as const;
 export function allowedModesForKind(kind: AiAgentKind): readonly AiAgentMode[] {
   if (kind === 'designer') return DESIGNER_ALLOWED_MODES;
   if (kind === 'research') return RESEARCH_ALLOWED_MODES;
+  if (kind === 'troubleshoot') return TROUBLESHOOT_ALLOWED_MODES;
   return AI_AGENT_MODES;
 }
 
@@ -218,6 +231,32 @@ export interface AiAgentLimits {
   analysisMaxStepTimeoutSeconds: number;
   analysisMaxStepsPerRun: number;
   /**
+   * W02 analysis sessions: the device cap on a `site`/`org` frame expanded at
+   * admission. A `devices` scope stays under `analysisMaxInputDevicesPerRun`;
+   * only a frame (a whole site or org the run reasons over) may be this wide.
+   * Merged with `min` (an org may tighten, never loosen, a partner cap).
+   * Snapshot v17.
+   */
+  analysisMaxFrameDevices: number;
+  /**
+   * W03 analysis sessions: the longest continuation chain, counted in links
+   * from the root run (a root is depth 0). Enforced at analysis admission
+   * under the org-wide analysis-compute lock. Merged with `min` (the default
+   * in `effectivePolicy.ts mergeLimits`): an org may tighten, never loosen,
+   * a partner ceiling. Snapshot v18.
+   */
+  analysisMaxChainDepth: number;
+  /**
+   * W03: the most runs one chain may hold in total (root plus continuations).
+   * Same enforcement point and `min` merge as `analysisMaxChainDepth`. v18.
+   */
+  analysisMaxChainRuns: number;
+  /**
+   * W03: the most a whole chain may spend, in cents, summed over its runs.
+   * Same enforcement point and `min` merge as `analysisMaxChainDepth`. v18.
+   */
+  analysisMaxChainBudgetCents: number;
+  /**
    * #4442 W05 — hard per-OCCURRENCE cap on how many distinct devices one
    * sweep may touch unattended. Merged with `min` (the default), so an org
    * may tighten it and never widen it. Default 3: a genuine canary, not a
@@ -352,6 +391,10 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   analysisMaxConcurrentRuns: 2,
   analysisMaxStepTimeoutSeconds: 300,
   analysisMaxStepsPerRun: 40,
+  analysisMaxFrameDevices: 1000,
+  analysisMaxChainDepth: 8,
+  analysisMaxChainRuns: 12,
+  analysisMaxChainBudgetCents: 600,
   // Sweep act-mode caps (#4442 W05) — see
   // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring.
   // maxUnattendedDevicesPerSweep merges with min (the default);
@@ -733,12 +776,22 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * v16 (AI Suggested Fixes W2): the seven research-profile limits. Same rule as
  * every prior bump: a v1-v15 in-flight run's snapshot lacks them and MUST still
  * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
+ *
+ * v17 (W02 analysis sessions): `analysisMaxFrameDevices` - see
+ * `AiAgentLimits.analysisMaxFrameDevices`'s docstring. Same rule as every
+ * prior bump: a v1-v16 in-flight run's snapshot lacks it and MUST still
+ * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
+ *
+ * v18 (W03 analysis sessions): `analysisMaxChainDepth`, `analysisMaxChainRuns`,
+ * `analysisMaxChainBudgetCents` - see the `AiAgentLimits` docstrings. Same rule
+ * as every prior bump: a v1-v17 in-flight run's snapshot lacks them and MUST
+ * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 16 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 18 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), 15 (pre-research-limits), or 16 (current). Read sites must tolerate all sixteen. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), 15 (pre-research-limits), 16 (pre-frame-limit), 17 (pre-chain-limits), or 18 (current). Read sites must tolerate all eighteen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -1130,9 +1183,17 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * that gathers server-side datasets, computes inside a per-run sandbox via
  * the `workspace_*` tools, and ends with `submit_analysis`. Admission is
  * counted against `analysisMaxConcurrentRuns`/`analysisMaxRunsPerHour`.
+ *
+ * Wisp W05 added `assessment`: a grant-bearing, device-less run of the org's
+ * `triage`-kind agent that looks at what changed for one org under a Wisp
+ * grant and reports through outcome tools (concerns, nudges, proposals). It
+ * executes nothing (`maxActionsPerRun` pinned to 0). Admission requires a
+ * grant and is counted against the constants in
+ * `apps/api/src/services/aiAgents/assessmentProfile.ts`, not policy limits.
  */
 export const AI_AGENT_RUN_PROFILES = [
   'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis', 'remediation_research',
+  'assessment', 'device_troubleshooting',
 ] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 

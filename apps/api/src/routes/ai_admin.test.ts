@@ -12,6 +12,7 @@ vi.mock('../services/topology/aiSessionAccess', () => ({
   resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
   topologySessionAccessCondition: vi.fn(async () => undefined),
   topologySessionCondition: vi.fn(() => undefined),
+  topologyAuditSessionCondition: vi.fn(() => undefined),
 }));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -123,6 +124,7 @@ vi.mock('../services/aiAgent', () => ({
 vi.mock('../services/aiCostTracker', () => ({
   getSessionHistory: vi.fn(),
   getUsageSummary: vi.fn(),
+  getAggregateUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
 }));
 
@@ -182,7 +184,7 @@ import {
   handleApproval,
   searchSessions,
 } from '../services/aiAgent';
-import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { getUsageSummary, getAggregateUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { resolveToolRateLimitMultiplier } from '../services/aiToolRateLimits';
@@ -337,6 +339,16 @@ describe('AI routes', () => {
         return next();
       });
 
+      // #9667: no-org requests now aggregate across accessible orgs.
+      vi.mocked(getAggregateUsageSummary).mockResolvedValueOnce({
+        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        billedTo: 'platform',
+        credits: null,
+        alerts: { fired: [] },
+      } as never);
+
       const res = await app.request('/ai/usage', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -346,6 +358,7 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.budget).toBeNull();
       expect(body.alerts).toEqual({ fired: [] });
+      expect(getAggregateUsageSummary).toHaveBeenCalledWith(null);
       expect(getUsageSummary).not.toHaveBeenCalled();
     });
   });
@@ -742,6 +755,32 @@ describe('AI routes', () => {
     });
   });
 
+  describe('GET /ai/admin/tool-executions refusal series (#10411)', () => {
+    const makeChainMock = (result: unknown[]) => {
+      const chain: any = {};
+      for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'groupBy', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+      chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
+      return chain;
+    };
+
+    it('reports platform refusals as their own daily series, apart from approval rejections', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([{ status: 'rejected', count: 1 }, { status: 'refused', count: 3 }]))
+        .mockReturnValueOnce(makeChainMock([]))
+        .mockReturnValueOnce(makeChainMock([{ date: '2026-10-29', completed: '0', failed: '0', rejected: '1', refused: '3' }]))
+        .mockReturnValueOnce(makeChainMock([]));
+
+      const res = await app.request(`/ai/admin/tool-executions?orgId=${ORG_ID}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.summary.byStatus).toEqual({ rejected: 1, refused: 3 });
+      expect(body.timeSeries).toEqual([{ date: '2026-10-29', completed: 0, failed: 0, rejected: 1, refused: 3 }]);
+      const seriesFields = vi.mocked(db.select).mock.calls.at(-2)![0] as Record<string, unknown>;
+      expect(seriesFields).toHaveProperty('refused');
+    });
+  });
+
   describe('M4-D2 pinned-site filter on the admin analytics reads', () => {
     const makeChainMock = (result: unknown[]) => {
       const chain: any = {};
@@ -766,6 +805,22 @@ describe('AI routes', () => {
       for (const chain of chains) {
         expect(JSON.stringify(chain.where.mock.calls[0])).toContain('site-filter');
       }
+    });
+
+    it('security-events applies the fail-closed audit-row condition for the caller visibility, before LIMIT', async () => {
+      const { resolveTopologySessionVisibility, topologyAuditSessionCondition } = await import('../services/topology/aiSessionAccess');
+      const visibility = { kind: 'none' as const };
+      vi.mocked(resolveTopologySessionVisibility).mockResolvedValueOnce(visibility);
+      const AUDIT_FILTER = { sentinel: 'audit-session-filter' };
+      vi.mocked(topologyAuditSessionCondition).mockReturnValueOnce(AUDIT_FILTER as never);
+      const chain = makeChainMock([]);
+      vi.mocked(db.select).mockReturnValueOnce(chain);
+
+      const res = await app.request(`/ai/admin/security-events?orgId=${ORG_ID}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(topologyAuditSessionCondition).toHaveBeenCalledWith(visibility);
+      expect(JSON.stringify(chain.where.mock.calls[0])).toContain('audit-session-filter');
     });
   });
 

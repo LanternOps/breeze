@@ -32,10 +32,12 @@ const UNMAPPED = "__unmapped__";
 
 export default function BackupProviderCustomerMapping({
   connectionId,
+  provider = "cove",
   customers,
   onChanged,
 }: {
   connectionId: string;
+  provider?: string;
   customers: BackupProviderCustomer[];
   onChanged: () => void;
 }) {
@@ -77,9 +79,9 @@ export default function BackupProviderCustomerMapping({
   return (
     <div data-testid={`backup-mapping-${connectionId}`} className="mt-6 rounded-lg border bg-card p-5 shadow-xs">
       <h4 className="text-sm font-semibold text-foreground">{t("backupProviders.mappingTitle")}</h4>
-      <p className="mt-1 text-sm text-muted-foreground">{t("backupProviders.mappingHelp")}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{t(/* i18n-dynamic */ provider === "dropsuite" ? "backupProviders.workloadMappingHelp" : "backupProviders.mappingHelp")}</p>
       <p data-testid="backup-mapping-summary" className="mt-2 text-xs text-muted-foreground">
-        {t("backupProviders.unmappedSummary", { customers: summary.customers, devices: summary.devices })}
+        {t(/* i18n-dynamic */ provider === "dropsuite" ? "backupProviders.unmappedWorkloadsSummary" : "backupProviders.unmappedSummary", { customers: summary.customers, devices: summary.devices })}
       </p>
 
       {customers.length === 0 ? (
@@ -93,7 +95,7 @@ export default function BackupProviderCustomerMapping({
               <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
                 <th className="pb-2 pr-4">{t("backupProviders.vendorCustomer")}</th>
                 <th className="pb-2 pr-4">{t("backupProviders.level")}</th>
-                <th className="pb-2 pr-4">{t("backupProviders.devices")}</th>
+                <th data-testid="backup-mapping-count-heading" className="pb-2 pr-4">{t(/* i18n-dynamic */ provider === "dropsuite" ? "backupProviders.workloads" : "backupProviders.devices")}</th>
                 <th className="pb-2 pr-4">{t("common:labels.organization")}</th>
                 <th className="pb-2">{t("common:labels.status")}</th>
               </tr>

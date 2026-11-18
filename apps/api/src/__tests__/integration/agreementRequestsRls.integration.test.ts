@@ -168,10 +168,15 @@ describe('agreement_requests / agreement_request_recipients RLS (shape 1)', () =
     expect(controlErr?.constraint_name).toBe('agreement_request_recipients_request_org_fk');
     await sys(() => db.execute(sql`DELETE FROM agreement_requests WHERE id = ${controlRequest}::uuid`));
 
-    // The merge shape (orgMerge.ts): one transaction, SET CONSTRAINTS ALL DEFERRED,
-    // parent and children moved in separate statements.
+    // The merge shape (orgMerge.ts): the loser fenced 'merging', then one
+    // system-scope transaction, SET CONSTRAINTS ALL DEFERRED, parent and
+    // children moved in separate statements. The fence + system scope are what
+    // contract_documents_append_only (2027-01-06-150000) admits an org_id
+    // re-point under; without them the contract_documents UPDATE is 55000.
     const adminDb = getTestDb() as never as typeof db;
+    await adminDb.execute(sql`UPDATE organizations SET status = 'merging' WHERE id = ${orgA.id}::uuid`);
     await adminDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
       await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
       await tx.execute(sql`UPDATE contracts SET org_id = ${orgB.id}::uuid WHERE id = ${contractA}::uuid`);
       await tx.execute(sql`UPDATE agreement_requests SET org_id = ${orgB.id}::uuid WHERE org_id = ${orgA.id}::uuid`);

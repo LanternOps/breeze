@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { backupProviderDevices, deviceNetwork, devices } from '../../db/schema';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type { ProviderSyncTx } from './persist';
@@ -63,7 +63,8 @@ const MATCH_NAME_SQL = sql<string | null>`
  * Re-derive every auto link for a connection and report the counters the
  * connection card shows.
  *
- * Four batched statements plus one savepointed write:
+ * Batched statements plus one savepointed write:
+ *   0. clear legacy links on SaaS workloads;
  *   1. drop auto links whose device no longer exists / no longer matches;
  *   2. normalise manual rows whose device was hard-deleted (the FK set
  *      breeze_device_id NULL and left device_match_source behind);
@@ -74,6 +75,17 @@ export async function matchProviderDevices(
   tx: ProviderSyncTx,
   connectionId: string,
 ): Promise<{ linked: number; ambiguous: number }> {
+  // SaaS rows may carry links created before the route guard existed, or
+  // retained when a provider changed an endpoint's account type. Clear both
+  // provenance and the link before endpoint candidate matching claims IDs.
+  await tx
+    .update(backupProviderDevices)
+    .set({ breezeDeviceId: null, deviceMatchSource: null, updatedAt: new Date() })
+    .where(and(
+      eq(backupProviderDevices.connectionId, connectionId),
+      inArray(backupProviderDevices.accountType, ['m365', 'gws']),
+    ));
+
   // 1. Stale auto links. A link survives only while the linked device still
   //    exists in the row's org, is not decommissioned, and still answers to the
   //    row's match name. A rename on either side therefore unlinks within one
@@ -139,7 +151,10 @@ export async function matchProviderDevices(
 
   // Candidate devices. `claimed` is a correlated EXISTS over the WHOLE table,
   // not just this connection — the partial unique index on breeze_device_id is
-  // global, so a row held by another connection is genuinely unavailable.
+  // global, so a row held by another connection is genuinely unavailable. The
+  // correlation goes through eq(), not a bare ${column} chunk: a single-table
+  // select strips qualifiers from direct chunks, which bound `id` to the inner
+  // table, so nothing read as claimed and the link batch hit the index (#9692).
   const candidateRows = await tx
     .select({
       deviceId: devices.id,
@@ -147,7 +162,7 @@ export async function matchProviderDevices(
       hostname: devices.hostname,
       displayName: devices.displayName,
       claimed: sql<boolean>`EXISTS (
-        SELECT 1 FROM backup_provider_devices x WHERE x.breeze_device_id = ${devices.id}
+        SELECT 1 FROM ${backupProviderDevices} WHERE ${eq(backupProviderDevices.breezeDeviceId, devices.id)}
       )`,
     })
     .from(devices)
@@ -239,6 +254,7 @@ async function countLinked(tx: ProviderSyncTx, connectionId: string): Promise<nu
     .where(and(
       eq(backupProviderDevices.connectionId, connectionId),
       isNotNull(backupProviderDevices.breezeDeviceId),
+      notInArray(backupProviderDevices.accountType, ['m365', 'gws']),
     ));
   return row?.n ?? 0;
 }

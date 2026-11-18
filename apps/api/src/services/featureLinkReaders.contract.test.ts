@@ -42,6 +42,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // services/monitors/monitorResolver.ts's job — so there is no call site here
   // that should switch to the view.
   'services/aiToolsMonitors.ts',
+  // Tool Catalog W06 (#5221, Decision 16): isComplianceRemediationTarget asks
+  // "does ANY compliance rule in this partner name this Job's script" to keep
+  // S+R Jobs from converting. It must see every AUTHORED rule link (a superset
+  // of any one policy's effective set — a false positive only keeps a Job on
+  // the legacy engine); it resolves nothing per device and writes nothing.
+  'services/policyEvaluationService.ts',
   // W05d boot-time system sweep: finds partners that still own an unretired
   // legacy source row. It must see AUTHORED links, including the retired
   // `alert_rule` / `monitoring` types the effective view no longer exposes.
@@ -148,6 +154,13 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // Rollback checks the authored link's identity under an authorized policy
   // before refusing restoration of retired formats. It never resolves config.
   'services/fleetDesign/rollback.ts',
+  // W16 PR B (#6786): the four-eyes digest pins the AUTHORED monitors link of the
+  // policies this design's apply wrote, which is the row apply appends to and rollback
+  // rewrites. Neither writes a parent's link. Through the view, a child with no link
+  // would read its parent's, so a parent edit that changes nothing here would refuse a
+  // matching approval, and monitors resolve cumulatively anyway (monitorResolver.ts).
+  // Never decides what a device gets.
+  'services/fleetDesign/applyTargets.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
@@ -159,7 +172,8 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'routes/policyManagement/helpers.ts',
   'routes/scripts.ts',
   'routes/backup/profiles.ts',
-  'routes/softwareInventory.ts',
+  // W12 (#6782): moved verbatim from routes/softwareInventory.ts (shared with the manage_software_inventory AI tool).
+  'services/softwareInventoryPolicy.ts',
   // Partner API exports the AUTHORED form; consumers derive the effective set.
   'routes/partnerApi/configuration.ts',
 ]);

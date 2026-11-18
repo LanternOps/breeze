@@ -339,6 +339,56 @@ describe('PatchesPage', () => {
     await screen.findAllByText('Ring Scoped Patch');
   });
 
+  it('explains Unrated severity on a ring with no devices (#9930)', async () => {
+    // An empty ring has no device reports of its own, so device-derived
+    // severity reads Unrated. The page says why instead of leaving it bare.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') {
+        return makeJsonResponse({
+          data: [
+            { id: 'ring-1', name: 'Pilot', ringOrder: 1, deferralDays: 0, enabled: true, deviceCount: 0 },
+            { id: 'ring-2', name: 'Broad', ringOrder: 2, deferralDays: 0, enabled: true, deviceCount: 4 },
+          ],
+        });
+      }
+      if (url === '/patches?limit=200' || url.startsWith('/update-rings/')) {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'patch-1',
+              title: 'Some Patch',
+              severity: 'unknown',
+              source: 'microsoft',
+              os: 'windows',
+              releaseDate: '2026-04-01T00:00:00.000Z',
+              approvalStatus: 'pending',
+            },
+          ],
+          pagination: { page: 1, limit: 200, total: 1 },
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<PatchesPage />);
+    await screen.findAllByText('Some Patch');
+    // All rings: no notice.
+    expect(screen.queryByTestId('patches-empty-ring-notice')).toBeNull();
+
+    const ringOption = await screen.findByRole('option', { name: /All Rings/ });
+    const ringSelect = ringOption.closest('select') as HTMLSelectElement;
+    fireEvent.change(ringSelect, { target: { value: 'ring-1' } });
+    const notice = await screen.findByTestId('patches-empty-ring-notice');
+    expect(notice.textContent).toContain('No devices in this ring yet');
+
+    // A ring with devices: no notice.
+    fireEvent.change(ringSelect, { target: { value: 'ring-2' } });
+    await waitFor(() => {
+      expect(screen.queryByTestId('patches-empty-ring-notice')).toBeNull();
+    });
+  });
+
   it('partner scope: allows bulk approve in all-orgs mode (no org, no ring) — request fires partner-wide', async () => {
     // After the partner-scoping migration, the API derives the partner from
     // auth.partnerId. A partner user in all-orgs mode (no org, no ring) is valid —

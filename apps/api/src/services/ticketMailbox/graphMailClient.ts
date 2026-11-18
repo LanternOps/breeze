@@ -36,6 +36,8 @@ export interface GraphMessage {
   bodyPreview?: string;
   hasAttachments?: boolean;
   internetMessageHeaders?: GraphHeader[];
+  /** Set on a delta entry that reports a message left the folder. Carries only the id. */
+  '@removed'?: { reason?: string };
 }
 
 export interface DeltaPage {
@@ -48,6 +50,8 @@ export interface DeltaPage {
    * a large mailbox's first sync, advances across sweeps (#8400).
    */
   resumeLink?: string;
+  /** Why the round stopped early when `resumeLink` is set: the deadline passed, or the page cap was reached (#8308). */
+  resumeReason?: 'deadline' | 'page_cap';
 }
 
 function sleep(ms: number): Promise<void> {
@@ -66,12 +70,14 @@ function sleep(ms: number): Promise<void> {
 export const GRAPH_POLL_TIMEOUT_MS = 60_000;
 
 /**
- * Total time one mailbox's Graph work may take in one sweep: the delta read
- * across every page, 429 Retry-After sleep and retry, then the mark-read calls
- * (#8308). GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but
- * responsive Graph could otherwise hold the concurrency-1 sweep for many minutes.
- * The sweep computes one deadline from this and passes it to listInboxDelta and
- * markRead. When it is spent during the delta read after at least one page,
+ * Default deadline for listInboxDelta when the caller passes none: the delta read
+ * across every page plus 429 Retry-After sleep and retry (#8308).
+ * GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but responsive
+ * Graph could otherwise hold the concurrency-1 sweep for many minutes. The
+ * mailbox poll sweep does not use this value: it always passes its own shared
+ * pass deadline (GRAPH_POLL_PASS_BUDGET_MS in ticketMailboxPollWorker) to
+ * listInboxDelta and markRead, so changing this does not change production
+ * polling. Whichever deadline applies, when it is spent during the delta read after at least one page,
  * listInboxDelta returns the pages it read with a resumeLink (the next page's
  * URL); the caller processes them and stores the resumeLink as the cursor, so the
  * next sweep continues the round. A large first sync therefore finishes over
@@ -112,6 +118,31 @@ function assertGraphContinuationUrl(url: string): void {
 }
 const DELTA_PREFER = { Prefer: `odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}` };
 
+/** `error.code` of a Graph error body. Many Graph errors have no JSON body at all. */
+function graphErrorCode(body: string): string | undefined {
+  try {
+    const code = (JSON.parse(body) as { error?: { code?: unknown } } | null)?.error?.code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether Graph refused the stored delta cursor because it is no longer valid, so
+ * the sweep must clear it and walk again (#10863). Microsoft documents 410 Gone for
+ * this, and also "a 40X-series error with error codes such as syncStateNotFound".
+ * A 401 or 403 keeps its own meaning (the consent is gone), whatever its body says.
+ */
+export function isDeltaCursorExpired(err: unknown): boolean {
+  const { status, graphCode } = (err ?? {}) as { status?: unknown; graphCode?: unknown };
+  if (status === 410) return true;
+  return (
+    typeof status === 'number' && status >= 400 && status < 500 && status !== 401 && status !== 403 &&
+    typeof graphCode === 'string' && graphCode.toLowerCase() === 'syncstatenotfound'
+  );
+}
+
 /** One delta page. Throws GraphSweepBudgetError when the budget ends the request or its body read. */
 async function readDeltaPage(
   url: string,
@@ -122,7 +153,8 @@ async function readDeltaPage(
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
-    (err as Error & { status?: number }).status = res.status;
+    (err as Error & { status?: number; graphCode?: string }).status = res.status;
+    (err as Error & { status?: number; graphCode?: string }).graphCode = graphErrorCode(body);
     throw err;
   }
   try {
@@ -232,7 +264,7 @@ export async function listInboxDelta(
       // Budget spent after at least one page: hand back what was read and where
       // to continue (#8400). Before the first page there is nothing to keep.
       if (err instanceof GraphSweepBudgetError && pageNo > 0) {
-        return { messages, deltaLink: null, resumeLink: url };
+        return { messages, deltaLink: null, resumeLink: url, resumeReason: 'deadline' };
       }
       throw err;
     }
@@ -250,7 +282,7 @@ export async function listInboxDelta(
   }
 
   // Per-sweep page cap reached: continue the round next sweep, like a spent budget.
-  return { messages, deltaLink: null, resumeLink: url };
+  return { messages, deltaLink: null, resumeLink: url, resumeReason: 'page_cap' };
 }
 
 /**
@@ -356,7 +388,8 @@ export async function markRead(token: string, mailbox: string, messageId: string
  *   with no error code). These do not fix themselves, so they keep stopping the
  *   mailbox as before.
  *
- * 410 (expired delta token) is handled by the caller before this is consulted.
+ * An expired delta token (isDeltaCursorExpired) is handled by the caller before
+ * this is consulted.
  */
 export type GraphPollErrorKind = 'reauth' | 'transient' | 'fatal';
 

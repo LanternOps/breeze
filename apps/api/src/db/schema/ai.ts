@@ -14,7 +14,10 @@ import type { AiTurnModel } from '@breeze/shared';
 
 export const aiSessionStatusEnum = pgEnum('ai_session_status', ['active', 'closed', 'expired']);
 export const aiMessageRoleEnum = pgEnum('ai_message_role', ['user', 'assistant', 'system', 'tool_use', 'tool_result']);
-export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved', 'executing', 'completed', 'failed', 'rejected']);
+// 'rejected': the approval lifecycle ended without an approval (denied,
+// expired, wait ended). 'refused': the platform refused the call before it ran
+// (guardrail, RBAC, rate limit, validation, ceiling; #10411).
+export const aiToolStatusEnum = pgEnum('ai_tool_status', ['pending', 'approved', 'executing', 'completed', 'failed', 'rejected', 'refused']);
 export const aiApprovalModeEnum = pgEnum('ai_approval_mode', [
   'per_step', 'action_plan', 'auto_approve', 'hybrid_plan',
 ]);
@@ -68,6 +71,10 @@ export const aiSessions = pgTable('ai_sessions', {
   flaggedAt: timestamp('flagged_at'),
   flaggedBy: uuid('flagged_by').references(() => users.id),
   flagReason: text('flag_reason'),
+  // #4342 W4: set when transcript retention turned this session into a stub
+  // (content gone, flag_reason too; accounting and flagged_at/by kept). The viewers show
+  // "removed by retention" instead of an empty conversation.
+  transcriptPurgedAt: timestamp('transcript_purged_at', { withTimezone: true }),
   delegantM365ConnectionId: uuid('delegant_m365_connection_id'),
   // AI for Office client principal (FK → portal_users). CHECKs in SQL:
   // ai_sessions_single_principal_check (never both user_id and client_user_id),
@@ -117,12 +124,22 @@ export const aiSessions = pgTable('ai_sessions', {
   // NULL (continued_from_session_id), DEFERRABLE INITIALLY IMMEDIATE, and a
   // not-self CHECK — declared in 2026-11-29-100200-ai-sessions-continued-from.sql.
   continuedFromSessionId: uuid('continued_from_session_id'),
+  // Wisp W04 (#9910): the delegation grant + the revision this session was
+  // created under (both-or-none CHECK ai_sessions_wisp_grant_pair_chk). The FK
+  // (wisp_grant_revision_id, wisp_grant_id) -> wisp_grant_revisions(id,
+  // grant_id) ON DELETE SET NULL is SQL-only (same rule as agent_id) —
+  // declared in 2027-01-04-110200-wisp-threads.sql. Server-owned: written only
+  // by createSession, never from a request body.
+  wispGrantId: uuid('wisp_grant_id'),
+  wispGrantRevisionId: uuid('wisp_grant_revision_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
   idOrgIdx: uniqueIndex('ai_sessions_id_org_uidx').on(table.id, table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
+  // #4342 W4 retention scan (2027-01-24-120100).
+  retentionScanIdx: index('ai_sessions_retention_scan_idx').on(table.orgId, table.lastActivityAt).where(sql`${table.flaggedAt} IS NULL`),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
   offeringFk: foreignKey({
     columns: [table.offeringId, table.offeringPartnerId],
@@ -331,6 +348,39 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
 }));
 
 // ============================================
+// AI credit debits (#9451, #7717) — durable outbox for keyed platform credit
+// debits with no budget reservation: sandbox compute ('compute', source_id =
+// ai_agent_runs.id) and unreserved token settlements ('invocation', source_id =
+// the first ai_invocations.id). Written in the transaction of the spend it
+// bills; retried by the sweep; terminal failures re-driven by an operator
+// under the SAME idempotency_key and cost_cents. RLS shape 1.
+// ============================================
+
+export const aiCreditDebits = pgTable('ai_credit_debits', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  source: varchar('source', { length: 16 }).$type<'compute' | 'invocation'>().notNull(),
+  // No FK on purpose (see the migration): identity is the idempotency key.
+  sourceId: uuid('source_id').notNull(),
+  idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+  costCents: numeric('cost_cents', { precision: 20, scale: 6 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  debitedAt: timestamp('debited_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  error: varchar('error', { length: 128 }),
+  attempts: integer('attempts').notNull().default(0),
+}, (table) => ({
+  idempotencyKeyIdx: uniqueIndex('ai_credit_debits_idempotency_key_uidx').on(table.idempotencyKey),
+  orgIdx: index('ai_credit_debits_org_idx').on(table.orgId),
+  sourceCheck: check('ai_credit_debits_source_check', sql`${table.source} IN ('compute', 'invocation')`),
+  costPositiveCheck: check('ai_credit_debits_cost_positive_check', sql`${table.costCents} > 0`),
+  attemptsCheck: check('ai_credit_debits_attempts_check', sql`${table.attempts} >= 0`),
+  // Partial indexes created via SQL migration: ai_credit_debits_undelivered_idx,
+  // ai_credit_debits_failed_idx.
+}));
+
+// ============================================
 // AI Budget Alert Events (#4388) — durable outbox, one row per threshold
 // crossing per (org, period, period_key). RLS shape 1.
 // ============================================
@@ -363,7 +413,8 @@ export const aiBudgetAlertEvents = pgTable('ai_budget_alert_events', {
 
 export const aiActionPlans = pgTable('ai_action_plans', {
   id: uuid('id').primaryKey().defaultRandom(),
-  sessionId: uuid('session_id').notNull().references(() => aiSessions.id),
+  // ON DELETE CASCADE since #4342 W4 (2027-01-24-120000): a retention stub is hard-deleted with its plans.
+  sessionId: uuid('session_id').notNull().references(() => aiSessions.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   status: aiPlanStatusEnum('status').notNull().default('pending'),
   steps: jsonb('steps').notNull(),           // Array<ActionPlanStep>
@@ -385,7 +436,11 @@ export const aiScreenshots = pgTable('ai_screenshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  sessionId: uuid('session_id').references(() => aiSessions.id),
+  // ON DELETE CASCADE since #4342 W4 (2027-01-24-120000). The retention job
+  // never relies on it: it expires a session's screenshots first so
+  // helperScreenshotRetention removes the file, and deletes a stub only once
+  // none remain (a cascaded row would orphan its file).
+  sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'cascade' }),
   storageKey: varchar('storage_key', { length: 500 }).notNull(),
   width: integer('width').notNull(),
   height: integer('height').notNull(),

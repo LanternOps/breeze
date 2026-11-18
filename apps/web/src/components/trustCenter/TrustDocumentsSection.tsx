@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TRUST_DOCUMENTS_MAX, type TrustDocumentVisibility } from '@breeze/shared';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import HashLink from '@/components/shared/HashLink';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { listOrgDocuments, type OrgDocument } from '@/lib/api/orgDocuments';
 import { updateTrustDocuments, type TrustLinkedDocument } from '@/lib/api/trustPage';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 
 export interface LinkedTrustDocument {
   documentId: string;
@@ -165,6 +166,11 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
       await onReload();
     } catch (err) {
       handleActionError(err, tr('documents.saveFailed'));
+      if (err instanceof ActionError && err.code === 'REVISION_MISMATCH') {
+        // Retrying with the same stale revision would 409 forever: re-read the page so the next Save carries
+        // the fresh revision. Unsaved links survive, because the list re-seeds only when the SAVED list changed.
+        try { await onReload(); } catch (reloadErr) { console.error('[TrustDocumentsSection] reload after stale revision failed', reloadErr); }
+      }
     } finally {
       setBusy(false);
     }
@@ -180,9 +186,9 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
           <h3 className="text-base font-semibold">{tr('sections.documentsHeading')}</h3>
           <p className="mt-1 text-sm text-muted-foreground">{tr('documents.description')}</p>
         </div>
-        <a href="#documents" className="text-sm text-primary underline" data-testid="trust-docs-upload-link">
+        <HashLink hash="documents" className="text-sm text-primary underline" data-testid="trust-docs-upload-link">
           {tr('documents.upload')}
-        </a>
+        </HashLink>
       </div>
 
       {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm" role="alert" data-testid="trust-docs-error">{error}</p>}

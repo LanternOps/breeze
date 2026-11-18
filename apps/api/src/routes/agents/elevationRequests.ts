@@ -3,7 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
+import { captureException } from '../../services/sentry';
 import {
   approvalRequests,
   devices,
@@ -15,6 +16,8 @@ import {
   pamSignerGroups,
   type SignerGroupEntry,
 } from '../../db/schema';
+import { PAM_PROMPT_RENDERERS } from '../../db/schema/elevations';
+import { pamPendingExpiresAt } from '../../jobs/pamPendingTtl';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -33,6 +36,7 @@ import type { RiskTier } from '@breeze/shared';
 import { createPamDecisionIntent } from '../../services/pamActuationLifecycle';
 import { buildPamConfigUpdate } from './helpers';
 import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
+import { resolveMessageBranding } from '../../services/endpointMessaging/brandingSnapshot';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -117,6 +121,10 @@ export const elevationRequestSchema = z.object({
   parent_image: z.string().max(4096).optional(),
   command_line: z.string().max(8192).optional(),
   observed_at: z.string().datetime({ offset: true }).optional(),
+  // #10190 W07: the renderer the agent intends to ask the end user's first
+  // question with (assist | native | headless). Audit only. An unknown value
+  // is dropped rather than failing the submit.
+  first_question_renderer: z.enum(PAM_PROMPT_RENDERERS).optional().catch(undefined),
 });
 
 export type ElevationRequestPayload = z.infer<typeof elevationRequestSchema>;
@@ -143,6 +151,31 @@ async function safePublish(
     await publishEvent(type, orgId, payload, 'pam-ingest');
   } catch (err) {
     console.error(`[ElevationRequests] event publish failed (${type}):`, err);
+  }
+}
+
+/** Longest support name sent to the agent, in code points (`NAME_MAX` in brandingSnapshot). */
+const PAM_SUPPORT_NAME_MAX = 120;
+
+/**
+ * #8928: the partner's name as the end user's toasts show it ("Request
+ * approved … by {s}"). Only a real partner name: the generic sender identity
+ * ("Your IT support team") reads badly mid-sentence, so it is omitted and the
+ * agent falls back to "IT". Runs after the org-scoped ingest transaction has
+ * closed, in its own system context (partner branding is partner-axis data).
+ */
+async function resolvePamSupportName(orgId: string): Promise<string | null> {
+  try {
+    const resolved = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => resolveMessageBranding(orgId)),
+    );
+    if (!resolved || resolved.senderIdentity !== 'partner') return null;
+    const name = resolved.branding.companyName.trim();
+    if (!name) return null;
+    return Array.from(name).slice(0, PAM_SUPPORT_NAME_MAX).join('');
+  } catch (err) {
+    console.warn(`[ElevationRequests] support-name lookup failed for org=${orgId}; the notices will say "IT":`, err);
+    return null;
   }
 }
 
@@ -207,7 +240,9 @@ async function fanOutMobileApprovals(args: {
       for (const userId of approverIds) {
         let approvalId: string;
         try {
-          const [row] = await db
+          // A savepoint, so one approver's failed insert leaves the next approver's
+          // insert and this context's commit intact (#11225).
+          const [row] = await withDbTransaction(() => db
             .insert(approvalRequests)
             .values({
               userId,
@@ -223,13 +258,15 @@ async function fanOutMobileApprovals(args: {
               isRecursive: false,
               expiresAt,
             })
-            .returning({ id: approvalRequests.id });
+            .returning({ id: approvalRequests.id }));
           if (!row) continue;
           approvalId = row.id;
         } catch (err) {
+          // The SQLSTATE or error name only: a Drizzle query error serializes its
+          // bound parameters, which here include the elevated command line.
+          const { cause, name } = err as { cause?: { code?: unknown }; name?: unknown };
           console.error(
-            `[ElevationRequests] mobile approval insert failed for user=${userId} elevation=${elevationRequestId}:`,
-            err,
+            `[ElevationRequests] mobile approval insert failed for user=${userId} elevation=${elevationRequestId}: ${String(cause?.code ?? name ?? 'unknown')}`,
           );
           continue;
         }
@@ -336,7 +373,7 @@ elevationRequestsRoutes.post(
     // to build (see the wrap site there): org scope, no partner-AXIS write
     // access, and the device org's owning partner on the read-only
     // `currentPartnerId` axis.
-    return withDbAccessContext(
+    const ingest = await withDbAccessContext(
       {
         scope: 'organization' as const,
         orgId,
@@ -398,123 +435,133 @@ elevationRequestsRoutes.post(
       // auto-approval, and degrading a blocklist deny to a pending row is
       // preferable to dropping the observation entirely.
       // ------------------------------------------------------------------
-      let bridgeVerdict: PamBridgeVerdict | null = null;
-      let decision: IngestDecision = { kind: 'pending' };
+      // Assigned inside the savepoint below, so these are cast rather than
+      // annotated: an annotation narrows them to the initial value here.
+      let bridgeVerdict = null as PamBridgeVerdict | null;
+      let decided = { kind: 'pending' } as IngestDecision;
       try {
-        bridgeVerdict = await evaluatePamBridge({
-          orgId: device.orgId,
-          deviceId: device.id,
-          targetExecutablePath: payload.target_executable_path,
-          targetExecutableHash: payload.target_executable_hash,
-          targetExecutableSigner: payload.target_executable_signer,
-        });
+        // A savepoint, so a failed lookup fails safe to pending and the request
+        // row below still commits (#11225).
+        await withDbTransaction(async () => {
+          bridgeVerdict = await evaluatePamBridge({
+            orgId: device.orgId,
+            deviceId: device.id,
+            targetExecutablePath: payload.target_executable_path,
+            targetExecutableHash: payload.target_executable_hash,
+            targetExecutableSigner: payload.target_executable_signer,
+          });
 
-        if (bridgeVerdict.match === 'blocklist') {
-          decision = { kind: 'denied', source: 'policy', policyId: bridgeVerdict.policyId };
-        } else if (bridgeVerdict.match === 'allowlist') {
-          decision = {
-            kind: 'auto_approved',
-            source: 'policy',
-            policyId: bridgeVerdict.policyId,
-            durationMinutes: PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
-          };
-        } else {
-          // No software policy bound — fall through to PAM-native rules.
-          const orgRules = await db
-            .select()
-            .from(pamRules)
-            .where(
-              and(
-                eq(pamRules.orgId, device.orgId),
-                eq(pamRules.enabled, true),
-                device.siteId
-                  ? or(isNull(pamRules.siteId), eq(pamRules.siteId, device.siteId))
-                  : isNull(pamRules.siteId),
-              ),
-            );
-          // Resolve any signer groups referenced by the candidate rules so the
-          // engine can match matchSignerGroupId against the group's members.
-          const signerGroupIds = [
-            ...new Set(
-              orgRules
-                .map((r) => r.matchSignerGroupId)
-                .filter((x): x is string => x != null),
-            ),
-          ];
-          let signerGroups: Map<string, SignerGroupEntry[]> | undefined;
-          if (signerGroupIds.length > 0) {
-            const groups = await db
-              .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
-              .from(pamSignerGroups)
+          if (bridgeVerdict.match === 'blocklist') {
+            decided = { kind: 'denied', source: 'policy', policyId: bridgeVerdict.policyId };
+          } else if (bridgeVerdict.match === 'allowlist') {
+            decided = {
+              kind: 'auto_approved',
+              source: 'policy',
+              policyId: bridgeVerdict.policyId,
+              durationMinutes: PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
+            };
+          } else {
+            // No software policy bound — fall through to PAM-native rules.
+            const orgRules = await db
+              .select()
+              .from(pamRules)
               .where(
                 and(
-                  eq(pamSignerGroups.orgId, device.orgId),
-                  inArray(pamSignerGroups.id, signerGroupIds),
+                  eq(pamRules.orgId, device.orgId),
+                  eq(pamRules.enabled, true),
+                  device.siteId
+                    ? or(isNull(pamRules.siteId), eq(pamRules.siteId, device.siteId))
+                    : isNull(pamRules.siteId),
                 ),
               );
-            // Normalize the stored jsonb (legacy bare CNs and/or new entry
-            // objects) to canonical entries the engine matches against (#1776).
-            signerGroups = new Map(groups.map((g) => [g.id, normalizeSignerGroupEntries(g.signers)]));
-          }
-          const ruleMatch = evaluatePamRules(
-            orgRules,
-            {
-              targetExecutablePath: payload.target_executable_path,
-              targetExecutableHash: payload.target_executable_hash,
-              targetExecutableSigner: payload.target_executable_signer,
-              targetExecutableSignerThumbprint: payload.target_executable_signer_thumbprint,
-              subjectUsername: payload.subject_username,
-              parentImage: payload.parent_image,
-              commandLine: payload.command_line,
-              at: observedAt,
-            },
-            signerGroups,
-          );
-          if (!ruleMatch) {
-            // No software policy and no PAM rule matched — apply the org's
-            // default verdict for unmatched elevations. The historical default
-            // (and the default when no config row exists) is require_approval,
-            // i.e. leave the request pending; an org can opt into auto_deny.
-            const [cfg] = await db
-              .select({ verdict: pamOrgConfig.defaultUnmatchedVerdict })
-              .from(pamOrgConfig)
-              .where(eq(pamOrgConfig.orgId, device.orgId))
-              .limit(1);
-            if (cfg?.verdict === 'auto_deny') {
-              decision = { kind: 'denied', source: 'default' };
+            // Resolve any signer groups referenced by the candidate rules so the
+            // engine can match matchSignerGroupId against the group's members.
+            const signerGroupIds = [
+              ...new Set(
+                orgRules
+                  .map((r) => r.matchSignerGroupId)
+                  .filter((x): x is string => x != null),
+              ),
+            ];
+            let signerGroups: Map<string, SignerGroupEntry[]> | undefined;
+            if (signerGroupIds.length > 0) {
+              const groups = await db
+                .select({ id: pamSignerGroups.id, signers: pamSignerGroups.signers })
+                .from(pamSignerGroups)
+                .where(
+                  and(
+                    eq(pamSignerGroups.orgId, device.orgId),
+                    inArray(pamSignerGroups.id, signerGroupIds),
+                  ),
+                );
+              // Normalize the stored jsonb (legacy bare CNs and/or new entry
+              // objects) to canonical entries the engine matches against (#1776).
+              signerGroups = new Map(groups.map((g) => [g.id, normalizeSignerGroupEntries(g.signers)]));
             }
-          } else {
-            switch (ruleMatch.verdict) {
-              case 'auto_approve':
-                decision = {
-                  kind: 'auto_approved',
-                  source: 'rule',
-                  rule: ruleMatch,
-                  durationMinutes:
-                    ruleMatch.approvalDurationMinutes ??
-                    PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
-                };
-                break;
-              case 'auto_deny':
-                decision = { kind: 'denied', source: 'rule', rule: ruleMatch };
-                break;
-              case 'ignore':
-                decision = { kind: 'ignored', rule: ruleMatch };
-                break;
-              case 'require_approval':
-              default:
-                decision = { kind: 'pending' };
-                break;
+            const ruleMatch = evaluatePamRules(
+              orgRules,
+              {
+                targetExecutablePath: payload.target_executable_path,
+                targetExecutableHash: payload.target_executable_hash,
+                targetExecutableSigner: payload.target_executable_signer,
+                targetExecutableSignerThumbprint: payload.target_executable_signer_thumbprint,
+                subjectUsername: payload.subject_username,
+                parentImage: payload.parent_image,
+                commandLine: payload.command_line,
+                at: observedAt,
+              },
+              signerGroups,
+            );
+            if (!ruleMatch) {
+              // No software policy and no PAM rule matched — apply the org's
+              // default verdict for unmatched elevations. The historical default
+              // (and the default when no config row exists) is require_approval,
+              // i.e. leave the request pending; an org can opt into auto_deny.
+              const [cfg] = await db
+                .select({ verdict: pamOrgConfig.defaultUnmatchedVerdict })
+                .from(pamOrgConfig)
+                .where(eq(pamOrgConfig.orgId, device.orgId))
+                .limit(1);
+              if (cfg?.verdict === 'auto_deny') {
+                decided = { kind: 'denied', source: 'default' };
+              }
+            } else {
+              switch (ruleMatch.verdict) {
+                case 'auto_approve':
+                  decided = {
+                    kind: 'auto_approved',
+                    source: 'rule',
+                    rule: ruleMatch,
+                    durationMinutes:
+                      ruleMatch.approvalDurationMinutes ??
+                      PAM_DEFAULT_AUTO_APPROVAL_DURATION_MINUTES,
+                  };
+                  break;
+                case 'auto_deny':
+                  decided = { kind: 'denied', source: 'rule', rule: ruleMatch };
+                  break;
+                case 'ignore':
+                  decided = { kind: 'ignored', rule: ruleMatch };
+                  break;
+                case 'require_approval':
+                default:
+                  decided = { kind: 'pending' };
+                  break;
+              }
             }
           }
-        }
+        });
       } catch (err) {
         console.error(
           `[ElevationRequests] decisioning failed for device=${device.id} org=${device.orgId} (failing safe to pending):`,
           err,
         );
-        decision = { kind: 'pending' };
+        // A blocklist deny that cannot be evaluated becomes a pending request, so
+        // an outage here has to reach someone.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        decided = { kind: 'pending' };
       }
+      const decision = decided;
 
       // 'ignore' rules suppress the request entirely: no elevation_requests
       // row (the approval queue stays signal-only), but the observation is
@@ -611,6 +658,7 @@ elevationRequestsRoutes.post(
               details: {
                 subject_username: payload.subject_username,
                 target_executable_path: payload.target_executable_path,
+                ...(payload.first_question_renderer ? { first_question_renderer: payload.first_question_renderer } : {}),
               },
               occurredAt: observedAt,
             },
@@ -691,6 +739,7 @@ elevationRequestsRoutes.post(
             subject_username: payload.subject_username,
             target_executable_path: payload.target_executable_path,
             ingest_status: row.status,
+            ...(payload.first_question_renderer ? { first_question_renderer: payload.first_question_renderer } : {}),
           },
         });
 
@@ -718,34 +767,34 @@ elevationRequestsRoutes.post(
             : {}),
         });
 
-        // #1254: bridge a manually-pending uac_intercept to the mobile approval
-        // surface (fan-out to eligible technicians). Best-effort — the elevation
-        // row + audit are already committed and the agent must get its 201 even
-        // if the entire bridge fails. auto_approved / denied rows skip this (no
-        // human decision is needed).
-        if (decision.kind === 'pending') {
-          try {
-            await fanOutMobileApprovals({
-              elevationRequestId: row.id,
-              device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
-              payload,
-              reason,
-              bridgeVerdict,
-              expiresAt: new Date(now.getTime() + PAM_MOBILE_APPROVAL_TTL_MINUTES * 60_000),
-            });
-          } catch (bridgeErr) {
-            console.error(
-              `[ElevationRequests] mobile bridge failed for request=${row.id}:`,
-              bridgeErr,
-            );
-          }
-        }
-
-        return c.json({
-          id: row.id,
-          status: row.status,
-          ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
-        }, 201);
+        // The 201 is built after this org-scoped transaction closes, so the
+        // support-name lookup below never holds a second pooled connection.
+        return {
+          kind: 'created' as const,
+          orgId: device.orgId,
+          // auto_approved / denied rows skip the mobile bridge: no human
+          // decision is needed.
+          mobileFanOut: decision.kind === 'pending'
+            ? {
+                elevationRequestId: row.id,
+                device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
+                payload,
+                reason,
+                bridgeVerdict,
+                expiresAt: new Date(now.getTime() + PAM_MOBILE_APPROVAL_TTL_MINUTES * 60_000),
+              }
+            : null,
+          body: {
+            id: row.id,
+            status: row.status,
+            ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
+            // #10190 W07: when the stale-pending expirer may expire it (same
+            // basis: requested_at + TTL), for the device's waiting card.
+            // requested_at is the agent's observed_at, so a skewed agent
+            // clock is clamped to [now, now + TTL] on the server clock.
+            ...(row.status === 'pending' ? { pendingExpiresAt: pamPendingExpiresAt(observedAt, now).toISOString() } : {}),
+          },
+        };
       } catch (err) {
         console.error(
           `[ElevationRequests] Failed to insert for device=${device.id} org=${device.orgId}:`,
@@ -755,5 +804,28 @@ elevationRequestsRoutes.post(
       }
       },
     );
+    if (ingest instanceof Response) return ingest;
+
+    // #1254: bridge a manually-pending uac_intercept to the mobile approval
+    // surface (fan-out to eligible technicians). After the org transaction
+    // commits, because the fan-out writes on its own connection and
+    // approval_requests has a foreign key to the elevation row, which that
+    // connection cannot see until then (#11225). Best-effort: the agent gets its
+    // 201 even if the entire bridge fails.
+    if (ingest.mobileFanOut) {
+      try {
+        await fanOutMobileApprovals(ingest.mobileFanOut);
+      } catch (bridgeErr) {
+        console.error(
+          `[ElevationRequests] mobile bridge failed for request=${ingest.mobileFanOut.elevationRequestId}:`,
+          bridgeErr,
+        );
+      }
+    }
+
+    // #8928: the MSP's name, for the end-user notices. Best-effort: a failed
+    // lookup never fails the submit; the agent then says "IT".
+    const supportName = await resolvePamSupportName(ingest.orgId);
+    return c.json({ ...ingest.body, ...(supportName ? { supportName } : {}) }, 201);
   },
 );

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { resolveBootstrapAdminConfig, DEFAULT_PERMISSIONS, SYSTEM_ROLES, DEV_SEED_DEFAULT_PARTNER_SETTINGS } from './seed';
 
@@ -612,6 +615,45 @@ describe('agreements RBAC (W02)', () => {
     const perms = byName('Org Admin')!.permissions;
     expect(perms).not.toContain('agreements:read');
     expect(perms).not.toContain('agreements:write');
+  });
+});
+
+describe('agreements:send RBAC (#9075 W2a, OD7 B)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name)!;
+  const MIGRATION = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../migrations/2027-01-05-110000-agreements-send-permission.sql',
+  );
+
+  it('seeds the agreements:send permission row', () => {
+    const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);
+    expect(keys).toContain('agreements:send');
+  });
+
+  it('Partner Billing can send agreements', () => {
+    expect(byName('Partner Billing').permissions).toContain('agreements:send');
+  });
+
+  it('Partner Billing Viewer cannot send agreements', () => {
+    expect(byName('Partner Billing Viewer').permissions).not.toContain('agreements:send');
+  });
+
+  // Back-fill is action-for-action from agreements:write: every seeded role
+  // that can write agreements can send them, and no role gains send without it.
+  it('every seeded role holding agreements:write also holds agreements:send, and vice versa', () => {
+    for (const role of SYSTEM_ROLES) {
+      const perms = role.permissions as readonly string[];
+      expect(perms.includes('agreements:send'), role.name).toBe(perms.includes('agreements:write'));
+    }
+  });
+
+  // A fresh install seeds from DEFAULT_PERMISSIONS, an upgrade from the
+  // migration: the two descriptions must be byte-identical.
+  it('the seeded description is byte-identical to the migration', () => {
+    const seeded = DEFAULT_PERMISSIONS.find((p) => p.resource === 'agreements' && p.action === 'send');
+    expect(seeded).toBeDefined();
+    const sql = readFileSync(MIGRATION, 'utf8');
+    expect(sql).toContain(`VALUES ('agreements', 'send', '${seeded!.description}')`);
   });
 });
 

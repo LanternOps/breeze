@@ -16,6 +16,7 @@ import {
   policyIdSchema,
 } from './schemas';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
+import { withoutObservedStateValues } from '../../services/complianceRuleResults';
 import {
   getPagination,
   ensureOrgAccess,
@@ -589,7 +590,7 @@ complianceRoutes.get(
         configItemName: row.configItemName,
         deviceId: row.deviceId,
         status: row.status,
-        details: row.details,
+        details: withoutObservedStateValues(row.details),
         lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
         remediationAttempts: row.remediationAttempts,
         updatedAt: row.updatedAt?.toISOString() ?? null,
@@ -735,7 +736,7 @@ complianceRoutes.get(
         });
 
       return c.json({
-        data: rows,
+        data: rows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
         pagination: { page, limit, total },
         overall,
         trend: [],
@@ -961,7 +962,7 @@ complianceRoutes.get(
       });
 
     return c.json({
-      data: configRows,
+      data: configRows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
       pagination: { page, limit, total: configTotal },
       overall: configOverall,
       trend: [],

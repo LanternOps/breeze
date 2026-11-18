@@ -2,6 +2,8 @@ import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
 import { db } from '../../db';
 import { ticketAttachments } from '../../db/schema/ticketAttachments';
 import type { InboundAttachmentSkipReason, NormalizedInboundEmail } from './types';
+import { lockTicketForWrite } from '../ticketRowLock';
+import { assertTicketNotMerged } from '../ticketMerge/errors';
 
 /**
  * Inbound-email attachment persistence (#6688). Provider-agnostic: the bytes
@@ -66,6 +68,9 @@ export async function persistInboundAttachments(
   const toInsert = n.attachments.filter((a) => a.stored && !a.persisted);
   if (toInsert.length === 0) return 0;
   const attachedAt = new Date();
+  // #8972 W0: ticket first (the comment these attach to normally holds it already).
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(await lockTicketForWrite(db, target.ticketId));
   await db.insert(ticketAttachments).values(toInsert.map((a) => ({
     id: a.stored!.attachmentId,
     orgId: target.orgId,

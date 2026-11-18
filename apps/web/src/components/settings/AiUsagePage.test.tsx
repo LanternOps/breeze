@@ -7,6 +7,7 @@ const orgState: { currentOrgId: string | null } = { currentOrgId: null };
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: orgState.currentOrgId }) }));
 
 import AiUsagePage from './AiUsagePage';
+import { useFeaturesStore } from '../../stores/featuresStore';
 
 // Every test below scopes its queries to its OWN render's container via
 // `within(container)` instead of the shared `screen` (which binds to
@@ -389,5 +390,74 @@ describe('AiUsagePage fired-alert badge vs the current effective budget (sweep E
 
     const badge = await findByTestId('ai-budget-fired-rungs');
     expect(badge.textContent).toContain('80% monthly alert sent');
+  });
+});
+
+// #9450: Buy credits next to the balance, hosted billing only.
+describe('AiUsagePage Buy credits link (#9450)', () => {
+  const setHosted = (billing: boolean) =>
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+  function mockCredits() {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') {
+        return Promise.resolve(jsonRes({ ...usageBody(), credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' } }));
+      }
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('links to the billing credits page when hosted billing is configured', async () => {
+    setHosted(true);
+    mockCredits();
+    const { getByText, getByRole } = renderPage();
+    await waitFor(() => expect(getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(getByRole('link', { name: 'Buy credits' })).toHaveAttribute('href', '/billing/credits');
+  });
+
+  it('shows no link when billing is not configured (self-hosted)', async () => {
+    setHosted(false);
+    mockCredits();
+    const { getByText, queryByRole } = renderPage();
+    await waitFor(() => expect(getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(queryByRole('link', { name: 'Buy credits' })).toBeNull();
+  });
+
+  it('renders the four stat-card labels from translation keys', async () => {
+    mockUsage();
+    const r = renderPage();
+    await waitFor(() => expect(r.getByText('Today\'s cost')).toBeTruthy());
+    expect(r.getByText('Monthly cost')).toBeTruthy();
+    expect(r.getByText('Messages today')).toBeTruthy();
+    expect(r.getByText('Tokens this month')).toBeTruthy();
+  });
+
+});
+
+describe('AiUsagePage sessions removed by retention (#4342 W4)', () => {
+  const session = (over: Record<string, unknown>) => ({
+    id: 's-1', userId: 'u-1', title: null, model: 'claude', turnCount: 3, totalCostCents: 12, status: 'closed',
+    flaggedAt: null, flaggedBy: null, flagReason: null, createdAt: '2026-01-02T03:04:05Z', ...over,
+  });
+  function mockSessions(rows: unknown[]) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody()));
+      if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: rows }));
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('labels a purged session "Removed by retention" instead of Untitled', async () => {
+    mockSessions([session({ transcriptPurgedAt: '2027-02-01T03:15:00Z' })]);
+    const r = renderPage();
+    await waitFor(() => expect(r.getByTestId('ai-usage-session-title-s-1')).toHaveTextContent('Removed by retention'));
+    expect(r.getByTestId('ai-usage-session-title-s-1')).not.toHaveTextContent('Untitled');
+  });
+
+  it('keeps Untitled when the session was not purged', async () => {
+    mockSessions([session({ transcriptPurgedAt: null })]);
+    const r = renderPage();
+    await waitFor(() => expect(r.getByTestId('ai-usage-session-title-s-1')).toHaveTextContent('Untitled'));
+    expect(r.getByTestId('ai-usage-session-title-s-1')).not.toHaveTextContent('Removed by retention');
   });
 });

@@ -7,12 +7,13 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // RecoveryKey is one escrowable disk-encryption recovery key. JSON tags match
@@ -37,16 +38,21 @@ const bitlockerKeyProtectorPS = `$r = Get-BitLockerVolume | ForEach-Object { $mp
 
 // CollectRecoveryKeys reads all BitLocker recovery-password protectors.
 // Windows only; other platforms return (nil, nil) — FileVault keys cannot be
-// read after enablement and are escrowed via the rotate command instead.
+// read after enablement and are escrowed via the rotate command instead. On a
+// Windows host without BitLocker it returns ErrBitLockerUnavailable without
+// spawning the recovery-password query (#10902).
 func CollectRecoveryKeys() ([]RecoveryKey, error) {
-	if runtime.GOOS != "windows" {
+	return collectRecoveryKeysFor(runtime.GOOS)
+}
+
+func collectRecoveryKeysFor(goos string) ([]RecoveryKey, error) {
+	if goos != "windows" {
 		return nil, nil
 	}
-	output, err := runCommand(
-		20*time.Second,
-		"powershell", "-NoProfile", "-NonInteractive", "-Command",
-		bitlockerKeyProtectorPS,
-	)
+	if bitLockerNotInstalled() {
+		return nil, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(20*time.Second, bitlockerKeyProtectorPS)
 	if err != nil {
 		return nil, fmt.Errorf("bitlocker key protector query failed: %w", err)
 	}
@@ -213,7 +219,7 @@ func RotateFileVaultKey(username, password, currentRecoveryKey string) (Recovery
 	plist := buildFileVaultAuthPlist(username, password, currentRecoveryKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "fdesetup", "changerecovery", "-personal", "-inputplist")
+	cmd := procspawn.CommandContext(ctx, "fdesetup", "changerecovery", "-personal", "-inputplist")
 	cmd.Stdin = strings.NewReader(plist)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)

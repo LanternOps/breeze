@@ -16,7 +16,7 @@
  * be a module cycle (same shape as identityAccessPdf.ts:43-53).
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import type {
   ReportScopeMeta,
   SlaOutcome,

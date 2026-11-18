@@ -24,6 +24,7 @@ import { and, eq, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { getUserPermissions, type UserPermissions } from './permissions';
 import {
   ResilienceAuthorizationError,
@@ -39,7 +40,7 @@ export const RESTORE_RESOURCE_NOT_FOUND_ERROR = 'Snapshot or target device not f
 
 /**
  * The caller's live RBAC grant, as `requirePermission` resolves it for the same
- * token on an HTTP route. An AI agent principal holds no user permissions, and a
+ * token on an HTTP route. An AI agent or flow principal holds no user permissions, and a
  * caller with no resolvable role gets an empty grant carrying only its site
  * allowlist — the same fallback the route adapter uses
  * (`routes/backup/resilienceAuthorization.ts`), so it fails closed on every
@@ -54,7 +55,7 @@ export async function resolveAiCallerPermissions(auth: AuthContext): Promise<Use
     scope: auth.scope,
     allowedSiteIds: auth.allowedSiteIds,
   };
-  if (auth.principal?.kind === 'ai_agent') return fallback;
+  if (isAutomationPrincipal(auth)) return fallback;
   const resolved = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,
     orgId: auth.orgId || undefined,

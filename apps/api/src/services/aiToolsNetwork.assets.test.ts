@@ -130,7 +130,7 @@ describe('network asset reads', () => {
     placement.read.mockResolvedValue({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
     const out = await run('get_network_asset', { assetId: ASSET });
     expect(placement.authority).toHaveBeenCalledWith({ kind: 'discovered', id: ASSET, orgId: ORG, siteId: SITE });
-    expect(placement.read).toHaveBeenCalledWith('device', OTHER);
+    expect(placement.read).toHaveBeenCalledWith('device', OTHER, ORG);
     expect(out.placement).toEqual({ room: 'MDF', rack: 'R2', rackUnit: 12, heightU: 2 });
     expect(out.placementAuthority).toEqual({ kind: 'device', id: OTHER, linked: true });
   });

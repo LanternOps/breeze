@@ -7,6 +7,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { deserializeAiOrigin } from '@breeze/shared';
 import {
   AgentRunOwnershipError,
@@ -63,7 +64,57 @@ const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<st
  * Returns null for any intent whose tool/action is not in the allowlist
  * above, or whose recorded target-org argument is missing or not a string.
  */
-function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
+/**
+ * Full-control W08 (#6778, quorum QW4/QW5): the ONE tool/action whose release must carry the REQUESTER's
+ * live session epochs and real axis. `apply_topology_template:apply` freezes its actor with
+ * `freezeApplicationActor`, which needs a `user_session` principal whose token carries `aep` / `mep`, and
+ * re-validates that actor later (`currentApplicationAuthority`: epochs, `users.partnerId`, and for an
+ * organization-scoped actor `users.orgId`). The synthesised release token has neither epoch, so without this the
+ * approved application could never run.
+ *
+ * What the epochs mean here: a revocation fence FROM RELEASE ONWARD (the deferred application refuses if the
+ * requester signs out or changes MFA after the release). They are NOT proof of a fresh MFA and do NOT invalidate
+ * an approval that predates an epoch change. Restricted to `user_session` origins: an MCP credential, an agent or
+ * an unknown origin never gets them.
+ */
+export const SESSION_EPOCH_RELEASE_ACTIONS: ReadonlyMap<string, string> = new Map([['apply_topology_template', 'apply']]);
+
+export function releaseCarriesSessionEpochs(
+  intent: Pick<ActionIntent, 'actionName' | 'arguments'>,
+  principal: AuthContext['principal'],
+): boolean {
+  const action = SESSION_EPOCH_RELEASE_ACTIONS.get(intent.actionName);
+  return action !== undefined && intent.arguments.action === action && principal.kind === 'user_session';
+}
+
+/**
+ * Full-control W16 (#6786, Decision 8; #11135): the tool/actions whose handler needs the requester's PARTNER axis at a
+ * durable release. A release otherwise rebuilds the requester on the organization axis, so these would fail closed at
+ * a worker release while the same approved intent succeeds inline, and a four-eyes approval can easily outlive the
+ * session that filed it.
+ *
+ *  - `manage_ai_agent_schedules`: a baseline is partner-wide, and `assertAgentWriteAllowed` needs
+ *    `canManagePartnerWidePolicies`.
+ *  - `manage_org_portal_settings:set_sensitive_access`: the tool is partner or system scope, as its route is.
+ *
+ * Only a `user_session` origin whose CURRENT permissions resolve on the intent's own partner takes the axis, and
+ * `partnerOrgAccess` is that live membership, so a member since narrowed to `selected` fails the partner-wide gate at
+ * release. Everyone else keeps the organization axis and fails closed. It carries no session epochs. Org reach stays
+ * `[intent.orgId]`: the axis adds partner authority, not org reach.
+ */
+export const PARTNER_AXIS_RELEASE_ACTIONS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['manage_ai_agent_schedules', ['create', 'update', 'delete']],
+  ['manage_org_portal_settings', ['set_sensitive_access']],
+]);
+
+function releaseNamesPartnerAxis(intent: Pick<ActionIntent, 'actionName' | 'arguments' | 'originPrincipalKind'>): boolean {
+  const actions = PARTNER_AXIS_RELEASE_ACTIONS.get(intent.actionName);
+  const action = intent.arguments.action;
+  return actions !== undefined && typeof action === 'string' && actions.includes(action)
+    && intent.originPrincipalKind === 'user_session';
+}
+
+export function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
   // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
   // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
   // purpose: `services/aiGuardrails.ts` pulls in the full tool-registry import
@@ -103,6 +154,19 @@ function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
  * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
+  // B-W04 (#6158, D-B26): an intent filed by an MCP credential is rebuilt
+  // from that LIVE credential with the same function the MCP call used —
+  // never the user-owned rebuild below, which would widen an org-pinned key
+  // to a target org and synthesize `mfa: true`. This first branch serves all
+  // three callers (release revalidation, the worker's M365 headless dispatch,
+  // the supervised approve-time RBAC re-check). Dynamic import keeps this
+  // module a light leaf (see resolveTenantMutationTargetOrgId above).
+  if (isMcpOriginIntent(intent)) {
+    const { rebuildMcpOriginAuthContext } = await import('../mcpPrincipalAuth');
+    const rebuilt = await rebuildMcpOriginAuthContext(intent);
+    return 'error' in rebuilt ? null : rebuilt.auth;
+  }
+
   if (intent.requestedByUserId) {
     return buildUserOwnedAuthContext(intent, intent.requestedByUserId);
   }
@@ -112,12 +176,27 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId/
+  // requestingFlowRunId is set.
   // An agent-originated intent reconstructs the RUN's agent identity (wave
   // 3b): structural, never a user token — checkToolPermission keeps denying
   // the resulting principal, and release authority is checkAgentReleaseAuthority.
   if (intent.requestingAgentRunId) {
     return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
+  }
+  // Tool catalog W04 (#5219): a flow-originated intent (requestingFlowRunId,
+  // the fourth actor root) rebuilds the RUN's flow principal — structural,
+  // never a user token (checkToolPermission keeps denying it). Any refusal
+  // (run gone, run in an org the flow does not own) is `null` ⇒ actor_invalid.
+  // Dynamic import: keeps this module a light leaf (see the MCP branch above).
+  if (intent.requestingFlowRunId) {
+    const { checkFlowReleaseAuthority } = await import('../flows/releaseAuthority');
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      console.error(`[actorContext] intent ${intent.id} flow release authority refused (${authority.code}) — failing closed`);
+      return null;
+    }
+    return authority.auth;
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -161,6 +240,14 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
             agentId: intent.originPrincipalId,
             runId: intent.requestingAgentRunId,
           }
+        : { kind: 'unknown' };
+    case 'flow':
+      // Tool catalog W04 (#5219): the stored origin of a parked Tier-3 flow
+      // step. flowId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — a flow intent without them is
+      // corruption and stays untrusted (`unknown`).
+      return intent.requestingFlowRunId && intent.originPrincipalId
+        ? { kind: 'flow', flowId: intent.originPrincipalId, runId: intent.requestingFlowRunId }
         : { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,
@@ -208,6 +295,23 @@ export async function buildApproverAuthContextForIntent(
     principal: { kind: 'user_session' },
     requirePartnerAxis: true,
   });
+}
+
+/**
+ * W5 PR C (#5220): the APPROVER of a chat Tier-3 flow-tool intent, rebuilt at
+ * release to become the run's triggerer. Unlike `buildApproverAuthContextForIntent`
+ * this does NOT require the partner axis: starting a flow writes no
+ * partner-axis row, and the run start (`startToolRun` → `authorizeRunTriggerer`)
+ * resolves the approver's permissions in the run org on either axis — so an
+ * internal-IT org admin (org-axis membership) can approve their own org's
+ * flows. Same revalidation as every user-owned rebuild: account active,
+ * CURRENT permissions reach the intent org, live `allowedSiteIds`.
+ */
+export async function buildFlowToolApproverAuthContext(
+  intent: ActionIntent,
+  approverUserId: string,
+): Promise<AuthContext | null> {
+  return buildUserOwnedAuthContext(intent, approverUserId, { principal: { kind: 'user_session' } });
 }
 
 /**
@@ -261,6 +365,8 @@ async function buildUserOwnedAuthContext(
         name: users.name,
         status: users.status,
         isPlatformAdmin: users.isPlatformAdmin,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -315,7 +421,14 @@ async function buildUserOwnedAuthContext(
     if (partnerAxis && (perms.scope !== 'partner' || !intent.partnerId || perms.partnerId !== intent.partnerId)) {
       return null;
     }
-    const scope: 'partner' | 'organization' = partnerAxis ? 'partner' : 'organization';
+    const principal = overrides.principal ?? originPrincipalFor(intent);
+    const carryEpochs = releaseCarriesSessionEpochs(intent, principal);
+    // W08-D2 / QW5: a requester who resolves on the intent's own partner axis keeps that axis for the epoch-carrying
+    // release (a partner user has no `users.orgId`, which an organization-scoped actor is revalidated against).
+    const carriedPartnerAxis = carryEpochs && perms.scope === 'partner' && !!intent.partnerId && perms.partnerId === intent.partnerId;
+    // W16 Decision 8: the named actions keep the requester's axis the same way, without the epochs.
+    const namedPartnerAxis = releaseNamesPartnerAxis(intent) && perms.scope === 'partner' && !!intent.partnerId && perms.partnerId === intent.partnerId;
+    const scope: 'partner' | 'organization' = partnerAxis || carriedPartnerAxis || namedPartnerAxis ? 'partner' : 'organization';
 
     // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
     // manage_tickets:move_org), widen accessibleOrgIds to also cover the
@@ -377,6 +490,7 @@ async function buildUserOwnedAuthContext(
       scope,
       type: 'access',
       mfa: true,
+      ...(carryEpochs ? { aep: user.authEpoch, mep: user.mfaEpoch } : {}),
     };
 
     return {
@@ -395,7 +509,7 @@ async function buildUserOwnedAuthContext(
       //
       // The ONE sanctioned override is `buildApproverAuthContextForIntent`
       // (#4177), which executes as the approving human on purpose.
-      principal: overrides.principal ?? originPrincipalFor(intent),
+      principal,
       // #5022 W01: read the AI origin back off the intent's own columns. This
       // context is synthesised from the `users` row, so a chat-minted origin
       // would otherwise be lost across the durable approval boundary — the
@@ -423,6 +537,13 @@ async function buildUserOwnedAuthContext(
       canAccessOrg,
       allowedSiteIds,
       canAccessSite: siteAccessCheck(allowedSiteIds),
+      // Full-control W14 PR B (#6784, PR B quorum QB6): the partner-wide authority gate
+      // (canManagePartnerWidePolicies) reads this, and a released partner-axis action used to arrive without it, so
+      // every partner-wide write failed closed at a durable release even for a full-partner administrator. It comes
+      // from the CURRENT partner membership resolved above (perms is the partner axis whenever scope is 'partner':
+      // partnerAxis / carriedPartnerAxis both require it), never from the one-org accessibleOrgIds list, and an
+      // org-axis release carries none.
+      partnerOrgAccess: scope === 'partner' && perms.scope === 'partner' ? perms.orgAccess ?? null : null,
     };
   });
 }

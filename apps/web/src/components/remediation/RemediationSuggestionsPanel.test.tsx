@@ -348,7 +348,7 @@ describe('RemediationSuggestionsPanel', () => {
     expect(screen.queryByRole('button', { name: /execute/i })).toBeNull();
   });
 
-  it('rejects a suggestion through runAction', async () => {
+  it('denies a suggestion through runAction', async () => {
     const rejected = { ...suggestion, status: 'rejected' };
     fetchWithAuthMock.mockImplementation((input, init) => {
       const url = String(input);
@@ -365,7 +365,7 @@ describe('RemediationSuggestionsPanel', () => {
 
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /reject/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /deny/i }));
 
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(

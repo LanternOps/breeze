@@ -2,9 +2,9 @@
  * Tool Catalog W3 (#5218) PR B — the read-only Flows list.
  *
  * Pinned behaviours: partner-wide rows carry the shared "All orgs" ScopeBadge,
- * a FAILED load says so rather than claiming the tenant has no flows, the
- * preview notice is always visible, and a deployment with the flag off renders
- * the not-found state without ever calling the API.
+ * a FAILED load says so rather than claiming the tenant has no flows, and a
+ * deployment with the flag off renders the not-found state without ever calling
+ * the API.
  */
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,12 +41,12 @@ beforeEach(() => {
 });
 
 describe('FlowsPage', () => {
-  it('renders rows linking to the detail page, with the read-only notice', async () => {
+  it('renders rows linking to the detail page, without a preview notice', async () => {
     render(<FlowsPage />);
     const row = await screen.findByTestId('flow-row-9f1c0f4e-0000-4000-8000-000000000001');
     expect(row.textContent).toContain('Nightly offline report');
     expect(row.querySelector('a')?.getAttribute('href')).toBe('/flows/9f1c0f4e-0000-4000-8000-000000000001');
-    expect(screen.getByTestId('flow-preview-notice')).toBeTruthy();
+    expect(screen.queryByTestId('flow-preview-notice')).toBeNull();
     expect(screen.queryByTestId('flow-empty')).toBeNull();
   });
 
@@ -60,6 +60,17 @@ describe('FlowsPage', () => {
     const badges = screen.getAllByTestId('scope-badge');
     expect(badges.length).toBeGreaterThan(0);
     expect(badges[0].textContent).toMatch(/partner-wide/i);
+  });
+
+  it('badges a flow whose runs are being refused, and links the flow limits page (W05 #5220)', async () => {
+    api.listFlows.mockResolvedValue({
+      flows: [flow({ id: 'f-capped', lastAdmissionRefusal: { at: '2026-10-25T02:00:00.000Z', code: 'flow_monthly_cap_reached' } }), flow({ id: 'f-ok' })],
+      total: 2,
+    });
+    render(<FlowsPage />);
+    expect((await screen.findAllByTestId('flow-refused-f-capped')).length).toBeGreaterThan(0);
+    expect(screen.queryAllByTestId('flow-refused-f-ok')).toHaveLength(0);
+    expect(screen.getByTestId('flows-limits-link').getAttribute('href')).toBe('/settings/flow-limits');
   });
 
   it('shows the empty state only when the tenant genuinely has none', async () => {

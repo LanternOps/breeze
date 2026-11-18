@@ -9,6 +9,7 @@ const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -82,8 +83,17 @@ vi.mock('../jobs/dnsSyncJob', () => ({
   schedulePolicySync: vi.fn()
 }));
 
+vi.mock('../jobs/dnsSecurityRetention', () => ({
+  DNS_INTEGRATION_DELETING_STATUS: 'deleting',
+  enqueueDnsIntegrationDelete: vi.fn(async () => undefined)
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn()
 }));
 
 vi.mock('../services/secretCrypto', () => ({
@@ -101,9 +111,32 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
-import { db } from '../db';
+// The events page query (keyset + capped count) is covered against real
+// Postgres in dnsSecurityEventsPage.integration.test.ts; here only the route's
+// window / cursor handling and what it hands the query are under test. The
+// cursor codec and window resolver stay real.
+vi.mock('../services/dnsSecurityEventsPage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/dnsSecurityEventsPage')>()),
+  listDnsSecurityEventsPage: vi.fn()
+}));
+
+import { db, runAfterDbContextCommit } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
+import { scheduleDnsEventSync } from '../jobs/dnsSyncJob';
+import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
+import { encodeDnsEventsCursor, listDnsSecurityEventsPage } from '../services/dnsSecurityEventsPage';
 import { dnsSecurityRoutes } from './dnsSecurity';
+
+/** The integration-config read /stats makes to work out allowed-traffic coverage (#10054). */
+function integrationConfigsSel(configs: Array<Record<string, unknown>>) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(configs.map((config) => ({ config })))
+    })
+  };
+}
 
 describe('dns security routes', () => {
   let app: Hono;
@@ -414,6 +447,8 @@ describe('dns security routes', () => {
     } as any);
   }
 
+  const EMPTY_PAGE = { rows: [], nextCursor: null, total: 0, totalCapped: false };
+
   describe('GET /events — site scope', () => {
     it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
       setSiteScopedAuth([SITE_ALLOWED]);
@@ -426,68 +461,136 @@ describe('dns security routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe('Device not found or access denied');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
     });
 
     it('narrows to accessible + provider-level (null-device) rows', async () => {
       setSiteScopedAuth([SITE_ALLOWED]);
       mockDeviceResolution([{ id: DEVICE_ALLOWED, siteId: SITE_ALLOWED }]);
-      // events list + count
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      { id: 'evt-1', deviceId: DEVICE_ALLOWED, domain: 'bad.example' },
-                      { id: 'evt-2', deviceId: null, domain: 'provider.example' }
-                    ])
-                  })
-                })
-              })
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 2 }])
-          })
-        } as any);
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [
+          { id: 'evt-1', deviceId: DEVICE_ALLOWED, domain: 'bad.example' },
+          { id: 'evt-2', deviceId: null, domain: 'provider.example' }
+        ],
+        nextCursor: null,
+        total: 2,
+        totalCapped: false
+      });
 
       const res = await app.request('/dns-security/events');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(2);
+      // Device resolution ran (the site-narrow condition is built from it).
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(listDnsSecurityEventsPage).toHaveBeenCalledTimes(1);
     });
 
     it('does not narrow for unrestricted callers', async () => {
       setSiteScopedAuth(undefined);
-      // No device-resolution select should run; first select is the events list.
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([{ id: 'evt-1', deviceId: DEVICE_DENIED }])
-                  })
-                })
-              })
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 1 }])
-          })
-        } as any);
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [{ id: 'evt-1', deviceId: DEVICE_DENIED }],
+        nextCursor: null,
+        total: 1,
+        totalCapped: false
+      });
 
       const res = await app.request('/dns-security/events');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+      // No device-resolution select.
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /events — window, cursor and count (#10054)', () => {
+    const DAY_MS = 86_400_000;
+
+    it('defaults to the last 7 days when no start is given and reports the window', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+      const before = Date.now();
+
+      const res = await app.request('/dns-security/events?action=blocked');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const start = Date.parse(body.window.start);
+      expect(start).toBeGreaterThanOrEqual(before - 7 * DAY_MS);
+      expect(start).toBeLessThanOrEqual(Date.now() - 7 * DAY_MS);
+      expect(body.window.end).toBeNull();
+    });
+
+    it('keeps an explicit start/end window', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+
+      const res = await app.request('/dns-security/events?start=2026-10-01T00:00:00.000Z&end=2026-10-02T00:00:00.000Z');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.window).toEqual({ start: '2026-10-01T00:00:00.000Z', end: '2026-10-02T00:00:00.000Z' });
+    });
+
+    it('refuses an open-ended start older than 90 days before touching the database', async () => {
+      const start = new Date(Date.now() - 91 * DAY_MS).toISOString();
+      const res = await app.request(`/dns-security/events?start=${encodeURIComponent(start)}`);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Time range cannot exceed 90 days');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('passes a decoded cursor through and returns the next one', async () => {
+      const cursor = { ts: '2026-10-27T10:00:00.123456', id: '0b5d0f4e-1c2a-4d3b-9e8f-7a6b5c4d3e2f' };
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [{ id: 'evt-9' }],
+        nextCursor: 'next-token',
+        total: null,
+        totalCapped: false
+      });
+
+      const res = await app.request(`/dns-security/events?limit=1&cursor=${encodeDnsEventsCursor(cursor)}`);
+      expect(res.status).toBe(200);
+      expect(vi.mocked(listDnsSecurityEventsPage).mock.calls[0]![0]).toMatchObject({ limit: 1, cursor });
+      const body = await res.json();
+      expect(body.pagination).toEqual({
+        limit: 1,
+        offset: 0,
+        total: null,
+        totalCapped: false,
+        nextCursor: 'next-token'
+      });
+    });
+
+    it('surfaces a capped total', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [],
+        nextCursor: null,
+        total: 10_000,
+        totalCapped: true
+      });
+
+      const res = await app.request('/dns-security/events');
+      const body = await res.json();
+      expect(body.pagination).toMatchObject({ total: 10_000, totalCapped: true });
+    });
+
+    it('rejects a cursor it did not issue', async () => {
+      const res = await app.request('/dns-security/events?cursor=not-a-cursor');
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Invalid cursor');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('rejects cursor combined with offset', async () => {
+      const cursor = encodeDnsEventsCursor({ ts: '2026-10-27T10:00:00.123456', id: '0b5d0f4e-1c2a-4d3b-9e8f-7a6b5c4d3e2f' });
+      const res = await app.request(`/dns-security/events?cursor=${cursor}&offset=100`);
+      expect(res.status).toBe(400);
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('still accepts legacy offset paging', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+      const res = await app.request('/dns-security/events?offset=200');
+      expect(res.status).toBe(200);
+      expect(vi.mocked(listDnsSecurityEventsPage).mock.calls[0]![0]).toMatchObject({ offset: 200, cursor: null });
     });
   });
 
@@ -615,13 +718,139 @@ describe('dns security routes', () => {
         .mockReturnValueOnce(summarySel as any)
         .mockReturnValueOnce(groupSel as any)
         .mockReturnValueOnce(groupSel as any)
-        .mockReturnValueOnce(deviceGroupSel as any);
+        .mockReturnValueOnce(deviceGroupSel as any)
+        .mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }]) as any);
 
       const res = await app.request('/dns-security/stats');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.summary.totalQueries).toBe(5);
       expect(body.source).toBe('raw');
+    });
+  });
+
+  // #10054 — sync stores allowed traffic only for integrations that opted in,
+  // so /stats says whether its allowed count is real instead of returning a
+  // misleading zero.
+  describe('GET /stats — allowed traffic coverage (#10054)', () => {
+    beforeEach(() => {
+      // The site-scope tests above leave a restricted caller in place.
+      setSiteScopedAuth(undefined);
+      vi.mocked(db.select).mockReset();
+    });
+
+    function mockRawStats(summaryRow: Record<string, number>) {
+      const summarySel = {
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([summaryRow]) })
+      };
+      const groupSel = {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        })
+      };
+      const deviceGroupSel = {
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+              })
+            })
+          })
+        })
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(summarySel as any)
+        .mockReturnValueOnce(groupSel as any)
+        .mockReturnValueOnce(groupSel as any)
+        .mockReturnValueOnce(deviceGroupSel as any);
+    }
+
+    const row = { totalQueries: 120, blockedQueries: 100, allowedQueries: 0, redirectedQueries: 20 };
+
+    it('reports allowedTraffic=none with a null allowed count and blocked rate when no integration stores allowed', async () => {
+      mockRawStats(row);
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{}, { storeAllowedTraffic: false }]) as any);
+
+      const res = await app.request('/dns-security/stats');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary).toMatchObject({ totalQueries: 120, blockedQueries: 100, allowedQueries: null, blockedRate: null });
+    });
+
+    it('reports allowedTraffic=some and keeps the numbers when only part of the integrations store allowed', async () => {
+      mockRawStats({ ...row, totalQueries: 1120, allowedQueries: 1000 });
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }, {}]) as any);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('some');
+      expect(body.summary.allowedQueries).toBe(1000);
+      expect(typeof body.summary.blockedRate).toBe('number');
+    });
+
+    /** Shape-routed select mock: config read → configs; aggregation probe → count; summary → row; else []. */
+    function mockStatsByShape(configs: Array<Record<string, unknown>>, summaryRow: Record<string, number>) {
+      const thenable = (result: unknown): any => {
+        const p: any = Promise.resolve(result);
+        for (const m of ['from', 'leftJoin', 'where', 'groupBy', 'orderBy', 'limit']) p[m] = () => p;
+        return p;
+      };
+      vi.mocked(db.select).mockImplementation(((cols?: Record<string, unknown>) => {
+        const keys = cols ? Object.keys(cols) : [];
+        if (keys.length === 1 && keys[0] === 'config') return thenable(configs.map((config) => ({ config })));
+        if (keys.length === 1 && keys[0] === 'count') return thenable([{ count: 3 }]);
+        if (keys.includes('totalQueries')) return thenable([summaryRow]);
+        return thenable([]);
+      }) as any);
+    }
+
+    it('applies the coverage on the aggregated (> 7 day) path too', async () => {
+      mockStatsByShape([{}], { totalQueries: 120, blockedQueries: 100, allowedQueries: 0 });
+
+      const res = await app.request('/dns-security/stats?start=2026-09-01T00:00:00Z&end=2026-10-01T00:00:00Z');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('aggregated');
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary).toMatchObject({ allowedQueries: null, blockedRate: null, blockedQueries: 100 });
+    });
+
+    it('is none when the caller has no active integration at all', async () => {
+      mockStatsByShape([], row);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary.allowedQueries).toBeNull();
+    });
+
+    it('nulls the total of an allowed-only view, and leaves a blocked-only view alone', async () => {
+      mockStatsByShape([{}], { totalQueries: 0, blockedQueries: 0, allowedQueries: 0, redirectedQueries: 0 });
+      const allowedOnly = await (await app.request('/dns-security/stats?action=allowed')).json();
+      expect(allowedOnly.summary).toMatchObject({ totalQueries: null, allowedQueries: null, blockedRate: null });
+
+      mockStatsByShape([{}], { totalQueries: 100, blockedQueries: 100, allowedQueries: 0, redirectedQueries: 0 });
+      const blockedOnly = await (await app.request('/dns-security/stats?action=blocked')).json();
+      expect(blockedOnly.allowedTraffic).toBe('none');
+      expect(blockedOnly.summary).toMatchObject({ totalQueries: 100, allowedQueries: 0, blockedRate: 100 });
+    });
+
+    it('reports allowedTraffic=all when every integration stores allowed', async () => {
+      mockRawStats({ ...row, totalQueries: 1120, allowedQueries: 1000 });
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }]) as any);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('all');
+      expect(body.summary.allowedQueries).toBe(1000);
     });
   });
 
@@ -912,6 +1141,222 @@ describe('dns security routes', () => {
 
       expect(res.status).toBe(404);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+  // ──────────────── #10019 / #10020: background delete + retention edit ────────────────
+  describe('integration lifecycle (#10019, #10020)', () => {
+    const INTEGRATION_ID = '22222222-2222-2222-2222-222222222222';
+    const ORG_ID = '11111111-1111-1111-1111-111111111111';
+
+    function mockIntegrationLookup(row: Record<string, unknown> | undefined) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(row ? [row] : [])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdate() {
+      const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+      return set;
+    }
+
+    const activeRow = {
+      id: INTEGRATION_ID, orgId: ORG_ID, name: 'Umbrella', isActive: true,
+      lastSyncStatus: 'success', config: { organizationId: '42' }
+    };
+    const deletingRow = { ...activeRow, isActive: false, lastSyncStatus: 'deleting' };
+
+    describe('DELETE /integrations/:id', () => {
+      it('deactivates and marks the row, queues the background delete after commit, and answers 202', async () => {
+        mockIntegrationLookup(activeRow);
+        const set = mockUpdate();
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ success: true, id: INTEGRATION_ID, status: 'deleting' });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ isActive: false, lastSyncStatus: 'deleting' }));
+        expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
+        expect(enqueueDnsIntegrationDelete).toHaveBeenCalledWith(INTEGRATION_ID);
+        // Nothing is deleted inline any more: no 30M-row statement in the request.
+        expect(db.delete).not.toHaveBeenCalled();
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.delete', resourceId: INTEGRATION_ID
+        }));
+      });
+
+      it('still answers 202 when the after-commit enqueue fails, and reports it to Sentry', async () => {
+        mockIntegrationLookup(activeRow);
+        mockUpdate();
+        const boom = new Error('redis down');
+        vi.mocked(enqueueDnsIntegrationDelete).mockRejectedValueOnce(boom);
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(boom));
+      });
+
+      it('re-queues an integration that is already being deleted, without touching the row again', async () => {
+        mockIntegrationLookup(deletingRow);
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        expect(db.update).not.toHaveBeenCalled();
+        expect(enqueueDnsIntegrationDelete).toHaveBeenCalledWith(INTEGRATION_ID);
+      });
+
+      it('404s an unknown or foreign integration and queues nothing', async () => {
+        mockIntegrationLookup(undefined);
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+        expect(res.status).toBe(404);
+        expect(enqueueDnsIntegrationDelete).not.toHaveBeenCalled();
+      });
+
+      it('still requires MFA', async () => {
+        mfaGate.deny = true;
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('POST /integrations/:id/sync', () => {
+      it('refuses to sync an integration that is being deleted', async () => {
+        mockIntegrationLookup(deletingRow);
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}/sync`, { method: 'POST' });
+        expect(res.status).toBe(409);
+        expect(scheduleDnsEventSync).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PATCH /integrations/:id (retentionDays)', () => {
+      const patch = (body: unknown) => app.request(`/dns-security/integrations/${INTEGRATION_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      it('sets retentionDays while keeping the rest of the provider config', async () => {
+        mockIntegrationLookup(activeRow);
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ id: INTEGRATION_ID, retentionDays: 30 });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 30 }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.update',
+          details: expect.objectContaining({ retentionDays: { from: null, to: 30 } })
+        }));
+      });
+
+      it('null clears the override so the deployment default applies', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', retentionDays: 7 } });
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: null });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ config: { organizationId: '42' } }));
+      });
+
+      it.each([0, 366, 1.5, '30'])('rejects retentionDays=%s', async (value) => {
+        const res = await patch({ retentionDays: value });
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('rejects keys other than retentionDays', async () => {
+        const res = await patch({ retentionDays: 30, apiKey: 'x' });
+        expect(res.status).toBe(400);
+      });
+
+      it('409s an integration that is being deleted', async () => {
+        mockIntegrationLookup(deletingRow);
+        const res = await patch({ retentionDays: 30 });
+        expect(res.status).toBe(409);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('404s an unknown integration', async () => {
+        mockIntegrationLookup(undefined);
+        const res = await patch({ retentionDays: 30 });
+        expect(res.status).toBe(404);
+      });
+
+      // #10054 — the allowed-traffic opt-in lives on the same integration
+      // config and is edited through the same PATCH.
+      it('sets storeAllowedTraffic without touching retentionDays', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', retentionDays: 7 } });
+        const set = mockUpdate();
+
+        const res = await patch({ storeAllowedTraffic: true });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ id: INTEGRATION_ID, retentionDays: 7, storeAllowedTraffic: true });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 7, storeAllowedTraffic: true }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.update',
+          details: { storeAllowedTraffic: { from: false, to: true } }
+        }));
+      });
+
+      it('turning the opt-in off removes the key so the default (not stored) applies', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', storeAllowedTraffic: true } });
+        const set = mockUpdate();
+
+        const res = await patch({ storeAllowedTraffic: false, retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 30 }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          details: {
+            retentionDays: { from: null, to: 30 },
+            storeAllowedTraffic: { from: true, to: false }
+          }
+        }));
+      });
+
+      it('keeps an existing opt-in when only retentionDays is sent', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', storeAllowedTraffic: true } });
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', storeAllowedTraffic: true, retentionDays: 30 }
+        }));
+      });
+
+      it.each([{}, { storeAllowedTraffic: 'yes' }])('rejects body %j', async (body) => {
+        const res = await patch(body);
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('requires organizations:write and MFA', async () => {
+        permissionGate.deniedPermission = 'organizations:write';
+        expect((await patch({ retentionDays: 30 })).status).toBe(403);
+        permissionGate.deniedPermission = null;
+        mfaGate.deny = true;
+        expect((await patch({ retentionDays: 30 })).status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      });
     });
   });
 });

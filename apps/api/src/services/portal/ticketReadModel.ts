@@ -3,10 +3,6 @@ import { and, eq, gte, inArray, isNull, lt, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets } from '../../db/schema';
 import { portalMonthWindow } from './patchReadModel';
-import {
-  resolveSlaTargets,
-  SLA_AT_RISK_RATIO,
-} from '../ticketSla';
 
 type TicketSlaRow = Pick<
   typeof tickets.$inferSelect,
@@ -20,17 +16,27 @@ type TicketSlaRow = Pick<
   | 'slaBreachedAt'
   | 'slaPausedAt'
   | 'slaPausedMinutes'
+  | 'responseDueAt'
+  | 'resolutionDueAt'
+  | 'responseWarnAt'
+  | 'resolutionWarnAt'
 >;
 
 const minutes = (from: Date, to: Date) =>
   Math.max(0, (to.getTime() - from.getTime()) / 60_000);
 
+/**
+ * Portal SLA status (#8973 W3, spec §4.3 reader 4). Status is derived from the
+ * STORED deadlines the staff side uses, so the portal and the MSP queue agree.
+ * A null target is `not_configured` — the portal no longer invents a
+ * priority-default target the ticket never had (spec §8.5 correction 1). The
+ * portal shows status only, never a due time (D11).
+ */
 export function ticketSla(row: TicketSlaRow, now: Date): SlaDto {
-  const targets = resolveSlaTargets({
-    overrideResponseMinutes: row.responseSlaMinutes,
-    overrideResolutionMinutes: row.resolutionSlaMinutes,
-    priority: row.priority,
-  });
+  const targets = {
+    responseMinutes: row.responseSlaMinutes ?? null,
+    resolutionMinutes: row.resolutionSlaMinutes ?? null,
+  };
   const firstResponseMinutes = row.firstResponseAt
     ? minutes(row.createdAt, row.firstResponseAt)
     : null;
@@ -45,18 +51,19 @@ export function ticketSla(row: TicketSlaRow, now: Date): SlaDto {
   const configured =
     targets.responseMinutes !== null ||
     targets.resolutionMinutes !== null;
+  // A completion after its stored deadline is a breach (met = completion <= due).
   const measuredTargetBreached =
-    (firstResponseMinutes !== null &&
-      targets.responseMinutes !== null &&
-      firstResponseMinutes > targets.responseMinutes) ||
-    (resolutionMinutes !== null &&
-      targets.resolutionMinutes !== null &&
-      resolutionMinutes > targets.resolutionMinutes);
+    (row.firstResponseAt != null &&
+      row.responseDueAt != null &&
+      row.firstResponseAt.getTime() > row.responseDueAt.getTime()) ||
+    (row.resolvedAt != null &&
+      row.resolutionDueAt != null &&
+      row.resolvedAt.getTime() > row.resolutionDueAt.getTime());
   let status: SlaDto['status'];
 
-  // Match the MSP list's SQL twins in routes/tickets/tickets.ts:61-85.
+  // Same rules as the MSP queue (routes/tickets/tickets.ts SLA_AT_RISK).
   // A stamped breach wins. Completed measurements can also prove a breach;
-  // current elapsed time alone only drives the at-risk state below.
+  // otherwise the stored warn point drives at-risk.
   if (row.slaBreachedAt) status = 'breached';
   else if (!configured) status = 'not_configured';
   else if (measuredTargetBreached) status = 'breached';
@@ -66,22 +73,22 @@ export function ticketSla(row: TicketSlaRow, now: Date): SlaDto {
     row.resolvedAt
   ) status = 'met';
   else {
-    const unmet = [
-      row.firstResponseAt ? null : targets.responseMinutes,
-      targets.resolutionMinutes,
-    ].filter((value): value is number => value !== null);
+    // Warn points of the arms still running. An arm with a target but no
+    // stored deadline yet (written by a pre-W3 instance; the SLA sweep heals
+    // it within a tick) still runs — it is never "met" — it just cannot be
+    // at risk until its warn point exists.
+    const running: Array<Date | null> = [];
+    if (!row.firstResponseAt && targets.responseMinutes !== null) running.push(row.responseWarnAt);
+    if (targets.resolutionMinutes !== null) running.push(row.resolutionWarnAt);
 
-    if (unmet.length === 0) status = 'met';
+    if (running.length === 0) status = 'met';
     else if (
       row.status === 'pending' ||
       row.status === 'on_hold' ||
       row.slaPausedAt
     ) status = 'paused';
     else {
-      const activeElapsed =
-        minutes(row.createdAt, now) - (row.slaPausedMinutes ?? 0);
-      const target = Math.min(...unmet);
-      status = activeElapsed >= target * SLA_AT_RISK_RATIO
+      status = running.some((warn) => warn != null && now.getTime() >= warn.getTime())
         ? 'at_risk'
         : 'on_track';
     }

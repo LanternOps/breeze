@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 import '@/lib/i18n';
 
 const api = vi.hoisted(() => ({ getContract: vi.fn(), listContractDocuments: vi.fn() }));
@@ -104,5 +106,59 @@ describe('ContractWorkspace created-from-quote pill', () => {
     render(<ContractWorkspace contractId="ct-1" />);
     await screen.findByTestId('contract-under-agreement-pill');
     expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+
+  // #10361: a quote with no agreement block leaves no executed document, so the
+  // pill falls back to the contract's own source_quote_id link.
+  it('names the source quote from the contract itself when the quote carried no agreement', async () => {
+    api.getContract.mockResolvedValue(resp({ data: {
+      contract: { id: 'ct-1', name: 'Q-2026-0009 — Annual', status: 'draft' },
+      sourceQuote: { id: 'q-99', quoteNumber: 'Q-2026-0009' },
+    } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    const pill = await screen.findByTestId('contract-from-quote-pill');
+    expect(pill).toHaveTextContent('From quote Q-2026-0009');
+    expect(pill).toHaveAttribute('href', '/billing/quotes/q-99');
+  });
+
+  it('shows no fallback pill for a quote that was never numbered', async () => {
+    api.getContract.mockResolvedValue(resp({ data: {
+      contract: { id: 'ct-1', name: 'Draft', status: 'draft' },
+      sourceQuote: { id: 'q-99', quoteNumber: null },
+    } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-workspace');
+    await waitFor(() => expect(api.listContractDocuments).toHaveBeenCalled());
+    expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+});
+
+async function expectHashLinkClick(testId: string, expected: string) {
+  const router = installAstroClientRouterStandIn();
+  window.location.hash = '';
+  try {
+    const changed = new Promise<void>((resolve) => {
+      window.addEventListener('hashchange', (e) => {
+        if ((e as HashChangeEvent).newURL.endsWith(expected)) resolve();
+      });
+    });
+    await userEvent.click(screen.getByTestId(testId));
+    expect(window.location.hash).toBe(expected);
+    await expect(changed).resolves.toBeUndefined();
+  } finally {
+    router.uninstall();
+    window.location.hash = '';
+  }
+}
+
+describe('ContractWorkspace agreement pill hash link', () => {
+  it('click sets #signed-agreements and fires hashchange under the Astro router', async () => {
+    api.getContract.mockResolvedValue(resp({ data: { contract: { id: 'ct-1', name: 'Acme MSA', status: 'active' } } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [doc()] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-under-agreement-pill');
+    await expectHashLinkClick('contract-under-agreement-pill', '#signed-agreements');
   });
 });

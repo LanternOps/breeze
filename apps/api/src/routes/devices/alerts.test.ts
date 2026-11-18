@@ -92,7 +92,8 @@ describe('device alert routes', () => {
       headers: { Authorization: 'Bearer token' },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: Array<{ summary: string; message: string }> };
+    const body = await res.json() as { data: Array<{ title: string; summary: string; message: string }> };
+    expect(body.data[0]?.title).toBe('Front desk offline');
     expect(body.data[0]?.summary).toBe('Front desk offline');
     expect(body.data[0]?.message).toBe('Front desk has been offline');
   });

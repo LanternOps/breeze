@@ -28,7 +28,7 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '../../utils/pgErrors';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createAccessToken } from '../../services/jwt';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
@@ -151,7 +151,7 @@ describe('device_function_assessments — tenancy guards', () => {
     // device of org A stamped with org A2: RLS is bypassed (system), so the
     // structural pin is what fires.
     await expect(insertRaw({ deviceId: f.deviceA, orgId: f.orgA2 }))
-      .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+      .rejects.toSatisfy((e: unknown) => isPgForeignKeyViolationCode(pgErrorCode(e)));
   });
 
   runDb('an org token cannot read another org\'s assessments (RLS SELECT)', async () => {

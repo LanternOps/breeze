@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import { computeDurationSeconds, formatDuration } from './ExecutionHistory';
-import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
+import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusDescription, resolveExecutionStatusLabel } from './executionStatus';
 import { RunContextChip } from '@/components/common/RunContext';
 import RestorePointInline from '../restorePoints/RestorePointInline';
 import { hasPermission } from '@/lib/permissions';
@@ -66,13 +66,15 @@ export function OutputSection({
   content,
   icon: Icon,
   defaultOpen = true,
-  variant = 'default'
+  variant = 'default',
+  purgedNote
 }: {
   title: string;
   content?: string;
   icon: typeof Terminal;
   defaultOpen?: boolean;
   variant?: 'default' | 'error';
+  purgedNote?: string;
 }) {
   const { t } = useTranslation('scripts');
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -153,7 +155,7 @@ export function OutputSection({
       {isOpen && (
         <div className="p-4">
           {isEmpty ? (
-            <p className="text-sm text-muted-foreground italic">{t('executionDetails.output.noOutput')}</p>
+            <p className="text-sm text-muted-foreground italic">{purgedNote ?? t('executionDetails.output.noOutput')}</p>
           ) : (
             <pre className={cn(
               'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
@@ -268,6 +270,9 @@ export default function ExecutionDetails({
   const canCancel = hasPermission(permissions, 'scripts', 'execute');
   const isCancellable = CANCELLABLE_STATUSES.has(execution.status);
   const isCancelling = execution.status === 'cancelling';
+  const purgedNote = execution.outputPurgedAt
+    ? t('executionDetails.output.purged', { date: formatDateTime(execution.outputPurgedAt, timezone) })
+    : undefined;
 
   const handleConfirmCancel = async (graceSeconds: number) => {
     if (!onCancel) return;
@@ -335,10 +340,10 @@ export default function ExecutionDetails({
                   'text-lg font-semibold',
                   statusConfig[execution.status].color
                 )}>
-                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(execution.status, execution.cancelState, execution.deviceStatus)}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {t(/* i18n-dynamic */ `executionDetails.statusDescription.${execution.status}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusDescription(execution.status, execution.deviceStatus)}`)}
                 </p>
               </div>
             </div>
@@ -412,6 +417,7 @@ export default function ExecutionDetails({
               content={execution.stdout}
               icon={Terminal}
               defaultOpen={true}
+              purgedNote={purgedNote}
             />
 
             <OutputSection
@@ -420,6 +426,7 @@ export default function ExecutionDetails({
               icon={AlertOctagon}
               defaultOpen={!!execution.stderr}
               variant="error"
+              purgedNote={purgedNote}
             />
           </div>
 

@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import { getErrorMessage, getErrorTitle, isAccessDenied } from './errorMessages';
 
+// #11195: a 429 clears on its own — it must read as a wait, not a failure.
+describe('errorMessages — 429 reads as a wait', () => {
+  const resp = new Response(null, { status: 429 });
+  it('titles and words a 429 as "please wait"', () => {
+    expect(getErrorTitle(resp)).toBe('Please wait');
+    expect(getErrorMessage(resp)).toMatch(/too many requests.*try again in a moment/i);
+  });
+  it('handles an app error carrying status 429', () => {
+    const err = Object.assign(new Error('rate limited'), { status: 429 });
+    expect(getErrorTitle(err)).toBe('Please wait');
+  });
+});
+
 // #1629 follow-up: a 403 is a permission denial, NOT an expired session. Before
 // the fix, both 401 and 403 mapped to "Session expired / Please sign in again",
 // so a validly-signed-in but permission-limited user was told to sign in again.

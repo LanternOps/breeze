@@ -18,12 +18,24 @@ const CUSTOM_DEFS = [
     defaultValue: null,
     deviceTypes: ['windows'],
   },
+  {
+    id: 'cf-2',
+    orgId: null,
+    partnerId: 'p1',
+    name: 'Tier',
+    fieldKey: 'tier',
+    type: 'dropdown',
+    options: { choices: [{ label: 'Standard', value: 's' }, { label: 'Gold', value: 'gold_tier' }] },
+    required: false,
+    defaultValue: null,
+    deviceTypes: ['windows'],
+  },
 ];
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
     if (url === '/custom-fields') {
-      return { ok: true, status: 200, json: async () => ({ data: CUSTOM_DEFS, total: 1 }) };
+      return { ok: true, status: 200, json: async () => ({ data: CUSTOM_DEFS, total: 2 }) };
     }
     return { ok: false, status: 404, json: async () => ({}) };
   }),
@@ -80,7 +92,7 @@ describe('DeviceList — custom field columns (#6594)', () => {
   it('a custom field column is hidden by default even once definitions load', async () => {
     render(<DeviceList devices={[populated]} pageSize={50} />);
     await waitFor(() => {
-      expect(useCustomFieldDefinitionsStore.getState().definitions).toHaveLength(1);
+      expect(useCustomFieldDefinitionsStore.getState().definitions).toHaveLength(2);
     });
     expect(screen.queryByTestId(`device-${populated.id}-custom-bdr_windows_activation`)).toBeNull();
   });
@@ -102,7 +114,7 @@ describe('DeviceList — custom field columns (#6594)', () => {
   it('the column picker lists the definition and toggling it shows the column', async () => {
     render(<DeviceList devices={[populated]} pageSize={50} />);
     await waitFor(() => {
-      expect(useCustomFieldDefinitionsStore.getState().definitions).toHaveLength(1);
+      expect(useCustomFieldDefinitionsStore.getState().definitions).toHaveLength(2);
     });
 
     fireEvent.click(screen.getByText('Columns'));
@@ -156,6 +168,17 @@ describe('DeviceList — custom field columns (#6594)', () => {
       ).toBe('Notification');
     });
     expect(screen.queryByTestId(`device-${populated.id}-custom-deleted_field`)).toBeNull();
+  });
+
+  it('shows the dropdown choice label, not the stored value (#9677)', async () => {
+    writeVisibleCustomFieldKeys(['tier']);
+    const std = device('66666666-6666-6666-6666-666666666666', 'std-box', { customFields: { tier: 's' } });
+    const orphan = device('77777777-7777-7777-7777-777777777777', 'orphan-box', { customFields: { tier: 'retired' } });
+    render(<DeviceList devices={[std, orphan]} pageSize={50} />);
+    await waitFor(() => {
+      expect(screen.getByTestId(`device-${std.id}-custom-tier`).textContent).toBe('Standard');
+    });
+    expect(screen.getByTestId(`device-${orphan.id}-custom-tier`).textContent).toBe('retired');
   });
 });
 

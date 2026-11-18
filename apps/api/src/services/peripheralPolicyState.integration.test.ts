@@ -138,6 +138,22 @@ describe('peripheral policy desired-state persistence', () => {
       .effectivePolicies.map((entry) => entry.action)).toEqual(['allow']);
   });
 
+  runDb('never pushes to a device of a suspended partner (#10362)', async () => {
+    const database = getTestDb();
+    const seeded = await seedDevice(2);
+    await database.update(partners).set({ status: 'suspended' }).where(eq(partners.id, seeded.partner.id));
+
+    await expect(reconcilePeripheralPolicyDevice(seeded.device.id, 'periodic_drift'))
+      .resolves.toBe('incompatible');
+
+    await expect(database.select().from(peripheralPolicyDeviceStates)
+      .where(eq(peripheralPolicyDeviceStates.deviceId, seeded.device.id))).resolves.toEqual([]);
+    await expect(database.select().from(deviceCommands).where(and(
+      eq(deviceCommands.deviceId, seeded.device.id),
+      eq(deviceCommands.type, 'peripheral_policy_sync_v2'),
+    ))).resolves.toEqual([]);
+  });
+
   runDb('serializes concurrent first admission and coalesces one clear command', async () => {
     const database = getTestDb();
     const seeded = await seedDevice(2);

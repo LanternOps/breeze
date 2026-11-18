@@ -238,19 +238,38 @@ func parseDeviceDetail(deviceID string, body []byte) (TopologyDeviceDetailRow, e
 // CollectDeviceDetails reads one device's detail through the documented
 // Integration API endpoint. A 404 is `unsupported` for that device only.
 func (c *APIClient) CollectDeviceDetails(ctx context.Context, siteID, deviceID string) (TopologyDeviceDetailRow, topologycanon.Outcome, error) {
+	row, _, outcome, err := c.collectDeviceDetail(ctx, siteID, deviceID, false)
+	return row, outcome, err
+}
+
+// collectDeviceDetail is CollectDeviceDetails plus, when wifi is set, the v2
+// radio/capability extraction from the same response (no extra request).
+func (c *APIClient) collectDeviceDetail(ctx context.Context, siteID, deviceID string, wifi bool) (TopologyDeviceDetailRow, detailV2, topologycanon.Outcome, error) {
 	path := fmt.Sprintf("%s/sites/%s/devices/%s", apiBase, url.PathEscape(siteID), url.PathEscape(deviceID))
 	body, status, err := c.getPage(ctx, path, 0)
 	if err != nil {
-		return TopologyDeviceDetailRow{}, topologycanon.Failed, err
+		return TopologyDeviceDetailRow{}, detailV2{}, topologycanon.Failed, err
 	}
 	if status == http.StatusNotFound {
-		return TopologyDeviceDetailRow{}, topologycanon.Unsupported, nil
+		return TopologyDeviceDetailRow{}, detailV2{}, topologycanon.Unsupported, nil
 	}
 	row, err := parseDeviceDetail(deviceID, body)
 	if err != nil {
-		return TopologyDeviceDetailRow{}, topologycanon.Failed, fmt.Errorf("unifi api %s: %w", path, err)
+		return TopologyDeviceDetailRow{}, detailV2{}, topologycanon.Failed, fmt.Errorf("unifi api %s: %w", path, err)
 	}
-	return row, topologycanon.Complete, nil
+	var extra detailV2
+	if wifi {
+		if extra, err = parseDetailV2(body); err != nil {
+			return TopologyDeviceDetailRow{}, detailV2{}, topologycanon.Failed, fmt.Errorf("unifi api %s: %w", path, err)
+		}
+	}
+	return row, extra, topologycanon.Complete, nil
+}
+
+// detailKey addresses one device in the poll's (site index, device id) space.
+type detailKey struct {
+	site int
+	id   string
 }
 
 type detailTally struct {
@@ -261,7 +280,8 @@ type detailTally struct {
 // collectDetailWindow fetches at most opts.DetailBudget device details, walking
 // the poll's sorted (site, device) list from opts.DetailCursor and wrapping, so
 // successive polls cover large sites without any extra schedule.
-func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, siteDevices [][]Device, deviceLists []Resource, opts PollOptions) ([]Resource, int) {
+func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, siteDevices [][]Device, deviceLists []Resource, opts PollOptions) ([]Resource, int, map[detailKey]detailV2) {
+	extras := map[detailKey]detailV2{}
 	out := make([]Resource, len(sites))
 	type target struct {
 		site int
@@ -283,7 +303,7 @@ func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, si
 		}
 	}
 	if opts.DetailBudget <= 0 {
-		return out, opts.DetailCursor
+		return out, opts.DetailCursor, extras
 	}
 	tallies := make([]detailTally, len(sites))
 	next := 0
@@ -293,8 +313,8 @@ func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, si
 		if take > n {
 			take = n
 		}
-		dctx, cancel := context.WithTimeout(ctx, detailPhaseTimeout)
-		defer cancel()
+		// ctx already carries the shared enrichment deadline (client.go).
+		dctx := ctx
 		picked := map[int]bool{}
 		for k := 0; k < take; k++ {
 			idx := (start + k) % n
@@ -304,10 +324,13 @@ func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, si
 				tallies[t.site].skipped++
 				continue
 			}
-			row, outcome, _ := c.CollectDeviceDetails(dctx, sites[t.site].ID, t.id)
+			row, extra, outcome, _ := c.collectDeviceDetail(dctx, sites[t.site].ID, t.id, opts.Wifi)
 			switch outcome {
 			case topologycanon.Complete:
 				tallies[t.site].rows = append(tallies[t.site].rows, row)
+				if opts.Wifi {
+					extras[detailKey(t)] = extra
+				}
 			case topologycanon.Unsupported:
 				tallies[t.site].unsupported++
 			default:
@@ -327,7 +350,7 @@ func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, si
 		}
 		finishDetails(&out[i], tallies[i], deviceLists[i].Outcome)
 	}
-	return out, next
+	return out, next, extras
 }
 
 func finishDetails(r *Resource, t detailTally, listOutcome topologycanon.Outcome) {

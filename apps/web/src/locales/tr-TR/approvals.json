@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Bu isteği neden reddediyorsunuz? Gerekçe isteğe bağlıdır.",
   "denyReasonPlaceholder": "İsteğe bağlı — isteği yapan kişiyle paylaşılır",
+  "denyReasonShownToUserHint": "Son kullanıcı bunu bildiriminde görür (ilk 500 karakter).",
   "confirmDeny": "Reddi onayla",
   "cancel": "Vazgeç",
   "deny": "Reddet",
@@ -67,6 +68,7 @@
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "approverScopeRequired": "Bu onay, iş ortağının tüm organizasyonlarını etkiler; bu nedenle tüm organizasyonlara erişimi olan iş ortağı düzeyinde bir onaylayan gerekir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
     "alreadyDecided": "Bu isteğe zaten karar verildi.",
     "expired": "Bu istek, karar verilmeden önce sona erdi.",
@@ -98,6 +100,7 @@
     "loading": "Son onaylar yükleniyor…",
     "error": "Son onaylar yüklenemedi.",
     "retry": "Yeniden dene",
+    "decisionReasonLabel": "Onaylayanın gerekçesi",
     "empty": "Son zamanlarda tamamlanan bir şey yok.",
     "status": {
       "failed": "Başarısız",
@@ -106,7 +109,7 @@
       "cancelled": "İptal edildi",
       "completed": "Tamamlandı",
       "denied": "Reddedildi",
-      "refused": "Onay uygulanmadı",
+      "refused": "Onaylandı, sonra engellendi",
       "approved": "Onaylandı",
       "reported": "Bildirildi",
       "unknown": "Bilinmiyor"
@@ -131,7 +134,7 @@
     "durationValue": "Onaydan itibaren {{minutes}} dakika",
     "purpose": "Amaç",
     "requestedBy": "Talep eden",
-    "principalUser": "Breeze yapay zekâ sohbeti",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP API anahtarı",
     "principalOauth": "MCP OAuth bağlantısı",
     "paths": "Yollar",
@@ -149,7 +152,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Yapay zekâ operatörü görevi için plan",
+    "title": "Yapay zekâ görevi için plan",
     "summary_one": "{{count}} etki, plan revizyonu {{revision}}",
     "summary_other": "{{count}} etki, plan revizyonu {{revision}}",
     "groupBreeze": "Breeze cihazları",
@@ -160,5 +163,19 @@
     "orderNote": "Etkiler bu sırayla çalışır. Oturum açma en son devre dışı bırakılır; böylece erken durdurma e-postaları asla yönlendirmesiz bırakmaz.",
     "empty": "Bu plan hiçbir etki içermiyor.",
     "invalid": "Bu planın tamamı görüntülenemedi. Onaylamayın."
+  },
+  "intentStatus": {
+    "title": "Onay durumu",
+    "waitingForApprovers": "Onaylayıcılar bekleniyor",
+    "notFound": "Bu onay bulunamadı.",
+    "status": {
+      "pending_approval": "Onay bekliyor",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "rejected": "Reddedildi",
+      "expired": "Süresi doldu",
+      "cancelled": "İptal edildi"
+    }
   }
 }

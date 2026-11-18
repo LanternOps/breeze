@@ -10,8 +10,11 @@ import OrgImportPreviewTable, {
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { Dialog } from '../shared/Dialog';
 // Initializes the shared i18next singleton — see PsaConnectionsPage.
 import '../../lib/i18n';
+
+const TITLE_ID = 'psa-company-import-title';
 
 /**
  * Import a PSA's companies as organizations (#3246).
@@ -183,14 +186,18 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div
-        data-testid="psa-company-import-modal"
-        className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs"
-      >
+    <Dialog
+      open
+      onClose={onClose}
+      title={t('longTail.psa.PsaCompanyImport.title')}
+      labelledBy={TITLE_ID}
+      maxWidth="3xl"
+      className="max-h-[90vh] overflow-y-auto"
+    >
+      <div data-testid="psa-company-import-modal" className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">{t('longTail.psa.PsaCompanyImport.title')}</h2>
+            <h2 id={TITLE_ID} className="text-lg font-semibold">{t('longTail.psa.PsaCompanyImport.title')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {t('longTail.psa.PsaCompanyImport.subtitle', { name: connection.name })}
             </p>
@@ -380,6 +387,6 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
           </div>
         )}
       </div>
-    </div>
+    </Dialog>
   );
 }

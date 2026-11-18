@@ -62,9 +62,83 @@ describe('import mode side effects are confined to ticketSideEffects (spec §4.5
     expect(functionSource('addTicketComment')).toMatch(/fx\.writeTicketOutbox\(ticket\.orgId, ticketId, 'ticket\.commented'/);
   });
 
+  // #8313 W1 (spec 2026-10-19 §4.3.1): the reservation and skip-delete
+  // statements, and the reserve / store steps around them, run inside
+  // importTicket's transactions with no write mode at all, so they must not
+  // reach a side effect by any path: not directly, not through fx.
+  it.each([
+    'ticketImport/importAttachments.ts',
+    'ticketImport/chunkAttachments.ts',
+    'ticketImport/storeAttachments.ts',
+  ])('%s takes no write mode and calls none of the side-effect helpers at all', (file) => {
+    const body = stripComments(readFileSync(join(__dirname, file), 'utf8'));
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `${file} calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+    expect(body, `${file} builds side effects`).not.toMatch(/ticketSideEffects\s*\(/);
+    expect(body, `${file} writes the outbox`).not.toMatch(/\bticketOutbox\b|ticket_outbox/);
+    expect(body, `${file} takes a write mode`).not.toMatch(/TicketWriteMode|kind:\s*['"]import['"]/);
+  });
+
+  // #8313 W4b (spec 2026-10-19 §5.13): the created-contacts resolution runs
+  // inside the ticket's header transaction. It emits, queues, audits and
+  // sends nothing, and never grants portal access, and createContact, which
+  // it calls, writes no audit row or event either (the contact routes audit).
+  it('ticketImport/importPeople.ts calls no side effect, audit, mail or portal write', () => {
+    const file = 'ticketImport/importPeople.ts';
+    const body = stripComments(readFileSync(join(__dirname, file), 'utf8'));
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `${file} calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+    expect(body, `${file} builds side effects`).not.toMatch(/ticketSideEffects\s*\(/);
+    expect(body, `${file} writes the outbox`).not.toMatch(/\bticketOutbox\b|ticket_outbox/);
+    expect(body, `${file} takes a write mode`).not.toMatch(/TicketWriteMode|kind:\s*['"]import['"]/);
+    expect(body, `${file} audits`).not.toMatch(/\b(writeContactAudit|writeRouteAudit|writeAuditEvent|createAuditLog\w*)\s*\(/);
+    expect(body, `${file} mails or queues`).not.toMatch(/\b(sendEmail|getEmailService|enqueue\w*|\w+Queue)\s*[.(]/);
+    expect(body, `${file} touches portal logins`).not.toMatch(/\bportalUsers\b|portal_users|invitePortal/);
+    expect(body, `${file} grants a role`).toMatch(/roles: \[\]/);
+  });
+
+  it("createContact, which the import calls, emits no event and writes no audit row", () => {
+    const crud = readFileSync(join(__dirname, 'contacts/crud.ts'), 'utf8');
+    const start = crud.indexOf('export async function createContact(');
+    expect(start).toBeGreaterThan(-1);
+    const body = stripComments(crud.slice(start, crud.indexOf('\n}\n', start) + 2));
+    for (const effect of [...SIDE_EFFECTS, 'writeContactAudit', 'writeRouteAudit', 'writeAuditEvent', 'publishEvent', 'emitEvent']) {
+      expect(body, `createContact calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+  });
+
+  // #8313 W2 (spec 2026-10-19 §5.3 item 4): links in import mode go through
+  // addTicketLink, so its events and audit row go through fx too.
+  it('ticketLinkService.ts addTicketLink takes a mode and calls no side effect directly', () => {
+    const source = readFileSync(join(__dirname, 'ticketLinkService.ts'), 'utf8');
+    const start = source.indexOf('export async function addTicketLink(');
+    expect(start).toBeGreaterThan(-1);
+    const body = stripComments(source.slice(start, source.indexOf('\n}\n', start) + 2));
+    expect(body).toMatch(/mode: TicketWriteMode = LIVE_TICKET_WRITE/);
+    expect(body).toMatch(/const fx = ticketSideEffects\(mode\);/);
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `addTicketLink calls ${effect} directly`).not.toMatch(new RegExp(`(?<![.\\w])${effect}\\s*\\(`));
+    }
+    expect(body).toMatch(/fx\.emitTicketEvent\(\{\s*type: 'ticket\.link_added'/);
+    expect(body).toMatch(/fx\.createAuditLogAsync\(\{/);
+  });
+
+  it('ticketImport/importLinks.ts reaches the link only through addTicketLink in import mode', () => {
+    const body = stripComments(readFileSync(join(__dirname, 'ticketImport/importLinks.ts'), 'utf8'));
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `importLinks.ts calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+    expect(body, 'importLinks.ts writes ticket_links itself').not.toMatch(/insert\(\s*ticketLinks\s*\)/);
+    expect(body).toMatch(/addTicketLink\([\s\S]*?scope\.at\(link\.at\)/);
+  });
+
   it('the scan really finds a direct call (self-check)', () => {
     const planted = stripComments('export async function x() {\n  await writeTicketOutbox(a, b, c);\n  await fx.emitTicketEvent({});\n}\n');
     expect(planted).toMatch(/(?<![.\w])writeTicketOutbox\s*\(/);
     expect(planted).not.toMatch(/(?<![.\w])emitTicketEvent\s*\(/);
+    // The import-attachment scan above also catches a call through fx.
+    expect(planted).toMatch(/\bemitTicketEvent\s*\(/);
   });
 });

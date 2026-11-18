@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(vide)",
       "noOutput": "Aucune sortie",
+      "purged": "Sortie supprimée après la période de conservation ({{date}})",
       "title": "Sortie",
       "stdout": "Sortie standard (stdout)",
       "stderr": "Erreur standard (stderr)"
@@ -720,6 +721,8 @@
       "timeout": "Délai d’exécution du script dépassé",
       "pending": "Le script attend son exécution",
       "queued": "Le script est en attente d'envoi à l'appareil",
+      "queuedAwaitingPickup": "Aucune session d'agent active ne l'a encore récupéré. Le script sera livré lors du prochain contact de l'agent de l'appareil.",
+      "deviceOffline": "L'appareil est hors ligne. Le script sera livré lorsqu'il se reconnectera.",
       "cancelling": "Arrêt demandé — en attente de confirmation de l'appareil.",
       "cancelled": "Le script a été arrêté sur l'appareil"
     },
@@ -743,7 +746,8 @@
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
       "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
-      "queuedOffline": "En file d'attente — appareil hors ligne"
+      "queuedOffline": "En file d'attente — appareil hors ligne",
+      "queuedAwaitingPickup": "En file d'attente — en attente de récupération par l'appareil"
     }
   },
   "executionHistory": {
@@ -774,7 +778,8 @@
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
       "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
-      "queuedOffline": "En file d'attente — appareil hors ligne"
+      "queuedOffline": "En file d'attente — appareil hors ligne",
+      "queuedAwaitingPickup": "En file d'attente — en attente de récupération"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -803,7 +808,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Décrivez le script dont vous avez besoin...",
-      "opening": "Ouverture de l’assistant IA..."
+      "opening": "Ouverture de Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Arrêter la génération",
@@ -819,15 +824,15 @@
     "approval": {
       "title": "Approbation requise",
       "approve": "Approuver",
-      "reject": "Rejeter"
+      "reject": "Refuser"
     },
     "empty": {
-      "title": "Assistant IA de script",
-      "description": "Décrivez votre besoin et j’écrirai le script pour vous."
+      "title": "Breeze AI",
+      "description": "Demandez à Breeze AI d’écrire ou de vérifier ce script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistant IA de script",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Réappliquer la modification IA",
       "redo": "Rétablir",
@@ -966,11 +971,20 @@
       "allAdmitted": "Tous les appareils sélectionnés ont été admis et placés en file d’attente.",
       "partiallyAdmitted": "Certains appareils ont été admis et placés en file d’attente. Examinez les cibles restantes.",
       "rejected": "Aucun appareil n’a été admis. Examinez les raisons ci-dessous.",
-      "queued": "En file d’attente"
+      "queued": "En file d’attente",
+      "reasons": {
+        "not_found_or_inaccessible": "Appareil introuvable ou inaccessible",
+        "site_access_denied": "Vous n'avez pas accès au site de cet appareil",
+        "script_org_mismatch": "Le script appartient à une autre organisation que l'appareil",
+        "os_incompatible": "Le script n'est pas compatible avec le système d'exploitation de cet appareil",
+        "device_decommissioned": "L'appareil a été mis hors service",
+        "maintenance_suppressed": "Ignoré : l'appareil est dans une fenêtre de maintenance"
+      }
     },
     "confirm": {
       "title": "Confirmer l’exécution",
-      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement."
+      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement.",
+      "descriptionOffline": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne."
     },
     "selectedCount": "{{count}} appareil(s) sélectionné(s)",
     "executeBlocked": "L’exécution est indisponible : un appareil sélectionné ne peut pas exécuter ce script ici (il appartient peut-être à une autre organisation que celle affichée, ou il n’est plus accessible).",
@@ -1015,6 +1029,7 @@
       "submitting": "Envoi à {{count}} groupe(s)...",
       "warningsTitle": "Remarques du serveur",
       "confirmDescription": "Exécuter « {{name}} » sur {{groups}} groupe(s) d'appareils en tant que {{runAs}}. Les scripts sont mis en file d'attente et démarrent immédiatement.",
+      "confirmDescriptionOffline": "Exécuter « {{name}} » sur {{groups}} groupe(s) d’appareils en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne.",
       "confirmMembers": "{{count}} appareil(s) unique(s) font partie de ces groupes en ce moment ; l'appartenance est relue lorsque vous confirmez.",
       "confirmMembersUnknown": "Le nombre d'appareils n'est pas encore connu ; l'appartenance est lue lorsque vous confirmez.",
       "errors": {
@@ -1122,8 +1137,8 @@
       "exitCodeSeverity": "Sévérité des codes de sortie"
     },
     "ai": {
-      "toggleTitle": "Activer/désactiver l’assistant IA de script (⌘⇧I)",
-      "button": "Assistant IA"
+      "toggleTitle": "Activer/désactiver Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",
@@ -1538,6 +1553,22 @@
     "riskLow": "Faible",
     "riskMedium": "Moyen",
     "riskHigh": "Élevé",
-    "riskCritical": "Critique"
+    "riskCritical": "Critique",
+    "reviewInApprovals": "Examiner dans Approbations",
+    "status": {
+      "proposed": "En attente d’examen",
+      "scan_rejected": "Rejeté par l’analyse de sécurité",
+      "review_failed": "Échec de l’examen par l’IA",
+      "reviewed": "Examiné",
+      "approved": "Approuvé",
+      "rejected": "Rejeté",
+      "changes_requested": "Modifications demandées",
+      "expired": "Expiré",
+      "superseded": "Remplacé",
+      "executed": "Exécuté",
+      "verified": "Vérifié",
+      "verification_failed": "Échec de la vérification",
+      "promoted": "Enregistré dans la bibliothèque"
+    }
   }
 }

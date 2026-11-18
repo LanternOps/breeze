@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
@@ -8,8 +8,7 @@ import {
   partnerServicePrincipalKeys,
   partnerServicePrincipals,
   partnerUsers,
-  permissions,
-  rolePermissions,
+  ticketAttachments,
   ticketComments,
   tickets,
   users,
@@ -18,6 +17,8 @@ import {
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { createAuditLog } from './auditService';
+import { permissionGrantMatches } from './permissionMatching';
+import { getRolesPermissionGrants, type RoleReadExecutor } from './roleInheritance';
 import { publishEvent } from './eventBus';
 import { consumeStepUpGrant, type StepUpGrantBinding } from './mfaStepUpGrant';
 import { MIGRATION_WINDOW_MIN_WRITES_PER_HOUR, migrationWindowLimits } from './migrationWindowLimits';
@@ -63,16 +64,22 @@ export type MigrationWindowErrorCode =
   | 'MIGRATION_WINDOW_NOT_OPEN'
   | 'MIGRATION_WINDOW_RATE_LIMITED'
   | 'MIGRATION_SOURCE_ID_IN_USE'
-  | 'MIGRATION_IMPORT_INVALID';
+  | 'MIGRATION_IMPORT_INVALID'
+  // Attachments in import mode (#8313 W1, spec 2026-10-19 §4.1, §4.3): the
+  // writer stores imported files in object storage only (409), and a file it
+  // could not read or store for now fails the ticket for this pass (503).
+  | 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED'
+  | 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE';
 
 export class MigrationWindowError extends Error {
   constructor(
     public readonly code: MigrationWindowErrorCode,
     message: string,
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 429,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 429 | 503,
     public readonly details?: Record<string, unknown>,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'MigrationWindowError';
   }
 }
@@ -125,9 +132,24 @@ function iso(d: Date | null): string | null {
 
 function emptySummary(orgIds: readonly string[]): MigrationWindowSummary {
   return {
-    orgs: orgIds.map((orgId) => ({ orgId, ticketsImported: 0, commentsImported: 0 })),
+    orgs: orgIds.map((orgId) => ({ orgId, ticketsImported: 0, commentsImported: 0, attachmentsImported: 0 })),
     ticketsImported: 0,
     commentsImported: 0,
+    attachmentsImported: 0,
+  };
+}
+
+/**
+ * A closed window's frozen summary. One frozen before #8313 W1 has no
+ * `attachmentsImported`; it imported none (nothing wrote import attachments
+ * before), so it reads as 0.
+ */
+function storedSummary(summary: MigrationWindowSummary | null, orgIds: readonly string[]): MigrationWindowSummary {
+  if (!summary) return emptySummary(orgIds);
+  return {
+    ...summary,
+    orgs: summary.orgs.map((org) => ({ ...org, attachmentsImported: org.attachmentsImported ?? 0 })),
+    attachmentsImported: summary.attachmentsImported ?? 0,
   };
 }
 
@@ -146,20 +168,6 @@ function isUniqueViolationOf(error: unknown, constraint: string): boolean {
 }
 
 /**
- * True when the role on the opener's partner membership grants
- * `permission`, wildcard-aware like hasPermission(): a `*` resource or action
- * matches. `roleId` is the partner_users.role_id column of an enclosing query.
- */
-function roleGrants(roleId: SQLWrapper, permission: { resource: string; action: string }): SQL {
-  return sql`EXISTS (
-    SELECT 1 FROM ${rolePermissions}
-      JOIN ${permissions} ON ${permissions.id} = ${rolePermissions.permissionId}
-     WHERE ${rolePermissions.roleId} = ${roleId}
-       AND ${permissions.resource} IN (${permission.resource}, '*')
-       AND ${permissions.action} IN (${permission.action}, '*'))`;
-}
-
-/**
  * True while `userId` is a partner-wide admin of `partnerId`: a partner_users
  * row with org_access 'all'. A system-scope session has no such row.
  */
@@ -172,25 +180,46 @@ function isPartnerWideAdminSql(userId: SQLWrapper | string, partnerId: SQLWrappe
 }
 
 /**
- * True while one partner-wide membership of `userId` in `partnerId` (the same
- * row: org_access 'all') has a role that still grants every
- * MIGRATION_WINDOW_OPENER_PERMISSIONS entry. Opening requires it, and the
- * sweep closes the window as soon as it stops holding (a role downgrade).
+ * The (user, partner) pairs among `pairs` that still hold every
+ * MIGRATION_WINDOW_OPENER_PERMISSIONS entry: ONE partner-wide membership
+ * (partner_users row with org_access 'all') whose role's runtime grants — its
+ * own plus inherited through `parent_role_id` (#9600/#11702) — cover each
+ * entry, wildcard-aware like hasPermission(). Grants of different memberships
+ * are not pooled. Opening requires it, and the sweep closes the window as soon
+ * as it stops holding (a role downgrade). Keys are `${userId}:${partnerId}`.
+ * `exec` is the caller's transaction handle when it reads inside one.
  */
-function holdsOpenerPermissionsSql(userId: SQLWrapper | string, partnerId: SQLWrapper | string): SQL {
-  const grants = MIGRATION_WINDOW_OPENER_PERMISSIONS.map((permission) => roleGrants(partnerUsers.roleId, permission));
-  return sql`EXISTS (
-    SELECT 1 FROM ${partnerUsers}
-     WHERE ${partnerUsers.userId} = ${userId}
-       AND ${partnerUsers.partnerId} = ${partnerId}
-       AND ${partnerUsers.orgAccess} = 'all'
-       AND ${sql.join(grants, sql` AND `)})`;
+export async function openersHoldingOpenPermissions(
+  pairs: ReadonlyArray<{ userId: string; partnerId: string }>,
+  exec: RoleReadExecutor = db,
+): Promise<Set<string>> {
+  const held = new Set<string>();
+  if (pairs.length === 0) return held;
+  const memberships = await exec
+    .select({ userId: partnerUsers.userId, partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
+    .from(partnerUsers)
+    .where(and(
+      eq(partnerUsers.orgAccess, 'all'),
+      or(...pairs.map((p) => and(eq(partnerUsers.userId, p.userId), eq(partnerUsers.partnerId, p.partnerId)))),
+    ));
+  if (memberships.length === 0) return held;
+  const grants = await getRolesPermissionGrants([...new Set(memberships.map((m) => m.roleId))], exec);
+  for (const m of memberships) {
+    const roleGrantsList = grants.get(m.roleId) ?? [];
+    if (MIGRATION_WINDOW_OPENER_PERMISSIONS.every((need) =>
+      roleGrantsList.some((g) => permissionGrantMatches(g, need.resource, need.action)))) {
+      held.add(`${m.userId}:${m.partnerId}`);
+    }
+  }
+  return held;
 }
 
 /**
- * Per-org counts of what a window imported: tickets carrying its id, and
+ * Per-org counts of what a window imported: tickets carrying its id,
  * comments carrying it with comment_type comment/internal (feed rows are not
- * counted). Rows are grouped by their CURRENT org and reported for the
+ * counted), and attached files carrying it (#8313 W1, spec 2026-10-19 §4.6:
+ * a pending reservation is not counted; idx_ticket_attachments_migration_window
+ * serves it). Rows are grouped by their CURRENT org and reported for the
  * window's orgs only.
  */
 async function countImported(tx: Tx | typeof db, windowId: string, orgIds: readonly string[]): Promise<MigrationWindowSummary> {
@@ -212,6 +241,15 @@ async function countImported(tx: Tx | typeof db, windowId: string, orgIds: reado
       inArray(tickets.orgId, [...orgIds]),
     ))
     .groupBy(tickets.orgId);
+  const attachmentRows = await tx
+    .select({ orgId: ticketAttachments.orgId, n: sql<number>`count(*)::int` })
+    .from(ticketAttachments)
+    .where(and(
+      eq(ticketAttachments.migrationWindowId, windowId),
+      isNotNull(ticketAttachments.commentId),
+      inArray(ticketAttachments.orgId, [...orgIds]),
+    ))
+    .groupBy(ticketAttachments.orgId);
   for (const row of ticketRows) {
     const entry = byOrg.get(row.orgId);
     if (entry) entry.ticketsImported = Number(row.n);
@@ -220,8 +258,13 @@ async function countImported(tx: Tx | typeof db, windowId: string, orgIds: reado
     const entry = byOrg.get(row.orgId);
     if (entry) entry.commentsImported = Number(row.n);
   }
+  for (const row of attachmentRows) {
+    const entry = byOrg.get(row.orgId);
+    if (entry) entry.attachmentsImported = Number(row.n);
+  }
   summary.ticketsImported = summary.orgs.reduce((a, o) => a + o.ticketsImported, 0);
   summary.commentsImported = summary.orgs.reduce((a, o) => a + o.commentsImported, 0);
+  summary.attachmentsImported = summary.orgs.reduce((a, o) => a + o.attachmentsImported, 0);
   return summary;
 }
 
@@ -398,7 +441,6 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
           credentialEpoch: users.credentialEpoch,
           mfaEpoch: users.mfaEpoch,
           isPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(input.opener.userId, input.partnerId)}`,
-          holdsOpenerPermissions: sql<boolean>`${holdsOpenerPermissionsSql(input.opener.userId, input.partnerId)}`,
         })
         .from(users)
         .where(and(
@@ -415,7 +457,10 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
       // admin of the partner whose role still grants what opening needs. Open
       // accepts exactly that, so no window is opened only to be closed by the
       // next sweep (a system-scope admin has no partner membership).
-      if (!opener.isPartnerWideAdmin || !opener.holdsOpenerPermissions) {
+      const holdsOpenerPermissions = opener.isPartnerWideAdmin
+        && (await openersHoldingOpenPermissions([{ userId: input.opener.userId, partnerId: input.partnerId }], tx))
+          .has(`${input.opener.userId}:${input.partnerId}`);
+      if (!opener.isPartnerWideAdmin || !holdsOpenerPermissions) {
         throw new MigrationWindowError(
           'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED',
           MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE,
@@ -518,7 +563,7 @@ export async function closeMigrationWindow(
   if (!row) return null;
   const orgIds = await windowOrgIds(tx, row.id);
   if (row.status === 'closed') {
-    return { window: toView(row, orgIds, row.summary ?? emptySummary(orgIds)), alreadyClosed: true };
+    return { window: toView(row, orgIds, storedSummary(row.summary, orgIds)), alreadyClosed: true };
   }
 
   const summary = await countImported(tx, row.id, orgIds);
@@ -557,6 +602,7 @@ export async function closeMigrationWindow(
       endsAt: row.endsAt.toISOString(),
       ticketsImported: summary.ticketsImported,
       commentsImported: summary.commentsImported,
+      attachmentsImported: summary.attachmentsImported,
       orgs: summary.orgs,
     },
     result: 'success',
@@ -575,7 +621,10 @@ export async function listMigrationWindows(partnerId: string, limit = 100): Prom
   const views: MigrationWindowView[] = [];
   for (const row of rows) {
     const orgIds = await windowOrgIds(db, row.id);
-    const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : (row.summary ?? emptySummary(orgIds));
+    // Live counts (tickets, comments, attachments) for the open window only:
+    // migration_windows_one_open_per_partner allows one, so this is at most
+    // one countImported per list. Closed windows read their frozen summary.
+    const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : storedSummary(row.summary, orgIds);
     views.push(toView(row, orgIds, counts));
   }
   return views;
@@ -590,7 +639,7 @@ export async function getMigrationWindow(partnerId: string, windowId: string): P
     .limit(1);
   if (!row) return null;
   const orgIds = await windowOrgIds(db, row.id);
-  const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : (row.summary ?? emptySummary(orgIds));
+  const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : storedSummary(row.summary, orgIds);
   return toView(row, orgIds, counts);
 }
 
@@ -676,7 +725,8 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
       snapshotCredentialEpoch: migrationWindows.openerCredentialEpoch,
       snapshotMfaEpoch: migrationWindows.openerMfaEpoch,
       openerIsPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
-      openerHoldsOpenPermissions: sql<boolean>`${holdsOpenerPermissionsSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
+      openedBy: migrationWindows.openedBy,
+      partnerId: migrationWindows.partnerId,
     })
     .from(migrationWindows)
     .leftJoin(partnerServicePrincipals, and(
@@ -685,12 +735,37 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
     ))
     .leftJoin(users, eq(users.id, migrationWindows.openedBy))
     .where(eq(migrationWindows.status, 'open'));
-  return rows.map((r) => ({
+  // One membership read and one grant resolution for every open window. A
+  // window whose opener row is gone (opened_by SET NULL) holds nothing.
+  const held = await openersHoldingOpenPermissions(
+    rows.flatMap((r) => (r.openedBy ? [{ userId: r.openedBy, partnerId: r.partnerId }] : [])),
+  );
+  return rows.map(({ openedBy, partnerId, ...r }) => ({
     ...r,
     openerIsPartnerWideAdmin: Boolean(r.openerIsPartnerWideAdmin),
-    openerHoldsOpenPermissions: Boolean(r.openerHoldsOpenPermissions),
+    openerHoldsOpenPermissions: openedBy !== null && held.has(`${openedBy}:${partnerId}`),
   }));
 }
+
+/**
+ * The `migration.window_closed` payload, one per org in the window, with
+ * that org's counts: ids and counts only. Its keys are the webhook docs row
+ * (apps/docs/src/content/docs/features/webhooks.mdx), pinned by
+ * eventBus.types.test.ts. `attachmentsImported` is #8313 W1's (spec
+ * 2026-10-19 §4.6), additive.
+ */
+export type MigrationWindowClosedPayload = {
+  windowId: string;
+  partnerId: string;
+  sourceLabel: string;
+  openedAt: string;
+  endsAt: string;
+  closedAt: string | null;
+  closedReason: MigrationWindowClosedReason | null;
+  ticketsImported: number;
+  commentsImported: number;
+  attachmentsImported: number;
+};
 
 /**
  * Publishes `migration.window_closed` once per org for every closed window
@@ -707,10 +782,10 @@ export async function publishPendingWindowSummaries(): Promise<number> {
   let published = 0;
   for (const row of pending) {
     try {
-      const summary = row.summary ?? emptySummary([]);
+      const summary = storedSummary(row.summary, []);
       await runOutsideDbContext(async () => {
         for (const org of summary.orgs) {
-          await publishEvent(
+          await publishEvent<MigrationWindowClosedPayload>(
             'migration.window_closed',
             org.orgId,
             {
@@ -723,6 +798,7 @@ export async function publishPendingWindowSummaries(): Promise<number> {
               closedReason: row.closedReason,
               ticketsImported: org.ticketsImported,
               commentsImported: org.commentsImported,
+              attachmentsImported: org.attachmentsImported,
             },
             'migration-window-sweep',
             { eventId: `${row.id}:${org.orgId}`, occurredAt: iso(row.closedAt) ?? undefined },

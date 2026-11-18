@@ -1,5 +1,15 @@
 export { buildReportPdf, parseHexColor } from './reportPdf';
 export type { ReportBranding, BuildOpts } from './reportPdf';
+export {
+  REPORT_META_SEPARATOR,
+  formatReportDate,
+  formatReportDateTime,
+  formatReportPeriod,
+  partnerReportConventions,
+  reportPageGeometry,
+  resolveReportLocale,
+} from './reportLocale';
+export type { ReportDateFormat, ReportLocale, ReportPageSize, ReportTimeFormat } from './reportLocale';
 export { renderThreatDetectionReport } from './threatDetectionPdf';
 export type { ThreatDetectionPdfOpts } from './threatDetectionPdf';
 export { renderEndpointManagementReport } from './endpointManagementPdf';
@@ -10,10 +20,18 @@ export { renderIdentityAccessReport } from './identityAccessPdf';
 export type { IdentityAccessPdfOpts } from './identityAccessPdf';
 export { renderTicketSlaReport } from './ticketSlaPdf';
 export type { TicketSlaPdfOpts } from './ticketSlaPdf';
+export { renderTicketSlaPerformanceReport } from './ticketSlaPerformancePdf';
+export type { TicketSlaPerformancePdfOpts } from './ticketSlaPerformancePdf';
 export { renderTechnicianTimeReport } from './technicianTimePdf';
 export type { TechnicianTimePdfOpts } from './technicianTimePdf';
 export { renderArAgingReport } from './arAgingPdf';
 export type { ArAgingPdfOpts } from './arAgingPdf';
 export { renderAiUsageByClientReport } from './aiUsageByClientPdf';
 export type { AiUsageByClientPdfOpts } from './aiUsageByClientPdf';
+export { renderMrrRenewalsReport } from './mrrRenewalsPdf';
+export type { MrrRenewalsPdfOpts } from './mrrRenewalsPdf';
+export { renderQuoteWinRateReport } from './quoteWinRatePdf';
+export type { QuoteWinRatePdfOpts } from './quoteWinRatePdf';
+export { renderClientProfitabilityReport } from './clientProfitabilityPdf';
+export type { ClientProfitabilityPdfOpts } from './clientProfitabilityPdf';
 export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';

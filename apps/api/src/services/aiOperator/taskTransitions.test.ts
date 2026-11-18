@@ -11,6 +11,7 @@ import {
   canTransition,
   isLeasableTaskState,
   isTerminalTaskState,
+  leasedWriteTargetStates,
   nextTaskState,
 } from './taskTransitions';
 
@@ -110,5 +111,19 @@ describe('taskTransitions state machine (spec §6.1)', () => {
     for (const state of TERMINAL_TASK_STATES) {
       expect(isLeasableTaskState(state)).toBe(false);
     }
+  });
+});
+
+describe('leasedWriteTargetStates (#9979)', () => {
+  it('a live snapshot may write over live states only', () => {
+    for (const s of ['queued', 'running', 'waiting']) {
+      expect(leasedWriteTargetStates(s)).toEqual(['queued', 'running', 'waiting']);
+    }
+  });
+  it('a stopping snapshot may write over stopping only', () => {
+    expect(leasedWriteTargetStates('stopping')).toEqual(['stopping']);
+  });
+  it('a paused or terminal snapshot may write over nothing', () => {
+    for (const s of ['paused', ...TERMINAL_TASK_STATES]) expect(leasedWriteTargetStates(s)).toEqual([]);
   });
 });

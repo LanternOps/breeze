@@ -26,6 +26,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const testState = vi.hoisted(() => ({
   scopes: ['ai:read'] as string[],
+  // A partner-scoped key, for a tool whose handler refuses every org-scoped caller (#11287).
+  partnerKey: false,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -72,7 +74,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: async (c: any, next: any) => {
     c.set('apiKey', {
       id: 'key-1',
-      orgId: 'org-1',
+      orgId: testState.partnerKey ? null : 'org-1',
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
@@ -81,7 +83,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       rateLimit: 1000,
       createdBy: 'user-1',
     });
-    c.set('apiKeyOrgId', 'org-1');
+    c.set('apiKeyOrgId', testState.partnerKey ? null : 'org-1');
     await next();
   },
   requireApiKeyScope: () => async (_c: any, next: any) => next(),
@@ -158,10 +160,10 @@ vi.mock('../services/permissions', async (importOriginal) => {
         { resource: 'automations', action: 'read' },
         { resource: 'automations', action: 'write' },
       ],
-      partnerId: null,
-      orgId: 'org-1',
+      ...(testState.partnerKey
+        ? { partnerId: 'partner-1', orgId: null, scope: 'partner' as const, orgAccess: 'all' as const }
+        : { partnerId: null, orgId: 'org-1', scope: 'organization' as const }),
       roleId: 'role-1',
-      scope: 'organization' as const,
       allowedSiteIds: undefined,
     })),
   };
@@ -172,14 +174,18 @@ import { mcpServerRoutes } from './mcpServer';
 beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read'];
+  testState.partnerKey = false;
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([]);
   // get_invite_funnel is the ONLY registered tool for this suite; it is base
   // tier 1 (a plain read), so no scope/approval gate stands between alias
   // resolution and dispatch — keeping the mock minimal isolates exactly the
   // alias-resolution behavior under test.
+  // manage_billing_catalog (W02 D3, #6756) is base tier 2, so its cases run
+  // with an ai:write key; create_item is its one tier-2 action (the price
+  // actions are supervised and MCP-denied).
   mocks.getToolTier.mockReset().mockImplementation((name: string) =>
-    name === 'get_invite_funnel' ? 1 : undefined,
+    name === 'get_invite_funnel' ? 1 : name === 'manage_billing_catalog' ? 2 : undefined,
   );
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
@@ -254,5 +260,56 @@ describe('MCP tools/call deprecated alias dispatch (#5362)', () => {
     expect(body.error?.code).toBe(-32602);
     expect(body.error?.message).toContain('Unknown tool');
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // W02 D3 (#6756): `manage_catalog` was renamed to `manage_billing_catalog`
+  // so the billing price book is never mistaken for the software catalog.
+  describe('manage_catalog -> manage_billing_catalog (W02 D3, #6756)', () => {
+    beforeEach(() => {
+      testState.scopes = ['ai:read', 'ai:write'];
+      // The billing price book is partner-scope only: an org-scoped key is refused before dispatch (#11287).
+      testState.partnerKey = true;
+    });
+
+    it('dispatches a call for "manage_catalog" as "manage_billing_catalog"', async () => {
+      const res = await callTool('manage_catalog', { action: 'create_item', name: 'Managed Workstation', itemType: 'service' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result?.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+      expect(mocks.executeTool.mock.calls[0]?.[0]).toBe('manage_billing_catalog');
+    });
+
+    it('audits the canonical name with requestedToolName "manage_catalog" and deprecatedToolAlias', async () => {
+      await callTool('manage_catalog', { action: 'create_item', name: 'Managed Workstation', itemType: 'service' });
+      const event = findToolExecutionAuditEvent();
+      expect(event).toBeDefined();
+      expect(event.action).toBe('mcp.tool.manage_billing_catalog');
+      expect(event.details.toolName).toBe('manage_billing_catalog');
+      expect(event.details.requestedToolName).toBe('manage_catalog');
+      expect(event.details.deprecatedToolAlias).toBe(true);
+    });
+
+    it('an org-scoped key calling the alias is refused before dispatch, like the canonical name (#11287)', async () => {
+      testState.partnerKey = false;
+      for (const name of ['manage_catalog', 'manage_billing_catalog']) {
+        mocks.executeTool.mockClear();
+        const body = await (await callTool(name, { action: 'create_item', name: 'Managed Workstation', itemType: 'service' })).json();
+        expect(body.result?.isError, name).toBe(true);
+        expect(JSON.parse(body.result.content[0].text).code, name).toBe('PARTNER_SCOPE_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      }
+    });
+
+    it('an aliased supervised action is still MCP-denied, exactly like the canonical name', async () => {
+      for (const name of ['manage_catalog', 'manage_billing_catalog']) {
+        mocks.executeTool.mockClear();
+        const res = await callTool(name, { action: 'set_price', itemId: '00000000-0000-4000-8000-000000000001', currencyCode: 'USD', price: 65 });
+        const body = await res.json();
+        expect(body.error ?? body.result?.isError, `${name} set_price must be refused over MCP`).toBeTruthy();
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      }
+    });
   });
 });

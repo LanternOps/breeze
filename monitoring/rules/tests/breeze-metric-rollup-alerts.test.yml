@@ -1,0 +1,49 @@
+# promtool test rules for the #10960 metric-rollup compaction stall alert in the
+# `breeze-business-alerts` group.
+#
+#   promtool test rules monitoring/rules/tests/breeze-metric-rollup-alerts.test.yml
+#   (CI: .github/workflows/perf-rules.yml runs it with the pinned prom/prometheus image)
+#
+# Only the instance that ran the job publishes the stall gauge, and it keeps its
+# last value, so the rule reads the instance with the newest run
+# (breeze_retention_last_run_timestamp_seconds). One sample per minute.
+rule_files:
+  - ../breeze-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # us: instance a ran last and left a month stalled; b ran earlier and was
+  # clean. eu: stalled on instance c long ago, but d has run since and compacted
+  # it, so c's stale 1 must not latch the alert.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-us",instance="a",job_name="metric_rollup_maintenance"}'
+        values: '1x10'
+      - series: 'breeze_retention_last_run_timestamp_seconds{job="breeze-worker-us",instance="a",job_name="metric_rollup_maintenance"}'
+        values: '2000x10'
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-us",instance="b",job_name="metric_rollup_maintenance"}'
+        values: '0x10'
+      - series: 'breeze_retention_last_run_timestamp_seconds{job="breeze-worker-us",instance="b",job_name="metric_rollup_maintenance"}'
+        values: '1000x10'
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-eu",instance="c",job_name="metric_rollup_maintenance"}'
+        values: '1x10'
+      - series: 'breeze_retention_last_run_timestamp_seconds{job="breeze-worker-eu",instance="c",job_name="metric_rollup_maintenance"}'
+        values: '1000x10'
+      - series: 'breeze_metric_rollup_compaction_stalled_months{job="breeze-worker-eu",instance="d",job_name="metric_rollup_maintenance"}'
+        values: '0x10'
+      - series: 'breeze_retention_last_run_timestamp_seconds{job="breeze-worker-eu",instance="d",job_name="metric_rollup_maintenance"}'
+        values: '2000x10'
+    alert_rule_test:
+      - alertname: MetricRollupCompactionStalled
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: MetricRollupCompactionStalled
+        eval_time: 7m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-worker-us
+            exp_annotations:
+              summary: "Legacy metric_rollups compaction has stalled on breeze-worker-us"
+              description: "1 legacy month(s) stayed uncompacted past the stall threshold because the cutover locks were never free. Their disk is not being reclaimed. The failed metric-rollup-maintenance job names the months."

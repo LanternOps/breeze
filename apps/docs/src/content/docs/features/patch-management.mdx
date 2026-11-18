@@ -23,7 +23,7 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 
 | Source | Description |
 |--------|-------------|
-| **`microsoft`** | Windows Update patches sourced from Microsoft, including cumulative updates, security fixes, and optional feature updates |
+| **`microsoft`** | Windows Update patches sourced from Microsoft, including cumulative updates, security fixes, and Windows feature releases when the device's [update ring allows or pins them](/features/update-rings/#windows-feature-updates) |
 | **`apple`** | macOS and iOS system updates distributed through Apple Software Update |
 | **`linux`** | Distribution packages managed via apt (Debian, Ubuntu) or dnf/yum (RHEL, Fedora, Rocky, AlmaLinux). Distributions that use another package manager (pacman, zypper, apk) are inventoried where possible but not patched yet -- see [Supported Linux Distributions](/agents/installation/#supported-linux-distributions) |
 | **`third_party`** | Updates for non-OS applications (browsers, runtimes, productivity tools) detected via winget and Chocolatey on Windows devices, and Homebrew on macOS devices. Enriched with vendor metadata and CVE data through the [Third-Party Package Catalog](#third-party-application-patching) |
@@ -39,7 +39,15 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`low`** | Minor improvement or non-security fix with minimal operational impact |
 | **`unknown`** | Severity not yet classified by the patch source |
 
-A patch whose source published no severity is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
+**Derived ratings for Windows updates (agent 0.125.0+).** Windows Update often sends no MSRC rating. When it doesn't, the agent derives one from the update's classification and title, and the badge carries a small **Derived rating** note:
+
+- Security Updates and Critical Updates, and other updates titled "security update" or "cumulative update" (not preview cumulative updates), are rated **important**. A derived rating is never **critical**: only a real MSRC rating can be.
+- Update Rollups are rated **important** only when the title mentions security.
+- Definition updates (including Defender security intelligence), drivers, feature packs, tools and upgrades stay unrated.
+
+A derived rating counts for ring auto-approval like any other, so a ring that auto-approves **important** now also approves Windows cumulative and security updates that used to be unrated. A ring that auto-approves only **critical** is unaffected. A later real MSRC rating replaces the derived one.
+
+A patch whose source published no severity, and that the agent cannot rate, is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
 
 ### Approval States
 
@@ -61,6 +69,12 @@ A patch whose source published no severity is shown as a muted **Unrated** badge
 | **`missing`** | Patch is approved and should be present but is not detected on the device |
 
 A patch whose latest install reported success but needs a restart stays pending on the device until it restarts. From v0.121.0 the device's **Patches** tab shows such a row as **Installed, reboot required** instead of an untouched pending patch, and it no longer counts as awaiting approval. An install started from the device's **Patches** tab (or from vulnerability remediation) also counts as an install attempt: a newer one replaces an older failed patch job in the **Install failed** status, and its own failure shows its own reason.
+
+For a user restricted to specific sites, the **Install failed** status, its device count and its reason on the patch list come only from devices in that user's sites.
+
+### Install dates
+
+From the 0.128.0 agent, installed updates show the date the operating system recorded for the install: Windows Update history on Windows, install history on macOS, and the program's install date for winget and Chocolatey packages. A later scan that cannot read a date keeps the date already shown, as long as the installed version is the same; a new version clears it until a date is reported. Where the operating system has no date (Linux packages, Homebrew, or a winget or Chocolatey package whose name doesn't match an installed program exactly), the row shows **Installed (date unknown)**. The customer portal's **Last patch** date fills in once dates arrive.
 
 ### Approval on a device's Patches tab
 
@@ -90,7 +104,7 @@ The detail below documents the winget execution path specifically. Chocolatey (W
 
 The Breeze agent runs winget directly, in the agent's own **SYSTEM** process, against **machine scope** — there is no dependency on a user being logged in, and no separate helper process in the loop. Scanning, installing, and uninstalling third-party patches all happen the same way regardless of whether anyone is signed in to the device, consistent with how OS patches are already applied.
 
-Machine-wide (SYSTEM-scope) installs are fully scanned and patched. Per-user (per-profile) winget installs are also detected, on a best-effort basis through a helper running in the interactive user's session, so they appear in the patch list -- but they cannot be installed or remediated from the SYSTEM agent context, and attempting to do so returns an error.
+Machine-wide (SYSTEM-scope) installs are fully scanned and patched. Per-user (per-profile) winget installs are also detected, on a best-effort basis through a helper running in the interactive user's session, so they appear in the patch list -- but they cannot be installed or remediated from the SYSTEM agent context. Breeze therefore never sends them to the device: patch jobs, AI patch plans, and vulnerability remediation skip them (the device Patches tab shows them as excluded, "a per-user install that Breeze cannot apply yet"), and a direct install request for one is rejected with HTTP 409. An update ring or a manual approval cannot override this.
 
 <Aside type="note">
 This requires winget (the **App Installer**) to already be present on the device. It ships by default on Windows 10, Windows 11, and Windows Server 2025. On Windows Server 2019 and 2022, winget is often missing, and automatic provisioning of winget on those servers is a planned follow-up rather than something Breeze does today. Until it ships, a Server 2019/2022 device without winget reports the third-party engine as unavailable and simply detects no third-party patches — expected behavior, since servers of that vintage typically aren't running desktop apps like browsers or Zoom in the first place.
@@ -103,6 +117,10 @@ This is purely an agent execution-path change: approval rings, patch policies, a
 A curated **package catalog** standardises metadata for known third-party applications. It ships pre-seeded with around 20 common applications, and platform admins manage it at **Admin → Third-Party Catalog**.
 
 Each catalog entry pairs a winget package ID with a vendor, friendly name, category, and a default severity. When a device reports an available third-party update, Breeze matches it to the catalog so the patch shows the correct vendor and a sensible severity even before any vulnerability data is available. Updates from applications not in the catalog still appear in the patches list, but without this enrichment.
+
+<Aside type="note">
+The catalog is not the list of apps Breeze keeps up to date, and neither is the **Software Library** (which holds packages you deploy on demand). Which third-party apps are upgraded is decided by the configuration policy's patch sources (`third_party`), an update ring, and what winget, Chocolatey or Homebrew reports on each device. Apps missing from the catalog are still upgraded; apps in it are not upgraded unless those conditions are met. Per-user winget installs are detected but never upgraded.
+</Aside>
 
 To add or edit an entry:
 
@@ -275,7 +293,7 @@ scheduled → running → completed / failed / cancelled
 
 ## System Restore checkpoints
 
-Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the new **System Protection** policy setting makes it configurable, and each patch install records the outcome (or **Awaiting the device**) as a badge in the patch history. Agent-side checkpoint creation and reporting roll out with a future agent release. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the status reference and the support matrix. System Restore is not a backup, and this is separate from the patch rollback described below.
+Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the **System Protection** policy setting makes it configurable, and each patch install records the outcome as a badge in the patch history. From **agent 0.124.0** the device takes one restore point per patch run, just before the first install, and reports what happened; a run that installs nothing spends none. A device on an older agent keeps reading **Awaiting the device**. A restore point that cannot be created never stops the run. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the badge reference and the support matrix. System Restore is not a backup, and this is separate from the patch rollback described below.
 
 ## Rollback
 
@@ -392,6 +410,8 @@ GET /patches/compliance
 
 This returns `compliancePercent` (a value from 0 to 100) and aggregated counts broken down by device patch status. Results are computed in real time from the current state of the fleet and are not cached.
 
+The response also includes `devicePercent` (the share of devices with nothing outstanding; `0` when there are no devices), which is the figure the dashboard and the Patches page show, and `failedDevices` (devices with an outstanding patch whose latest install failed), plus a paginated `devices` list selected by `status` (`all`, `compliant`, `needs-patches`, `failed`, `critical`, `reboot` or `third-party`), `search`, `limit` (up to 200, default 50) and `offset`. `compliancePercent` counts individual patches and is unchanged.
+
 The response also carries an `unratedSummary` breakdown (`total`, `patched`, `pending`) so you can see how much of the backlog carries no severity rating. The dashboard's patch compliance card surfaces the same number as **"N unrated patches pending (won't auto-approve)"** — a prompt to review them by hand, because nothing will approve them for you unless a ring opts in.
 
 Outstanding patches are split into **Approved** and **Pending Approval**: approved patches have cleared the approval workflow and are eligible for installation, while pending-approval patches are detected but not yet reviewed. A bulk install acts on the **approved** patches only — pending-approval patches are never deployed until they are reviewed and approved, so compliance reporting and deployment stay aligned with your approval posture. When patch settings come from a policy with [update rings](#patch-scheduling-via-configuration-policies), approval is driven automatically by the ring each device belongs to.
@@ -445,9 +465,15 @@ Content-Type: application/json
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
+When two configuration policies with patch settings reach the same device (for example an organization-wide policy and a device-group override), only the closest one schedules patch jobs for that device: its schedule, update ring and reboot policy apply, and the broader policy leaves the device out of its own jobs. The closest level wins (device, then device group, site, organization, partner), and within a level the lower assignment priority wins. An update ring's device count follows the same rule, so a device is counted only under the ring of the policy that patches it. If the closest policy's update ring is disabled or missing, its devices are not patched (the broader policy does not take them back) until the ring is re-enabled or the policy is linked to another ring.
+
 Approval comes from the [update ring](/features/update-rings/) linked to the patch feature. The ring decides which severities and categories are approved, and after what deferral, for the devices it covers. With no ring linked, only manual approvals apply. A device's **Patches** tab shows the result for each patch (see [Approval on a device's Patches tab](#approval-on-a-devices-patches-tab)).
 
 #### End-user restart prompts
+
+<Aside type="note">
+  This section describes the restart dialogs every device has. When the server enables the `restart.prompt` and `restart.final` prompt kinds (opt-in; see [What End Users See](/features/end-user-experience/#restart-prompts)), a device with Breeze Assist 0.1.2 or the native fallback shows one branded restart card instead, with a **Postpone until 15:30** button that is the default, a live countdown, and your restart text in it. The schedule, the postponement budget and the deadline work the same either way.
+</Aside>
 
 When `rebootAllowDeferral` is on and a restart is scheduled while someone is signed in at a desktop, the early warnings appear as a native modal dialog instead of a passive toast: a system message box on Windows, a standard dialog on macOS, and a `zenity` dialog on Linux. The dialog offers two buttons, **Restart now** and **Postpone N minutes/hours** (the postpone label reflects `rebootDeferralMinutes`), and states how many postponements remain, e.g. "You can postpone this restart 2 more times."
 
@@ -456,6 +482,14 @@ When `rebootAllowDeferral` is on and a restart is scheduled while someone is sig
 - Doing nothing — closing the dialog or letting its countdown run out — changes nothing. The restart proceeds exactly as scheduled; silence never postpones and never accelerates it.
 
 The deadline is an absolute cutoff, not a second budget: once it passes, the restart proceeds regardless of how much postponement budget is left. Once the postponement budget is spent, or the deadline no longer leaves room to defer, no further dialog is shown: the remaining warnings go back to being plain notifications, and they say "This restart can no longer be postponed." The final warning, fired as the OS-owned countdown begins, never offers a postponement either — by that point the countdown belongs to the operating system, not Breeze.
+
+**What the user sees.** A restart warning ladder runs from the moment the restart is scheduled until the machine goes down: a lead warning when the restart is booked, then reminders at 60, 15 and 5 minutes before the restart, then a final warning at one minute. Reminders that would land too close to the previous warning are skipped, so a short delay shows fewer rungs (a delay under two minutes collapses to the final warning alone).
+
+- **Dialog or notification.** With `rebootAllowDeferral` on, a warning that can still be postponed is a system-modal **Yes / No** message box on Windows (**Yes** is **Restart now**, **No** is the postpone button, and **No** is the default button, so pressing Enter postpones rather than restarts; agents from before [#10181](https://github.com/LanternOps/breeze/issues/10181) defaulted to Yes), and the equivalent native dialog on macOS and Linux. With postponing off, or once postponements are used up, every warning is a plain notification (on Windows and Linux, shown under the **Breeze** app name).
+- **Two-minute auto-close.** A dialog closes itself after 2 minutes, or sooner if the next warning is due first, with no decision recorded. The restart then proceeds as scheduled. A rung with less than 20 seconds before the next one shows a notification instead of a dialog.
+- **Postponing re-plans the schedule.** Each **Postpone** adds the postponement window to the restart's *scheduled* time, not to the moment of the click, and the ladder is rebuilt for the new time. The lead warning of the rebuilt ladder is a notification with the new time, so the dialog you just answered doesn't reopen; the reminders that follow offer the remaining postponements. The console's **Postponed N of M** badge updates after the device's next heartbeat.
+- **The final warning never offers buttons.** At one minute before the restart (**Restarting Now**, "Save your work now") the countdown belongs to the operating system, so there is nothing left to postpone. For delays of two minutes or more Breeze starts the OS shutdown countdown with a 60-second grace (a shorter delay uses the whole delay), so on Windows the system also typically shows its own "You're about to be signed out — Windows will shut down in 1 minute" notice at that moment. That notice comes from Windows, not Breeze, and can't be customised.
+- **Do Not Disturb and Focus Assist.** Notifications (toasts) can be hidden by Windows Focus Assist, macOS Focus or Do Not Disturb. A user who has one of these on may never see a notification-only warning, including the final one, before the restart. On Windows the dialogs are system-modal message boxes; macOS and Linux use native dialogs. None of them are toasts.
 
 If nobody is signed in or the desktop prompt can't be delivered — a server sitting at the logon screen, a headless machine — there's no dialog. The restart proceeds on schedule and the existing warnings are unaffected; this is expected behavior, not a failure, and there's no setting to change it.
 
@@ -475,6 +509,10 @@ This covers every restart Breeze schedules on Linux: post-patch restarts and res
 
 The settings that control all of this — `rebootAllowDeferral`, `rebootMaxDeferrals`, `rebootDeferralMinutes` — live on the Patch feature of a [Configuration Policy](#patch-scheduling-via-configuration-policies) (see [Patch settings fields](#patch-settings-fields) above) and default to **off**.
 
+**Audit.** Each answer a person gives at the device is recorded against the device as **Restart postponed at the device** (`device.reboot.user_postponed`) or **Restart now chosen at the device** (`device.reboot.user_restart_now`), once per decision, with which renderer showed the prompt (`assist`, `native` or `headless`). They appear on the device's activity feed and in the Audit Log. The rows are attributed to the device's agent, because the person at the keyboard is not a signed-in Breeze user. Doing nothing records nothing.
+
+**Preview.** The **Patch** tab of a Configuration Policy previews the restart card as your users would get it, built from the delay, postponement settings and restart text you have entered, so you can check your wording and the Postpone time before saving.
+
 #### Custom restart-prompt text
 
 By default the restart warnings are in English. To show them in your users' language, or to use your own wording, set any of **Title**, **Message** and **Restart button label** under **Restart prompt text** on the Patch feature (`rebootPromptTitle`, `rebootPromptBody`, `rebootPromptButton`). Each field is independent. A blank field keeps the built-in text for that part. Because the text lives on the patch policy, a site or organization policy can carry its own language and override a partner-wide one.
@@ -482,6 +520,7 @@ By default the restart warnings are in English. To show them in your users' lang
 - The custom title and message replace the text of **every** warning in the sequence: the first notice, the reminders and the final notice. Write `{{countdown}}` where the remaining time should appear. The agent fills it in for each warning (for example "15 minutes" or "1 minute"). No other placeholder is accepted.
 - The text is plain text. `<` and `>` are rejected, and so are line breaks in the title and button label. Text that fails these checks can't be saved. If an invalid value still reaches a device, the agent ignores that field and shows the built-in text. The restart and its warnings still go ahead.
 - The duration that replaces `{{countdown}}`, the **Postpone N minutes/hours** button and the "You can postpone this restart N more times" line stay in English.
+- On the branded restart card (the `restart.prompt` kind), `{{countdown}}` becomes a live `M:SS` countdown, the Postpone button reads "Postpone until 15:30", and the identity header, the consequence line and the postponements-left line are always Breeze's own wording in the user's language. Your text fills the title, the message and the **Restart now** button only.
 - On Windows the dialog uses fixed **Yes**/**No** buttons, so the custom button label is named in the dialog text rather than on a button.
 - The text is fixed when the restart is scheduled. An edit to the policy applies to the next restart, not to one that is already counting down.
 - Agents older than this release ignore these fields and keep the built-in text.
@@ -504,16 +543,18 @@ Each patch policy must declare which **patch sources** it manages, and at least 
 
 #### Application Rules
 
-Application rules give you per-app control over third-party and custom updates. They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
+Application rules give you per-app control over third-party and custom updates, and over individual Linux OS packages (apt and dnf/yum). They are part of the [update ring](/features/update-rings/) (the ring's `appRules` list, under **Application rules** in the ring editor), so they apply to every configuration policy that links that ring. Each rule targets a specific package and chooses one of two actions:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | string | `third_party` or `custom` |
-| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`) |
+| `source` | string | `third_party` or `custom` for applications; `linux` for a Linux OS package |
+| `packageId` | string | The catalog package identifier the rule applies to (e.g., `Mozilla.Firefox`), or the Linux package name (e.g., `docker-ce`) |
 | `action` | string | `block` to prevent the application from being updated, or `pin` to hold it at a specific version |
 | `pinnedVersion` | string | **Required when `action` is `pin`** — the version the application is held at. Updates beyond this version are withheld until the pin is changed |
 
 A **block** rule keeps the application off the approved/installable list entirely. A **pin** rule allows the application up to the pinned version but holds back anything newer, which is useful when a vendor's latest release is known to break a line-of-business workflow. A ring can carry up to 200 application rules, one per package. A rule overrides a manual approval: a blocked application is not installed by a scheduled run even when someone approved the patch.
+
+**Linux packages.** In the ring editor, pick a package from the search list (packages your Linux devices have reported as upgradable; a user restricted to specific sites sees only packages reported by devices in those sites, plus the curated catalog) or choose **Linux package** next to the manual entry box and type its name. A rule for `docker-ce` matches that package on both apt and dnf/yum devices. Pins compare versions the way the package manager does (epoch first, then version, then release), so enter the full version from the patch list, including any epoch, for example `5:24.0.7-1~ubuntu.22.04~jammy`. A pin without the epoch holds every candidate that has one. Breeze upgrades Linux packages one at a time (`apt-get install --only-upgrade <package>`, `dnf update <package>`). A blocked package is never requested by name, but the package manager can still upgrade it as a dependency of another approved package. Use `apt-mark hold` or the dnf `versionlock` plugin on the device if that must never happen.
 
 ### Creating a patch deployment job from a policy
 

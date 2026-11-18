@@ -154,12 +154,9 @@ vi.mock('../services/sso', async () => ({
       throw new Error(`OIDC endpoint rejected (internal): ${label}`);
     }
   },
-  PROVIDER_PRESETS: {
-    okta: {
-      scopes: 'openid profile email',
-      attributeMapping: { email: 'email', name: 'name' }
-    }
-  }
+  // The REAL preset table so the preset tests resolve the shipped keys (#9601:
+  // the web sent 'azure' while the table is keyed 'azure-ad').
+  PROVIDER_PRESETS: (await vi.importActual<typeof import('../services/sso')>('../services/sso')).PROVIDER_PRESETS
 }));
 
 vi.mock('../services', () => ({
@@ -191,15 +188,15 @@ vi.mock('../services', () => ({
   // individual tests override.
   verifyPassword: vi.fn().mockResolvedValue(false),
   hashPassword: vi.fn().mockResolvedValue('$argon2id$dummy-hash'),
-  isAccountLocked: vi.fn().mockResolvedValue(false),
-  recordAccountFailure: vi.fn().mockResolvedValue({ newlyLocked: false, count: 1 }),
+  reserveAccountAttempt: vi.fn().mockResolvedValue({ allowed: true, count: 1, reachesLimit: false }),
+  releaseAccountAttempt: vi.fn().mockResolvedValue(undefined),
   clearAccountFailures: vi.fn().mockResolvedValue(undefined)
 }));
 
 // #4067: the confirm endpoint reuses login's full lockout-notify helper.
 vi.mock('./auth/login', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./auth/login')>()),
-  recordAccountFailureAndMaybeNotify: vi.fn(),
+  notifyAccountLocked: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -402,16 +399,35 @@ vi.mock('../services/ssoDomainVerification', () => ({
 // under OUR policy: an unenrolled user whose policy REQUIRES MFA must not get
 // mfa:true no matter what `amr` says. Default: policy does not require MFA, so
 // the historical trustsIdpMfa×amr matrix below is unaffected.
-const mfaPolicyState = vi.hoisted(() => ({ required: false }));
+//
+// `settingsReadFails` simulates the effective-settings read throwing inside
+// getEffectiveMfaPolicy: the verdict then comes from the real
+// combineMfaPolicyFacts with `settingsUnavailable`, so it honours whatever
+// failClosed option the mint site passed.
+const mfaPolicyState = vi.hoisted(() => ({ required: false, settingsReadFails: false }));
 
-vi.mock('../services/mfaPolicy', () => ({
-  getEffectiveMfaPolicy: vi.fn(async () => ({
-    required: mfaPolicyState.required,
-    allowedMethods: { totp: true, sms: true, passkey: true },
-    pendingEnrollment: null,
-    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
-  })),
-}));
+vi.mock('../services/mfaPolicy', async () => {
+  const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../services/mfaPolicy')>('../services/mfaPolicy');
+  return {
+    getEffectiveMfaPolicy: vi.fn(async (_input: unknown, opts?: { failClosed?: boolean; failClosedMethods?: boolean }) => {
+      if (mfaPolicyState.settingsReadFails) {
+        return combineMfaPolicyFacts({
+          roleForceMfa: false,
+          security: undefined,
+          settingsUnavailable: true,
+          failClosed: opts?.failClosed === true,
+          failClosedMethods: opts?.failClosedMethods === true,
+        });
+      }
+      return {
+        required: mfaPolicyState.required,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+      };
+    }),
+  };
+});
 
 const ipAllowlistState = vi.hoisted(() => ({
   decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
@@ -502,10 +518,11 @@ import {
   getUserEpochs,
   getRefreshFamily,
   verifyPassword,
-  isAccountLocked,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
 } from '../services';
-import { recordAccountFailureAndMaybeNotify } from './auth/login';
+import { notifyAccountLocked } from './auth/login';
 import { users as usersTable, organizationUsers as organizationUsersTable } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -520,6 +537,7 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess
 import { getUserPermissions } from '../services/permissions';
 import { derivePartnerAttribution, writeRouteAudit } from '../services/auditEvents';
 import { auditLogin } from './auth/helpers';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -559,6 +577,8 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaPolicyState.required = false;
+    mfaPolicyState.settingsReadFails = false;
     ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
     ipAllowlistState.error = null;
     ipAllowlistState.calls = [];
@@ -571,7 +591,7 @@ describe('sso routes', () => {
     // #4067 confirm-ceremony defaults (clearAllMocks does NOT restore factory
     // implementations set via mockResolvedValue in earlier tests).
     vi.mocked(verifyPassword).mockResolvedValue(false);
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
     vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as any);
     const capability = {
       transitionId: '00000000-0000-4000-8000-0000000000b1',
@@ -845,7 +865,7 @@ describe('sso routes', () => {
       orgId: ORG_UUID,
       name: 'Okta',
       type: 'oidc',
-      scopes: 'openid profile email',
+      scopes: 'openid profile email groups',
       authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token',
       userInfoUrl: 'https://issuer.example.com/userinfo',
@@ -853,6 +873,69 @@ describe('sso routes', () => {
       createdBy: USER_UUID,
       status: 'inactive'
     }));
+  });
+
+  // #9601: the preset key the create route reads must be the one the API
+  // publishes from GET /sso/presets. The web form used to send 'azure', which
+  // matched nothing, so the provider was created with no attribute mapping.
+  describe('preset keys (#9601)', () => {
+    const postPreset = (preset: string) => app.request('/sso/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Entra', type: 'oidc', preset })
+    });
+
+    it('applies the azure-ad preset scopes and given/family name mapping', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure-ad');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        scopes: 'openid profile email',
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it("maps the legacy 'azure' value (stale web bundles) to the azure-ad preset", async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it('rejects an unknown preset with 400 instead of silently ignoring it', async () => {
+      const res = await postPreset('not-a-preset');
+
+      expect(res.status).toBe(400);
+      // The caller is told which ids are valid, not a bare "Invalid input".
+      const body = await res.json();
+      expect(body.error).toContain('preset');
+      expect(body.error).toContain('"azure-ad"|"okta"|"google"|"auth0"');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty preset (Custom configuration) as no preset', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ attributeMapping: undefined }));
+    });
   });
 
   it('creates a SAML provider without discovery', async () => {
@@ -2456,9 +2539,11 @@ describe('sso routes', () => {
       amr?: string[];
       policyRequiresMfa?: boolean;
       userMfaEnabled?: boolean;
+      policySettingsReadFails?: boolean;
     }) => {
       primeCallback();
       mfaPolicyState.required = opts.policyRequiresMfa === true;
+      mfaPolicyState.settingsReadFails = opts.policySettingsReadFails === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PROVIDER_ROW[0], trustsIdpMfa: opts.trustsIdpMfa }]))
@@ -2489,14 +2574,14 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false for amr phr when the provider does NOT trust IdP MFA (#6137)', async () => {
-      wireLinkedLogin({ trustsIdpMfa: false, amr: ['phr'] });
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['phr'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
     });
 
     it('mints mfa:false for a trusted provider asserting only a single-factor hardware key (#6137)', async () => {
-      wireLinkedLogin({ trustsIdpMfa: true, amr: ['hwk'] });
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['hwk'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
@@ -2522,7 +2607,7 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
-      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
@@ -2531,10 +2616,77 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
-      wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'] });
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    // #11889: an SSO session is held to the same contract as a password
+    // session (middleware/auth.ts requireMfa): a user with NO Breeze factor
+    // whose effective policy does NOT require MFA is policy-admitted. Before
+    // the fix the IdP assertion was a precondition of any mfa:true, so a
+    // tenant with MFA off got 403 MFA_REQUIRED on every MFA-gated route after
+    // an SSO sign-in.
+    it('mints a policy-admitted session for an UNENROLLED user when policy does not require MFA and the provider does not trust IdP MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'policy' }), expect.any(Object));
+    });
+
+    it('mints a policy-admitted session when a trusted provider sends no MFA amr and policy does not require MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'policy' }), expect.any(Object));
+    });
+
+    it('keeps mfa:false for an UNENROLLED user under a required policy without an IdP assertion (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
+    });
+
+    // The policy arm admits a no-factor user only on a policy it could READ.
+    // A failed settings read must not resolve to "not required" here: the
+    // mint resolves the policy fail-closed (as accept-invite does), so the
+    // session is minted unassured and the user is held to enrollment.
+    it('mints mfa:false for an UNENROLLED user when the MFA policy settings cannot be read', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, userMfaEnabled: false, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
+      expect(vi.mocked(getEffectiveMfaPolicy)).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'organization', userId: USER_UUID }),
+        { failClosed: true },
+      );
+    });
+
+    // An enrolled user's trusted IdP assertion does not depend on the policy
+    // read, so a read failure leaves that arm intact.
+    it('still assures an ENROLLED user from a trusted IdP assertion when the MFA policy settings cannot be read', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'idp' }), expect.any(Object));
+    });
+
+    // A user who HOLDS a Breeze factor proved none of it in an SSO callback
+    // (there is no Breeze challenge there), so policy never admits them —
+    // the same as the password path, which challenges an enrolled account.
+    it('keeps mfa:false for an ENROLLED user without a trusted IdP assertion, even when policy does not require MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, policyRequiresMfa: false, userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
     });
 
     // Adjudicated rule (same one the CF-Access mint sites follow): trusting an
@@ -3099,6 +3251,51 @@ describe('sso routes', () => {
       expect(body.error).toMatch(/select an organization/i);
       expect(body.error).toMatch(/ownerScope/);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // The web form never sends a body orgId; fetchWithAuth appends ?orgId=.
+    describe('selected ?orgId fallback', () => {
+      const OTHER_ORG = '00000000-0000-4000-8000-000000000011';
+      const partnerCtx = (canAccessOrg: (id: string) => boolean) => setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID, OTHER_ORG],
+        partnerOrgAccess: 'selected',
+        canAccessOrg
+      });
+      const post = (qs: string) => app.request(`/sso/providers${qs}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Authentik', type: 'oidc' })
+      });
+
+      it('creates for the accessible query orgId when the body has none', async () => {
+        partnerCtx((id) => id === ORG_UUID);
+        const valuesMock = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Authentik', orgId: ORG_UUID }])
+        });
+        vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+        const res = await post(`?orgId=${ORG_UUID}`);
+
+        expect(res.status).toBe(201);
+        expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_UUID }));
+      });
+
+      it('403s an inaccessible query orgId', async () => {
+        partnerCtx((id) => id === ORG_UUID);
+        const res = await post(`?orgId=${OTHER_ORG}`);
+        expect(res.status).toBe(403);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('still 400s with neither body nor query orgId', async () => {
+        partnerCtx(() => true);
+        const res = await post('');
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('sso_provider_org_required');
+      });
     });
 
     it('does not suggest ownerScope=partner to an org-scoped caller (it cannot use it)', async () => {
@@ -3871,9 +4068,11 @@ describe('sso routes', () => {
       amr?: string[];
       policyRequiresMfa?: boolean;
       userMfaEnabled?: boolean;
+      policySettingsReadFails?: boolean;
     }) => {
       prime();
       mfaPolicyState.required = opts.policyRequiresMfa === true;
+      mfaPolicyState.settingsReadFails = opts.policySettingsReadFails === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PARTNER_PROVIDER, trustsIdpMfa: opts.trustsIdpMfa }]))
@@ -3888,13 +4087,24 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: true }),
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'idp' }),
+        expect.any(Object)
+      );
+    });
+
+    // Enrolled tech: only the trusted assertion can assure them (#11889).
+    it('assures an ENROLLED tech from a trusted amr:mfa assertion with mfaSrc idp', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'idp' }),
         expect.any(Object)
       );
     });
 
     it('sets mfa false when trustsIdpMfa is set but amr does not attest mfa', async () => {
-      wireMfa({ trustsIdpMfa: true, amr: ['pwd'] });
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
@@ -3907,6 +4117,59 @@ describe('sso routes', () => {
     // for a factor the user does not have when policy REQUIRES one.
     it('sets mfa false for an UNENROLLED tech under a required policy despite a trusted amr:mfa assertion', async () => {
       wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+    });
+
+    // #11889, partner axis: a tech with no factor under a not-required policy
+    // is policy-admitted, exactly like a password login; the audit row does
+    // not record that as MFA (no factor or IdP assertion was presented).
+    it('mints mfa:false for an UNENROLLED tech when the MFA policy settings cannot be read', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: false, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfaSrc?: string };
+      expect(identity.mfaSrc).toBeUndefined();
+      expect(vi.mocked(getEffectiveMfaPolicy)).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', userId: USER_UUID }),
+        { failClosed: true },
+      );
+    });
+
+    it('policy-admits an UNENROLLED tech when policy does not require MFA and the provider does not trust IdP MFA (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'policy' }),
+        expect.any(Object)
+      );
+      expect(vi.mocked(auditLogin)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: 'sso-partner', mfa: false }),
+      );
+    });
+
+    it('records mfa:true in the partner login audit when a trusted IdP assertion satisfied an enrolled tech (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(vi.mocked(auditLogin)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: 'sso-partner', mfa: true }),
+      );
+    });
+
+    it('keeps mfa false for an ENROLLED tech without a trusted IdP assertion (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: false, userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
@@ -5007,6 +5270,13 @@ describe('sso routes', () => {
         expect.objectContaining({ userId: NEW_USER_UUID }),
         expect.any(Object),
       );
+      // A just-provisioned user's membership is not committed, so its policy
+      // cannot be resolved yet: the first session stays conservative mfa:false
+      // even though no policy requires MFA here (#11889 keeps this arm).
+      expect(issueUserSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: NEW_USER_UUID, mfa: false }),
+        expect.any(Object),
+      );
       expect(ssoTransitionMocks.createDurableSsoExchangeGrant).toHaveBeenCalledTimes(1);
       // The configurer's permissions were resolved on BOTH axes.
       expect(getUserPermissions).toHaveBeenCalledWith(CONFIGURER_UUID, {
@@ -5741,29 +6011,63 @@ describe('sso routes', () => {
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 
-      it('rejects a wrong password with the generic 401, bumps the lockout counter, and keeps the record for a retry', async () => {
+      it('rejects a wrong password with the generic 401, counts it on the account first, and keeps the record for a retry', async () => {
         wireRecord();
-        vi.mocked(verifyPassword).mockResolvedValue(false);
+        const order: string[] = [];
+        vi.mocked(reserveAccountAttempt).mockImplementationOnce(async () => {
+          order.push('reserve');
+          return { allowed: true, count: 2, reachesLimit: false };
+        });
+        vi.mocked(verifyPassword).mockImplementation(async () => {
+          order.push('verify');
+          return false;
+        });
         vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
 
         const res = await confirm({ password: 'wrong' });
         expect(res.status).toBe(401);
-        expect(recordAccountFailureAndMaybeNotify).toHaveBeenCalled();
+        expect(order).toEqual(['reserve', 'verify']);
+        expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'pw@example.com');
+        expect(notifyAccountLocked).not.toHaveBeenCalled();
+        expect(releaseAccountAttempt).not.toHaveBeenCalled();
         expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
         expect(pendingLinkRedis.del).not.toHaveBeenCalled();
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 
-      it('denies a locked account even with the correct password, without bumping the counter', async () => {
+      it('denies a locked account even with the correct password, after running the password check', async () => {
         wireRecord();
         vi.mocked(verifyPassword).mockResolvedValue(true);
-        vi.mocked(isAccountLocked).mockResolvedValue(true);
+        vi.mocked(reserveAccountAttempt).mockResolvedValueOnce({ allowed: false, count: 6, reachesLimit: false });
         vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
 
         const res = await confirm();
         expect(res.status).toBe(401);
-        expect(recordAccountFailureAndMaybeNotify).not.toHaveBeenCalled();
+        expect(verifyPassword).toHaveBeenCalled();
+        expect(notifyAccountLocked).not.toHaveBeenCalled();
+        expect(releaseAccountAttempt).not.toHaveBeenCalled();
         expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(false);
+        vi.mocked(reserveAccountAttempt).mockResolvedValueOnce({ allowed: true, count: 5, reachesLimit: true });
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm({ password: 'wrong' });
+        expect(res.status).toBe(401);
+        expect(notifyAccountLocked).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ email: 'pw@example.com' }), 5);
+      });
+
+      it('gives the reserved attempt back after a correct password', async () => {
+        wireRecord();
+        ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        await confirm();
+        expect(releaseAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'pw@example.com');
       });
 
       it('401s without a ceremony cookie', async () => {

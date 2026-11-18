@@ -1,5 +1,5 @@
 import { and, eq, inArray, or, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1OrgMappings, s1Threats } from '../../db/schema';
 import {
   dispatchS1Isolation,
@@ -267,7 +267,7 @@ export async function executeS1IsolationForOrg(params: {
 
   let actionRows: Array<{ id: string; deviceId: string | null }> = [];
   try {
-    actionRows = await db
+    actionRows = await withDbTransactionIfHeld(() => db
       .insert(s1Actions)
       .values(
         agents.map((row) => ({
@@ -285,7 +285,7 @@ export async function executeS1IsolationForOrg(params: {
           error: errorText
         }))
       )
-      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId }));
   } catch (dbError) {
     console.error('[s1-actions] Failed to persist action records after dispatch:', dbError);
     captureException(dbError);
@@ -508,7 +508,7 @@ export async function executeS1ThreatActionForOrg(params: {
 
   let actionRows: Array<{ id: string; deviceId: string | null }> = [];
   try {
-    actionRows = await db
+    actionRows = await withDbTransactionIfHeld(() => db
       .insert(s1Actions)
       .values(
         matchedThreats.map((threat) => ({
@@ -527,7 +527,7 @@ export async function executeS1ThreatActionForOrg(params: {
           error: errorText
         }))
       )
-      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId });
+      .returning({ id: s1Actions.id, deviceId: s1Actions.deviceId }));
   } catch (dbError) {
     console.error('[s1-actions] Failed to persist action records after dispatch:', dbError);
     captureException(dbError);

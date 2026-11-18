@@ -1,7 +1,8 @@
 /**
  * Narrow, security-sensitive surface for action_intents. Deliberately NOT part
  * of the mobile /mobile/approvals router. Today it exposes exactly one thing:
- * the one-time reveal of a headless reset-password temporary credential.
+ * the one-time reveal of a headless reset-password temporary credential, plus
+ * a human-only read-only status lookup for the /approvals#intent-<id> deep link.
  *
  * Security contract (spec 2026-07-19-reset-password-reveal-design.md):
  * - Shape-1 org RLS scopes every read and the burn write; fail closed.
@@ -15,9 +16,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
+import { approvalRequests } from '../db/schema/approvals';
+import { mapIntentStatus } from '../services/mcpActionStatus';
 import { authMiddleware } from '../middleware/auth';
 import { canAccessOrg, getUserPermissions, userCanDecideApprovals } from '../services/permissions';
 import { checkToolPermissionForResolvedUser } from '../services/aiGuardrails';
@@ -165,3 +168,52 @@ actionIntentsRoutes.post(
     });
   },
 );
+
+/**
+ * Read-only status for the `/approvals#intent-<id>` deep link, for a row the
+ * caller's inbox does not list (e.g. the requester of an MCP-originated
+ * intent). Human session only. Visible to the requester or a user with a
+ * fanned-out approval_requests row on the intent; everything else — unknown,
+ * malformed, invisible, wrong principal — is one identical 404 (no oracle).
+ * Returns display fields only: never arguments or result.
+ */
+actionIntentsRoutes.get('/:id/status', async (c) => {
+  const notFound = () => c.json({ error: 'not_found' }, 404);
+  const auth = c.get('auth');
+  // authMiddleware only accepts user JWTs; this is defense in depth so a
+  // machine principal (API key / MCP grant) can never reach the read.
+  if (auth.principal?.kind !== 'user_session') return notFound();
+  const parsed = z.string().uuid().safeParse(c.req.param('id'));
+  if (!parsed.success) return notFound();
+  const id = parsed.data;
+
+  // Request-scoped DB context (set by authMiddleware): org RLS applies.
+  const [intent] = await db
+    .select()
+    .from(actionIntents)
+    .where(eq(actionIntents.id, id))
+    .limit(1);
+  if (!intent) return notFound();
+
+  let visible = intent.requestedByUserId === auth.user.id;
+  if (!visible) {
+    const [approver] = await db
+      .select({ id: approvalRequests.id })
+      .from(approvalRequests)
+      .where(and(eq(approvalRequests.intentId, id), eq(approvalRequests.userId, auth.user.id)))
+      .limit(1);
+    visible = Boolean(approver);
+  }
+  if (!visible) return notFound();
+
+  return c.json({
+    id: intent.id,
+    status: mapIntentStatus(intent.status),
+    actionLabel: intent.actionName,
+    targetSummary: intent.targetSummary ?? null,
+    approvalScope: intent.approvalScope ?? null,
+    requestingClientLabel: intent.requestingClientLabel ?? null,
+    expiresAt: new Date(intent.expiresAt).toISOString(),
+    createdAt: new Date(intent.createdAt).toISOString(),
+  });
+});

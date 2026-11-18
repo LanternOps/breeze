@@ -159,7 +159,7 @@ export async function contractLinesCoveringDevice(
     const groupRows = await db
       .select({
         id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name,
-        type: deviceGroups.type, siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
+        type: deviceGroups.type, partnerId: deviceGroups.partnerId, siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
       })
       .from(deviceGroups)
       .where(and(inArray(deviceGroups.id, referencedGroupIds), eq(deviceGroups.orgId, device.orgId)));

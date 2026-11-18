@@ -100,7 +100,10 @@ func checkPasswordHistory() CheckResult {
 		return result
 	}
 
-	historyCount := intFromAny(policy["historyCount"])
+	historyCount, ok := policyInt(policy, security.PasswordPolicyKeyHistoryCount)
+	if !ok {
+		return policyValueMissing(result, "password history")
+	}
 	result.Evidence = map[string]any{"historyCount": historyCount}
 
 	if historyCount >= 24 {
@@ -134,7 +137,10 @@ func checkMaxPasswordAge() CheckResult {
 		return result
 	}
 
-	maxAge := intFromAny(policy["maxPasswordAge"])
+	maxAge, ok := policyInt(policy, security.PasswordPolicyKeyMaxAgeDays)
+	if !ok {
+		return policyValueMissing(result, "maximum password age")
+	}
 	result.Evidence = map[string]any{"maxPasswordAge": maxAge}
 
 	if maxAge > 0 && maxAge <= 365 {
@@ -166,7 +172,10 @@ func checkMinPasswordAge() CheckResult {
 		return result
 	}
 
-	minAge := intFromAny(policy["minPasswordAge"])
+	minAge, ok := policyInt(policy, security.PasswordPolicyKeyMinAgeDays)
+	if !ok {
+		return policyValueMissing(result, "minimum password age")
+	}
 	result.Evidence = map[string]any{"minPasswordAge": minAge}
 
 	if minAge >= 1 {
@@ -194,7 +203,10 @@ func checkMinPasswordLength() CheckResult {
 		return result
 	}
 
-	minLen := intFromAny(policy["minPasswordLength"])
+	minLen, ok := policyInt(policy, security.PasswordPolicyKeyMinLength)
+	if !ok {
+		return policyValueMissing(result, "minimum password length")
+	}
 	result.Evidence = map[string]any{"minPasswordLength": minLen}
 
 	if minLen >= 14 {
@@ -395,18 +407,4 @@ func checkAuditCredentialValidation() CheckResult {
 		result.Message = "Audit Credential Validation is not set to Success and Failure"
 	}
 	return result
-}
-
-// intFromAny converts a map value to int, handling float64 from JSON and int types.
-func intFromAny(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	default:
-		return 0
-	}
 }

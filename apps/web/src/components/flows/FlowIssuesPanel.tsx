@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowIssue } from '@breeze/shared';
 import { cn } from '@/lib/utils';
+import HashLink from '@/components/shared/HashLink';
 
 /** Validation issues for a flow, errors first, each linked to its step anchor. */
 export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
@@ -34,9 +35,9 @@ export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
               </span>
               <span>{issue.message}</span>
               {issue.stepId && (
-                <a className="ml-2 font-mono text-xs text-primary hover:underline" href={`#step-${issue.stepId}`}>
+                <HashLink className="ml-2 font-mono text-xs text-primary hover:underline" hash={`step-${issue.stepId}`}>
                   {issue.stepId}
-                </a>
+                </HashLink>
               )}
             </li>
           ))}

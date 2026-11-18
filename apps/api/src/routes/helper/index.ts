@@ -11,7 +11,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { eq, and, desc, sql, asc, isNull } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiSessions, aiMessages, devices } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -32,11 +32,13 @@ import { resolveHelperPermissionLevelForDevice } from '../../services/helperPerm
 import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot, ScreenshotQuotaExceededError, ScreenshotTooLargeError } from '../../services/screenshotStorage';
 import { envInt } from '../../utils/envInt';
-import { checkBudget, checkSystemAiRateLimit } from '../../services/aiCostTracker';
+import { checkBudgetDetailed, checkSystemAiRateLimit } from '../../services/aiCostTracker';
+import { aiDenialClientCode, type AiDenialClientCode } from '../../services/aiDenialCode';
 import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
+import { toolExposureRefusal } from '../../services/aiModels/sessionToolExposure';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
@@ -47,7 +49,12 @@ import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { captureException } from '../../services/sentry';
 import { persistAutoSessionTitle } from '../../services/aiSessionTitle';
 import { callerVerificationEnabled } from '../../config/env';
-import { callerHelperBranding, type CallerHelperBranding } from '../../services/callerVerification/helperBranding';
+import {
+  callerHelperBranding,
+  callerHelperLogo,
+  type CallerHelperBranding,
+  type CallerHelperLogo,
+} from '../../services/callerVerification/helperBranding';
 import {
   isAiBudgetLockTimeout,
   releaseUnusedAiBudgetReservation,
@@ -132,7 +139,7 @@ async function runHelperPreFlight(
   device: HelperDevice,
 ): Promise<
   | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; permissionLevel: HelperPermissionLevel; clientTools: ClientToolDeclaration[]; model: ResolvedModel }
-  | { ok: false; error: string; status: number; code?: ResolveFailureReason }
+  | { ok: false; error: string; status: number; code?: ResolveFailureReason; billingCode?: AiDenialClientCode }
 > {
   // Fetch session
   const [session] = await db
@@ -204,8 +211,11 @@ async function runHelperPreFlight(
 
   // Budget check
   try {
-    const budgetError = await checkBudget(device.orgId, model.funding);
-    if (budgetError) return { ok: false, error: budgetError, status: 402 };
+    const denial = await checkBudgetDetailed(device.orgId, model.funding);
+    if (denial) {
+      const billingCode = aiDenialClientCode(denial.reason);
+      return { ok: false, error: denial.message, status: 402, ...(billingCode ? { billingCode } : {}) };
+    }
   } catch (err) {
     console.error('[Helper] Budget check failed:', err);
     return { ok: false, error: 'Unable to verify budget.', status: 500 };
@@ -377,6 +387,9 @@ helperRoutes.post(
       if (preflight.code) {
         return c.json({ error: preflight.error, code: preflight.code, recoverable: true }, preflight.status as 409);
       }
+      if (preflight.billingCode) {
+        return c.json({ error: preflight.error, code: preflight.billingCode }, 402);
+      }
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
@@ -468,13 +481,18 @@ helperRoutes.post(
           model,
           allowedTools,
           mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-          // Device-initiated: the ledger attributes no Breeze user.
-          { budgetReservationId, ledgerUserId: null },
+          // Device-initiated: the ledger attributes no Breeze user. #11395: the
+          // per-level factory registers the Breeze registry, so a tool profile
+          // narrows it; client-declared tools are the client's own set.
+          { budgetReservationId, ledgerUserId: null, ...(clientTools.length === 0 ? { registersBreezeServer: true } : {}) },
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
           return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
         }
+        // #11396: the model's tool profile cannot serve the helper (too small a window, or a dropped floor tool).
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 
@@ -607,13 +625,14 @@ helperRoutes.post(
     // place a client tool's output is recorded. Generic: output = whatever the
     // client posted (its output, or an { error } payload).
     try {
-      await db.insert(aiMessages).values({
+      // Savepoint so a failed insert rolls back and the request transaction survives (#11203).
+      await withDbTransaction(async () => db.insert(aiMessages).values({
         sessionId,
         role: 'tool_result',
         toolName: toolName ?? null,
         toolOutput: error !== undefined ? { error } : (output ?? null),
         toolUseId,
-      });
+      }));
     } catch (err) {
       console.error('[Helper] Failed to persist tool_result message:', err);
     }
@@ -664,19 +683,61 @@ helperRoutes.get('/device-info', async (c) => {
 
 helperRoutes.get('/config', async (c) => {
   const device = c.get('helperDevice');
-  const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
+  const partnerId = c.get('auth').helperDevicePartnerId;
 
-  // Caller verification (#6354 W02): partner branding for the Assist card,
-  // derived from the authenticated device's org (never a client value). Null
-  // while the feature is dark or on any failure — branding must never delay
-  // or break the card, and must never fail this config response.
+  // #10190 W04: this route is registered in selfManagedDbContextRoutes, so
+  // helperAuth holds no request transaction across the handler. The reads run
+  // in one short transaction under the device's own helper context; the logo
+  // reference is resolved after it, with no connection held (it opens its own
+  // short system read on a cache miss, as the heartbeat does).
+  const { permissionLevel, baseBranding } = await runOutsideDbContext(() =>
+    withDbAccessContext(helperDbAccessContext({ orgId: device.orgId, partnerId }), async () => {
+      const level = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
+      // Caller verification (#6354 W02): partner branding for the Assist card,
+      // derived from the authenticated device's org (never a client value).
+      // Null while the feature is dark or on any failure — branding must never
+      // delay or break the card, and must never fail this config response.
+      let base: Omit<CallerHelperBranding, 'logo'> | null = null;
+      if (callerVerificationEnabled()) {
+        try {
+          base = await callerHelperBranding(device.orgId);
+        } catch (err) {
+          // Logged and reported, never swallowed: a DB failure here blanks the
+          // card's branding for the whole org until it clears.
+          // This catch sits INSIDE the transaction: if the failed statement
+          // aborted it, any statement after this point in the callback would
+          // fail too. Keep the catch last; add no statement after it.
+          console.warn('[helper] caller verification branding unavailable', {
+            deviceId: device.id,
+            orgId: device.orgId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
+        }
+      }
+      return { permissionLevel: level, baseBranding: base };
+    }),
+  );
+
+  // The caller-verify logo (#10190 W04, decision 1): the sha the heartbeat's
+  // promptIdentity block carries for this device, so Assist can draw the
+  // bytes the agent synced. Every id is the helper-authenticated device's
+  // (device → org → partner). Null on a cold https cache, an invalid logo or
+  // any failure; never delays or fails this response.
   let branding: CallerHelperBranding | null = null;
-  if (callerVerificationEnabled()) {
+  if (baseBranding) {
+    let logo: CallerHelperLogo | null = null;
     try {
-      branding = await callerHelperBranding(device.orgId);
+      logo = await callerHelperLogo({ deviceId: device.id, orgId: device.orgId, partnerId });
     } catch (err) {
-      console.warn('[helper] caller verification branding unavailable', { deviceId: device.id, error: err instanceof Error ? err.name : String(err) });
+      console.warn('[helper] caller verification logo unavailable', {
+        deviceId: device.id,
+        orgId: device.orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
     }
+    branding = { ...baseBranding, logo };
   }
 
   return c.json({

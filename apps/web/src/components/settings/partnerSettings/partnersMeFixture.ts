@@ -1,0 +1,32 @@
+// Test fixture: a partners/me response that exercises every branch of the
+// partners/me payload builder (trimmed website, cleared security limits,
+// explicit networkProxy, emailSignature). Used by usePartnersMeUnit.test.ts,
+// whose expected payload was captured from the pre-W2 `handleSave`.
+export const PARTNERS_ME_FIXTURE = {
+  id: 'partner-1',
+  name: 'Acme MSP',
+  slug: 'acme',
+  type: 'msp',
+  plan: 'pro',
+  timezone: 'America/Chicago',
+  emailSignature: 'Thanks,\nAcme',
+  createdAt: '2026-02-09T00:00:00.000Z',
+  settings: {
+    timezone: 'Europe/Berlin',
+    dateFormat: 'DD/MM/YYYY',
+    timeFormat: '24h',
+    language: 'de-DE',
+    contact: { name: 'Ada', email: 'ada@example.com', phone: '', website: '  https://acme.example  ' },
+    address: { street1: '1 Main St', city: 'Springfield', country: 'US', region: '' },
+    security: { minLength: 12, sessionTimeout: 720, requireMfa: true, ipAllowlist: [] },
+    notifications: { fromAddress: 'noc@example.com' },
+    eventLogs: { retentionDays: 30 },
+    defaults: { maintenanceWindow: 'Sun 02:00-04:00' },
+    branding: { primaryColor: '#123456' },
+    aiBudgets: { enabled: true, monthlyBudgetCents: 5000, alertThresholdPercents: [50, 80] },
+    aiApprovals: { timeoutMinutes: 15 },
+    remoteAccessProviders: { teamviewer: { enabled: true } },
+    networkProxy: { dedicatedTunnelOrigin: false },
+    ml: { anomalyDetection: true },
+  },
+} as const;

@@ -19,7 +19,7 @@ import {
 import { project } from './readActions';
 import {
   isUnlicensedSigninEventsError,
-  signinEventsFilter,
+  signinEventsQuery,
   signinEventsTruncated,
   resolveSigninEventsWindow,
   SIGNIN_EVENTS_PATH,
@@ -107,7 +107,7 @@ function limitsFor(
 function succeed(
   action: M365SyncAction,
   items: Record<string, unknown>[],
-  options: { truncated: boolean; sources: DomainSources; fetchedAt: Date; continuation?: string },
+  options: { truncated: boolean; sources: DomainSources; fetchedAt: Date; continuation?: string; malformedItems?: number },
 ): M365SyncActionResult {
   const fields = M365_READ_ACTION_FIELDS[action.type];
   return {
@@ -115,6 +115,7 @@ function succeed(
     kind: 'sync',
     items: items.map((item) => project(item, fields)),
     truncated: options.truncated,
+    ...(options.malformedItems === undefined ? {} : { malformedItems: options.malformedItems }),
     fetchedAt: options.fetchedAt.toISOString(),
     sources: options.sources,
     ...(options.continuation === undefined ? {} : { continuation: options.continuation }),
@@ -273,8 +274,19 @@ async function syncUsers(
   const registration = await fetchRegistrationFacts(context);
   const roles = await fetchRoleFacts(context, userIds);
 
+  // Scope: the users action has no continuation, so `primary.items` is every
+  // page read in this one call; duplicate detection spans all of those pages
+  // and nothing beyond them. A malformed item (non-string/empty id, or an id
+  // already seen) is dropped as before and counted so the API can refuse to
+  // treat the listing as complete.
+  let malformedItems = 0;
+  const seenIds = new Set<string>();
   const items = primary.items.flatMap((user) => {
-    if (typeof user.id !== 'string') return [];
+    if (typeof user.id !== 'string' || user.id === '' || seenIds.has(user.id)) {
+      malformedItems += 1;
+      return [];
+    }
+    seenIds.add(user.id);
     const facts = registration.state === 'ok' ? registration.byUserId.get(user.id) : undefined;
     return [{
       ...user,
@@ -294,6 +306,10 @@ async function syncUsers(
 
   return succeed(action, items, {
     truncated: primary.stopReason !== 'complete',
+    // Only when > 0: an API that predates the field parses results with a
+    // .strict() schema, and absent means 0 to a current API. A clean listing
+    // therefore stays parseable by an older API (deploy skew / rollback).
+    ...(malformedItems > 0 ? { malformedItems } : {}),
     fetchedAt,
     sources: { users: 'ok', mfaRegistration: registration.state, roleAssignments: roles.state },
   });
@@ -520,16 +536,14 @@ async function syncSigninEvents(
     pageSet = await context.graphClient.readSyncCollection({
       accessToken: context.accessToken,
       path: SIGNIN_EVENTS_PATH,
-      query: {
-        '$filter': signinEventsFilter(window),
-        // Ascending: a continuation must resume where the last page stopped,
-        // and Graph's default ordering on this endpoint is not guaranteed.
-        '$orderby': 'createdDateTime',
-        '$top': '1000',
-      },
+      query: signinEventsQuery(window, context.limits.signinEventsPageSize),
       ...(startUrl === undefined ? {} : { startUrl }),
       limits: limitsFor(context, context.limits.maxItemsSigninEvents),
       beforePage: () => context.signinEventsLimiter.tryTake(),
+      // #9394: a page that times out or stays throttled after earlier pages
+      // came back ends the walk with those pages and a continuation at the
+      // failed page, so the next run resumes there instead of re-reading them.
+      keepPagesOnTransientFailure: true,
     });
   } catch (error) {
     // No Entra ID P1: a COMPLETE, zero-item success, not a retryable failure.
@@ -545,11 +559,15 @@ async function syncSigninEvents(
   const continuation = resumeLink === undefined
     ? undefined
     : context.continuations.seal({ tenantId: context.tenantId, action: action.type, nextLink: resumeLink });
+  // An `interrupted` walk always carries a continuation, so the API stores the
+  // cursor and re-claims; this source state is only ever read on a walk that
+  // ended without one.
+  const stoppedEarly = pageSet.stopReason === 'paused' || pageSet.stopReason === 'interrupted';
 
   return succeed(action, pageSet.items, {
     truncated: signinEventsTruncated(pageSet),
     fetchedAt,
-    sources: { signinEvents: pageSet.stopReason === 'paused' ? 'throttled' : 'ok' },
+    sources: { signinEvents: stoppedEarly ? 'throttled' : 'ok' },
     ...(continuation === undefined ? {} : { continuation }),
   });
 }

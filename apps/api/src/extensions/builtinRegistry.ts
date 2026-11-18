@@ -61,6 +61,13 @@ export interface BuiltinExtension {
    * configuration that decides whether the built-in is loaded at all.
    */
   enableEnvVar: string;
+  /**
+   * Extra env names that enable this built-in exactly as `enableEnvVar` does
+   * (same strict `'true'` rule; any one of them suffices). For a product rename
+   * that must not break the original deployment contract: `enableEnvVar` stays
+   * the canonical name every diagnostic reports, and an alias only adds a way in.
+   */
+  enableEnvAliases?: readonly string[];
 }
 
 /**
@@ -247,6 +254,11 @@ export const BUILTINS: readonly BuiltinExtension[] = [
     // Default OFF: workspace's migrations require a pgvector-enabled Postgres,
     // which a stock `postgres:16-alpine` deployment does not have.
     enableEnvVar: 'BREEZE_WORKSPACE_ENABLED',
+    // Wisp W08 (spec §17.2, w00 A35): users know this connector as "Wisp", so
+    // the flag has a Wisp-named alias. It is NOT the engine flag
+    // BREEZE_WISP_ENABLED — the connector needs pgvector and the engine does
+    // not, so enabling Wisp must never imply loading this built-in.
+    enableEnvAliases: ['BREEZE_WISP_CONNECTOR_ENABLED'],
   }),
 ];
 

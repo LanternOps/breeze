@@ -1,3 +1,5 @@
+import { getTableName, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
@@ -16,9 +18,12 @@ const h = vi.hoisted(() => ({
   dbUpdateReturning: vi.fn(),
   dbInsertReturning: vi.fn(),
   dbDeleteReturning: vi.fn(),
+  dbDeleteAssignmentsReturning: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  assignmentDeleteWhere: undefined as unknown,
   lastSet: undefined as Record<string, unknown> | undefined,
   insertedValues: undefined as Record<string, unknown> | undefined,
   systemContexts: 0,
+  loadServedToolSurfaces: vi.fn(async (..._a: unknown[]) => ({ surfaces: new Set<string>(), troubleshootingRuns: false })),
 }));
 
 vi.mock('./candidateLoader', async (orig) => ({
@@ -43,6 +48,10 @@ vi.mock('./registryWriteLock', () => ({
   },
 }));
 vi.mock('../../config/env', () => ({ isHosted: () => h.hosted }));
+vi.mock('./toolSettingsWrite', async (orig) => ({
+  ...(await orig<typeof import('./toolSettingsWrite')>()),
+  loadServedToolSurfaces: (...a: unknown[]) => { h.calls.push('served'); return h.loadServedToolSurfaces(...a); },
+}));
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => {
     const c: any = { from: () => c, where: () => c, limit: () => Promise.resolve(rows()), then: (r: any) => Promise.resolve(rows()).then(r) };
@@ -57,8 +66,16 @@ vi.mock('../../db', () => {
           return { where: () => ({ returning: (...a: unknown[]) => { h.calls.push('update'); return h.dbUpdateReturning(...a); } }) };
         },
       }),
-      delete: () => ({
-        where: () => ({ returning: (...a: unknown[]) => { h.calls.push('delete'); return h.dbDeleteReturning(...a); } }),
+      delete: (table: unknown) => ({
+        where: (cond: unknown) => ({
+          returning: (...a: unknown[]) => {
+            // Name the table: removeOffering may delete inert platform-only assignment rows first (#9496).
+            const name = getTableName(table as Parameters<typeof getTableName>[0]);
+            h.calls.push(name === 'partner_ai_models' ? 'delete' : `delete:${name}`);
+            if (name !== 'partner_ai_models') h.assignmentDeleteWhere = cond;
+            return name === 'partner_ai_models' ? h.dbDeleteReturning(...a) : h.dbDeleteAssignmentsReturning(...a);
+          },
+        }),
       }),
       insert: () => ({
         values: (v: Record<string, unknown>) => {
@@ -75,7 +92,7 @@ vi.mock('../../db', () => {
   };
 });
 
-import { ensurePlatformOffering, removeOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
+import { ensurePlatformOffering, listOfferingDefaultUses, removeOffering, setOfferingEnabled, updateOfferingDetails } from './offeringWrites';
 import { RegistryWriteError } from './registryWriteErrors';
 
 const P = '22222222-2222-4222-8222-222222222222';
@@ -117,9 +134,11 @@ beforeEach(() => {
   h.calls = [];
   h.lastSet = undefined;
   h.insertedValues = undefined;
+  h.assignmentDeleteWhere = undefined;
   h.systemContexts = 0;
   h.getPlatformModelById.mockResolvedValue(null);
   h.getPlatformInferenceGeo.mockResolvedValue(null);
+  h.loadServedToolSurfaces.mockResolvedValue({ surfaces: new Set<string>(), troubleshootingRuns: false });
 });
 
 describe('setOfferingEnabled', () => {
@@ -219,6 +238,20 @@ describe('setOfferingEnabled', () => {
     const r = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: true });
     expect(r.inUse).toEqual([{ surface: 'chat', level: 'partner', orgId: null }]);
     expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
+  });
+});
+
+describe('listOfferingDefaultUses (#9496)', () => {
+  it('lists configurable partner and org defaults and drops platform-only (patch_test) rows', async () => {
+    h.dbSelectRows = [[
+      { surface: 'patch_test', orgId: null },
+      { surface: 'chat', orgId: null },
+      { surface: 'helper', orgId: 'org-1' },
+    ]];
+    expect(await listOfferingDefaultUses(P, OFF)).toEqual([
+      { surface: 'chat', level: 'partner', orgId: null },
+      { surface: 'helper', level: 'org', orgId: 'org-1' },
+    ]);
   });
 });
 
@@ -576,6 +609,105 @@ describe('updateOfferingDetails', () => {
   });
 });
 
+describe('updateOfferingDetails: tool profile and context window (#11398)', () => {
+  const at = UPDATED.toISOString();
+  const catalog = {
+    surfaceNames: (s: string) => new Set(s === 'script_builder'
+      ? ['apply_script_code', 'apply_script_metadata', 'query_devices', 'execute_script_on_device']
+      : ['query_devices', 'search_logs', 'set_device_context']),
+    domainOf: () => undefined,
+  };
+  const gatewayRow = (over: Record<string, unknown> = {}) =>
+    row({ source: 'discovered', connectionId: 'c-1', platformModelId: null, modelId: 'm', toolProfile: 'auto', toolAllowlist: null, ...over });
+  beforeEach(() => {
+    h.getOffering.mockResolvedValue(gatewayRow());
+    h.loadOfferingCandidate.mockResolvedValue(candidate({ funding: 'partner_key', connectionId: 'c-1' }));
+    h.dbUpdateReturning.mockImplementation(async () => [gatewayRow({ ...h.lastSet, updatedAt: new Date() })]);
+    h.dbSelectRows = [[{ kind: 'openai_compatible', configVersion: 2 }]];
+  });
+
+  it('a tool settings patch without the tool catalog is a programming error: nothing is written', async () => {
+    const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, toolProfile: 'standard' } }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/tool catalog/);
+    expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it('writes the profile and override on a gateway model, inside the registry lock, and reports the change', async () => {
+    const result = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard', contextWindowOverride: 32768 },
+    });
+    // The served surfaces are read inside the lock, before the write.
+    expect(h.calls).toEqual([`lock:${P}`, 'served', 'update']);
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard', contextWindowOverride: 32768 });
+    expect(h.loadServedToolSurfaces).toHaveBeenCalledWith(P, OFF);
+    expect(result.toolSettingsChange).toEqual({
+      from: { toolProfile: 'auto', toolAllowlist: null, contextWindowOverride: null },
+      to: { toolProfile: 'standard', toolAllowlist: null, contextWindowOverride: 32768 },
+    });
+  });
+
+  it('a patch without tool fields reports no tool change and never loads the served surfaces', async () => {
+    const result = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, displayName: 'x' } });
+    expect(result.toolSettingsChange).toBeNull();
+    expect(h.loadServedToolSurfaces).not.toHaveBeenCalled();
+  });
+
+  it('refuses minimal on a model the script builder uses (422 tool_profile_underpowered), nothing written', async () => {
+    h.loadServedToolSurfaces.mockResolvedValue({ surfaces: new Set(['script_builder']), troubleshootingRuns: false });
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'minimal' },
+    }).catch((e) => e);
+    expect([err.status, err.code]).toEqual([422, 'tool_profile_underpowered']);
+    expect(err.details.surfaces).toEqual([{ surface: 'script_builder', missing: ['execute_script_on_device'], tooSmall: false }]);
+    expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it('validates custom against the STORED profile: an allow-list alone on a standard model → 422', async () => {
+    h.getOffering.mockResolvedValue(gatewayRow({ toolProfile: 'standard' }));
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolAllowlist: { domains: [], tools: ['search_logs'] } },
+    }).catch((e) => e);
+    expect([err.status, err.details]).toEqual([422, { field: 'toolAllowlist', reason: 'allowlist_requires_custom' }]);
+  });
+
+  it('refuses an override on a platform model (no connection): 422 gateway_only', async () => {
+    h.getOffering.mockResolvedValue(row({ toolProfile: 'auto', toolAllowlist: null }));
+    h.loadOfferingCandidate.mockResolvedValue(candidate());
+    h.dbSelectRows = [];
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, contextWindowOverride: 32768 },
+    }).catch((e) => e);
+    expect([err.status, err.details]).toEqual([422, { field: 'contextWindowOverride', reason: 'gateway_only' }]);
+  });
+
+  it('refuses an override on an Anthropic-key connection model: 422 gateway_only', async () => {
+    h.dbSelectRows = [[{ kind: 'anthropic_byok', configVersion: 1 }]];
+    const err = await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, contextWindowOverride: 32768 },
+    }).catch((e) => e);
+    expect(err.details).toEqual({ field: 'contextWindowOverride', reason: 'gateway_only' });
+  });
+
+  it('an env-managed (MCP_LLM_*) gateway model takes tool settings: access policy, not its price or name', async () => {
+    h.dbSelectRows = [[{ kind: 'openai_compatible', configVersion: 2 }]];
+    await updateOfferingDetails({
+      partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard', contextWindowOverride: 16384 },
+    });
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard', contextWindowOverride: 16384 });
+    // Only the gateway lookup ran: the env-managed check (prices / name only) was never consulted.
+    expect(h.dbSelectRows).toEqual([]);
+  });
+
+  it('a profile on a platform model is accepted (names narrow on every transport)', async () => {
+    h.getOffering.mockResolvedValue(row({ toolProfile: 'auto', toolAllowlist: null }));
+    h.loadOfferingCandidate.mockResolvedValue(candidate());
+    h.dbSelectRows = [];
+    await updateOfferingDetails({ partnerId: P, offeringId: OFF, toolCatalog: catalog, patch: { expectedUpdatedAt: at, toolProfile: 'standard' } });
+    expect(h.lastSet).toMatchObject({ toolProfile: 'standard' });
+  });
+});
+
 describe('removeOffering (#8510)', () => {
   const manual = (over: Record<string, unknown> = {}) =>
     row({ source: 'manual', connectionId: 'conn-1', platformModelId: null, modelId: 'qwen', ...over });
@@ -628,6 +760,61 @@ describe('removeOffering (#8510)', () => {
       { surface: 'chat', level: 'org', orgId: 'org-2', via: 'permitted' },
     ]);
     expect(h.dbDeleteReturning).not.toHaveBeenCalled();
+  });
+
+  // patch_test is platform-only: the resolver never reads its assignment, no UI
+  // row manages it, and the default FK has no cascade. A leftover partner row
+  // must neither block the removal nor survive it as a dangling reference (#9496).
+  it('ignores platform-only (patch_test) assignment references and deletes those inert rows before the offering', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [{ surface: 'patch_test', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null }],
+      [], [],
+    ];
+    h.dbDeleteAssignmentsReturning.mockResolvedValueOnce([{ id: 'a-1' }]);
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    const r = await removeOffering({ partnerId: P, offeringId: OFF });
+    expect(r.id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
+    // The inert delete is pinned to this partner, to the platform-only surfaces
+    // seen, and to rows that reference this offering (never a configurable row).
+    const q = new PgDialect().sqlToQuery(h.assignmentDeleteWhere as SQL);
+    expect(q.sql).toContain('"offering_partner_id" = $1');
+    expect(q.sql).toMatch(/"surface" in \(\$2\)/);
+    expect(q.sql).toContain('"default_offering_id" =');
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."fallback_offering_ids"\)/);
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."permitted_offering_ids"\)/);
+    expect(q.params.slice(0, 2)).toEqual([P, 'patch_test']);
+    expect(q.params).toContain(OFF);
+  });
+
+  it('also drops an inert patch_test row that names it only as a fallback (no dangling id)', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [{ surface: 'patch_test', orgId: null, defaultOfferingId: FB, fallbackOfferingIds: [OFF], permittedOfferingIds: null }],
+      [], [],
+    ];
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    expect((await removeOffering({ partnerId: P, offeringId: OFF })).id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
+  });
+
+  it('still refuses when a configurable surface references it alongside a platform-only row, and deletes nothing', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [
+        { surface: 'patch_test', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null },
+        { surface: 'chat', orgId: null, defaultOfferingId: OFF, fallbackOfferingIds: null, permittedOfferingIds: null },
+      ],
+      [], [],
+    ];
+    const err = await removeOffering({ partnerId: P, offeringId: OFF }).catch((e) => e);
+    expect(err).toMatchObject({ code: 'offering_in_use', status: 409 });
+    expect(err.details.inUse).toEqual([{ surface: 'chat', level: 'partner', orgId: null, via: 'default' }]);
+    expect(h.calls).toEqual([`lock:${P}`]);
   });
 
   it('409 offering_in_use when another offering uses it as its refusal fallback', async () => {

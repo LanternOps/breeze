@@ -88,6 +88,10 @@ export interface OccurrenceEvidence {
   reportRunId: string | null;
   /** #9312: the signed agreement (contract_documents) this evidence cites. */
   contractDocumentId: string | null;
+  /** #9961: the cited record's name (document title, report name, or
+   *  "<agreement> v<n>"). null when the caller may not read that kind of
+   *  record, or it is deleted / not visible — show the short id instead. */
+  label: string | null;
   createdAt: string;
 }
 

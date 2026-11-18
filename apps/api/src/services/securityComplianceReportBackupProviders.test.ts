@@ -59,12 +59,19 @@ describe('loadBackupProviderEvidence', () => {
     expect(coverage.getProviderCoverageForDevices).toHaveBeenCalledWith(ORG, ['dev-1', 'dev-2'], {});
   });
 
+  it.each(['m365', 'gws'])('never credits %s as endpoint evidence, even with a legacy device link', async (accountType) => {
+    state.rows = [{ provider: 'dropsuite', portalShowProviderName: true, breezeDeviceId: 'dev-1', accountType }];
+    coverage.getProviderCoverageForDevices.mockResolvedValue(new Map([['dev-1', { covered: true, health: 'healthy' }]]));
+    expect(await loadBackupProviderEvidence(ORG, ['dev-1'])).toEqual({ evidence: [], coveredDeviceCount: 0 });
+    expect(coverage.getProviderCoverageForDevices).not.toHaveBeenCalled();
+  });
+
   it('only reads rows linked to the devices in the report scope (restricted sites / config.sites)', async () => {
     await loadBackupProviderEvidence(ORG, ['dev-1']);
     const where = new PgDialect().sqlToQuery(state.wheres[0] as SQL);
     expect(where.sql).toContain('"backup_provider_devices"."org_id" = $');
     expect(where.sql).toContain('"backup_provider_devices"."breeze_device_id" in');
-    expect(where.params).toEqual([ORG, 'dev-1']);
+    expect(where.params).toEqual([ORG, 'dev-1', 'm365', 'gws']);
   });
 
   it('drops a row linked outside the report scope even if the query returned it', async () => {

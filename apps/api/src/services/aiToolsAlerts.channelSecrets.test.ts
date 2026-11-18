@@ -705,3 +705,37 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
     expect(mocks.dbDelete).toHaveBeenCalled();
   });
 });
+
+// W02-D9 (#6756): `test` stays tier 2 ONLY while it sends nothing. The REST
+// route (routes/alerts/channels.ts POST /:id/test) delivers a real message;
+// this handler is a lookup stub. Making it real must red here and force a
+// reclassification (anything that leaves the tenant cannot be tier 2).
+describe('manage_notification_channels — test sends nothing (W02-D9, #6756)', () => {
+  let handler: AiTool['handler'];
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handler = getHandler('manage_notification_channels');
+  });
+
+  it('a found channel returns a verification result with no outbound call, event or write', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    mocks.dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([{ id: 'chan-1', name: 'Ops Slack', type: 'slack', enabled: true }]),
+        })),
+      })),
+    });
+    const out = JSON.parse(await handler({ action: 'test', channelId: 'chan-1' }, makeAuth()));
+    expect(out.success).toBe(true);
+    expect(out.channel).toMatchObject({ id: 'chan-1', type: 'slack' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mocks.publishEvent).not.toHaveBeenCalled();
+    expect(mocks.dbInsert).not.toHaveBeenCalled();
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(mocks.dbDelete).not.toHaveBeenCalled();
+    // Never even reads the destination secret.
+    expect(mocks.decryptNotificationChannelConfig).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+});

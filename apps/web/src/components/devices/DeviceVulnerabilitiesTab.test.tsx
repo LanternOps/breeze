@@ -36,8 +36,8 @@ vi.mock('../../lib/api/vulnerabilities', () => ({
 const RESPONSE: DeviceVulnSoftwareResponse = {
   stats: { openTotal: 3, critical: 1, high: 1, medium: 1, low: 0, unscored: 0, kevFindingCount: 1, patchReadyFindingCount: 2 },
   groups: [
-    { groupKey: 'sw:google chrome|', kind: 'software', name: 'Google Chrome', vendor: null, versions: ['126.0'], deviceCount: 1, cveCount: 2, cveIds: ['CVE-1', 'CVE-2'], worstSeverity: 'critical', maxRiskScore: 90, kevCveCount: 1, maxEpss: 0.4, patchReadyFindingCount: 2, patchReadyDeviceCount: 1, tickets: [], targetVersion: null },
-    { groupKey: 'os:windows', kind: 'os', name: 'Windows OS updates', vendor: null, versions: [], deviceCount: 1, cveCount: 1, cveIds: ['CVE-3'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [], targetVersion: null },
+    { groupKey: 'sw:google chrome|', kind: 'software', name: 'Google Chrome', vendor: null, versions: ['126.0'], deviceCount: 1, cveCount: 2, cveIds: ['CVE-1', 'CVE-2'], worstSeverity: 'critical', maxRiskScore: 90, kevCveCount: 1, maxEpss: 0.4, patchReadyFindingCount: 2, patchReadyDeviceCount: 1, vendorFixAvailable: false, tickets: [], targetVersion: null },
+    { groupKey: 'os:windows', kind: 'os', name: 'Windows OS updates', vendor: null, versions: [], deviceCount: 1, cveCount: 1, cveIds: ['CVE-3'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: false, tickets: [], targetVersion: null },
   ],
   findings: [
     { id: 'a', deviceId: 'd1', vulnerabilityId: 'v1', cveId: 'CVE-1', cvssScore: 9.1, cvssVector: null, severity: 'critical', knownExploited: true, epssScore: 0.4, riskScore: 90, status: 'open', detectedAt: '2026-06-01T00:00:00.000Z', patchAvailable: true, groupKey: 'sw:google chrome|' },
@@ -57,7 +57,7 @@ const EMPTY_RESPONSE: DeviceVulnSoftwareResponse = {
 const ACCEPTED_RESPONSE: DeviceVulnSoftwareResponse = {
   stats: { openTotal: 0, critical: 0, high: 1, medium: 0, low: 0, unscored: 0, kevFindingCount: 0, patchReadyFindingCount: 0 },
   groups: [
-    { groupKey: 'sw:acme app|', kind: 'software', name: 'Acme App', vendor: null, versions: ['1.0'], deviceCount: 1, cveCount: 1, cveIds: ['CVE-9'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [], targetVersion: null },
+    { groupKey: 'sw:acme app|', kind: 'software', name: 'Acme App', vendor: null, versions: ['1.0'], deviceCount: 1, cveCount: 1, cveIds: ['CVE-9'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: false, tickets: [], targetVersion: null },
   ],
   findings: [
     { id: 'acc1', deviceId: 'd1', vulnerabilityId: 'v9', cveId: 'CVE-9', cvssScore: 7.0, cvssVector: null, severity: 'high', knownExploited: false, epssScore: null, riskScore: 70, status: 'accepted', detectedAt: '2026-06-01T00:00:00.000Z', patchAvailable: true, groupKey: 'sw:acme app|' },
@@ -117,7 +117,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('Remediate all posts the group patch-ready open finding ids', async () => {
-    const remediate = vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 2, alreadyQueued: [], skipped: [] });
+    const remediate = vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 2, installs: 2, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-remediate-sw:google chrome|'));
     await waitFor(() => expect(remediate).toHaveBeenCalledWith(['a', 'b']));
@@ -130,7 +130,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('calls remediate when the per-finding remediate button is clicked', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, installs: 1, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));
@@ -224,7 +224,7 @@ describe('DeviceVulnerabilitiesTab', () => {
   });
 
   it('enables Remediate button when patchAvailable is true', async () => {
-    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, alreadyQueued: [], skipped: [] });
+    vi.mocked(api.remediateVuln).mockResolvedValue({ scheduled: 1, installs: 1, alreadyQueued: [], skipped: [] });
     render(<DeviceVulnerabilitiesTab deviceId="d1" />);
     fireEvent.click(await screen.findByTestId('vuln-group-toggle-sw:google chrome|'));
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));

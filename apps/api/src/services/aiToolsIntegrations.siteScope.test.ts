@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
   toWorkerWebhookConfig: vi.fn(),
 }));
 
-vi.mock('../db', () => ({ db: { select: mocks.dbSelect, insert: mocks.dbInsert, update: mocks.dbUpdate } }));
-vi.mock('../workers/webhookDelivery', () => ({ getWebhookWorker: () => ({ queueDelivery: mocks.queueDelivery }) }));
+vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()), db: { select: mocks.dbSelect, insert: mocks.dbInsert, update: mocks.dbUpdate } }));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: mocks.queueDelivery }));
 vi.mock('../routes/webhooks', () => ({ toWorkerWebhookConfig: mocks.toWorkerWebhookConfig }));
 
 vi.mock('../db/schema/integrations', () => ({

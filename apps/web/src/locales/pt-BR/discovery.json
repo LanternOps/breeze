@@ -203,6 +203,7 @@
       "scanQueued": "Varredura de descoberta enfileirada para \"{{name}}\"",
       "profileCreated": "Perfil de descoberta \"{{name}}\" criado",
       "profileUpdated": "Perfil de descoberta \"{{name}}\" atualizado",
+      "profileDeleted": "Perfil de descoberta \"{{name}}\" excluído",
       "profileMoved": "Perfil movido para {{site}}.",
       "assetsMoved_one": "{{count}} dispositivo de rede movido",
       "assetsMoved_other": "{{count}} dispositivos de rede movidos",
@@ -342,6 +343,8 @@
       "subnets": "Sub-redes"
     },
     "configuredCount": "{{count}} perfis configurados",
+    "configuredCount_one": "{{count}} perfil configurado",
+    "configuredCount_other": "{{count}} perfis configurados",
     "empty": "Ainda não há perfis de descoberta. Crie o primeiro perfil para iniciar as varreduras.",
     "lastRun": "Última execução {{time}}",
     "loading": "Carregando perfis de descoberta...",
@@ -438,6 +441,8 @@
       "selectSite": "Selecione um local antes de salvar."
     },
     "configuredCount": "{{count}} linhas de base configuradas",
+    "configuredCount_one": "{{count}} linha de base configurada",
+    "configuredCount_other": "{{count}} linhas de base configuradas",
     "subnetTopologyNote": "As sub-redes aqui também identificam as redes deste site no mapa de topologia."
   },
   "networkChangeDetailModal": {

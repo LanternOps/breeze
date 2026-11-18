@@ -57,7 +57,12 @@ export interface ActionPlan {
 
 export type AiSessionStatus = 'active' | 'closed' | 'expired';
 export type AiMessageRole = 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result';
-export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected';
+/**
+ * `rejected`: the approval lifecycle ended without an approval (denied, expired,
+ * wait ended). `refused`: the platform refused the call before it ran —
+ * guardrail, RBAC, rate limit, input validation, ceiling (#10411).
+ */
+export type AiToolStatus = 'pending' | 'approved' | 'executing' | 'completed' | 'failed' | 'rejected' | 'refused';
 
 export interface AiSession {
   id: string;
@@ -122,18 +127,35 @@ export type AiContentBlock =
 // Page Context (injected from frontend)
 // ============================================
 
+export const AI_RECORD_KINDS = ['ticket', 'quote', 'invoice', 'contract', 'organization', 'site'] as const;
+export type AiRecordKind = (typeof AI_RECORD_KINDS)[number];
+
+/** IDs only. The server reads everything else. */
+export interface AiRecordPageContext {
+  type: 'record';
+  kind: AiRecordKind;
+  id: string;
+  /** Client hint only; never authorization authority. */
+  orgId?: string;
+  /** Display label for the web badge only. */
+  label?: string;
+}
+
 export type AiPageContext =
   // `orgId` is the org the device belongs to, supplied so the web client can
   // tell that an open chat session belongs to a different tenant than the page
   // it is now sitting on (#5684). It is a client-side hint only: the API never
   // authorizes on it — the session org is derived from the device row (#5593).
-  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
+  // `displayName` is the web badge's label only (#11673): aiPageContextSchema
+  // does not carry it, so the API strips it on parse and no prompt sees it.
+  | { type: 'device'; id: string; hostname: string; displayName?: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> }
   // Topology M4 (#6000): IDs only. The server pins the session to `siteId`
   // after authorizing it; the client value is never authority afterwards.
-  | AiTopologyPageContext;
+  | AiTopologyPageContext
+  | AiRecordPageContext;
 
 export interface AiTopologyPageContext {
   type: 'topology';
@@ -211,6 +233,49 @@ export interface AiRunResultArtifactRef {
 /** Fixed, server-built phases of a topology investigation turn (M4 #6000); never model text. */
 export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'validating' | 'awaiting_approval';
 
+/**
+ * #9431: how an approval card's wait ended, as far as the session knows.
+ * `not_approved` is a denial; `expired` (#12079) means the request ran out of
+ * time before anyone decided it; `ended` means the wait stopped without a
+ * decision here (settled by a new message or interrupt, or a durable intent
+ * that can still be decided in Approvals). Only `approved` means the action
+ * may run: a client must treat every other value, including one it does not
+ * know, as not approved.
+ */
+export type AiApprovalOutcome = 'approved' | 'not_approved' | 'expired' | 'ended';
+
+/**
+ * #10416: who an `approval_required` card is waiting on. `'you'` means the
+ * requester can decide it (a Tier-2 card, or an intent that fanned an approval
+ * row out to them); `'other_approvers'` means someone else must decide: any
+ * intent where the requester holds no approval row (e.g. four-eyes in a
+ * multi-approver org), or a helper card decided by PAM policy or an admin.
+ */
+export type AiApprovalWaitingOn = 'you' | 'other_approvers';
+
+/**
+ * #9428: machine codes the server puts on an `error` stream event. A client
+ * decides from the code, never the message text, whether "Try again" can help.
+ * Only `timeout`, `provider_error` and `stream_error` are retryable server
+ * codes; the rest need a new session, a different model, an administrator or
+ * waiting (rate limit). Kept in step with the web classifier (lib/aiErrors.ts).
+ */
+export type AiStreamErrorCode =
+  | 'timeout'
+  | 'provider_error'
+  | 'stream_error'
+  | 'rate_limited'
+  | 'provider_auth'
+  | 'provider_quota'
+  | 'context_window_exceeded'
+  | 'budget_exceeded'
+  | 'turn_limit_reached'
+  | 'config_changed'
+  | 'session_expired'
+  | 'session_evicted'
+  | 'topology_limit'
+  | 'topology_failed';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
@@ -287,8 +352,13 @@ export type AiStreamEvent =
    * leaving the value buried in the collapsed parameter JSON. Letting an
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
+   *
+   * #10416: `pushedToPhone` (Tier-2 only; absent means unknown, not "no push")
+   * is true when a push provider accepted at least one push for the
+   * requester's phone; `waitingOn` says who must decide.
+   * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict; ticketContext?: AiApprovalTicketContext }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -302,6 +372,13 @@ export type AiStreamEvent =
    * approval card; this informational event replaces it.
    */
   | { type: 'unattended_release'; executionId: string; intentId: string; toolName: string; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string }; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  /**
+   * #9431: the wait behind an `approval_required` card ended — decided here,
+   * in another window, in Approvals or on mobile, timed out or settled.
+   * Published to every listener on the session so no surface keeps showing
+   * Approve / Deny for a request that is no longer waiting.
+   */
+  | { type: 'approval_resolved'; executionId: string; outcome: AiApprovalOutcome }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
@@ -311,7 +388,14 @@ export type AiStreamEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
-  | { type: 'error'; message: string }
+  /**
+   * `code` names a failure the client can act on (see AiStreamErrorCode);
+   * `turn_limit_reached` = the session's turn budget is spent (start a new
+   * session). Absent on older servers: a client treats a missing or unknown
+   * code as not retryable. `detail` is an optional secondary line (#9428:
+   * the model gateway's reason behind a timeout).
+   */
+  | { type: 'error'; message: string; code?: AiStreamErrorCode; detail?: string }
   // ── Generic client-declared session tools (e.g. Helper chat) — published by
   //    services/clientSessionTools.ts when the model calls a client-declared tool.
   | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
@@ -337,14 +421,133 @@ export type AiStreamEvent =
   | {
       type: 'run_result';
       runId: string;
-      status: 'completed' | 'failed';
+      /**
+       * `awaiting_approval` (#11084): a device-troubleshooting run settled with
+       * steps a person must approve. Not terminal for the card's status copy,
+       * but the run will not move again on its own, so polling may stop.
+       */
+      status: 'completed' | 'failed' | 'awaiting_approval';
       /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
       summary: string | null;
       artifacts: AiRunResultArtifactRef[];
+      /** Set with `awaiting_approval` only: how many of the run's intents are still pending. */
+      pendingIntentCount?: number;
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } };
+  | {
+    type: 'done';
+    usage?: { inputTokens: number; outputTokens: number; costCents: number };
+    /**
+     * #11676: the technician pressed Stop and this turn ended because of it.
+     * Not a failure: no `error` precedes it, and the partial reply so far is
+     * kept and marked stopped.
+     */
+    stopped?: true;
+    /**
+     * #10428 (Wisp only): the turn's message held a standing instruction, and
+     * its capture runs after `done`. The chip polls
+     * `GET /wisp/memory/captures/status/:captureId` until it is terminal.
+     */
+    wispInstructionCapture?: { captureId: string };
+  }
+  /**
+   * #9427: the first data frame of `GET /ai/sessions/:id/stream` (attach). A
+   * snapshot of the session's CURRENT turn on this API instance — never sent
+   * on `/messages`. Live events after it carry a per-turn `seq` greater than
+   * `lastSeq`. See {@link AiAttachState}.
+   */
+  | ({ type: 'attach_state' } & AiAttachState);
+
+/** The cards a turn can be blocked on, verbatim as they were published. */
+/**
+ * #10428 (W06): a Wisp card whose call matches a remembered standing
+ * instruction that does not refuse it (unconfirmed, conditional, or a
+ * `possible` match). The card shows a red banner; the description carries
+ * the same text so every channel shows it.
+ */
+export type AiStandingInstructionConflict = { text: string };
+
+/**
+ * #11674: the ticket a `manage_tickets` approval acts on, resolved server-side
+ * (org-pinned) so the chat card can name it by number and say who a public
+ * reply emails. The requester fields mirror `tickets.submitter_*`, which is
+ * where the notify worker sends customer-visible replies.
+ */
+export type AiApprovalTicketContext = {
+  ticketNumber: string;
+  subject: string;
+  requesterName?: string;
+  requesterEmail?: string;
+};
+
+export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
+
+/**
+ * #9427: what an attaching client needs to render the current turn of a
+ * session that another surface (or a previous page load) started.
+ *
+ * One attach covers ONE turn: every `POST /messages` replaces the in-memory
+ * session and closes its event bus, so a `running` attach that ends without
+ * `done` usually means "a new turn started — attach again". `idle` and
+ * `unavailable` attaches end right after this frame.
+ */
+export interface AiAttachState {
+  /**
+   * `running` — a turn is in progress on this instance; live events follow.
+   * `idle` — the session is in memory and its last turn has ended (or `done`
+   * was already published); the stream ends.
+   * `unavailable` — no turn to show here: the session is not in memory on
+   * this instance (finished long ago, another instance, a restart), is
+   * closing, or is a replacement not yet claimed for its turn; the stream
+   * ends. A client re-attaching after a closed stream or a
+   * `turn_in_progress` 409 retries on this.
+   */
+  turn: 'idle' | 'running' | 'unavailable';
+  /** One per in-memory session, i.e. one per turn. Null when unavailable. */
+  turnId: string | null;
+  /** Highest `seq` the snapshot covers; 0 when none. */
+  lastSeq: number;
+  /**
+   * `ai_messages.id` of this turn's user row. Null when the turn has not
+   * persisted it yet (no output of the turn is persisted either).
+   */
+  turnUserMessageId: string | null;
+  /**
+   * Every event of a `running` turn so far, in order, with `plan_screenshot`
+   * images emptied; `[]` when `partial`, and always `[]` for `idle`/`unavailable`.
+   */
+  replay: AiStreamEvent[];
+  /** The turn outgrew the replay buffer; `replay` is empty, live events still follow. */
+  partial: boolean;
+  /** Cards still awaiting a decision, verbatim with their original deadlines. */
+  pendingCards: AiPendingCardEvent[];
+  /** The executing (or just finished) action plan, as of `lastSeq`. */
+  activePlan: {
+    planId: string;
+    steps: ActionPlanStep[];
+    currentStepIndex: number;
+    status: 'executing' | 'completed' | 'aborted';
+  } | null;
+  /** The turn's last `turn_model`, if one was published. */
+  turnModel: AiTurnModel | null;
+}
+
+const ATTACH_TURN_STATES: ReadonlySet<unknown> = new Set(['idle', 'running', 'unavailable']);
+
+/** Structural guard for an `attach_state` frame read off the wire. */
+export function isAttachStateEvent(e: unknown): e is { type: 'attach_state' } & AiAttachState {
+  if (!e || typeof e !== 'object') return false;
+  const v = e as Record<string, unknown>;
+  return v.type === 'attach_state'
+    && ATTACH_TURN_STATES.has(v.turn)
+    && typeof v.lastSeq === 'number'
+    && typeof v.partial === 'boolean'
+    && Array.isArray(v.replay)
+    && Array.isArray(v.pendingCards)
+    && (v.turnId === null || typeof v.turnId === 'string')
+    && (v.turnUserMessageId === null || typeof v.turnUserMessageId === 'string');
+}
 
 // ============================================
 // API Request/Response Types

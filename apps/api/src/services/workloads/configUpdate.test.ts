@@ -18,6 +18,7 @@ it('sends explicit defaults (enabled: false) when no policy applies, so removing
     hyperv_enabled: true,
     proxmox_enabled: true,
     interval_minutes: 60,
+    accepts_image_provenance: true,
   });
 });
 
@@ -38,7 +39,14 @@ it('maps every setting to its snake_case wire key', () => {
     hyperv_enabled: false,
     proxmox_enabled: true,
     interval_minutes: 30,
+    accepts_image_provenance: true,
   });
+});
+
+// #9067: the agent sends imageProvenance only to a server that says its ingest
+// schema accepts it (an older server rejects the whole report on the key).
+it('always advertises that ingest accepts imageProvenance, whatever the policy', () => {
+  expect(toWorkloadInventoryConfigUpdate(WORKLOAD_INVENTORY_DEFAULTS).accepts_image_provenance).toBe(true);
 });
 
 it('rejects when the resolver fails, so the heartbeat omits the key instead of sending defaults', async () => {

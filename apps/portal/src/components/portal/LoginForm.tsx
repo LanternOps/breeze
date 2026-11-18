@@ -1,10 +1,20 @@
 import { withBase } from '@/lib/basePath';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { portalLogin, usePortalAuth } from '@/lib/auth';
+import { portalApi } from '@/lib/api';
+import {
+  getSignInMethods,
+  startGoogleSignIn,
+  startMicrosoftSignIn,
+  takeStoredNext,
+  type SignInMethods
+} from '@/lib/oidc';
+import { MicrosoftSignInButton } from './MicrosoftSignInButton';
+import { GoogleSignInButton } from './GoogleSignInButton';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
@@ -17,10 +27,138 @@ const loginSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginSchema>;
 
+type SsoProvider = 'microsoft' | 'google';
+
+/**
+ * The callback's result codes (`?sso=`). A Google flow adds `&p=google`; a
+ * missing `p` is Microsoft (its callback never sends one). Unknown codes get
+ * the provider's generic failure. A refusal's reason is never shown, except
+ * `request_pending` (W7 D9), which only describes the signed-in person's own
+ * address.
+ */
+const SSO_COPY: Record<SsoProvider, Record<string, string>> = {
+  microsoft: {
+    request_sent: "Your request was sent. You'll get an email when you can sign in.",
+    account_exists:
+      'You already have an account. Sign in with your password and connect Microsoft, or ask your IT provider to re-invite you.',
+    request_pending:
+      'An access request for your email address is already waiting for your IT provider. Ask them to review it, then sign in again.'
+  },
+  google: {
+    request_sent: "Your request was sent. You'll get an email when you can sign in.",
+    account_exists:
+      'You already have an account. Sign in with your password and connect Google, or ask your IT provider to re-invite you.',
+    request_pending:
+      'An access request for your email address is already waiting for your IT provider. Ask them to review it, then sign in again.'
+  }
+};
+const SSO_GENERIC_COPY: Record<SsoProvider, string> = {
+  microsoft: "Microsoft sign-in isn't set up for this account here.",
+  google: "Google sign-in isn't set up for this account here."
+};
+
+function readSsoParams(): { code: string | null; provider: SsoProvider } {
+  if (typeof window === 'undefined') return { code: null, provider: 'microsoft' };
+  const params = new URLSearchParams(window.location.search);
+  return { code: params.get('sso'), provider: params.get('p') === 'google' ? 'google' : 'microsoft' };
+}
+
 export function LoginForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null = unknown / still loading: render the password form (today's behaviour)
+  // and no SSO buttons. A failed methods fetch stays that way, silently.
+  const [methods, setMethods] = useState<SignInMethods | null>(null);
+  const [msBusy, setMsBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  // Read after mount, never during render: the server has no query string, so
+  // reading it in the initial state makes the hydrated tree differ from the SSR HTML.
+  const [ssoCode, setSsoCode] = useState<string | null>(null);
+  const [ssoProvider, setSsoProvider] = useState<SsoProvider>('microsoft');
+  useEffect(() => {
+    const { code, provider } = readSsoParams();
+    setSsoCode(code);
+    setSsoProvider(provider);
+  }, []);
   const { login } = usePortalAuth();
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSignInMethods().then((result) => {
+      if (!cancelled) setMethods(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The callback has already set the session cookies and redirected here with
+  // ?sso=signed_in. Pick the session up like a password login would: hydrate
+  // the profile into the store, then go to the stored (validated) destination.
+  useEffect(() => {
+    if (ssoCode !== 'signed_in') return;
+    let cancelled = false;
+    void (async () => {
+      const next = safeNextPath(takeStoredNext());
+      try {
+        const profile = await portalApi.getProfile();
+        if (profile.data && !cancelled) {
+          usePortalAuth.getState().setUser({
+            id: profile.data.id,
+            email: profile.data.email,
+            name: profile.data.name ?? '',
+            organizationId: profile.data.organizationId,
+            organizationName: profile.data.organizationName,
+            orgId: profile.data.orgId,
+            orgName: profile.data.orgName ?? undefined
+          });
+        }
+      } catch (err) {
+        // The cookie session is what authorizes requests; the store is a display cache.
+        // A missing session shows up on the next page as the usual sign-in redirect.
+        console.warn('[LoginForm] profile load after single sign-on failed', err);
+      }
+      if (!cancelled) await navigateTo(next ?? '/', { replace: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ssoCode]);
+
+  const showPassword = methods?.password !== false;
+  const showMicrosoft = methods?.microsoft === true;
+  // Absent unless the deployment has a Google client (`google` is omitted otherwise).
+  const showGoogle = methods?.google === true;
+  // W6: only a verified custom portal domain whose org has self-registration
+  // on answers true; the shared host and a failed fetch show no link.
+  const showRequestAccess = methods?.requestAccess === true;
+  const ssoBanner =
+    ssoCode && ssoCode !== 'signed_in'
+      ? ((Object.hasOwn(SSO_COPY[ssoProvider], ssoCode) ? SSO_COPY[ssoProvider][ssoCode] : undefined) ??
+        SSO_GENERIC_COPY[ssoProvider])
+      : null;
+
+  const onMicrosoft = async () => {
+    setMsBusy(true);
+    setError(null);
+    const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
+    const result = await startMicrosoftSignIn({ purpose: 'login', ...(next ? { next } : {}) });
+    if (!result.ok) {
+      setError(result.error);
+      setMsBusy(false);
+    }
+  };
+
+  const onGoogle = async () => {
+    setGoogleBusy(true);
+    setError(null);
+    const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
+    const result = await startGoogleSignIn({ purpose: 'login', ...(next ? { next } : {}) });
+    if (!result.ok) {
+      setError(result.error);
+      setGoogleBusy(false);
+    }
+  };
 
   const {
     register,
@@ -52,6 +190,18 @@ export function LoginForm() {
   };
 
   return (
+    <div className="space-y-4">
+      {ssoBanner && (
+        <div
+          role="status"
+          data-testid="portal-login-sso-banner"
+          className="rounded-md bg-muted p-3 text-sm text-foreground"
+        >
+          {ssoBanner}
+        </div>
+      )}
+
+      {showPassword && (
     // method="post" is a pre-hydration safety net: if the island fails to
     // hydrate, a native submit must never be a GET that puts the password in
     // the URL / browser history / access logs (#2868). Once hydrated,
@@ -140,6 +290,38 @@ export function LoginForm() {
         )}
       </button>
     </form>
+      )}
+
+      {!showPassword && error && (
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm font-medium text-destructive-on-tint">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {(showMicrosoft || showGoogle) && (
+        <div className="space-y-4">
+          {showPassword && (
+            <p className="text-center text-xs uppercase tracking-[0.08em] text-muted-foreground">or</p>
+          )}
+          {showMicrosoft && <MicrosoftSignInButton onClick={onMicrosoft} busy={msBusy} />}
+          {showGoogle && <GoogleSignInButton onClick={onGoogle} busy={googleBusy} />}
+        </div>
+      )}
+
+      {showRequestAccess && (
+        <p className="text-center text-sm text-muted-foreground">
+          Don't have an account?{' '}
+          <a
+            href={withBase('/request-access')}
+            data-testid="login-request-access"
+            className="font-medium text-primary-on-tint underline-offset-4 hover:underline"
+          >
+            Request access
+          </a>
+        </p>
+      )}
+    </div>
   );
 }
 

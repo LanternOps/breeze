@@ -250,6 +250,22 @@ describe('ExecutionDetails empty stdout (sweep E5)', () => {
   });
 });
 
+describe('ExecutionDetails purged output (#4342 W2)', () => {
+  it('shows the retention note instead of "No output" when outputPurgedAt is set', () => {
+    renderExecution({ stdout: undefined, stderr: undefined, outputPurgedAt: '2026-01-01T00:00:00Z' });
+
+    expect(screen.getAllByText(/Output removed after the retention window \([^{}]*\d[^{}]*\)/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No output')).toBeNull();
+  });
+
+  it('keeps the existing "No output" copy when outputPurgedAt is null', () => {
+    renderExecution({ stdout: undefined, stderr: 'a warning', outputPurgedAt: null });
+
+    expect(screen.getByText('No output')).toBeInTheDocument();
+    expect(screen.queryByText(/Output removed after the retention window/)).toBeNull();
+  });
+});
+
 describe('ExecutionDetails restore-point badge (#4759)', () => {
   it('renders the restore-point badge when the execution carries an outcome', () => {
     renderExecution({
@@ -291,5 +307,41 @@ describe('ExecutionDetails restore-point badge (#4759)', () => {
     unmount();
     renderExecution({});
     expect(screen.queryByTestId('restore-point-badge')).toBeNull();
+  });
+});
+
+describe('ExecutionDetails queued/pending delivery copy (#9563)', () => {
+  const queued: Partial<ScriptExecution> = {
+    status: 'queued',
+    startedAt: null,
+    completedAt: undefined,
+    exitCode: undefined,
+    stdout: undefined
+  };
+
+  it('a queued run on an ONLINE device says it is awaiting pickup, never "device offline"', () => {
+    renderExecution({ ...queued, deviceStatus: 'online' });
+    expect(screen.getByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.getByText(/no active agent session/i)).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+    expect(screen.queryByText(/device is offline/i)).toBeNull();
+  });
+
+  it('a queued run with an unknown device status gets the same neutral copy', () => {
+    renderExecution({ ...queued });
+    expect(screen.getByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+  });
+
+  it('a queued run on an OFFLINE device keeps a distinct offline message', () => {
+    renderExecution({ ...queued, deviceStatus: 'offline' });
+    expect(screen.getByText('Queued — device offline')).toBeInTheDocument();
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no active agent session/i)).toBeNull();
+  });
+
+  it('a pending run on an offline device says the device is offline', () => {
+    renderExecution({ ...queued, status: 'pending', deviceStatus: 'offline' });
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
   });
 });

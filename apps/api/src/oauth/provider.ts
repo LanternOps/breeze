@@ -10,6 +10,7 @@ import {
   OAUTH_RESOURCE_URL,
 } from '../config/env';
 import { BreezeOidcAdapter } from './adapter';
+import { createOauthErrorRenderer } from './errorPage';
 import { cimdAllowFetch, createOidcProviderFetch } from './cimdPolicy';
 import { cimdAllowClient } from './cimdClients';
 import { findAccount } from './findAccount';
@@ -36,6 +37,7 @@ import {
 import { eq, isNull, lt, or, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 import { createGrantErrorLogger, grantErrorContext } from './grantErrorLog';
+import { installRotationSuccessorIds } from './refreshRotationGrace';
 import { recordRefreshRetry } from '../services/connectionHealth/oauthRetryCounter';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
@@ -447,8 +449,9 @@ export async function handleRevocationSuccess(
  */
 export function buildOidcProviderConfiguration(
   jwks: Awaited<ReturnType<typeof loadJwks>>,
-  opts: { cimdEnabled: boolean } = { cimdEnabled: OAUTH_CIMD_ENABLED },
+  opts: { cimdEnabled?: boolean; consentUrlBase?: string } = {},
 ): Configuration {
+  const { cimdEnabled = OAUTH_CIMD_ENABLED, consentUrlBase = OAUTH_CONSENT_URL_BASE } = opts;
   return {
   adapter: BreezeOidcAdapter,
   clients: [],
@@ -511,7 +514,7 @@ export function buildOidcProviderConfiguration(
     // floor is 5 min: Cache-Control no-store/no-cache below that is NOT
     // honoured, on purpose, to bound fetch amplification.
     clientIdMetadataDocument: {
-      enabled: opts.cimdEnabled,
+      enabled: cimdEnabled,
       ack: 'draft-02',
       allowFetch: cimdAllowFetch,
       allowClient: cimdAllowClient,
@@ -631,8 +634,13 @@ export function buildOidcProviderConfiguration(
   },
   interactions: {
     url: (_ctx: any, interaction: any) =>
-      `${OAUTH_CONSENT_URL_BASE}/oauth/consent?uid=${interaction.uid}`,
+      `${consentUrlBase}/oauth/consent?uid=${interaction.uid}`,
   },
+  // #9938: errors that must not go back to the client (unknown/refused
+  // client_id, unregistered redirect_uri) used to land on oidc-provider's
+  // unbranded "oops! something went wrong" page; send them to the web app's
+  // /oauth/consent/error page instead. See errorPage.ts.
+  renderError: createOauthErrorRenderer(consentUrlBase),
     // B-W03 (#6157): every outbound fetch the provider makes (CIMD documents,
     // and anything a document might name) must be a URL cimdAllowFetch just
     // approved; it then goes through safeFetch.
@@ -662,6 +670,10 @@ export async function getProvider(): Promise<Provider> {
   const jwks = await loadJwks();
 
   providerInstance = new Provider(OAUTH_ISSUER, buildOidcProviderConfiguration(jwks));
+  // #10301: rotated refresh tokens are minted with the successor the adapter's
+  // consume() sealed onto the parent, so a racing duplicate of the same
+  // client's refresh receives the same token (refreshRotationGrace.ts).
+  installRotationSuccessorIds(providerInstance, OAUTH_COOKIE_SECRET);
 
   providerInstance.proxy = true;
   // NOTE: oidc-provider 8.x does NOT emit `revocation.success`. We previously

@@ -17,6 +17,7 @@ import {
   type AiAgentScheduleDto,
 } from '@breeze/shared';
 import { sweepActEnabled } from '../config/env';
+import { withDbTransaction } from '../db';
 import { zValidator } from '../lib/validation';
 import type { AiAgentScheduleRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -146,7 +147,9 @@ aiAgentSchedulesRoutes.post(
       return c.json({ error: 'sweep_act_mode_disabled', code: 'sweep_act_mode_disabled' }, 409);
     }
     try {
-      const row = await createSchedule(auth, body);
+      // In a savepoint: a duplicate override raises here, and only then can the
+      // 409 in mapScheduleError survive the request's commit (#11203).
+      const row = await withDbTransaction(() => createSchedule(auth, body));
       writeRouteAudit(c, {
         orgId: row.orgId,
         action: 'ai_agent.schedule.created',

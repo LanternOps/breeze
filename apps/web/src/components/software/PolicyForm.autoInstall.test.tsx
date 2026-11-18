@@ -31,7 +31,7 @@ function fillRequired() {
       target: { value: "Required Apps" },
     },
   );
-  fireEvent.change(screen.getByPlaceholderText("Name *"), {
+  fireEvent.change(screen.getByPlaceholderText("Software name *"), {
     target: { value: "Zoom" },
   });
 }

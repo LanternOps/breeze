@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import DeviceEdrGenericSection from "./DeviceEdrGenericSection";
 import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import SecurityAgentCoverageSetupLink from "../security/SecurityAgentCoverageSetupLink";
 import {
   coverageReasonLabel,
   fetchSecurityAgentCoverage,
@@ -388,9 +389,10 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                   <SecurityAgentCoverageStateBadge state={row.state} />
                   {row.reasonCode && (
                     <span className="text-xs text-muted-foreground">
-                      {coverageReasonLabel(tSecurity, row.reasonCode)}
+                      {coverageReasonLabel(tSecurity, row.reasonCode, row.vendor)}
                     </span>
                   )}
+                  <SecurityAgentCoverageSetupLink row={row} />
                 </div>
                 {row.detail && (
                   <p className="mt-1 text-xs text-muted-foreground">

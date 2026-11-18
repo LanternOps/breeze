@@ -108,6 +108,11 @@ export interface DashboardDto {
   service?: ServiceTileDto;
 }
 
+/** A dashboard tile: every DashboardDto key except the page-level asOf/timezone.
+ *  The staff Customer view keys its tile labels by this, so a new tile fails
+ *  typecheck until it has a label (#9952). */
+export type DashboardTileKey = Exclude<keyof DashboardDto, 'asOf' | 'timezone'>;
+
 export interface SecurityTrendPoint {
   capturedAt: string;
   score: number;
@@ -226,6 +231,22 @@ export interface BackupOverviewDto {
   /** Distinct third-party backup labels shown for this org (D5-resolved),
    *  sorted. Empty when no third-party backup reports for the org. (#6012) */
   externalProviders: string[];
+  /** Third-party SaaS backup (Microsoft 365 / Google Workspace), one entry per
+   *  workload. Never counted in the device totals above. Absent from producers
+   *  that predate it, so readers treat a missing array as empty. (#10600) */
+  saasWorkloads?: BackupSaasWorkloadDto[];
+}
+
+export interface BackupSaasWorkloadDto {
+  /** D5-resolved: null unless the MSP chose to name the vendor in the portal. */
+  providerLabel: string | null;
+  /** Data-source key, e.g. `m365_mail`, `gws_drive`. */
+  workload: string;
+  accountType: 'm365' | 'gws';
+  health: BackupHealth;
+  status: ExternalBackupStatus;
+  lastSuccessAt: string | null;
+  itemCount: number | null;
 }
 
 export interface BackupDevicesDto {
@@ -334,12 +355,18 @@ export interface PortalRunDto {
     // #5784 W06 — managed evidence, same rule. `portalRunListPredicate` has no
     // type filter, so an unwidened union here is a type lie the compiler cannot
     // see: the value comes from the database.
-    | 'identity_access_review';
+    | 'identity_access_review'
+    // #11018 W2 — managed evidence, listed once delivered, never generated here.
+    | 'ticket_sla_performance';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;
   completedAt: string | null;
   rowCount: number | null;
+  /** True when the stored result carries tabular `rows`, i.e. the CSV artifact
+   *  can be rendered. Executive summaries have none; the CSV route 422s for
+   *  them, so the client offers CSV only when this is true. */
+  csvAvailable: boolean;
   createdAt: string;
 }
 
@@ -391,6 +418,19 @@ export type NetworkOverviewDto =
 /** Mirrors alert_severity (apps/api/src/db/schema/alerts.ts); ranked critical > high > medium > low > info. */
 export type NetworkAssetAlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
+/**
+ * Customer-safe physical placement (CPEV-W1). Exact allowlist: no ids,
+ * timestamps, authority/link state or reconciliation outcome. `siteName` is the
+ * placement authority's live site, never stored on the placement.
+ */
+export interface PhysicalPlacementDto {
+  siteName: string;
+  room: string | null;
+  rack: string | null;
+  rackUnit: number | null;
+  heightU: number | null;
+}
+
 export interface NetworkAssetRowDto {
   id: string;
   hostname: string | null;
@@ -417,6 +457,12 @@ export interface NetworkAssetRowDto {
   highestAlertSeverity?: NetworkAssetAlertSeverity | null;
   /** Distinct non-terminal tickets linked (via ticket_alert_links) to this asset's active alerts. */
   openTicketCount?: number;
+  /**
+   * Present only when the org's enable_physical_placement flag is on AND the
+   * asset's placement authority holds a placement; omitted otherwise (never
+   * null-filled, no placeholder strings).
+   */
+  physicalPlacement?: PhysicalPlacementDto;
 }
 
 /** A site that has at least one portal-visible network asset (#7025). */
@@ -433,6 +479,29 @@ export interface NetworkSiteDto {
 export interface NetworkSitesDto {
   dataStatus: 'ok' | 'not_enabled';
   data: NetworkSiteDto[];
+}
+
+/**
+ * Per-site Network Visibility health (CPEV-W2). Alert fields are present only
+ * when enableNetworkAlerts is on; omitted otherwise, never null-filled.
+ * highestAlertSeverity is null when activeAlertCount is 0.
+ */
+export interface NetworkSiteHealthRowDto {
+  siteId: string;
+  siteName: string;
+  totalAssets: number;
+  onlineAssets: number;
+  offlineAssets: number;
+  unverifiedAssets: number;
+  snmpDevicesPolling: number;
+  monitorsDown: number;
+  activeAlertCount?: number;
+  highestAlertSeverity?: NetworkAssetAlertSeverity | null;
+}
+
+export interface NetworkSiteHealthDto {
+  dataStatus: 'ok' | 'no_data' | 'not_enabled';
+  data: NetworkSiteHealthRowDto[];
 }
 
 /**

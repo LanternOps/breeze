@@ -326,14 +326,23 @@ function normalizeOrganization(input: unknown): HuntressOrganizationRecord | nul
   };
 }
 
+/**
+ * The Huntress account id a webhook body names, if any. Read before the
+ * signature is verified (it routes the delivery to an integration, whose
+ * secret then verifies it), so it touches nothing but the id fields.
+ */
+export function extractHuntressWebhookAccountId(payload: unknown): string | null {
+  const root = asRecord(payload) ?? {};
+  return firstString(root, ['accountId', 'account_id'])
+    ?? firstNestedString(root, [['account', ['id']]]);
+}
+
 function normalizeWebhookPayload(payload: unknown): {
   accountId: string | null;
   agents: HuntressAgentRecord[];
   incidents: HuntressIncidentRecord[];
 } {
-  const root = asRecord(payload) ?? {};
-  const accountId = firstString(root, ['accountId', 'account_id'])
-    ?? firstNestedString(root, [['account', ['id']]]);
+  const accountId = extractHuntressWebhookAccountId(payload);
 
   const incidentCandidates = [
     ...extractArrayFromEnvelope(payload, ['incidents', 'alerts', 'findings', 'data', 'results']),

@@ -18,6 +18,8 @@ import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
 import { designToolAllowlist } from './designProfile';
+import { assessmentToolAllowlist } from './assessmentProfile';
+import { troubleshootToolAllowlist } from './troubleshootProfile';
 import { patchToolAllowlist } from './patchProfile';
 import type { FleetDesignOutcomeRefs } from '@breeze/shared';
 
@@ -244,6 +246,10 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // AI Suggested Fixes W2 — placeholder until Task 10 adds researchProfile.ts's
       // allowlist; Task 10 must replace this literal with the real floor.
       remediation_research: ['submit_suggestions'],
+      // Wisp W05b — read-only drill-down tier plus the five assessment outcome tools.
+      assessment: assessmentToolAllowlist(['manage_services', 'run_script']),
+      // Wisp delegation W1 (#11084) — reads plus proposable tools, no outcome tool.
+      device_troubleshooting: troubleshootToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -687,5 +693,143 @@ describe('submit_suggestions tool (W2)', () => {
   });
   it('validateOutcomeToolInput returns the server-built outcome', () => {
     expect(validateOutcomeToolInput('submit_suggestions', { summary: 's', items: [] }, refs)).toMatchObject({ noSafeFix: true });
+  });
+});
+
+// Wisp W05b Task 6 — the assessment profile's five outcome tools.
+describe('assessment outcome tools (Wisp W05b)', () => {
+  const ASSESSMENT_TOOLS = ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'] as const;
+  const CONCERN_ID = '00000000-0000-4000-8000-0000000000c1';
+  const RUN_ORG_ID = '00000000-0000-4000-8000-0000000000c9';
+  const ASSESSMENT_REFS = { assessment: { orgId: RUN_ORG_ID } };
+
+  it('registers the five names in OUTCOME_TOOL_NAMES and OUTCOME_MCP_TOOL_NAMES', () => {
+    for (const name of ASSESSMENT_TOOLS) {
+      expect(OUTCOME_TOOL_NAMES as readonly string[]).toContain(name);
+      expect((OUTCOME_MCP_TOOL_NAMES as Record<string, string>)[name]).toBe(`mcp__breeze__${name}`);
+      expect(isOutcomeTool(name)).toBe(true);
+    }
+  });
+
+  it('outcomeToolsForProfile("assessment") is exactly the five, in order', () => {
+    expect(outcomeToolsForProfile('assessment')).toEqual([...ASSESSMENT_TOOLS]);
+  });
+
+  it('no assessment outcome-tool name is a TOOL_TIERS key (createBreezeMcpServer collision guard)', () => {
+    // Chat's `raise_concern` (Task 11b) lives in TOOL_TIERS; the run-side
+    // tool is `record_concern` so the two sets stay disjoint.
+    for (const name of ASSESSMENT_TOOLS) {
+      expect(Object.prototype.hasOwnProperty.call(TOOL_TIERS, name), name).toBe(false);
+      expect(aiTools.has(name), name).toBe(false);
+    }
+    expect(outcomeToolsForProfile('assessment') as string[]).not.toContain('raise_concern');
+  });
+
+  it('the real createBreezeMcpServer accepts the five as extraTools', () => {
+    expect(() => createBreezeMcpServer(
+      () => ({}) as never, undefined, undefined, undefined,
+      buildOutcomeSdkTools(outcomeToolsForProfile('assessment'), ASSESSMENT_REFS),
+    )).not.toThrow();
+  });
+
+  it('validateOutcomeToolInput("record_concern") throws on a 2001-char summary and accepts a valid one', () => {
+    const base = { subject: { kind: 'ticket', id: CONCERN_ID }, severity: 'medium' };
+    expect(() => validateOutcomeToolInput('record_concern', { ...base, summary: 'x'.repeat(2001) })).toThrow();
+    expect(validateOutcomeToolInput('record_concern', { ...base, summary: 'Ticket waiting 3 days' }))
+      .toMatchObject({ summary: 'Ticket waiting 3 days', severity: 'medium' });
+  });
+
+  it('validateOutcomeToolInput("update_concern") requires an outcome when resolving', () => {
+    expect(() => validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, status: 'resolved' })).toThrow();
+    expect(validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, status: 'resolved', outcome: 'fixed' }))
+      .toMatchObject({ status: 'resolved', outcome: 'fixed' });
+  });
+
+  // #11427: the captured (validated) call is what the finalizer applies, so the
+  // outcome-implies-resolved transform must survive validateOutcomeToolInput.
+  it('validateOutcomeToolInput("update_concern") turns an outcome without a status into a resolve', () => {
+    expect(validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, summary: 'Rebooted', outcome: 'Reboot alert cleared' }))
+      .toEqual({ concernId: CONCERN_ID, summary: 'Rebooted', outcome: 'Reboot alert cleared', status: 'resolved' });
+  });
+
+  it('update_concern tells the model how to close a concern and that a summary edit keeps it open', () => {
+    const [update] = buildOutcomeSdkTools(['update_concern']);
+    expect(update!.description).toMatch(/status: 'resolved'/);
+    expect(update!.description).toMatch(/outcome/);
+    expect(update!.description).toMatch(/keeps it open/i);
+  });
+
+  it('validates nudge / propose_action / request_specialist with the shared schemas', () => {
+    expect(validateOutcomeToolInput('nudge', { concernId: CONCERN_ID, nextStep: 'Call the customer' }))
+      .toMatchObject({ nextStep: 'Call the customer' });
+    expect(() => validateOutcomeToolInput('nudge', { concernId: 'not-a-uuid', nextStep: 'x' })).toThrow();
+    expect(validateOutcomeToolInput('propose_action', { toolName: 'manage_services', input: {}, reason: 'restart it' }))
+      .toMatchObject({ toolName: 'manage_services' });
+    expect(() => validateOutcomeToolInput('request_specialist', { kind: 'k', params: {}, reason: 'short' })).toThrow();
+  });
+
+  it('builds all five SDK tools', () => {
+    const tools = buildOutcomeSdkTools(outcomeToolsForProfile('assessment'), ASSESSMENT_REFS);
+    expect(tools.map((t) => t.name)).toEqual([...ASSESSMENT_TOOLS]);
+  });
+
+  it('request_specialist (W07) validates kind/params/reason, records, and no longer refuses not_available_until_w07', async () => {
+    const [specialist] = buildOutcomeSdkTools(['request_specialist']);
+    const result = await specialist!.handler({ kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' }, {});
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(JSON.parse(text)).toEqual({ status: 'recorded' });
+    expect(text).not.toContain('not_available_until_w07');
+    // A kind outside the specialist policy is rejected (the model retries) …
+    await expect(specialist!.handler({ kind: 'run_script', params: {}, reason: 'Backups failed twice at Greenwood' }, {}))
+      .rejects.toThrow();
+    // … and so is a reason under 10 characters.
+    await expect(specialist!.handler({ kind: 'sweep', params: {}, reason: 'x' }, {})).rejects.toThrow();
+  });
+
+  it('request_specialist describes post-assessment coordinator handling, approval cards and the cap of 3', () => {
+    const [specialist] = buildOutcomeSdkTools(['request_specialist']);
+    expect(specialist!.description).not.toMatch(/not available/i);
+    expect(specialist!.description).toMatch(/coordinator/i);
+    expect(specialist!.description).toMatch(/after the assessment/i);
+    expect(specialist!.description).toMatch(/approval/i);
+    expect(specialist!.description).toMatch(/\b3\b/);
+  });
+
+  it('the recording tools validate and ack without executing anything', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    const ok = await record!.handler({ subject: { kind: 'org', id: RUN_ORG_ID }, summary: 's', severity: 'low' }, {});
+    expect(JSON.stringify(ok)).toContain('recorded');
+    await expect(record!.handler({ subject: { kind: 'org', id: RUN_ORG_ID }, summary: '', severity: 'low' }, {}))
+      .rejects.toThrow();
+  });
+
+  // #10387: the tool acked `recorded` for an org subject that was not the
+  // run's org, and the finalizer then dropped it. It now refuses at call time
+  // with the id the model needs, and the refusal is an error result, so the
+  // run loop's post hook (which captures only non-error results) never records it.
+  it('record_concern needs the run org at wiring time', () => {
+    expect(() => buildOutcomeSdkTools(['record_concern'])).toThrow(/requires the run's org id/);
+  });
+
+  it('record_concern refuses an org subject that is not the run org, naming the right id', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    for (const wrong of ['00000000-0000-0000-0000-000000000000', CONCERN_ID]) {
+      const result = await record!.handler({ subject: { kind: 'org', id: wrong }, summary: 'Patch hygiene', severity: 'high' }, {}) as {
+        isError?: boolean; content: Array<{ text: string }>;
+      };
+      expect(result.isError).toBe(true);
+      const body = JSON.parse(result.content[0]!.text) as { error: string };
+      expect(body.error).toContain(RUN_ORG_ID);
+      expect(JSON.stringify(result)).not.toContain('"status":"recorded"');
+    }
+  });
+
+  it('record_concern still records a non-org subject (its org is pinned by the finalizer)', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern'], ASSESSMENT_REFS);
+    const result = await record!.handler({ subject: { kind: 'device', id: CONCERN_ID }, summary: 'Disk full', severity: 'medium' }, {}) as {
+      isError?: boolean; content: Array<{ text: string }>;
+    };
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ status: 'recorded' });
   });
 });

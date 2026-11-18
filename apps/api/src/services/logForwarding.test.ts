@@ -21,7 +21,7 @@ vi.mock('./urlSafety', async (importOriginal) => {
   return { ...actual, safeFetch: vi.fn() };
 });
 
-import { bulkIndexEvents, getOrgForwardingConfig, bulkIndexToEndpoint } from './logForwarding';
+import { bulkIndexEvents, getOrgForwardingConfig, bulkIndexToEndpoint, resolveForwardingDestination } from './logForwarding';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 import { captureException } from './sentry';
 
@@ -390,5 +390,50 @@ describe('organization forwarding destination resolution', () => {
     expect(db.select).toHaveBeenCalledOnce();
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  // Pure core (#9170): getOrgForwardingConfig is a thin loader around
+  // resolveForwardingDestination, which the partner settings inheritance read
+  // model calls too. Each fixture is asserted on the core, then fed as mocked
+  // DB rows through the async wrapper.
+  describe('resolveForwardingDestination (pure core)', () => {
+    const orgForwarding = { ...baseConfig, elasticsearchApiKey: 'org-key' };
+    const fixtures: {
+      name: string;
+      eventLogs: unknown;
+      logForwarding: unknown;
+      source: 'partner' | 'org' | 'none';
+      url: string | null;
+    }[] = [
+      { name: 'partner enabled with a URL', eventLogs: partnerConfig, logForwarding: orgForwarding, source: 'partner', url: partnerConfig.elasticsearchUrl },
+      { name: 'partner enabled without a URL (partial)', eventLogs: { enabled: true }, logForwarding: orgForwarding, source: 'org', url: baseConfig.elasticsearchUrl },
+      { name: 'partner disabled', eventLogs: { ...partnerConfig, enabled: false }, logForwarding: orgForwarding, source: 'org', url: baseConfig.elasticsearchUrl },
+      { name: 'neither configured', eventLogs: undefined, logForwarding: undefined, source: 'none', url: null },
+    ];
+
+    for (const f of fixtures) {
+      it(`${f.name}: core output`, () => {
+        const result = resolveForwardingDestination(f.eventLogs, f.logForwarding);
+        expect(result.source).toBe(f.source);
+        expect(result.config?.elasticsearchUrl ?? null).toBe(f.url);
+        expect(result.config?.sharedAcrossOrgs ?? false).toBe(f.source === 'partner');
+      });
+
+      it(`${f.name}: the async wrapper returns the core output`, async () => {
+        prime(
+          f.logForwarding === undefined ? {} : { logForwarding: f.logForwarding },
+          f.eventLogs === undefined ? {} : { eventLogs: f.eventLogs },
+        );
+        // decryptForColumn is an identity mock here, so the wrapper's result
+        // equals the core's config as-is.
+        expect(await getOrgForwardingConfig(orgId)).toEqual(resolveForwardingDestination(f.eventLogs, f.logForwarding).config);
+      });
+    }
+
+    it('never throws on malformed stored shapes', () => {
+      for (const junk of [null, 'x', 5, [], { enabled: 'yes' }]) {
+        expect(() => resolveForwardingDestination(junk, junk)).not.toThrow();
+      }
+    });
   });
 });

@@ -2,6 +2,8 @@
 
 package collectors
 
+import "time"
+
 // windowsVPNServiceQuery lists running services as "Name<TAB>DisplayName" lines.
 // The DisplayName column is what identifies Zscaler's drivers (#8763): zapprd
 // and zsawdrv only say "Zscaler" in their display names. A bare Get-Service
@@ -16,9 +18,16 @@ const windowsVPNServiceQuery = "$s = @(Get-Service); " +
 	"foreach ($n in 'zapprd','zsawdrv') { try { $s += Get-Service -Name $n -ErrorAction Stop } catch {} }; " +
 	"$s | Where-Object {$_.Status -eq 'Running'} | ForEach-Object { $_.Name + [char]9 + $_.DisplayName }"
 
-// windowsVPNServiceListing runs windowsVPNServiceQuery.
+// windowsVPNServiceListing runs windowsVPNServiceQuery with the production deadline.
 func windowsVPNServiceListing() ([]byte, error) {
-	return runCollectorOutput(collectorShortCommandTimeout,
+	return windowsVPNServiceListingWithTimeout(collectorShortCommandTimeout)
+}
+
+// windowsVPNServiceListingWithTimeout lets the live-PowerShell test use a
+// deadline that tolerates a cold start on a loaded CI runner (#9814) without
+// changing the production deadline.
+func windowsVPNServiceListingWithTimeout(timeout time.Duration) ([]byte, error) {
+	return runCollectorOutput(timeout,
 		"powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(windowsVPNServiceQuery))
 }

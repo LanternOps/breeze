@@ -17,7 +17,9 @@ import (
 // text, a green live dot, and an elapsed-session clock (1s repaint timer);
 // the pill is sized to its label and DPI-scaled, with fully rounded ends via
 // a window region. WS_EX_TRANSPARENT makes it hit-test invisible so it can
-// never swallow clicks on whatever sits underneath it.
+// never swallow clicks on whatever sits underneath it — except for the
+// remote.session pill when End session is offered (#10190 W06): then it takes
+// clicks (pillExStyle, prompt_native_indicator.go), without ever activating.
 
 var (
 	bannerGdi32               = syscall.NewLazyDLL("gdi32.dll")
@@ -43,6 +45,10 @@ var (
 	procBannerGetDC           = pamDialogUser32.NewProc("GetDC")
 	procBannerReleaseDC       = pamDialogUser32.NewProc("ReleaseDC")
 	procBannerSetTimer        = pamDialogUser32.NewProc("SetTimer")
+	procBannerSetWindowLong   = pamDialogUser32.NewProc("SetWindowLongPtrW")
+	procBannerLoadCursorW     = pamDialogUser32.NewProc("LoadCursorW")
+	procBannerSetCursor       = pamDialogUser32.NewProc("SetCursor")
+	procBannerSetLastError    = syscall.NewLazyDLL("kernel32.dll").NewProc("SetLastError")
 	procGetModuleHandleW      = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
 
 	procCreateSolidBrush      = bannerGdi32.NewProc("CreateSolidBrush")
@@ -58,15 +64,18 @@ var (
 
 const (
 	bwsPopup          = 0x80000000
-	bwsExTopmost      = 0x00000008
-	bwsExToolwindow   = 0x00000080
-	bwsExNoactivate   = 0x08000000
-	bwsExLayered      = 0x00080000
-	bwsExTransparent  = 0x00000020 // hit-test invisible: clicks pass through
 	bwmDestroy        = 0x0002
 	bwmPaint          = 0x000F
 	bwmClose          = 0x0010
 	bwmTimer          = 0x0113
+	bwmSetCursor      = 0x0020
+	bwmMouseActivate  = 0x0021
+	bwmLButtonUp      = 0x0202
+	bMANoActivate     = 3     // WM_MOUSEACTIVATE: do not activate, keep the click
+	bIDCHand          = 32649 // IDC_HAND
+	bSwpNosize        = 0x0001
+	bSwpNomove        = 0x0002
+	bSwpFramechanged  = 0x0020
 	bswShowNoactivate = 4
 	bsmCxScreen       = 0
 	bdtVCenter        = 0x0004
@@ -103,7 +112,14 @@ var (
 	bannerStartedMs int64 // session start (unix ms); 0 hides the elapsed clock
 	bannerFont      uintptr
 	bannerClassReg  sync.Once
+	// bannerClickable / bannerOnClick: the remote.session pill offers End
+	// session; a click runs bannerOnClick (off the message loop).
+	bannerClickable bool
+	bannerOnClick   func()
 )
+
+// gwlExStyle is GWL_EXSTYLE (-20) as SetWindowLongPtrW's nIndex.
+var gwlExStyle = int32(-20)
 
 type bannerRect struct{ left, top, right, bottom int32 }
 
@@ -256,6 +272,25 @@ func bannerWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			procInvalidateRect.Call(hwnd, 0, 1)
 		}
 		return 0
+	case bwmSetCursor:
+		bannerMu.Lock()
+		clickable := bannerClickable
+		bannerMu.Unlock()
+		if clickable {
+			cursor, _, _ := procBannerLoadCursorW.Call(0, bIDCHand)
+			_, _, _ = procBannerSetCursor.Call(cursor)
+			return 1
+		}
+	case bwmMouseActivate:
+		return bMANoActivate
+	case bwmLButtonUp:
+		bannerMu.Lock()
+		clickable, onClick := bannerClickable, bannerOnClick
+		bannerMu.Unlock()
+		if clickable && onClick != nil {
+			go onClick()
+		}
+		return 0
 	case bwmClose:
 		procDestroyWindow.Call(hwnd)
 		return 0
@@ -340,20 +375,56 @@ func registerBannerClass() {
 	})
 }
 
-// showBannerOS shows (or relabels) the banner window. The window lives on a
-// dedicated locked OS thread running its own message loop; hide posts WM_CLOSE.
+// showBannerOS shows (or relabels) the click-through banner (banner_show).
 func showBannerOS(label string, startedAtUnixMs int64) bool {
+	return showPillOS(label, startedAtUnixMs, false, nil)
+}
+
+// showPillOS shows (or relabels) the pill window, clickable or not. The window
+// lives on a dedicated locked OS thread running its own message loop; hide
+// posts WM_CLOSE.
+func showPillOS(label string, startedAtUnixMs int64, clickable bool, onClick func()) bool {
 	u16, err := syscall.UTF16FromString(label)
 	if err != nil {
 		log.Warn("banner label is not representable; banner not shown", "error", err.Error())
 		return false
 	}
+	if !clickable {
+		onClick = nil
+	}
 	bannerMu.Lock()
 	bannerLabelU16 = u16
 	bannerStartedMs = startedAtUnixMs
+	wasClickable := bannerClickable
+	bannerClickable, bannerOnClick = clickable, onClick
 	if bannerHwnd != 0 {
 		hwnd := bannerHwnd
 		bannerMu.Unlock()
+		if wasClickable != clickable {
+			// Toggle WS_EX_TRANSPARENT in place. SetWindowLongPtrW returns the
+			// previous style, so 0 is a failure only with a last error.
+			// The last error is per thread: SetLastError, the call and its
+			// GetLastError must run on one OS thread.
+			runtime.LockOSThread()
+			_, _, _ = procBannerSetLastError.Call(0)
+			prev, _, setErr := procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(pillExStyle(clickable)))
+			runtime.UnlockOSThread()
+			pos, _, _ := procBannerSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, bSwpNomove|bSwpNosize|bSwpNozorder|bSwpNoactivate|bSwpFramechanged)
+			if failed, restorePrev := pillStyleOutcome(prev, setErr, pos); failed {
+				if restorePrev {
+					// The new style took but did not apply: put the old one
+					// back, so the window matches the flags restored below.
+					_, _, _ = procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), prev)
+				}
+				// The click-through state is unknown: refuse, so the caller
+				// falls back (the prompt host takes today's banner).
+				log.Warn("session pill style could not be changed; not showing it as asked", "clickable", clickable, "restored", restorePrev, "error", fmt.Sprint(setErr))
+				bannerMu.Lock()
+				bannerClickable, bannerOnClick = wasClickable, nil
+				bannerMu.Unlock()
+				return false
+			}
+		}
 		// Relabel: re-fit the pill to the new text, then repaint.
 		bannerApplyBounds(hwnd, bannerDesiredWidth(hwnd, u16), bannerScale(36))
 		procInvalidateRect.Call(hwnd, 0, 1)
@@ -390,6 +461,7 @@ func hideBannerOS() {
 	hwnd := bannerHwnd
 	bannerHwnd = 0
 	bannerStartedMs = 0
+	bannerClickable, bannerOnClick = false, nil
 	bannerMu.Unlock()
 	if hwnd != 0 {
 		procPostMessageW.Call(hwnd, bwmClose, 0, 0)
@@ -413,6 +485,7 @@ func bannerWindowLoop(ready chan<- uintptr, abandoned <-chan struct{}) {
 	registerBannerClass()
 	bannerMu.Lock()
 	label := bannerLabelU16
+	clickable := bannerClickable
 	bannerMu.Unlock()
 	height := bannerScale(36)
 	width := bannerDesiredWidth(0, label)
@@ -425,7 +498,7 @@ func bannerWindowLoop(ready chan<- uintptr, abandoned <-chan struct{}) {
 	title, _ := syscall.UTF16PtrFromString("Remote session active")
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 	hwnd, _, _ := procCreateWindowExW.Call(
-		bwsExTopmost|bwsExToolwindow|bwsExNoactivate|bwsExLayered|bwsExTransparent,
+		uintptr(pillExStyle(clickable)),
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		bwsPopup,

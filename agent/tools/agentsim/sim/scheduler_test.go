@@ -38,7 +38,7 @@ func TestOSExecutorRefusesAnythingButDocker(t *testing.T) {
 func TestSchedulerDropOfNoSocketsIsNotOK(t *testing.T) {
 	sc := Scenario{Name: "t", Events: []Event{{Name: "d", At: Duration{20 * ms}, Start: []Action{{Internal: ActionDropSockets}}}}}
 	s := &Scheduler{Scenario: sc, Exec: &fakeExec{}, Rec: newTestRecorder(), PreWindow: 10 * ms,
-		Internal: map[string]func() int{ActionDropSockets: func() int { return 0 }}}
+		Internal: map[string]func(Action) int{ActionDropSockets: func(Action) int { return 0 }}}
 	s.Run(context.Background(), time.Now())
 	if st := s.Steps(); len(st) != 1 || st[0].OK {
 		t.Fatalf("closing 0 sockets must be a failed step: %+v", st)
@@ -69,7 +69,7 @@ func TestSchedulerRunsEventsAtOffsetsAndMarksPhases(t *testing.T) {
 	sc := Scenario{Name: "t", Events: []Event{{Name: "kill", At: Duration{100 * ms}, Hold: Duration{50 * ms}, Recovery: Duration{100 * ms},
 		Start: []Action{{Exec: []string{"docker", "kill", "c"}}, {Internal: ActionDropSockets}},
 		End:   []Action{{Exec: []string{"docker", "start", "c"}}}}}}
-	s := &Scheduler{Scenario: sc, Exec: ex, Rec: rec, Internal: map[string]func() int{ActionDropSockets: func() int { dropped++; return 3 }},
+	s := &Scheduler{Scenario: sc, Exec: ex, Rec: rec, Internal: map[string]func(Action) int{ActionDropSockets: func(Action) int { dropped++; return 3 }},
 		PreWindow: 50 * ms}
 	open := time.Now()
 	s.Run(context.Background(), open)
@@ -88,8 +88,11 @@ func TestSchedulerRunsEventsAtOffsetsAndMarksPhases(t *testing.T) {
 		t.Fatalf("dropped %d, exec calls %v", dropped, ex.calls)
 	}
 	ev := s.Events()
-	if len(ev) != 1 || ev[0].End.Sub(ev[0].Start) < 40*ms { // hold runs from the planned start; Start is the actual one
-		t.Fatalf("event window %+v", ev)
+	// The hold is anchored to the PLANNED start (open+At), not the actual one,
+	// so a late Start under load shortens End-Start (#9816). Assert against the
+	// planned anchors instead of a wall-clock gap between the two.
+	if len(ev) != 1 || ev[0].Start.Before(open.Add(100*ms)) || ev[0].End.Before(open.Add(150*ms)) || ev[0].End.Before(ev[0].Start) {
+		t.Fatalf("event window %+v, open %v", ev, open)
 	}
 	rec.ObserveHTTP(RouteHeartbeat, true, time.Now(), 5*ms, 200, nil) // after recovery: in no phase
 	if n := rec.PhaseLatency("kill", "recovery").Count; n != 0 {
@@ -143,5 +146,18 @@ func TestSchedulerRestoresOnCancelDuringHold(t *testing.T) {
 	}
 	if ev := s.Events(); len(ev) != 1 || ev[0].End.IsZero() {
 		t.Fatalf("event not closed: %+v", ev)
+	}
+}
+
+func TestSchedulerPassesTheDrainWindow(t *testing.T) {
+	within := int64(120000)
+	sc := Scenario{Name: "t", Events: []Event{{Name: "d", At: Duration{20 * ms},
+		Start: []Action{{Internal: ActionDrainSockets, WithinMs: &within}}}}}
+	var got int64 = -1
+	s := &Scheduler{Scenario: sc, Exec: &fakeExec{}, Rec: newTestRecorder(), PreWindow: 10 * ms,
+		Internal: map[string]func(Action) int{ActionDrainSockets: func(a Action) int { got = *a.WithinMs; return 2 }}}
+	s.Run(context.Background(), time.Now())
+	if got != within {
+		t.Fatalf("the action saw withinMs %d, want %d", got, within)
 	}
 }

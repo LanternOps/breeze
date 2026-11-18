@@ -1,6 +1,10 @@
 import { and, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { huntressIntegrations, huntressOrgMappings, organizations, s1Integrations, s1OrgMappings } from '../../db/schema';
+import { getBuiltinPackage } from '../builtinDeploymentPackages';
+import { loadInstallerTenantSelections, type InstallerTenantReadiness } from '../edrProviders/installerTenant';
+import { isEdrInstallerProviderKey, type EdrInstallerProviderKey } from '../edrProviders/providerKeys';
+import { loadTenantVariableScope, resolveForOrg, unreadableForOrg } from '../tenantVariableResolution';
 import { getVendor, type VendorKey } from './securityAgentVendors';
 
 /**
@@ -15,9 +19,11 @@ import { getVendor, type VendorKey } from './securityAgentVendors';
  * integration, never against the policy owner: a partner-wide policy reaches
  * many orgs and each one is mapped (or not) on its own.
  *
- * Exhaustive over vendors: Huntress and SentinelOne have their own checks;
- * vendors whose install path is not wired yet (the DNS vendors) fail closed
- * (`vendor_unavailable`) rather than borrowing another vendor's checks.
+ * Exhaustive over vendors: Huntress and SentinelOne check their EDR
+ * integration and org mapping; the DNS vendors (W05) check the tenant variable
+ * their install script substitutes; EDR framework vendors (#8170) ask the
+ * tenant selection dispatch itself uses. A vendor without its own check fails
+ * closed (`vendor_unavailable`) rather than borrowing another vendor's.
  */
 
 export type ReadinessReason =
@@ -29,9 +35,39 @@ export type ReadinessReason =
   | 'requires_mdm_approval'
   /** The link limits the vendor to platforms that exclude this device's. */
   | 'platform_not_selected'
-  /** Tenant-variable vendors: a required variable is not set for the org (wired with those vendors). */
+  /**
+   * Tenant-variable vendors: a required variable has no usable value for the
+   * org (not set on the org nor as its partner's default, blank, or its
+   * winning row cannot be decrypted). Remedy: set a value.
+   */
   | 'var_missing'
-  /** The vendor's readiness checks are not wired yet; never ready. */
+  /**
+   * Tenant-variable vendors: a required variable resolves but is marked
+   * secret. Dispatch never places a secret in an install script (#6958 lab
+   * gate L5), so the install could never run. Remedy: unmark it (enrollment
+   * values are non-secret by design).
+   */
+  | 'var_secret'
+  /**
+   * Vendors whose built-in package needs a partner-uploaded installer
+   * (SentinelOne's MSI): the package the rule installs from has no deployable
+   * latest version (#9247). Partner-level, so every reached device of the
+   * vendor reads it. Remedy: upload the installer on the package's Versions
+   * tab (`/software#versions=<catalogId>`).
+   */
+  | 'installer_missing'
+  /**
+   * EDR framework vendors: the org maps to more than one vendor tenant, and
+   * nothing ever picks one. Remedy: map it to one (Integrations).
+   */
+  | 'tenant_ambiguous'
+  /**
+   * EDR framework vendors: the org's one tenant has no installer link dispatch
+   * may use (never fetched, cleared by a credential change, or expired).
+   * Remedy: the next inventory run refetches it (Sync in Integrations).
+   */
+  | 'installer_link_missing'
+  /** The vendor's readiness checks are not wired yet, or its package is not released; never ready. */
   | 'vendor_unavailable';
 
 export type ReadinessResult = { ok: true } | { ok: false; reason: ReadinessReason };
@@ -61,7 +97,8 @@ export function evaluatePlatformReadiness(
 }
 
 /**
- * Org half of readiness for many orgs at once (at most three queries per
+ * Org half of readiness for many orgs at once (one batched selection for a
+ * framework vendor; otherwise at most three queries per
  * vendor, whatever the org count). Every requested org gets an answer.
  *
  * Runs in its own system context: the vendor integration/mapping tables are
@@ -77,6 +114,8 @@ export async function loadOrgInstallerReadiness(
   const result = new Map<string, ReadinessResult>();
   if (unique.length === 0) return result;
 
+  if (isEdrInstallerProviderKey(vendor)) return loadFrameworkReadiness(vendor, unique);
+
   switch (vendor) {
     case 'huntress':
       return loadHuntressReadiness(unique);
@@ -84,8 +123,7 @@ export async function loadOrgInstallerReadiness(
       return loadSentinelOneReadiness(unique);
     case 'controld':
     case 'nextdns':
-      for (const orgId of unique) result.set(orgId, notReady('vendor_unavailable'));
-      return result;
+      return loadTenantVarReadiness(vendor, unique);
     default: {
       const unreachable: never = vendor;
       for (const orgId of unique) result.set(orgId, notReady('vendor_unavailable'));
@@ -241,6 +279,91 @@ async function loadSentinelOneReadiness(orgIds: string[]): Promise<Map<string, R
     result.set(orgId, verdict);
   }
   return result;
+}
+
+/**
+ * Tenant-variable vendors (Control D, NextDNS): every variable the vendor's
+ * install script substitutes (`requiredVars`) must resolve for the org through
+ * the same resolver dispatch uses (org value over its partner's default), to a
+ * non-blank, non-secret value.
+ *
+ * `loadTenantVariableScope` runs its one query in its own
+ * `runOutsideDbContext(() => withSystemDbAccessContext(...))` (tenant
+ * variables are dual-axis; an org-scoped caller would miss partner defaults),
+ * keyed by the org ids passed in, which come from the devices being evaluated.
+ * The snapshot holds decrypted values in memory only; this function reads
+ * `isSecret` and blankness and never returns, logs or reports a value.
+ */
+async function loadTenantVarReadiness(vendor: VendorKey, orgIds: string[]): Promise<Map<string, ReadinessResult>> {
+  const required = getVendor(vendor).requiredVars ?? [];
+  const result = new Map<string, ReadinessResult>();
+  if (required.length === 0) {
+    // A tenant-variable vendor that names no variable is a registry bug: fail closed.
+    for (const orgId of orgIds) result.set(orgId, notReady('vendor_unavailable'));
+    return result;
+  }
+  const scope = await loadTenantVariableScope(orgIds);
+  for (const orgId of orgIds) {
+    const variables = resolveForOrg(scope, orgId);
+    const unreadable = unreadableForOrg(scope, orgId);
+    let verdict: ReadinessResult = READY;
+    for (const key of required) {
+      const variable = variables.get(key);
+      if (variable?.isSecret) {
+        verdict = notReady('var_secret');
+        break;
+      }
+      if (!variable || unreadable.has(key) || variable.value.trim().length === 0) {
+        verdict = notReady('var_missing');
+        break;
+      }
+    }
+    result.set(orgId, verdict);
+  }
+  return result;
+}
+
+/**
+ * EDR framework vendors: the same selection dispatch uses, so "ready" and "would
+ * dispatch" cannot disagree on which tenant an org installs into. The readiness
+ * form of the selection never loads the sealed material, and an unreleased
+ * package reads no tenant at all.
+ */
+async function loadFrameworkReadiness(
+  provider: EdrInstallerProviderKey,
+  orgIds: string[],
+): Promise<Map<string, ReadinessResult>> {
+  const result = new Map<string, ReadinessResult>();
+  if (!getBuiltinPackage(provider).released) {
+    for (const orgId of orgIds) result.set(orgId, notReady('vendor_unavailable'));
+    return result;
+  }
+  const selections = await loadInstallerTenantSelections(provider, orgIds);
+  for (const orgId of orgIds) {
+    result.set(orgId, readinessFromSelection(selections.get(orgId) ?? { kind: 'not_mapped' }));
+  }
+  return result;
+}
+
+function readinessFromSelection(selection: InstallerTenantReadiness): ReadinessResult {
+  switch (selection.kind) {
+    case 'ok':
+      return READY;
+    case 'not_mapped':
+      return notReady('org_not_mapped');
+    case 'ambiguous':
+      return notReady('tenant_ambiguous');
+    case 'inactive':
+      return notReady('integration_inactive');
+    case 'material_missing':
+    case 'material_expired':
+      return notReady('installer_link_missing');
+    default: {
+      const unreachable: never = selection;
+      void unreachable;
+      return notReady('vendor_unavailable');
+    }
+  }
 }
 
 /** Single-device form: platform first (no I/O), then the device org's integration. */

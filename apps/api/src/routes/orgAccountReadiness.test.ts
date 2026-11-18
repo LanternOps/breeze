@@ -38,6 +38,10 @@ vi.mock('../services/serviceManagement', () => ({
   getServiceManagementMode: vi.fn(),
 }));
 
+vi.mock('../services/billingEnabled', () => ({
+  isBillingEnabledForPartner: vi.fn(),
+}));
+
 vi.mock('../services/orgAccountReadiness', () => ({
   resolveAcceptedOrgs: vi.fn(),
   loadAccountReadiness: vi.fn(),
@@ -57,6 +61,7 @@ vi.mock('../services/orgAccountReadinessCommercial', () => ({
 }));
 
 import { getServiceManagementMode } from '../services/serviceManagement';
+import { isBillingEnabledForPartner } from '../services/billingEnabled';
 import { loadAccountReadiness, resolveAcceptedOrgs } from '../services/orgAccountReadiness';
 import { loadIntegrationReadiness } from '../services/orgAccountReadinessIntegrations';
 import { loadActiveContractCounts, loadBackupReadiness } from '../services/orgAccountReadinessCommercial';
@@ -157,6 +162,7 @@ describe('GET /orgs/account-readiness', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getServiceManagementMode).mockResolvedValue('native');
+    vi.mocked(isBillingEnabledForPartner).mockResolvedValue(true);
     vi.mocked(resolveAcceptedOrgs).mockResolvedValue([acceptedOrg(ORG_A)]);
     vi.mocked(loadAccountReadiness).mockResolvedValue(new Map([[ORG_A, fullSignals()]]));
     vi.mocked(loadIntegrationReadiness).mockResolvedValue({ connectors: [], byOrg: new Map() });
@@ -331,6 +337,7 @@ describe('GET /orgs/account-readiness', () => {
     name: string;
     grants: Array<{ resource: string; action: string }>;
     mode: 'native' | 'external' | 'off';
+    billingEnabled?: boolean;
     capabilities: Record<string, boolean>;
   }> = [
     { name: 'organizations:read only', grants: [PERMISSIONS.ORGS_READ], mode: 'native', capabilities: ALL_FALSE },
@@ -339,14 +346,18 @@ describe('GET /orgs/account-readiness', () => {
     { name: '+ users:read', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.USERS_READ], mode: 'native', capabilities: { ...ALL_FALSE, portalUsers: true } },
     { name: '+ invoices:read (native)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ], mode: 'native', capabilities: { ...ALL_FALSE, invoices: true } },
     { name: '+ tickets:read (native)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.TICKETS_READ], mode: 'native', capabilities: { ...ALL_FALSE, tickets: true } },
-    { name: '+ invoices:read + tickets:read but external mode', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.TICKETS_READ], mode: 'external', capabilities: ALL_FALSE },
-    { name: 'wildcard but mode off', grants: WILDCARD_GRANTS, mode: 'off', capabilities: { ...ALL_FALSE, sites: true, devices: true, portalUsers: true, integrations: true, backup: true } },
+    { name: '+ invoices:read + tickets:read, external mode: invoices follow billing_enabled, tickets follow mode', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.TICKETS_READ], mode: 'external', capabilities: { ...ALL_FALSE, invoices: true } },
+    { name: '+ invoices:read + contracts:read, mode off: contracts/invoices still on', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.CONTRACTS_READ], mode: 'off', capabilities: { ...ALL_FALSE, invoices: true, contracts: true } },
+    { name: 'invoices/contracts/tickets, native but billing_enabled=false', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.CONTRACTS_READ, PERMISSIONS.TICKETS_READ], mode: 'native', billingEnabled: false, capabilities: { ...ALL_FALSE, tickets: true } },
+    { name: 'invoices/contracts/tickets, external and billing_enabled=false', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.CONTRACTS_READ, PERMISSIONS.TICKETS_READ], mode: 'external', billingEnabled: false, capabilities: ALL_FALSE },
+    { name: 'wildcard but mode off (billing on)', grants: WILDCARD_GRANTS, mode: 'off', capabilities: { ...ALL_FALSE, sites: true, devices: true, portalUsers: true, integrations: true, backup: true, invoices: true, contracts: true } },
     // accounting:read is a W03 sub-grant (forwarded to the integrations loader) — it does not itself gate `capabilities.integrations`, only connected_apps:read does.
     { name: '+ connected_apps:read + accounting:read (W03 only)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.CONNECTED_APPS_READ, PERMISSIONS.ACCOUNTING_READ], mode: 'native', capabilities: { ...ALL_FALSE, integrations: true } },
   ];
 
-  it.each(gateCases)('gates sections by grant and mode: $name', async ({ grants, mode, capabilities }) => {
+  it.each(gateCases)('gates sections by grant and mode: $name', async ({ grants, mode, billingEnabled = true, capabilities }) => {
     vi.mocked(getServiceManagementMode).mockResolvedValue(mode);
+    vi.mocked(isBillingEnabledForPartner).mockResolvedValue(billingEnabled);
     const app = buildApp({ grants });
     const res = await app.request(path([ORG_A]));
     expect(res.status).toBe(200);

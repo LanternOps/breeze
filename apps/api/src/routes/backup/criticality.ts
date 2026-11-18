@@ -1,16 +1,12 @@
 import { and, eq } from 'drizzle-orm';
-import * as dbModule from '../../db';
+import { db, withDbTransactionIfHeld, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import { devices as devicesTable } from '../../db/schema';
 import { resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_CRITICAL_TAGS = ['critical', 'tier0', 'tier1'];
-const { db } = dbModule;
 
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
 
 function isUuid(value?: string | null): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
@@ -42,12 +38,20 @@ function hasCriticalMetadata(value: unknown): boolean {
   return normalized.some((entry) => entry === 'critical' || entry === 'tier0' || entry === 'tier1');
 }
 
-export async function isCriticalBackupDevice(orgId: string, deviceId: string): Promise<boolean> {
+/**
+ * A failed lookup answers "not critical", so a caller that reports a verdict passes
+ * `onDbReadFailure` and must not treat that answer as known.
+ */
+export async function isCriticalBackupDevice(
+  orgId: string,
+  deviceId: string,
+  onDbReadFailure?: () => void,
+): Promise<boolean> {
   const criticalTags = normalizeConfiguredTags(process.env.BACKUP_CRITICAL_DEVICE_TAGS);
 
   if (isUuid(orgId) && isUuid(deviceId)) {
     try {
-      const [device] = await runWithSystemDbAccess(() => db
+      const [device] = await withSystemDbAccessContextIsolated(() => db
         .select({ tags: devicesTable.tags })
         .from(devicesTable)
         .where(and(
@@ -60,19 +64,21 @@ export async function isCriticalBackupDevice(orgId: string, deviceId: string): P
         return true;
       }
     } catch (error) {
-      console.warn('[backupVerification] Failed to read device tags for criticality:', error);
+      reportBackupDbFallback('[backupVerification] Failed to read device tags for criticality', error);
+      onDbReadFailure?.();
     }
   }
 
   try {
-    const resolved = await resolveBackupConfigForDevice(deviceId);
+    const resolved = await withDbTransactionIfHeld(() => resolveBackupConfigForDevice(deviceId));
     if (!resolved) return false;
 
     if (hasCriticalMetadata(resolved.inlineSettings)) return true;
     if (hasCriticalMetadata(resolved.settings)) return true;
     if (hasCriticalMetadata(asRecord(resolved.settings)?.targets)) return true;
   } catch (error) {
-    console.warn('[backupVerification] Failed to resolve backup criticality metadata:', error);
+    reportBackupDbFallback('[backupVerification] Failed to resolve backup criticality metadata', error);
+    onDbReadFailure?.();
   }
 
   return false;

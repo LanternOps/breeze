@@ -1,8 +1,9 @@
-import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import {
   actionIntentTaskContextSchema,
   type ActionIntentTaskContext,
@@ -14,7 +15,8 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
-import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
+import { publishEvent } from '../eventBus';
+import { flowApprovalTtlHours, policyDecideEnabled, sweepActEnabled } from '../../config/env';
 import { subjectMatchesArguments } from './intentTargetScope';
 import {
   actionIntents,
@@ -31,14 +33,17 @@ import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import {
   checkAgentGuardrails,
   checkGuardrails,
+  needsRegistryTier3Approval,
   type AgentGuardrailPolicy,
   type GuardrailCheck,
   type GuardrailContext,
 } from '../aiGuardrails';
+import { AGENT_COORDINATOR_CARRIER_TOOLS } from '../aiToolExposure';
 import {
   consumeProposalForIntent,
   latestCompletedReview,
@@ -52,6 +57,9 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHandoff';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
+import { loadFlowIntentRun, type FlowIntentRunFacts } from '../flows/intentRun';
+import { isFlowToolName } from '../flows/toolNames';
+import { flowIntentApproverRule } from './flowIntentApproverRule';
 import {
   isOrgWideGovernanceIntent,
   resolveAgentIntentApprovers,
@@ -60,9 +68,11 @@ import {
   type IntentTargetScope,
   type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
+import { mayHavePartnerWideEffect, PARTNER_LEVEL_APPROVER_NOTE } from './partnerWideEffect';
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
+import { fleetApprovalScope } from '../flows/builtins/fleetApprovalScope';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -101,6 +111,25 @@ import {
  * source of truth for both the onConflictDoNothing target predicate and the
  * idempotent-replay re-select below, so the two can never drift apart. */
 const LIVE_INTENT_STATUSES: readonly ActionIntentStatus[] = ['pending_approval', 'approved', 'executing'];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * B-W04 (#6158, D-B27): a key collision between an MCP-origin request and a
+ * live row is only a replay when the SAME credential and the same human
+ * asked. Applied whenever either side is MCP-origin, so a different key of
+ * the same user (or an in-app request) can never converge on, read or cancel
+ * another credential's intent.
+ */
+function mcpOriginReplayMismatch(
+  existing: Pick<ActionIntent, 'source' | 'originPrincipalKind' | 'originPrincipalId' | 'requestedByUserId'>,
+  incoming: { source: string; originPrincipalKind: string; originPrincipalId: string | null; requestedByUserId: string | null },
+): boolean {
+  if (!isMcpOriginIntent(existing) && !isMcpOriginIntent(incoming)) return false;
+  return existing.originPrincipalKind !== incoming.originPrincipalKind
+    || (existing.originPrincipalId ?? null) !== incoming.originPrincipalId
+    || (existing.requestedByUserId ?? null) !== incoming.requestedByUserId;
+}
 
 /**
  * Shape of the loaded/verified agent run an agent-originated intent carries
@@ -197,7 +226,33 @@ export interface CreateActionIntentInput {
    * (not ActionIntentSource) so a future source value is opted into this
    * public input on purpose, never inherited.
    */
-  source: 'chat' | 'mcp_api' | 'ai_agent';
+  source: 'chat' | 'mcp_api' | 'ai_agent' | 'flow';
+  /**
+   * Tool catalog W04 (#5219), plan Task A5: the parked flow step this intent
+   * is minted for. REQUIRED iff `source === 'flow'` (both directions:
+   * `flow_source_mismatch`), and only from a flow principal whose `runId`
+   * matches. TRUSTED, INTERNAL-ONLY — set by the flow runner (Task A7), never
+   * from an HTTP body. `delegatorUserId` / `triggeredByUserId` are cross-checked
+   * against the run and its publication (`flow_run_invalid` on disagreement);
+   * the four-eyes exclusions always use the SERVER values.
+   */
+  flowRun?: {
+    runId: string;
+    stepRowId: string;
+    delegatorUserId: string | null;
+    triggeredByUserId: string | null;
+    flowName: string;
+    stepId: string;
+    /**
+     * Tool catalog W05 (#5220), Decision 12: the step is a Tier-3 built-in
+     * (an `http_request` write). A built-in name is accepted ONLY with source
+     * 'flow' and this flag (`builtin_intent_invalid` otherwise, both
+     * directions). The core classifier is skipped; the tier comes from the
+     * built-in's own `tierFor` and must equal the step row's pinned tier;
+     * approval is `supervised`; never policy-decidable.
+     */
+    builtin?: boolean;
+  };
   /**
    * #6475 — the org's interactive AI approval timeout (ms) for the chat
    * session minting this intent. Honoured ONLY for `source: 'chat'` +
@@ -209,6 +264,41 @@ export interface CreateActionIntentInput {
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
+  /**
+   * Wisp W07 — TRUSTED INTERNAL INPUT, set ONLY by the Wisp coordinator
+   * (`wisp/specialistIntent.raiseSpecialistIntent`). A coordinator approval
+   * carrier (AGENT_COORDINATOR_CARRIER_TOOLS) is refused without it, so no
+   * other agent path (e.g. a model's `propose_action`) can mint one through
+   * the agent-guardrail carve-out those carriers get.
+   */
+  coordinatorCarrier?: true;
+  /**
+   * B-W04 (#6158): the MCP request's server-minted request id, stored as the
+   * intent's `correlation_id` so the creation audit row and the intent link.
+   * Honoured only for an MCP-origin intent (source mcp_api, api_key/oauth_grant
+   * principal); every other intent keeps a fresh randomUUID().
+   */
+  correlationId?: string;
+  /**
+   * B-W04 (#6158, D-B27): cap on LIVE MCP-origin intents per origin
+   * credential (across orgs). When set (MCP-origin only), the insert takes a
+   * per-origin advisory lock, lets a live replay through first, then refuses
+   * with `too_many_pending_actions` at or over the cap.
+   */
+  maxLiveForOrigin?: number;
+  /**
+   * #9758: the requester's `auth_epoch` the OAuth bearer middleware verified
+   * on the filing MCP call. REQUIRED for an MCP-origin `oauth_grant` intent
+   * (refused with `principal_not_supported` without a safe integer) and
+   * stored as `origin_auth_epoch`; ignored for every other origin.
+   */
+  originAuthEpoch?: number;
+  /**
+   * B-W04 (#6158, D-B27): churn charge, invoked outside any DB context only
+   * when a NEW row is about to be inserted (a live replay is never charged).
+   * Throws ActionIntentError('rate_limited') to refuse. MCP-origin only.
+   */
+  beforeInsert?: () => Promise<void>;
   /** Resolved via resolveWritableToolOrgId when absent. */
   orgId?: string;
   /**
@@ -273,11 +363,29 @@ export interface CreateActionIntentInput {
    * would answer tier 4 "unknown tool" for a qualified name. The external
    * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
    * auto-execute in-session and never mint an intent; the caller passes
-   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
-   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
-   * calling tenant tools is W5 work (flows-as-tools).
+   * only Tier-3 descriptors). Chat/MCP principals, and a flow principal
+   * parking its own Tier-3 external step (#10288 — the step row must be that
+   * tool, pinned Tier 3); an ai_agent principal is refused
+   * (`external_tool_not_allowed_for_agent`) — agents calling tenant tools is
+   * W5 work (flows-as-tools).
    */
   externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
+  /**
+   * W5 PR C (#5220, Decision 8): the intent starts a FLOW — a chat Tier-3
+   * call of a `flow__<slug>` tool. REQUIRED iff `toolName` is a flow tool
+   * name (both directions: `invalid_invoked_flow`), mutually exclusive with
+   * `externalTool`, and only for source `chat` from an interactive user
+   * session (`invoked_flow_not_allowed`): Tier-3 flows are refused over MCP,
+   * agents never propose flows (Decision 9), and a flow is never a step of a
+   * flow (Decision 7). `input` is the COERCED call (`{ inputs, orgId,
+   * idempotencyKey }`) and `orgId` the run org. Writes `invoked_flow_id` and
+   * `tool_revision 'flowpub:<publicationId>'` — immutable content
+   * (`action_intents_block_content_update`). Like `externalTool`, the core
+   * classifier is skipped (a fixed Tier-3 / `supervised` verdict), the intent
+   * is never policy-decidable, and release revalidates the binding
+   * (`flowToolRelease.ts`) with the approver as the triggerer.
+   */
+  invokedFlow?: { flowId: string; publicationId: string; publicationSeq: number; flowName: string };
   /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
@@ -314,11 +422,25 @@ export interface CreateActionIntentInput {
    * (W04) consumes — keep the field name.
    */
   guardrailContext?: GuardrailContext;
+  /**
+   * #10027: set only by `createMcpActionIntent` (source `mcp_api`). A call to
+   * a registry-Tier-3 tool whose action is rated below Tier 3 and is NOT
+   * read-only (`needsRegistryTier3Approval`) is then approved at Tier 3,
+   * supervised, instead of being refused as `tool_not_tier3`. It changes
+   * nothing for any other call. TRUSTED, INTERNAL-ONLY.
+   */
+  mcpRegistryTierApproval?: true;
 }
 
 export type ActionIntentSnapshot = {
   id: string;
   status: ActionIntentStatus;
+  /**
+   * B-W04 (#6158): true when this call converged on an existing LIVE intent
+   * (idempotent replay) instead of inserting one. Set only by
+   * createActionIntent; absent elsewhere.
+   */
+  replayed?: boolean;
   actionName: string;
   argumentDigest: string;
   source: ActionIntentSource;
@@ -414,6 +536,9 @@ const MAX_ARG_VALUE_LEN = 80;
  * columns may receive (design §5.2; an uppercase GUID would 22P02 at INSERT). */
 const CANONICAL_UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+/** W5 PR C (#5220): approvers of a flow-tool intent also hold automations.write (a Tier ≥ 2 flow start). */
+const FLOW_TOOL_APPROVER_PERMISSION = { resource: 'automations', action: 'write' } as const;
+
 // ---------------------------------------------------------------------------
 // Summary / digest helpers
 // ---------------------------------------------------------------------------
@@ -505,6 +630,56 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
     'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
   shutdown: () =>
     'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+  // #9657: plain-language impact for tools whose catalog description is
+  // model-facing prompt text. Display only.
+  remediate_vulnerability: () =>
+    'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+  restore_snapshot: () =>
+    'Restores data from a backup snapshot. Files at the restore target can be overwritten.',
+  trigger_backup: () => 'Starts a backup job now. It uses device and storage resources while it runs.',
+  manage_invoices: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'issue': return 'Issues the invoice to the customer.';
+      case 'void': return 'Voids the invoice. It will no longer be payable.';
+      case 'record_payment': return 'Records a payment against the invoice.';
+      case 'void_payment': return 'Voids a recorded payment, reopening the invoice balance.';
+      default: return null;
+    }
+  },
+  // Full-control W17 (#6788).
+  manage_backup_verification: (input) =>
+    nonEmptyString(input.action) === 'run' ? 'Queues a backup check on the machine. It uses device and storage resources while it runs.' : null,
+  manage_c2c_configs: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'create': return 'Chooses whose mail is copied, where it is stored and on what schedule.';
+      case 'update': return 'Changes whose mail is copied, where it is stored or on what schedule.';
+      case 'delete': return 'Deletes the config. Refused while backup history depends on it.';
+      default: return null;
+    }
+  },
+  manage_quotes: (input) =>
+    nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
+  manage_pax8_subscriptions: (input) => describePax8Action('manage_pax8_subscriptions', nonEmptyString(input.action)),
+  manage_pax8_orders: (input) => input.action === 'submit' ? describePax8Submit(input) : describePax8Action('manage_pax8_orders', nonEmptyString(input.action)),
+  manage_contracts: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'activate': return 'Activates the contract so billing starts.';
+      case 'pause': return 'Pauses the contract and its billing.';
+      case 'resume': return 'Resumes the contract and its billing.';
+      case 'cancel': return 'Cancels the contract.';
+      default: return null;
+    }
+  },
+  m365_disable_user: () => 'Blocks the Microsoft 365 user from signing in.',
+  m365_reset_password: () => 'Resets the Microsoft 365 user\'s password; they are signed out until they use the new one.',
+  m365_revoke_sessions: () => 'Signs the Microsoft 365 user out of all active sessions.',
+  m365_remove_license: () => 'Removes a license from the Microsoft 365 user; access to the licensed service may end.',
+  m365_assign_license: () => 'Assigns a license to the Microsoft 365 user, which may add cost.',
+  m365_remove_from_group: () => 'Removes the user from a Microsoft 365 group, which may remove their access.',
+  m365_add_to_group: () => 'Adds the user to a Microsoft 365 group, which may grant them access.',
+  m365_retire_intune_device: () => 'Retires the device from Intune management and removes company data from it.',
+  m365_create_user: () => 'Creates a new Microsoft 365 user account.',
+  m365_set_auto_reply: () => 'Sets the Microsoft 365 mailbox auto-reply.',
   // #5173: execute_command multiplexes on `commandType` (input.payload is the
   // agent-command-specific parameters, `z.record(z.string(), z.unknown())` —
   // deliberately unvalidated, so this is a read-only extraction for display,
@@ -651,6 +826,9 @@ export function computeExpiresAt(
   chatApprovalWindowMs?: number,
 ): Date {
   if (source === 'ai_agent') return new Date(Date.now() + AGENT_INTENT_EXPIRY_MS);
+  // Tool catalog W04 (#5219): a parked flow step waits FLOW_APPROVAL_TTL_HOURS
+  // (default 24 h) for a human, whatever its approval scope.
+  if (source === 'flow') return new Date(Date.now() + flowApprovalTtlHours() * 3_600_000);
   if (source !== 'chat') return new Date(Date.now() + MCP_EXPIRY_MS);
   const ms = approvalScope === 'supervised'
     ? clampChatApprovalWindowMs(chatApprovalWindowMs)
@@ -864,6 +1042,13 @@ interface HumanFanoutArgs {
   impactSummary: string;
   expiresAt: Date;
   agentRun: AgentRunRef;
+  /**
+   * Tool catalog W04 (#5219): set for a flow-origin intent — requester-less
+   * like an agent intent, so it takes the same pool branch (no requester
+   * short-circuit, no sole-operator fallback). `eligibleApprovers` already
+   * excludes the delegator and the manual-run triggerer.
+   */
+  flowRunId: string | null;
   approvalScope: ActionIntentApprovalScope;
   eligibleApprovers: string[];
   agentEligibleApprovers: string[];
@@ -909,6 +1094,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     impactSummary,
     expiresAt,
     agentRun,
+    flowRunId,
     approvalScope,
     eligibleApprovers,
     agentEligibleApprovers,
@@ -960,8 +1146,8 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
   };
 
-  if (agentRun) {
-    // Agent intents have NO requester, so neither the supervised
+  if (agentRun || flowRunId) {
+    // Agent (and flow, #5219) intents have NO requester, so neither the supervised
     // requester short-circuit nor the sole-operator fallback below can
     // apply. Supervised fans out to the action-and-target-eligible humans
     // resolved above (spec §3.4: any human with the action's RBAC AND
@@ -1049,7 +1235,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
       }
       await publishIntentTerminalOutbox(
         tx,
-        { id: inserted.id, orgId: inserted.orgId, taskId: inserted.taskId },
+        { id: inserted.id, orgId: inserted.orgId, taskId: inserted.taskId, requestingFlowRunId: inserted.requestingFlowRunId ?? null },
         'intent_cancelled',
       );
     }
@@ -1177,6 +1363,22 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
  * The load is a plain read outside any transaction — this runs BEFORE the
  * creation transaction opens, so it cannot double-hold a pooled connection.
  */
+/**
+ * Tool catalog W05 (#5220), Decision 12: a flow built-in step has no core
+ * classification. Its tier is the built-in's own `tierFor` on the immutable
+ * input; at Tier 3 one supervised approver (the Tier-3-only gate below
+ * refuses anything lower for a flow principal).
+ */
+function builtinGuardrailCheck(toolName: string, input: Record<string, unknown>): GuardrailCheck {
+  const tier = flowBuiltinTierFor(toolName as Parameters<typeof flowBuiltinTierFor>[0], input);
+  const description = `${toolName} — flow built-in step`;
+  // W6 (#5221): a fleet script step's scope follows the script (core run_script's classification).
+  const approvalScope = toolName === 'run_script_on_targets' ? fleetApprovalScope(input) : 'supervised';
+  return tier === 3
+    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope, description }
+    : { tier, allowed: true, requiresApproval: false, readOnly: false, description };
+}
+
 export async function resolveGuardrailForIntent(
   toolName: string,
   input: Record<string, unknown>,
@@ -1202,6 +1404,47 @@ export async function createActionIntent(
   // outright rather than recorded as whatever synthetic user the agent's
   // attribution record carries — or, in the other direction, as a human
   // intent masquerading as an agent proposal.
+  if (AGENT_COORDINATOR_CARRIER_TOOLS.has(input.toolName) && input.coordinatorCarrier !== true) {
+    throw new ActionIntentError(
+      `"${input.toolName}" is an approval carrier only the Wisp coordinator may raise`,
+      'coordinator_carrier_only',
+    );
+  }
+  // Tool catalog W04 (#5219), plan Task A5: flow-origin intents. The same
+  // mutual pairing as the agent rule below, in both directions: a flow
+  // principal may ONLY write source 'flow', source 'flow' needs a flow
+  // principal AND a `flowRun`, and `flowRun` is meaningless anywhere else.
+  // The run attribution facts (requested_by_user_id NULL +
+  // requesting_flow_run_id, CHECK action_intents_flow_origin_chk) key off it.
+  const flowPrincipal = auth.principal.kind === 'flow' ? auth.principal : null;
+  if (
+    !!flowPrincipal !== (input.source === 'flow')
+    || (input.flowRun !== undefined) !== (input.source === 'flow')
+    || (flowPrincipal && input.flowRun && flowPrincipal.runId !== input.flowRun.runId)
+  ) {
+    throw new ActionIntentError(
+      flowPrincipal
+        ? `A flow principal must create intents with source 'flow' and its own run (got source '${input.source}')`
+        : `source 'flow' / flowRun are reserved for the flow principal of that run (got principal '${auth.principal.kind}', source '${input.source}')`,
+      'flow_source_mismatch',
+    );
+  }
+  const flowRunInput = flowPrincipal ? input.flowRun! : null;
+  // Tool catalog W05 (#5220), Decision 12: built-in flow step names are not
+  // registered tools. They are accepted only from a flow principal's own run
+  // with the explicit flag, and the flag only with a built-in name.
+  const builtinIntent = isFlowBuiltin(input.toolName);
+  if (builtinIntent !== (flowRunInput?.builtin === true)) {
+    throw new ActionIntentError(
+      builtinIntent
+        ? `"${input.toolName}" is a flow built-in step; only its flow run may request approval for it`
+        : `flowRun.builtin is set but "${input.toolName}" is not a flow built-in step`,
+      'builtin_intent_invalid',
+    );
+  }
+  if (builtinIntent && (input.externalTool || input.scope || input.binding || input.task)) {
+    throw new ActionIntentError(`"${input.toolName}" is a flow built-in step and takes no binding, scope or task`, 'builtin_intent_invalid');
+  }
   const isAgentIntent = auth.principal.kind === 'ai_agent';
   if (isAgentIntent !== (input.source === 'ai_agent')) {
     throw new ActionIntentError(
@@ -1281,6 +1524,34 @@ export async function createActionIntent(
     );
   }
   const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
+  // B-W04 (#6158): the credential id for an api_key / oauth_grant principal,
+  // and whether this is an MCP-origin intent (see isMcpOriginIntent).
+  const credentialOriginId: string | null = auth.principal.kind === 'api_key'
+    ? auth.principal.apiKeyId ?? null
+    : auth.principal.kind === 'oauth_grant'
+      ? auth.principal.grantId ?? null
+      : null;
+  const isMcpOrigin = isMcpOriginIntent({ source: input.source, originPrincipalKind });
+  if (input.correlationId !== undefined && isMcpOrigin && !UUID_RE.test(input.correlationId)) {
+    throw new ActionIntentError('correlationId must be a UUID', 'invalid_correlation_id');
+  }
+  // #9758: an MCP-origin OAuth intent must carry the auth_epoch its filing
+  // call was admitted at — release compares it to the live row. Without one
+  // the intent could never be released, so refuse before anything is written.
+  const isMcpOAuthOrigin = isMcpOrigin && originPrincipalKind === 'oauth_grant';
+  if (isMcpOAuthOrigin && !Number.isSafeInteger(input.originAuthEpoch)) {
+    throw new ActionIntentError(
+      'An OAuth-originated MCP intent requires the verified auth epoch',
+      'principal_not_supported',
+    );
+  }
+  const originAuthEpoch = isMcpOAuthOrigin ? (input.originAuthEpoch as number) : null;
+  const replayIdentity = {
+    source: input.source,
+    originPrincipalKind,
+    originPrincipalId: credentialOriginId,
+    requestedByUserId: auth.user.id as string | null,
+  };
   // Same reasoning, for the scope union: every later use site (idempotency
   // key, the insert values, the ticket-autonomy evaluation) needs a plain
   // `string | null` it can read without re-narrowing `input.scope`. The two
@@ -1314,6 +1585,33 @@ export async function createActionIntent(
     }
     if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
       throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
+    }
+  }
+
+  // W5 PR C (#5220): the invoked-flow binding — see the field's doc. Checked
+  // BEFORE any DB access and before the classifier, so a flow tool name never
+  // reaches `checkGuardrails` (it would answer tier 4 "unknown tool").
+  const invokedFlow = input.invokedFlow ?? null;
+  if (invokedFlow || isFlowToolName(input.toolName)) {
+    if (!invokedFlow || !isFlowToolName(input.toolName) || externalTool) {
+      throw new ActionIntentError(
+        'A flow tool intent needs a flow__<slug> tool name and an invokedFlow binding, and no external tool binding',
+        'invalid_invoked_flow',
+      );
+    }
+    if (input.source !== 'chat' || auth.principal?.kind !== 'user_session') {
+      throw new ActionIntentError(
+        'Flow tool intents are created only from an interactive chat session',
+        'invoked_flow_not_allowed',
+      );
+    }
+    if (
+      !CANONICAL_UUID_LOWER.test(invokedFlow.flowId)
+      || !CANONICAL_UUID_LOWER.test(invokedFlow.publicationId)
+      || !Number.isInteger(invokedFlow.publicationSeq) || invokedFlow.publicationSeq < 1
+      || typeof invokedFlow.flowName !== 'string' || invokedFlow.flowName.length === 0
+    ) {
+      throw new ActionIntentError('invokedFlow ids must be canonical lowercase UUIDs and the seq a positive integer', 'invalid_invoked_flow');
     }
   }
 
@@ -1419,7 +1717,7 @@ export async function createActionIntent(
     };
   }
 
-  const { check: guardrail, context: guardrailContext } = externalTool
+  const { check: classified, context: guardrailContext } = externalTool
     ? {
         check: {
           tier: 3,
@@ -1431,6 +1729,25 @@ export async function createActionIntent(
         } satisfies GuardrailCheck,
         context: undefined,
       }
+    : invokedFlow
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `Run flow "${invokedFlow.flowName}"`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : builtinIntent
+    // Tool catalog W05 (#5220), Decision 12: a built-in has no core
+    // classification. Its tier is its own `tierFor` on the immutable input
+    // (Tier 3 only reaches here — the gate below refuses lower), one
+    // supervised approver, and it is cross-checked against the step row's
+    // pinned tier once the run facts load.
+    ? { check: builtinGuardrailCheck(input.toolName, input.input), context: undefined }
     : await resolveGuardrailForIntent(
         input.toolName,
         input.input,
@@ -1441,6 +1758,22 @@ export async function createActionIntent(
         input.orgId ?? auth.orgId ?? null,
         input.guardrailContext,
       );
+  // #10027: an MCP filing of a NON-read action that a per-action table rates
+  // below Tier 3 on a registry-Tier-3 tool (edr_endpoint_action scan). The MCP
+  // gate runs only read-only below-Tier-3 actions directly and files every
+  // other one, so this is approved at the tool's registry Tier 3, the tier
+  // release revalidation compares against (`getToolTier > riskTier` fails it
+  // as tier_escalated). One supervised approver, like P2-1's agent Tier-2
+  // lane: the action's own classification is below Tier 3, and four_eyes
+  // would make a scan harder to approve than an isolate. A read-only call, a
+  // registry tier below 3, or any other source keeps the tier gate below.
+  const guardrail: GuardrailCheck = input.mcpRegistryTierApproval === true
+    && input.source === 'mcp_api'
+    && !externalTool && !invokedFlow && !builtinIntent
+    && classified.allowed
+    && needsRegistryTier3Approval(input.toolName, classified)
+    ? { ...classified, tier: 3, requiresApproval: true, readOnly: false, approvalScope: 'supervised' }
+    : classified;
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1469,6 +1802,45 @@ export async function createActionIntent(
     throw new ActionIntentError(resolvedOrg.error ?? 'Organization context required', 'org_resolution_failed');
   }
   const orgId = resolvedOrg.orgId;
+
+  // Tool catalog W04 (#5219): load the run, its pinned publication's
+  // delegator and the step row from the SERVER, and refuse anything that does
+  // not line up — the run must be this principal's, in this org, still
+  // running, with the named step row in flight. The caller's delegator /
+  // triggerer must agree with the server (a disagreement is a runner bug, and
+  // the four-eyes exclusions must never rest on caller input).
+  let flowRunFacts: (FlowIntentRunFacts & { step: NonNullable<FlowIntentRunFacts['step']> }) | null = null;
+  if (flowPrincipal && flowRunInput) {
+    const facts = await loadFlowIntentRun(flowRunInput.runId, flowRunInput.stepRowId);
+    if (
+      !facts
+      || facts.orgId !== orgId
+      || facts.flowId !== flowPrincipal.flowId
+      || facts.status !== 'running'
+      || !facts.step
+      || facts.step.id !== flowRunInput.stepRowId
+      || facts.step.stepId !== flowRunInput.stepId
+      || facts.step.status !== 'running'
+      || (facts.delegatorUserId ?? null) !== (flowRunInput.delegatorUserId ?? null)
+      || (facts.triggeredByUserId ?? null) !== (flowRunInput.triggeredByUserId ?? null)
+      // W05 (#5220): a built-in intent is for exactly this step row's built-in at its pinned tier.
+      || (builtinIntent && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'builtin' || facts.step.tier !== guardrail.tier
+      ))
+      // #10288: likewise an external intent is for exactly this step row's
+      // tool-source tool, pinned Tier 3 (the binding's fixed verdict).
+      || (externalTool && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'tenant' || facts.step.tier !== 3
+      ))
+    ) {
+      throw new ActionIntentError(
+        'Flow run is missing, belongs to another flow or org, is not running, or does not match the step being parked',
+        'flow_run_invalid',
+      );
+    }
+    flowRunFacts = { ...facts, step: facts.step };
+  }
+
   // P2-5 (#4192): `manage_ai_agents.orgId` is an ADDRESS, not a target
   // selector. It exists only so the effect-digest resolver — which receives
   // `(args, database)` and recomputes under a system context with no ambient
@@ -1773,16 +2145,9 @@ export async function createActionIntent(
   // -------------------------------------------------------------------------
   let planApprovalDecision: Extract<PlanMembershipResult, { ok: true }> | null = null;
   if (input.planApproval !== undefined) {
-    if (!taskContext || auth.principal.kind === 'ai_agent') {
+    if (!taskContext || isAutomationPrincipal(auth)) {
       throw new ActionIntentError(
         'planApproval requires task context and a human principal (the plan\'s approver)',
-        'plan_approval_invalid',
-      );
-    }
-    // Spec §6.4: secret-bearing effects never ride a plan in this wave.
-    if (isSecretBearingTool(input.toolName)) {
-      throw new ActionIntentError(
-        `${input.toolName} mints a credential and cannot be dispatched under a plan approval`,
         'plan_approval_invalid',
       );
     }
@@ -1799,6 +2164,22 @@ export async function createActionIntent(
     if (!membership.ok) {
       throw new ActionIntentError(
         `plan approval does not authorize this effect: ${membership.refusal} (${membership.detail})`,
+        'plan_approval_invalid',
+      );
+    }
+    // Spec §6.4 / R2 (D-R2-2): the effect's kind must MATCH its approved set's
+    // kind, both ways. A credential-minting effect is dispatched only under a
+    // set whose every member mints one (the card was about account creation
+    // and nothing else, and each effect keeps its own result to seal into); an
+    // ordinary effect never rides a credential-only set. `setSecrecy` is read
+    // from the approved ROWS by membership, which also refuses a mixed set at
+    // mint and at release.
+    const wantsSecret = isSecretBearingTool(input.toolName);
+    if (wantsSecret !== (membership.setSecrecy === 'all_secret_bearing')) {
+      throw new ActionIntentError(
+        wantsSecret
+          ? `${input.toolName} mints a credential and may only be dispatched under an approval whose every effect does`
+          : `${input.toolName} does not mint a credential and may not be dispatched under a credential-only approval`,
         'plan_approval_invalid',
       );
     }
@@ -1848,27 +2229,47 @@ export async function createActionIntent(
     // id): two runs of the same agent proposing identical arguments must
     // yield DISTINCT intents — an intent is immutably attributed to one run,
     // whose policy snapshot the release path evaluates (review major 4).
-    actorId: agentRun ? agentRun.id : requesterId,
+    // Tool catalog W04 (#5219): a flow intent is keyed on its RUN and the
+    // step-attempt row (scopeId below), so a retried attempt never converges
+    // on the previous attempt's intent and a redelivered park does.
+    actorId: agentRun ? agentRun.id : flowRunFacts ? flowRunFacts.runId : requesterId,
     // The two scope variants are mutually exclusive; either one (or neither)
     // folds into the SAME hashed-material parameter that has always carried
     // the device scope — a ticket-scoped fan-out (multiple ticket-triage
     // proposals for the same tool+args, one per ticket) must land on distinct
     // keys for exactly the same reason a device sweep fan-out does.
-    scopeId: scopeDeviceId ?? scopeTicketId ?? null,
+    scopeId: scopeDeviceId ?? scopeTicketId ?? flowRunFacts?.step.id ?? null,
   });
   // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
   // definition: the approver reads which source the call goes to and which
   // argument keys it carries (values are on the card's argument JSON).
+  const flowInputKeys = (): string => {
+    const inputs = input.input.inputs;
+    const keys = inputs && typeof inputs === 'object' && !Array.isArray(inputs) ? Object.keys(inputs).sort() : [];
+    return keys.length > 0 ? keys.join(', ') : '(none)';
+  };
   const targetSummary = externalTool
     ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : invokedFlow
+    ? `Run flow "${invokedFlow.flowName}" (${input.toolName})`
     : runScriptGroupNote
       ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
       : buildTargetSummary(input.toolName, input.input);
-  const impactSummary = externalTool
+  const baseImpactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
       }`
+    : invokedFlow
+    ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
     : buildImpactSummary(input.toolName, input.input, guardrail);
+  // Approver scope on a partner-wide intent. The summary is the risk line on every
+  // approval surface, so it says who can approve whichever path filed this.
+  let requirePartnerAxis = false;
+  if (mayHavePartnerWideEffect(input.toolName, input.input)) {
+    const { intentRequiresPartnerAxisApprover } = await import('./partnerAxisApprover');
+    requirePartnerAxis = await intentRequiresPartnerAxisApprover({ actionName: input.toolName, arguments: input.input, orgId });
+  }
+  const impactSummary = requirePartnerAxis ? `${baseImpactSummary} ${PARTNER_LEVEL_APPROVER_NOTE}` : baseImpactSummary;
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -1885,15 +2286,21 @@ export async function createActionIntent(
       labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
     }
   }
-  const actionLabel = buildActionLabel({
-    toolName: input.toolName,
-    input: input.input,
-    reason: labelReason,
-    deviceHostname: labelDeviceName,
-  });
+  // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
+  // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
+  const actionLabel = flowRunFacts
+    ? `Step ${flowRunFacts.step.stepId}: ${input.toolName}`
+    : buildActionLabel({
+      toolName: input.toolName,
+      input: input.input,
+      reason: labelReason,
+      deviceHostname: labelDeviceName,
+    });
   const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
-  const requestingClientLabel = input.requestingClientLabel
-    ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
+  const requestingClientLabel = flowRunFacts
+    ? `Flow ${flowRunFacts.flowName}`
+    : input.requestingClientLabel
+      ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.
   // T4 is refused above, so only two labels are reachable here: Tier-3 (every
   // non-agent intent, and any agent intent that isn't Tier-2) maps to 'high',
@@ -1942,7 +2349,8 @@ export async function createActionIntent(
     if (callerReplay) {
       if (callerReplay.requestedByUserId !== requesterId || callerReplay.requestingAgentRunId
         || callerReplay.actionName !== input.toolName || callerReplay.source !== input.source
-        || callerReplay.argumentDigest !== argumentDigest) {
+        || callerReplay.argumentDigest !== argumentDigest
+        || mcpOriginReplayMismatch(callerReplay, replayIdentity)) {
         throw new ActionIntentError('Idempotency key already belongs to a different live request', 'idempotency_conflict');
       }
       return withDbAccessContext(dbContext, async () => {
@@ -1965,7 +2373,7 @@ export async function createActionIntent(
       });
     };
     // A verified caller authorizes a HUMAN technician's request, never an agent run.
-    if (agentRun || auth.principal.kind === 'ai_agent') await refuseCaller('technician_mismatch');
+    if (agentRun || isAutomationPrincipal(auth)) await refuseCaller('technician_mismatch');
     try {
       const { resolveM365CallerTarget } = await import('../aiToolsM365');
       callerTarget = await withDbAccessContext(dbContext, () => resolveM365CallerTarget(
@@ -2028,13 +2436,25 @@ export async function createActionIntent(
     alsoRequire:
       input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
         ? PERMISSION_GRANTS.SCRIPTS_WRITE
-        : undefined,
+        // W5 PR C: starting a Tier ≥ 2 flow needs automations.write; release
+        // re-checks the approver's rule 7 for every step (flowToolRelease.ts).
+        : invokedFlow
+          ? FLOW_TOOL_APPROVER_PERMISSION
+          : undefined,
     requireOrgWideGovernance,
+    ...(requirePartnerAxis ? { requirePartnerAxis } : {}),
     onDiagnostics: (diagnostics) => {
       governanceDiagnostics = diagnostics;
     },
   });
-  const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
+  // Tool catalog W04 (#5219), Decision 6: a four-eyes flow intent never routes
+  // to the publication's delegator nor to a manual run's triggerer (its real
+  // requester) — server values, see flowRunFacts above. A supervised flow
+  // intent's pool (agentEligibleApprovers below) may include the delegator.
+  const flowExcluded = flowRunFacts
+    ? [flowRunFacts.delegatorUserId, flowRunFacts.triggeredByUserId].filter((id): id is string => !!id)
+    : [];
+  const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId && !flowExcluded.includes(userId));
   const requesterEligible = eligibleAll.includes(requesterId);
 
   // Agent action-and-target eligibility (Task 3), resolved OUTSIDE the
@@ -2083,6 +2503,37 @@ export async function createActionIntent(
       input: input.input,
       targetScope,
     });
+  } else if (flowRunFacts) {
+    // Tool catalog W04 (#5219): the agent-origin action-and-target pool. A
+    // run has no device of its own: the target is whatever the step's
+    // arguments name. An external step has no core RBAC mapping, so its pool
+    // is the external-tool grant over an org-wide (indirect) target.
+    // W05 (#5220): the same rule decides who may approve at decide time
+    // (intentApprovers.flowIntentApproverRule) — external and built-in steps
+    // carry their own grant over an org-wide target.
+    const rule = flowIntentApproverRule({
+      actionName: input.toolName,
+      toolSourceToolId: externalTool ? externalTool.toolSourceToolId : null,
+      arguments: input.input,
+    });
+    let targetScope: IntentTargetScope;
+    try {
+      targetScope = rule.indirect
+        ? { kind: 'indirect' }
+        : await resolveIntentTargetScope(input.toolName, input.input, { deviceId: null }, orgId);
+    } catch (err) {
+      throw new ActionIntentError(
+        err instanceof Error ? err.message : 'Flow step target could not be resolved',
+        'flow_target_invalid',
+      );
+    }
+    agentEligibleApprovers = await resolveAgentIntentApprovers({
+      orgId,
+      toolName: input.toolName,
+      input: input.input,
+      targetScope,
+      ...(rule.indirect && rule.required ? { requiredOverride: rule.required } : {}),
+    });
   }
 
   // ONE system-scoped transaction (durability): insert the intent row (or
@@ -2115,6 +2566,45 @@ export async function createActionIntent(
   // system-scoped is internally consistent. Cross-tenant READS remain denied —
   // RLS filters reads by org_id regardless of which scope inserted the row
   // (proven by createIntentAtomicity.integration.test.ts).
+  // B-W04 (#6158, D-B27 step 4): the churn charge (Redis) runs outside any
+  // DB context and only when a NEW row is about to be inserted — a live
+  // replay of the same request is never charged. A race that turns this into
+  // a replay inside the transaction over-charges by one (accepted).
+  if (isMcpOrigin && input.beforeInsert) {
+    const [liveReplay] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ id: actionIntents.id })
+      .from(actionIntents)
+      .where(and(
+        eq(actionIntents.orgId, orgId),
+        eq(actionIntents.idempotencyKey, idempotencyKey),
+        inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+      ))
+      .limit(1)));
+    if (!liveReplay) {
+      // Advisory cap pre-check (the locked check in the transaction stays
+      // authoritative): a credential already at its live cap must not burn
+      // its hourly churn budget on calls that will be refused anyway.
+      if (input.maxLiveForOrigin !== undefined) {
+        const [live] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(actionIntents)
+          .where(and(
+            eq(actionIntents.source, 'mcp_api'),
+            eq(actionIntents.originPrincipalKind, originPrincipalKind),
+            eq(actionIntents.originPrincipalId, credentialOriginId ?? ''),
+            inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+          ))));
+        if ((live?.n ?? 0) >= input.maxLiveForOrigin) {
+          throw new ActionIntentError(
+            'Too many actions from this connection are waiting for approval',
+            'too_many_pending_actions',
+          );
+        }
+      }
+      await runOutsideDbContext(() => input.beforeInsert!());
+    }
+  }
+
   let creation: CreationResult;
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
@@ -2139,11 +2629,11 @@ export async function createActionIntent(
       // effect_digest NULL, which both release paths treat as "nothing to
       // check", not a failure. The `unresolved` cases are audited after
       // commit — they are intents that SHOULD have been pinned and weren't.
-      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db, { intentOrgId: orgId });
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.
-      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName)) {
+      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName, input.input)) {
         throw new EffectDigestUnresolvableError(
           input.toolName,
           effectDigestOutcome.kind === 'unresolved' ? effectDigestOutcome.reason : 'no resolver',
@@ -2250,6 +2740,42 @@ export async function createActionIntent(
           ? { scriptLaneRefusal: scriptLaneDecision.reason }
           : null;
 
+      // B-W04 (#6158, D-B27 steps 1-3): per-origin cap, serialised by an
+      // advisory lock on the origin credential so N concurrent creations can
+      // never overshoot it. A live replay of this exact request is let
+      // through first (it converges on the existing row below and is never
+      // refused for the cap). The count reads action_intents_live_origin_idx.
+      if (isMcpOrigin && input.maxLiveForOrigin !== undefined) {
+        const originRef = `${originPrincipalKind}:${credentialOriginId ?? ''}`;
+        await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`mcp-intent-cap:${originRef}`}))`);
+        const [liveReplay] = await db
+          .select({ id: actionIntents.id })
+          .from(actionIntents)
+          .where(and(
+            eq(actionIntents.orgId, orgId),
+            eq(actionIntents.idempotencyKey, idempotencyKey),
+            inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+          ))
+          .limit(1);
+        if (!liveReplay) {
+          const [live] = await db
+            .select({ n: sql<number>`count(*)::int` })
+            .from(actionIntents)
+            .where(and(
+              eq(actionIntents.source, 'mcp_api'),
+              eq(actionIntents.originPrincipalKind, originPrincipalKind),
+              eq(actionIntents.originPrincipalId, credentialOriginId ?? ''),
+              inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+            ));
+          if ((live?.n ?? 0) >= input.maxLiveForOrigin) {
+            throw new ActionIntentError(
+              'Too many actions from this connection are waiting for approval',
+              'too_many_pending_actions',
+            );
+          }
+        }
+      }
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -2265,8 +2791,11 @@ export async function createActionIntent(
           targetConnectionRef: callerTarget?.connectionId ?? null,
           // Agent intents are requester-less by design (wave 3b): the run is
           // the attribution record, never the agent's synthetic user id.
-          requestedByUserId: agentRun ? null : requesterId,
+          requestedByUserId: agentRun || flowRunFacts ? null : requesterId,
           requestingAgentRunId: agentRun?.id ?? null,
+          // Tool catalog W04 (#5219): the run is the single actor root of a
+          // flow intent (action_intents_flow_origin_chk / _flow_source_chk).
+          requestingFlowRunId: flowRunFacts?.runId ?? null,
           // Record the ORIGIN principal as a fact, at the one moment it is
           // known for certain. Do NOT derive this later from `source` or from
           // which actor column is populated — see the column's doc comment.
@@ -2278,7 +2807,11 @@ export async function createActionIntent(
                 ? auth.principal.grantId ?? null
                 : agentRow
                   ? agentRow.id
-                  : null,
+                  : flowPrincipal
+                    ? flowPrincipal.flowId
+                    : null,
+          // #9758: set only for an MCP-origin oauth_grant intent; immutable.
+          originAuthEpoch,
           // #5022 W01: persist the AI origin at INSERT (these columns are
           // never updated — `action_intents_immutable_trg` blocks it). The
           // release worker rebuilds the AuthContext from scratch, so without
@@ -2313,9 +2846,11 @@ export async function createActionIntent(
           // Tool catalog W01 PR B (#5216): both or neither —
           // `action_intents_external_tool_chk`. Immutable from here on.
           toolSourceToolId: externalTool?.toolSourceToolId ?? null,
-          toolRevision: externalTool?.revision ?? null,
+          // W5 PR C: the invoked-flow binding (same pairing CHECK, immutable).
+          invokedFlowId: invokedFlow?.flowId ?? null,
+          toolRevision: externalTool?.revision ?? (invokedFlow ? `flowpub:${invokedFlow.publicationId}` : null),
           idempotencyKey,
-          correlationId: randomUUID(),
+          correlationId: isMcpOrigin && input.correlationId ? input.correlationId : randomUUID(),
           approvalScope,
           classificationVersion: CLASSIFICATION_VERSION,
           effectDigest,
@@ -2450,6 +2985,7 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
+          (existing.requestingFlowRunId ?? null) !== (flowRunFacts?.runId ?? null) ||
           existing.argumentDigest !== argumentDigest ||
           // Tool catalog W01 PR B (#5216): the external binding is part of the
           // request's identity. A tool row deleted and recreated under the
@@ -2459,7 +2995,10 @@ export async function createActionIntent(
           // going to refuse as `external_tool_disabled`/`_drift` — a confusing
           // spurious failure instead of an honest conflict here.
           (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
-          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
+          (existing.invokedFlowId ?? null) !== (invokedFlow?.flowId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? (invokedFlow ? `flowpub:${invokedFlow.publicationId}` : null)) ||
+          // B-W04 (#6158, D-B27): same credential, same human.
+          mcpOriginReplayMismatch(existing, replayIdentity)
         ) {
           throw new ActionIntentError(
             'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
@@ -2575,6 +3114,7 @@ export async function createActionIntent(
             impactSummary,
             expiresAt,
             agentRun,
+            flowRunId: flowRunFacts?.runId ?? null,
             approvalScope,
             eligibleApprovers,
             agentEligibleApprovers,
@@ -2701,7 +3241,12 @@ export async function createActionIntent(
   if (
     creation.isNew &&
     creation.intent.status === 'pending_approval' &&
-    (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent')
+    (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent'
+      // Tool catalog W04 (#5219): a parked flow step is headless too.
+      || creation.intent.source === 'flow'
+      // B-W04 (#6158, D-B28): an MCP-origin intent is headless too — nobody
+      // is watching a chat pane — so a supervised one notifies its requester.
+      || isMcpOriginIntent(creation.intent))
   ) {
     await notifyFannedOutApprovers({
       orgId,
@@ -2727,11 +3272,18 @@ export async function createActionIntent(
   // Agent creations are audited as the AGENT (actorType 'ai_agent', no
   // actorId — the synthetic user id must never masquerade as a person),
   // carrying the agent/run ids in details (gap 13).
+  // Tool catalog W04 (#5219): a flow creation is system-driven — never
+  // attributed to the flow's synthetic user id; the run is in the details.
   const auditActor = agentRun
     ? { actorType: 'ai_agent' as const }
-    : { actorId: requesterId };
+    : flowRunFacts
+      ? {}
+      : { actorId: requesterId };
   const agentAuditDetails = {
     ...(agentRun && agentRow ? { agentId: agentRow.id, agentRunId: agentRun.id } : {}),
+    ...(flowRunFacts
+      ? { flowId: flowRunFacts.flowId, flowRunId: flowRunFacts.runId, flowStepId: flowRunFacts.step.stepId }
+      : {}),
     ...(trigger ? {
       triggerKind: trigger.kind,
       triggerRefId: trigger.refId ?? null,
@@ -2821,7 +3373,10 @@ export async function createActionIntent(
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
+  return {
+    ...toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds),
+    replayed: !creation.isNew,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2980,6 +3535,8 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       // it does not get a new one for having been attempted first.
       expiresAt: updated.approvalExpiresAt ?? updated.expiresAt,
       agentRun,
+      // Policy-decide only ever attempts agent intents; never a flow intent.
+      flowRunId: null,
       approvalScope: updated.approvalScope,
       // resolvePolicyDecisionState only ever admits approvalScope ===
       // 'supervised' into 'unattempted' — the four_eyes pool is structurally
@@ -3182,7 +3739,7 @@ export async function cancelActionIntent(
       // immutable.
       await publishIntentTerminalOutbox(
         db,
-        { id: intentId, orgId: intent.orgId, taskId: intent.taskId },
+        { id: intentId, orgId: intent.orgId, taskId: intent.taskId, requestingFlowRunId: intent.requestingFlowRunId ?? null },
         'intent_cancelled',
       );
       return true;
@@ -3304,17 +3861,70 @@ export async function transitionIntent(
         : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
   }
 
-  return withSystemDbAccessContext(async () => {
+  const decided = await withSystemDbAccessContext(async () => {
     const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
     if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })
       .where(and(...conditions))
-      .returning({ id: actionIntents.id });
-    return rows.length > 0;
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        toolName: actionIntents.actionName,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+      });
+    const row = rows[0];
+    if (!row) return null;
+    // Wisp W05: the grant is reachable through the run that minted the intent
+    // (action_intents carries no grant column). Only decision transitions
+    // publish, so only they pay for the extra read.
+    let grantId: string | null = null;
+    if (DECISION_STATUSES.has(to) && row.requestingAgentRunId) {
+      const [run] = await db
+        .select({ grantId: aiAgentRuns.grantId })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, row.requestingAgentRunId))
+        .limit(1);
+      grantId = run?.grantId ?? null;
+    }
+    return { row, grantId };
   });
+  if (!decided) return false;
+
+  // Wisp W05: `ai.intent.decided` wakes the triage engine. Published AFTER the
+  // system block has returned (never inside an open DB context, #1105) and
+  // never awaited: a bus outage must not fail or delay the CAS the caller won.
+  if (DECISION_STATUSES.has(to)) {
+    const { row, grantId } = decided;
+    // publishEvent is `async`, so in production it only ever rejects; the
+    // outer catch covers a non-async stand-in (test doubles) that throws.
+    try {
+      void publishEvent('ai.intent.decided', row.orgId, {
+        intentId: row.id,
+        orgId: row.orgId,
+        toolName: row.toolName,
+        decision: to,
+        requestingAgentRunId: row.requestingAgentRunId ?? null,
+        grantId,
+      }, 'action-intents').catch(reportIntentDecidedPublishFailure);
+    } catch (err) {
+      reportIntentDecidedPublishFailure(err);
+    }
+  }
+  return true;
 }
+
+/** A lost `ai.intent.decided` is a lost Wisp wake: report it, never fail the caller. */
+function reportIntentDecidedPublishFailure(err: unknown): void {
+  console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'actionIntents', op: 'publish_intent_decided' });
+}
+
+/** Statuses that are decisions (not execution progress) — they emit `ai.intent.decided`. */
+const DECISION_STATUSES: ReadonlySet<ActionIntentStatus> = new Set<ActionIntentStatus>([
+  'approved', 'rejected', 'expired', 'cancelled',
+]);
 
 // ---------------------------------------------------------------------------
 // waitForIntentDecision — chat SDK's blocking poll (spec §6.1)
@@ -3339,6 +3949,15 @@ export async function transitionIntent(
  * approved/executing/completed/failed/rejected/expired/cancelled), so a
  * caller only needs to special-case `pending_approval` to detect "still
  * waiting" vs. "a decision (or a worker) already moved this."
+ *
+ * #12098: when the time runs out it reads the row once more before
+ * returning. The last poll can be up to 3 s old by then, and a decision made
+ * during that last sleep would otherwise come back as `pending_approval`. A
+ * settled wait (`signal`) returns without that read: the caller asked it to
+ * stop now. `pending_approval` is still not proof the intent is undecided
+ * (a decision can land right after this read); a caller that is about to call
+ * the intent expired must settle it with `closeOutUndecidedIntent`
+ * (./intentExpiry.ts) first.
  */
 export async function waitForIntentDecision(
   intentId: string,
@@ -3349,9 +3968,9 @@ export async function waitForIntentDecision(
   let pollInterval = 500;
   let lastStatus: ActionIntentStatus = 'pending_approval';
 
-  while (Date.now() - startTime < timeoutMs) {
-    if (signal?.aborted) return lastStatus;
-
+  // One poll. `found: false` means the row is gone and the wait should stop
+  // with what it last saw; a read error keeps the previous status.
+  const poll = async (): Promise<{ found: boolean }> => {
     try {
       const [row] = await withSystemDbAccessContext(() =>
         db
@@ -3360,18 +3979,26 @@ export async function waitForIntentDecision(
           .where(eq(actionIntents.id, intentId))
           .limit(1),
       );
-
-      if (!row) return lastStatus;
+      if (!row) return { found: false };
       lastStatus = row.status;
-      if (lastStatus !== 'pending_approval') return lastStatus;
     } catch (err) {
       console.error(`[intentService] waitForIntentDecision poll error for intent ${intentId}:`, err);
     }
+    return { found: true };
+  };
+
+  while (Date.now() - startTime < timeoutMs) {
+    if (signal?.aborted) return lastStatus;
+    if (!(await poll()).found) return lastStatus;
+    if (lastStatus !== 'pending_approval') return lastStatus;
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
     pollInterval = Math.min(pollInterval * 1.5, 3000);
   }
 
+  // #12098: out of time. Read once more, so a decision made during the last
+  // sleep is returned rather than reported as still pending.
+  if (!signal?.aborted) await poll();
   return lastStatus;
 }
 

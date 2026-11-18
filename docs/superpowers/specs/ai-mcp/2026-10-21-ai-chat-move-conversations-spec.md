@@ -1,11 +1,13 @@
 ---
-status: draft — awaiting Todd's decisions (§7). Quorum: Codex gpt-6-astra xhigh, read-only, 2026-10-21. It agreed on D2 and D3 and disagreed on D1 (both positions in §7).
+status: approved 2026-10-22 by Todd (Gate A); decisions recorded in §7. Quorum: Codex gpt-6-astra xhigh, read-only, 2026-10-21. It agreed on D2 and D3 and disagreed on D1 (both positions in §7).
 date: 2026-10-21
 tracking_issue: LanternOps/breeze#9427
 related: "#9428 (Try again, plan-only), #9429 (browser notification, plan-only), #7002 (device pin on tier-3 intents), #6474 (keep-alive events), #7772 (in-turn failover replay), #8139 W4 (in-process state across API instances)"
 ---
 
 # AI chat: move conversations between the side panel and the AI Assistant
+
+**Approval:** approved 2026-10-22 by Todd (Gate A). D1 is A, and the store merge becomes its own spec. D2–D7 are decided as recommended.
 
 **Scope:** web chat surfaces (`apps/web/src/stores/aiStore.ts`, `apps/web/src/stores/workspaceStore.ts`, `apps/web/src/components/ai/AiChatSidebar.tsx`, `apps/web/src/components/workspace/*`) plus one new read-only API route. This document records intent and decisions. It contains no plan and no code.
 
@@ -262,6 +264,8 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
   - Cons: it rewrites both stores, and the model picker must become per-session (`aiModelPickerStore.ts:60` is a singleton store). The ownership tokens have to become per-session. It needs a feature flag, and every listed test needs reworking.
 - **Recommend A for this feature, with B filed as a follow-up spec.** Attach (§3.5) is needed anyway for reloads, deep links and other browser tabs, so a merge buys only the same-document reader. That is not worth reopening `aiStore`'s invariants inside a UX feature. *(Codex recommends B.)*
 
+**Decided 2026-10-22:** A. Keep `aiStore` and `workspaceStore` separate, with shared open, attach and hand-off modules. The store merge (B) becomes its own spec.
+
 **D2. Attaching to a turn already streaming in the other surface.**
 
 - **(a) Attach and resume.** Uses the attach route and snapshot (§3.5).
@@ -269,11 +273,15 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
 - **(c) Offer the move only when idle.**
 - **Recommend (a), shipped together with the move.** Not (c): it hides the control during long turns, which is exactly when users want more room. Not (b) or (c) alone either: local idleness does not prove the server is idle, and fact 3 already loses turns without attach. (b) is the documented fallback if the attach wave slips. **Agreed by the quorum.**
 
+**Decided 2026-10-22:** (a), shipped together with the move.
+
 **D3. After a move, close the conversation in the origin, or mirror it in both?**
 
 - **(a) Release the origin.** The side panel unbinds locally with no DELETE. The workspace closes the tab, so `closeTab` makes no API call.
 - **(b) Mirror live in both.** This means two composers, two approval cards, and two readers in one document.
 - **Recommend (a).** Prepare the destination first and release only on success. "Released" means within this document. **Agreed by the quorum.**
+
+**Decided 2026-10-22:** (a). Release the origin.
 
 **D4. Which sessions each list shows.**
 
@@ -286,6 +294,8 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
 - **Alternatives:**
   - Filter by the switcher's org. This would change the existing side-panel behaviour, and the API ignores `?orgId` anyway.
   - Open closed sessions read-only with a "Continue" action. Codex suggested this. It needs a continue-from-closed path, so it is deferred.
+
+**Decided 2026-10-22:** As recommended.
 
 **D5. Deep link and permissions when the session's org is not the current org.**
 
@@ -300,11 +310,15 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
   - Switch the org switcher to the session's org. This surprises the user and is a stateful side effect of a link.
   - Refuse sessions outside the current org. This blocks the main use for partner technicians.
 
+**Decided 2026-10-22:** As recommended.
+
 **D6. Hash lifecycle.**
 
 - **(a) The hash follows the active tab** (`replaceState`).
 - **(b) The hash is consumed once and then cleared.**
 - **Recommend (a).** Reload and copy-link then keep their meaning, and it matches how `DeviceDetails` keeps its tab in the hash.
+
+**Decided 2026-10-22:** (a). The hash follows the active tab.
 
 **D7. Control placement and copy (product call).**
 
@@ -312,6 +326,8 @@ The author formed positions on D1–D3, then put them to `codex exec` (gpt-6-ast
   - Side panel: an "Open in AI Assistant" icon in the header.
   - Workspace: "Continue in side panel" in the tab menu and in the chat header, and an "Open a past conversation" item behind the tab bar's "+".
 - Every new string goes into all locales (`localeParity`).
+
+**Decided 2026-10-22:** As recommended, including the placement and copy above.
 
 ## 8. Test and rollout notes
 

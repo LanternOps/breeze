@@ -76,7 +76,7 @@ describe('Workspace manifest', () => {
     });
     expect(manifest.web.navigation).toContainEqual({
       id: 'dashboard',
-      label: 'Workspace Dashboard',
+      label: 'Knowledge dashboard',
       path: '/extensions/workspace/dashboard',
       order: 50,
     });

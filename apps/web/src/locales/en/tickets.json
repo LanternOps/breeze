@@ -20,6 +20,7 @@
     "state": {
       "met": "Met",
       "notMet": "Not met",
+      "metLate": "Met late",
       "breached": "Breached",
       "pausedLeft": "Paused · {{relative}} left",
       "left": "{{relative}} left"
@@ -83,7 +84,10 @@
       "low": "Low"
     },
     "checklistProgress": "{{done}}/{{total}} steps",
-    "checklistTitle": "Checklist: {{done}} of {{total}} steps done"
+    "checklistTitle": "Checklist: {{done}} of {{total}} steps done",
+    "merged": "Merged",
+    "ageTitle": "Opened {{created}} · Updated {{updated}}",
+    "imported": "Imported"
   },
   "ticketArchivedList": {
     "emptyTitle": "No archived tickets.",
@@ -135,8 +139,25 @@
       "remove": "Remove file",
       "tooMany": "You can attach at most {{max}} files to one comment.",
       "tooLarge": "{{name}} is larger than 10 MB.",
-      "sentWithoutAttachment_one": "Note posted, but the attachment could not be added. Retry or remove it.",
-      "sentWithoutAttachment_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them."
+      "rejectedType": "{{name}} was not attached: only JPEG, PNG, WebP images and PDFs are supported.",
+      "rejectedEmpty": "{{name}} was not attached: the file is empty.",
+      "sentWithoutAttachmentReply_one": "Reply posted, but the attachment could not be added. Retry or remove it.",
+      "sentWithoutAttachmentNote_one": "Note posted, but the attachment could not be added. Retry or remove it.",
+      "sentWithoutAttachmentReply_other": "Reply posted, but {{count}} attachments could not be added. Retry or remove them.",
+      "sentWithoutAttachmentNote_other": "Note posted, but {{count}} attachments could not be added. Retry or remove them.",
+      "rejectedTicketDeleted": "{{name}} was not attached: this ticket was deleted.",
+      "rejectedTicketMerged": "{{name}} was not attached: this ticket was merged into another ticket.",
+      "rejectedNotFound": "{{name}} was not attached: the ticket could not be found.",
+      "rejectedMalformed": "{{name}} was not attached: the upload was malformed. Try attaching it again.",
+      "openMergedTicket": "Open merged ticket",
+      "notKept_one": "1 attachment was not kept with this draft ({{names}}). Attach it again, or dismiss to send without it.",
+      "notKept_other": "{{count}} attachments were not kept with this draft ({{names}}). Attach them again, or dismiss to send without them.",
+      "notKeptDismiss": "Dismiss"
+    },
+    "modeLabel": "Comment visibility",
+    "recipient": {
+      "emails": "Emails {{recipient}}",
+      "none": "No requester email on file. The reply is saved to the ticket and nobody is emailed."
     }
   },
   "ticketFeed": {
@@ -175,7 +196,9 @@
       "broken": "Couldn't load {{name}}",
       "open": "Open attachment",
       "remove": "Remove attachment"
-    }
+    },
+    "mergedFrom": "from {{number}}",
+    "mergedFromUnknown": "from a merged ticket"
   },
   "ticketPartsCard": {
     "title": "Parts",
@@ -235,6 +258,8 @@
     },
     "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
     "includedMinutes": "{{hours}} h included in contract",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Each entry bills its minutes rounded to hours (2 decimals) × its rate.",
     "missingRateCount_one": "1 entry has no hourly rate — not counted in the amount above",
     "missingRateCount_other": "{{count}} entries have no hourly rate — not counted in the amount above",
     "deleteEntry": "Delete {{duration}} time entry by {{tech}}",
@@ -333,6 +358,11 @@
     "selectedCount_other": "{{count}} selected",
     "clearSelection": "Clear",
     "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "ticketNotInView": "Ticket {{number}} is not in this view.",
+    "movedToClosed": {
+      "message": "{{status}} — now under {{tab}}",
+      "view": "View in {{tab}}"
+    },
     "ticketingSettings": "Ticketing settings",
     "assignFailed": "Assign failed. Retry.",
     "assignedToYou": "Assigned to you",
@@ -349,6 +379,7 @@
       "triage": "Triage order",
       "newest": "Newest first",
       "oldest": "Oldest first",
+      "updated": "Recently updated",
       "due": "Due date"
     },
     "priority": {
@@ -404,13 +435,28 @@
       "confirm": "Delete tickets"
     },
     "filterByType": "Filter by type",
-    "allTypes": "All types"
+    "allTypes": "All types",
+    "showMerged": "Show merged",
+    "shortcutsButton": "Shortcuts",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, {{priority}} priority",
+      "ticketWithSla": "{{number}} {{subject}}, {{priority}} priority, {{sla}}",
+      "sla": {
+        "ok": "SLA {{relative}} left",
+        "atRisk": "SLA at risk, {{relative}} left",
+        "paused": "SLA paused, {{relative}} left",
+        "breached": "SLA breached"
+      }
+    },
+    "importTickets": "Import tickets",
+    "importedOnly": "Imported only"
   },
   "ticketWorkbench": {
     "notFound": "Ticket not found. It may have been deleted, or you may not have access to it.",
     "loadFailed": "Ticket failed to load.",
     "backToQueue": "Back to queue",
     "ticketSubject": "Ticket subject",
+    "subjectEditButton": "Edit subject",
     "openFullPage": "Open full page",
     "priorityLabel": "Priority",
     "categoryLabel": "Category",
@@ -470,6 +516,91 @@
       "blockedCurrency": "This ticket has {{timeCount}} unbilled time entries and {{partCount}} unbilled parts priced in {{sourceCurrency}}, but {{targetOrg}} bills in {{targetCurrency}}. Bill them first, or move anyway — the amounts stay in {{sourceCurrency}} and can only be invoiced on a {{sourceCurrency}} draft.",
       "acceptCurrency": "I understand these amounts stay in {{sourceCurrency}} and are not converted.",
       "moveAnyway": "Move anyway"
+    },
+    "merge": {
+      "open": "Merge into…",
+      "title": "Merge {{number}} into another ticket",
+      "description": "The comments, time, parts and links of {{number}} move to the ticket you pick. {{number}} is then closed and points at it.",
+      "pickerLabel": "Target ticket",
+      "searchPlaceholder": "Search by number or subject",
+      "pickerHint": "Only open tickets in this organization are listed, oldest first.",
+      "loading": "Loading tickets…",
+      "candidatesFailed": "Could not load tickets. Close the dialog and try again.",
+      "noCandidates": "No other open tickets in this organization.",
+      "previewLoading": "Checking the merge…",
+      "previewFailed": "Could not check this merge. Pick the ticket again to retry.",
+      "side": {
+        "source": "This ticket",
+        "survivor": "The target",
+        "both": "Both tickets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "A ticket cannot be merged into itself.",
+        "MERGE_CROSS_ORG": "Both tickets must belong to the same organization.",
+        "MERGE_SOURCE_INELIGIBLE": "This ticket cannot be merged (it is deleted or already merged).",
+        "MERGE_SURVIVOR_INELIGIBLE": "The target cannot receive a merge (it is closed, deleted or already merged).",
+        "MERGE_DELIVERABLE_PINNED": "A ticket pinned to a service deliverable cannot be merged.",
+        "MERGE_IMPORT_WINDOW": "A ticket in an open import window cannot be merged.",
+        "MERGE_APPROVAL_STATE": "Tickets with approval requests or a budget cannot be merged.",
+        "MERGE_WORK_KIND_MISMATCH": "Support and project work cannot be merged together.",
+        "MERGE_PENDING_INTENTS": "This ticket has pending AI actions. Wait for them to finish or cancel them.",
+        "ORG_MERGING": "This organization is being merged. Try again later.",
+        "MERGE_SCOPE_DENIED": "You do not have access to a device or site on one of these tickets."
+      },
+      "suggested": "{{number}} is older; it is usually the one to keep.",
+      "movesTo": "Moves to {{number}}",
+      "nothingMoves": "Nothing else moves.",
+      "counts": {
+        "ticket_comments": "Comments: {{count}}",
+        "time_entries": "Time entries: {{count}}",
+        "ticket_parts": "Parts: {{count}}",
+        "ticket_alert_links": "Alert links: {{count}}",
+        "ticket_attachments": "Attachments: {{count}}",
+        "ticket_email_links": "Email links: {{count}}",
+        "ticket_checklist_items": "Checklist items: {{count}}",
+        "ticket_external_refs": "External references: {{count}}",
+        "ticket_links": "Ticket links: {{count}}",
+        "device_vulnerabilities": "Vulnerabilities: {{count}}",
+        "organization_key_dates": "Key-date reminders: {{count}}",
+        "service_deliverable_occurrences": "Deliverable occurrences: {{count}}",
+        "ai_operator_task_targets": "AI task targets: {{count}}",
+        "ticket_drafts": "Drafts discarded: {{count}}"
+      },
+      "droppedHeading": "Links that are dropped",
+      "dropped": {
+        "between_pair": "link between the two tickets",
+        "pair_unique": "duplicate of a link the target already has",
+        "self": "would point at itself",
+        "canonical_duplicate": "duplicate after re-ordering",
+        "cycle": "would create a cycle",
+        "limit": "over the per-ticket link limit"
+      },
+      "retained": "Stays on {{number}}: {{name}}",
+      "anIntegration": "an integration",
+      "device": {
+        "keeps": "The merged ticket keeps {{device}}.",
+        "takes": "The merged ticket takes {{device}}.",
+        "unknown": "another device"
+      },
+      "requesterAccess": "The requester of {{source}} will see the public thread of {{survivor}} in the portal and can reply there.",
+      "notify": "Email the requester of {{number}} that their request was merged",
+      "noRequester": "{{number}} has no requester to email.",
+      "warning": "This cannot be undone. {{source}} becomes read-only and points at {{survivor}}.",
+      "confirm": "Merge",
+      "merging": "Merging…",
+      "failed": "Merge failed. Try again.",
+      "merged": "Merged into {{number}}",
+      "mfaRequired": "Merging tickets requires multi-factor authentication. Sign in again with MFA and retry.",
+      "alreadyMerged": "One of these tickets was already merged. Pick another target.",
+      "retry": "These tickets changed while merging. Try again."
+    },
+    "mergedBanner": {
+      "mergedInto": "This ticket was merged into {{number}} on {{date}}.",
+      "pending": "This ticket was merged into another ticket on {{date}}.",
+      "deleted": "This ticket was merged on {{date}} into a ticket that was deleted or that you cannot see.",
+      "open": "Open {{number}}",
+      "readOnly": "Merged tickets are read-only. Reply on the ticket it was merged into.",
+      "railReadOnly": "Time, billing and parts are read-only on a merged ticket. Log time and parts on the ticket it was merged into."
     },
     "triage": {
       "title": "Suggested triage",
@@ -744,6 +875,64 @@
       "SELF_LINK": "A ticket cannot be linked to itself.",
       "NOT_FOUND": "That ticket was not found or is no longer available.",
       "LINK_GONE": "That link was already removed."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Ticket navigation",
+    "backTo": "Back to {{tab}}",
+    "position": "{{index}} of {{total}}",
+    "previous": "Previous ticket",
+    "next": "Next ticket",
+    "more": "More actions",
+    "sections": "Ticket sections",
+    "tabs": {
+      "conversation": "Conversation",
+      "details": "Details"
+    },
+    "descriptionAria": "Request from {{author}}",
+    "invoiceDialogTitle": "Some work was not invoiced",
+    "nextOffer": {
+      "label": "Next",
+      "open": "Open",
+      "openAria": "Open {{number}} {{subject}}",
+      "atRisk": "At risk · {{relative}} left",
+      "noSla": "No SLA"
+    },
+    "requester": {
+      "noEmail": "No email on file"
+    },
+    "endpoint": {
+      "noDevice": "No device linked",
+      "lastSeen": "last seen {{ago}}",
+      "loading": "Loading the device",
+      "loadFailed": "The device's live state could not load.",
+      "os": "Operating system",
+      "signedIn": "Signed in",
+      "nobodySignedIn": "No one signed in",
+      "lastUser": "Last user {{user}}",
+      "activeAlerts": "Active alerts",
+      "noAlerts": "No active alerts",
+      "alertsFailed": "Alerts could not load.",
+      "untitledAlert": "Untitled alert",
+      "userSignedIn": "{{user}} signed in",
+      "alertCount": "{{count}} alerts",
+      "alertCount_one": "{{count}} alert",
+      "alertCount_other": "{{count}} alerts",
+      "openDetails": "{{device}}: open the device details"
+    },
+    "details": {
+      "properties": "Properties",
+      "logged": "{{time}} logged",
+      "partCount": "{{count}} parts",
+      "partCount_one": "{{count}} part",
+      "partCount_other": "{{count}} parts",
+      "pendingApprovals": "{{count}} pending",
+      "pendingApprovals_one": "{{count}} pending",
+      "pendingApprovals_other": "{{count}} pending",
+      "linkCount": "{{count}} linked",
+      "linkCount_one": "{{count}} linked",
+      "linkCount_other": "{{count}} linked",
+      "approvals": "Approvals"
     }
   }
 }

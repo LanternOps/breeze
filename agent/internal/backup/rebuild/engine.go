@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // runState is the engine's resumable on-disk state: which phases already
@@ -76,20 +78,15 @@ type run struct {
 	espLetterRelease func() error
 
 	staging string
-	// Mounts are tracked in three groups so teardown can unmount safely
+	// Mounts are tracked in two groups so teardown can unmount safely
 	// AND deterministically: rootMount (the disk's root partition, mounted
 	// at r.staging itself) must always be the very LAST thing unmounted —
 	// every other mount point here is nested inside it. treeMounts (the
 	// rest of mountTree's real partition mounts — /boot, /boot/efi, ...) is
-	// unmounted first, deepest (mount order) last-appended first. mounts
-	// (boot()'s chroot-prep bind mounts: /dev, /proc, /sys, /run,
-	// optionally efivars) is unmounted next, in its own reverse order.
-	// Neither group nests inside the other, so their relative order
-	// doesn't matter for safety — only that both finish before rootMount.
+	// unmounted first, deepest (mount order) last-appended first.
 	rootMount    string
 	treeMounts   []string
-	mounts       []string // chroot-prep bind mounts, in mount order
-	stateStaging string   // downloaded system-state artifacts
+	stateStaging string // downloaded system-state artifacts
 	// releaseErr is set when teardown could not unmount the root partition
 	// or detach the loop device: the staging image is still live, so
 	// convert must not read it.
@@ -150,6 +147,46 @@ func SetHostPlatformForTest(p string) (restore func()) {
 	return func() { hostPlatform = prev }
 }
 
+// prepareRunDirs makes the engine state directory private (created mode 0700
+// or tightened to it, owned by this process, reached without an untrusted
+// link) and refuses a staging root that other users can write to, or whose
+// parent they can: the Linux engine mounts the rebuilt partitions by path
+// under the staging root.
+func prepareRunDirs(stateDir, stagingRoot string) error {
+	if err := securefs.EnsurePrivateDir(stateDir); err != nil {
+		return fmt.Errorf("rebuild state directory %s: %w", stateDir, err)
+	}
+	for _, dir := range []string{filepath.Dir(stagingRoot), stagingRoot} {
+		info, err := os.Stat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("rebuild staging directory %s: %w", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("rebuild staging directory %s is not a directory", dir)
+		}
+		if writableByOthers(info) {
+			return fmt.Errorf("rebuild staging directory %s is writable by other users", dir)
+		}
+	}
+	return nil
+}
+
+// writableByOthers reports whether info's permission bits let the group or
+// other users write. Windows has no such bits: Go synthesizes them from the
+// read-only attribute, so every writable directory reads as 0777 and the bits
+// say nothing about who else can write. The Linux engine, the only caller,
+// runs on a Windows host only in tests that pin hostPlatform, so there the
+// check is skipped; on Linux and macOS it reads the real mode.
+func writableByOthers(info fs.FileInfo) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	return info.Mode().Perm()&0o022 != 0
+}
+
 // Run executes the eight phases (preflight, provision, restore, boot,
 // identity, encryption, validate, convert). It returns (result, nil) on success and
 // (result, err) on refusal or failure — result is never nil once options
@@ -169,14 +206,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// leftover cleanup, ForceReprovision's state-file removal, the layout
 	// fetch or anything else with a side effect — on every host.
 	if len(opts.DriverDirs) > 0 {
-		ref := &RefusalError{Reason: DriverInjectionUnsupportedReason}
-		now := time.Now().UTC()
-		return &Result{
-			SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity,
-			Status: "refused", Refusal: ref.Reason, PhaseReached: PhasePreflight,
-			Phases:     []PhaseResult{{Phase: PhasePreflight, Status: PhaseRefused, Message: ref.Reason, StartedAt: now, CompletedAt: now}},
-			DurationMs: time.Since(start).Milliseconds(),
-		}, ref
+		return refusedAtStart(opts, start, &RefusalError{Reason: DriverInjectionUnsupportedReason})
+	}
+	// The restored system's own boot tools: same point, same guarantee —
+	// the opt-in is refused before anything with a side effect, on every
+	// host (boot_tools.go).
+	if ref := restoredBootToolsRefusal(opts); ref != nil {
+		return refusedAtStart(opts, start, ref)
 	}
 	if opts.StateDir == "" {
 		if hostPlatform() == "windows" {
@@ -213,6 +249,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		r.warnings = append(r.warnings, w)
 	}
 	r.statePath = filepath.Join(opts.StateDir, fmt.Sprintf("rebuild-%s-%s.json", opts.SnapshotID, targetKey(opts.Target)))
+	if hostPlatform() != "windows" {
+		if err := prepareRunDirs(opts.StateDir, opts.StagingRoot); err != nil {
+			now := time.Now().UTC()
+			r.result.PhaseReached = PhasePreflight
+			r.result.Phases = append(r.result.Phases, PhaseResult{Phase: PhasePreflight, Status: PhaseFailed, Message: err.Error(), StartedAt: now, CompletedAt: now})
+			r.result.Error = err.Error()
+			r.result.DurationMs = time.Since(start).Milliseconds()
+			return r.result, err
+		}
+	}
 	// cleanupLeftovers reads the state file to find a VHDX a crashed run
 	// left attached, so it must run before ForceReprovision discards it.
 	cleanupLeftovers(r)
@@ -307,6 +353,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		_ = os.RemoveAll(restoreWorkRoot(opts.StateDir))
 	}
 	return r.result, nil
+}
+
+// refusedAtStart is Run's result for options refused before any side effect:
+// one refused preflight row and nothing else.
+func refusedAtStart(opts Options, start time.Time, ref *RefusalError) (*Result, error) {
+	now := time.Now().UTC()
+	return &Result{
+		SnapshotID: opts.SnapshotID, Target: opts.Target, Identity: opts.Identity,
+		Status: "refused", Refusal: ref.Reason, RefusalCode: ref.Code, PhaseReached: PhasePreflight,
+		Phases:     []PhaseResult{{Phase: PhasePreflight, Status: PhaseRefused, Message: ref.Reason, StartedAt: now, CompletedAt: now}},
+		DurationMs: time.Since(start).Milliseconds(),
+	}, ref
 }
 
 // reattachForResume dispatches a resumed run's re-mount step to the right
@@ -445,12 +503,6 @@ func (r *run) teardown() {
 		}
 	}
 	r.treeMounts = nil
-	for i := len(r.mounts) - 1; i >= 0; i-- {
-		if err := r.sys.Unmount(ctx, r.mounts[i]); err != nil {
-			r.warn("unmount %s: %v", r.mounts[i], err)
-		}
-	}
-	r.mounts = nil
 	if r.rootMount != "" {
 		if err := r.sys.Unmount(ctx, r.rootMount); err != nil {
 			r.warn("unmount %s: %v", r.rootMount, err)

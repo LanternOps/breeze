@@ -11,6 +11,7 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../../db';
 import { softwareInventory } from '../../../db/schema';
+import { compareVersions } from '../../softwareVersionCompare';
 import type { ConditionHandler } from '../registry';
 import type { ConditionResult } from '../types';
 
@@ -20,36 +21,6 @@ export interface SoftwarePresenceCondition {
   vendor?: string;
   presence: 'installed' | 'not_installed' | 'version_below';
   version?: string;
-}
-
-/**
- * Compare two dotted version strings numerically, segment by segment
- * (missing trailing segments count as 0). Deliberately NOT a lexicographic
- * string comparison: '10.10' < '10.2' lexicographically but is numerically
- * greater, which would make a 'version_below' check breach on a device that
- * is actually up to date.
- *
- * Returns -1/0/1, or `null` if either version has a non-numeric segment —
- * callers must not guess in that case.
- */
-function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
-  const aParts = a.split('.');
-  const bParts = b.split('.');
-  const len = Math.max(aParts.length, bParts.length);
-
-  for (let i = 0; i < len; i++) {
-    const aRaw = aParts[i] ?? '0';
-    const bRaw = bParts[i] ?? '0';
-    if (!/^\d+$/.test(aRaw) || !/^\d+$/.test(bRaw)) {
-      return null;
-    }
-    const aNum = Number.parseInt(aRaw, 10);
-    const bNum = Number.parseInt(bRaw, 10);
-    if (aNum !== bNum) {
-      return aNum < bNum ? -1 : 1;
-    }
-  }
-  return 0;
 }
 
 export const softwarePresenceHandler: ConditionHandler = {

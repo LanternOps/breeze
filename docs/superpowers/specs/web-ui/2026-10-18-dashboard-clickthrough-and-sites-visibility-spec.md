@@ -1,7 +1,8 @@
 # Dashboard click-through contract and Sites visibility
 
 **Date:** 2026-10-18
-**Status:** Draft. Awaiting Todd's decisions (§7).
+**Status:** Approved 2026-10-22 (Todd, Gate A). Decisions recorded in §7.
+**Approval:** approved 2026-10-22 by Todd. All six Open Decisions are decided as recommended (also covers #6720).
 **Issues:** #6721 (anchor), #6720 (co-anchor). Both were filed by Discord triage, and the reporters do not read GitHub.
 This spec does not depend on asking them anything. Every ambiguity is settled in the text or listed as an Open
 Decision.
@@ -481,12 +482,16 @@ unless Todd overrides them.
 - **Recommend (a).** It fixes both the partner discoverability gap and the org-scoped dead end without growing the top
   level.
 
+- **Decided 2026-10-22:** (a). Sites lives in Fleet Management next to Device Groups, and `/settings/sites` is revived.
+
 **2. The Sites entry for partners whose orgs all have one site (Todd).**
 - (a) **Always show**, gated only on `sites:read`.
 - (b) Hide until any reachable org has 2 or more sites. This hides the add-site path, which is the reporter's first
   need.
 - (c) A per-user hide preference. This adds persisted, tenancy-bearing state for a nav item.
 - **Recommend (a).**
+
+- **Decided 2026-10-22:** (a). Always shown, gated only on `sites:read`.
 
 **3. Product analytics for click-through (Todd).**
 - (a) **No telemetry. Judge by §8.1.** Pros: no privacy surface, nothing new for self-hosters to disclose, no CSP or
@@ -498,6 +503,8 @@ unless Todd overrides them.
   first-party data. Cons: a new endpoint and table (tenancy shape, cascade and export registrations) for a vanity
   metric. The UI-flow spec already ruled it out.
 - **Recommend (a)** for this feature, and decide (b) as a separate, product-wide question.
+
+- **Decided 2026-10-22:** (a). No telemetry for this feature. Product analytics stays a separate, product-wide question.
 
 **4. What "Patch compliance %" means (Todd).**
 The dashboard shows an **item** percentage: installed over installed plus pending, with image terms. The `/patches`
@@ -512,6 +519,8 @@ metrics.
 - (c) Keep everything as is. The KPI stays a section link.
 - **Recommend (a).**
 
+- **Decided 2026-10-22:** (a). Patch compliance shows the device percentage everywhere (dashboard KPI, card headline and `/patches`), with a release-note line.
+
 **5. Bulk site move: new endpoint or client loop.**
 - (a) **`POST /devices/bulk/site`** sharing PATCH's move logic, with per-device outcomes. Pros: one round trip, one
   place for checks, the cap and the audit, and usable by MCP and AI tools. Cons: a new route and its contract tests,
@@ -520,6 +529,8 @@ metrics.
   the browser, and not reusable by agents.
 - **Recommend (a).**
 
+- **Decided 2026-10-22:** (a). `POST /devices/bulk/site`.
+
 **6. Whether the Critical and Warnings tiles keep the active-only count.**
 `/alerts/summary` counts `bySeverity` over **active** alerts only. The dashboard's alert feed shows active plus
 acknowledged. The links in §3.2 match the tile (`status=active`).
@@ -527,6 +538,8 @@ acknowledged. The links in §3.2 match the tile (`status=active`).
 - (b) Change the summary to active plus acknowledged. That changes a long-standing number for every user, and the
   §3.2 links would then carry `status=active,acknowledged`.
 - **Recommend (a).** The §3.2 map is written to this default.
+
+- **Decided 2026-10-22:** (a). The tiles stay active-only and link `status=active`.
 
 ## 8. Test and rollout notes
 

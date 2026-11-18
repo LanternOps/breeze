@@ -1,0 +1,51 @@
+[
+  {
+    "pagination": {
+      "current_page": 2,
+      "per_page": 1,
+      "next_link": null,
+      "prev_link": null
+    },
+    "result_set": []
+  },
+  {
+    "pagination": {
+      "current_page": 2,
+      "per_page": 1,
+      "next_link": null,
+      "prev_link": null
+    },
+    "result_set": [
+      {
+        "id": "10002-14",
+        "email": "it@fabrikam.example",
+        "authentication_token": "22222222-2222-4222-8222-222222222222",
+        "organization_id": 502,
+        "plan_id": "100-14",
+        "reseller_token": "99999999-9999-4999-8999-999999999999",
+        "notification_email": [
+          "it@fabrikam.example"
+        ],
+        "external_id": null,
+        "is_business": true,
+        "admin": true,
+        "customer_deactivated": false,
+        "seats_used": 4,
+        "seats_available": 4,
+        "storage_used": 0,
+        "storage_available": 0,
+        "archive": false,
+        "backup_summary": null,
+        "login_disabled": false,
+        "flg_suspended": false,
+        "organization_name": "Fabrikam Law",
+        "auto_license": false,
+        "deactivated_seats": 0,
+        "active_seats": 4,
+        "required_seats": 4,
+        "paid_shared_mailboxes": 0,
+        "free_shared_mailboxes": 0
+      }
+    ]
+  }
+]

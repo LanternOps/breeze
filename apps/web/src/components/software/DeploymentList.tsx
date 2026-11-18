@@ -414,9 +414,6 @@ export default function DeploymentList({
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-muted-foreground">
-                            {item.id}
-                          </p>
                         </td>
                         <td className="px-4 py-3">
                           <span className="rounded-full border px-2 py-1 text-xs font-medium text-muted-foreground">
@@ -458,6 +455,13 @@ export default function DeploymentList({
                                 {progress}%
                               </span>
                             </div>
+                          ) : item.status === "completed" ? (
+                            <span
+                              className="text-xs text-muted-foreground"
+                              data-testid={`deployment-progress-done-${item.id}`}
+                            >
+                              100%
+                            </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">
                               —

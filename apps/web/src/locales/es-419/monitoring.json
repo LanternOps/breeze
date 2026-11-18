@@ -43,6 +43,43 @@
       "description": "Adjunte los monitores integrados a una política."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Activado",
+    "autoResolveOff": "Desactivado",
+    "rearmLabel": "Rearmado",
+    "rearmNewEvidence": "Evidencia nueva",
+    "rearmAfterDelay": "Después de N minutos",
+    "rearmAfterMinutes_one": "Después de {{count}} minuto",
+    "rearmAfterMinutes_other": "Después de {{count}} minutos",
+    "rearmDelayLabel": "Rearmar después de (minutos)",
+    "rearmHelp": "Evidencia nueva: solo un evento que la alerta cerrada no haya visto la vuelve a abrir. Después de N minutos: los eventos más antiguos también pueden volver a abrirla una vez que hayan pasado N minutos desde que se cerró.",
+    "inheritOption": "Heredar ({{value}}, {{source}})",
+    "inheritOptionPlain": "Heredar",
+    "sources": {
+      "org": "Predeterminado de la organización",
+      "partner": "Predeterminado del partner",
+      "builtin": "Predeterminado integrado"
+    },
+    "errors": {
+      "cooldown": "Ingrese un número entero de 0 a 1440.",
+      "cooldownOrInherit": "Ingrese un número entero de 0 a 1440 o deje el campo en blanco para heredarlo.",
+      "rearmDelay": "Ingrese un número entero de minutos de 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valores predeterminados del ciclo de vida",
+    "descriptionPartner": "El valor predeterminado para los monitores de todas las organizaciones. Una organización puede reemplazarlo, y la configuración propia de un monitor prevalece sobre ambos.",
+    "descriptionOrg": "Reemplaza el valor predeterminado del partner para esta organización. Deje un campo en blanco para heredarlo. La configuración propia de un monitor prevalece sobre este valor.",
+    "readOnly": "No tiene permiso para cambiar el valor predeterminado del partner.",
+    "saved": "Valores predeterminados del ciclo de vida guardados",
+    "saveAction": "Guardar valores predeterminados",
+    "overrideCount_one": "{{count}} monitor reemplaza este valor",
+    "overrideCount_other": "{{count}} monitores reemplazan este valor",
+    "errors": {
+      "load": "No se pudieron cargar los valores predeterminados del ciclo de vida.",
+      "save": "No se pudieron guardar los valores predeterminados del ciclo de vida."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor creado y adjuntado a la política",
     "titleNew": "Nuevo monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Qué observar",
-      "noise": "Severidad y ruido",
+      "lifecycle": "Ciclo de vida de la alerta",
       "respond": "Responder",
       "notify": "Notificar",
       "escalate": "Escalar a una persona",
       "deployed": "Desplegado en"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Este monitor reemplaza el valor predeterminado de la organización ({{value}})",
+        "partner": "Este monitor reemplaza el valor predeterminado del partner ({{value}})",
+        "builtin": "Este monitor reemplaza el valor predeterminado integrado ({{value}})",
+        "unknown": "Este monitor reemplaza el valor predeterminado heredado."
+      },
+      "partnerWideHint": "Una organización con su propio valor predeterminado usa ese en lugar del valor heredado que se muestra aquí.",
+      "inheritedUnavailable": "No se pudieron cargar los valores heredados. Aun así, puede guardar.",
+      "windowWarning": "La ventana de eventos ({{window}} min) es más corta que el enfriamiento ({{cooldown}} min). Un evento nuevo durante el enfriamiento puede salir de la ventana antes de que la alerta se vuelva a abrir."
     },
     "tabs": {
       "settings": "Configuración",
@@ -77,7 +125,8 @@
       "recurrenceThreshold": "Escalar después de",
       "recurrenceWindowDays": "episodios dentro de (días)",
       "pauseResponses": "Pausar las respuestas automáticas hasta que una persona las restablezca",
-      "aiAgent": "Agente de IA (habilita respuestas de triaje con IA)"
+      "aiAgent": "Agente de IA (habilita respuestas de triaje con IA)",
+      "psaBoard": "Tablero del PSA para tickets de alertas"
     },
     "deliveryModes": {
       "inherit": "Usar reglas de enrutamiento",
@@ -122,7 +171,8 @@
     "testDialog": {
       "title": "Probar en un dispositivo",
       "selectDevice": "Dispositivo",
-      "run": "Ejecutar prueba"
+      "run": "Ejecutar prueba",
+      "saveToTest": "Guarde para probar sus cambios"
     },
     "deliveryPreview": {
       "selectOrg": "Selecciona una organización para ver la entrega.",
@@ -169,6 +219,23 @@
       "failed": "No se pudieron cargar los activos",
       "orgRequired": "Selecciona una organización como propietaria para vincular un activo.",
       "pingName": "Ping a {{label}}"
+    },
+    "psaBoardDefault": "Usar el tablero predeterminado de la conexión",
+    "psaBoardHelp": "Los tickets de alertas de este monitor se crean en este tablero en lugar del predeterminado de la conexión.",
+    "psaBoardReadOnly": "Los tickets de alertas van al tablero #{{id}} del PSA",
+    "psaBoardUnavailable": "No se pudieron cargar los tableros del PSA, por lo que la sustitución del tablero no está disponible por ahora.",
+    "clearsWhen": {
+      "title": "Se borra cuando",
+      "hint": "Solo se borra con un evento registrado después del evento que activó la alerta.",
+      "noneHint": "No hay una condición de recuperación, así que la alerta se borra cuando el activador deja de coincidir.",
+      "add": "Agregar una condición de recuperación",
+      "removeCondition": "Quitar",
+      "keepCustom": "Conservar la condición personalizada",
+      "customTitle": "Condición de recuperación personalizada (API)",
+      "customHint": "Esta condición se configuró mediante la API y no se puede editar aquí. Al guardar, se conserva tal como está.",
+      "replaceCustom": "Reemplazar",
+      "invalid": "Uno de los valores de la condición de recuperación no es válido.",
+      "customUnusable": "Esta condición no se puede evaluar, así que las alertas de este monitor no se resolverán automáticamente. Reemplázala para solucionarlo."
     }
   },
   "kinds": {
@@ -246,8 +313,8 @@
     "nameserver": "Servidor DNS",
     "degradedIsFailure": "Tratar degradado como falla",
     "maxResponseMs": "Fallar si tarda más de (ms)",
-    "eventLogCollectionNoSource": "Los eventos de Aplicación de nivel Información y Advertencia solo se recopilan de {{providers}}. Los eventos de otros orígenes solo activan esta regla en nivel Error o Crítico.",
-    "eventLogCollectionSourceNotCollected": "El agente no recopila eventos de Aplicación de nivel Información o Advertencia de \"{{source}}\", así que esta regla solo coincidirá con sus eventos de Error o Crítico. Proveedores recopilados: {{providers}}."
+    "eventLogCollectionNoSource": "Los eventos de aplicación de nivel Información y Advertencia solo se recopilan de {{providers}}. Los eventos de otros orígenes solo coinciden con esta regla en los niveles Error o Crítico, a menos que una directiva de configuración de registros de eventos incluya el origen (Directiva de configuración → Registros de eventos → Proveedores de aplicaciones).",
+    "eventLogCollectionSourceNotCollected": "El agente no recopila eventos de aplicación de nivel Información o Advertencia de «{{source}}», a menos que una directiva de configuración de registros de eventos lo incluya (Directiva de configuración → Registros de eventos → Proveedores de aplicaciones). De lo contrario, esta regla solo coincide con sus eventos de Error o Crítico. Proveedores integrados: {{providers}}."
   },
   "operators": {
     "gt": "mayor que",
@@ -332,10 +399,13 @@
     "cancel": "Cancelar",
     "detachConfirm": "¿Separar de {{policy}}?",
     "errors": {
+      "loadGroups": "No se pudieron cargar los grupos de dispositivos.",
       "attach": "No se pudo adjuntar el monitor",
       "detach": "No se pudo separar el monitor",
       "linkedFeature": "Los monitores de esta política provienen de una política de función compartida. Edite esa política o elija otra."
-    }
+    },
+    "partnerWideGroups": "Todas las org. (de todo el socio)",
+    "organizationGroups": "Grupos de la organización"
   },
   "policyTab": {
     "title": "Monitores",

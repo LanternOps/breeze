@@ -27,6 +27,20 @@ export type McpRequestCorrelation = {
   clientInfo: { name: string; version: string | null } | null;
 };
 
+/**
+ * B-W04 (#6158, D-B29): correlation for one release of an `mcp_api` action
+ * intent by the worker. There is no transport request; `requestId` is minted
+ * per release, `creationRequestId` is the intent's correlation_id (the B-W03
+ * requestId of the tools/call that filed it), `principalKey` the origin ref.
+ */
+export type McpReleaseCorrelation = {
+  kind: 'intent_release';
+  requestId: string;
+  intentId: string;
+  creationRequestId: string;
+  principalKey: string;
+};
+
 const CLIENT_INFO_FIELD_MAX = 64;
 const OAUTH_API_KEY_PREFIX = 'oauth:';
 const OAUTH_NO_JTI = 'oauth:no-jti';

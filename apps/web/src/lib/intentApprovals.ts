@@ -137,6 +137,14 @@ export function isSiteCeiling(err: unknown): boolean {
   return errorToken(err) === 'site_ceiling';
 }
 
+/**
+ * A 403 answered when a partner-wide intent is decided by someone without full partner
+ * access. Terminal like `site_ceiling`: only a partner-level approver can decide the card.
+ */
+export function isApproverScopeRequired(err: unknown): boolean {
+  return errorToken(err) === 'approver_scope_required';
+}
+
 /** Bare machine tokens the decide route emits in `error` (no `code`), mapped to
  *  translated copy. Without this the user is shown the literal token. Keys are
  *  spelled out as literals so the i18n key-usage scanner can see them. */
@@ -144,6 +152,7 @@ export function decideErrorCopy(token: string): string | undefined {
   if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
   if (token === 'site_ceiling') return i18n.t('ai:aiApprovalDialog.siteCeiling');
+  if (token === 'approver_scope_required') return i18n.t('ai:aiApprovalDialog.approverScopeRequired');
   // W03 (#5612): the decide route's 422 refusals of a submitted
   // acknowledgedPatterns set — the server re-derives (submitted ∩
   // strict_hits) and refuses either when the viewer may not acknowledge at
@@ -332,6 +341,13 @@ export async function decideIntentApproval(
      * the server refuses both), and never caches a grant it mints.
      */
     freshFactor?: boolean;
+    /**
+     * #9658: the caller shows its own, more specific success toast (the
+     * approvals inbox: "Approved {action} for {org}"), so skip the generic one
+     * here — otherwise one click shows two. Errors and the refused-approve
+     * toast are unaffected.
+     */
+    silentSuccess?: boolean;
   },
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
@@ -468,7 +484,7 @@ export async function decideIntentApproval(
       // No success toast for a refused approve: it is reported as an error
       // below, never as "approved".
       successMessage: (result) =>
-        isRefusedDecision(result)
+        isRefusedDecision(result) || opts?.silentSuccess
           ? ''
           : decision === 'approve'
             ? i18n.t('ai:aiApprovalDialog.approvedToast')

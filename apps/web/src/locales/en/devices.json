@@ -318,6 +318,10 @@
     "generatingToken": "Generating token...",
     "multiFactorAuthenticationIsRequiredTo3": "Multi-factor authentication is required to generate installation tokens.",
     "generateNewToken": "Generate new token",
+    "generateNewLink": "Generate new link",
+    "cliTokenReuse": "Generated earlier. Valid until {{date}}, unless its device enrollments have all been used.",
+    "cliTokenReuseVerified": "Generated earlier. Valid until {{date}}.",
+    "linkReuse": "Generated earlier for {{platform}}. Valid until {{date}}.",
     "generateToken": "Generate token",
     "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
     "cliCommandNeedsToken": "Generate a token first. The install command appears here once a token exists — until then there is nothing to run.",
@@ -354,28 +358,28 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
     "toADifferentSite": "to a different site.",
     "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
-    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Failed to create group",
-    "newDeviceGroup": "New Device Group",
-    "name": "Name",
-    "eGProductionServers": "e.g. Production Servers",
-    "type": "Type",
-    "static": "Static",
-    "dynamic": "Dynamic",
-    "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
-    "devicesAreAutoAssignedBasedOn": "Devices are auto-assigned based on filter rules.",
-    "filterRules": "Filter Rules",
-    "cancel": "Cancel",
-    "creating": "Creating...",
-    "createGroup": "Create Group"
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically.",
+    "bulkIntro": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntro_one": "Move {{count}} selected device to a different site within {{org}}.",
+    "bulkIntro_other": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntroNoOrg": "Move {{count}} selected devices to a different site.",
+    "bulkIntroNoOrg_one": "Move {{count}} selected device to a different site.",
+    "bulkIntroNoOrg_other": "Move {{count}} selected devices to a different site.",
+    "devicesFromSites": "{{count}} devices from {{siteCount}} sites",
+    "devicesFromSites_one": "{{count}} device from {{siteCount}} sites",
+    "devicesFromSites_other": "{{count}} devices from {{siteCount}} sites",
+    "selectSite": "Select a site",
+    "moveDevices": "Move {{count}} devices",
+    "moveDevices_one": "Move {{count}} device",
+    "moveDevices_other": "Move {{count}} devices",
+    "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
+    "failedToMoveDevices": "Couldn't move the devices. Try again."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
@@ -429,6 +433,18 @@
         "title": "Remove Device",
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
+      },
+      "forcePermanentDelete": {
+        "confirm": "Delete anyway",
+        "reason": {
+          "agentReturned": "An uninstall completed earlier, but the agent has checked in since (it was reinstalled).",
+          "cancelled": "The agent uninstall was cancelled before it ran.",
+          "expired": "The agent never came back to collect the uninstall before it expired.",
+          "failed": "The uninstall command ran on the device but reported a failure.",
+          "none": "No agent uninstall was queued for this device (it was removed with the agent left installed)."
+        },
+        "risk": "Deleting {{hostname}} now can leave the agent installed and running with nobody managing it. This cannot be undone.",
+        "title": "The agent did not confirm removal"
       },
       "permanentDelete": {
         "title": "Delete {{hostname}} permanently?",
@@ -485,6 +501,10 @@
     "reRunAgentInventoryCollectorsSo": "Collect fresh inventory now",
     "refresh": "Refresh",
     "reboot": "Reboot",
+    "forceRebootNow": "Force reboot now",
+    "forceRebootHint": "Reboot immediately and close running apps. Unsaved work is lost.",
+    "forceRebootAgentUpgradeRequired": "Agent upgrade required: force reboot needs agent {{version}} or later",
+    "forceRebootQueued": "Force reboot queued for {{hostname}}. It runs as soon as nothing else is running on the device.",
     "wake": "Wake",
     "rebootToSafeMode": "Reboot to Safe Mode",
     "deploySoftware": "Deploy Software",
@@ -501,7 +521,10 @@
     "shutdown": "Shutdown",
     "deviceSettings": "Device Settings",
     "installHomebrew": "Install Homebrew",
-    "restartAgent": "Restart agent"
+    "restartAgent": "Restart agent",
+    "runVendorUpdates": "Run vendor updates",
+    "runVendorUpdatesHint": "Run the manufacturer's update tool on this device.",
+    "runVendorUpdatesAgentUpgradeRequired": "Agent upgrade required: vendor updates need agent {{version}} or later"
   },
   "deviceActivityFeed": {
     "activity": "Activity",
@@ -857,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "No compliance results reported. Assign a Configuration Policy with compliance rules to this device, or wait for the next evaluation.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Assign a configuration policy"
+    "assignPolicy": "Assign a configuration policy",
+    "notCollectedProbeLimit": "Not collected (probe limit)",
+    "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
@@ -938,6 +963,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
+    "backupRunning": "Backup running",
+    "backupRunningTooltip": "A backup is running on this device. Open the Backup tab to see its progress.",
     "restartScheduled": "Restart scheduled",
     "restartInProgress": "Restarting",
     "restartScheduledFor": "Restart scheduled for {{time}}",
@@ -948,6 +975,7 @@
     "restartCannotBePostponed": "Cannot be postponed",
     "restartSourcePatchJob": "Requested by a patch installation",
     "restartSourceMaintenanceWindow": "Requested by a maintenance window",
+    "restartSourceOemUpdates": "Requested by a vendor update run",
     "restartSourceManual": "Requested by a technician",
     "restartSourceUnknown": "Scheduled restart",
     "agentV": "Agent v",
@@ -958,8 +986,8 @@
     "strip": "strip",
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
-    "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "operatorTasks": "AI Tasks",
+    "operatorTasksForThisDevice": "AI tasks for this device",
     "tabGroups": {
       "monitoring": "Monitoring",
       "inventory": "Inventory",
@@ -1031,7 +1059,13 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
-    }
+    },
+    "containment": {
+      "extraDestinations": "Extra destinations while isolated",
+      "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
+    },
+    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
+    "featureOverriddenBy": "Overridden by {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1340,7 +1374,14 @@
     "assignAPolicyTo": "Assign a policy to",
     "policy2": "Policy",
     "selectAPolicy": "Select a policy",
-    "applying": "Applying..."
+    "applying": "Applying...",
+    "ownerFilterAll": "All groups",
+    "ownerFilterOrganization": "Organization groups",
+    "ownerFilterPartner": "All orgs",
+    "noGroupsMatchFilter": "No groups match this filter.",
+    "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
+    "partnerDynamicType": "Dynamic · All orgs",
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",
@@ -1356,6 +1397,7 @@
     "drive": "Drive",
     "size": "Size",
     "used": "Used",
+    "usedPercent": "Used %",
     "health": "Health",
     "noDiskInventoryReported": "No disk inventory reported.",
     "networkAdapters": "Network Adapters",
@@ -1390,7 +1432,24 @@
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
+      "webview2Outdated": "Breeze Assist is installed but the agent does not start it (since {{since}}): this device's WebView2 Runtime is older than Breeze Assist needs. Prompts use the standard Windows dialogs until the WebView2 Runtime is updated. The agent log names the version it found.",
+      "crashLoop": "Breeze Assist kept closing right after it started (since {{since}}), so the agent stopped restarting it. It tries again after 6 hours, or as soon as a new Breeze Assist version is installed. The agent log has the exit codes.",
+      "unmanagedInstall": "Breeze Assist on this device was not installed by Breeze (since {{since}}). Deploy is off in this device's policy, so the agent leaves this copy alone: it does not start, update or remove it. Turn deploy on to have the agent manage it.",
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
+    },
+    "assistStatus": {
+      "label": "Breeze Assist",
+      "installed": "Installed",
+      "unavailable": "Unavailable: {{reason}}",
+      "notDeployed": "Not deployed",
+      "reason": {
+        "webview2Outdated": "WebView2 Runtime too old",
+        "crashLoop": "keeps closing",
+        "unmanagedInstall": "not installed by Breeze",
+        "awaitingServerOffer": "not installed yet",
+        "installAbandoned": "install failed",
+        "unknown": "see the agent log"
+      }
     },
     "watchdogInstall": {
       "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run <code>breeze-agent service install --watchdog</code> on the host to retry.",
@@ -1407,6 +1466,19 @@
         "locked": "another install was already in progress",
         "unknown": "an unrecognized error occurred"
       }
+    },
+    "controlPlaneBlock": {
+      "title": "Blocked by a network filter",
+      "titleUntrustedCertificate": "Server certificate not trusted",
+      "webFilter": "A network security filter on this device's network is answering in place of the Breeze server ({{locationHost}}). This is usually an ISP gateway security feature, a firewall web filter, or a network sign-in page.",
+      "captivePortal": "This device's network is holding connections at a sign-in (captive portal) page.",
+      "plaintextUnknown": "Something on this device's network answered the Breeze connection with plain HTTP instead of TLS.",
+      "untrustedCertificate": "The connection to the Breeze server presented a certificate this device does not trust (issued by {{certIssuer}}). This is usually TLS inspection by a firewall or proxy, a certificate problem on a self-hosted server, or an out-of-date trusted-root store on this device. Breeze will not bypass it.",
+      "viaEch": "Currently reachable via Encrypted Client Hello.",
+      "cleared": "Was blocked from {{from}} to {{to}}.",
+      "lastKnown": "Last reported {{time}}. The device has not reported since, so this may no longer apply.",
+      "howToFix": "How to fix",
+      "noDetail": "no detail"
     },
     "logShipping": {
       "label": "Log shipping",
@@ -1454,6 +1526,7 @@
     "cancel": "Cancel",
     "editDisplayName": "Edit display name",
     "serialNumber": "Serial Number",
+    "productSku": "Product Number",
     "manufacturer": "Manufacturer",
     "model": "Model",
     "deviceRole": "Device Role",
@@ -1603,6 +1676,12 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Disk Usage",
+    "diskUsageScope": "Disks to display",
+    "allDisks": "All disks",
+    "osDiskOnly": "OS disk only",
+    "sortByDiskUsage": "Sort by disk usage (highest displayed usage)",
+    "osDiskUsageUnavailable": "The agent has not identified the system disk yet.",
     "selectedComposition": "{{agent}} agent, {{network}} network",
     "agentOnlyBulkAction": "Applies to agent devices only",
     "eligibleOfSelected": "{{count}} of {{total}}",
@@ -1623,6 +1702,8 @@
       "ram": "RAM %",
       "lastSeen": "Last Seen",
       "serial": "Serial",
+      "productSku": "Product Number",
+      "hardwareModel": "Model",
       "assetTag": "Asset Tag",
       "location": "Location",
       "source": "Source"
@@ -1640,6 +1721,8 @@
       "ram": "Sort by RAM usage",
       "lastSeen": "Sort by last seen time",
       "serial": "Sort by serial number",
+      "productSku": "Sort by product number",
+      "hardwareModel": "Sort by model",
       "assetTag": "Sort by asset tag",
       "location": "Sort by location",
       "source": "Sort by source"
@@ -1715,6 +1798,11 @@
     "on": "on",
     "multiBootMachinesTuckExpectedOffline": "Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list.",
     "collapseLinkedInactiveProfiles": "Collapse linked inactive profiles",
+    "exportCsv": "Export CSV",
+    "exportCsvSelected": "Export CSV ({{count}} selected)",
+    "exportingCsv": "Exporting…",
+    "exportCsvFailed": "Couldn't export the device list. Try again.",
+    "exportCsvAttentionPartial": "Exported, but open alerts and tickets could not be loaded for some devices — those cells say \"unavailable\".",
     "columns": "Columns",
     "visibleInOrder": "Visible (in order)",
     "moveUp": "Move up",
@@ -1783,11 +1871,18 @@
     "updateStuckTooltip": "This device has been retrying its agent update to {{target}} for over an hour without converging.",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
     "helperNotInstalled": "Not installed",
+    "helperUnavailable": "Assist unavailable",
     "helperInstallIssueTooltip": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed: the server has offered no Breeze Assist version for this device to install.",
       "installAbandoned": "Breeze Assist is enabled but not installed: installing the offered version failed repeatedly and retries are paused.",
+      "webview2Outdated": "Breeze Assist is installed but not started: the device's WebView2 Runtime is too old.",
+      "crashLoop": "Breeze Assist kept closing right after it started; the agent tries again after 6 hours.",
+      "unmanagedInstall": "Breeze Assist was not installed by Breeze and deploy is off, so the agent leaves it alone.",
       "unknown": "Breeze Assist is enabled but not installed."
     },
+    "controlPlaneBlockBadge": "Network filter",
+    "controlPlaneBlockBadgeCertificate": "Certificate not trusted",
+    "controlPlaneBlockLastKnownTooltip": "Last reported {{time}}; the device has not reported since.",
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",
@@ -1839,7 +1934,14 @@
     },
     "countLine_one": "{{shown}} of {{count}} device",
     "countLine_other": "{{shown}} of {{count}} devices",
-    "noMatchesTitle": "No devices match these filters"
+    "noMatchesTitle": "No devices match these filters",
+    "moveToSite": "Move to site",
+    "moveSelectedToSite": "Move to site",
+    "moveSiteMixedOrgs": "Selected devices belong to more than one organization",
+    "moveSiteOverCap": "Select at most {{count}} devices to move at once",
+    "addToGroup": "Add to group…",
+    "removeFromGroup": "Remove from group…",
+    "groupMembershipOverCap": "Select at most {{count}} devices to change group membership at once"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -1861,7 +1963,10 @@
     "s": "s",
     "loadingDeviceLogs": "Loading device logs...",
     "noLogsMatchTheSelectedFilters": "No logs match the selected filters.",
-    "noDeviceLogsRecordedYet": "No device logs recorded yet."
+    "noDeviceLogsRecordedYet": "No device logs recorded yet.",
+    "linkedWindow": "Showing the reliability scoring window {{from}} – {{to}}",
+    "linkedWindowWithSource": "Showing the reliability scoring window {{from}} – {{to}} for {{source}}",
+    "clearLinkedFilter": "Clear link filter"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Loading management posture...",
@@ -1943,6 +2048,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",
@@ -2016,11 +2122,14 @@
     "loading": "Loading patch status...",
     "notDownloadedTitle": "Not yet downloaded -- install will take longer",
     "notices": {
+      "installCommandEnded": "The install command ended ({{status}}) before the device reported a result. Check the device's command history for details.",
+      "installFinishedWithIssues": "Install finished: {{installed}} installed, {{failed}} failed, {{awaitingRestart}} awaiting a restart, {{unresolved}} not yet confirmed. Check the patch rows for details.",
       "installLongerThanExpected": "Install is taking longer than expected. macOS updates can take 30+ minutes. Refresh the page later to check status.",
       "installPatchFailed": "Failed to install {{name}}",
       "installPatchQueued": "Install queued for \"{{name}}\"",
       "installPatchQueuedDetail": "Install queued for \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} queued for {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Could not check the install status: the patch list failed to load. Refresh the page to see the latest status.",
       "installedSuccessfully": "{{installed}} patch(es) installed successfully. {{pending}} still pending.",
       "installingPolling": "Installing patches... Polling for updates.",
       "noPendingForLabel": "No pending patches available for {{label}}.",
@@ -2062,10 +2171,14 @@
       "deferredUntil": "Auto-approves {{date}}",
       "deferredUntilTitle": "Update ring {{ring}} holds new patches for its deferral window. This one is approved on {{date}} and installs with the next scheduled patch run after that.",
       "excluded": "Excluded by policy",
+      "managedByVendorUpdates": "Managed by Vendor updates",
+      "managedByVendorUpdatesTitle": "The manufacturer's update tool delivers this on this device, so scheduled patch runs skip it.",
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedUserScopeTitle": "Not installable: this is a per-user install that Breeze cannot apply yet, so no patch run will install it.",
+      "excludedFeatureUpdateTitle": "Update ring {{ring}} blocks this Windows feature release (or pins devices to a different one), so scheduled patch runs skip it.",
       "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
@@ -2097,9 +2210,9 @@
       "disk": "Disk",
       "download": "Download",
       "ram": "RAM",
-      "readThroughput": "Read Throughput",
+      "readThroughput": "Read throughput",
       "upload": "Upload",
-      "writeThroughput": "Write Throughput"
+      "writeThroughput": "Write throughput"
     },
     "networkBandwidth": "Network Bandwidth",
     "title": "Performance Graphs",
@@ -2146,7 +2259,7 @@
   "devicePlaybookHistory": {
     "duration": "Duration: {{duration}}",
     "empty": "No playbook executions found for this device.",
-    "emptyHelp": "Playbooks can be triggered via the AI assistant to automate remediation tasks.",
+    "emptyHelp": "Playbooks can be triggered via Breeze AI to automate remediation tasks.",
     "loading": "Loading playbook history...",
     "noStepResults": "No step results recorded.",
     "rollbackExecuted": "Rollback was executed",
@@ -2281,7 +2394,11 @@
       "savedNotActive": "Marker saved. A later marker is still in effect, so the score didn't change.",
       "clearNotFound": "This marker no longer exists.",
       "clearAlreadyCleared": "This marker was already cleared."
-    }
+    },
+    "eventLogLinkExact": "View in event log",
+    "eventLogLinkWindow": "Open event log",
+    "eventLogLinkTitle": "Event log, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Event log for {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copy to clipboard",
@@ -2339,7 +2456,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2361,7 +2480,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",
@@ -2432,9 +2557,9 @@
       "couldNotQueue": "{{action}} could not be queued",
       "updateVersionQueued": "Update to {{version}} queued for \"{{name}}\""
     },
-    "uninstallTitle": "Uninstall Title",
+    "uninstallTitle": "Uninstall this package",
     "unknownSoftware": "Unknown software",
-    "updateTitle": "Update Title",
+    "updateTitle": "Queue an update for this package",
     "updatesAvailable": "{{count}} updates available",
     "updatesAvailable_one": "{{count}} update available",
     "updatesAvailable_other": "{{count}} updates available"
@@ -2466,7 +2591,7 @@
       "load": "Load",
       "mitigate": "Mitigate",
       "reopen": "Reopen",
-      "scheduleRemediation": "Schedule Remediation"
+      "scheduleRemediation": "Failed to schedule remediation"
     },
     "groupSummary": "{{cves}} CVEs · {{findings}} findings · {{patchReady}} patch-ready",
     "hideFindings": "Hide Findings",
@@ -2491,7 +2616,7 @@
     "showFindings": "Show Findings",
     "stats": {
       "accepted": "Accepted",
-      "kev": "Kev",
+      "kev": "Known exploited",
       "mitigated": "Mitigated",
       "open": "Open",
       "patchReady": "Patch Ready",
@@ -2509,9 +2634,9 @@
     "statusLabel": "Status Label",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
-      "cvss": "Cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Severity",
       "status": "Status"
@@ -2552,9 +2677,18 @@
       "refreshFailed": "Warranty refresh failed: {{error}}",
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
-      "updated": "Warranty information updated."
+      "updated": "Warranty information updated.",
+      "agentCollected": "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      "noVendorLookupKept": "No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept."
     },
-    "lookUp": "Look up"
+    "lookUp": "Look up",
+    "sources": {
+      "agentCmsl": "Agent (HP CMSL)",
+      "agentPlist": "Agent (macOS plist)",
+      "import": "Imported",
+      "importVendorEarlier": "Imported (vendor reports earlier end date)",
+      "provider": "Vendor API"
+    }
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -2566,7 +2700,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
-    "importFromRmm": "Import from another RMM",
+    "importFromRmm": "Import custom fields from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",
@@ -2604,13 +2738,17 @@
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "agentOnlyActionManual": "This action applies to agent devices only. Manual assets have no agent.",
-      "alreadyPendingTail": "Already Pending Tail",
-      "bulkActionFailed": "Bulk Action Failed",
+      "alreadyPendingTail": ", {{count}} already pending",
+      "bulkActionFailed": "Failed bulk {{action}}",
       "bulkMaintenanceSuccess": "{{count}} devices {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_one": "{{count}} device {{verb}} maintenance mode",
       "bulkMaintenanceSuccess_other": "{{count}} devices {{verb}} maintenance mode",
       "bulkPurgeFailed": "Permanent delete failed: {{reason}}",
-      "bulkPurgeNoneDeleted": "No device was deleted: {{reasons}}",
+      "bulkPurgeNoneDeleted": "No device was deleted. {{reasons}}",
+      "bulkPurgeSkipOther_one": "{{count}} skipped with reason {{code}}.",
+      "bulkPurgeSkipOther_other": "{{count}} skipped with reason {{code}}.",
+      "bulkPurgeSkipUninstallNotConfirmed_one": "{{count}} skipped because its agent never confirmed the uninstall. Delete it on its own from the device page.",
+      "bulkPurgeSkipUninstallNotConfirmed_other": "{{count}} skipped because their agents never confirmed the uninstall. Delete them one at a time from the device page.",
       "bulkWakeAllFailed": "Bulk Wake All Failed",
       "bulkWakeSent": "Bulk Wake Sent",
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
@@ -2622,18 +2760,18 @@
       "decommissionFailed": "Remove Failed",
       "decommissioned": "Removed",
       "decommissioning": "Removing",
-      "deleteFailed": "Delete Failed",
+      "deleteFailed": "Failed to delete {{hostname}}",
       "deviceError": "Device Error",
-      "deviceOnline": "Device Online",
-      "inventoryRefreshRequested": "Inventory Refresh Requested",
+      "deviceOnline": "{{hostname}} is now online.",
+      "inventoryRefreshRequested": "Inventory refresh requested for {{hostname}}. Fresh data in 1–2 minutes.",
       "listTruncated": "List Truncated",
       "maintenanceOff": "Maintenance Off",
       "maintenanceOn": "Maintenance On",
-      "multibootLinked": "Multiboot Linked",
+      "multibootLinked": "Linked {{count}} devices as multi-boot profiles.",
       "networkSkipped_one": "1 network device skipped — this action applies to agent devices only.",
       "networkSkipped_other": "{{count}} network devices skipped — this action applies to agent devices only.",
       "networkSkipped": "{{count}} network devices skipped — this action applies to agent devices only.",
-      "permanentDeleteCancelled": "Permanent Delete Cancelled",
+      "permanentDeleteCancelled": "Permanent delete cancelled",
       "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} permanently deleted",
       "queuedOfflineTail": ", {{count}} queued for offline devices",
@@ -2641,15 +2779,15 @@
       "restored": "Restored",
       "runsWhenOnline": "Runs when the device is online — expires {{date}}",
       "runsWhenOnlineNoExpiry": "Runs when the device is online",
-      "scriptQueueFailed": "Script Queue Failed",
-      "scriptQueuedMany": "Script Queued Many",
-      "scriptQueuedOne": "Script Queued One",
-      "selectDeviceForScript": "Select Device For Script",
-      "selectTwoForMultiboot": "Select Two For Multiboot",
-      "unknownAction": "Unknown Action",
-      "unknownBulkAction": "Unknown Bulk Action",
-      "wakeSentWatching": "Wake Sent Watching",
-      "wakeTimeout": "Wake Timeout",
+      "scriptQueueFailed": "Failed to queue script",
+      "scriptQueuedMany": "Script \"{{script}}\" queued for {{count}} devices",
+      "scriptQueuedOne": "Script \"{{script}}\" queued for {{hostname}}",
+      "selectDeviceForScript": "Select at least one device to run a script",
+      "selectTwoForMultiboot": "Select at least two devices to link as multi-boot profiles.",
+      "unknownAction": "Unknown action: {{action}}",
+      "unknownBulkAction": "Unknown bulk action: {{action}}",
+      "wakeSentWatching": "Wake-on-LAN sent to {{hostname}} via {{relay}} ({{broadcast}}). Watching for it to come online…",
+      "wakeTimeout": "{{hostname}} did not come online within 4 minutes. Check ethernet + BIOS WoL.",
       "deleteManualFailed": "Failed to delete {{hostname}}.",
       "mfaRequired": "This action requires multi-factor authentication. Please sign in again.",
       "manualDeleted": "Deleted {{hostname}}.",
@@ -2677,8 +2815,8 @@
       "bulkMaintenanceSomeFailed_other": "{{count}} devices {{verb}} maintenance mode; {{failed}} failed: {{devices}}",
       "bulkPurgeDone_one": "{{count}} device permanently deleted",
       "bulkPurgeDone_other": "{{count}} devices permanently deleted",
-      "bulkPurgeDoneWithSkips_one": "{{count}} device permanently deleted; {{skipped}} skipped ({{reasons}})",
-      "bulkPurgeDoneWithSkips_other": "{{count}} devices permanently deleted; {{skipped}} skipped ({{reasons}})",
+      "bulkPurgeDoneWithSkips_one": "{{count}} device permanently deleted; {{reasons}}",
+      "bulkPurgeDoneWithSkips_other": "{{count}} devices permanently deleted; {{reasons}}",
       "bulkPurgeStarted_one": "Permanently deleting {{count}} device…",
       "bulkPurgeStarted_other": "Permanently deleting {{count}} devices…",
       "bulkRestoreAllFailed_one": "Failed to restore {{count}} device",
@@ -2688,7 +2826,23 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} device had already received the uninstall — that machine may need the agent reinstalled.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} devices had already received the uninstall — those machines may need the agent reinstalled.",
       "bulkRestored_one": "{{count}} device restored",
-      "bulkRestored_other": "{{count}} devices restored"
+      "bulkRestored_other": "{{count}} devices restored",
+      "bulkMoveSiteSuccess": "{{count}} devices are now at {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} device is now at {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} devices are now at {{site}}",
+      "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (its site changed after the list loaded; the list has been refreshed, so try again)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (you do not have access to its site or to the target site)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
+      "deviceMovedToSite": "{{hostname}} moved to a new site",
+      "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} skipped by Wake-on-LAN policy",
+      "bulkWakeAllBlockedByPolicy": "No wake sent: {{count}} blocked by Wake-on-LAN policy",
+      "bulkWakeLookupFailedSkipped": "{{count}} could not be checked, try again",
+      "bulkWakeAllLookupFailed": "No wake sent: {{count}} could not be checked, try again",
+      "scriptQueuedOneOffline": "Script \"{{script}}\" queued for {{hostname}} — runs when the device reconnects"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",
@@ -2726,7 +2880,20 @@
     "emptyOrgTitleUnnamed": "No devices in this organization yet",
     "emptyOrgDescription": "Install the agent on a machine in this organization to start monitoring it, or switch to all organizations to see the rest of your fleet.",
     "viewAllOrganizations": "View all organizations",
-    "importFromRmmShort": "Import"
+    "importFromRmmShort": "Import",
+    "wakeSkipReasons": {
+      "online": "already online",
+      "relayUnavailable": "with no online peer at their site",
+      "missingMac": "with no MAC on file (agent has not checked in)",
+      "missingSubnet": "with no usable IPv4 history",
+      "ipv6": "with IPv6 history only",
+      "relayDisconnected": "had relay disconnect mid-dispatch — retry",
+      "missingTarget": "not found or access denied",
+      "removed": "removed",
+      "invalidRelay": "with invalid relay override",
+      "policyNotReady": "blocked by their Wake-on-LAN policy (not ready)",
+      "policyLookupFailed": "whose Wake-on-LAN policy could not be checked — retry"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Add filter",
@@ -2800,9 +2967,21 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      },
+      "helperVersion": "Helper Version",
+      "deviceFunction": "Device Function",
+      "hostsWorkloads": "Hosts Workloads",
+      "workloadRuntimes": "Workload Runtimes",
+      "warranty": {
+        "status": "Warranty Status"
+      }
     }
   },
   "filterChipBar": {
@@ -2870,9 +3049,14 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      }
     }
   },
   "filterHelpPopover": {
@@ -2888,8 +3072,10 @@
     "title": "Filter shortcuts"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Pick a value to see matching devices",
     "counting": "…counting",
-    "matches": "~{{count}} devices match",
+    "matches_one": "~{{count}} device matches",
+    "matches_other": "~{{count}} devices match",
     "unavailable": "preview unavailable"
   },
   "filterSentenceBuilder": {
@@ -2957,9 +3143,14 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
-      "logShippingFailing": "Log Shipping Failing"
+      "logShippingFailing": "Log Shipping Failing",
+      "networkIsolation": {
+        "active": "Isolated"
+      }
     }
   },
   "filterValueEditor": {
@@ -3028,6 +3219,29 @@
     "submitting": "Working…",
     "cancel": "Cancel",
     "genericError": "Failed to start maintenance mode."
+  },
+  "forceRebootDialog": {
+    "title": "Force reboot now",
+    "description": "Reboots {{hostname}} immediately and closes any running apps, instead of waiting for them.",
+    "hostnameLabel": "Device",
+    "osLabel": "Operating system",
+    "commandLabel": "Command",
+    "noEffectOnOs": "On {{os}} a reboot never waits for apps, so this is the same as a normal immediate reboot.",
+    "warning": "Unsaved work in open apps on this device will be lost. The reboot still waits for any command already running on the device.",
+    "typeHostname": "Type {{hostname}} to confirm",
+    "stepUpHeading": "Confirm your identity",
+    "stepUpPasskeyNote": "You will confirm with your passkey.",
+    "stepUpCodeLabel": "Authenticator code",
+    "noStepUpFactor": "Add an authenticator app or a passkey to your account before you force reboot a device.",
+    "mfaRequired": "Finish the MFA sign-in first, then try again.",
+    "stepUpFailed": "Verification didn't go through. Enter a new code and try again.",
+    "deviceOffline": "This device is not online. A force reboot is only sent to a device that is online now.",
+    "agentUpgradeRequired": "This device's agent is too old for a force reboot. Update the agent first.",
+    "genericError": "The force reboot could not be sent.",
+    "cancel": "Cancel",
+    "confirm": "Force reboot now",
+    "submitStepUp": "Verify and force reboot",
+    "submitting": "Sending…"
   },
   "moveDeviceOrgDialog": {
     "title": "Move to another organization",
@@ -3454,6 +3668,8 @@
     "health": {
       "empty": {
         "title": "Nothing is being monitored yet",
+        "titleWithCheck": "No SNMP health data",
+        "descriptionWithCheck": "A network check is active for this device, so reachability is still tracked. Turn on SNMP to also collect health data.",
         "action": "Set up monitoring",
         "benefit": {
           "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",
@@ -3553,9 +3769,9 @@
       "noneRecorded": "No process samples have been recorded for this device yet. The agent collects them periodically — check back once it has reported."
     },
     "errors": {
-      "liveProcesses": "Live Processes",
-      "loadProcesses": "Load Processes",
-      "processSample": "Process Sample"
+      "liveProcesses": "Failed to fetch live processes",
+      "loadProcesses": "Failed to load processes",
+      "processSample": "Failed to fetch process sample"
     },
     "live": "Live",
     "subtitle": {
@@ -3616,6 +3832,7 @@
     "deleteTitle": "Delete \"{{name}}\"",
     "empty": "No saved views yet. Build a filter, then save it as a view.",
     "manageAll": "Manage all views",
+    "ownerOrgHint": "Views belong to one organization. Choose which one owns this view.",
     "saveCurrent": "Save current as view…",
     "saveCurrentTitle": "Save the current filter as a view",
     "setDefaultTitle": "Set as default view",
@@ -3674,7 +3891,11 @@
     "oldDeviceUnavailable": "The old device record is no longer available.",
     "title": "Possible duplicate enrollment",
     "unknownDevice": "the previous device",
-    "viewOldDevice": "View old device"
+    "viewOldDevice": "View old device",
+    "reattach": "Reattach",
+    "reattachPending": "A reattach onto the old record is pending: the new install completes it when its agent checks in. The request expires {{expiresAt}}.",
+    "reviewPending": "A possible reinstall awaits partner review.",
+    "reattachPendingOther": "A reattach of this device is pending. The request expires {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Remote-access security findings could not be loaded for this view.",
@@ -4087,7 +4308,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Device limit reached",
       "STEP_UP_REQUIRED": "Confirmation required",
       "ASSIGNMENT_FAILED": "Failed"
-    }
+    },
+    "modeLegend": "What to do with this device",
+    "modeAssign": "Assign as a new device",
+    "modeReattach": "Reattach to {{hostname}} (a reinstall of an existing record)",
+    "reattachPending": "A reattach of this device is pending: its new install completes it when its agent checks in. The request expires {{expiresAt}}.",
+    "cancelReattachConfirm": "Assigning this device as new cancels its pending reattach. I understand."
   },
   "timeFleet": {
     "title": "Time synchronization",
@@ -4217,6 +4443,7 @@
       "pending": "Not checked yet",
       "private": "Private registry — credentials required",
       "unsupported_registry": "Registry not supported",
+      "provenance_unknown": "Provenance unknown — the image name is not sent to any registry",
       "error": "Registry check failed — will retry",
       "behind": "A newer image is published for this tag",
       "current": "Matches the registry",
@@ -4546,5 +4773,416 @@
     "untitledAlert": "Alert reported",
     "alertsUnavailable": "Couldn't load open alerts",
     "viewAlerts": "View alerts"
+  },
+  "physicalPlacementCard": {
+    "title": "Physical placement",
+    "room": "Room",
+    "rack": "Rack",
+    "rackUnit": "Rack unit",
+    "heightU": "Height (U)",
+    "add": "Add placement",
+    "edit": "Edit",
+    "save": "Save",
+    "saving": "Saving...",
+    "cancel": "Cancel",
+    "remove": "Remove placement",
+    "loadFailed": "Couldn't load physical placement.",
+    "linkedNotice": "This asset is linked to a managed device. Edit the placement on <deviceLink>{{name}}</deviceLink>.",
+    "openDevice": "the device",
+    "removeConfirm": {
+      "title": "Remove physical placement?",
+      "message": "This clears the room, rack, rack unit and height for this asset."
+    },
+    "validation": {
+      "roomTooLong": "Room must be at most 255 characters.",
+      "rackTooLong": "Rack must be at most 128 characters.",
+      "unitRange": "Enter a whole number from 1 to 100."
+    },
+    "toasts": {
+      "saved": "Physical placement saved",
+      "removed": "Physical placement removed",
+      "saveFailed": "Couldn't save the physical placement",
+      "concurrent": "The placement was changed elsewhere. The latest values were reloaded; try again.",
+      "authorityDevice": "This asset is now linked to a managed device. Edit the placement on the device.",
+      "mfaRequired": "Multi-factor authentication is required to change the physical placement."
+    }
+  },
+  "assetCircuitCard": {
+    "title": "WAN and circuit",
+    "loadFailed": "Couldn't load WAN and circuit information.",
+    "empty": "No circuit is recorded or visible to you for this asset.",
+    "provider": "Provider",
+    "cid": "Circuit ID",
+    "bandwidth": "Bandwidth",
+    "serviceType": "Service type",
+    "administrativeStatus": "Administrative status",
+    "sitesServed": "Sites served by this circuit",
+    "terminationSite": "Termination site: {{site}} (from {{asset}} / {{iface}})",
+    "terminationSiteBare": "Termination site: {{site}}",
+    "terminationUnassigned": "Termination not assigned",
+    "terminationNeedsReassociation": "Termination needs reassociation",
+    "interfaces": "Interfaces",
+    "noInterfaces": "No interfaces recorded.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Retired",
+    "markWan": "Mark as WAN",
+    "unmarkWan": "Clear WAN",
+    "truncated": "Only some interfaces are shown.",
+    "unmarkConfirm": {
+      "title": "Clear WAN role?",
+      "message": "{{name}} will no longer be treated as a WAN interface."
+    },
+    "status": {
+      "active": "Active",
+      "planned": "Planned",
+      "suspended": "Suspended",
+      "disconnected": "Disconnected"
+    },
+    "toasts": {
+      "marked": "Interface marked as WAN",
+      "unmarked": "WAN role cleared",
+      "failed": "Couldn't update the WAN role",
+      "mfaRequired": "Multi-factor authentication is required to change the WAN role.",
+      "hasTermination": "This interface has an active circuit termination. Move or remove the termination first.",
+      "retired": "This interface is retired and can no longer be changed.",
+      "notFound": "Interface not found. The list was reloaded.",
+      "permissionDenied": "You don't have permission to change topology."
+    }
+  },
+  "partnerGroups": {
+    "ownerScope": "Group owner",
+    "organization": "This organization",
+    "partner": "All organizations",
+    "dynamicOnly": "partner-wide, dynamic only",
+    "scopeHint": "Membership is evaluated in every organization you manage; static membership, sites and group/organization filter conditions are not available.",
+    "allOrgs": "All orgs",
+    "pending": "Updating membership…",
+    "current": "Last evaluated {{time}}",
+    "notEvaluated": "Not evaluated yet",
+    "partial_one": "{{count}} org not evaluated · last good evaluation {{time}}",
+    "partial_other": "{{count}} orgs not evaluated · last good evaluation {{time}}",
+    "retryHint": "Breeze retries these organizations automatically. Saving the group's filter starts a new evaluation.",
+    "showMembers": "Show members",
+    "hideMembers": "Hide members",
+    "device": "Device",
+    "organizationColumn": "Organization",
+    "status": "Status",
+    "loading": "Loading members…",
+    "membersError": "Failed to load group members.",
+    "retry": "Retry",
+    "emptyMembers": "No devices in this group."
+  },
+  "bulkGroupMembership": {
+    "titleAdd": "Add to group",
+    "titleRemove": "Remove from group",
+    "selectionSummary": "Selected devices: {{n}} · Organization: {{org}}",
+    "groupLabel": "Static group",
+    "selectGroup": "Select a group",
+    "loadingGroups": "Loading groups…",
+    "noGroups": "No static group in this organization can take this selection.",
+    "scopeHint": "Only static groups of this organization are listed. A site group is listed only when every selected device is at that site. Dynamic groups are not listed: their rules decide who is a member.",
+    "cancel": "Cancel",
+    "saving": "Saving…",
+    "submitAdd": "Add devices",
+    "submitRemove": "Remove devices",
+    "failedToLoadGroups": "Could not load the groups of this organization. Close the dialog and try again.",
+    "failedToUpdate": "Failed to update group membership",
+    "addResult": "{{group}}: {{added}} added, {{skipped}} already in the group",
+    "removeResult": "{{group}}: {{removed}} removed, {{notMember}} were not in the group",
+    "removeResultForbidden": "{{group}}: {{removed}} removed, {{notMember}} were not in the group. Not removed (no access to the device's site): {{devices}}",
+    "andMore": "{{names}} and {{n}} more"
+  },
+  "networkIsolation": {
+    "heading": "Network isolation",
+    "isolate": "Isolate from network…",
+    "release": "Release isolation…",
+    "release_queued": "Release (queued until the device reconnects)",
+    "startTitle": "Isolate from network",
+    "releaseTitle": "Release network isolation",
+    "startDescription": "Block network traffic except the Breeze management plane.",
+    "releaseDescription": "Request removal of Breeze isolation rules. An offline device receives the release when it reconnects.",
+    "serverWarning": "This is a server OS. Isolation can interrupt services for other devices.",
+    "deadManUnsupported": "This device's containment policy sets a dead-man release, but its agent version does not support it. The device will be isolated without one.",
+    "reason": "Reason",
+    "ttlHours": "Duration (hours)",
+    "incidentId": "Existing incident ID (optional)",
+    "incidentTitle": "New incident title",
+    "remoteRelay": "Keep remote desktop reachable through the relay",
+    "startSuccess": "Network isolation requested",
+    "releaseSuccess": "Isolation release requested",
+    "mutationError": "Could not update network isolation. Try again.",
+    "loadError": "Could not load network isolation. Try again.",
+    "unavailable": "Network isolation eligibility is unavailable.",
+    "extend": "Extend isolation",
+    "extendTitle": "Extend network isolation",
+    "extendSuccess": "Isolation expiry extended",
+    "isolatedExpires": "Isolated · expires in {{hours}} h",
+    "acknowledge": "Acknowledge local release",
+    "acknowledgeSuccess": "Local release acknowledged",
+    "acknowledgeError": "Could not acknowledge the local release",
+    "showCode": "Show break-glass codes",
+    "hideCode": "Hide break-glass codes",
+    "codeCurrent": "Current code",
+    "codeNext": "Next-hour code",
+    "codeValidUntil": "Current code valid until {{date}}",
+    "codeError": "Could not load the break-glass codes. Try again.",
+    "tabCode": "Break-glass code",
+    "tabToken": "Release token",
+    "issueToken": "Issue release token",
+    "hideToken": "Hide token",
+    "tokenLabel": "Release token",
+    "copyToken": "Copy token",
+    "tokenCopied": "Copied",
+    "tokenCopyError": "Could not copy the token. Select it and copy it manually.",
+    "tokenQrAlt": "QR code containing the release token",
+    "tokenValidUntil": "Token valid until {{date}}",
+    "tokenCommandHint": "On the isolated device, run this command as Administrator or root, replacing <token> with the token:",
+    "tokenError": "Could not issue a release token. Try again.",
+    "tokenUnavailable": "A release token is not available for this isolation episode.",
+    "codesDisabledNote": "Break-glass codes are turned off for this device. Use a signed release token instead.",
+    "incidentHeading": "Network isolation",
+    "retry": "Retry isolation status",
+    "filterLabel": "Isolated",
+    "states": {
+      "requested": "Isolation requested",
+      "dispatched": "Isolation dispatched",
+      "applying": "Applying isolation",
+      "applied": "Verifying isolation",
+      "verified": "Isolation verified",
+      "release_requested": "Release requested",
+      "released": "Isolation released",
+      "expired": "Isolation expired",
+      "failed": "Isolation failed",
+      "released_locally": "Released locally · acknowledgement needed",
+      "self_released": "Self-released · acknowledgement needed",
+      "uninstalled": "Agent uninstalled"
+    },
+    "refusal": {
+      "feature_disabled": "New network isolations are disabled.",
+      "partner_not_enabled": "Network isolation is not enabled for this partner.",
+      "agent_below_gate": "Update to an agent version that supports network isolation.",
+      "agent_not_ready": "The agent is not ready to enforce network isolation.",
+      "device_lifecycle": "This device’s lifecycle status prevents a new isolation.",
+      "unsupported_platform": "This platform does not support network isolation.",
+      "trust_restricted": "The partner’s trust status prevents new isolations.",
+      "isolation_already_active": "This device already has an active isolation episode.",
+      "isolation_unacknowledged": "Acknowledge the previous local release before starting another isolation.",
+      "incident_mismatch": "Choose an open incident belonging to this device’s organization.",
+      "site_forbidden": "You do not have access to this device’s site.",
+      "device_not_found": "This device could not be found.",
+      "isolation_not_found": "This isolation episode could not be found.",
+      "relay_unavailable": "A remote desktop relay is not available. Disable the relay option or configure TURN.",
+      "invalid_allowlist": "The server’s isolation allowlist is invalid. Contact your administrator.",
+      "invalid_allowlist_server_url_missing": "This device has no agent server URL and AGENT_SERVER_URL is not set on the server. Set AGENT_SERVER_URL, then try again.",
+      "invalid_allowlist_server_url_invalid": "The agent server URL for this device is not a valid http(s) URL. Check the device’s server URL or AGENT_SERVER_URL.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL is not a valid http(s) URL. Correct it and try again.",
+      "invalid_allowlist_relay_config_invalid": "The TURN relay settings (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) are invalid. Correct them or turn off the relay option.",
+      "invalid_allowlist_policy_invalid": "The saved containment policy has an invalid or oversized allowlist entry. Review the policy’s allowed destinations.",
+      "isolation_conflict": "The isolation episode changed. Refresh its status and try again.",
+      "isolation_secret_unavailable": "Recovery codes are temporarily unavailable. Contact your administrator.",
+      "approval_mismatch": "The approval does not match this isolation request.",
+      "device_offline": "The device is offline. Refresh its status before starting isolation.",
+      "device_decommissioned": "A decommissioned device cannot start a new isolation.",
+      "device_pending_assignment": "Assign this device to an organization before starting isolation.",
+      "backup_helper_update_required": "Update the backup helper before starting isolation."
+    }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Run vendor updates",
+    "description": "Runs the {{vendor}} update tool on {{hostname}} now. It can install drivers and applications, and flash BIOS and firmware.",
+    "rebootLegend": "If the updates need a restart",
+    "whenFinishedLabel": "Reboot when finished",
+    "whenFinishedDescription": "Breeze restarts the device after the run, with the warning its patch policy sets. BIOS and firmware updates are included.",
+    "leaveToMeLabel": "Leave reboot to me",
+    "leaveToMeDescription": "Breeze does not restart the device. Someone restarts it later to finish the updates.",
+    "skippedNote": "BIOS and firmware updates are skipped with this choice, because they need a restart Breeze controls. Drivers and applications still run.",
+    "confirm": "Run updates",
+    "submitting": "Starting...",
+    "cancel": "Cancel",
+    "genericError": "Could not start vendor updates on this device.",
+    "queued": "Vendor updates started on {{hostname}}.",
+    "queuedSkipped": "Vendor updates started on {{hostname}}. BIOS and firmware were skipped.",
+    "refusal": {
+      "flagOff": "Vendor updates are not turned on for this organization.",
+      "laneClosed": "Vendor updates are not available yet for this device's manufacturer.",
+      "killSwitch": "Vendor updates are paused for this device's manufacturer.",
+      "agentTooOld": "This device's agent is too old for vendor updates. Update the agent to {{version}} or later.",
+      "notApplicable": "Vendor updates do not apply to this device.",
+      "notSupported": "The vendor's tool does not support this model.",
+      "ephemeral": "Vendor updates do not run on Quick Support devices.",
+      "parked": "Assign this device to an organization before running vendor updates.",
+      "offline": "The device is not online. Vendor updates only start on a device that is online now.",
+      "runInFlight": "A vendor update run is already in progress on this device.",
+      "noOpenCategories": "Nothing can run with this choice. BIOS and firmware are all that is available here: choose Reboot when finished.",
+      "decommissioned": "This device is decommissioned, so nothing can be sent to it.",
+      "cancelledAtClaim": "The run was cancelled before it reached the device. Try again."
+    }
+  },
+  "vendorUpdates": {
+    "title": "Vendor updates",
+    "refreshState": "Refresh",
+    "loadError": "Could not load vendor updates for this device.",
+    "retryLoad": "Try again",
+    "empty": "No vendor update has run on this device yet.",
+    "state": {
+      "upToDate": "Up to date",
+      "overdue": "Overdue",
+      "failing": "Failing",
+      "notSupported": "Not supported",
+      "notManaged": "Not managed",
+      "waitingForReboot": "Waiting for restart",
+      "rebootOverdue": "Restart overdue"
+    },
+    "stateDescription": {
+      "upToDate": "The last scheduled run finished.",
+      "overdue": "No run has finished since the schedule came due.",
+      "failing": "The last run did not finish. See below for what to do.",
+      "notSupported": "The vendor's tool does not support this model.",
+      "notManaged": "No policy schedules vendor updates here. You can still run them on demand.",
+      "notOffered": "Vendor updates are not available on this device right now.",
+      "waitingForReboot": "Updates are installed and take effect after the next restart.",
+      "rebootOverdue": "A restart has been waiting for more than three days."
+    },
+    "lastRunHeading": "Last run",
+    "outcomeLabel": "Outcome",
+    "noOutcomeYet": "Waiting for the device to report",
+    "errorCodeLabel": "Error code",
+    "toolVersionLabel": "Tool version",
+    "lastAttemptLabel": "Started",
+    "installedLabel": "Installed",
+    "failedLabel": "Failed",
+    "rebootLabel": "Restart",
+    "rebootPendingSince": "Restart needed since {{date}}",
+    "rebootNotNeeded": "No restart needed",
+    "outcome": {
+      "success": "Success",
+      "successRebootRequired": "Success, restart needed",
+      "noUpdates": "No updates found",
+      "partial": "Partly installed",
+      "failed": "Did not finish",
+      "notSupported": "Model not supported",
+      "toolUnavailable": "Tool unavailable",
+      "blockedOnBattery": "Blocked: on battery",
+      "blockedRebootPending": "Blocked: restart pending",
+      "blockedNoRecoveryKey": "Blocked: no recovery key",
+      "retryLater": "Will try again",
+      "interrupted": "Interrupted"
+    },
+    "outcomeHelp": {
+      "partial": "Some updates installed and some did not. Check the failed items below, then run vendor updates again.",
+      "failed": "The vendor's tool did not finish. Check the error code, then run vendor updates again.",
+      "notSupported": "The vendor's tool does not support this model, so Breeze stops asking until the tool version or the model changes.",
+      "toolUnavailable": "The vendor's update tool is not installed and could not be fetched. Check that the device can reach the vendor's download site.",
+      "blockedOnBattery": "BIOS and firmware only run on AC power with enough battery. Plug the device in, then run vendor updates again.",
+      "blockedRebootPending": "The device already has a restart waiting. Once it has restarted, run vendor updates again.",
+      "blockedNoRecoveryKey": "BIOS and firmware stay blocked until Breeze holds this device's current BitLocker recovery key. Back up the key to Breeze, then run vendor updates again.",
+      "retryLater": "The vendor's tool asked to try again later. Breeze did not change anything on the device.",
+      "interrupted": "The run stopped before it finished, usually because the device restarted or the agent stopped. Run vendor updates again."
+    },
+    "categoriesHeading": "What can run on this device",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Firmware",
+      "driver": "Drivers",
+      "application": "Applications"
+    },
+    "gateOpen": "Available",
+    "gateClosed": "Not available yet on {{vendor}}. Breeze turns on each update type only after testing it on real hardware.",
+    "itemResult": {
+      "installed": "installed",
+      "failed": "failed",
+      "skipped": "skipped"
+    },
+    "history": {
+      "heading": "Run history",
+      "loadError": "Could not load the run history.",
+      "noResult": "No readable result",
+      "bySchedule": "Schedule",
+      "byUnknown": "Unknown",
+      "range": "{{from}}-{{to}} of {{total}}",
+      "previousPage": "Previous",
+      "nextPage": "Next"
+    }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstalled on {{date}}",
+    "title": "This record took over a reinstalled machine on {{at}}. The new install rebuilt its inventory."
+  },
+  "reattachDialog": {
+    "title": "Reattach to {{target}}",
+    "description": "Use the existing record {{target}} for the new install {{source}}, keeping its history, policies and configuration.",
+    "newInstall": "New install",
+    "existingRecord": "Existing record",
+    "holdingArea": "Holding area",
+    "fields": {
+      "hostname": "Hostname",
+      "os": "Operating system",
+      "model": "Manufacturer and model",
+      "serial": "Serial number",
+      "systemUuid": "System UUID",
+      "agentVersion": "Agent version",
+      "place": "Organization / site",
+      "enrolledAt": "Enrolled",
+      "lastSeenAt": "Last seen"
+    },
+    "matchedOn": "Matched on: {{evidence}}",
+    "evidence": {
+      "systemUuid": "system UUID",
+      "serial": "serial number and manufacturer",
+      "hostname": "hostname only",
+      "other": "reported identifiers"
+    },
+    "evidenceNoticeHint": "Hardware identifiers reported by the device. Not verified.",
+    "evidenceNoticeTpm": "Same TPM endorsement key the old install proved possession of. This proves key continuity, not the same physical TPM; cloned virtual TPMs share keys.",
+    "consequences": "The new install rebuilds the inventory of {{target}}. Queued work, grants and sessions of the old install are cancelled, and the {{source}} record is retired.",
+    "possession": "I confirmed, outside Breeze, that the new install runs on the machine {{target}} describes.",
+    "acknowledgeOsChange": "The new install reports {{sourceOs}} and the existing record {{targetOs}}. I confirm the operating system changed.",
+    "restoreDecommissioned": "{{target}} was removed. Restore it as part of this reattach.",
+    "confirmNameLabel": "Type {{hostname}} to confirm",
+    "stepUpHeading": "Confirm it’s you",
+    "stepUpIntro": "Reattaching retires a device record. Verify with your second factor to continue.",
+    "stepUpPasskeyNote": "Your browser will ask for your passkey when you continue.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpRetry": "That verification expired or no longer matches. Enter a new code.",
+    "noStepUpFactor": "Reattaching needs a passkey or an authenticator app. Set one up in your profile, then try again.",
+    "genericError": "The reattach could not be requested. Try again.",
+    "cancel": "Cancel",
+    "close": "Close",
+    "submit": "Reattach to {{hostname}}",
+    "submitting": "Requesting…",
+    "submitStepUp": "Verify and reattach",
+    "requestedToast": "Reattach to {{hostname}} requested",
+    "pendingTitle": "Reattach requested",
+    "pendingMessage": "{{source}} takes over {{target}} the next time its agent checks in; nothing else is needed here. The request expires {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "One of the devices no longer exists or is outside your access.",
+      "not_partner_user": "Only partner users can reattach devices.",
+      "user_inactive": "Your account is not active.",
+      "permission_denied": "You need permission to edit and remove devices in the organizations of both devices.",
+      "org_access_denied": "You do not have access to the organizations of both devices.",
+      "full_admin_required": "Reattaching a device from the holding area on reported identifiers needs a full partner administrator.",
+      "partner_mismatch": "The devices are no longer in your partner.",
+      "MFA_REQUIRED": "Reattaching needs a session signed in with two-factor authentication. Sign in again with your second factor.",
+      "target_alive": "{{hostname}} is still in use: its install authenticated recently. A reattach needs the old install to be silent.",
+      "liveness_unknown": "Whether {{hostname}} is still in use could not be checked. Try again in a moment.",
+      "os_changed": "The operating systems differ. Confirm the operating system change and try again.",
+      "target_changed": "{{hostname}} changed since it was shown (it re-enrolled or was reattached). Open the reattach again to see its current state.",
+      "rebind_unsupported": "The new install’s agent is too old to be reattached. Upgrade the agent first.",
+      "source_decommissioned": "The new install’s record was removed.",
+      "source_ineligible": "This device cannot be reattached: Quick Support devices cannot.",
+      "target_ephemeral": "{{hostname}} is a temporary device and cannot be reattached onto.",
+      "target_decommissioned": "{{hostname}} was removed. Choose to restore it to reattach onto it.",
+      "target_ineligible": "{{hostname}} is not a managed record.",
+      "target_retired": "{{hostname}} was already retired by an earlier reattach.",
+      "device_quarantined": "One of the devices is quarantined.",
+      "device_suspended": "One of the devices has its agent credentials suspended.",
+      "org_draining": "The organization of one of the devices is not active.",
+      "device_in_open_intent": "One of the devices is already in a pending reattach.",
+      "confirm_target_name_required": "Type the existing device’s name to confirm.",
+      "confirm_target_name_mismatch": "The name typed does not match {{hostname}}.",
+      "same_device": "A device cannot be reattached onto itself.",
+      "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
+    },
+    "stepUpHeld": "Your verification is still valid for this reattach."
   }
 }

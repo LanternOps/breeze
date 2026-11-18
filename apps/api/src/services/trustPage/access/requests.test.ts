@@ -193,6 +193,16 @@ describe('verifyAccessRequest', () => {
     createTicket.mockRejectedValueOnce(new Error('service management off'));
     await expect(verifyAccessRequest(RAW, NOW)).resolves.toEqual({ orgName: 'Contoso' });
     expect(createTicket).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', source: 'api' }), expect.objectContaining({ kind: 'system' }));
+    // #8883 W5 T5.4: no hard-coded priority, so a routing rule may set one.
+    expect((createTicket.mock.calls.at(-1) as unknown as [Record<string, unknown>])[0]).not.toHaveProperty('priority');
+  });
+
+  it('files the access-request ticket as the trust_center system source', async () => {
+    script.selects.push([tokenRow], [reqRow], [{ ...pageCtx, createsTicket: true }], []);
+    await expect(verifyAccessRequest(RAW, NOW)).resolves.toEqual({ orgName: 'Contoso' });
+    expect(createTicket).toHaveBeenCalledTimes(1);
+    expect((createTicket.mock.calls.at(-1) as unknown as [unknown, unknown])[1])
+      .toEqual({ kind: 'system', source: 'trust_center', name: 'Trust Center access request' });
   });
 });
 

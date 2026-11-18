@@ -39,7 +39,7 @@
  * integration.test.ts` uses).
  */
 import './setup';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -91,6 +91,12 @@ import {
 } from './db-utils';
 import { approvalRoutes } from '../../routes/approvals';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import { intentOutbox } from '../../db/schema/actionIntents';
+import { flowRuns } from '../../db/schema/flowRuns';
+import { users } from '../../db/schema/users';
+import { buildFlowAuthContext } from '../../services/flows/flowAuthContext';
+import { claimFlowLinkedIntentForDispatch } from '../../services/flows/intentClaim';
+import { parkFlowRunOnIntent, readFlowRunState, seedEnabledFlowRun } from './helpers/flowSeed';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -487,4 +493,230 @@ describe('tier3-supervised-four-eyes split: end-to-end coverage (real Postgres, 
       expect(rows[0]?.userId).toBe(requester.id);
     },
   );
+});
+
+// ============================================================================
+// Tool catalog W04 (#5219), plan Task A5 — a four-eyes FLOW step on a real DB.
+//
+// The run's publication delegator and a manual run's triggerer hold
+// approvals:decide like any admin, yet must never be the second pair of eyes:
+// fan-out leaves them out, the decide path refuses them (server data — the
+// run and its publication), another admin approves, and the durable release
+// worker executes the step through the flow-aware dispatch claim under the
+// FLOW principal. A delegator deactivated while the step waited makes the
+// claim cancel the intent, fail the run and pause the flow.
+// ============================================================================
+describe('four-eyes flow step (#5219): delegator refused, claim, release', () => {
+  const PIN = { stepId: 'offboard', tool: TOOL_NAME, source: 'core', tier: 3, approvalScope: 'four_eyes' } as const;
+
+  // The flow dispatch claim refuses `flows_disabled` while the FLOWS_ENABLED
+  // deployment kill switch is off, so these cases run with it on.
+  let savedFlowsEnabled: string | undefined;
+  beforeAll(() => {
+    savedFlowsEnabled = process.env.FLOWS_ENABLED;
+    process.env.FLOWS_ENABLED = 'true';
+  });
+  afterAll(() => {
+    if (savedFlowsEnabled === undefined) delete process.env.FLOWS_ENABLED;
+    else process.env.FLOWS_ENABLED = savedFlowsEnabled;
+  });
+
+  async function seedFlowScenario(opts: { triggerer?: (s: TwoAdminScenario) => Promise<{ id: string }> } = {}) {
+    const s = await seedTwoAdminScenario();
+    // The dispatch claim re-checks rule 7: the delegator must still hold every
+    // permission a step needs, so the admins' role also carries the step's own.
+    await grantRolePermissions(s.adminRoleId, [GOOGLE_EXECUTE]);
+    // admin1 enabled the flow (the delegator); admin2 is the independent approver.
+    const triggeredByUserId = opts.triggerer ? (await opts.triggerer(s)).id : s.requester.id;
+    const seed = await seedEnabledFlowRun({
+      orgId: s.orgId,
+      partnerId: s.partnerId,
+      delegatorUserId: s.admin1.id,
+      triggeredByUserId,
+      stepId: PIN.stepId,
+      tool: TOOL_NAME,
+      stepInput: { userEmail: 'target@customer.example', reason: 'offboarding' },
+      pin: PIN,
+    });
+    const flowAuth = buildFlowAuthContext(
+      { id: seed.flowId, orgId: s.orgId, partnerId: null, status: 'enabled', name: seed.flowName },
+      { id: seed.runId, orgId: s.orgId, flowId: seed.flowId },
+      { id: s.orgId, partnerId: s.partnerId },
+    );
+    const snapshot = await createActionIntent(flowAuth, {
+      toolName: TOOL_NAME,
+      input: { userEmail: 'target@customer.example', reason: 'offboarding' },
+      source: 'flow',
+      flowRun: {
+        runId: seed.runId,
+        stepRowId: seed.stepRowId,
+        delegatorUserId: s.admin1.id,
+        triggeredByUserId,
+        flowName: seed.flowName,
+        stepId: seed.stepId,
+      },
+    });
+    await parkFlowRunOnIntent(seed, snapshot.id);
+    return { s, seed, snapshot };
+  }
+
+  async function insertApprovalRowFor(userId: string, intentId: string): Promise<string> {
+    const intent = await readIntent(intentId);
+    const [row] = await withSystemDbAccessContext(() =>
+      db.insert(approvalRequests).values({
+        userId,
+        requestingClientLabel: intent.requestingClientLabel ?? 'Flow',
+        actionLabel: 'Step offboard',
+        actionToolName: intent.actionName,
+        actionArguments: intent.arguments,
+        riskTier: 'high',
+        riskSummary: intent.impactSummary,
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        intentId,
+        boundArgumentDigest: intent.argumentDigest,
+        isRecursive: false,
+      }).returning({ id: approvalRequests.id }),
+    );
+    return row!.id;
+  }
+
+  runDb('the flow intent is filed under the run, fans out to neither the delegator nor the triggerer', async () => {
+    const { s, seed, snapshot } = await seedFlowScenario();
+    expect(snapshot.status).toBe('pending_approval');
+    const intent = await readIntent(snapshot.id);
+    expect(intent.source).toBe('flow');
+    expect(intent.originPrincipalKind).toBe('flow');
+    expect(intent.requestingFlowRunId).toBe(seed.runId);
+    expect(intent.requestedByUserId).toBeNull();
+    expect(intent.aiOriginKind).toBe('flow');
+    expect(intent.requestingClientLabel).toBe(`Flow ${seed.flowName}`);
+    const owners = await withSystemDbAccessContext(() =>
+      db.select({ userId: approvalRequests.userId }).from(approvalRequests).where(eq(approvalRequests.intentId, snapshot.id)),
+    );
+    expect(owners.map((r) => r.userId)).toEqual([s.admin2.id]);
+  });
+
+  runDb('the delegator is refused at decide time on a real DB; another admin approves and the flow claim releases it', async () => {
+    const { s, seed, snapshot } = await seedFlowScenario();
+    await seedGoogleConnection(s.orgId);
+
+    // A row for the delegator can only exist by defect or tampering — the
+    // decide-time exclusion is what still refuses it.
+    const delegatorRow = await insertApprovalRowFor(s.admin1.id, snapshot.id);
+    const refused = await approveViaRoute(s.admin1, s.orgId, s.partnerId, s.adminRoleId, delegatorRow);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toBe('self_approval_forbidden');
+    expect((await readIntent(snapshot.id)).status).toBe('pending_approval');
+
+    const [admin2Row] = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id }).from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, snapshot.id), eq(approvalRequests.userId, s.admin2.id))),
+    );
+    const approved = await approveViaRoute(s.admin2, s.orgId, s.partnerId, s.adminRoleId, admin2Row!.id);
+    expect(approved.status).toBe(200);
+    expect((await readIntent(snapshot.id)).status).toBe('approved');
+
+    await releaseApprovedIntent(snapshot.id);
+
+    expect(h.usersUpdate).toHaveBeenCalledTimes(1);
+    const done = await readIntent(snapshot.id);
+    expect(done.status).toBe('completed');
+    // The claim wrote nothing to the run: the runner (Task A8) maps the
+    // intent outcome onto the step on wake.
+    const { run } = await readFlowRunState(seed);
+    expect(run.status).toBe('awaiting_approval');
+
+    // A duplicate delivery is a silent no-op.
+    await expect(claimFlowLinkedIntentForDispatch(snapshot.id)).resolves.toEqual({ claimed: false, reason: 'lost_race' });
+  });
+
+  runDb("the manual run's triggerer is refused at decide time (self_approval_forbidden) even holding approvals:decide; the intent stays pending", async () => {
+    // A third admin with the SAME decide-capable role started the run by hand,
+    // so a refusal can only be the four-eyes triggerer exclusion — never a
+    // missing permission.
+    let triggerer: { id: string; email: string } | undefined;
+    const { s, seed, snapshot } = await seedFlowScenario({
+      triggerer: async (sc) => {
+        const u = await createUser({ partnerId: sc.partnerId, orgId: sc.orgId, email: `admin3-${randomUUID()}@fourEyes.test` });
+        await assignUserToOrganization(u.id, sc.orgId, sc.adminRoleId);
+        triggerer = { id: u.id, email: u.email };
+        return u;
+      },
+    });
+    expect((await readFlowRunState(seed)).run.triggeredByUserId).toBe(triggerer!.id);
+    // Fan-out already leaves the triggerer out of the pool.
+    const owners = await withSystemDbAccessContext(() =>
+      db.select({ userId: approvalRequests.userId }).from(approvalRequests).where(eq(approvalRequests.intentId, snapshot.id)),
+    );
+    expect(owners.map((r) => r.userId)).toEqual([s.admin2.id]);
+
+    // A row for the triggerer can only exist by defect or tampering — the
+    // decide-time exclusion (read from the run, not the caller) still refuses it.
+    const triggererRow = await insertApprovalRowFor(triggerer!.id, snapshot.id);
+    const refused = await approveViaRoute(triggerer!, s.orgId, s.partnerId, s.adminRoleId, triggererRow);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toBe('self_approval_forbidden');
+    expect((await readIntent(snapshot.id)).status).toBe('pending_approval');
+    expect((await readFlowRunState(seed)).run.status).toBe('awaiting_approval');
+
+    // Control: the independent admin with the identical role approves.
+    const [admin2Row] = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id }).from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, snapshot.id), eq(approvalRequests.userId, s.admin2.id))),
+    );
+    expect((await approveViaRoute(s.admin2, s.orgId, s.partnerId, s.adminRoleId, admin2Row!.id)).status).toBe(200);
+    expect((await readIntent(snapshot.id)).status).toBe('approved');
+  });
+
+  runDb('a delegator deactivated while the step waited: the claim cancels the intent, fails the run and pauses the flow', async () => {
+    const { s, seed, snapshot } = await seedFlowScenario();
+    const [admin2Row] = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id }).from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, snapshot.id), eq(approvalRequests.userId, s.admin2.id))),
+    );
+    const approved = await approveViaRoute(s.admin2, s.orgId, s.partnerId, s.adminRoleId, admin2Row!.id);
+    expect(approved.status).toBe(200);
+
+    await withSystemDbAccessContext(() => db.update(users).set({ status: 'disabled' }).where(eq(users.id, s.admin1.id)));
+
+    await expect(claimFlowLinkedIntentForDispatch(snapshot.id)).resolves.toEqual({ claimed: false, reason: 'delegator_inactive' });
+
+    const intent = await readIntent(snapshot.id);
+    expect(intent.status).toBe('cancelled');
+    expect(intent.errorCode).toBe('flow_drift');
+    const { run, step, flow } = await readFlowRunState(seed);
+    expect(run.status).toBe('failed');
+    expect(run.errorCode).toBe('delegator_inactive');
+    expect(run.finishedAt).not.toBeNull();
+    expect(run.wakeAt).toBeNull();
+    expect(step.status).toBe('failed');
+    expect(flow.status).toBe('paused');
+    expect(flow.pausedReason).toBe('delegator_inactive');
+    // The terminal transition wrote its outbox row (the run wake rides it).
+    const outbox = await withSystemDbAccessContext(() =>
+      db.select({ eventType: intentOutbox.eventType }).from(intentOutbox).where(eq(intentOutbox.intentId, snapshot.id)),
+    );
+    expect(outbox.map((r) => r.eventType)).toContain('intent_cancelled');
+
+    // Nothing ran.
+    await releaseApprovedIntent(snapshot.id);
+    expect(h.usersUpdate).not.toHaveBeenCalled();
+  });
+
+  runDb('a run under a live slice lease is run_leased and nothing is written', async () => {
+    const { s, seed, snapshot } = await seedFlowScenario();
+    const [admin2Row] = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id }).from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, snapshot.id), eq(approvalRequests.userId, s.admin2.id))),
+    );
+    expect((await approveViaRoute(s.admin2, s.orgId, s.partnerId, s.adminRoleId, admin2Row!.id)).status).toBe(200);
+    await withSystemDbAccessContext(() => db.update(flowRuns)
+      .set({ leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(flowRuns.id, seed.runId)));
+
+    await expect(claimFlowLinkedIntentForDispatch(snapshot.id)).resolves.toEqual({ claimed: false, reason: 'run_leased' });
+    expect((await readIntent(snapshot.id)).status).toBe('approved');
+    expect((await readFlowRunState(seed)).run.status).toBe('awaiting_approval');
+  });
 });

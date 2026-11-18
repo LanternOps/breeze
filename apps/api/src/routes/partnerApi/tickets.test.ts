@@ -87,6 +87,7 @@ function ticketRow(id: string, changeXid: string, overrides: Record<string, unkn
     dueDate: null, firstResponseAt: null, resolvedAt: null, closedAt: null,
     pendingReason: null, resolutionNote: null, responseSlaMinutes: 60, resolutionSlaMinutes: 480,
     slaBreachedAt: null, slaBreachReason: null, deletedAt: null,
+    mergedIntoTicketId: null, mergedAt: null,
     createdAt: new Date('2026-09-26T12:00:00.000Z'), updatedAt: new Date('2026-09-26T12:30:00.000Z'),
     changeXid,
     ...overrides,
@@ -284,6 +285,22 @@ describe('partner tickets read surface', () => {
     expect((await request('/tickets/not-a-uuid')).status).toBe(404);
   });
 
+  // #8972: a merged ticket stays readable as a tombstone and says where it went.
+  it('GET /tickets/:id and the feed carry mergedIntoTicketId + mergedAt (null on a normal ticket)', async () => {
+    selectResults = [[ticketRow(TICKET_A, '900')]];
+    const normal = partnerTicketRecordResponseSchema.parse(await (await request(`/tickets/${TICKET_A}`)).json());
+    expect(normal.data).toMatchObject({ mergedIntoTicketId: null, mergedAt: null });
+
+    const merged = { mergedIntoTicketId: TICKET_B, mergedAt: new Date('2026-09-27T08:00:00.000Z') };
+    selectResults = [[ticketRow(TICKET_A, '901', merged)]];
+    const one = partnerTicketRecordResponseSchema.parse(await (await request(`/tickets/${TICKET_A}`)).json());
+    expect(one.data).toMatchObject({ mergedIntoTicketId: TICKET_B, mergedAt: '2026-09-27T08:00:00.000Z' });
+
+    selectResults = [[ticketRow(TICKET_A, '902', merged)]];
+    const feed = partnerTicketFeedEnvelopeSchema.parse(await (await request('/tickets')).json());
+    expect(feed.data[0]).toMatchObject({ id: TICKET_A, mergedIntoTicketId: TICKET_B, mergedAt: '2026-09-27T08:00:00.000Z' });
+  });
+
   it('GET /tickets/:id/comments pages in creation order with a keyset cursor, surfaces edits and deletes, after authorizing the ticket', async () => {
     selectResults = [
       [ticketRow(TICKET_A, '900')],
@@ -328,6 +345,26 @@ describe('partner tickets read surface', () => {
   });
 
   // #7900 / #8592 W01: additive field on the read model.
+  // #8973 W3: four read-only, additive stored-deadline fields on every record.
+  it('feed records carry the four stored SLA deadlines', async () => {
+    selectResults = [[ticketRow(TICKET_A, '901', {
+      responseDueAt: new Date('2026-09-26T13:00:00.000Z'),
+      responseWarnAt: new Date('2026-09-26T12:48:00.000Z'),
+      resolutionDueAt: null,
+      resolutionWarnAt: null,
+    })]];
+    const res = await request('/tickets');
+    expect(res.status).toBe(200);
+    const body = partnerTicketFeedEnvelopeSchema.parse(await res.json());
+    expect(body.data[0]).toMatchObject({
+      id: TICKET_A,
+      responseDueAt: '2026-09-26T13:00:00.000Z',
+      responseWarnAt: '2026-09-26T12:48:00.000Z',
+      resolutionDueAt: null,
+      resolutionWarnAt: null,
+    });
+  });
+
   it('feed records carry ticketType', async () => {
     selectResults = [[ticketRow(TICKET_A, '900', { ticketType: 'service_request' })]];
     const res = await request('/tickets');

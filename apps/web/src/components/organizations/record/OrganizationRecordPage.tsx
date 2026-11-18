@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity as ActivityIcon,
@@ -88,6 +89,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   usePageItemName(state.kind === 'loaded' ? state.org.name : undefined);
+  useRecordPageContext(state.kind === 'loaded' ? { kind: 'organization', id: state.org.id, orgId: state.org.id, label: state.org.name } : null);
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -128,6 +130,19 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
   const isOrgScoped = claims.status === 'resolved' && claims.claims.scope === 'organization';
 
+  // `undefined` when a newer read superseded this one, `null` when it failed.
+  const fetchSummary = useCallback(
+    () =>
+      summaryLatest
+        .run(
+          orgFetch(`/orgs/organizations/${orgId}/summary`).then(async (res) =>
+            res.ok ? ((await res.json()) as OrgSummary) : null,
+          ),
+        )
+        .catch(() => null),
+    [orgFetch, orgId, summaryLatest],
+  );
+
   const loadOrg = useCallback(async () => {
     setState({ kind: 'loading' });
     setSummaryFailed(false);
@@ -149,17 +164,29 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
     // notice for `archived` regardless of `summaryFailed`, so the request
     // itself is dead weight (sweep F6).
     if (isArchiveLifecycleOrg(next.org)) return;
-    const nextSummary = await summaryLatest
-      .run(
-        orgFetch(`/orgs/organizations/${orgId}/summary`).then(async (res) =>
-          res.ok ? ((await res.json()) as OrgSummary) : null,
-        ),
-      )
-      .catch(() => null);
+    const nextSummary = await fetchSummary();
     if (nextSummary === undefined) return;
     setSummary(nextSummary);
     setSummaryFailed(nextSummary === null);
-  }, [orgFetch, orgId, orgLatest, summaryLatest]);
+  }, [orgFetch, orgId, orgLatest, fetchSummary]);
+
+  // #9954: the header's primary contact (and the overview's contact count) come
+  // from the summary, read once on load. A write on the Contacts tab re-reads
+  // just the summary — not the record, which would flash the loading state. A
+  // failed refresh keeps the last good summary rather than replacing a correct
+  // header with the overview's error panel.
+  const refreshSummary = useCallback(async () => {
+    const nextSummary = await fetchSummary();
+    if (nextSummary === undefined) return;
+    if (nextSummary === null) {
+      console.error(
+        `[OrganizationRecordPage] summary refresh after a contact change failed for org ${orgId}; the header keeps the last summary until reload`,
+      );
+      return;
+    }
+    setSummary(nextSummary);
+    setSummaryFailed(false);
+  }, [fetchSummary, orgId]);
 
   useEffect(() => {
     if (isOrgScoped) return;
@@ -442,7 +469,9 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           archived={archived}
         />
       )}
-      {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
+      {effectiveTab === 'contacts' && (
+        <ContactsCard orgId={orgId} onContactsChanged={() => void refreshSummary()} />
+      )}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
       {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgName={loadedOrg.name} orgFetch={orgFetch} />}
       {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}

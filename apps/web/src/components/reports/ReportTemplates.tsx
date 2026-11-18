@@ -11,11 +11,14 @@ import {
   KeyRound,
   Laptop,
   Loader2,
+  PiggyBank,
   Plus,
+  Repeat,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   Timer,
+  Trophy,
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -53,6 +56,12 @@ import {
   type IdentityAccessOptions,
 } from './IdentityAccessOptionsForm';
 import {
+  DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS,
+  ticketSlaPerformanceConfigFromOptions,
+  TicketSlaPerformanceOptionsForm,
+  type TicketSlaPerformanceOptions,
+} from './TicketSlaPerformanceOptionsForm';
+import {
   DEFAULT_TICKET_SLA_OPTIONS,
   TicketSlaOptionsForm,
   ticketSlaConfigFromOptions,
@@ -80,6 +89,27 @@ import {
   aiUsageByClientOptionsFromConfig,
   type AiUsageByClientOptions,
 } from './AiUsageByClientOptionsForm';
+import {
+  DEFAULT_MRR_RENEWALS_OPTIONS,
+  MrrRenewalsOptionsForm,
+  mrrRenewalsConfigFromOptions,
+  mrrRenewalsOptionsFromConfig,
+  type MrrRenewalsOptions,
+} from './MrrRenewalsOptionsForm';
+import {
+  DEFAULT_QUOTE_WIN_RATE_OPTIONS,
+  QuoteWinRateOptionsForm,
+  quoteWinRateConfigFromOptions,
+  quoteWinRateOptionsFromConfig,
+  type QuoteWinRateOptions,
+} from './QuoteWinRateOptionsForm';
+import {
+  DEFAULT_CLIENT_PROFITABILITY_OPTIONS,
+  ClientProfitabilityOptionsForm,
+  clientProfitabilityConfigFromOptions,
+  clientProfitabilityOptionsFromConfig,
+  type ClientProfitabilityOptions,
+} from './ClientProfitabilityOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
@@ -92,6 +122,7 @@ import {
   type TemplateDeliveryValue,
 } from './TemplateDeliveryFields';
 import { hasTemplateOptionsForm } from './templateReportTypes';
+import { isSelectorlessOrgReportType } from './businessReportConfig';
 import { showToast } from '../shared/Toast';
 import { ActionError, runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -167,6 +198,10 @@ const reportTypeValues: TemplateReportType[] = [
   'technician_time_billability',
   'ar_aging',
   'ai_usage_by_client',
+  'mrr_renewals',
+  'quote_win_rate',
+  'client_profitability',
+  'ticket_sla_performance',
   'devices',
   'alerts',
   'patches',
@@ -235,6 +270,51 @@ const defaultTemplates: ReportTemplate[] = [
     },
     icon: Sparkles,
     tone: { iconBg: 'bg-violet-500/15', iconColor: 'text-violet-600' },
+    group: 'business'
+  },
+  {
+    id: 'mrr_renewals',
+    name: 'MRR & renewals',
+    description:
+      'Monthly and annual recurring revenue from active contracts, measured on the day the report runs, with the contracts renewing inside the chosen horizon and what has actually been billed as recurring. One set of totals per currency, never converted.',
+    defaults: {
+      name: 'MRR & renewals',
+      type: 'mrr_renewals',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Repeat,
+    tone: { iconBg: 'bg-teal-500/15', iconColor: 'text-teal-600' },
+    group: 'business'
+  },
+  {
+    id: 'quote_win_rate',
+    name: 'Quote win rate',
+    description:
+      'The share of sent quotes that were won, counted per opportunity so a revised and re-sent quote counts once. The headline rate covers decided opportunities only, with the still-open count beside it. Values are pre-tax, one set per currency, never converted.',
+    defaults: {
+      name: 'Quote win rate',
+      type: 'quote_win_rate',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Trophy,
+    tone: { iconBg: 'bg-amber-500/15', iconColor: 'text-amber-600' },
+    group: 'business'
+  },
+  {
+    id: 'client_profitability',
+    name: 'Client profitability',
+    description:
+      'Billed revenue per client for the period by source (recurring, labor, product, AI, other), with the hours logged against it and an optional labor-cost estimate from one blended hourly rate. Figures using that rate are labelled as estimates. One set of totals per currency, never converted.',
+    defaults: {
+      name: 'Client profitability',
+      type: 'client_profitability',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: PiggyBank,
+    tone: { iconBg: 'bg-lime-500/15', iconColor: 'text-lime-600' },
     group: 'business'
   },
   {
@@ -370,6 +450,20 @@ const defaultTemplates: ReportTemplate[] = [
       iconBg: 'bg-sky-500/15',
       iconColor: 'text-sky-600'
     },
+    group: 'general'
+  },
+  {
+    id: 'ticket_sla_performance',
+    name: 'SLA performance',
+    description: 'Customer-ready response and resolution times against SLA, by priority, with breaches.',
+    defaults: {
+      name: 'SLA performance',
+      type: 'ticket_sla_performance',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Timer,
+    tone: { iconBg: 'bg-teal-500/15', iconColor: 'text-teal-600' },
     group: 'general'
   },
   {
@@ -588,12 +682,13 @@ function businessDefaultRange(template: ReportTemplate, t: (key: string) => stri
   const type = template.defaults.type;
   const saved = template.savedBusinessConfig;
   const periodKind = (saved?.period as { kind?: unknown } | undefined)?.kind;
+  if (type === 'mrr_renewals') return t('reports.reportTemplates.spec.asOfRunDate');
   if (type === 'ar_aging') {
     return typeof saved?.asOf === 'string' && saved.asOf
       ? saved.asOf
       : t('reports.reportTemplates.spec.asOfRunDate');
   }
-  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability' || type === 'ai_usage_by_client') {
+  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability' || type === 'ai_usage_by_client' || type === 'quote_win_rate' || type === 'client_profitability' || type === 'ticket_sla_performance') {
     switch (periodKind) {
       case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
       case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
@@ -671,6 +766,8 @@ export default function ReportTemplates() {
   const [backupStatusOptions, setBackupStatusOptions] = useState<BackupStatusOptions>(DEFAULT_BACKUP_STATUS_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+  const [slaPerformanceTemplate, setSlaPerformanceTemplate] = useState<ReportTemplate | null>(null);
+  const [slaPerformanceOptions, setSlaPerformanceOptions] = useState<TicketSlaPerformanceOptions>(DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS);
   // One options modal for the three business report types (#3198 W03); the
   // template's type picks which form it renders.
   const [businessTemplate, setBusinessTemplate] = useState<ReportTemplate | null>(null);
@@ -678,6 +775,9 @@ export default function ReportTemplates() {
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   const [aiUsageOptions, setAiUsageOptions] = useState<AiUsageByClientOptions>(DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
+  const [mrrRenewalsOptions, setMrrRenewalsOptions] = useState<MrrRenewalsOptions>(DEFAULT_MRR_RENEWALS_OPTIONS);
+  const [quoteWinRateOptions, setQuoteWinRateOptions] = useState<QuoteWinRateOptions>(DEFAULT_QUOTE_WIN_RATE_OPTIONS);
+  const [clientProfitabilityOptions, setClientProfitabilityOptions] = useState<ClientProfitabilityOptions>(DEFAULT_CLIENT_PROFITABILITY_OPTIONS);
   // Create-only ownership for the business modal. The selector renders only
   // for a resolved partner-scope token; everyone else creates org-owned.
   const {
@@ -846,7 +946,10 @@ export default function ReportTemplates() {
                 config: isBusiness
                   ? { ...postureConfig }
                   : {
-                      dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
+                      // The same refusal, on an org-owned type that keeps its delivery keys.
+                      ...(isSelectorlessOrgReportType(template.defaults.type)
+                        ? {}
+                        : { dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' } }),
                       ...postureConfig,
                       ...(singleOrg && singleOrg.emailRecipients.length > 0
                         ? { emailRecipients: singleOrg.emailRecipients }
@@ -951,6 +1054,11 @@ export default function ReportTemplates() {
         setIdentityTemplate(template);
         return;
       }
+      if (type === 'ticket_sla_performance') {
+        setSlaPerformanceOptions(DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS);
+        setSlaPerformanceTemplate(template);
+        return;
+      }
       if (isBusinessReportType(type)) {
         // Seeded on every open — never the last submission's values: a saved
         // report opens with the options it stored (the ones its card's Default
@@ -960,6 +1068,9 @@ export default function ReportTemplates() {
         setTechnicianTimeOptions(saved ? technicianTimeOptionsFromConfig(saved) : DEFAULT_TECHNICIAN_TIME_OPTIONS);
         setArAgingOptions(saved ? arAgingOptionsFromConfig(saved) : DEFAULT_AR_AGING_OPTIONS);
         setAiUsageOptions(saved ? aiUsageByClientOptionsFromConfig(saved) : DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
+        setMrrRenewalsOptions(saved ? mrrRenewalsOptionsFromConfig(saved) : DEFAULT_MRR_RENEWALS_OPTIONS);
+        setQuoteWinRateOptions(saved ? quoteWinRateOptionsFromConfig(saved) : DEFAULT_QUOTE_WIN_RATE_OPTIONS);
+        setClientProfitabilityOptions(saved ? clientProfitabilityOptionsFromConfig(saved) : DEFAULT_CLIENT_PROFITABILITY_OPTIONS);
         setOwnerScope(defaultOwnerScope);
         setBusinessTemplate(template);
         return;
@@ -1024,6 +1135,42 @@ export default function ReportTemplates() {
             submitLabel={t('reports.aiUsageByClientOptions.createReport')}
             onSubmit={() => {
               void handleCreateDirect(template, aiUsageByClientConfigFromOptions(aiUsageOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'mrr_renewals':
+        return (
+          <MrrRenewalsOptionsForm
+            {...shared}
+            value={mrrRenewalsOptions}
+            onChange={setMrrRenewalsOptions}
+            submitLabel={t('reports.mrrRenewalsOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, mrrRenewalsConfigFromOptions(mrrRenewalsOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'quote_win_rate':
+        return (
+          <QuoteWinRateOptionsForm
+            {...shared}
+            value={quoteWinRateOptions}
+            onChange={setQuoteWinRateOptions}
+            submitLabel={t('reports.quoteWinRateOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, quoteWinRateConfigFromOptions(quoteWinRateOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'client_profitability':
+        return (
+          <ClientProfitabilityOptionsForm
+            {...shared}
+            value={clientProfitabilityOptions}
+            onChange={setClientProfitabilityOptions}
+            submitLabel={t('reports.clientProfitabilityOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, clientProfitabilityConfigFromOptions(clientProfitabilityOptions), effectiveOwnerScope);
             }}
           />
         );
@@ -1115,7 +1262,10 @@ export default function ReportTemplates() {
         : templates.filter(t => t.group === 'business' && canUseBusinessReportType(t.defaults.type)),
     [templates, isPartnerScope, canUseBusinessReportType]
   );
-  const generalTemplates = useMemo(() => templates.filter(t => t.group !== 'business'), [templates]);
+  const generalTemplates = useMemo(
+    () => templates.filter(t => t.group !== 'business' && canUseBusinessReportType(t.defaults.type)),
+    [templates, canUseBusinessReportType]
+  );
 
   const renderCard = (template: ReportTemplate) => {
     const Icon = template.icon;
@@ -1372,6 +1522,20 @@ export default function ReportTemplates() {
           onCancel={() => setIdentityTemplate(null)}
           onSubmit={() => {
             void handleCreateDirect(identityTemplate, { ...identityOptions }, 'organization', templateDelivery);
+          }}
+        />
+      )}
+
+      {slaPerformanceTemplate && renderTemplateModal(
+        slaPerformanceTemplate,
+        <TicketSlaPerformanceOptionsForm
+          value={slaPerformanceOptions}
+          onChange={setSlaPerformanceOptions}
+          busy={creatingId === slaPerformanceTemplate.id}
+          submitLabel={t('reports.ticketSlaPerformanceOptions.createReport')}
+          onCancel={() => setSlaPerformanceTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(slaPerformanceTemplate, ticketSlaPerformanceConfigFromOptions(slaPerformanceOptions), 'organization', templateDelivery);
           }}
         />
       )}

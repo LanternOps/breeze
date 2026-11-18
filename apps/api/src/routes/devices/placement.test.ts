@@ -83,7 +83,7 @@ describe('GET /devices/:id/placement', () => {
       authority: { kind: 'device', id: DEVICE_ID, linked: false },
       placement: stored,
     });
-    expect(readPlacement).toHaveBeenCalledWith('device', DEVICE_ID);
+    expect(readPlacement).toHaveBeenCalledWith('device', DEVICE_ID, ORG_ID);
   });
 
   it('returns placement null when none is stored', async () => {

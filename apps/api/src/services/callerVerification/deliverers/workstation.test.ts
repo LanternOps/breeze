@@ -211,7 +211,7 @@ describe('deliverWorkstation', () => {
 
   it('claims and pushes the pre-created command id, outside any request context', async () => {
     state.results.push([loaded]);
-    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-1' });
     m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
     await deliverWorkstation(ID);
     expect(m.claim).toHaveBeenCalledWith(CMD);
@@ -220,10 +220,20 @@ describe('deliverWorkstation', () => {
     expect(m.contexts[0]).toBe('outside');
   });
 
+  it('pushes to the agent id read in the claim, not the one loaded before it (#8318 §6.4)', async () => {
+    state.results.push([loaded]); // loaded before the claim: agent-1
+    // A reattach / re-enroll committed between the load and the claim.
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-after-reattach' });
+    m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
+    await deliverWorkstation(ID);
+    expect(m.dispatch).toHaveBeenCalledTimes(1);
+    expect(m.dispatch).toHaveBeenCalledWith('agent-after-reattach', { id: CMD, type: 'caller_verify', payload: loaded.payload });
+  });
+
   it('pushes a stored payload that carries the absolute deadline unchanged (#8668)', async () => {
     const withDeadline = { ...loaded, payload: { ...payload, deadlineAt: '2026-10-16T12:02:00.000Z' } };
     state.results.push([withDeadline]);
-    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-1' });
     m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
     await deliverWorkstation(ID);
     expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: withDeadline.payload });
@@ -238,7 +248,7 @@ describe('deliverWorkstation', () => {
 
   it.each(['offline', 'expired', 'owner_mismatch'])('releases the claim for heartbeat delivery when %s', async (status) => {
     state.results.push([loaded]);
-    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-1' });
     m.dispatch.mockResolvedValue({ status });
     await expect(deliverWorkstation(ID)).resolves.toBeUndefined();
     expect(m.release).toHaveBeenCalledWith(CMD, executedAt);
@@ -246,7 +256,7 @@ describe('deliverWorkstation', () => {
 
   it('keeps an indeterminate send claimed (the frame may have arrived)', async () => {
     state.results.push([loaded]);
-    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-1' });
     m.dispatch.mockResolvedValue({ status: 'indeterminate' });
     await deliverWorkstation(ID);
     expect(m.release).not.toHaveBeenCalled();
@@ -254,7 +264,7 @@ describe('deliverWorkstation', () => {
 
   it('releases and throws on an infrastructure error so the publisher retries the same command', async () => {
     state.results.push([loaded]);
-    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt, agentId: 'agent-1' });
     m.dispatch.mockResolvedValue({ status: 'infrastructure_error', message: 'redis down' });
     await expect(deliverWorkstation(ID)).rejects.toThrow('redis down');
     expect(m.release).toHaveBeenCalledWith(CMD, executedAt);

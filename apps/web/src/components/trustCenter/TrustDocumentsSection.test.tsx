@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 import '@/lib/i18n';
 const api = vi.hoisted(() => ({ updateTrustDocuments: vi.fn() }));
 vi.mock('@/lib/api/trustPage', () => api);
@@ -141,10 +143,78 @@ describe('TrustDocumentsSection', () => {
     await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenCalled());
     expect(await screen.findByTestId('trust-docs-error')).toHaveTextContent(/changed since you loaded it/);
   });
+  it('a 409 shows the inline error and reloads the page state, so the retry carries the fresh revision (#9087)', async () => {
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }));
+    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    expect(await screen.findByTestId('trust-docs-error')).toHaveTextContent(/changed since you loaded it/);
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+  });
+  it('a reload after 409 keeps unsaved links when the saved list did not change (#9087)', async () => {
+    api.updateTrustDocuments
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }))
+      .mockResolvedValue(ok());
+    // The reload hands back a NEW array with the same saved content and a bumped revision (what the tab does).
+    const props = { orgId: 'o1', orgFetch, canWrite: true };
+    let rerenderSection: ReturnType<typeof render>['rerender'] | undefined;
+    const onReload = vi.fn(async () => {
+      rerenderSection?.(<TrustDocumentsSection {...props} documents={[sd('d-pol', 'Security policy', 0)]} onReload={onReload} expectedRevision={3} />);
+    });
+    ({ rerender: rerenderSection } = render(<TrustDocumentsSection {...props} documents={[sd('d-pol', 'Security policy', 0)]} onReload={onReload} expectedRevision={2} />));
+    fireEvent.click(await screen.findByTestId('trust-doc-add-d-ev'));
+    fireEvent.click(screen.getByTestId('trust-doc-disclosure-checkbox'));
+    fireEvent.click(screen.getByTestId('trust-doc-disclosure-confirm'));
+    await screen.findByTestId('trust-doc-linked-d-ev');
+    fireEvent.click(screen.getByTestId('trust-docs-save'));
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    // The unsaved addition survived the re-render, and the retry carries the fresh revision.
+    expect(screen.getByTestId('trust-doc-linked-d-ev')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-doc-linked-d-pol')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('trust-docs-save')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('trust-docs-save'));
+    await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenLastCalledWith(orgFetch, 'o1', [
+      { documentId: 'd-pol', visibility: 'public', disclosureConfirmed: true },
+      { documentId: 'd-ev', visibility: 'public', disclosureConfirmed: true },
+    ], 3));
+  });
+  it('a DOCUMENT_UNAVAILABLE 422 does not reload (only a stale revision does)', async () => {
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'DOCUMENT_UNAVAILABLE', details: { documentIds: ['d-pol'] } }), { status: 422 }));
+    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    expect(await screen.findByTestId('trust-docs-error')).toBeInTheDocument();
+    expect(onReload).not.toHaveBeenCalled();
+  });
   it('removes a linked document and disables controls without write', async () => {
     mount({ canWrite: false, documents: [{ documentId: 'd-pol', title: 'Security policy', disclosureConfirmed: true }] });
     expect(await screen.findByTestId('trust-docs-save')).toBeDisabled();
     expect(screen.getByTestId('trust-doc-remove-d-pol')).toBeDisabled();
     expect(await screen.findByTestId('trust-doc-add-d-ev')).toBeDisabled();
+  });
+});
+
+async function expectHashLinkClick(testId: string, expected: string) {
+  const router = installAstroClientRouterStandIn();
+  window.location.hash = '';
+  try {
+    const changed = new Promise<void>((resolve) => {
+      window.addEventListener('hashchange', (e) => {
+        if ((e as HashChangeEvent).newURL.endsWith(expected)) resolve();
+      });
+    });
+    await userEvent.click(screen.getByTestId(testId));
+    expect(window.location.hash).toBe(expected);
+    await expect(changed).resolves.toBeUndefined();
+  } finally {
+    router.uninstall();
+    window.location.hash = '';
+  }
+}
+
+describe('TrustDocumentsSection upload link', () => {
+  it('click sets #documents and fires hashchange under the Astro router', async () => {
+    lib.listOrgDocuments.mockResolvedValue([]);
+    mount();
+    await screen.findByTestId('trust-docs-upload-link');
+    await expectHashLinkClick('trust-docs-upload-link', '#documents');
   });
 });

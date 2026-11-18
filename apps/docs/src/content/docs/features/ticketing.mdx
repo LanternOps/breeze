@@ -53,7 +53,7 @@ The workbench shows everything you need to resolve a ticket without leaving the 
 - **Subject and description** -- click the subject to rename the ticket in place; the description has an **Edit** (or **Add description**) control. Changes save instantly and are recorded in the ticket's activity.
 - **Category, due date, and tags** -- set the category from a dropdown (including **No category**), pick or clear a due date, and add or remove tags directly on the ticket. Every change is logged in the activity feed.
 - **Requester** -- select or change who the ticket is for, so a ticket that came in under the wrong contact (or with none) can be corrected without recreating it.
-- **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page, and any **linked alerts** with one-click navigation to the alert itself.
+- **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page (use **Link device** to attach one to an existing ticket, or **Change device** to swap it, v0.124.0+), and any **linked alerts** with one-click navigation to the alert itself.
 
 Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
 
@@ -91,13 +91,35 @@ For a newly created ticket, the assignment notification is sent on the next noti
 
 If a ticket landed under the wrong customer, use **Move to another org…** in the ticket header to reassign it to a different organization. Pick the target from the dropdown and click **Move**. The ticket — along with its time entries, parts, and linked alerts — follows to the new organization, and the move is recorded in the activity feed and the audit log.
 
-Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee, category, and SLA carry over unchanged.
+Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee and category carry over unchanged. The ticket's business calendar is re-resolved for the target organization, and its response and resolution deadlines that haven't been met yet are recalculated on that calendar (see [Business hours](#business-hours)).
 
 If the two organizations bill in different currencies and the ticket still has **unbilled** time entries or parts with amounts, the move is blocked: the dialog explains how many entries and parts are priced in the old currency and in which currency the target organization bills. The clean path is to invoice that work first (or assemble a draft in the old currency from the ticket), then move. If you need to move regardless, tick the acknowledgement and click **Move anyway** -- those items keep their amounts in the old currency, they are never converted, and they can only be invoiced later on a draft in that currency. "Move anyway" additionally requires invoice edit permission, and the acknowledgement is recorded in the activity feed and the audit log.
 
 <Aside>
   Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
 </Aside>
+
+### Merging duplicate tickets
+
+When the same issue arrives twice (a customer emails and also calls, or two people report one outage), merge the duplicate into the ticket you want to keep.
+
+1. Open the duplicate and choose **Merge into…** in the ticket header.
+2. Pick the ticket to keep. The list shows the organization's open tickets, oldest first, and you can search it. Resolved and closed tickets cannot receive a merge.
+3. Read the preview. It lists what moves to the kept ticket (comments, attachments, time entries, parts, checklist items, linked alerts and emails, tags), the links that are dropped, and whether the kept ticket keeps its own device or takes the duplicate's. When the ticket you picked is not the older one, the preview suggests the older one, which is usually the one to keep.
+4. Decide whether to email the duplicate's requester. **Notify the requester** is ticked by default when the two tickets have different requesters.
+5. Click **Merge** and confirm with MFA.
+
+After the merge:
+
+- The duplicate becomes a **closed, read-only record** with a banner linking to the kept ticket. Nothing can be added to it or changed on it. Comments that moved show "from T-…" next to the author.
+- The kept ticket keeps its own SLA clock, priority and assignee. Time entries and parts move with their amounts and billing state unchanged.
+- **Replies follow the merge.** Email sent to the duplicate's thread is added to the kept ticket.
+- **In the customer portal**, the duplicate shows a "This request was merged into T-…" banner. Its requester can read and reply on the kept ticket.
+- Merged tickets are hidden from the queue. Tick **Show merged** above the list to see them.
+
+A merge cannot be undone. It is refused when the tickets belong to different organizations (move one first), when either ticket has a customer approval request or a budget, when either is tied to a service deliverable or an open migration import, when one is planned work and the other a support ticket, or when the duplicate has AI actions waiting for approval. The preview names the reason before you confirm.
+
+Merging needs ticket edit permission and access to both tickets' sites and devices. The AI assistant can preview and perform a merge through its ticket tool, under the same rules and with approval.
 
 ### Deleting and Restoring Tickets
 
@@ -142,6 +164,19 @@ Technicians can add attachments from the ticket workbench and from the mobile ap
 Each reply and internal note you wrote has **Edit** and **Delete** controls in its header. Editing opens the text inline with **Save** and **Cancel**; an edited entry is marked **edited** in the feed. Deleting asks you to confirm and leaves a small "deleted" placeholder in its place rather than removing the entry outright, so the conversation history stays intact.
 
 You can edit or delete your **own** comments; technicians with ticket management permission can edit or delete anyone's. System entries — status changes, assignments, and time logs — can't be edited or deleted, and comments that came in from the customer portal aren't editable from the workbench. Editing or deleting a reply does **not** re-notify the customer.
+
+## Checklists
+
+A ticket can carry a **Checklist** of steps to tick off as the work is done. Steps are internal -- never shown to the customer -- and each can carry a note. Resolving a ticket with unticked steps asks you to confirm first. In the queue, a ticket with a checklist shows its progress as **n/m steps** (v0.124.0+).
+
+### Checklist templates
+
+Reusable procedures live under **Settings → Ticketing → Templates**, in **Checklist templates**. A template is available to all organizations or to one, and has a name, a description, internal instructions and its steps; an inactive template stays linked where it is already used but stops appearing in pickers. On a ticket, **Apply template** either adds the template's steps to the existing checklist or replaces the unticked steps while keeping the completed ones.
+
+Two shortcuts arrived in v0.124.0:
+
+- **Save as template** turns the checklist on a ticket into a template. Give it a name and choose whether to make it available to all organizations. Steps created by an AI task and repeated steps are left out, and the confirmation says how many.
+- **Duplicate** copies an existing template so you can adapt it without editing the original.
 
 ## Canned Responses
 
@@ -206,6 +241,31 @@ Tickets enter the queue from four directions:
   [Service Management mode](/reference/partner-management/#service-management-mode).
 </Aside>
 
+### Importing tickets from another help desk
+
+Partner administrators with access to all organizations can bring the ticket history of another help desk into Breeze from **Tickets → Import tickets**. Imported tickets carry an **Imported** chip, and **Imported only** above the list shows just them. See [Importing Tickets from Another Help Desk](/features/ticket-import/).
+
+## Routing rules
+
+Routing rules set who a new ticket goes to, and how it starts, the moment it is created. Manage them in **Settings → Ticketing → Routing**.
+
+A rule has **conditions** and **actions**:
+
+- **Conditions:** where the ticket came from (portal, email, alert, technician, API, AI), its priority, its category, words in the subject, and the requester's email domain. A domain is either exact (`example.com`) or every subdomain (`*.example.com`, which matches `help.example.com` but not `example.com` itself). Within one condition any value can match; every condition you fill in must match. A rule with no conditions matches every ticket, and the editor warns you about it. A priority condition matches only a priority someone chose (the technician, the customer or an intake form); a ticket whose priority was left at the default doesn't match one, even though it is saved as Normal.
+- **Actions:** assign a technician, set the priority, the category or the starting status, and add tags. A rule must have at least one action. The starting status can be a **New**, **Open**, **Pending** or **On hold** status; a ticket that starts Pending or On hold starts with its SLA clock paused.
+
+How rules are applied:
+
+- **Org rules first.** An organization's own rules are checked first, then the partner-wide rules (marked **All orgs**, or limited to the organizations you list). Within each group, the order on the page decides; drag a rule to reorder it. The **first** rule that matches wins.
+- **A rule never overrides a choice.** It only fills in what the person or form creating the ticket left empty: a priority a technician picked, an assignee they chose, or an intake form's own category and priority always win. The rule's category and priority then decide the ticket's SLA targets.
+- **If an action can't be applied**, it is skipped and the rest of the rule still applies. For example, if the technician a rule assigns can't be assigned that ticket (they were disabled, or they can't see that customer's organization), the ticket is created without that assignee. A rule whose only assignee has since been deleted becomes a rule with no action; the editor shows it so you can fix it.
+- **Every routed ticket says why.** The ticket gets an internal note naming the rule and listing the actions it applied and any it skipped, and the ticket keeps that note even if the rule is later renamed or deleted.
+- **Rules run once, at creation.** Editing a ticket later never re-routes it. Imported tickets, and tickets created as a continuation of a closed ticket (a reply to a closed email thread, an Office add-in follow-up), are not routed. Routing sends no notifications of its own; an assigned technician gets the usual [assignment notification](#assignment-notifications).
+
+Use **Test a ticket** on the Routing tab to see which rule a ticket would match, and what it would set, without creating anything.
+
+Partner-wide rules can be created and changed only by staff with access to all of your organizations. Staff with access to some organizations manage those organizations' own rules. Organization users can see the rules that apply to them but can't change them.
+
 ## Email-to-Ticket
 
 Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.
@@ -244,7 +304,7 @@ Edit the acknowledgement under **Settings → Partner → Email templates** (Tic
 
 ### Review queue
 
-Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Two kinds of mail land here:
+Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Working the queue needs the `tickets:email_review` permission (full admins already have it), so you can give a triage role or service account access to the queue without making it a full admin. The permission alone is enough to read the queue and to convert a message into a ticket in any of the partner's organizations, so grant it deliberately. Two kinds of mail land here:
 
 - Any email that **failed to process** -- for example, one with no usable sender address.
 - Emails from **unknown senders**, if your **Unknown senders** setting is left on its default. See [Unknown sender handling](#unknown-sender-handling) below to change that behavior.
@@ -255,7 +315,7 @@ Emails that Breeze can't automatically turn into a ticket land in a **review que
 
 ### Unknown sender handling
 
-A sender is "unknown" when it isn't a portal user, a mapped customer domain, or a reply to an existing ticket. Choose what happens to that mail under **Settings → Ticketing → Inbound email**, in the **Unknown senders** section:
+A sender is "unknown" when it isn't a portal user, a mapped customer domain, or a reply to an existing ticket. Customer domains are managed under **Settings → Organizations → [organization] → Domains**; **Settings → Ticketing → Inbound email** shows a read-only summary of them (see [Customer domain verification](/features/portal-domain-verification/)). Choose what happens to that mail under **Settings → Ticketing → Inbound email**, in the **Unknown senders** section:
 
 | Option | Behavior |
 |---|---|
@@ -268,6 +328,8 @@ Pick the **Default triage organization** from the dropdown above the Unknown sen
 #### Dropping mail that fails sender authentication
 
 A separate checkbox on the same card, **Drop mail that fails sender authentication (SPF/DKIM/DMARC)**, controls mail that fails those checks -- independently of the Unknown senders setting above. When it's off (the default), unverified mail is quarantined for review. When it's on, unverified mail is dropped silently instead -- no ticket, no review-queue entry, no autoresponse. This applies to **all** unverified senders, including a message from an otherwise-recognized customer that individually fails the check, and takes priority over whatever you've chosen for unknown senders.
+
+Breeze identifies the sender by the message's **From** address, the address its DMARC check covers, and only that address is matched to a portal user, a customer domain or an existing ticket. The SMTP envelope sender (bounce or return-path address) is never used as the sender. A passing verdict counts only when it is for the From address's own domain: mail with more than one From header, an `@` anywhere in the From header that is not followed by the sender's domain (including in the display name, such as `"help@example.com" <jane@customer.com>`), or a passing verdict that names a different domain is handled as unverified, and the review queue shows `unverified sender (SPF/DKIM/DMARC): verdict is not for the From domain`. (On a Microsoft 365 mailbox, mail Exchange marks as sent from inside your own tenant is still verified for the From address it carries; see below.) A message whose envelope sender (return-path) contains `(`, `)`, `"`, `;` or `\` is also handled as unverified, because mail servers copy that address into the authentication results in a way that cannot be read reliably; the review queue shows `unverified sender (SPF/DKIM/DMARC): envelope sender cannot be read unambiguously`. The same applies when Mailgun or Gmail delivers a message with no envelope sender at all, and, with the reason `signature identity cannot be read unambiguously`, when a DKIM signature's identity (`i=`) contains any of those characters or a space.
 
 #### Filing staff forwards under the original sender's customer
 
@@ -289,8 +351,9 @@ Anything else is routed exactly as it would be with the setting off. The origina
 
 #### Default assignee for new inbound tickets
 
-An unassigned ticket sends no assignee notification, so staff can miss it. Pick a **Default assignee for new inbound tickets** on the same card to give every ticket created from inbound email an owner. It's empty (off) by default.
+An unassigned ticket sends no assignee notification, so staff can miss it. Set a default assignee to give every ticket created from inbound email an owner. It's empty (off) by default. The setting lives at the bottom of **Settings → Ticketing → Routing**, under **If no rule assigns an email ticket** (it used to be on the Inbound email card).
 
+- It is the **fallback** after [routing rules](#routing-rules): it applies only when no rule assigned the ticket, including when the matching rule set only a priority or category, or its assignee was skipped.
 - Only **new** tickets are assigned. A reply that threads onto an existing ticket never changes who it's assigned to, and a ticket something else already assigned is left alone.
 - You can pick an **active** member of your team whose organization access isn't set to none and whose role can view tickets. Breeze checks this every time the card saves, and rejects a user from another partner, a disabled user, or someone without ticket access. If the person you picked later stops qualifying, the card shows them as unavailable and won't save other changes until you pick someone else or clear the setting.
 - Each ticket is checked again when it arrives. If the default assignee can no longer be assigned that ticket (for example, they were disabled, or their access doesn't include that customer's organization), the ticket is created **unassigned** and Breeze records why in its inbound email log. The email is never rejected because of this setting.
@@ -323,7 +386,7 @@ Instead of forwarding to your Breeze inbound address, you can connect a Microsof
 
 </Steps>
 
-Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
+Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported, and Breeze neither marks it read nor sends it an autoresponse. The first poll reads through the inbox to set its starting point, which can take several minutes on a large mailbox; the card then shows how many messages, if any, were already there and will not be imported. Older mail that someone later reads, flags or moves back into the inbox stays out too. Reconnecting a mailbox that lost its consent picks up the mail that arrived while it was down, but connecting one again after you **Disconnect** it starts over from that moment, so mail received in between is not ticketed. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
 
 A temporary Microsoft Graph problem -- throttling, a Microsoft server error, a network failure or a request that times out -- does not stop the mailbox: it stays **Connected** and Breeze retries on the next poll. Only an authorization failure asks you to reconnect.
 
@@ -336,6 +399,19 @@ If a connection does not complete:
 
 <Aside>
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
+</Aside>
+
+#### How external mail is verified on a connected mailbox
+
+Unverified external mail goes to the review queue (or is dropped, if you turned that on), so a forged From address from outside your tenant can't open a ticket under your customer's name. On a Microsoft 365 mailbox Breeze verifies external mail with:
+
+- **Exchange Online's own check.** Mail counts as verified when Exchange marks it as external mail not attributed to a connector, it carries exactly one `Authentication-Results` header with Exchange's authserv-id (`mx.microsoft.com` or a `*.mail.protection.outlook.com` host), and that header says `dmarc=pass` for the From domain. Mail from a domain with no DMARC record (`dmarc=none`) stays in review. A second `Authentication-Results` header also sends a message to review, since Breeze can't tell which one Exchange wrote. Mail Exchange attributes to a partner connector isn't verified from this header.
+- **A trusted mail gateway, if you list one.** With an inline gateway that adds an ARC seal, Exchange checks the gateway instead of the sender and may fail legitimate mail. Under **Mail gateway** on the mailbox, list the gateway's ARC sealing domain: the `d=` value in the gateway's `ARC-Seal` header on a message it delivered (not `microsoft.com`, which is Exchange's own seal). Breeze then verifies the seal and the gateway's signature over the From header, and uses the gateway's verdict, which must be for the From domain. A seal more than 6 hours older than the message's arrival isn't used. The list is empty by default. If the gateway's key can't be fetched, Breeze retries for up to an hour before the message goes to review. A gateway that doesn't add an ARC seal isn't used; Breeze falls back to Exchange's own check, and never reads `Authentication-Results-Original`, because a sender can write that header.
+
+The review queue shows which of these Breeze checked and why the message didn't pass, for example `unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail`.
+
+<Aside type="caution">
+  Only list a gateway that all of the tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Without that restriction, Breeze can't tell a message the gateway delivered from one sent directly to Exchange.
 </Aside>
 
 ### Connecting a Google Workspace support mailbox
@@ -376,6 +452,19 @@ Categories also carry SLA targets (response and resolution times) and can name a
 <Aside>
   The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
 </Aside>
+
+## Business hours
+
+SLA deadlines can be counted on business hours instead of the clock. Go to **Settings → Ticketing → Priorities & SLAs** and open the **Business hours** card to manage calendars. A calendar has a time zone, a weekly schedule (each weekday can have several open intervals, such as a split shift), and a list of holidays.
+
+Which calendar a ticket uses is resolved when the ticket is created: the organization's own override if it has one, otherwise the partner's default calendar, otherwise round-the-clock (24×7). A partner-wide calendar is marked **All orgs**; the default is marked **Default**. The calendar and its current hours are then **snapshotted on the ticket**, so later edits don't silently shift deadlines on tickets that already exist.
+
+- **Choosing a calendar for one organization.** In the organization's **Ticketing** settings, the **Business hours** field is blank by default and shows what it inherits (for example "Inherited: Support hours (partner default)"). Pick a calendar to override it for that organization.
+- **Editing hours or the time zone affects new tickets only.** Open tickets keep the hours they were created with.
+- **Holidays.** Adding or removing a holiday dated in the future recomputes the deadlines of open tickets. Holidays dated today or earlier don't change open tickets.
+- **Apply to open tickets.** To move tickets that are already open onto a calendar's current hours, use **Apply to open tickets**. Breeze first shows a preview: how many tickets would be updated, how many of those would become breached immediately, and how many are skipped because they have been paused. Tickets that have ever been paused are never changed. If the hours change between the preview and your confirmation, the apply is rejected and the preview is reloaded so you can review the new counts.
+- **Archiving and deleting.** An archived calendar can't be chosen for new work. A calendar that tickets or organizations still use, or that is the default, can't be deleted.
+- **Customer portal.** The portal shows SLA status only; it doesn't show your calendars or hours.
 
 ## Custom Statuses & SLA Configuration
 

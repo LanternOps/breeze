@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PsaConnectionsPage from './PsaConnectionsPage';
@@ -40,6 +40,13 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: unknown) => unknown) => selector(orgStoreState),
 }));
 
+// The card has its own suite; here we only assert when the page mounts it.
+vi.mock('./PsaAlertTicketingCard', () => ({
+  default: ({ connectionId }: { connectionId: string }) => (
+    <div data-testid={`alert-ticketing-card-${connectionId}`} />
+  ),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
@@ -76,6 +83,58 @@ function installFetchRouter(routes: Record<string, unknown>, recorded: RecordedR
   });
 }
 
+/**
+ * Fill the Jira create form with one synchronous `change` per field instead of
+ * ~70 awaited `userEvent.type` keystrokes. Every keystroke yields to the event loop,
+ * so on a loaded CI runner the typing alone can exhaust the 5 s test timeout (#11350);
+ * the controlled inputs only read the resulting value either way.
+ */
+function fillJiraForm(name: string) {
+  const fill = (field: HTMLElement, value: string) => fireEvent.change(field, { target: { value } });
+  fill(screen.getByLabelText(/connection name/i), name);
+  fill(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
+  fill(screen.getByLabelText(/username or email/i), 'admin@acme.com');
+  fill(screen.getByLabelText(/api token/i), 'tok-123');
+}
+
+describe('PsaConnectionsPage alert tickets', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the connection list up with a ledger ticket row and names its provider from the connection', async () => {
+    installFetchRouter(
+      {
+        'GET /psa/connections': {
+          data: [{ id: 'c-1', provider: 'connectwise', name: 'CW Prod', status: 'active' }],
+        },
+        'GET /psa/tickets?limit=25': {
+          data: [{
+            id: 'm-1',
+            psaId: 'c-1',
+            title: 'Ticket 8841',
+            status: null,
+            syncedAt: '2026-11-02T10:00:00.000Z',
+            connectionId: 'c-1',
+            alertId: 'alert-1',
+            createState: 'created',
+            externalTicketNumber: 'CW-8841',
+            externalTicketUrl: 'https://psa.example/tickets/8841',
+            raw: { externalTicketId: '8841' },
+          }],
+        },
+      },
+      []
+    );
+
+    render(<PsaConnectionsPage />);
+
+    const ticketLink = await screen.findByRole('link', { name: 'CW-8841' });
+    expect(screen.getByText('CW Prod')).toBeInTheDocument();
+    expect(within(ticketLink.closest('tr') as HTMLElement).getByText('ConnectWise')).toBeInTheDocument();
+  });
+});
+
 describe('PsaConnectionsPage round-trip contract', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -96,14 +155,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(await screen.findByRole('button', { name: /add connection/i }));
 
-    await user.type(screen.getByLabelText(/connection name/i), 'Jira Prod');
-    await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-    await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-    await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+    fillJiraForm('Jira Prod');
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections');
     expect(request.method).toBe('POST');
@@ -115,13 +171,9 @@ describe('PsaConnectionsPage round-trip contract', () => {
         username: 'admin@acme.com',
         apiToken: 'tok-123',
       },
-      settings: {
-        syncEnabled: true,
-        syncInterval: '1h',
-        syncDirection: 'bidirectional',
-        syncOnClose: true,
-        includeNotes: true,
-      },
+      // #9947: ticket sync is not implemented, so the form must not post the
+      // hidden sync defaults (syncEnabled/interval/direction/onClose/notes).
+      settings: {},
     });
     // Flat form fields must NOT leak to the top level, and empty secrets must
     // not appear as empty-string credential keys.
@@ -186,7 +238,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
     await user.type(nameInput, 'Renamed');
     await user.click(screen.getByRole('button', { name: /save changes/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections/c1');
     expect(request.method).toBe('PATCH');
@@ -196,13 +248,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
         baseUrl: 'https://acme.atlassian.net',
         username: 'admin@acme.com',
       },
+      // #9947: stored sync keys are neither echoed back nor overwritten — the
+      // server-side PATCH merge keeps whatever is already stored.
       settings: {
         defaultQueue: 'OPS',
-        syncEnabled: false,
-        syncInterval: '6h',
-        syncDirection: 'outbound',
-        syncOnClose: false,
-        includeNotes: false,
       },
     });
     // PATCH must not send provider, and untouched secrets must be omitted so
@@ -243,7 +292,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const body = recorded[0]!.body as { provider: string; credentials: Record<string, string> };
     expect(body.provider).toBe('connectwise');
     expect(body.credentials).toEqual({
@@ -287,7 +336,11 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(testButton).toBeEnabled();
     expect(screen.queryByTestId('psa-test-dirty-hint')).toBeNull();
 
+    // Dialog autofocus runs on the next animation frame; let it finish before
+    // typing so it cannot move focus away from the token mid-keystroke.
+    await waitFor(() => expect(screen.getByLabelText(/connection name/i)).toHaveFocus());
     await user.type(screen.getByTestId('psa-credential-apiToken'), 'rotated-token');
+    expect(screen.getByTestId('psa-credential-apiToken')).toHaveValue('rotated-token');
 
     await waitFor(() => expect(testButton).toBeDisabled());
     expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
@@ -364,13 +417,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       expect(screen.getByTestId('psa-connection-owner-partner')).toBeChecked();
       expect(screen.getByTestId('psa-connection-owner-org')).not.toBeChecked();
 
-      await user.type(screen.getByLabelText(/connection name/i), 'MSP Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('MSP Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('partner');
     });
 
@@ -390,13 +440,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       await user.click(await screen.findByRole('button', { name: /add connection/i }));
 
       await user.click(screen.getByTestId('psa-connection-owner-org'));
-      await user.type(screen.getByLabelText(/connection name/i), 'Cust Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('Cust Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('organization');
     });
 
@@ -445,13 +492,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
       const picker = await screen.findByTestId('psa-connection-owner-org-select');
       await user.selectOptions(picker, 'org-2');
 
-      await user.type(screen.getByLabelText(/connection name/i), 'Globex Jira');
-      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
-      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
-      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      fillJiraForm('Globex Jira');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       const body = recorded[0]!.body as Record<string, unknown>;
       expect(body.ownerScope).toBe('organization');
       expect(body.orgId).toBe('org-2');
@@ -563,5 +607,60 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await screen.findByRole('button', { name: /^edit$/i });
     expect(screen.queryByRole('button', { name: /sync now/i })).toBeNull();
+  });
+  it('does not promise ticket sync in the page copy or the connection form (#9655)', async () => {
+    const user = userEvent.setup();
+    installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+    render(<PsaConnectionsPage />);
+
+    expect(await screen.findByText(/import companies as organizations/i)).toBeTruthy();
+    expect(screen.queryByText(/sync tickets/i)).toBeNull();
+    expect(screen.queryByText(/start syncing tickets/i)).toBeNull();
+
+    await user.click(await screen.findByRole('button', { name: /add connection/i }));
+    expect(screen.queryByLabelText(/enable sync/i)).toBeNull();
+    expect(screen.queryByLabelText(/sync interval/i)).toBeNull();
+    expect(screen.queryByLabelText(/sync direction/i)).toBeNull();
+    expect(screen.getByTestId('psa-ticket-sync-unavailable')).toBeTruthy();
+  });
+
+  it('titles the ticket card for what it shows, not as synced tickets (#9947)', async () => {
+    installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+    render(<PsaConnectionsPage />);
+
+    expect(await screen.findByRole('heading', { name: /^alert tickets$/i })).toBeTruthy();
+    expect(screen.queryByText(/synced tickets/i)).toBeNull();
+  });
+});
+
+describe('PsaConnectionsPage alert ticketing card mount', () => {
+  afterEach(() => {
+    ownerScopeState.isPartnerScope = false;
+  });
+
+  const connections = [
+    { id: 'cw-partner', provider: 'connectwise', name: 'MSP CW', status: 'active', ownerScope: 'partner' },
+    { id: 'cw-org', provider: 'connectwise', name: 'Org CW', status: 'active', ownerScope: 'organization' },
+    { id: 'jira-partner', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' },
+  ];
+
+  it('mounts only for a partner-owned, capable provider in a partner session', async () => {
+    ownerScopeState.isPartnerScope = true;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.getByTestId('alert-ticketing-card-cw-partner')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-ticketing-card-cw-org')).toBeNull();
+    expect(screen.queryByTestId('alert-ticketing-card-jira-partner')).toBeNull();
+  });
+
+  it('does not mount in an org-scope session', async () => {
+    ownerScopeState.isPartnerScope = false;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.queryByTestId('alert-ticketing-card-cw-partner')).toBeNull();
   });
 });

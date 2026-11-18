@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mirrors commandQueue.test.ts's mocking idiom: a passthrough default so most
 // tests don't have to know the wrapper exists, with individual tests
@@ -17,6 +17,7 @@ import {
   loadContractBlockAuthoring,
   resolveAutoVariables,
   resolveQuoteAutoVariables,
+  resolveQuoteEditorAutoVariables,
   renderContextFromQuote,
   renderContextFromRequest,
   substituteVariables,
@@ -213,6 +214,40 @@ describe('resolveAutoVariables', () => {
     expect(values['client.name']).toBe('');
     expect(values['client.address']).toBe('');
     expect(values['seller.name']).toBe('');
+  });
+});
+
+// #9867: the quote editor shows each auto variable's resolved value, not its
+// {{token}}. A draft has no frozen bill-to/seller yet, so the editor resolves
+// them the way send will freeze them (getQuote's billTo + branding's live seller).
+describe('resolveQuoteEditorAutoVariables', () => {
+  const billTo = { name: 'Org Name Inc', address: { line1: '9 Elm St', line2: null, city: 'Dover', region: 'DE', postalCode: '19901', country: 'USA' } };
+  const seller = { name: 'Live Partner MSP', address: null, phone: null, email: null, website: null };
+
+  it('draft: client and seller come from the resolved bill-to and live seller', () => {
+    const values = resolveQuoteEditorAutoVariables(
+      fixtureQuote({ status: 'draft', billToName: null, billToAddress: null, sellerSnapshot: null }),
+      { billTo, seller, locale: 'en' },
+    );
+    expect(values['client.name']).toBe('Org Name Inc');
+    expect(values['client.address']).toBe('9 Elm St, Dover, DE, 19901, USA');
+    expect(values['seller.name']).toBe('Live Partner MSP');
+    expect(values['totals.total']).toBe('$810.00');
+    expect(values['quote.number']).toBe('Q-1001');
+  });
+
+  it('sent: the frozen snapshot wins over any live value', () => {
+    const values = resolveQuoteEditorAutoVariables(fixtureQuote({ status: 'sent' }), { billTo, seller, locale: 'en' });
+    expect(values['client.name']).toBe('Acme Co');
+    expect(values['seller.name']).toBe('Breeze MSP');
+  });
+
+  it('accepted: dates.effective is pinned to the accept date, like the display render', () => {
+    const values = resolveQuoteEditorAutoVariables(
+      fixtureQuote({ status: 'accepted', acceptedAt: new Date('2026-07-20T12:00:00Z') }),
+      { billTo: null, seller: null, locale: 'en' },
+    );
+    expect(values['dates.effective']).toBe('Jul 20, 2026');
   });
 });
 
@@ -481,6 +516,9 @@ describe('renderContractBlocksForClient', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   const authoredVersionRow = {
     id: 'ver-1',
@@ -624,6 +662,59 @@ describe('renderContractBlocksForClient', () => {
       () => '/unused'
     );
     expect((block!.content as Record<string, unknown>).label).toBe('Master Services Agreement');
+  });
+
+  // #9452: a contract block whose stored content does not parse must NEVER be
+  // passed through raw to a customer surface (it would leak the authoring
+  // fields). It renders as the "unavailable" variant instead: the shared quote
+  // builder turns renderedHtml:null on an authored block into `unavailableText`.
+  describe.each([
+    ['non-object content (bad JSON stored as a string)', '{"templateId": "tmpl-1", oops'],
+    ['array content', ['tmpl-1', 'ver-1']],
+    ['null content', null],
+    ['object missing templateVersionId (shape the parser rejects)', { templateId: 'tmpl-1', variableValues: { secret: 'internal-note' }, label: 'Raw label' }],
+    ['object with non-string ids', { templateId: 7, templateVersionId: {}, variableValues: { secret: 'internal-note' } }],
+  ])('unparseable contract content: %s', (_name, content) => {
+    it('renders the unavailable variant, never the raw content, and warns with quote + block id', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const [block] = await renderContractBlocksForClient(
+        [{ id: 'block-bad', blockType: 'contract', content }],
+        fixtureQuote(),
+        () => '/unused'
+      );
+      expect(block!.content).toEqual({
+        templateName: '',
+        versionNumber: 0,
+        sourceType: 'authored',
+        renderedHtml: null,
+        fileUrl: null,
+      });
+      expect(JSON.stringify(block)).not.toContain('internal-note');
+      expect(JSON.stringify(block)).not.toContain('Raw label');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(warn.mock.calls[0]);
+      expect(logged).toContain('quote-1');
+      expect(logged).toContain('block-bad');
+      expect(logged).not.toContain('internal-note');
+      warn.mockRestore();
+    });
+  });
+
+  it('still resolves a parseable sibling when another contract block is unparseable', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+    const heading = { id: 'block-h', blockType: 'heading', content: { text: 'Intro', level: 2 } };
+    const [bad, good, h] = await renderContractBlocksForClient(
+      [{ id: 'block-bad', blockType: 'contract', content: 'garbage' }, contractBlockFixture(), heading],
+      fixtureQuote(),
+      () => '/unused'
+    );
+    expect((bad!.content as Record<string, unknown>).renderedHtml).toBeNull();
+    expect((good!.content as Record<string, unknown>).templateName).toBe('MSA');
+    // Non-contract siblings must pass through untouched (guards the blockType check).
+    expect(h).toEqual(heading);
   });
 
   it('leaves non-contract blocks unchanged and short-circuits without touching the db', async () => {

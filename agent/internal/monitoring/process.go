@@ -3,11 +3,12 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/process"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // checkProcess looks for a process by name and reports its status + resource usage.
@@ -116,7 +117,7 @@ func runCommand(name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}

@@ -42,7 +42,7 @@ describe('PORTAL_VISIBILITY_FLAG_KEYS', () => {
 
 describe('PORTAL_SENSITIVE_FLAG_KEYS', () => {
   it('lists the flags that stay outside "Enable all"', () => {
-    expect(PORTAL_SENSITIVE_FLAG_KEYS).toEqual(['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail', 'enableVulnerabilityDetail']);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toEqual(['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail', 'enableVulnerabilityDetail', 'enablePhysicalPlacement']);
   });
 
   it('keeps the billing-sensitive Support hours flag out of "Enable all"', () => {
@@ -64,6 +64,11 @@ describe('PORTAL_SENSITIVE_FLAG_KEYS', () => {
   it('keeps the sensitive vulnerability detail flag out of "Enable all"', () => {
     // enableVulnerabilityDetail (portal visibility W06) shows per-host CVE findings.
     expect(PORTAL_VISIBILITY_FLAG_KEYS).not.toContain('enableVulnerabilityDetail');
+  });
+
+  it('keeps the sensitive physical placement flag out of "Enable all"', () => {
+    // enablePhysicalPlacement (environment visibility W1) shows rack and room.
+    expect(PORTAL_VISIBILITY_FLAG_KEYS).not.toContain('enablePhysicalPlacement');
   });
 
   it('never overlaps the flags that "Enable all" turns on', () => {

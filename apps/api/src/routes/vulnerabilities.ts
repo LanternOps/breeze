@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gt, ilike, inArray, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, ilike, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import {
   VULN_STATUS_FILTERS,
@@ -13,7 +13,8 @@ import {
   type DeviceVulnFinding,
 } from '@breeze/shared';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
 import { deviceVulnerabilities, devices, vulnerabilities, vulnerabilitySources } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -25,7 +26,7 @@ import {
   toGroupFinding,
   type FleetFindingRow,
 } from '../services/vulnerabilityFleetAggregation';
-import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
+import { fetchCveCatalogRecord, fetchFleetFindingRows, resolveReadyFindingIds } from '../services/vulnerabilityFleetQueries';
 import {
   aggregateFleetStats,
   getSoftwareGroupDetail,
@@ -397,7 +398,8 @@ async function readCatalogRows(
 
   const conditions: SQL[] = [inArray(vulnerabilities.id, vulnerabilityIds)];
   if (filters.severity) {
-    conditions.push(eq(vulnerabilities.severity, filters.severity));
+    // Feeds historically stored mixed case ('CRITICAL', 'Critical'); compare case-insensitively (#11902).
+    conditions.push(sql`lower(${vulnerabilities.severity}) = ${filters.severity.toLowerCase()}`);
   }
   if (filters.cve) {
     conditions.push(ilike(vulnerabilities.cveId, `%${filters.cve}%`));
@@ -519,7 +521,10 @@ type FleetRow = {
   epssScore: number | null;
   riskScore: number | null;
   deviceCount: number;
+  /** Vendor fix published (global catalog flag) — NOT "Ready". */
   patchAvailable: boolean;
+  /** Distinct devices whose open finding for this CVE is Ready (#9533). */
+  patchReadyDeviceCount: number;
   statuses: string[];
 };
 
@@ -529,10 +534,16 @@ type FleetRow = {
  * we take the max riskScore across devices to be safe. Sort: riskScore DESC,
  * knownExploited (true first), epssScore DESC, cvssScore DESC — all nulls last.
  */
-function aggregateFleet(items: MergedItem[]): FleetRow[] {
+function aggregateFleet(items: MergedItem[], readyIds: ReadonlySet<string>): FleetRow[] {
   const byVuln = new Map<string, FleetRow>();
   const statusesByVuln = new Map<string, Set<string>>();
+  const readyDevicesByVuln = new Map<string, Set<string>>();
   for (const item of items) {
+    if (readyIds.has(item.id)) {
+      const devicesReady = readyDevicesByVuln.get(item.vulnerabilityId) ?? new Set<string>();
+      devicesReady.add(item.deviceId);
+      readyDevicesByVuln.set(item.vulnerabilityId, devicesReady);
+    }
     const statuses = statusesByVuln.get(item.vulnerabilityId);
     if (statuses) {
       statuses.add(item.status);
@@ -558,6 +569,7 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
       riskScore: item.riskScore,
       deviceCount: 1,
       patchAvailable: item.patchAvailable,
+      patchReadyDeviceCount: 0,
       statuses: [],
     });
   }
@@ -565,6 +577,7 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
   for (const row of byVuln.values()) {
     const statuses = statusesByVuln.get(row.id);
     row.statuses = statuses ? [...statuses].sort() : [];
+    row.patchReadyDeviceCount = readyDevicesByVuln.get(row.id)?.size ?? 0;
   }
 
   return Array.from(byVuln.values()).sort((a, b) => {
@@ -616,7 +629,15 @@ vulnerabilityRoutes.get('/', zValidator('query', fleetListQuerySchema), async (c
     ...query,
     allowedSiteIds: perms?.allowedSiteIds,
   });
-  const rows = aggregateFleet(items);
+  // "Ready" means what it means on the By-software column and the "Patch
+  // ready" tile: Remediate's resolver finds a pending, partner-approved patch
+  // (#7499). The catalog flag alone is vendor-level, and showing it as Ready
+  // gave this lens a third answer to "is there a patch?" (#9533).
+  const readyIds = await resolveReadyFindingIds(items);
+  let rows = aggregateFleet(items, readyIds);
+  // The patch-ready filter (the tile's preset) narrows to CVEs with a Ready
+  // finding; readCatalogRows' catalog-flag condition is only a pre-filter.
+  if (query.patchAvailable) rows = rows.filter((r) => r.patchReadyDeviceCount > 0);
   return c.json({
     items: rows.slice(0, FLEET_CVE_CAP),
     hasMore: rows.length > FLEET_CVE_CAP,
@@ -963,14 +984,19 @@ vulnerabilityRoutes.post(
       }
       const description = buildTicketDescription(rows, deviceNameById, cveByVulnId, note);
       try {
-        const ticket = await createTicket(
-          { orgId, subject: title, description, priority, source: 'manual' },
-          { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email },
-        );
-        await db
-          .update(deviceVulnerabilities)
-          .set({ ticketId: ticket.id, updatedAt: new Date() })
-          .where(inArray(deviceVulnerabilities.id, rows.map((r) => r.id)));
+        // Savepoint so a failed ticket create or link rolls back and the next
+        // org's ticket still runs in a live transaction (#11203).
+        const ticket = await withDbTransaction(async () => {
+          const created = await createTicket(
+            { orgId, subject: title, description, priority, source: 'manual' },
+            { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email },
+          );
+          await db
+            .update(deviceVulnerabilities)
+            .set({ ticketId: created.id, updatedAt: new Date() })
+            .where(inArray(deviceVulnerabilities.id, rows.map((r) => r.id)));
+          return created;
+        });
         writeRouteAudit(c, {
           orgId,
           action: 'vulnerability.ticket_create',
@@ -979,7 +1005,9 @@ vulnerabilityRoutes.post(
           details: { deviceVulnerabilityIds: rows.map((r) => r.id), title },
         });
         tickets.push({ ticketId: ticket.id, orgId, findingCount: rows.length });
-      } catch {
+      } catch (err) {
+        // The code, not the message: a drizzle error's message carries the query params.
+        console.error('[vulnerabilities] ticket creation failed', { orgId, findingCount: rows.length, code: pgErrorCode(err) ?? (err instanceof Error ? err.name : 'unknown') });
         // TicketServiceError message is dynamic prose; collapse to the closest code.
         for (const r of rows) skipped.push({ id: r.id, reason: 'ticket_create_failed' });
       }

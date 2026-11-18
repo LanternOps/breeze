@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Bot, Link2 } from 'lucide-react';
+import { ArrowLeft, ArrowRightLeft, Bot, Link2 } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
@@ -17,6 +17,8 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { useFlowsGate } from '../../stores/featuresStore';
+import { conversionErrorMessage } from './conversion/conversionApi';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -178,6 +180,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   // over the agent-managed notice below since a monitor-compiled automation
   // is never also agent-owned in practice.
   const [managedByMonitorId, setManagedByMonitorId] = useState<string | null>(null);
+  // #5221 W06: a Job switched to a flow is frozen (the API 409s
+  // `automation_converted`); show where it lives now instead of the editor.
+  const [movedToFlowId, setMovedToFlowId] = useState<string | null>(null);
+  // R1 (Decision 8): with Flows on, new Jobs are made in Flows (POST is 410).
+  const { enabled: flowsOn, loaded: flowsLoaded } = useFlowsGate();
   // #8599: the stored owner org (null/undefined for a partner-wide automation).
   // Scopes the group picker and decides which target modes are offered.
   const [storedOwnerOrgId, setStoredOwnerOrgId] = useState<string>();
@@ -206,6 +213,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       const automation = data.automation ?? data;
       setManagedByAgentId(asString(automation.managedByAgentId) ?? null);
       setManagedByMonitorId(asString(automation.managedByMonitorId) ?? null);
+      const conversion = isPlainRecord(automation.conversion) ? automation.conversion : null;
+      setMovedToFlowId(
+        conversion && conversion.state === 'switched' ? asString(conversion.flowId) ?? null : null,
+      );
       setStoredOwnerOrgId(asString(automation.orgId));
 
       const trigger = isPlainRecord(automation.trigger)
@@ -399,7 +410,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         // #8599: the API names the offending groups/devices; put that behind a
         // sentence that says what is wrong rather than a bare id list.
         friendly: (code, message) =>
-          code === 'INVALID_TARGET' ? t('automationEditPage.errors.invalidTarget', { detail: message }) : undefined,
+          code === 'INVALID_TARGET'
+            ? t('automationEditPage.errors.invalidTarget', { detail: message })
+            : conversionErrorMessage(code),
       });
 
       void navigateTo('/jobs');
@@ -474,7 +487,33 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         </div>
       )}
 
-      {managedByMonitorId ? (
+      {isNew && flowsLoaded && flowsOn ? (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-6" data-testid="automation-new-opens-flows">
+          <div className="flex items-center gap-2">
+            <ArrowRightLeft className="h-5 w-5 text-primary" />
+            <h2 className="text-sm font-semibold">{t('flows:jobs.migration.banner.r1')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{t('flows:conversion.errors.automations_moved_to_flows')}</p>
+          <a href="/flows" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+            {t('flows:jobs.migration.newJobOpensFlows')}
+          </a>
+        </div>
+      ) : movedToFlowId ? (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-6" data-testid="automation-moved-notice">
+          <div className="flex items-center gap-2">
+            <ArrowRightLeft className="h-5 w-5 text-primary" />
+            <h2 className="text-sm font-semibold">{t('flows:conversion.state.switched')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{t('flows:conversion.panel.switchedNote')}</p>
+          <a
+            href={`/flows/${movedToFlowId}`}
+            className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            data-testid="automation-moved-flow-link"
+          >
+            {t('flows:conversion.panel.openFlow')}
+          </a>
+        </div>
+      ) : managedByMonitorId ? (
         <div
           className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-6"
           data-testid="automation-managed-notice"

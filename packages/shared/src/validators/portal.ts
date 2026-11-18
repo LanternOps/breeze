@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-// Admin-writable subset of portal_branding (feature toggles + support contact,
-// plus customCss as of #5952). Visual branding (logo, colors) and
-// customDomain/domainVerified are deliberately NOT writable here — they ship
-// with the domain-verification project. `.strict()` is the enforcement:
-// unknown keys are rejected.
+// Admin-writable subset of portal_branding: feature toggles, support contact,
+// customCss (#5952), primaryColor (#9962), logoUrl and secondaryColor (#9673).
+// faviconUrl, accentColor and customDomain/domainVerified are deliberately NOT
+// writable here — they ship with the domain-verification project. `.strict()`
+// is the enforcement: unknown keys are rejected.
 
 export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 
@@ -17,7 +17,8 @@ export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 // enableHourBlock (block hours W04) exposes a prepaid-hours balance.
 // enablePatchDetail (visibility W05) exposes per-host missing/pending patches.
 // enableVulnerabilityDetail (visibility W06) exposes per-host CVE findings.
-export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail', 'enableVulnerabilityDetail'] as const;
+// enablePhysicalPlacement (environment visibility W1) exposes rack and room.
+export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail', 'enableVulnerabilityDetail', 'enablePhysicalPlacement'] as const;
 export type PortalSensitiveFlag = typeof PORTAL_SENSITIVE_FLAG_KEYS[number];
 
 // Portal flags that grant portal users a WRITE permission rather than a view.
@@ -41,8 +42,64 @@ const CSS_DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> 
   { pattern: /behavior\s*:/i, label: 'behavior:' }
 ];
 
-// Matches url(...), with or without quotes, capturing the raw value.
-const CSS_URL_PATTERN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+const CSS_WHITESPACE = /\s/;
+
+function isCssUrlStop(ch: string | undefined): boolean {
+  return ch === "'" || ch === '"' || ch === ')';
+}
+
+/**
+ * The raw value of each url(...) in `css`, with or without quotes, in order.
+ * It reports exactly what `/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi` would capture,
+ * in time linear in the length of `css` (this check runs on every portal page
+ * load).
+ */
+function* cssUrlValues(css: string): Generator<string> {
+  const opener = /url\(/gi;
+  // nextStop[k]: index of the first quote or `)` at or after k (css.length if none).
+  let nextStop: Int32Array | null = null;
+  const stopAt = (from: number): number => {
+    if (!nextStop) {
+      nextStop = new Int32Array(css.length + 1);
+      nextStop[css.length] = css.length;
+      for (let k = css.length - 1; k >= 0; k -= 1) nextStop[k] = isCssUrlStop(css[k]) ? k : nextStop[k + 1]!;
+    }
+    return nextStop[from]!;
+  };
+  const skipWhitespace = (from: number): number => {
+    let k = from;
+    while (k < css.length && CSS_WHITESPACE.test(css[k]!)) k += 1;
+    return k;
+  };
+
+  let from = 0;
+  for (;;) {
+    opener.lastIndex = from;
+    const open = opener.exec(css);
+    if (!open) return;
+    const start = skipWhitespace(open.index + 4);
+    const quote = css[start];
+    if (quote === "'" || quote === '"') {
+      const end = stopAt(start + 1);
+      if (css[end] === quote) {
+        const close = skipWhitespace(end + 1);
+        if (css[close] === ')') {
+          yield css.slice(start + 1, end);
+          from = close + 1;
+          continue;
+        }
+      }
+    } else {
+      const end = stopAt(start);
+      if (css[end] === ')') {
+        yield css.slice(start, end);
+        from = end + 1;
+        continue;
+      }
+    }
+    from = open.index + 1;
+  }
+}
 
 // CSS identifiers/at-keywords support backslash escapes (CSS Syntax Module
 // §4.3.7): `\` + 1-6 hex digits (+ one optional trailing whitespace) decodes
@@ -82,10 +139,8 @@ export function findUnsafePortalCssPattern(css: string): string | null {
     if (pattern.test(decoded)) return label;
   }
 
-  CSS_URL_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CSS_URL_PATTERN.exec(decoded)) !== null) {
-    const value = (match[2] ?? '').trim();
+  for (const raw of cssUrlValues(decoded)) {
+    const value = raw.trim();
     if (!/^(https:|data:)/i.test(value)) {
       return value ? `url(${value})` : 'url()';
     }
@@ -94,7 +149,10 @@ export function findUnsafePortalCssPattern(css: string): string | null {
   return null;
 }
 
-const portalCustomCssSchema = z
+// Shared by both Custom CSS write paths: the org portal settings
+// (updatePortalSettingsSchema below) and the partner's branding settings
+// (PATCH /partners/me, #9674), whose CSS reaches every child org's portal.
+export const portalCustomCssSchema = z
   .string()
   .max(PORTAL_CUSTOM_CSS_MAX_LENGTH, `Custom CSS exceeds maximum size (${PORTAL_CUSTOM_CSS_MAX_LENGTH} characters)`)
   .nullable()
@@ -109,6 +167,34 @@ const portalCustomCssSchema = z
       });
     }
   });
+
+/** #rgb / #rrggbb — the only shape an org document accent may take (#9962). */
+export const PORTAL_PRIMARY_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/** Matches MAX_LOGO_BYTES in the web logo encoder and the partner Branding cap. */
+export const PORTAL_LOGO_MAX_LENGTH = 400_000;
+
+const PORTAL_LOGO_DATA_URI = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+const PORTAL_LOGO_HTTPS_URL = /^https:\/\/[^\s"'<>\\]+$/;
+
+/**
+ * Whether a value may be stored as an org logo (#9673): an uploaded PNG data
+ * URI (the editor always encodes PNG, and PNG is the one format every renderer
+ * embeds, report PDFs included), or an https URL so a customer's browser never
+ * loads it insecurely (PDFs print the company name instead of a URL logo). The
+ * value goes unchanged into `<img src>` on the portal and customer documents, so
+ * anything else is refused at write.
+ */
+export function isPortalLogoUrl(value: string): boolean {
+  if (value.length > PORTAL_LOGO_MAX_LENGTH) return false;
+  if (PORTAL_LOGO_DATA_URI.test(value)) return true;
+  if (!PORTAL_LOGO_HTTPS_URL.test(value)) return false;
+  try {
+    return new URL(value).hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 export const updatePortalSettingsSchema = z.object({
   enableTickets: z.boolean().optional(),
@@ -149,6 +235,9 @@ export const updatePortalSettingsSchema = z.object({
   // Portal advanced visibility W06 (#7736): vulnerability detail, fail closed. Sensitive:
   // "Enable all" never sets it.
   enableVulnerabilityDetail: z.boolean().optional(),
+  // Environment visibility W1 (#8775): physical placement, fail closed. Sensitive:
+  // "Enable all" never sets it.
+  enablePhysicalPlacement: z.boolean().optional(),
   // Trust Center W3d: a permission flag, fail closed. Org-scoped admin contacts
   // with a portal login may edit part of the trust page draft. Never in "Enable all".
   enableTrustPageEditing: z.boolean().optional(),
@@ -156,6 +245,28 @@ export const updatePortalSettingsSchema = z.object({
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),
   footerText: z.string().max(2000).nullable().optional(),
+  // #9962: the org level of the one document-accent chain — partner Branding
+  // colour → this org override (resolveDocumentBrand, partnerDocumentBrand.ts).
+  // Written by the org Branding tab; null = inherit the partner colour. It is
+  // emitted into a <style> element on customer documents, so only a strict
+  // #rgb / #rrggbb hex is accepted.
+  primaryColor: z
+    .string()
+    .regex(PORTAL_PRIMARY_COLOR_PATTERN, 'Primary color must be a hex colour such as #2563eb')
+    .nullable()
+    .optional(),
+  // #9673: the org level of the secondary colour and logo in the same chain.
+  // Null = inherit the partner's value.
+  secondaryColor: z
+    .string()
+    .regex(PORTAL_PRIMARY_COLOR_PATTERN, 'Secondary color must be a hex colour such as #0f766e')
+    .nullable()
+    .optional(),
+  logoUrl: z
+    .string()
+    .refine(isPortalLogoUrl, 'Logo must be a PNG image of at most 400 KB, or an https URL')
+    .nullable()
+    .optional(),
   // #5952: canonical write path for portal_branding.custom_css. Rejected
   // (not silently stripped) on a disallowed pattern — see
   // findUnsafePortalCssPattern above.
@@ -169,12 +280,70 @@ export type UpdatePortalSettingsInput = z.infer<typeof updatePortalSettingsSchem
 // portal users by id; update a portal user's editable fields. `status` here
 // is deliberately limited to active/disabled — 'invited' is a system-set
 // state, not something an MSP can set directly via this endpoint.
+//
+// `contactId` (portal registration W1, #11378): bind the login to THIS contact.
+// The invite email must equal the contact's email (case-insensitive), because
+// binding a contact grants its ticket history; the API refuses a mismatch.
 export const invitePortalUserSchema = z.object({
   email: z.string().email().max(255),
   name: z.string().min(1).max(255).optional(),
-  message: z.string().max(1000).optional()
+  message: z.string().max(1000).optional(),
+  contactId: z.string().guid().optional()
 }).strict();
 export type InvitePortalUserInput = z.infer<typeof invitePortalUserSchema>;
+
+// Batch "Give portal access" from the Contacts tab. Each invite sends one
+// email synchronously inside the request, so the batch is capped.
+export const INVITE_CONTACTS_MAX = 100;
+export const inviteContactsToPortalSchema = z.object({
+  contactIds: z.array(z.string().guid()).min(1).max(INVITE_CONTACTS_MAX)
+}).strict();
+export type InviteContactsToPortalInput = z.infer<typeof inviteContactsToPortalSchema>;
+
+// Per-contact outcome of a batch invite. Exactly these five: any further
+// detail rides in `reason` / `emailSent`, never as a sixth outcome.
+export const CONTACT_PORTAL_INVITE_OUTCOMES = [
+  'invited',
+  'already_has_access',
+  'no_email',
+  'email_bound_to_other_contact',
+  'duplicate_email_in_batch'
+] as const;
+export type ContactPortalInviteOutcome = (typeof CONTACT_PORTAL_INVITE_OUTCOMES)[number];
+
+/** Why a contact counts as `already_has_access` (or why a single invite was refused). */
+export type AlreadyHasAccessReason = 'active' | 'disabled' | 'external_identity' | 'login_email_differs';
+
+/** One contact's result, keyed on `outcome` so impossible combinations do not type-check. */
+export type ContactPortalInviteResult =
+  | {
+      contactId: string;
+      outcome: 'invited';
+      portalUserId: string;
+      /** false: the login exists but the email did not go out (use Resend). */
+      emailSent: boolean;
+    }
+  | { contactId: string; outcome: 'already_has_access'; portalUserId: string; reason: AlreadyHasAccessReason }
+  | { contactId: string; outcome: 'email_bound_to_other_contact'; portalUserId: string }
+  | { contactId: string; outcome: 'no_email' | 'duplicate_email_in_batch' };
+
+/** `POST …/portal-users/invite-contacts` response body. */
+export type ContactPortalInviteResponse = {
+  data: { results: ContactPortalInviteResult[]; counts: Record<ContactPortalInviteOutcome, number> };
+};
+
+/** Stable `code` values on invite refusals (`{ error, code }` bodies). */
+export const PORTAL_INVITE_ERROR_CODES = {
+  PORTAL_INVITE_CONTACT_NOT_FOUND: 'PORTAL_INVITE_CONTACT_NOT_FOUND',
+  PORTAL_INVITE_CONTACT_NO_EMAIL: 'PORTAL_INVITE_CONTACT_NO_EMAIL',
+  PORTAL_INVITE_EMAIL_MISMATCH: 'PORTAL_INVITE_EMAIL_MISMATCH',
+  PORTAL_INVITE_CONTACT_CONFLICT: 'PORTAL_INVITE_CONTACT_CONFLICT',
+  PORTAL_INVITE_LOGIN_EMAIL_DIFFERS: 'PORTAL_INVITE_LOGIN_EMAIL_DIFFERS',
+  PORTAL_INVITE_ALREADY_ACTIVE: 'PORTAL_INVITE_ALREADY_ACTIVE',
+  PORTAL_INVITE_USER_DISABLED: 'PORTAL_INVITE_USER_DISABLED',
+  PORTAL_INVITE_EXTERNAL_IDENTITY: 'PORTAL_INVITE_EXTERNAL_IDENTITY'
+} as const;
+export type PortalInviteErrorCode = keyof typeof PORTAL_INVITE_ERROR_CODES;
 
 export const bulkInvitePortalUsersSchema = z.object({
   userIds: z.array(z.string().guid()).optional()

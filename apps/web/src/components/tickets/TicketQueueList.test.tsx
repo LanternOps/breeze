@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-import TicketQueueList from './TicketQueueList';
+import TicketQueueList, { queueOptionId } from './TicketQueueList';
 import type { TicketSummary } from './ticketConfig';
 
 const makeTicket = (overrides: Partial<TicketSummary> & { id: string }): TicketSummary => ({
@@ -66,23 +66,129 @@ describe('TicketQueueList type chip (#7900)', () => {
     expect(screen.getByTestId('ticket-type-chip-tk-c')).toHaveTextContent('Change');
   });
 
-  it('reads a row without ticketType (older payload) as Incident', () => {
+  it('reads a row without ticketType (older payload) as Incident, the default, so it carries no type chip', () => {
     render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-old' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
-    expect(screen.getByTestId('ticket-type-chip-tk-old')).toHaveAttribute('data-ticket-type', 'incident');
+    expect(screen.queryByTestId('ticket-type-chip-tk-old')).toBeNull();
   });
 });
 
-describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
-  it('links the org name to the org record without selecting the row', () => {
+describe('TicketQueueList non-default chips', () => {
+  it('shows no priority, type or status chip when every value is its default', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-d', priority: 'normal', ticketType: 'incident', status: 'open' })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-priority-chip-tk-d')).toBeNull();
+    expect(screen.queryByTestId('ticket-type-chip-tk-d')).toBeNull();
+    expect(screen.queryByTestId('ticket-status-chip-tk-d')).toBeNull();
+  });
+
+  it('shows each chip only when its value deviates (priority not Normal, type not Incident, status not Open)', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-x', priority: 'urgent', ticketType: 'change', status: 'pending' })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-priority-chip-tk-x')).toHaveTextContent('Urgent');
+    expect(screen.getByTestId('ticket-type-chip-tk-x')).toHaveTextContent('Change');
+    expect(screen.getByTestId('ticket-status-chip-tk-x')).toHaveTextContent('Pending');
+    for (const id of ['ticket-priority-chip-tk-x', 'ticket-type-chip-tk-x', 'ticket-status-chip-tk-x']) {
+      expect(screen.getByTestId(id).className).toContain('whitespace-nowrap');
+    }
+  });
+
+  it('treats New and On hold as signal and Low as a deviation', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-n', status: 'new', priority: 'low' }),
+          makeTicket({ id: 'tk-h', status: 'on_hold' }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-status-chip-tk-n')).toHaveTextContent('New');
+    expect(screen.getByTestId('ticket-priority-chip-tk-n')).toHaveTextContent('Low');
+    expect(screen.getByTestId('ticket-status-chip-tk-h')).toHaveTextContent('On hold');
+  });
+});
+
+describe('TicketQueueList two-line row', () => {
+  it('second line carries org, requester and device; the right cluster carries owner, SLA and age', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({
+          id: 'tk-r',
+          orgName: 'Acme',
+          submitterName: 'Jane Doe',
+          deviceHostname: 'e2e-windows.local',
+          assignedTo: 'u-1',
+          assigneeName: 'Todd Hebebrand',
+        })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    const meta = screen.getByTestId('ticket-row-meta-tk-r');
+    expect(meta).toHaveTextContent('Acme');
+    expect(meta).toHaveTextContent('Jane Doe');
+    expect(meta).toHaveTextContent('e2e-windows.local');
+    // The org is the client: it is the last part of the line to shrink.
+    const org = screen.getByTestId('ticket-org-tk-r');
+    const device = screen.getByTestId('ticket-device-tk-r');
+    expect(org.className).toContain('truncate');
+    expect(device.className).toContain('truncate');
+    expect(org.className).toMatch(/min-w-\[/);
+    const owner = screen.getByTestId('ticket-owner-tk-r');
+    expect(owner).toHaveTextContent('TH');
+    expect(owner).toHaveTextContent('Todd Hebebrand');
+    expect(screen.getByTestId('ticket-age-tk-r')).toBeInTheDocument();
+  });
+
+  it('marks an unowned ticket "Unassigned"', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-u' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.getByTestId('ticket-owner-tk-u')).toHaveTextContent('Unassigned');
+    expect(screen.getByTestId('ticket-owner-tk-u')).toHaveAttribute('data-unassigned', 'true');
+  });
+
+  it('omits the requester and device parts when the row has none', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-e' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.queryByTestId('ticket-requester-tk-e')).toBeNull();
+    expect(screen.queryByTestId('ticket-device-tk-e')).toBeNull();
+  });
+});
+
+describe('TicketQueueList org label and row activation (#9564)', () => {
+  it('shows the org as a plain label, not a link that steals the row click', () => {
     const onSelect = vi.fn();
-    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
-    const link = screen.getByTestId('org-record-link');
-    expect(link).toHaveAttribute('href', '/organizations/org-1');
-    expect(link).toHaveTextContent('Acme');
-    fireEvent.click(link);
-    expect(onSelect).not.toHaveBeenCalled();
+    const ticket = makeTicket({ id: 'tk-1' });
+    render(<TicketQueueList tickets={[ticket]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const row = screen.getByTestId('ticket-row-tk-1');
+    const org = screen.getByTestId('ticket-org-tk-1');
+    expect(org).toHaveTextContent('Acme');
+    // No anchor anywhere in the row: a click in the middle (where the org name
+    // sits) must open the ticket, never navigate to /organizations/<id>.
+    expect(row.querySelector('a')).toBeNull();
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    fireEvent.click(org);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(ticket);
   });
 
   it('selects on row click, Enter and Space', () => {
@@ -99,56 +205,138 @@ describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
     expect(onSelect).toHaveBeenCalledWith(ticket);
   });
 
-  it('does not hijack Enter pressed on the org link inside the row', () => {
-    const onSelect = vi.fn();
-    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
-    fireEvent.keyDown(screen.getByTestId('org-record-link'), { key: 'Enter' });
-    expect(onSelect).not.toHaveBeenCalled();
-  });
-
-  it('renders no org link when hideOrg or orgName is null', () => {
+  it('renders no org label when hideOrg or orgName is null', () => {
     const { unmount } = render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={vi.fn()} loading={false} hideOrg />
     );
-    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-org-tk-1')).toBeNull();
     unmount();
     render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-2', orgName: null })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
-    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-org-tk-2')).toBeNull();
   });
 });
 
-describe('TicketQueueList checklist progress (#9180)', () => {
-  it('shows done/total for a ticket with steps, from the row payload (no per-row fetch)', () => {
-    render(
-      <TicketQueueList
-        tickets={[makeTicket({ id: 'tk-1', checklist: { done: 2, total: 5 } })]}
-        selectedId={null}
-        onSelect={vi.fn()}
-        loading={false}
-      />
-    );
-    const chip = screen.getByTestId('ticket-checklist-chip-tk-1');
-    expect(chip).toHaveTextContent('2/5');
-    expect(chip.getAttribute('title')).toContain('2 of 5');
+describe('TicketQueueList listbox semantics', () => {
+  const three = [
+    makeTicket({ id: 'tk-1', internalNumber: 'T-1' }),
+    makeTicket({ id: 'tk-2', internalNumber: 'T-2' }),
+    makeTicket({ id: 'tk-3', internalNumber: 'T-3' }),
+  ];
+
+  it('is one tab stop: only the selected row is tabbable and the list items are presentational', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-2" onSelect={vi.fn()} loading={false} onToggleSelect={vi.fn()} bulkSelectedIds={new Set()} />);
+    const listbox = screen.getByRole('listbox', { name: 'Ticket queue' });
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+    for (const li of listbox.querySelectorAll('li')) expect(li).toHaveAttribute('role', 'presentation');
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('tabindex', '-1');
+    const tabbable = listbox.querySelectorAll('[tabindex="0"], input:not([tabindex="-1"])');
+    expect(tabbable).toHaveLength(1);
   });
 
-  it('renders no chip when the ticket has no steps, the field is absent, or total is 0', () => {
+  it('makes the first row the tab stop when nothing in the list is selected', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-elsewhere" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('keeps row checkboxes out of the tab order and reports bulk state on the option', () => {
+    const onToggleSelect = vi.fn();
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} onToggleSelect={onToggleSelect} bulkSelectedIds={new Set(['tk-3'])} />);
+    const box = screen.getByTestId('ticket-select-tk-1');
+    expect(box).toHaveAttribute('tabindex', '-1');
+    // The option carries the state for assistive tech (x toggles it); the
+    // pointer-only checkbox is hidden so the listbox owns only options.
+    expect(box).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByTestId('ticket-row-tk-1')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('ticket-row-tk-3')).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(box);
+    expect(onToggleSelect).toHaveBeenCalledWith('tk-1');
+  });
+
+  it('omits aria-checked when the host offers no bulk selection', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-1')).not.toHaveAttribute('aria-checked');
+  });
+
+  it('shows a row checkbox whenever its row has keyboard focus, not only on hover', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} onToggleSelect={vi.fn()} bulkSelectedIds={new Set()} />);
+    expect(screen.getByTestId('ticket-select-tk-1').className).toContain('group-has-[:focus-visible]:opacity-100');
+  });
+
+  it('gives each row a stable id so the page can move focus to it', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} />);
+    expect(screen.getByTestId('ticket-row-tk-2')).toHaveAttribute('id', queueOptionId('tk-2'));
+  });
+
+  // A host without the page's j/k hook (the organization record's Tickets
+  // tab): with one tab stop, rows 2..N are reachable only through the arrows.
+  it('moves focus between rows with ArrowDown/ArrowUp/Home/End when the host has no queue keys', () => {
+    const onSelect = vi.fn();
+    render(<TicketQueueList tickets={three} selectedId={null} onSelect={onSelect} loading={false} />);
+    const [r1, r2, r3] = ['tk-1', 'tk-2', 'tk-3'].map((id) => screen.getByTestId(`ticket-row-${id}`));
+    r1.focus();
+    fireEvent.keyDown(r1, { key: 'ArrowDown' });
+    expect(r2).toHaveFocus();
+    // The tab stop follows focus, so Tab out and back returns to this row.
+    expect(r2).toHaveAttribute('tabindex', '0');
+    expect(r1).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(r2, { key: 'End' });
+    expect(r3).toHaveFocus();
+    fireEvent.keyDown(r3, { key: 'ArrowDown' });
+    expect(r3).toHaveFocus();
+    fireEvent.keyDown(r3, { key: 'Home' });
+    expect(r1).toHaveFocus();
+    fireEvent.keyDown(r1, { key: 'ArrowUp' });
+    expect(r1).toHaveFocus();
+    // Moving focus never activates (here, activation navigates away).
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('leaves the arrows to a host that owns queue navigation (TicketsPage j/k)', () => {
+    render(<TicketQueueList tickets={three} selectedId="tk-1" onSelect={vi.fn()} loading={false} hostHandlesArrowKeys />);
+    const r1 = screen.getByTestId('ticket-row-tk-1');
+    r1.focus();
+    expect(fireEvent.keyDown(r1, { key: 'ArrowDown' })).toBe(true);
+    expect(r1).toHaveFocus();
+  });
+});
+
+describe('TicketQueueList merged chip (#8972)', () => {
+  it('marks a merged tombstone row "Merged" and leaves live rows alone', () => {
     render(
       <TicketQueueList
         tickets={[
-          makeTicket({ id: 'tk-null', checklist: null }),
-          makeTicket({ id: 'tk-absent' }),
-          makeTicket({ id: 'tk-zero', checklist: { done: 0, total: 0 } }),
+          makeTicket({ id: 'tk-m', status: 'closed', mergedIntoTicketId: 'tk-surv', mergedAt: '2026-10-20T12:00:00.000Z' }),
+          makeTicket({ id: 'tk-l', mergedIntoTicketId: null }),
         ]}
         selectedId={null}
         onSelect={vi.fn()}
         loading={false}
       />
     );
-    expect(screen.queryByTestId('ticket-checklist-chip-tk-null')).toBeNull();
-    expect(screen.queryByTestId('ticket-checklist-chip-tk-absent')).toBeNull();
-    expect(screen.queryByTestId('ticket-checklist-chip-tk-zero')).toBeNull();
+    expect(screen.getByTestId('ticket-row-merged-tk-m')).toHaveTextContent('Merged');
+    expect(screen.queryByTestId('ticket-row-merged-tk-l')).toBeNull();
+  });
+});
+
+describe('TicketQueueList imported chip (#8313)', () => {
+  it('marks a window-imported row "Imported" and leaves live rows alone', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-i', migrationWindowId: '6f1c2b0a-5d4e-4f3a-8b2c-1d0e9f8a7b6c' }),
+          makeTicket({ id: 'tk-l', migrationWindowId: null }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-row-imported-tk-i')).toHaveTextContent('Imported');
+    expect(screen.queryByTestId('ticket-row-imported-tk-l')).toBeNull();
   });
 });

@@ -1433,6 +1433,57 @@ describe('featureLinks routes', () => {
     });
   });
 
+  describe('wake_on_lan inlineSettings validation (#10838)', () => {
+    const STUB_POLICY_WITH_WOL_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'always' } }],
+    };
+
+    beforeEach(() => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'wake_on_lan' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'wake_on_lan' });
+    });
+
+    const post = (inlineSettings: unknown) => buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'wake_on_lan', inlineSettings }),
+    });
+
+    it('rejects configureSettings true on ADD', async () => {
+      const res = await post({ configureSettings: true, buttonMode: 'always' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid wake on LAN settings' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects unknown keys and missing settings on ADD', async () => {
+      expect((await post({ configureSettings: false, buttonMode: 'always', extra: 1 })).status).toBe(400);
+      expect((await post(undefined)).status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts both modes on ADD', async () => {
+      for (const buttonMode of ['verified', 'always']) {
+        const res = await post({ configureSettings: false, buttonMode });
+        expect(res.status).toBe(201);
+      }
+    });
+
+    it('rejects configureSettings true on UPDATE', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_WOL_LINK);
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { configureSettings: true, buttonMode: 'verified' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('maintenance inlineSettings validation', () => {
     const STUB_POLICY_WITH_MAINTENANCE_LINK = {
       ...STUB_POLICY,
@@ -1916,6 +1967,96 @@ describe('compliance rule set names', () => {
     expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 
+  it('POST refuses a rule set name over 200 characters → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: { items: [{ name: 'x'.repeat(201), rules }] } }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_RULE_SET_NAME_TOO_LONG');
+    expect(body.error).toContain('200');
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH refuses a rule set name over 200 characters → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: { items: [{ name: 'Baseline', rules }, { name: 'x'.repeat(201), rules }] } }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_RULE_SET_NAME_TOO_LONG');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts a rule set name of exactly 200 characters', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: { items: [{ name: 'x'.repeat(200), rules }] } }),
+    });
+
+    expect(res.status).not.toBe(400);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #11976: the agent never collects these paths, so the rule would report
+  // "Registry value not found" forever. Refuse it when it is written.
+  const SAM_RULE = { items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SAM\\SAM', registryValueName: 'F' }] }] };
+
+  it('POST refuses a registry_check on a path the agent never collects → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: SAM_RULE }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED');
+    expect(body.error).toContain('HKLM\\SAM\\SAM');
+    expect(body.paths).toEqual(['HKLM\\SAM\\SAM']);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH refuses a registry_check on a path the agent never collects → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: SAM_RULE }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts a registry_check on an ordinary policy path', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        featureType: 'compliance',
+        inlineSettings: { items: [{ name: 'Lock', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Example', registryValueName: 'Enabled' }] }] },
+      }),
+    });
+
+    expect(res.status).not.toBe(400);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
   it('PATCH with distinct names saves', async () => {
     getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
     const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
@@ -2136,5 +2277,107 @@ describe('security_agents feature links (#6960)', () => {
       LINK_ID, { inlineSettings: DISABLED }, POLICY_ID, expect.anything(), undefined,
       { securityAgentsArmAuthorized: true },
     );
+  });
+});
+
+// #10100: containment is inline-only and partner-wide from its first release.
+describe('containment feature links', () => {
+  const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
+  const LINK = { id: LINK_ID, featureType: 'containment' };
+  const DEFAULTS = {
+    version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0,
+    remoteRelay: true, requireSignedReleaseToken: false,
+  };
+
+  function request(method: string, body: Record<string, unknown>, access = 'all') {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('auth', makeAuth({
+        scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: access,
+      }));
+      c.set('permissions', permState.permissions);
+      await next();
+    });
+    app.route('/', featureLinkRoutes);
+    return app.request(`/${POLICY_ID}/features${method === 'PATCH' ? '/' + LINK_ID : ''}`, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...(method === 'POST' ? { featureType: 'containment' } : {}), ...body }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, orgId: null, partnerId: PARTNER_ID, featureLinks: [LINK] });
+    validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+    addFeatureLinkMock.mockResolvedValue(LINK);
+    updateFeatureLinkMock.mockResolvedValue(LINK);
+  });
+
+  it('is partner-linkable while refusing standalone references at the service boundary', async () => {
+    const { PARTNER_LINKABLE_FEATURE_TYPES, validateFeaturePolicyExists } =
+      await vi.importActual<typeof import('../../services/configurationPolicy')>('../../services/configurationPolicy');
+    expect(PARTNER_LINKABLE_FEATURE_TYPES.has('containment')).toBe(true);
+    await expect(validateFeaturePolicyExists('containment', null, { orgId: null, partnerId: PARTNER_ID }))
+      .resolves.toEqual({ valid: true });
+    await expect(validateFeaturePolicyExists('containment', LINK_ID, { orgId: null, partnerId: PARTNER_ID }))
+      .resolves.toMatchObject({ valid: false });
+  });
+
+  it.each(['POST', 'PATCH'])('%s denies partner-wide writes without full partner access', async method => {
+    const res = await request(method, { inlineSettings: { version: 1 } }, 'selected');
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toMatch(/full partner org access/);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PATCH'])('%s stores parsed defaults with full partner access', async method => {
+    const res = await request(method, { inlineSettings: { version: 1 } });
+    expect(res.status).toBe(method === 'POST' ? 201 : 200);
+    if (method === 'POST') {
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(POLICY_ID, 'containment', undefined, DEFAULTS, expect.anything());
+    } else {
+      expect(updateFeatureLinkMock.mock.calls[0]?.[1]).toMatchObject({ inlineSettings: DEFAULTS });
+    }
+  });
+
+  it.each(['POST', 'PATCH'])('%s refuses a blanket permit before mutation', async method => {
+    const res = await request(method, { inlineSettings: { version: 1, extraAllow: [
+      { cidr: '0.0.0.0/0', proto: 'tcp', ports: [443], label: 'Invalid blanket permit' },
+    ] } });
+    expect(res.status).toBe(400);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['POST', { cidr: '::1/128' }], ['PATCH', { cidr: '::1/128' }],
+    ['POST', { host: 'relay.localhost' }], ['PATCH', { host: 'relay.localhost' }],
+  ])('%s refuses a containment-only loopback target %j before mutation', async (method, target) => {
+    // ::1/128 and relay.localhost pass the base isolation wire schema; only the
+    // containment schema refuses them, so this proves the route uses it.
+    const res = await request(method, { inlineSettings: { version: 1, extraAllow: [
+      { ...target, proto: 'tcp', ports: [443], label: 'Loopback' },
+    ] } });
+    expect(res.status).toBe(400);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PATCH'])('%s refuses featurePolicyId before mutation', async method => {
+    const res = await request(method, { featurePolicyId: LINK_ID, inlineSettings: { version: 1 } });
+    expect(res.status).toBe(400);
+    expect(String((await res.json()).error)).toMatch(/inline|featurePolicyId/);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PATCH'])('%s refuses null inline settings before mutation', async method => {
+    const res = await request(method, { inlineSettings: null });
+    expect(res.status).toBe(400);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 });

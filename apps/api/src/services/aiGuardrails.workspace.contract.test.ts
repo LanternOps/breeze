@@ -102,7 +102,7 @@ describe('workspace_* guardrail contract (W04)', () => {
 
   it('every workspace tool has a TOOL_PERMISSIONS mapping', () => {
     for (const name of WORKSPACE_TOOL_NAMES) {
-      expect(TOOL_PERMISSIONS[name], name).toEqual({ resource: 'ai_agents', action: 'read' });
+      expect(TOOL_PERMISSIONS[name], name).toEqual({ resource: 'ai_workspace', action: 'execute' });
     }
   });
 

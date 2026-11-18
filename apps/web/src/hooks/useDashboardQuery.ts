@@ -36,11 +36,17 @@ export interface DashboardQueryState<T> {
  * widget always shows the same scope — the old per-widget pollers drifted
  * (RecentAlerts didn't refetch on an org change, showing the old scope
  * until its next poll).
+ *
+ * `enabled: false` skips the request entirely and reports the slot
+ * `unavailable` — the same state a 403 produces — so a role known to lack the
+ * endpoint's permission doesn't fire a doomed request every tick (#10295).
+ * UX only: the server still enforces the permission.
  */
 export function useDashboardQuery<T>(
   path: string,
   refreshToken: number,
   select: (json: unknown) => T,
+  { enabled = true }: { enabled?: boolean } = {},
 ): DashboardQueryState<T> {
   const [state, setState] = useState<DashboardQueryState<T>>({
     data: null,
@@ -66,7 +72,21 @@ export function useDashboardQuery<T>(
   const requestSeq = useRef(0);
 
   useEffect(() => {
+    // Bumping the sequence also invalidates any request still in flight from
+    // before the permission was withdrawn.
     const seq = ++requestSeq.current;
+    if (!enabled) {
+      dataOrgId.current = currentOrgId;
+      setState({
+        data: null,
+        error: null,
+        isLoading: false,
+        isFetching: false,
+        unavailable: true,
+        staleScope: false,
+      });
+      return;
+    }
     setState((prev) => ({
       ...prev,
       isFetching: true,
@@ -127,7 +147,7 @@ export function useDashboardQuery<T>(
     };
 
     run();
-  }, [path, refreshToken, currentOrgId]);
+  }, [path, refreshToken, currentOrgId, enabled]);
 
   return state;
 }

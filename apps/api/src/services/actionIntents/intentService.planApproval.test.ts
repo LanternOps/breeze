@@ -603,11 +603,14 @@ describe('createActionIntent planApproval branch (Recipe Library E4, #6169)', ()
     expect(planState.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
   });
 
-  it('refuses a secret-bearing tool before consulting membership', async () => {
+  // R2a Task 6 (W07 Amendment B5): the blanket secret-bearing throw moved
+  // AFTER membership, which now supplies the set's secrecy. Same refusal, same
+  // code, nothing inserted; membership is consulted once first.
+  it('refuses a secret-bearing tool under an all-ordinary approved set (after consulting membership)', async () => {
     await expect(
       createActionIntent(approverAuth(), planInput({ toolName: 'google_reset_password' })),
     ).rejects.toMatchObject({ code: 'plan_approval_invalid' });
-    expect(planState.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+    expect(planState.checkPlanEffectMembershipSystem).toHaveBeenCalledTimes(1);
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 
@@ -668,5 +671,91 @@ describe('createActionIntent planApproval branch (Recipe Library E4, #6169)', ()
     expect(approvedRows[0]).toMatchObject({ payload: { orgId: ORG_ID } });
     expect(planState.reserveOperation).toHaveBeenCalledTimes(1);
     expect(snapshot.status).toBe('approved');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2a Task 6 (W07 Amendment B5 / G1; D-R2-2): the SYMMETRIC set-kind gate.
+// Appended; every case above is unchanged.
+//
+// E4 refused every secret-bearing tool under a plan approval by NAME, before
+// membership. That blanket refusal is replaced by a check against the
+// approved set's kind, read from the ROWS by membership (`setSecrecy`): the
+// effect's kind must MATCH the set's, both ways. The `task_context_not_allowed`
+// throw, the membership refusal, the approver binding and the allowlist
+// ceiling are unchanged and keep their order.
+// ---------------------------------------------------------------------------
+describe('createActionIntent planApproval — set-kind gate (R2a Task 6)', () => {
+  const SECRET_TOOL = 'google_reset_password';
+  const SECRET_INPUT = { userEmail: 'dana@customer.example' };
+  const secretInput = (overrides?: Partial<CreateActionIntentInput>) =>
+    planInput({ toolName: SECRET_TOOL, input: SECRET_INPUT, ...overrides });
+
+  it('REFUSES a secret-bearing tool whose approved set is all-ordinary — decided from the approved rows', async () => {
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(okMembership({ setSecrecy: 'none_secret_bearing' }));
+    const err = await createActionIntent(approverAuth(), secretInput()).catch((e) => e);
+    expect(err).toMatchObject({ code: 'plan_approval_invalid' });
+    expect(String(err.message)).toMatch(/mints a credential/);
+    expect(planState.checkPlanEffectMembershipSystem).toHaveBeenCalledTimes(1);
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(planState.reserveOperation).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES an ordinary tool whose approved set is credential-only — the rule is SYMMETRIC', async () => {
+    // Without this direction a technician who approved "create one account"
+    // would have authorized an ordinary effect they never saw on the card.
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(okMembership({ setSecrecy: 'all_secret_bearing' }));
+    const err = await createActionIntent(approverAuth(), planInput()).catch((e) => e);
+    expect(err).toMatchObject({ code: 'plan_approval_invalid' });
+    expect(String(err.message)).toMatch(/credential-only/);
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(planState.reserveOperation).not.toHaveBeenCalled();
+  });
+
+  it('PERMITS a secret-bearing tool whose approved set is credential-only: it passes the gate and mints approved-at-creation', async () => {
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(okMembership({ setSecrecy: 'all_secret_bearing' }));
+    queueHappyDb();
+    const snapshot = await createActionIntent(approverAuth(), secretInput());
+    expect(planState.checkToolCeiling).toHaveBeenCalledWith(expect.anything(), SECRET_TOOL, SECRET_INPUT);
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      status: 'approved', decidedVia: 'plan_approval', decidedByUserId: APPROVER_ID, taskId: TASK_ID,
+    });
+    expect(planState.reserveOperation).toHaveBeenCalledTimes(1);
+    expect(snapshot.status).toBe('approved');
+  });
+
+  it('CONTROL (unchanged): an ordinary tool under an all-ordinary set mints exactly as before', async () => {
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(okMembership({ setSecrecy: 'none_secret_bearing' }));
+    queueHappyDb();
+    const snapshot = await createActionIntent(approverAuth(), planInput());
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(snapshot.status).toBe('approved');
+  });
+
+  it('a mixed stored set surfaces as the MEMBERSHIP refusal (membership runs first, unchanged)', async () => {
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue({ ok: false, refusal: 'mixed_secret_bearing', detail: 'mixed' });
+    const err = await createActionIntent(approverAuth(), secretInput()).catch((e) => e);
+    expect(err).toMatchObject({ code: 'plan_approval_invalid' });
+    expect(String(err.message)).toContain('mixed_secret_bearing');
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('a secret-bearing tool with task context but NO planApproval is still task_context_not_allowed', async () => {
+    await expect(createActionIntent(approverAuth(), secretInput({ planApproval: undefined })))
+      .rejects.toMatchObject({ code: 'task_context_not_allowed' });
+    expect(planState.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('the approver binding and the allowlist ceiling still bind a credential-only approval', async () => {
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(
+      okMembership({ setSecrecy: 'all_secret_bearing', approverUserId: 'someone-else' }),
+    );
+    await expect(createActionIntent(approverAuth(), secretInput())).rejects.toMatchObject({ code: 'plan_approval_invalid' });
+    planState.checkPlanEffectMembershipSystem.mockResolvedValue(okMembership({ setSecrecy: 'all_secret_bearing' }));
+    planState.checkToolCeiling.mockReturnValue({ ok: false, detail: 'not in allowlist' });
+    await expect(createActionIntent(approverAuth(), secretInput())).rejects.toMatchObject({ code: 'tool_not_in_agent_allowlist' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 });

@@ -52,6 +52,17 @@ import {
   subnetChangeWouldRetainSnmpSecrets,
 } from '../services/snmpSecrets';
 
+// The worker stores the agent's OS string as `{ os: '<name>' }` in jsonb;
+// the API contract is a plain string (#9645).
+function normalizeOsFingerprint(value: unknown): string | null {
+  if (typeof value === 'string') return value || null;
+  if (value && typeof value === 'object') {
+    const os = (value as { os?: unknown }).os;
+    return typeof os === 'string' && os ? os : null;
+  }
+  return null;
+}
+
 export const discoveryRoutes = new Hono();
 const requireDiscoveryRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -405,6 +416,7 @@ const createProfileSchema = z.object({
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
   concurrency: z.number().int().positive().optional(),
+  alertSettings: alertSettingsSchema,
   // #7969: devices.id of the agent that must run this profile's scans; null
   // or absent = automatic selection.
   pinnedDeviceId: z.string().guid().nullable().optional()
@@ -582,21 +594,37 @@ discoveryRoutes.get(
       conditions.push(inArray(discoveryProfiles.siteId, permissions.allowedSiteIds));
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
-    const results = await db.select({
-      profile: discoveryProfiles,
-      lastRunAt: sql<string | null>`(
-        select max(${discoveryJobs.completedAt})
-        from ${discoveryJobs}
-        where ${discoveryJobs.profileId} = ${discoveryProfiles.id}
-          and ${discoveryJobs.status} = 'completed'
-      )`.as('last_run_at')
-    }).from(discoveryProfiles)
+    const allResults = await db.select({ profile: discoveryProfiles })
+      .from(discoveryProfiles)
       .where(where)
       .orderBy(desc(discoveryProfiles.createdAt));
+    const results = allResults.filter((row) => canAccessRecordSite(permissions, row.profile.siteId));
+
+    // Last run = newest completed job per profile. Deliberately a separate
+    // grouped query, not a correlated subquery in the select above: a
+    // single-table drizzle select strips table qualifiers from `sql` chunks,
+    // which made `profile_id = id` bind to discovery_jobs.id and always
+    // yield NULL (#9644). Scoped to the profiles the caller may access.
+    const lastRunByProfile = new Map<string, string | Date | null>();
+    if (results.length > 0) {
+      const lastRuns = await db.select({
+        profileId: discoveryJobs.profileId,
+        lastRunAt: sql<string | null>`max(${discoveryJobs.completedAt})`
+      }).from(discoveryJobs)
+        .where(and(
+          inArray(discoveryJobs.profileId, results.map((row) => row.profile.id)),
+          eq(discoveryJobs.status, 'completed')
+        ))
+        .groupBy(discoveryJobs.profileId);
+      for (const run of lastRuns) {
+        if (run.profileId) lastRunByProfile.set(run.profileId, run.lastRunAt);
+      }
+    }
 
     return c.json({
-      data: results.filter((row) => canAccessRecordSite(permissions, row.profile.siteId)).map((row) => {
+      data: results.map((row) => {
         const p = row.profile;
+        const lastRun = lastRunByProfile.get(p.id);
         return {
           id: p.id,
           orgId: p.orgId,
@@ -613,7 +641,7 @@ discoveryRoutes.get(
           pinnedDeviceId: p.pinnedDeviceId ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
-          lastRunAt: row.lastRunAt ? dateFromSqlValue(row.lastRunAt).toISOString() : null
+          lastRunAt: lastRun ? dateFromSqlValue(lastRun).toISOString() : null
         };
       })
     });
@@ -664,6 +692,7 @@ discoveryRoutes.post(
       resolveHostnames: body.resolveHostnames ?? false,
       timeout: body.timeout ?? null,
       concurrency: body.concurrency ?? null,
+      alertSettings: body.alertSettings ?? null,
       pinnedDeviceId: body.pinnedDeviceId ?? null,
       createdBy: auth.user?.id ?? null
     }).returning();
@@ -1096,7 +1125,7 @@ discoveryRoutes.get(
         id: discoveryJobs.id,
         orgId: discoveryJobs.orgId,
         siteId: discoveryJobs.siteId,
-        profileId: discoveryJobs.profileId,
+        profileId: discoveryProfiles.id,
         profileName: discoveryProfiles.name,
         agentId: discoveryJobs.agentId,
         status: discoveryJobs.status,
@@ -1110,7 +1139,12 @@ discoveryRoutes.get(
         createdAt: discoveryJobs.createdAt
       })
       .from(discoveryJobs)
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the job's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveryJobs.orgId),
+        eq(discoveryProfiles.siteId, discoveryJobs.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
@@ -1396,7 +1430,12 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -1424,6 +1463,7 @@ discoveryRoutes.get(
           model: maskOidShapedModel(a.model),
           nicVendor: nicVendorFromMac(a.macAddress),
           openPorts: a.openPorts,
+          osFingerprint: normalizeOsFingerprint(a.osFingerprint),
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: row.linkedDeviceId ?? null,
@@ -1516,10 +1556,16 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .leftJoin(bridgeDevices, and(
         eq(discoveryJobs.agentId, bridgeDevices.agentId),
         eq(bridgeDevices.orgId, discoveredAssets.orgId),
+        eq(bridgeDevices.siteId, discoveredAssets.siteId),
       ))
       .leftJoin(sites, eq(discoveredAssets.siteId, sites.id))
       .where(and(...conditions))
@@ -1562,7 +1608,7 @@ discoveryRoutes.get(
         model: maskOidShapedModel(a.model),
         nicVendor: nicVendorFromMac(a.macAddress),
         openPorts: a.openPorts,
-        osFingerprint: a.osFingerprint,
+        osFingerprint: normalizeOsFingerprint(a.osFingerprint),
         snmpData: a.snmpData,
         responseTimeMs: a.responseTimeMs,
         linkedDeviceId: row.linkedDeviceId ?? null,

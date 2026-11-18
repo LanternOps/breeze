@@ -350,6 +350,7 @@ func testConfig(f *fakeAPI, dir string) Config {
 	cfg.Retry = httputil.RetryConfig{MaxRetries: 0, InitialDelay: 10 * ms, MaxDelay: 10 * ms, BackoffFactor: 2}
 	cfg.RequestTimeout = 2 * time.Second
 	cfg.CommandDelay = 5 * ms
+	cfg.wsPaceScale = 0.001 // shipped reconnect waits are seconds; tests pace in milliseconds
 	return cfg
 }
 

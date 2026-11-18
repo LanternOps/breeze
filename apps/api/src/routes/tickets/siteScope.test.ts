@@ -99,10 +99,10 @@ describe('filterAlertsBySiteScope', () => {
     expect(out).toEqual([]);
   });
 
-  it('KEEPS a deviceless (org-wide) alert for a site-restricted caller', async () => {
+  it('DROPS a deviceless (org-wide) alert for a site-restricted caller', async () => {
     const rows: AlertRow[] = [{ id: 'alert-orgwide', deviceId: null, topologySiteId: null }];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [SITE_A], orgId: ORG }, rows);
-    expect(out.map((r) => r.id)).toEqual(['alert-orgwide']);
+    expect(out.map((r) => r.id)).toEqual([]);
   });
 
   it('KEEPS in-site device alerts and DROPS out-of-site ones for a site-restricted caller', async () => {
@@ -127,13 +127,13 @@ describe('filterAlertsBySiteScope', () => {
     expect(dbMock.select).not.toHaveBeenCalled();
   });
 
-  it('an empty allowlist keeps deviceless alerts but drops all device-bound ones', async () => {
+  it('an empty allowlist drops every alert', async () => {
     const rows: AlertRow[] = [
       { id: 'alert-a', deviceId: DEVICE_A, topologySiteId: null },
       { id: 'alert-orgwide', deviceId: null, topologySiteId: null },
     ];
     const out = await filterAlertsBySiteScope({ allowedSiteIds: [], orgId: ORG }, rows);
-    expect(out.map((r) => r.id)).toEqual(['alert-orgwide']);
+    expect(out.map((r) => r.id)).toEqual([]);
   });
 
   it('scopes the device lookup to auth.orgId (belt-and-suspenders) so a cross-org device never matches', async () => {
@@ -169,5 +169,12 @@ describe('site-owned topology alerts follow their TOPOLOGY site (M3-D6, PR #7117
     expect(await alertInSiteScope({ allowedSiteIds: [SITE_A] }, { deviceId: DEVICE_B, topologySiteId: SITE_A })).toBe(true);
     expect(await alertInSiteScope({ allowedDeviceIds: [DEVICE_A] }, { deviceId: DEVICE_B, topologySiteId: SITE_A })).toBe(false);
     expect(await alertInSiteScope({}, { deviceId: DEVICE_A, topologySiteId: SITE_B })).toBe(true);
+  });
+});
+
+
+describe('alertInSiteScope workload gate', () => {
+  it.each([{ allowedSiteIds: [SITE_A] }, { allowedSiteIds: [] }])('denies a workload for restricted sites %j', async ({ allowedSiteIds }) => {
+    expect(await alertInSiteScope({ allowedSiteIds }, { deviceId: null, topologySiteId: null })).toBe(false);
   });
 });

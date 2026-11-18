@@ -136,6 +136,14 @@ export type BuildRunScriptSnapshotResult =
  */
 export interface RunScriptSnapshotDeps {
   loadScope: (orgIds: string[], database: Database) => Promise<TenantVariableScope>;
+  /**
+   * The device -> org lookup behind `deviceOrgIds`. Defaults to a `devices`
+   * read. Tool catalog W04 (#5219): `flows/preApproval.ts` supplies a
+   * placeholder org so it can build a device-less CONTENT snapshot at enable
+   * time (the pre-approval binding digest omits `deviceOrgIds` and
+   * `variableReferences`, so the placeholder never reaches a digest).
+   */
+  loadDeviceOrgs?: (deviceIds: string[], database: Database) => Promise<Array<{ id: string; orgId: string }>>;
 }
 
 const DEFAULT_DEPS: RunScriptSnapshotDeps = {
@@ -243,10 +251,12 @@ export async function buildRunScriptSnapshot(
     .limit(1);
   if (!script) return { kind: 'target_absent' };
 
-  const deviceRows: Array<{ id: string; orgId: string }> = await database
-    .select({ id: devices.id, orgId: devices.orgId })
-    .from(devices)
-    .where(inArray(devices.id, deviceIds));
+  const deviceRows: Array<{ id: string; orgId: string }> = deps.loadDeviceOrgs
+    ? await deps.loadDeviceOrgs(deviceIds, database)
+    : await database
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(inArray(devices.id, deviceIds));
 
   // Fail closed on an unresolvable device rather than skipping it. Dropping it
   // would shrink `deviceOrgIds`, which shrinks the reference set, which can

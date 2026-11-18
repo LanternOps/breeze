@@ -1,0 +1,11 @@
+{
+  "promptId": "elevation:00000000-0000-4000-8000-0000000000e1",
+  "rev": 4,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "state": "expired",
+  "copy": {
+    "title": "Request expired",
+    "body": "Your IT support team did not answer in time. You can send the request again."
+  },
+  "actions": []
+}

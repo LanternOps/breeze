@@ -191,6 +191,18 @@ vi.mock('./ticketMailbox/resolveOutboundMailbox', () => ({
 
 // ── real implementations ─────────────────────────────────────────────────────
 
+// #8972 W0: ticket-child writers lock the ticket row first; these select mocks have
+// no .for(), so the helper is stubbed and its call is asserted below.
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('./ticketRowLock', () => ({
+  lockTicketForWrite: lockTicketForWriteMock,
+  lockTicketsForWrite: vi.fn(async () => new Map()),
+}));
+
 import { createTicket, addTicketComment, changeTicketStatus, updateTicketFields } from './ticketService';
 import { handleTicketEvent } from '../jobs/ticketNotifyWorker';
 import { assigneeNotificationFromOutboxRow } from '../jobs/ticketOutboxPublisher';
@@ -287,6 +299,8 @@ describe('ticket-events producer→consumer contract', () => {
     hoisted.updateReturningQueue.push([{ id: 't-c2' }]);
 
     await addTicketComment('t-c2', { content: 'We are looking into this.', isPublic: true }, actor);
+    // #8972 W0: the comment writer locked the ticket row first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't-c2');
 
     expect(hoisted.emitCaptured).toHaveLength(1);
     const event = hoisted.emitCaptured[0] as TicketEvent;
@@ -309,10 +323,10 @@ describe('ticket-events producer→consumer contract', () => {
   // ── changeTicketStatus (resolve) → ticket.status_changed ─────────────────
 
   it('changeTicketStatus to resolved: emitted event feeds handleTicketEvent → requester email with resolution note', async () => {
-    // Service: ticket lookup for changeTicketStatus
-    hoisted.selectQueue.push([{
-      id: 't-c3', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null
-    }]);
+    // Service: ticket lookup for changeTicketStatus, then its re-read under
+    // the ticket lock (#8972 W0)
+    const row = { id: 't-c3', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null };
+    hoisted.selectQueue.push([row], [row]);
     // Service: update returning
     hoisted.updateReturningQueue.push([{ id: 't-c3', status: 'resolved' }]);
     // Service: comment insert returning
@@ -354,12 +368,14 @@ describe('ticket-events producer→consumer contract', () => {
   // ── updateTicketFields → ticket.updated ───────────────────────────────────
 
   it('updateTicketFields: emitted ticket.updated event feeds handleTicketEvent → explicit no-op (no insert, no email)', async () => {
-    // Service selects: ticket lookup
-    hoisted.selectQueue.push([{
+    // Service selects: ticket lookup, then its re-read under the ticket lock
+    // (#8972 W0: a priority change can restamp SLA)
+    const row = {
       id: 't-c4', orgId: 'o-1', partnerId: 'p-1', status: 'open',
       subject: 'Old subject', priority: 'normal', description: null,
       categoryId: null, dueDate: null, deviceId: null, tags: []
-    }]);
+    };
+    hoisted.selectQueue.push([row], [row]);
     // Service update: returning
     hoisted.updateReturningQueue.push([{ id: 't-c4', subject: 'New subject', priority: 'high' }]);
     // Service insert: system feed entry returning

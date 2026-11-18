@@ -13,6 +13,13 @@ import type { SQL } from 'drizzle-orm';
  * predicate is really compiled into SQL, and if a zero-row result is really
  * followed by a re-read.
  */
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 const dbMocks = vi.hoisted(() => ({
   rows: [] as unknown[],
   set: [] as unknown[],
@@ -131,6 +138,8 @@ describe('addChecklistItem', () => {
     dbMocks.rows.push([{ maxPosition: null }], [row({ position: 0 })]);
     await addChecklistItem(TICKET, { label: 'First' }, ACTOR);
     expect(dbMocks.values[0]).toEqual(expect.objectContaining({ position: 0 }));
+    // #8972 W0: the ticket row is locked first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET.id);
   });
 
   it('records a null createdBy for a system actor', async () => {
@@ -141,6 +150,8 @@ describe('addChecklistItem', () => {
 });
 
 describe('patchChecklistItem attestation rules', () => {
+  // #8972 W0: lockItemTicket's unlocked ticketId peek is the first select
+  beforeEach(() => { dbMocks.rows.push([{ ticketId: 'ticket-lock-1' }]); });
   it('done: true stamps done_at and the actor, guarded on done_at IS NULL', async () => {
     const stamped = new Date('2026-09-02T10:00:00.000Z');
     dbMocks.rows.push([row()], [row({ doneAt: stamped, doneByUserId: 'user-1' })]);
@@ -148,11 +159,14 @@ describe('patchChecklistItem attestation rules', () => {
     const out = await patchChecklistItem(ITEM, { done: true }, ACTOR);
 
     expect(out.done).toBe(true);
+    // #8972 W0: the item's ticket (from the unlocked peek) is locked first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 'ticket-lock-1');
     expect(out.doneByUserId).toBe('user-1');
     expect(dbMocks.set[0]).toEqual(expect.objectContaining({ doneByUserId: 'user-1' }));
+    // #8972 W0: where[0] is the lock peek, [1] the 404 read, [2] the guarded UPDATE
     // The guard is the whole point: compile the real predicate and assert the
     // `done_at is null` leg is in it, so a plain unguarded SET fails here.
-    const guard = compile(dbMocks.where[1]).sql.toLowerCase();
+    const guard = compile(dbMocks.where[2]).sql.toLowerCase();
     expect(guard).toContain('done_at" is null');
   });
 
@@ -320,6 +334,8 @@ describe('listChecklist', () => {
 });
 
 describe('deleteChecklistItem', () => {
+  // #8972 W0: lockItemTicket's unlocked ticketId peek is the first select
+  beforeEach(() => { dbMocks.rows.push([{ ticketId: 'ticket-lock-1' }]); });
   it('404s when nothing was deleted', async () => {
     dbMocks.rows.push([]);
     await expect(deleteChecklistItem(ITEM)).rejects.toBeInstanceOf(ChecklistServiceError);
@@ -346,6 +362,8 @@ describe('deleteChecklistItem', () => {
  *     silently strand the task.
  */
 describe('patchChecklistItem — operator wake path (E3)', () => {
+  // #8972 W0: lockItemTicket's unlocked ticketId peek is the first select
+  beforeEach(() => { dbMocks.rows.push([{ ticketId: 'ticket-lock-1' }]); });
   const stamped = new Date('2026-09-02T10:00:00.000Z');
 
   it('enqueues the task wake when an operator_task item is ticked', async () => {
@@ -400,13 +418,16 @@ describe('patchChecklistItem — operator wake path (E3)', () => {
   it('does NOT record an untick for a manual item, nor for an operator item that was not done', async () => {
     dbMocks.rows.push([row({ doneAt: stamped })], [row()]);
     await patchChecklistItem(ITEM, { done: false }, { userId: 'user-7' });
-    dbMocks.rows.push([row({ source: 'operator_task' })], [row({ source: 'operator_task' })]);
+    // #8972 W0: second call needs its own lock peek
+    dbMocks.rows.push([{ ticketId: 'ticket-lock-1' }], [row({ source: 'operator_task' })], [row({ source: 'operator_task' })]);
     await patchChecklistItem(ITEM, { done: false }, { userId: 'user-7' });
     expect(humanWork.onChecklistItemUnticked).not.toHaveBeenCalled();
   });
 });
 
 describe('deleteChecklistItem — operator guard (E3)', () => {
+  // #8972 W0: lockItemTicket's unlocked ticketId peek is the first select
+  beforeEach(() => { dbMocks.rows.push([{ ticketId: 'ticket-lock-1' }]); });
   it('asks the guard BEFORE deleting', async () => {
     dbMocks.rows.push([{ id: ITEM }]);
     await deleteChecklistItem(ITEM);
@@ -421,8 +442,8 @@ describe('deleteChecklistItem — operator guard (E3)', () => {
       throw e;
     });
     await expect(deleteChecklistItem(ITEM)).rejects.toMatchObject({ status: 409 });
-    // Nothing was consumed from the row queue: the DELETE never ran.
-    expect(dbMocks.where).toHaveLength(0);
+    // Only the lock peek ran (#8972 W0: + lock read): the DELETE never ran.
+    expect(dbMocks.where).toHaveLength(1);
   });
 });
 

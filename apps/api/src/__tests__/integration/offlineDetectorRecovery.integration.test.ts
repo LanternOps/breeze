@@ -2,6 +2,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'bullmq';
+import postgres from 'postgres';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDb, db, withDbAccessContext } from '../../db';
@@ -256,5 +257,66 @@ describe('transitionDeviceOffline from inside an ambient org-scoped context (#65
       db.select().from(offlineTransitionEffects).where(eq(offlineTransitionEffects.deviceId, device.id)),
     );
     expect(ownOrgEffects.length).toBeGreaterThan(0);
+  });
+});
+
+// #8318 §6.4 (review of wave 1b-1, nice-to-have b): transitionDeviceOffline
+// reads the row by the closing socket's agent_id WITHOUT a lock, then flips it
+// with a CAS that carries `agent_id = <the id it was read by>` inline (it is
+// allow-listed in the own-row contract, which only checks the text). This pins
+// the predicate's behaviour: a reattach confirm (or an in-place re-enroll) that
+// commits between that read and the UPDATE leaves the row to its new install.
+// Without the predicate every other CAS half still matches (same id, org,
+// status and last_seen_at) and the superseded socket's close would take the
+// new install's device offline.
+describe('transitionDeviceOffline after the row changed hands under it (#8318 §6.4)', () => {
+  it('a superseded socket\'s close matches 0 rows when agent_id changed between its read and its CAS; status stays online', async () => {
+    const { device } = await fixture();
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const newAgentId = `reattached-${randomUUID()}`;
+    let confirm: Promise<unknown> | undefined;
+    let closing: Promise<{ transitioned: boolean }> | undefined;
+    try {
+      // The "confirm": holds the device row, then hands it to a new install.
+      confirm = holder.begin(async (tx) => {
+        await tx`SELECT id FROM devices WHERE id = ${device.id}::uuid FOR UPDATE`;
+        locked();
+        await mayCommit;
+        await tx`UPDATE devices SET agent_id = ${newAgentId} WHERE id = ${device.id}::uuid`;
+      });
+      await lockTaken;
+
+      // The old install's socket closes: its unlocked read sees the old
+      // agent_id, then its CAS UPDATE queues behind the confirm's lock.
+      closing = transitionDeviceOffline(device.agentId!, ['online']);
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const [blocked] = await getTestDb().execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND query ILIKE '%update "devices" set "status"%'`);
+        if ((blocked?.n ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error('the offline CAS never blocked on the device row');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      release();
+      await confirm;
+
+      // The CAS re-evaluates against the committed row: agent_id moved, 0 rows.
+      expect(await closing).toEqual({ transitioned: false });
+      const [row] = await getTestDb().select().from(devices).where(eq(devices.id, device.id));
+      expect(row!.agentId).toBe(newAgentId);
+      expect(row!.status).toBe('online');
+      const effects = await getTestDb().select().from(offlineTransitionEffects)
+        .where(eq(offlineTransitionEffects.deviceId, device.id));
+      expect(effects).toEqual([]);
+    } finally {
+      release();
+      await Promise.allSettled([confirm, closing].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 5 });
+    }
   });
 });

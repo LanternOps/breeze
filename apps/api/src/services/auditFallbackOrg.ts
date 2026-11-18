@@ -110,6 +110,7 @@ function orgOf(table: OrgOwnedTable, id: string): OrgLookup {
       .from(table)
       .where(eq(table.id, id))
       .limit(1);
+    // Partner-owned groups intentionally attribute audits at partner level (orgId null).
     return row?.orgId ?? null;
   };
 }

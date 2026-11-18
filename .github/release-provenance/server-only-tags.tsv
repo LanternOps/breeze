@@ -21,3 +21,4 @@
 # Append-only once the tag exists on the remote: PR CI refuses edits to, or
 # removal of, a row whose tag has been pushed. A row for a tag that has not been
 # pushed yet may be removed.
+v0.126.1	365a806f0cd9f6c80a0543814b1ae68559d3f620	v0.126.0	Alert notifications fix (#10926) + device list serial (#10921); no agent change

@@ -6,6 +6,7 @@ import {
   restoreAccessTokenFromCookieDetailed,
   useAuthStore
 } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '../../lib/authScope';
 import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
@@ -266,16 +267,17 @@ export default function AdminSessionManager() {
         // partner-level security policy. Without this the timer silently reset to
         // the 60-minute frontend default whenever no org was selected, logging a
         // partner admin out early despite a longer configured timeout (#2347).
-        const response = await fetchWithAuth('/orgs/partners/me');
-        if (!response.ok) {
+        // Shared with the other islands reading partners/me at load (#9172).
+        const read = await getPartnersMe();
+        if (!read.ok) {
           console.warn(
             '[AdminSessionManager] Failed to load partner session timeout:',
-            response.status
+            read.status
           );
           settleTimeout(null);
           return;
         }
-        const data = await response.json();
+        const data = read.data as { settings?: { security?: { sessionTimeout?: unknown } } } | null;
         settleTimeout(Number(data?.settings?.security?.sessionTimeout));
       } catch (err) {
         // Fall back to the frontend default — NOT to the previous scope's

@@ -22,8 +22,15 @@ import {
 import { and, eq, gte, inArray, ne } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
+import { getLocalTimeParts, normalizeTimezone, zonedWallClockToUtc } from '../services/zonedTime';
 import { attachWorkerObservability } from './workerObservability';
-import { checkDeviceMaintenanceWindow } from '../services/featureConfigResolver';
+import { deferUntilDatabaseWritable } from '../db/deferUntilWritable';
+import { isReadOnlySqlError } from '../db/readOnlyDatabase';
+import {
+  checkDeviceMaintenanceWindow,
+  resolvePatchPolicyWinnersForDevices,
+  type PatchPolicyWinner,
+} from '../services/featureConfigResolver';
 import {
   enqueuePatchJob,
   selectStaleScheduledJobIds,
@@ -76,16 +83,6 @@ function getSchedulerQueue(): Queue {
   return schedulerQueue;
 }
 
-interface LocalTimeParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  weekday: 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
-}
-
 interface DeviceSchedulingContext {
   deviceId: string;
   orgId: string;
@@ -115,44 +112,6 @@ function parsePartnerTimezone(column: string | null | undefined, settings: unkno
   const fromSettings = parseOrgTimezone(settings);
   if (fromSettings) return fromSettings;
   return canonicalColumn;
-}
-
-function normalizeTimezone(timezone: string | null | undefined): string {
-  const candidate = timezone || 'UTC';
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
-    return candidate;
-  } catch (err) {
-    console.warn(`[PatchScheduler] Invalid timezone "${candidate}", falling back to UTC:`, err);
-    return 'UTC';
-  }
-}
-
-function getLocalTimeParts(now: Date, timezone: string): LocalTimeParts {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: normalizeTimezone(timezone),
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    weekday: 'short',
-    hourCycle: 'h23',
-  });
-  const parts = formatter.formatToParts(now);
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '0';
-  const weekday = get('weekday').toLowerCase().slice(0, 3) as LocalTimeParts['weekday'];
-
-  return {
-    year: Number.parseInt(get('year'), 10),
-    month: Number.parseInt(get('month'), 10),
-    day: Number.parseInt(get('day'), 10),
-    hour: Number.parseInt(get('hour'), 10),
-    minute: Number.parseInt(get('minute'), 10),
-    second: Number.parseInt(get('second'), 10),
-    weekday,
-  };
 }
 
 function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, now: Date): string | null {
@@ -192,49 +151,6 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 type WeekdayKey = (typeof WEEKDAY_KEYS)[number];
-
-/** The zone's UTC offset (ms) in force at `instant`. */
-function zoneOffsetMsAt(instant: number, timezone: string): number {
-  const local = getLocalTimeParts(new Date(instant), timezone);
-  return (
-    Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0) - instant
-  );
-}
-
-/**
- * The UTC instant of a wall-clock time in `timezone`.
- *
- * Deliberately NOT a convergence loop. The naive guess uses the offset in force
- * at `wallAsUtc`, which is the wrong offset for a wall clock on the far side of
- * a DST transition; correcting once and re-checking is right for every ordinary
- * time, but on a SPRING-FORWARD day the requested wall clock does not exist at
- * all (02:00 is skipped) and the two candidates oscillate forever — a loop
- * settles on 01:00, an hour BEFORE the window the admin asked for.
- *
- * So: try the correction, accept it if the offset it implies is self-consistent,
- * and otherwise take the later of the two candidates — the same "shift forward
- * into the gap" rule Luxon and date-fns-tz use. Ambiguous fall-back times
- * resolve to the first (pre-transition) occurrence.
- */
-function zonedWallClockToUtc(
-  parts: { year: number; month: number; day: number; hour: number; minute: number },
-  timezone: string,
-): Date {
-  const wallAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
-
-  const firstOffset = zoneOffsetMsAt(wallAsUtc, timezone);
-  const firstCandidate = wallAsUtc - firstOffset;
-
-  const secondOffset = zoneOffsetMsAt(firstCandidate, timezone);
-  if (secondOffset === firstOffset) return new Date(firstCandidate);
-
-  const secondCandidate = wallAsUtc - secondOffset;
-  if (zoneOffsetMsAt(secondCandidate, timezone) === secondOffset) {
-    return new Date(secondCandidate);
-  }
-
-  return new Date(Math.max(firstCandidate, secondCandidate));
-}
 
 /**
  * The next occurrence of a patch schedule, strictly after `now`, as a UTC
@@ -427,6 +343,116 @@ async function resolveDeviceIdsForAssignment(
   return deviceIds;
 }
 
+/** Per-tick #9632 lookups shared by every policy the scan visits. */
+interface ClosestWinsCache {
+  /** Device id -> its winning patch policy (null: no policy wins it). */
+  winners: Map<string, PatchPolicyWinner | null>;
+  /** Config policy id -> whether the scheduler can run it (it loads and its ring is valid). */
+  schedulable: Map<string, boolean>;
+  /**
+   * Set once a lookup has exhausted its retries this tick. Later lookups then
+   * try once without waiting, so a persistent failure cannot stall the scan by
+   * ~2 s per due group past the 60 s tick.
+   */
+  retriesExhausted: boolean;
+}
+
+/** Waits between winner-lookup attempts. The due window is a single minute (getDueOccurrenceKey). */
+const CLOSEST_WINS_RETRY_DELAYS_MS = [500, 1500];
+
+async function withClosestWinsRetry<T>(
+  configPolicyId: string,
+  cache: ClosestWinsCache,
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      const delay = cache.retriesExhausted ? undefined : CLOSEST_WINS_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        cache.retriesExhausted = true;
+        // The caller's per-policy catch only logs to the console, and the
+        // occurrence's minute passes with it: this must reach Sentry.
+        const message = `[PatchScheduler] Failed to resolve winning patch policies for config policy ${configPolicyId}`;
+        console.error(`${message}:`, err instanceof Error ? err.message : err);
+        captureException(err instanceof Error ? err : new Error(message), undefined, {
+          patch_scheduler_stage: 'closest_wins_resolve_failed',
+        }, { fingerprint: ['patch-scheduler', 'closest-wins-resolve-failed'] });
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
+ * #9632: the devices of `deviceIds` this config policy should schedule: those
+ * whose winning patch policy (resolvePatchPolicyWinnersForDevices, the batched
+ * resolvePatchConfigPolicyForDevice) is this one.
+ *
+ *  - A device with NO winner is kept. The per-device resolver needs a
+ *    normalized patch settings row, so a policy still on the inline fallback
+ *    would otherwise patch nothing.
+ *  - A device a DIFFERENT policy wins is dropped; that policy schedules it.
+ *  - If that winner cannot be scheduled (its ring reference is invalid, e.g. a
+ *    disabled ring, #8678), the device is still dropped: falling back to this
+ *    broader policy would apply the ring and reboot policy the override exists
+ *    to replace, and #8678 already fails a broken ring closed for the devices
+ *    it governs (their Patches tab denies every candidate). It is reported to
+ *    Sentry so the unpatched devices are not silent.
+ *
+ * A lookup that still fails after retries throws, so the policy is skipped for
+ * this tick: a later patch beats a reboot outside the window.
+ */
+async function keepDevicesThisPolicyWins(
+  configPolicyId: string,
+  orgId: string,
+  deviceIds: string[],
+  cache: ClosestWinsCache,
+): Promise<{ kept: string[]; skippedByWinner: Map<string, number> }> {
+  await withClosestWinsRetry(configPolicyId, cache, async () => {
+    const missing = deviceIds.filter((id) => !cache.winners.has(id));
+    if (missing.length > 0) {
+      const resolved = await runWithSystemDbAccess(() => resolvePatchPolicyWinnersForDevices(missing));
+      for (const id of missing) cache.winners.set(id, resolved.get(id) ?? null);
+    }
+    for (const id of deviceIds) {
+      const winnerId = cache.winners.get(id)?.configPolicyId;
+      if (!winnerId || winnerId === configPolicyId || cache.schedulable.has(winnerId)) continue;
+      const local = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(winnerId));
+      cache.schedulable.set(winnerId, !!local && local.ring.valid);
+    }
+  });
+
+  const kept: string[] = [];
+  const skippedByWinner = new Map<string, number>();
+  const unschedulableWinners = new Map<string, number>();
+  for (const id of deviceIds) {
+    const winner = cache.winners.get(id) ?? null;
+    if (!winner || winner.configPolicyId === configPolicyId) {
+      kept.push(id);
+      continue;
+    }
+    skippedByWinner.set(winner.configPolicyId, (skippedByWinner.get(winner.configPolicyId) ?? 0) + 1);
+    if (cache.schedulable.get(winner.configPolicyId) === false) {
+      unschedulableWinners.set(winner.configPolicyId, (unschedulableWinners.get(winner.configPolicyId) ?? 0) + 1);
+    }
+  }
+
+  for (const [winnerId, count] of unschedulableWinners) {
+    const message =
+      `[PatchScheduler] ${count} device(s) in org ${orgId} are not patched: their closest patch policy ${winnerId} ` +
+      `cannot be scheduled (invalid ring reference), so the broader policy ${configPolicyId} leaves them out`;
+    console.error(message);
+    captureException(new Error(message), undefined, {
+      patch_scheduler_stage: 'closest_wins_winner_unschedulable',
+    }, { fingerprint: ['patch-scheduler', 'closest-wins-winner-unschedulable'] });
+  }
+
+  return { kept, skippedByWinner };
+}
+
 async function loadDeviceSchedulingContexts(deviceIds: string[]): Promise<DeviceSchedulingContext[]> {
   if (deviceIds.length === 0) return [];
 
@@ -528,6 +554,9 @@ async function scanAndCreateJobs(): Promise<{
   // context pinned the pooled connection idle-in-transaction across Redis
   // round-trips, a contributor to the #1105 pool-poisoning pattern.
   const enqueueJobIds: string[] = [];
+  // #9632: each device's winning patch policy, resolved once per tick and
+  // shared by every policy that reaches the device.
+  const closestWins: ClosestWinsCache = { winners: new Map(), schedulable: new Map(), retriesExhausted: false };
 
   const patchPoliciesWithSchedules = await runWithSystemDbAccess(() =>
     db
@@ -560,6 +589,7 @@ async function scanAndCreateJobs(): Promise<{
       const policyPartnerId = row.policyPartnerId;
 
       const policyLocal = await runWithSystemDbAccess(() => loadPolicyLocalPatchConfig(row.configPolicyId));
+      closestWins.schedulable.set(row.configPolicyId, !!policyLocal && policyLocal.ring.valid);
       if (!policyLocal) continue;
 
       if (!policyLocal.ring.valid) {
@@ -634,11 +664,33 @@ async function scanAndCreateJobs(): Promise<{
           continue;
         }
 
+        // #9632: closest level wins. A device reached by several patch policies
+        // belongs to the one its effective configuration shows. Without this
+        // each policy scheduled its own job for it, so a broader policy's ring
+        // and reboot policy (e.g. "If required") applied to a device a closer
+        // override had moved to a maintenance-window reboot.
+        const { kept: closestDeviceIds, skippedByWinner } = await keepDevicesThisPolicyWins(
+          row.configPolicyId,
+          group.orgId,
+          group.deviceIds,
+          closestWins,
+        );
+        if (skippedByWinner.size > 0) {
+          const winners = Array.from(skippedByWinner, ([policyId, count]) => `${policyId} (${count})`).join(', ');
+          console.log(
+            `[PatchScheduler] Config policy ${row.configPolicyId}: skipped ${group.deviceIds.length - closestDeviceIds.length} ` +
+              `device(s) in ${group.orgId} whose patch settings come from a closer policy: ${winners}`
+          );
+        }
+        if (closestDeviceIds.length === 0) {
+          continue;
+        }
+
         // Per-device maintenance check: each lookup is its OWN short context so
         // this loop never holds one pooled connection across the whole device
         // set (#1105/#1896 conn-hold). checkDeviceMaintenanceWindow is DB-backed.
         const eligibleDeviceIds: string[] = [];
-        for (const deviceId of group.deviceIds) {
+        for (const deviceId of closestDeviceIds) {
           const maintenance = await runWithSystemDbAccess(() => checkDeviceMaintenanceWindow(deviceId));
           if (!maintenance.active || !maintenance.suppressPatching) {
             eligibleDeviceIds.push(deviceId);
@@ -1020,7 +1072,7 @@ function createSchedulerWorker(): Worker {
   );
 }
 
-export async function initializePatchSchedulerWorker(): Promise<void> {
+async function repairPatchSettings(): Promise<void> {
   await runWithSystemDbAccess(async () => {
     try {
       const repair = await backfillMissingPatchSettings();
@@ -1039,6 +1091,18 @@ export async function initializePatchSchedulerWorker(): Promise<void> {
       }
     }
   });
+}
+
+export async function initializePatchSchedulerWorker(): Promise<void> {
+  try {
+    await repairPatchSettings();
+  } catch (error) {
+    // #11741: the repair writes only when a feature link lacks its settings
+    // row. On a read-only database, repair once writes are accepted instead
+    // of failing the scheduler for the life of the process.
+    if (!isReadOnlySqlError(error)) throw error;
+    deferUntilDatabaseWritable('PatchScheduler settings repair', repairPatchSettings);
+  }
 
   schedulerWorker = createSchedulerWorker();
   attachWorkerObservability(schedulerWorker, 'patchSchedulerWorker');

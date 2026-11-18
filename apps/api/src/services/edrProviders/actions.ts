@@ -24,10 +24,11 @@ import {
   type EdrTenantRow,
 } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { createAuditLog, createAuditLogAsync } from '../auditService';
 import { getRedis } from '../redis';
 import { edrActionsEnabled } from '../../config/env';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { checkEdrActionRateLimit, edrActorKey } from './actionGates';
 import { classifyVendorActionError, EdrActionError } from './actionErrors';
 import {
@@ -275,9 +276,10 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     throw new EdrActionError('actions_disabled', 503, EDR_ACTIONS_DISABLED_REASON);
   }
   const { auth } = actor;
-  // An AI operator agent never lands its own id in requested_by (a users FK):
-  // it proposes through an action intent and a human's release executes.
-  if (auth.principal?.kind === 'ai_agent') {
+  // An AI operator agent (or a flow run) never lands its own id in
+  // requested_by (a users FK): it proposes through an action intent and a
+  // human's release executes.
+  if (isAutomationPrincipal(auth)) {
     throw new EdrActionError('approval_required', 403, 'An AI agent must propose this action for human approval');
   }
   const action: EdrActionKey = input.action;
@@ -382,7 +384,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     if (code === '23505') {
       throw new EdrActionError('action_in_progress', 409, 'This action is already in progress for this target');
     }
-    if (code === '23503') {
+    if (isPgForeignKeyViolationCode(code)) {
       // The composite FKs are the remap fence: tenant remapped / endpoint gone since step 2.
       throw new EdrActionError('target_not_found', 404, 'EDR target not found');
     }

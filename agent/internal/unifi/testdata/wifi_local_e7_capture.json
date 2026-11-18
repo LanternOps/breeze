@@ -1,0 +1,58 @@
+{
+  "_comment": "Sanitized LOCAL-controller capture, GET only, GET https://<controller>/proxy/network/integration/v1/..., Network 10.6.106 / UniFi OS 5.1.33, E7 firmware 8.7.11: https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-19078413 . Only values published in that comment are used; ids are synthetic placeholders because the capture redacted them. The cloud (Site Manager connector, UniFi OS 5.1.132) cases live in packages/shared/src/testing/topology-unifi-v2.json: https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621",
+  "evidence": {
+    "deviceList.features": "GET /v1/sites/{siteId}/devices -> ARRAY of names",
+    "deviceList.interfaces": "GET /v1/sites/{siteId}/devices -> ARRAY of names",
+    "deviceDetail.features": "GET /v1/sites/{siteId}/devices/{deviceId} -> OBJECT keyed by name",
+    "deviceDetail.interfaces.radios[]": "GET /v1/sites/{siteId}/devices/{deviceId}: frequencyGHz, channel, channelWidthMHz, wlanStandard (802.11be)",
+    "statistics.uptimeSec/cpuUtilizationPct/memoryUtilizationPct": "GET .../devices/{deviceId}/statistics/latest",
+    "statistics.loadAverage1/5/15Min": "GET .../statistics/latest (decoded, NOT emitted: no v2 wire field)",
+    "statistics.uplink": "GET .../statistics/latest: {} (rxRateBps/txRateBps omitted)",
+    "statistics.interfaces.radios[].txRetriesPct": "GET .../statistics/latest: 0.0, 0.0, 10.0",
+    "clients.type/uplinkDeviceId": "GET /v1/sites/{siteId}/clients: WIRELESS and WIRED both carry uplinkDeviceId"
+  },
+  "siteId": "site-local",
+  "apId": "ap-e7-local",
+  "deviceList": {
+    "data": [
+      {"id": "ap-e7-local", "model": "E7", "state": "ONLINE", "supported": true, "firmwareVersion": "8.7.11", "firmwareUpdatable": false,
+       "features": ["accessPoint"], "interfaces": ["radios"]}
+    ],
+    "offset": 0, "limit": 25, "count": 1, "totalCount": 1
+  },
+  "deviceDetail": {
+    "id": "ap-e7-local", "model": "E7", "state": "ONLINE", "supported": true, "firmwareVersion": "8.7.11", "firmwareUpdatable": false,
+    "features": {"accessPoint": {}},
+    "interfaces": {
+      "radios": [
+        {"wlanStandard": "802.11be", "frequencyGHz": 2.4, "channelWidthMHz": 20, "channel": 6},
+        {"wlanStandard": "802.11be", "frequencyGHz": 5, "channelWidthMHz": 80, "channel": 48},
+        {"wlanStandard": "802.11be", "frequencyGHz": 6, "channelWidthMHz": 160, "channel": 53}
+      ]
+    },
+    "uplink": {"deviceId": "gw-placeholder"}
+  },
+  "statistics": {
+    "uptimeSec": 4272049,
+    "loadAverage1Min": 2.46,
+    "loadAverage5Min": 2.3,
+    "loadAverage15Min": 2.18,
+    "cpuUtilizationPct": 4.8,
+    "memoryUtilizationPct": 33.1,
+    "uplink": {},
+    "interfaces": {
+      "radios": [
+        {"frequencyGHz": 2.4, "txRetriesPct": 0.0},
+        {"frequencyGHz": 5, "txRetriesPct": 0.0},
+        {"frequencyGHz": 6, "txRetriesPct": 10.0}
+      ]
+    }
+  },
+  "clients": {
+    "data": [
+      {"id": "client-wireless-1", "type": "WIRELESS", "uplinkDeviceId": "ap-e7-local", "access": {"type": "DEFAULT"}},
+      {"id": "client-wired-1", "type": "WIRED", "uplinkDeviceId": "ap-e7-local", "access": {"type": "DEFAULT"}}
+    ],
+    "offset": 0, "limit": 25, "count": 2, "totalCount": 2
+  }
+}
