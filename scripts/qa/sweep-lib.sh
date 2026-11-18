@@ -122,11 +122,12 @@ safe_title() {
 #     loopback is reachable. Unix sockets are denied too (except the agent's own
 #     TMPDIR), which also blocks DNS (mDNSResponder), docker.sock and ssh-agent;
 #     hostname lookups for the proxy's upstreams happen in the proxy.
-#   - reads: an allow-list under the home directory, QA_HOME and the developer
-#     checkout. File contents there are denied except RUN_DIR, the worktree,
-#     the agent's TMPDIR and claude config dir, the runner's scripts and MCP
-#     install, the claude/node toolchain, Playwright's browsers, user fonts and
-#     the login keychain (token refresh). ~/.claude, ~/.claude.json, ~/.ssh,
+#   - reads: an allow-list under the home directory, QA_HOME, the developer
+#     checkout, the per-user temp/cache dirs and /tmp. File contents there are
+#     denied except RUN_DIR, the worktree, the agent's TMPDIR and claude config
+#     dir, the runner's scripts and MCP install, the claude and node files
+#     themselves (not their directories), Playwright's browsers, user fonts,
+#     Chrome's own lock dirs and the login keychain (token refresh). ~/.claude, ~/.claude.json, ~/.ssh,
 #     ~/.config, shell history and rc files, the other keychains and the
 #     checkout's .env files are unreadable without being named. System paths
 #     outside the home directory stay readable.
@@ -206,21 +207,38 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
     "$home/.claude/skills" "$home/.ssh" "$home/Library/LaunchAgents")"
   # The toolchain the agent runs from: claude and node, wherever they are
   # installed (a per-user install lives under the home directory, which is
-  # otherwise unreadable). The resolved binary's directory, plus the PATH entry
-  # (a symlink) that names it.
-  local tools="" t tr
+  # otherwise unreadable). Exactly the PATH entry and the file it resolves to,
+  # never their directories: a shared bin dir (~/bin, ~/.local/bin) holds other
+  # tools and scripts. A JS entry point (an npm-installed claude) gets its own
+  # package directory, unless that is a bin dir or the home directory itself.
+  local tools="" t tr td
   for t in claude node; do
     t="$(command -v "$t" 2>/dev/null)" || continue
     case "$t" in /*) ;; *) continue ;; esac
     t="$(_sb_real "$t")" && tr="$(/usr/bin/python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$t")" \
       && tr="$(_sb_real "$tr")" || continue
     tools="$tools  (literal \"$t\")
-  (subpath \"$(dirname "$tr")\")
+  (literal \"$tr\")
 "
-    # node: its whole prefix (lib/node_modules, include) is the runtime.
-    [ "${t##*/}" = node ] && tools="$tools  (subpath \"$(dirname "$(dirname "$tr")")\")
-"
+    case "$tr" in
+      *.js|*.mjs|*.cjs)
+        td="$(dirname "$tr")"
+        case "$td" in "$home"|*/bin) log "sandbox: refusing to allow all of $td for $t" ;;
+          *) tools="$tools  (subpath \"$td\")
+" ;; esac ;;
+    esac
   done
+  # Per-user temp and cache dirs and the shared temp dirs sit outside the home
+  # directory and hold other programs' files (other sessions' scratch, caches),
+  # so they are default-deny for reads as well. The agent has its own TMPDIR.
+  local udir tmps=""
+  udir="$(getconf DARWIN_USER_DIR 2>/dev/null)"; udir="${udir%/}"
+  if [ -n "$udir" ] && udir="$(_sb_real "$(dirname "$udir")")"; then tmps="(subpath \"$udir\") "; fi
+  for p in /private/tmp /private/var/tmp; do [ -d "$p" ] && tmps="$tmps(subpath \"$p\") "; done
+  # xcrun's tool-path cache, read by the /usr/bin/python3 shim on every start.
+  local xcrun_db=""
+  [ -n "$dtmp" ] && xcrun_db="
+  (literal \"$dtmp/xcrun_db\")"
   ( umask 077; cat > "$out" ) <<SB
 (version 1)
 (allow default)
@@ -262,7 +280,10 @@ $chrome_tmp
 ;; (runner state), the developer checkout and its git dir are default-deny
 ;; wherever they live: the agent works in its own worktree.
 (deny file-read-data (subpath "$home") (subpath "$qh") (subpath "$src") (subpath "$gitc"))
+;; and the per-user temp/cache dirs plus /tmp and /var/tmp
+(deny file-read-data $tmps(literal "/dev/null/qa-none"))
 (allow file-read-data
+$chrome_tmp$xcrun_db
   (subpath "$run")
   (subpath "$wt")
   (subpath "$atmp")
@@ -499,8 +520,22 @@ EOF
   local rcan="$HOME/.qa-sandbox-read-canary.$$" rd=""
   if ( umask 077; echo canary > "$rcan" ) 2>/dev/null && [ "$(cat "$rcan" 2>/dev/null)" = canary ]; then
     sbx /bin/cat "$rcan" >/dev/null 2>&1 && fails="$fails home-readable"
+    # A hard link into RUN_DIR must not carry it past the read rules.
+    if sbx /bin/ln "$rcan" "$RUN_DIR/.qa-sandbox-hardlink" 2>/dev/null \
+       || sbx /bin/cat "$RUN_DIR/.qa-sandbox-hardlink" >/dev/null 2>&1; then fails="$fails home-hardlink-readable"; fi
+    rm -f "$RUN_DIR/.qa-sandbox-hardlink"
   else fails="$fails home-read-probe-inconclusive"; fi
   rm -f "$rcan"
+  # The same default for the per-user temp/cache dirs and the shared temp dirs.
+  local tdir tcan
+  for tdir in "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" "$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)" /private/tmp; do
+    tdir="${tdir%/}"; [ -n "$tdir" ] && [ -d "$tdir" ] || continue
+    tcan="$tdir/.qa-sandbox-read-canary.$$"
+    if ( umask 077; echo canary > "$tcan" ) 2>/dev/null; then
+      sbx /bin/cat "$tcan" >/dev/null 2>&1 && fails="$fails temp-readable($tdir)"
+    else fails="$fails temp-read-probe-inconclusive($tdir)"; fi
+    rm -f "$tcan"
+  done
   rprobe() {   # rprobe <path...>: each one readable outside must be unreadable inside
     local p c
     for p in "$@"; do
@@ -518,7 +553,13 @@ EOF
     "$STATE" "$QA_HOME/launchd.out.log" "$QA_HOME/launchd.err.log"
   # The checkout itself, unless the worktree sits inside it (then that path is the agent's).
   case "$QA_WORKTREE/" in "$QA_SOURCE_REPO"/*) ;; *) rprobe "$QA_SOURCE_REPO" ;; esac
+  # Only the toolchain files themselves are allowed, not their directories.
   local k
+  for k in claude node; do
+    k="$(command -v "$k" 2>/dev/null)" || continue
+    k="$(/usr/bin/python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$k" 2>/dev/null)" || continue
+    case "$k" in *.js|*.mjs|*.cjs) continue ;; "$HOME"/*) rprobe "$(dirname "$k")" ;; esac   # system dirs stay readable
+  done
   for k in "$HOME"/Library/Keychains/*; do
     case "${k##*/}" in login.keychain-db|login.keychain-db.sb-*) continue ;; esac
     rprobe "$k"
@@ -696,7 +737,9 @@ def opendir(root, rel):
 def openreg(dfd, name):
     fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NF, dir_fd=dfd)
     st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode):
+    # A hard link is a second name for a file that lives elsewhere: refuse it
+    # like a symlink (the sandbox also refuses linking a file it cannot read).
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         os.close(fd)
         raise OSError("not a regular file")
     return fd, st
@@ -738,7 +781,7 @@ elif mode == "outbox":
             st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
         except OSError:
             continue
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
             print("REJECT %s: not a regular file" % shown(name))
             continue
         if not name_re.fullmatch(name):

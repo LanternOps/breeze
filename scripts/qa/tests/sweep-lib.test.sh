@@ -127,6 +127,13 @@ for _ in $(seq 1 100); do kill -0 "$PUBPID" 2>/dev/null || break; sleep 0.1; don
 if kill -0 "$PUBPID" 2>/dev/null; then kill "$PUBPID" 2>/dev/null; bad "links: a FIFO in the outbox or at ledger.md cannot hang the publisher"
 else ok "links: a FIFO in the outbox or at ledger.md cannot hang the publisher"; fi
 check "links: FIFO and directory entries are rejected, the regular entry publishes" "grep -q 'REJECT 001-fifo.json: not a regular file' '$T/runner.log' && grep -q 'REJECT 002-dir.json: not a regular file' '$T/runner.log' && grep -q 'marker-fifo-ok' '$GH_LOG'"
+new_run hardlink
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+printf '{"action":"create","title":"[UI] marker-hardlink entry","body":"x"}' > "$T/hl-src.json"
+ln "$T/hl-src.json" "$RUN_DIR/outbox/001-hl.json"
+printf 'marker-hardlink-ledger\n' > "$T/hl-ledger.md"; ln "$T/hl-ledger.md" "$RUN_DIR/ledger.md"
+publish_outbox >/dev/null 2>&1
+check "links: a hard-linked outbox entry or ledger is not published (a second name for a file elsewhere)" "! grep -q 'marker-hardlink' '$GH_LOG' '$GH_LOG.bodies' && grep -q 'REJECT 001-hl.json: not a regular file' '$T/runner.log'"
 new_run report
 printf 'RESULT: marker-outside-report\n' > "$T/outside-report.md"; ln -s "$T/outside-report.md" "$RUN_DIR/report.md"
 check "report: a report.md symlink does not count as a finished report" "! agent_report_present"
@@ -359,9 +366,15 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   printf '#!/bin/sh\necho tool-ok\n' > "$FAKE_HOME/.local/share/claude/versions/9.9.9"; chmod +x "$FAKE_HOME/.local/share/claude/versions/9.9.9"
   ln -sf "$FAKE_HOME/.local/share/claude/versions/9.9.9" "$FAKE_HOME/.toolbin/claude"
   echo 'export SECRET=1' > "$FAKE_HOME/.toolbin/other-script"
+  echo 'other version' > "$FAKE_HOME/.local/share/claude/versions/other-file"
+  # A standalone node dropped into a shared bin dir (~/.local/bin/node): its
+  # neighbours and the dir's parent (~/.local) are not the toolchain.
+  mkdir -p "$FAKE_HOME/.local/bin" "$FAKE_HOME/.local/share/otherapp"
+  printf '#!/bin/sh\necho node-ok\n' > "$FAKE_HOME/.local/bin/node"; chmod +x "$FAKE_HOME/.local/bin/node"
+  echo 'token=x' > "$FAKE_HOME/.local/bin/deploy-secret.sh"; echo 'data' > "$FAKE_HOME/.local/share/otherapp/db"
   PROF="$T/agent.sb"
   check "sandbox: the profile refuses to build without the stack/proxy/broker ports" "! (QA_STACK_PORT='' HOME='$FAKE_HOME' qa_sandbox_profile '$T/noport.sb')"
-  HOME="$FAKE_HOME" PATH="$FAKE_HOME/.toolbin:$PATH" qa_sandbox_profile "$PROF"
+  HOME="$FAKE_HOME" PATH="$FAKE_HOME/.toolbin:$FAKE_HOME/.local/bin:$PATH" qa_sandbox_profile "$PROF"
   sbx() { /usr/bin/sandbox-exec -f "$PROF" "$@"; }
   check "F2: parked stack env is unreadable" "! sbx /bin/cat '$STACK_ENV_DIR/.env' >/dev/null 2>&1"
   check "F2: a .env left in the worktree is unreadable (any tool, not just Read)" "! sbx /bin/cat '$QA_WORKTREE/apps/api/.env.local' >/dev/null 2>&1"
@@ -370,8 +383,8 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "F2: redaction list + machine overrides are unreadable" "! sbx /bin/cat '$ENVVALS' >/dev/null 2>&1 && ! sbx /bin/cat '$QA_HOME/env.overrides' >/dev/null 2>&1"
   check "F2: other runs' container logs are unreadable" "! sbx /bin/cat '$QA_HOME/runs/older/container-api.log' >/dev/null 2>&1"
   check "F2: this run's runner log is unreadable" "! sbx /bin/cat '$RUN_DIR/runner.log' >/dev/null 2>&1"
-  mkdir -p "$T/unrelated"; echo 'X=1' > "$T/unrelated/.env"
-  check "sandbox: the .env rule is scoped (a .env elsewhere stays readable)" "sbx /bin/cat '$T/unrelated/.env' >/dev/null 2>&1"
+  mkdir -p "$RUN_DIR/unrelated"; echo 'X=1' > "$RUN_DIR/unrelated/.env"
+  check "sandbox: the .env rule is scoped (a .env elsewhere stays readable)" "sbx /bin/cat '$RUN_DIR/unrelated/.env' >/dev/null 2>&1"
   check "sandbox: ordinary worktree files stay readable" "[ \"\$(sbx /bin/cat '$QA_WORKTREE/README.md')\" = readme ]"
   # === Strix r8: reads under the home directory are an allow-list ===
   unread() {  # unread <path...>: each is readable outside (control) and unreadable inside
@@ -396,6 +409,15 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "read: runner state and launchd logs in QA_HOME are unreadable" "unread '$STATE' '$QA_HOME/launchd.out.log' '$QA_HOME'"
   check "read: the developer repo (QA_SOURCE_REPO) is unreadable, wherever it lives" "echo readme > '$QA_SOURCE_REPO/README.md' && unread '$QA_SOURCE_REPO/README.md' '$QA_SOURCE_REPO/.git/config'"
   check "read: other files in a PATH dir under the home directory are unreadable" "unread '$FAKE_HOME/.toolbin/other-script'"
+  check "read: only the resolved tool file is allowed, not its directory (other versions, siblings)" "unread '$FAKE_HOME/.local/share/claude/versions/other-file' '$FAKE_HOME/.local/share/claude/versions'"
+  check "read: a node in a shared bin dir runs, but its neighbours and ~/.local stay unreadable" "[ \"\$(sbx '$FAKE_HOME/.local/bin/node')\" = node-ok ] && unread '$FAKE_HOME/.local/bin/deploy-secret.sh' '$FAKE_HOME/.local/share/otherapp/db'"
+  # Outside the home directory: per-user temp/cache dirs and /tmp hold other
+  # programs' scratch files (other sessions' notes, caches).
+  UTMP="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"; UCACHE="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)"
+  echo canary > "$T/.qa-utemp-canary"; echo canary > "${UCACHE}qa-ucache-canary.$$"; echo canary > "/private/tmp/qa-tmp-canary.$$"
+  check "read: the per-user temp dir, cache dir and /tmp are unreadable" "unread '$T/.qa-utemp-canary' '${UCACHE}qa-ucache-canary.$$' '/private/tmp/qa-tmp-canary.$$' '${UTMP%/}'"
+  rm -f "$T/.qa-utemp-canary" "${UCACHE}qa-ucache-canary.$$" "/private/tmp/qa-tmp-canary.$$"
+  check "read: a hard link of an unreadable file cannot be made in RUN_DIR" "! sbx /bin/ln '$FAKE_HOME/.qa-unlisted-file' '$RUN_DIR/hl.json' 2>/dev/null && [ ! -e '$RUN_DIR/hl.json' ]"
   # What the run needs stays readable.
   check "read: the login keychain db stays readable (claude.ai token refresh)" "[ \"\$(sbx /bin/cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = db ]"
   : > "$FAKE_HOME/Library/Keychains/.flC23220F1"; echo x > "$FAKE_HOME/Library/Keychains/.flother"
