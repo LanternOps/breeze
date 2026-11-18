@@ -79,7 +79,8 @@ func TestOrderedClockOrdersSameTickEvents(t *testing.T) {
 	clock := newOrderedClock(coarse)
 
 	renameStart := clock.now() // the publisher enters the rename syscall...
-	firstMiss := clock.now()   // ...then the reader's first by-name probe misses, same tick
+	firstMiss := clock.now()   // ...then the reader's first by-name probe misses...
+	lateStart := clock.now()   // ...then another rename enters, all in the same tick
 	tick = tick.Add(100 * time.Millisecond)
 	lastMiss := clock.now()
 	tick = tick.Add(time.Millisecond)
@@ -91,12 +92,12 @@ func TestOrderedClockOrdersSameTickEvents(t *testing.T) {
 			renameStart.UnixNano(), firstMiss.UnixNano())
 	}
 	// The reverse order must still be refused: a rename entered after the
-	// first miss cannot have opened the gap the reader already saw.
-	late := clock.now()
-	tick = tick.Add(time.Millisecond)
-	log = []renameCall{{start: late, end: clock.now(), done: true, class: 65}}
+	// first miss cannot have opened the gap the reader already saw, even
+	// within the same tick. This is what a lazier fix (comparing raw stamps
+	// with "not after" instead of "before") would get wrong.
+	log = []renameCall{{start: lateStart, end: renameEnd, done: true, class: 65}}
 	if got := renamesSpanning(log, firstMiss, lastMiss); len(got) != 0 {
-		t.Fatalf("a rename entered after the first miss was counted as spanning it")
+		t.Fatalf("a rename entered after the first miss, in the same clock tick, was counted as spanning it")
 	}
 	// Durations still come from the underlying clock; the tie-breaking nudges
 	// shift a stamp by nanoseconds, never by a tick.
