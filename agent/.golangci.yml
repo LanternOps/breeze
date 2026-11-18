@@ -10,6 +10,9 @@ version: "2"
 linters:
   # Standard set: errcheck, govet, ineffassign, staticcheck, unused.
   default: standard
+  # Runs new-issues-only like the rest; the existing backlog (~1900 findings) is burned down separately.
+  enable:
+    - modernize
 
 formatters:
   # gofmt is reported (new code only via --new-from-rev); does not rewrite.
