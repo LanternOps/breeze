@@ -422,6 +422,15 @@ if ! { start_egress_proxy && start_gh_broker && qa_sandbox_profile "$AGENT_PROFI
   notify "QA sweep: agent sandbox/egress proxy failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
+# Reads under the home directory are an allow-list, so prove the agent's exact
+# command line still finds its claude.ai login (the keychain) from inside.
+build_agent_cmd claude auth status --json
+SB_AUTH="$("${AGENT_CMD[@]}" 2>/dev/null | jq -r '.authMethod // empty' 2>/dev/null)"
+if [ "$SB_AUTH" != claude.ai ]; then
+  notify "QA sweep: the agent cannot see its claude.ai login inside the sandbox; agent not started (see $LOG)"
+  log "FATAL in-sandbox auth method '${SB_AUTH:-none}', expected claude.ai"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
+fi
+log "in-sandbox auth: claude.ai subscription"
 
 PROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
@@ -563,9 +572,17 @@ run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
     restore_stack_env; log "FATAL could not reset the agent's claude config dir; agent not started"
     return 1
   fi
+  # The transcript and stderr are runner files in the agent's RUN_DIR. The
+  # sandbox forbids the agent those names; the runner also creates them only
+  # where nothing exists yet (no symlink followed) and never clobbers.
+  local tr="$RUN_DIR/transcript$3.jsonl" er="$RUN_DIR/claude$3.err"
+  if ! runner_fresh_path "$tr" || ! runner_fresh_path "$er"; then
+    restore_stack_env; log "FATAL $tr or $er already exists; agent not started"
+    return 1
+  fi
   log "claude start [$3] (timeout $2)"
   build_agent_cmd claude "${args[@]}"   # sandbox-exec + proxy env around claude
-  gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$RUN_DIR/transcript$3.jsonl" 2> "$RUN_DIR/claude$3.err"
+  ( set -C; exec gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$tr" 2> "$er" )
   local rc=$?; restore_stack_env; log "claude exit [$3]=$rc"; return $rc
 }
 
@@ -573,7 +590,9 @@ run_agent "$PROMPT" "$QA_TIMEOUT" ""
 RC=$?
 
 # --- hosted phase (only when hosted-only surfaces were touched) ---------------
-HOSTED_OK=1
+HOSTED_OK=1; HOSTED_NOTE=""
+# From here on RUN_DIR is the agent's: the runner reads it only through
+# _agent_io and writes nothing into it (see sweep-lib.sh).
 if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   HOSTED_OK=0
   if switch_to_hosted && secure_stack; then   # the recreated containers start on the project network again
@@ -591,7 +610,7 @@ You are unattended: never ask questions. Queue GitHub writes in RUN_DIR/outbox a
     run_agent "$HPROMPT" "${QA_HOSTED_TIMEOUT:-90m}" "-hosted" && HOSTED_OK=1
   else
     log "hosted switch FAILED; hosted PRs carried to next run"
-    echo "- Hosted phase skipped: could not switch the stack to hosted mode (see runner.log)." >> "$RUN_DIR/report.md"
+    HOSTED_NOTE=" (hosted phase skipped: could not switch the stack to hosted mode)"
   fi
 fi
 
@@ -614,7 +633,7 @@ done
 [ -n "${PENDING_HOSTED// /}" ] && log "hosted PRs carried to next run:$PENDING_HOSTED"
 
 # --- advance cursor only on a completed sweep -------------------------------
-if [ "$RC" = 0 ] && [ -f "$RUN_DIR/report.md" ]; then
+if [ "$RC" = 0 ] && agent_report_present; then
   tmp="$(mktemp)"
   jq -n --slurpfile old <(cat "$STATE" 2>/dev/null || echo '{}') \
      --arg sha "$NEW_SHA" --arg run "$RUN_ID" --argjson slice "$(( (SLICE + 1) % 4 ))" \
@@ -627,10 +646,10 @@ if [ "$RC" = 0 ] && [ -f "$RUN_DIR/report.md" ]; then
       | $o + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice,
               pendingHostedPrs: [$pend[] | select($kt[.] != null)], pendingHostedTries: $kt}' > "$tmp" && mv "$tmp" "$STATE"
   ln -sfn "$RUN_DIR" "$QA_HOME/latest"
-  SUMMARY="$(grep -m1 -E '^RESULT:' "$RUN_DIR/report.md" | cut -c1-180)"
-  notify "${SUMMARY:-Sweep complete} — main@${NEW_SHA:0:9}"
+  SUMMARY="$(agent_report_summary)"
+  notify "${SUMMARY:-Sweep complete} — main@${NEW_SHA:0:9}$HOSTED_NOTE"
 else
-  notify "QA sweep did not complete (exit $RC); cursor not advanced. Log: $RUN_DIR"
+  notify "QA sweep did not complete (exit $RC); cursor not advanced$HOSTED_NOTE. Log: $RUN_DIR"
 fi
 
 # keep 30 days of runs and their egress audit logs

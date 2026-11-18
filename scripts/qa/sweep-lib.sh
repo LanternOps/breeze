@@ -122,9 +122,17 @@ safe_title() {
 #     loopback is reachable. Unix sockets are denied too (except the agent's own
 #     TMPDIR), which also blocks DNS (mDNSResponder), docker.sock and ssh-agent;
 #     hostname lookups for the proxy's upstreams happen in the proxy.
+#   - reads: an allow-list under the home directory, QA_HOME and the developer
+#     checkout. File contents there are denied except RUN_DIR, the worktree,
+#     the agent's TMPDIR and claude config dir, the runner's scripts and MCP
+#     install, the claude/node toolchain, Playwright's browsers, user fonts and
+#     the login keychain (token refresh). ~/.claude, ~/.claude.json, ~/.ssh,
+#     ~/.config, shell history and rc files, the other keychains and the
+#     checkout's .env files are unreadable without being named. System paths
+#     outside the home directory stay readable.
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
 #     ~/.ssh, git credential files, the egress audit log, other runs and this
-#     run's logs/transcripts are unreadable.
+#     run's logs/transcripts are also denied by name, wherever they live.
 #   - writes: an allow-list, not a deny-list. Every write is denied except to
 #     RUN_DIR (minus the runner's inputs, its logs/transcripts and any
 #     .claude/CLAUDE.md), the agent's TMPDIR, its throwaway claude config dir
@@ -196,6 +204,23 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   fi
   locked="$(_sb_ancestors "$run" "$audit" "$wt" "$src" "$gitc" "$lib" "$home/.config/gh" "$home/.config/git" \
     "$home/.claude/skills" "$home/.ssh" "$home/Library/LaunchAgents")"
+  # The toolchain the agent runs from: claude and node, wherever they are
+  # installed (a per-user install lives under the home directory, which is
+  # otherwise unreadable). The resolved binary's directory, plus the PATH entry
+  # (a symlink) that names it.
+  local tools="" t tr
+  for t in claude node; do
+    t="$(command -v "$t" 2>/dev/null)" || continue
+    case "$t" in /*) ;; *) continue ;; esac
+    t="$(_sb_real "$t")" && tr="$(/usr/bin/python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$t")" \
+      && tr="$(_sb_real "$tr")" || continue
+    tools="$tools  (literal \"$t\")
+  (subpath \"$(dirname "$tr")\")
+"
+    # node: its whole prefix (lib/node_modules, include) is the runtime.
+    [ "${t##*/}" = node ] && tools="$tools  (subpath \"$(dirname "$(dirname "$tr")")\")
+"
+  done
   ( umask 077; cat > "$out" ) <<SB
 (version 1)
 (allow default)
@@ -228,8 +253,36 @@ $chrome_tmp
   (literal "/dev/dtracehelper")
   (regex #"^/dev/fd/[0-9]+$"))
 
-;; secrets: unreadable (and unwritable) by every process in the tree
-(deny file-read* file-write*
+;; reads under the home directory: an allow-list. Every file's contents and
+;; every directory listing under $home are denied (transcripts and memory in
+;; ~/.claude, ~/.claude.json, shell history and rc files, ~/.config, ~/.npmrc,
+;; the developer's checkouts and their .env files, every other keychain file,
+;; whatever a new tool stores next) except what the run needs. Metadata stays
+;; readable so paths resolve. System paths outside $home stay readable. QA_HOME
+;; (runner state), the developer checkout and its git dir are default-deny
+;; wherever they live: the agent works in its own worktree.
+(deny file-read-data (subpath "$home") (subpath "$qh") (subpath "$src") (subpath "$gitc"))
+(allow file-read-data
+  (subpath "$run")
+  (subpath "$wt")
+  (subpath "$atmp")
+  (subpath "$acfg")
+  (subpath "$lib")
+  (subpath "$qh/mcp")
+$tools  (subpath "$home/Library/Caches/ms-playwright")
+  (subpath "$home/Library/Fonts")
+  (literal "$home/.CFUserTextEncoding")
+  ;; the login keychain and its save temp files (token refresh), plus the empty
+  ;; .fl<hex> lock files Security.framework opens to lock it
+  (literal "$home/Library/Keychains/login.keychain-db")
+  (regex #"^$home_re/Library/Keychains/login\.keychain-db\.sb-[0-9a-f]+-[A-Za-z0-9]+$")
+  (regex #"^$home_re/Library/Keychains/\.fl[0-9A-Fa-f]+$"))
+
+;; secrets: unreadable (and unwritable) by every process in the tree. file-read-data
+;; is named as well as file-read*: a rule for the narrower operation outranks one
+;; for the wider, so without it the allow-list above (e.g. the worktree) would
+;; win over these denies.
+(deny file-read* file-read-data file-write*
   (subpath "$st")
   (literal "$sed_env")
   (literal "$qh/env.overrides")
@@ -384,7 +437,9 @@ build_agent_cmd() {
 # outside the sandbox, so a probe that could never succeed proves nothing.
 sandbox_selfcheck() {
   local fails="" canary="$QA_WORKTREE/.env.qa-sandbox-canary" lp lpid out
-  sbx() { /usr/bin/sandbox-exec -f "$AGENT_PROFILE" "$@"; }
+  # Probes run from the agent's own cwd (the worktree): under the read allow-list
+  # an arbitrary caller's cwd may be unreadable, and python dies on that.
+  sbx() { ( cd "$QA_WORKTREE" && /usr/bin/sandbox-exec -f "$AGENT_PROFILE" "$@" ); }
   tcp() { "$@" /usr/bin/python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5).close()' "$PORT" 2>/dev/null; }
   dns() { "$@" /usr/bin/python3 -c 'import socket; socket.getaddrinfo("api.anthropic.com", 443)' >/dev/null 2>&1; }
   echo "QA_SANDBOX_CANARY=1" > "$canary"
@@ -438,8 +493,39 @@ sandbox_selfcheck() {
 $(printf '%s' "$PATH" | tr ':' '\n')
 EOF
   [ -n "$pw" ] && { fails="$fails path-dir-writable"; log "sandbox: PATH dirs writable from inside:$pw"; }
+  # Reads under the home directory are an allow-list too. A fresh file in $HOME
+  # proves the default (a profile that only names stores fails it), then every
+  # per-user store that is readable outside (the control) must not be inside.
+  local rcan="$HOME/.qa-sandbox-read-canary.$$" rd=""
+  if ( umask 077; echo canary > "$rcan" ) 2>/dev/null && [ "$(cat "$rcan" 2>/dev/null)" = canary ]; then
+    sbx /bin/cat "$rcan" >/dev/null 2>&1 && fails="$fails home-readable"
+  else fails="$fails home-read-probe-inconclusive"; fi
+  rm -f "$rcan"
+  rprobe() {   # rprobe <path...>: each one readable outside must be unreadable inside
+    local p c
+    for p in "$@"; do
+      [ -e "$p" ] || continue
+      c=/bin/cat; [ -d "$p" ] && c=/bin/ls
+      "$c" "$p" >/dev/null 2>&1 || continue
+      sbx "$c" "$p" >/dev/null 2>&1 && rd="$rd $p"
+    done
+  }
+  rprobe "$HOME/.claude" "$HOME"/.claude/* "$HOME/.claude.json" "$HOME/.ssh" "$HOME"/.ssh/* \
+    "$HOME/.config" "$HOME"/.config/* "$HOME/.npmrc" "$HOME/.netrc" "$HOME/.git-credentials" \
+    "$HOME"/.zsh_history "$HOME"/.bash_history "$HOME"/.zshrc "$HOME"/.zshenv "$HOME"/.zprofile \
+    "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.profile "$HOME/.claude-auth" \
+    "${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}" "$QA_SOURCE_REPO"/.env* \
+    "$STATE" "$QA_HOME/launchd.out.log" "$QA_HOME/launchd.err.log"
+  # The checkout itself, unless the worktree sits inside it (then that path is the agent's).
+  case "$QA_WORKTREE/" in "$QA_SOURCE_REPO"/*) ;; *) rprobe "$QA_SOURCE_REPO" ;; esac
+  local k
+  for k in "$HOME"/Library/Keychains/*; do
+    case "${k##*/}" in login.keychain-db|login.keychain-db.sb-*) continue ;; esac
+    rprobe "$k"
+  done
+  [ -n "$rd" ] && { fails="$fails home-store-readable"; log "sandbox: readable from inside:$rd"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, other keychains, the checkout and its .env))"
 }
 
 # ---------------------------------------------------------------------------
@@ -576,26 +662,135 @@ snapshot_open_issues() {
   chmod 0444 "$out"
 }
 
+# ---------------------------------------------------------------------------
+# Reading what the agent wrote. RUN_DIR is the agent's to rearrange: any name in
+# it may be a symlink, a FIFO or a directory swapped in after a check, and a
+# process it left running can do that at any time. So the runner never opens an
+# agent path by name with the shell: _agent_io walks from RUN_DIR with
+# O_NOFOLLOW on every component (a planted link fails with ELOOP), opens files
+# O_NONBLOCK, and accepts only what fstat on the open descriptor says is a
+# regular file. Check and use are the same descriptor, so nothing can be swapped
+# in between. The runner never writes into RUN_DIR once an agent has started.
+# ---------------------------------------------------------------------------
+# _agent_io read <run-dir> <rel> <max>    the file to stdout; fails if over <max>
+# _agent_io head <run-dir> <rel> <max>    its first <max> bytes to stdout
+# _agent_io outbox <run-dir> <dst> <max-entries> <max-bytes>
+#     copy outbox/*.json into the runner-owned <dst> (mtime kept), printing one
+#     "REJECT ..." line per refused entry; names are shown escaped and cut.
+_agent_io() {
+  /usr/bin/python3 -I - "$@" <<'PY'
+import os, re, stat, sys
+
+NF = os.O_NOFOLLOW | os.O_CLOEXEC
+
+def opendir(root, rel):
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | NF)
+    for part in [p for p in rel.split("/") if p]:
+        if part in (".", ".."):
+            raise OSError("bad path")
+        nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | NF, dir_fd=fd)
+        os.close(fd)
+        fd = nfd
+    return fd
+
+def openreg(dfd, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NF, dir_fd=dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise OSError("not a regular file")
+    return fd, st
+
+def shown(name):
+    return ascii(name)[1:-1][:120]
+
+mode, root = sys.argv[1], sys.argv[2]
+if mode in ("read", "head"):
+    rel, limit = sys.argv[3], int(sys.argv[4])
+    parent, _, base = rel.rpartition("/")
+    try:
+        dfd = opendir(root, parent)
+        fd, _st = openreg(dfd, base)
+    except OSError:
+        sys.exit(2)
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        if mode == "read":
+            sys.exit(3)
+        data = data[:limit]
+    sys.stdout.buffer.write(data)
+elif mode == "outbox":
+    dst, max_n, max_bytes = sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+    try:
+        dfd = opendir(root, "outbox")
+    except FileNotFoundError:
+        sys.exit(0)
+    except OSError:
+        print("REJECT outbox: not a directory")
+        sys.exit(0)
+    name_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.json")
+    n = 0
+    for name in sorted(os.listdir(dfd)):
+        if name.startswith("."):
+            continue
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            print("REJECT %s: not a regular file" % shown(name))
+            continue
+        if not name_re.fullmatch(name):
+            print("REJECT (unsafe name): %s" % shown(name))
+            continue
+        n += 1
+        if n > max_n:
+            print("REJECT %s: over %d entries" % (name, max_n))
+            continue
+        try:
+            fd, st = openreg(dfd, name)
+        except OSError:
+            print("REJECT %s: not a regular file" % name)
+            continue
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            print("REJECT %s: oversized" % name)
+            continue
+        out = os.path.join(dst, name)
+        try:
+            ofd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NF, 0o600)
+            with os.fdopen(ofd, "wb") as o:
+                o.write(data)
+            os.utime(out, ns=(st.st_atime_ns, st.st_mtime_ns))
+        except OSError:
+            print("REJECT %s: copy failed" % name)
+else:
+    sys.exit(64)
+PY
+}
+# agent_report_present: RUN_DIR/report.md exists as a regular file (not a link).
+agent_report_present() { _agent_io head "$RUN_DIR" report.md 0 >/dev/null 2>&1; }
+# agent_report_summary: the report's first RESULT: line (first 64 KiB only).
+agent_report_summary() {
+  _agent_io head "$RUN_DIR" report.md 65536 2>/dev/null | LC_ALL=C grep -a -m1 -E '^RESULT:' | cut -c1-180
+}
+# runner_fresh_path <path>: true only when nothing at all is at <path> (not even
+# a dangling symlink). For the few runner files created in RUN_DIR while an
+# agent may still be around; the sandbox also forbids the agent those names.
+runner_fresh_path() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+
 # snapshot_outbox: copy the agent's outbox into a runner-owned directory and
-# publish from there, so nothing the agent left running (or a symlink) can swap
-# an entry between validation and use. Unsafe names and non-regular files are
-# dropped.
+# publish from there (see _agent_io): a symlinked outbox or entry, a FIFO, an
+# unsafe name or an oversized file is dropped, and nothing the agent left
+# running can swap an entry between validation and use.
 snapshot_outbox() {
   PUBLISH_DIR="$QA_HOME/.publish/$RUN_ID"
   rm -rf "$PUBLISH_DIR"; ( umask 077; mkdir -p "$PUBLISH_DIR" ) || return 1
-  local f name n=0
-  for f in "$RUN_DIR"/outbox/*; do
-    [ -e "$f" ] || [ -L "$f" ] || continue
-    name="${f##*/}"
-    if [ -L "$f" ] || [ ! -f "$f" ]; then log "outbox REJECT $name: not a regular file"; continue; fi
-    if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.json$ ]]; then
-      log "outbox REJECT (unsafe name): $(printf '%q' "$name" | cut -c1-120)"; continue
-    fi
-    n=$((n+1))
-    if [ "$n" -gt "${QA_MAX_OUTBOX:-300}" ]; then log "outbox REJECT $name: over ${QA_MAX_OUTBOX:-300} entries"; continue; fi
-    if [ "$(wc -c < "$f")" -gt 120000 ]; then log "outbox REJECT $name: oversized"; continue; fi
-    cp -p "$f" "$PUBLISH_DIR/$name" || log "outbox REJECT $name: copy failed"
-  done
+  local line
+  while IFS= read -r line; do log "outbox $line"; done \
+    < <(_agent_io outbox "$RUN_DIR" "$PUBLISH_DIR" "${QA_MAX_OUTBOX:-300}" 120000)
 }
 
 # hosted_verdict <pr>: the result publish_outbox validated and published for
@@ -699,7 +894,7 @@ publish_outbox() {
   done
   log "outbox: $created issue(s) created, $comments comment(s), $prs PR(s) annotated"
   local ledger="$PUBLISH_DIR/ledger.md"
-  if [ -f "$RUN_DIR/ledger.md" ] && [ ! -L "$RUN_DIR/ledger.md" ]; then cp "$RUN_DIR/ledger.md" "$ledger"; fi
+  _agent_io read "$RUN_DIR" ledger.md "$QA_BODY_MAX" > "$ledger" 2>/dev/null || rm -f "$ledger"
   if [ -s "$ledger" ] && body_ok "$ledger" && fence_text "$ledger"; then
     local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
                  --jq '[.[]|select(.title=="QA sweep ledger")][0].number // empty')"

@@ -105,6 +105,49 @@ check "outbox: symlinks are rejected" "grep -q 'REJECT link.json: not a regular 
 check "outbox: well-formed entry still publishes" "grep -q 'issue create --title \[UI\] Devices page 500s' '$GH_LOG'"
 check "outbox: publisher works on a runner-owned copy, not RUN_DIR" "[ -z \"\$(ls \"\$RUN_DIR\"/outbox/*.body.md 2>/dev/null)\" ] && [ -n \"\${PUBLISH_DIR:-}\" ] && [ -f \"\$PUBLISH_DIR/001-good.json\" ]"
 
+# === Strix r8: the runner never follows a link the agent planted in RUN_DIR ===
+# RUN_DIR is agent-writable; anything in it may be a symlink, a FIFO or swapped
+# after a check. The runner reads it without following links and never writes it.
+new_run links
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+mkdir -p "$T/elsewhere"
+printf '{"action":"create","title":"[UI] marker-elsewhere via a dir link","body":"x"}' > "$T/elsewhere/001.json"
+printf 'marker-ledger-link\n' > "$T/elsewhere/ledger.md"
+rm -rf "$RUN_DIR/outbox"; ln -s "$T/elsewhere" "$RUN_DIR/outbox"; ln -s "$T/elsewhere/ledger.md" "$RUN_DIR/ledger.md"
+publish_outbox >/dev/null 2>&1
+check "links: an outbox that is a symlink to another directory publishes nothing" "! grep -q 'marker-elsewhere' '$GH_LOG' && grep -q 'REJECT outbox: not a directory' '$T/runner.log'"
+check "links: a symlinked ledger is not published" "! grep -q 'marker-ledger-link' '$GH_LOG.bodies' && ! grep -q 'issue edit\|QA sweep ledger' '$GH_LOG'"
+new_run fifo
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+mkfifo "$RUN_DIR/outbox/001-fifo.json"; mkdir "$RUN_DIR/outbox/002-dir.json"
+outbox 003-ok.json '{"action":"create","title":"[UI] marker-fifo-ok next to a fifo","body":"body text"}'
+mkfifo "$RUN_DIR/ledger.md"
+( publish_outbox >/dev/null 2>&1 ) & PUBPID=$!
+for _ in $(seq 1 100); do kill -0 "$PUBPID" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$PUBPID" 2>/dev/null; then kill "$PUBPID" 2>/dev/null; bad "links: a FIFO in the outbox or at ledger.md cannot hang the publisher"
+else ok "links: a FIFO in the outbox or at ledger.md cannot hang the publisher"; fi
+check "links: FIFO and directory entries are rejected, the regular entry publishes" "grep -q 'REJECT 001-fifo.json: not a regular file' '$T/runner.log' && grep -q 'REJECT 002-dir.json: not a regular file' '$T/runner.log' && grep -q 'marker-fifo-ok' '$GH_LOG'"
+new_run report
+printf 'RESULT: marker-outside-report\n' > "$T/outside-report.md"; ln -s "$T/outside-report.md" "$RUN_DIR/report.md"
+check "report: a report.md symlink does not count as a finished report" "! agent_report_present"
+check "report: the summary is never read through a report.md symlink" "[ -z \"\$(agent_report_summary)\" ]"
+rm -f "$RUN_DIR/report.md"; mkdir "$RUN_DIR/report.md"
+check "report: a directory named report.md is not a report" "! agent_report_present"
+rmdir "$RUN_DIR/report.md"; printf 'intro\nRESULT: 3 PASS 1 FAIL\nRESULT: second\n' > "$RUN_DIR/report.md"
+check "report: control: a regular report.md is present and gives its first RESULT line" "agent_report_present && [ \"\$(agent_report_summary)\" = 'RESULT: 3 PASS 1 FAIL' ]"
+ln -s "$T/no-such-target" "$RUN_DIR/transcript-hosted.jsonl"; : > "$RUN_DIR/claude-hosted.err"
+check "runner: a dangling symlink or an existing file is not a fresh runner path" "! runner_fresh_path '$RUN_DIR/transcript-hosted.jsonl' && ! runner_fresh_path '$RUN_DIR/claude-hosted.err' && runner_fresh_path '$RUN_DIR/transcript-new.jsonl'"
+# Static: once the first agent starts, the runner writes nothing into RUN_DIR and
+# reads report.md only through the no-follow reader.
+after_agent() { awk '/^run_agent "\$PROMPT"/{f=1} f' "$QA_DIR/scheduled-ui-sweep.sh"; }
+no_rundir_writes() {
+  [ -n "$(after_agent)" ] || return 1
+  ! after_agent | grep -vE '^[[:space:]]*#' | grep -E '(>>?|tee( -a)?|cp|mv|ln -s[fn]*)[[:space:]]+[^|]*"\$(RUN_DIR|HOSTED_PRS_FILE|DRIFT|FP_FILE)[/"]' | grep -vE 'ln -sfn "\$RUN_DIR" "\$QA_HOME/latest"'
+}
+check "runner: no write or append into RUN_DIR once an agent has started" "no_rundir_writes"
+check "runner: report.md is never opened by name after the agent ran" "! after_agent | grep -F '\$RUN_DIR/report.md'"
+check "runner: transcripts are created only at fresh paths, never clobbered" "grep -q 'runner_fresh_path \"\$tr\"' '$QA_DIR/scheduled-ui-sweep.sh' && grep -q 'set -C; exec gtimeout' '$QA_DIR/scheduled-ui-sweep.sh'"
+
 # === every agent-written field bound for GitHub passes the secret gate ========
 # Built by concatenation so this file never holds a credential-shaped literal.
 FAKE_AKIA="AKIA""IOSFODNN7EXAMPLE"
@@ -252,9 +295,12 @@ check "pr-keep: a PR with no verdict reports none" "[ -z \"\$(hosted_verdict 103
 # === F2/F3: kernel-enforced sandbox for the agent's whole process tree ========
 if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   new_run sb
-  RUN_DIR="$QA_HOME/runs/$RUN_ID"; mkdir -p "$RUN_DIR/outbox"   # real layout: runs live under QA_HOME
+  # Real layout: QA_HOME is ~/.breeze-qa and runs live under it. HOME is a
+  # throwaway; the rules below are exercised by really attempting each access.
+  FAKE_HOME="$T/fakehome"; QA_HOME="$FAKE_HOME/.breeze-qa"; mkdir -p "$QA_HOME"
+  RUN_DIR="$QA_HOME/runs/$RUN_ID"; mkdir -p "$RUN_DIR/outbox"
   QA_WORKTREE="$QA_HOME/worktree"; QA_SOURCE_REPO="$T/source-repo"
-  STACK_ENV_DIR="$QA_HOME/.stack-env"; STATE="$QA_HOME/state.json"; AGENT_TMP="$QA_HOME/.t"
+  STACK_ENV_DIR="$QA_HOME/.stack-env"; STATE="$QA_HOME/state.json"; AGENT_TMP="$(cd "$(mktemp -d /tmp/qa-at.XXXXXX)" && pwd -P)"   # short: unix socket paths are capped at 104 bytes
   AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"
   mkdir -p "$AGENT_TMP"
   mkdir -p "$QA_WORKTREE/apps/api" "$QA_SOURCE_REPO" "$STACK_ENV_DIR" "$QA_HOME/runs/older" "$QA_HOME/bin" "$RUN_DIR/.claude"
@@ -268,8 +314,7 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   echo 'readme' > "$QA_WORKTREE/README.md"
   echo '{}' > "$STATE"
   printf 'aaa\t2026\tx (#1)\n' > "$RUN_DIR/commits.tsv"
-  # A throwaway HOME: the rules below are exercised by really attempting the write.
-  FAKE_HOME="$T/fakehome"; mkdir -p "$FAKE_HOME/.config/gh" "$FAKE_HOME/.config/git"
+  mkdir -p "$FAKE_HOME/.config/gh" "$FAKE_HOME/.config/git"
   echo '[user]' > "$FAKE_HOME/.gitconfig"; echo '[user]' > "$FAKE_HOME/.config/git/config"
   echo 'https://u:p@example.invalid' > "$FAKE_HOME/.git-credentials"
   echo 'github.com:' > "$FAKE_HOME/.config/gh/hosts.yml"; echo 'version: 1' > "$FAKE_HOME/.config/gh/config.yml"
@@ -286,9 +331,37 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   lport() { lsof -nP -a -p "$1" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}'; }
   HTTP_PORT="$(lport "$HTTP_PID")"; HTTP2_PORT="$(lport "$HTTP2_PID")"
   QA_STACK_PORT="$HTTP_PORT"; EGRESS_PORT=1; GH_BROKER_PORT=2
+  # Per-user stores the agent must not read (Strix r8): reads under the home
+  # directory are an allow-list, not a list of known stores.
+  mkdir -p "$FAKE_HOME/.claude/projects/-Users-dev-repo" "$FAKE_HOME/.claude/todos" "$FAKE_HOME/.ssh" \
+    "$FAKE_HOME/.config/someapp" "$FAKE_HOME/.claude-auth/acct" "$FAKE_HOME/dev/repo/apps/api" \
+    "$FAKE_HOME/Library/Keychains/55508251-BFB9-5056-BD1A-F6ADBAACF3A5" "$FAKE_HOME/Library/Caches/ms-playwright/chromium-1" \
+    "$FAKE_HOME/Library/Fonts" "$FAKE_HOME/.local/share/claude/versions" "$FAKE_HOME/.toolbin"
+  echo '{"type":"user","message":"transcript"}' > "$FAKE_HOME/.claude/projects/-Users-dev-repo/s1.jsonl"
+  echo '- memory' > "$FAKE_HOME/.claude/projects/-Users-dev-repo/MEMORY.md"
+  echo '{"env":{}}' > "$FAKE_HOME/.claude/settings.json"; echo '{}' > "$FAKE_HOME/.claude/history.jsonl"
+  echo '[]' > "$FAKE_HOME/.claude/todos/t.json"
+  echo '{"oauthAccount":{}}' > "$FAKE_HOME/.claude.json"
+  echo '{"claudeAiOauth":{}}' > "$FAKE_HOME/.claude-auth/acct/.credentials.json"
+  echo 'PRIVATE KEY' > "$FAKE_HOME/.ssh/id_ed25519"
+  echo ': 1:0;export TOKEN=x' > "$FAKE_HOME/.zsh_history"; echo 'history' > "$FAKE_HOME/.bash_history"
+  echo 'export GITHUB_TOKEN=x' > "$FAKE_HOME/.zshrc"; echo 'export X=1' > "$FAKE_HOME/.bash_profile"
+  echo 'token = x' > "$FAKE_HOME/.config/someapp/config.toml"
+  echo '//registry.npmjs.org/:_authToken=x' > "$FAKE_HOME/.npmrc"
+  echo 'machine x login y' > "$FAKE_HOME/.netrc"
+  echo 'DATABASE_URL=postgres://dev' > "$FAKE_HOME/dev/repo/.env"; echo 'K=v' > "$FAKE_HOME/dev/repo/apps/api/.env.local"
+  echo 'readme' > "$FAKE_HOME/dev/repo/README.md"
+  echo db > "$FAKE_HOME/Library/Keychains/login.keychain-db"; echo meta > "$FAKE_HOME/Library/Keychains/metadata.keychain-db"
+  echo kc > "$FAKE_HOME/Library/Keychains/55508251-BFB9-5056-BD1A-F6ADBAACF3A5/keychain-2.db"
+  echo bin > "$FAKE_HOME/Library/Caches/ms-playwright/chromium-1/chrome"; echo font > "$FAKE_HOME/Library/Fonts/f.ttf"
+  echo '{}' > "$QA_HOME/launchd.out.log"
+  # A per-user claude install (~/.local/share/claude/versions/<v>, linked from a PATH dir).
+  printf '#!/bin/sh\necho tool-ok\n' > "$FAKE_HOME/.local/share/claude/versions/9.9.9"; chmod +x "$FAKE_HOME/.local/share/claude/versions/9.9.9"
+  ln -sf "$FAKE_HOME/.local/share/claude/versions/9.9.9" "$FAKE_HOME/.toolbin/claude"
+  echo 'export SECRET=1' > "$FAKE_HOME/.toolbin/other-script"
   PROF="$T/agent.sb"
   check "sandbox: the profile refuses to build without the stack/proxy/broker ports" "! (QA_STACK_PORT='' HOME='$FAKE_HOME' qa_sandbox_profile '$T/noport.sb')"
-  HOME="$FAKE_HOME" qa_sandbox_profile "$PROF"
+  HOME="$FAKE_HOME" PATH="$FAKE_HOME/.toolbin:$PATH" qa_sandbox_profile "$PROF"
   sbx() { /usr/bin/sandbox-exec -f "$PROF" "$@"; }
   check "F2: parked stack env is unreadable" "! sbx /bin/cat '$STACK_ENV_DIR/.env' >/dev/null 2>&1"
   check "F2: a .env left in the worktree is unreadable (any tool, not just Read)" "! sbx /bin/cat '$QA_WORKTREE/apps/api/.env.local' >/dev/null 2>&1"
@@ -300,6 +373,40 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   mkdir -p "$T/unrelated"; echo 'X=1' > "$T/unrelated/.env"
   check "sandbox: the .env rule is scoped (a .env elsewhere stays readable)" "sbx /bin/cat '$T/unrelated/.env' >/dev/null 2>&1"
   check "sandbox: ordinary worktree files stay readable" "[ \"\$(sbx /bin/cat '$QA_WORKTREE/README.md')\" = readme ]"
+  # === Strix r8: reads under the home directory are an allow-list ===
+  unread() {  # unread <path...>: each is readable outside (control) and unreadable inside
+    local p c
+    for p in "$@"; do
+      c=/bin/cat; [ -d "$p" ] && c=/bin/ls
+      "$c" "$p" >/dev/null 2>&1 || { echo "control failed: $p"; return 1; }
+      if sbx "$c" "$p" >/dev/null 2>&1; then echo "readable inside: $p"; return 1; fi
+    done
+  }
+  echo canary > "$FAKE_HOME/.qa-unlisted-file"
+  check "read: a file in the home directory that no rule names is unreadable (default deny)" "unread '$FAKE_HOME/.qa-unlisted-file' '$FAKE_HOME'"
+  check "read: ~/.claude transcripts, memory, settings, history and todos are unreadable" "unread '$FAKE_HOME/.claude' '$FAKE_HOME/.claude/projects' '$FAKE_HOME/.claude/projects/-Users-dev-repo/s1.jsonl' '$FAKE_HOME/.claude/projects/-Users-dev-repo/MEMORY.md' '$FAKE_HOME/.claude/settings.json' '$FAKE_HOME/.claude/history.jsonl' '$FAKE_HOME/.claude/todos/t.json'"
+  check "read: ~/.claude.json is unreadable" "unread '$FAKE_HOME/.claude.json'"
+  check "read: claude.ai login profiles (~/.claude-auth) are unreadable" "unread '$FAKE_HOME/.claude-auth' '$FAKE_HOME/.claude-auth/acct/.credentials.json'"
+  check "read: ~/.ssh is unreadable" "unread '$FAKE_HOME/.ssh' '$FAKE_HOME/.ssh/id_ed25519'"
+  check "read: shell history and rc files are unreadable" "unread '$FAKE_HOME/.zsh_history' '$FAKE_HOME/.bash_history' '$FAKE_HOME/.zshrc' '$FAKE_HOME/.bash_profile'"
+  check "read: ~/.config is unreadable (any app, not only gh/git)" "unread '$FAKE_HOME/.config' '$FAKE_HOME/.config/someapp/config.toml'"
+  check "read: ~/.npmrc and ~/.netrc are unreadable" "unread '$FAKE_HOME/.npmrc' '$FAKE_HOME/.netrc'"
+  check "read: a developer checkout under the home directory and its .env files are unreadable" "unread '$FAKE_HOME/dev/repo' '$FAKE_HOME/dev/repo/README.md' '$FAKE_HOME/dev/repo/.env' '$FAKE_HOME/dev/repo/apps/api/.env.local'"
+  check "read: keychain files other than the login db are unreadable" "unread '$FAKE_HOME/Library/Keychains' '$FAKE_HOME/Library/Keychains/metadata.keychain-db' '$FAKE_HOME/Library/Keychains/55508251-BFB9-5056-BD1A-F6ADBAACF3A5/keychain-2.db'"
+  check "read: runner state and launchd logs in QA_HOME are unreadable" "unread '$STATE' '$QA_HOME/launchd.out.log' '$QA_HOME'"
+  check "read: the developer repo (QA_SOURCE_REPO) is unreadable, wherever it lives" "echo readme > '$QA_SOURCE_REPO/README.md' && unread '$QA_SOURCE_REPO/README.md' '$QA_SOURCE_REPO/.git/config'"
+  check "read: other files in a PATH dir under the home directory are unreadable" "unread '$FAKE_HOME/.toolbin/other-script'"
+  # What the run needs stays readable.
+  check "read: the login keychain db stays readable (claude.ai token refresh)" "[ \"\$(sbx /bin/cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = db ]"
+  : > "$FAKE_HOME/Library/Keychains/.flC23220F1"; echo x > "$FAKE_HOME/Library/Keychains/.flother"
+  check "read: the keychain's empty .fl<hex> lock files stay readable (Security.framework locks with them)" "sbx /bin/cat '$FAKE_HOME/Library/Keychains/.flC23220F1' && unread '$FAKE_HOME/Library/Keychains/.flother'"
+  check "read: a per-user claude install under the home directory still runs" "[ \"\$(sbx '$FAKE_HOME/.toolbin/claude')\" = tool-ok ]"
+  check "read: Playwright's browser cache and user fonts stay readable" "[ \"\$(sbx /bin/cat '$FAKE_HOME/Library/Caches/ms-playwright/chromium-1/chrome')\" = bin ] && sbx /bin/cat '$FAKE_HOME/Library/Fonts/f.ttf' >/dev/null"
+  mkdir -p "$QA_HOME/mcp/node_modules/x" "$AGENT_CLAUDE_DIR"; echo mcp > "$QA_HOME/mcp/node_modules/x/i.js"; echo cfg > "$AGENT_CLAUDE_DIR/c.json"
+  echo tmp > "$AGENT_TMP/t"; echo report > "$RUN_DIR/report.md"
+  check "read: RUN_DIR, the agent TMPDIR, its claude config dir and the MCP install stay readable" "[ \"\$(sbx /bin/cat '$RUN_DIR/report.md' '$AGENT_TMP/t' '$AGENT_CLAUDE_DIR/c.json' '$QA_HOME/mcp/node_modules/x/i.js' | tr '\n' ' ')\" = 'report tmp cfg mcp ' ] && sbx /bin/ls '$RUN_DIR' >/dev/null"
+  check "read: the runner's own scripts (qa-gh) stay readable" "sbx /bin/cat '$QA_DIR/qa-gh' >/dev/null"
+  rm -f "$RUN_DIR/report.md"
   check "sandbox: RUN_DIR's parents can be stat'ed (claude --add-dir / Edit rules resolve it)" "sbx /usr/bin/python3 -c 'import os,sys; os.lstat(os.path.dirname(sys.argv[1])); os.path.realpath(sys.argv[1])' '$RUN_DIR'"
   check "sandbox: RUN_DIR stays writable for the report/outbox" "sbx /bin/sh -c 'echo r > \"$RUN_DIR/report.md\"' && [ -s '$RUN_DIR/report.md' ]"
   check "F1: commits.tsv is not writable from inside" "! sbx /bin/sh -c 'echo x >> \"$RUN_DIR/commits.tsv\"' 2>/dev/null"
@@ -412,7 +519,7 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "sandbox: the stack port is reachable as 127.0.0.1 too" "[ \"\$(sbx /usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP_PORT/README.md)\" = readme ]"
   check "sandbox: control: the second loopback listener answers outside the sandbox" "[ \"\$(/usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP2_PORT/README.md)\" = readme ]"
   check "sandbox: any other loopback service on this Mac is unreachable" "! sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null http://127.0.0.1:$HTTP2_PORT/README.md 2>/dev/null"
-  kill "$HTTP_PID" "$HTTP2_PID" 2>/dev/null
+  kill "$HTTP_PID" "$HTTP2_PID" 2>/dev/null; rm -rf "$AGENT_TMP"
 else
   skip "Seatbelt cases (needs macOS sandbox-exec and qa_sandbox_profile)"
   type qa_sandbox_profile >/dev/null 2>&1 || bad "qa_sandbox_profile is defined"
@@ -751,7 +858,14 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
   sed '/^(deny file-write\*)$/d' "$T/selfcheck.sb" > "$T/denylist.sb"; AGENT_PROFILE="$T/denylist.sb"; : > "$T/runner.log"
   check "selfcheck: control: the deny-list profile really lost its default deny" "! grep -qx '(deny file-write\*)' '$T/denylist.sb' && grep -qx '(deny file-write\*)' '$T/selfcheck.sb'"
   check "selfcheck: a deny-list write profile is caught (PATH dir + home writable)" "! sandbox_selfcheck && grep -q 'path-dir-writable' '$T/runner.log' && grep -q 'home-writable' '$T/runner.log'"
-  check "selfcheck: its probes leave nothing behind" "[ -z \"\$(ls -a \"\$HOME\" | grep -F .qa-sandbox-probe)\" ] && [ -z \"\$(ls -a '$T/bin' | grep -F .qa-sandbox-probe)\" ]"
+  # Strix r8: a profile that names stores but has no default read deny under the
+  # home directory (the round-7 shape) must fail it.
+  RHOME="$(cd "$HOME" && pwd -P)"
+  sed "s|^(deny file-read-data (subpath \"$RHOME\") |(deny file-read-data |" "$T/selfcheck.sb" > "$T/readlist.sb"; AGENT_PROFILE="$T/readlist.sb"; : > "$T/runner.log"
+  check "selfcheck: control: the read-list profile really lost its home default deny" "grep -q '^(deny file-read-data (subpath \"$RHOME\") ' '$T/selfcheck.sb' && ! grep -q '^(deny file-read-data (subpath \"$RHOME\") ' '$T/readlist.sb'"
+  check "selfcheck: a profile without the home read default-deny is caught" "! sandbox_selfcheck && grep -q 'home-readable' '$T/runner.log' && grep -q 'home-store-readable' '$T/runner.log'"
+  grep -o 'readable from inside:.*' "$T/runner.log" | cut -c1-300
+  check "selfcheck: its probes leave nothing behind" "[ -z \"\$(ls -a \"\$HOME\" | grep -F .qa-sandbox-)\" ] && [ -z \"\$(ls -a '$T/bin' | grep -F .qa-sandbox-probe)\" ]"
   stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
 else
   skip "end-to-end sandbox self-check (set QA_TEST_NETWORK=1, macOS)"
