@@ -24,8 +24,9 @@ const (
 	// linuxDesktopMaxAttempts is the spawn budget one demand gets.
 	linuxDesktopMaxAttempts = 3
 	// linuxDesktopEnsureDeadline bounds one demand's respawn chain, from its
-	// first attempt. A helper that stays connected longer than this ends the
-	// chain; its later crash starts a new one.
+	// first attempt. A chain past it is exhausted, never renewed; only a new
+	// demand or the crash of a helper that stayed connected past it starts a
+	// fresh chain.
 	linuxDesktopEnsureDeadline = 30 * time.Second
 	// linuxDesktopExhaustedCooldown is how long a session whose budget ran
 	// out is refused before a new demand gets a fresh budget.
@@ -70,6 +71,9 @@ var (
 	ErrLinuxDesktopAgentUpdatePending = errors.New("agent update pending; desktop helper not spawned")
 	// ErrLinuxDesktopManagerClosed: the manager has shut down.
 	ErrLinuxDesktopManagerClosed = errors.New("linux desktop helper manager stopped")
+
+	errLinuxDesktopSpawnCancelled = errors.New("desktop helper spawn cancelled by a stop")
+	errLinuxDesktopBuildUnknown   = errors.New("running agent build hash unavailable; desktop helper not spawned")
 )
 
 // LinuxDesktopHooks is what the manager tells the rest of the agent.
@@ -83,6 +87,8 @@ type LinuxDesktopHooks struct {
 }
 
 // linuxDesktopBrokerOps is the part of the broker the manager drives.
+// RevokeLinuxDesktopTickets is called with the manager lock held, so it must
+// never call back into the manager.
 type linuxDesktopBrokerOps interface {
 	IssueLinuxDesktopTicket(LinuxDesktopBinding) (string, error)
 	RevokeLinuxDesktopTickets(logindSessionID string)
@@ -173,17 +179,25 @@ func newLinuxDesktopHelperManager(ops linuxDesktopBrokerOps, sp linuxDesktopSpaw
 	if now == nil {
 		now = time.Now
 	}
+	start := now().UnixMilli()
+	if start < 0 {
+		start = 0
+	}
 	return &LinuxDesktopHelperManager{
 		bySession: make(map[string]*linuxDesktopEntry),
 		exhausted: make(map[string]linuxDesktopExhaustion),
-		ops:       ops,
-		spawner:   sp,
-		lookup:    lookup,
-		list:      list,
-		hooks:     hooks,
-		now:       now,
-		agentExe:  resolvedAgentExecutable,
-		hashFile:  hashFileSHA256,
+		// Seeded from the clock so unit names never repeat across agent
+		// restarts (the orphan sweep tells a live spawn from a leftover by
+		// its generation).
+		nextGen:  uint64(start),
+		ops:      ops,
+		spawner:  sp,
+		lookup:   lookup,
+		list:     list,
+		hooks:    hooks,
+		now:      now,
+		agentExe: resolvedAgentExecutable,
+		hashFile: hashFileSHA256,
 		waylandDisplay: func(context.Context, string, uint32) (string, error) {
 			return "", errors.New("no wayland display lookup")
 		},
@@ -236,6 +250,10 @@ func (m *LinuxDesktopHelperManager) Ensure(ctx context.Context, logindSessionID 
 		m.mu.Unlock()
 		m.Stop(ctx, logindSessionID, "uid_changed")
 		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return ErrLinuxDesktopManagerClosed
+		}
 		e = m.bySession[logindSessionID]
 	}
 	if e == nil {
@@ -243,7 +261,17 @@ func (m *LinuxDesktopHelperManager) Ensure(ctx context.Context, logindSessionID 
 		m.bySession[logindSessionID] = e
 	}
 	switch e.state {
-	case linuxDesktopConnected, linuxDesktopSpawning:
+	case linuxDesktopConnected:
+		if s := e.session; s != nil && s.IsClosed() {
+			// Its close was missed; handle it as the crash it is, then
+			// decide afresh.
+			m.mu.Unlock()
+			m.OnSessionClosed(s)
+			return m.Ensure(ctx, logindSessionID)
+		}
+		m.mu.Unlock()
+		return nil
+	case linuxDesktopSpawning:
 		m.mu.Unlock()
 		return nil
 	}
@@ -296,19 +324,25 @@ func (m *LinuxDesktopHelperManager) eligibleBinding(ctx context.Context, id stri
 	return LinuxDesktopBinding{UID: st.UID, Username: username, LogindSessionID: id}, nil
 }
 
+func (m *LinuxDesktopHelperManager) uidInUseLocked(uid uint32) bool {
+	for _, e := range m.bySession {
+		if e.binding.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
 // spawnLocked starts a helper for e. Called with m.mu held; returns with it
 // released.
 func (m *LinuxDesktopHelperManager) spawnLocked(ctx context.Context, id string, e *linuxDesktopEntry) error {
 	now := m.now()
-	if e.attempts > 0 && now.Sub(e.chainStart) > linuxDesktopEnsureDeadline {
-		e.attempts, e.failures = 0, 0
+	if e.attempts >= linuxDesktopMaxAttempts || (e.attempts > 0 && now.Sub(e.chainStart) > linuxDesktopEnsureDeadline) {
+		m.mu.Unlock()
+		return m.exhaust(ctx, id, e)
 	}
 	if e.attempts == 0 {
 		e.chainStart = now
-	}
-	if e.attempts >= linuxDesktopMaxAttempts {
-		m.mu.Unlock()
-		return m.exhaust(ctx, id, e)
 	}
 	e.attempts++
 	attempt := e.attempts
@@ -325,30 +359,47 @@ func (m *LinuxDesktopHelperManager) spawnLocked(ctx context.Context, id string, 
 	unit, err := m.startHelper(ctx, binding)
 
 	m.mu.Lock()
-	cur := m.bySession[id]
-	if cur != e || e.binding.Generation != gen || m.closed {
-		// Stopped or replaced while starting: nothing may survive it.
+	if cur := m.bySession[id]; cur != e || e.binding.Generation != gen || m.closed {
+		// Stopped or replaced while starting: nothing it created may
+		// survive. A replacement entry's ticket is its own (issuing it
+		// revoked this one), so only an orphaned id is revoked here.
+		if cur == nil {
+			m.ops.RevokeLinuxDesktopTickets(id)
+		}
+		uidUnused := !m.uidInUseLocked(binding.UID)
 		m.mu.Unlock()
-		m.ops.RevokeLinuxDesktopTickets(id)
-		if err == nil && unit != "" {
+		if unit != "" {
 			m.stopUnit(binding.Username, unit)
 		}
-		if err != nil {
-			return err
+		if uidUnused {
+			m.ops.CloseLinuxDesktopListener(binding.UID)
 		}
-		return ErrLinuxDesktopSessionNotEligible
+		log.Info("Linux desktop helper spawn cancelled by a stop", "logindSession", id, "uid", binding.UID, "generation", gen)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errLinuxDesktopSpawnCancelled, err)
+		}
+		return errLinuxDesktopSpawnCancelled
 	}
 	if err != nil {
+		if e.state == linuxDesktopConnected {
+			// The helper connected before systemd-run reported failure
+			// (e.g. its own deadline expired on a slow bus): keep it, and
+			// keep the unit name so Stop collects it.
+			e.unit = unit
+			m.mu.Unlock()
+			log.Warn("systemd-run reported failure after the Linux desktop helper connected; keeping it",
+				"logindSession", id, "uid", binding.UID, "generation", gen, "error", err.Error())
+			return nil
+		}
 		e.state = linuxDesktopIdle
-		m.mu.Unlock()
 		m.ops.RevokeLinuxDesktopTickets(id)
+		m.recordFailureLocked(e, err)
+		m.mu.Unlock()
+		if unit != "" {
+			m.stopUnit(binding.Username, unit)
+		}
 		log.Warn("Linux desktop helper spawn failed", "logindSession", id, "uid", binding.UID,
 			"generation", gen, "attempt", attempt, "error", err.Error())
-		m.mu.Lock()
-		if m.bySession[id] == e {
-			m.recordFailureLocked(e, err)
-		}
-		m.mu.Unlock()
 		return err
 	}
 	e.unit = unit
@@ -358,7 +409,8 @@ func (m *LinuxDesktopHelperManager) spawnLocked(ctx context.Context, id string, 
 }
 
 // startHelper runs the pre-spawn checks, opens the endpoint, mints the
-// ticket and starts the unit.
+// ticket and starts the unit. On error the returned unit, when non-empty,
+// may exist and must be stopped.
 func (m *LinuxDesktopHelperManager) startHelper(ctx context.Context, binding LinuxDesktopBinding) (string, error) {
 	exe, err := m.agentExe()
 	if err != nil {
@@ -370,11 +422,14 @@ func (m *LinuxDesktopHelperManager) startHelper(ctx context.Context, binding Lin
 	// The broker admits only the running build; a helper started from a
 	// different file on disk would burn its ticket for nothing.
 	running := m.ops.runningBuildHash()
+	if running == "" {
+		return "", errLinuxDesktopBuildUnknown
+	}
 	onDisk, err := m.hashFile(exe)
 	if err != nil {
 		return "", fmt.Errorf("hash agent executable: %w", err)
 	}
-	if running == "" || onDisk != running {
+	if onDisk != running {
 		return "", ErrLinuxDesktopAgentUpdatePending
 	}
 	display, err := m.waylandDisplay(ctx, binding.LogindSessionID, binding.UID)
@@ -400,7 +455,7 @@ func (m *LinuxDesktopHelperManager) startHelper(ctx context.Context, binding Lin
 }
 
 // recordFailureLocked charges a failure to e's chain and schedules the next
-// attempt when the demand still stands and the budget allows.
+// attempt.
 func (m *LinuxDesktopHelperManager) recordFailureLocked(e *linuxDesktopEntry, err error) {
 	now := m.now()
 	e.lastErr = err
@@ -420,8 +475,9 @@ func (m *LinuxDesktopHelperManager) exhaust(ctx context.Context, id string, e *l
 	}
 	err = fmt.Errorf("desktop helper spawn budget exhausted: %w", err)
 	m.exhausted[id] = linuxDesktopExhaustion{until: m.now().Add(linuxDesktopExhaustedCooldown), err: err}
+	uid := e.binding.UID
 	m.mu.Unlock()
-	log.Warn("Linux desktop helper spawn budget exhausted", "logindSession", id, "uid", e.binding.UID, "error", err.Error())
+	log.Warn("Linux desktop helper spawn budget exhausted", "logindSession", id, "uid", uid, "error", err.Error())
 	m.Stop(ctx, id, "spawn_failed")
 	return err
 }
@@ -439,6 +495,16 @@ func (m *LinuxDesktopHelperManager) onSessionAuthenticated(s *Session) {
 	recorded := false
 	if pid > 0 {
 		start, uid, recorded = m.peerIdentity(pid)
+	}
+	if recorded && uid != b.UID {
+		log.Warn("Linux desktop helper process uid does not match its admission; closing it",
+			"logindSession", b.LogindSessionID, "bindingUID", b.UID, "processUID", uid, "pid", pid)
+		_ = s.Close()
+		return
+	}
+	if !recorded {
+		log.Warn("could not record the Linux desktop helper's process identity; the final kill backstop is unavailable for it",
+			"logindSession", b.LogindSessionID, "uid", b.UID, "pid", pid)
 	}
 
 	m.mu.Lock()
@@ -459,9 +525,14 @@ func (m *LinuxDesktopHelperManager) onSessionAuthenticated(s *Session) {
 	if e.liveDesktops == 0 {
 		e.idleSince = now
 	}
-	e.peerPID, e.peerStart, e.peerUID, e.peerRecorded = pid, start, uid, recorded && uid == b.UID
+	e.peerPID, e.peerStart, e.peerUID, e.peerRecorded = pid, start, uid, recorded
 	m.mu.Unlock()
 	log.Info("Linux desktop helper connected", "logindSession", b.LogindSessionID, "generation", b.Generation, "uid", b.UID)
+	// The broker publishes a session before it fires this callback, so the
+	// session may already have closed and its close callback been ignored.
+	if s.IsClosed() {
+		m.OnSessionClosed(s)
+	}
 }
 
 // OnSessionClosed handles the end of a bound helper's broker session that
@@ -473,7 +544,7 @@ func (m *LinuxDesktopHelperManager) OnSessionClosed(s *Session) {
 	id := s.LinuxDesktop.LogindSessionID
 	m.mu.Lock()
 	e := m.bySession[id]
-	if e == nil || e.session != s {
+	if m.closed || e == nil || e.session != s {
 		m.mu.Unlock()
 		return
 	}
@@ -485,8 +556,10 @@ func (m *LinuxDesktopHelperManager) OnSessionClosed(s *Session) {
 	e.liveDesktops = 0
 	unit, user := e.unit, e.binding.Username
 	e.unit = ""
+	m.ops.RevokeLinuxDesktopTickets(id)
 	if demand {
 		if !chainActive {
+			// The helper outlived its chain: this crash starts a new one.
 			e.attempts, e.failures = 0, 0
 		}
 		m.recordFailureLocked(e, errors.New("desktop helper exited"))
@@ -495,7 +568,6 @@ func (m *LinuxDesktopHelperManager) OnSessionClosed(s *Session) {
 	m.mu.Unlock()
 
 	log.Warn("Linux desktop helper session ended", "logindSession", id, "uid", s.UID, "respawn", demand && !exhausted)
-	m.ops.RevokeLinuxDesktopTickets(id)
 	if m.hooks.OnHelperStopped != nil {
 		m.hooks.OnHelperStopped(s, "helper_exited")
 	}
@@ -517,29 +589,23 @@ func (m *LinuxDesktopHelperManager) OnSessionClosed(s *Session) {
 // last entry.
 func (m *LinuxDesktopHelperManager) Stop(ctx context.Context, logindSessionID, reason string) {
 	m.mu.Lock()
+	// 1. No new ticket exists for this session from here on.
+	m.ops.RevokeLinuxDesktopTickets(logindSessionID)
 	e := m.bySession[logindSessionID]
 	if e == nil {
 		m.mu.Unlock()
-		m.ops.RevokeLinuxDesktopTickets(logindSessionID)
 		return
 	}
 	delete(m.bySession, logindSessionID)
 	s := e.session
 	unit, user, uid := e.unit, e.binding.Username, e.binding.UID
 	pid, start, peerUID, recorded := e.peerPID, e.peerStart, e.peerUID, e.peerRecorded
-	lastForUID := true
-	for _, other := range m.bySession {
-		if other.binding.UID == uid {
-			lastForUID = false
-			break
-		}
-	}
+	lastForUID := !m.uidInUseLocked(uid)
 	m.mu.Unlock()
 
 	log.Info("stopping Linux desktop helper", "logindSession", logindSessionID, "uid", uid, "reason", reason)
-	// 1. No scope survives this point, and no new ticket exists.
-	m.ops.RevokeLinuxDesktopTickets(logindSessionID)
 	if s != nil {
+		// No scope survives this point.
 		_ = s.Close()
 		// 2. The control plane ends the viewer side and stops renewing.
 		if m.hooks.OnHelperStopped != nil {
@@ -555,9 +621,14 @@ func (m *LinuxDesktopHelperManager) Stop(ctx context.Context, logindSessionID, r
 	if s != nil && recorded && pid > 0 {
 		m.afterFunc(linuxDesktopKillGrace, func() {
 			curStart, curUID, alive := m.peerIdentity(pid)
-			if shouldKillLinuxDesktopPeer(recorded, start, peerUID, alive, curStart, curUID) {
+			switch {
+			case !alive:
+				// Exited, as it should have.
+			case shouldKillLinuxDesktopPeer(recorded, start, peerUID, alive, curStart, curUID):
 				log.Warn("Linux desktop helper outlived its stop; killing it", "pid", pid, "uid", peerUID)
 				m.killPeer(pid, peerUID, start)
+			default:
+				log.Info("Linux desktop helper pid now names another process; not signalling it", "pid", pid)
 			}
 		})
 	}
@@ -587,7 +658,7 @@ func shouldKillLinuxDesktopPeer(recorded bool, recStart uint64, recUID uint32, a
 func (m *LinuxDesktopHelperManager) BoundSession(logindSessionID string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e := m.bySession[logindSessionID]; e != nil && e.state == linuxDesktopConnected {
+	if e := m.bySession[logindSessionID]; e != nil && e.state == linuxDesktopConnected && e.session != nil && !e.session.IsClosed() {
 		return e.session
 	}
 	return nil
@@ -630,7 +701,7 @@ func (m *LinuxDesktopHelperManager) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			m.shutdown()
+			m.Shutdown()
 			return
 		case <-ticker.C:
 			m.tick(ctx)
@@ -678,13 +749,17 @@ func (m *LinuxDesktopHelperManager) spawnTimedOut(id string) {
 		return
 	}
 	unit, user := e.unit, e.binding.Username
+	uid, gen, attempt := e.binding.UID, e.binding.Generation, e.attempts
 	e.unit = ""
 	e.state = linuxDesktopIdle
+	m.ops.RevokeLinuxDesktopTickets(id)
 	m.recordFailureLocked(e, errors.New("desktop helper did not connect"))
 	exhausted := e.attempts >= linuxDesktopMaxAttempts
 	m.mu.Unlock()
-	log.Warn("Linux desktop helper did not connect in time", "logindSession", id, "unit", unit)
-	m.ops.RevokeLinuxDesktopTickets(id)
+	// The helper's own diagnostics (why it exited before authenticating) are
+	// in the user's journal for that unit.
+	log.Warn("Linux desktop helper did not connect in time", "logindSession", id, "uid", uid,
+		"generation", gen, "attempt", attempt, "unit", unit, "diagnostics", "journalctl --user -u "+unit)
 	if unit != "" {
 		m.stopUnit(user, unit)
 	}
@@ -704,17 +779,18 @@ func (m *LinuxDesktopHelperManager) respawn(ctx context.Context, id string) {
 		return
 	}
 	if err != nil || binding.UID != e.binding.UID {
+		uid := e.binding.UID
 		m.mu.Unlock()
 		reason := "session_ineligible"
 		if errors.Is(err, ErrLinuxDesktopMultipleWaylandSessions) {
 			reason = "ambiguous_session"
 		}
+		errText := "uid changed"
+		if err != nil {
+			errText = err.Error()
+		}
+		log.Warn("Linux desktop helper not respawned", "logindSession", id, "uid", uid, "error", errText)
 		m.Stop(ctx, id, reason)
-		return
-	}
-	if e.attempts >= linuxDesktopMaxAttempts {
-		m.mu.Unlock()
-		_ = m.exhaust(ctx, id, e)
 		return
 	}
 	_ = m.spawnLocked(ctx, id, e)
@@ -742,6 +818,7 @@ func (m *LinuxDesktopHelperManager) reconcile(ctx context.Context) {
 			m.mu.Unlock()
 			continue
 		}
+		uid := e.binding.UID
 		reason := ""
 		switch {
 		case err != nil || st.PropertiesUnknown:
@@ -768,6 +845,9 @@ func (m *LinuxDesktopHelperManager) reconcile(ctx context.Context) {
 			reason = "idle"
 		}
 		m.mu.Unlock()
+		if err != nil {
+			log.Warn("logind lookup failed for a Linux desktop helper session", "logindSession", id, "uid", uid, "error", err.Error())
+		}
 		if reason != "" {
 			m.Stop(ctx, id, reason)
 		}
@@ -775,7 +855,8 @@ func (m *LinuxDesktopHelperManager) reconcile(ctx context.Context) {
 }
 
 // sweepOrphans stops helper units a previous agent run left behind, in the
-// manager of every user with a session now.
+// manager of every user with a session now. A unit of a spawn in flight is
+// recognised by its session id and generation and left alone.
 func (m *LinuxDesktopHelperManager) sweepOrphans(ctx context.Context) {
 	if m.list == nil {
 		return
@@ -810,20 +891,24 @@ func (m *LinuxDesktopHelperManager) sweepOrphans(ctx context.Context) {
 }
 
 func (m *LinuxDesktopHelperManager) ownsUnit(unit string) bool {
+	id, gen, ok := parseLinuxDesktopUnitName(unit)
+	if !ok {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, e := range m.bySession {
-		if e.unit == unit {
-			return true
-		}
-	}
-	return false
+	e := m.bySession[id]
+	return e != nil && (e.unit == unit || e.binding.Generation == gen)
 }
 
-// shutdown stops every helper within linuxDesktopShutdownBudget and refuses
-// new ones.
-func (m *LinuxDesktopHelperManager) shutdown() {
+// Shutdown stops every helper within linuxDesktopShutdownBudget and refuses
+// new ones. Idempotent; the agent calls it before the broker closes.
+func (m *LinuxDesktopHelperManager) Shutdown() {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
 	m.closed = true
 	ids := make([]string, 0, len(m.bySession))
 	for id := range m.bySession {

@@ -30,7 +30,7 @@ func (h *Heartbeat) startLinuxDesktopHelperManager() {
 		log.Warn("Linux desktop helper manager unavailable", "error", err.Error())
 		return
 	}
-	h.linuxDesktopHelpers = m
+	h.linuxDesktopHelpers.Store(m)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-h.stopChan

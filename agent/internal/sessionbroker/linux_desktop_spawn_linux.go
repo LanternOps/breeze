@@ -6,9 +6,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -19,42 +19,31 @@ import (
 // system directories, never from PATH, and every child runs with a fixed
 // minimal environment through procspawn.
 type systemdRunSpawner struct {
-	probeOnce sync.Once
-	probeErr  error
+	probe *systemdVersionProbe
 }
 
-func newSystemdRunSpawner() *systemdRunSpawner { return &systemdRunSpawner{} }
+func newSystemdRunSpawner() *systemdRunSpawner {
+	return &systemdRunSpawner{probe: &systemdVersionProbe{run: runSystemdRunVersion}}
+}
 
-// probe checks once per agent run that systemd-run can reach a user manager.
-func (s *systemdRunSpawner) probe(ctx context.Context) error {
-	s.probeOnce.Do(func() {
-		bin, err := linuxsession.ResolveSystemBinary("systemd-run")
-		if err != nil {
-			s.probeErr = fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, err)
-			return
-		}
-		out, _, err := runSpawnCommand(ctx, bin, []string{"--version"}, "")
-		if err != nil {
-			s.probeErr = fmt.Errorf("%w: systemd-run --version: %v", ErrLinuxDesktopSpawnUnsupported, err)
-			return
-		}
-		major, err := systemdMajorVersion(string(out))
-		if err != nil {
-			s.probeErr = fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, err)
-			return
-		}
-		if major < linuxSystemdMinVersion {
-			s.probeErr = fmt.Errorf("%w: systemd %d is older than %d", ErrLinuxDesktopSpawnUnsupported, major, linuxSystemdMinVersion)
-		}
-	})
-	return s.probeErr
+// runSystemdRunVersion runs `systemd-run --version`.
+func runSystemdRunVersion(ctx context.Context) (string, error) {
+	bin, err := linuxsession.ResolveSystemBinary("systemd-run")
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errSystemdRunMissing, err)
+	}
+	out, _, err := runSpawnCommand(ctx, bin, []string{"--version"}, "")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func (s *systemdRunSpawner) Start(ctx context.Context, spec LinuxDesktopSpawnSpec) (string, error) {
 	if err := validateLinuxDesktopSpawnSpec(spec); err != nil {
 		return "", err
 	}
-	if err := s.probe(ctx); err != nil {
+	if err := s.probe.check(ctx); err != nil {
 		return "", err
 	}
 	// A user manager that is running has its bus here. Its presence does not
@@ -81,11 +70,18 @@ func (s *systemdRunSpawner) Start(ctx context.Context, spec LinuxDesktopSpawnSpe
 	if err != nil {
 		msg := spawnStderrForError(stderr, spec.Ticket)
 		if sentinel := classifySystemdRunFailure(msg); sentinel != nil {
-			return "", fmt.Errorf("%w: %s", sentinel, msg)
+			// A name collision means the unit is someone else's: never
+			// report it for stopping.
+			if errors.Is(sentinel, ErrLinuxDesktopUnitExists) {
+				return "", fmt.Errorf("%w: %s", sentinel, msg)
+			}
+			return unit, fmt.Errorf("%w: %s", sentinel, msg)
 		}
 		log.Warn("systemd-run failed to start the Linux desktop helper",
 			"argv", argv, "uid", spec.Binding.UID, "error", err.Error(), "stderr", msg)
-		return "", fmt.Errorf("systemd-run: %w: %s", err, msg)
+		// The unit may exist although systemd-run failed (e.g. its deadline
+		// expired after the request reached the manager).
+		return unit, fmt.Errorf("systemd-run: %w: %s", err, msg)
 	}
 	return unit, nil
 }

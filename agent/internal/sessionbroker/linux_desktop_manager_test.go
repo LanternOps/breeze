@@ -107,20 +107,41 @@ type ldSpawner struct {
 	units    map[string][]string
 	listed   []string
 	unitSeq  int
+	// errUnit is the unit name Start reports with startErr (a unit that may
+	// exist although systemd-run failed).
+	errUnit string
+	// onStart runs inside Start after the spec is recorded, before it
+	// returns (e.g. a helper that connects before systemd-run returns).
+	onStart func(LinuxDesktopSpawnSpec)
+	started chan struct{} // when set, signalled as Start begins
 }
 
 func (s *ldSpawner) Start(_ context.Context, spec LinuxDesktopSpawnSpec) (string, error) {
+	if s.started != nil {
+		s.started <- struct{}{}
+	}
 	if s.gate != nil {
 		<-s.gate
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.starts = append(s.starts, spec)
-	if s.startErr != nil {
-		return "", s.startErr
-	}
+	onStart, startErr, errUnit := s.onStart, s.startErr, s.errUnit
 	s.unitSeq++
-	return fmt.Sprintf("breeze-desktop-helper-%s-g%d-%08x.service", spec.Binding.LogindSessionID, spec.Binding.Generation, s.unitSeq), nil
+	unit := fmt.Sprintf("breeze-desktop-helper-%s-g%d-%08x.service", spec.Binding.LogindSessionID, spec.Binding.Generation, s.unitSeq)
+	s.mu.Unlock()
+	if onStart != nil {
+		onStart(spec)
+	}
+	if startErr != nil {
+		return errUnit, startErr
+	}
+	return unit, nil
+}
+
+func (s *ldSpawner) stopsList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.stops...)
 }
 func (s *ldSpawner) Stop(_ context.Context, user, unit string) error {
 	s.mu.Lock()

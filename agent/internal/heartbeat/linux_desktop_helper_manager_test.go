@@ -86,7 +86,7 @@ func TestStartLinuxDesktopHelperManager_FlagOffConstructsNothing(t *testing.T) {
 	h := &Heartbeat{config: &config.Config{}, stopChan: make(chan struct{})}
 	h.sessionBroker = newTestBrokerWithSessions(t)
 	h.startLinuxDesktopHelperManager()
-	if h.linuxDesktopHelpers != nil {
+	if h.linuxDesktopHelpers.Load() != nil {
 		t.Fatal("manager constructed with the flag off")
 	}
 }

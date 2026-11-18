@@ -181,7 +181,12 @@ func (b *Broker) EnsureLinuxDesktopListener(uid uint32) (string, error) {
 	// Replacing a listener closes the old one first, sessions included.
 	if stale != nil {
 		b.linuxDesktopMu.Unlock()
-		b.closeLinuxDesktopSessions(stale.shutdown())
+		// Only root can change this directory, so a vanished or swapped
+		// socket file is worth an operator's attention.
+		sessions := stale.shutdown()
+		log.Warn("Linux desktop endpoint socket is no longer the one root created; replacing it",
+			"uid", uid, "path", stale.path, "sessionsClosed", len(sessions))
+		b.closeLinuxDesktopSessions(sessions)
 		b.linuxDesktopMu.Lock()
 		if b.linuxDesktopClosed || b.acceptingStopped() {
 			b.linuxDesktopMu.Unlock()

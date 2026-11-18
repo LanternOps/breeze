@@ -10,18 +10,21 @@ import (
 )
 
 // linuxDesktopPeerIdentity reads a process's start time (clock ticks since
-// boot, /proc/<pid>/stat field 22) and owner uid. Together with the pid they
-// identify one process: a reused pid has a different start time.
+// boot, /proc/<pid>/stat field 22) and its uid. Together with the pid they
+// identify one process: a reused pid has a different start time. The uid
+// comes from the Uid: line of /proc/<pid>/status (real and effective must
+// agree), not from the owner of /proc/<pid>, which a process can make
+// root-owned by marking itself non-dumpable.
 func linuxDesktopPeerIdentity(pid int) (startTime uint64, uid uint32, alive bool) {
 	if pid <= 0 {
 		return 0, 0, false
 	}
 	dir := "/proc/" + strconv.Itoa(pid)
-	fi, err := os.Stat(dir)
+	status, err := os.ReadFile(dir + "/status")
 	if err != nil {
 		return 0, 0, false
 	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
+	uid, ok := parseProcStatusUID(string(status))
 	if !ok {
 		return 0, 0, false
 	}
@@ -33,7 +36,29 @@ func linuxDesktopPeerIdentity(pid int) (startTime uint64, uid uint32, alive bool
 	if !ok {
 		return 0, 0, false
 	}
-	return start, st.Uid, true
+	return start, uid, true
+}
+
+// parseProcStatusUID returns the uid from the "Uid:" line of
+// /proc/<pid>/status (real, effective, saved, fs), requiring the real and
+// effective ids to agree.
+func parseProcStatusUID(status string) (uint32, bool) {
+	for line := range strings.SplitSeq(status, "\n") {
+		rest, found := strings.CutPrefix(line, "Uid:")
+		if !found {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) < 2 || f[0] != f[1] {
+			return 0, false
+		}
+		v, err := strconv.ParseUint(f[0], 10, 32)
+		if err != nil {
+			return 0, false
+		}
+		return uint32(v), true
+	}
+	return 0, false
 }
 
 // parseProcStatStartTime returns field 22 of /proc/<pid>/stat. The comm

@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -24,6 +25,8 @@ import (
 // linuxDesktopSpawner starts and stops helper units in a user's manager.
 type linuxDesktopSpawner interface {
 	// Start launches a helper for spec and returns the unit name it used.
+	// On error, a non-empty unit names a unit that may nevertheless exist
+	// (systemd-run failed after asking for it); the caller stops it.
 	Start(ctx context.Context, spec LinuxDesktopSpawnSpec) (unit string, err error)
 	// Stop stops unit in username's user manager.
 	Stop(ctx context.Context, username, unit string) error
@@ -84,7 +87,7 @@ var (
 	linuxUsernamePattern       = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$`)
 	linuxWaylandDisplayPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 	linuxSpawnTicketPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
-	linuxDesktopUnitPattern    = regexp.MustCompile(`^breeze-desktop-helper-[A-Za-z0-9]{1,32}-g[0-9]{1,20}-[0-9a-f]{8}\.service$`)
+	linuxDesktopUnitPattern    = regexp.MustCompile(`^breeze-desktop-helper-([A-Za-z0-9]{1,32})-g([0-9]{1,20})-[0-9a-f]{8}\.service$`)
 )
 
 // validLinuxUsername reports whether s is a safe user name to put in
@@ -107,6 +110,61 @@ func linuxDesktopUnitName(logindSessionID string, gen uint64, rnd [4]byte) strin
 // linuxDesktopUnitName produces. Only such names are ever stopped.
 func isLinuxDesktopUnitName(unit string) bool {
 	return linuxDesktopUnitPattern.MatchString(unit)
+}
+
+// parseLinuxDesktopUnitName returns the logind session id and generation a
+// helper unit name carries.
+func parseLinuxDesktopUnitName(unit string) (logindSessionID string, gen uint64, ok bool) {
+	m := linuxDesktopUnitPattern.FindStringSubmatch(unit)
+	if m == nil {
+		return "", 0, false
+	}
+	g, err := strconv.ParseUint(m[2], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return m[1], g, true
+}
+
+// errSystemdRunMissing is what a version probe's run reports when the
+// systemd-run binary is not installed: a definitive answer.
+var errSystemdRunMissing = errors.New("systemd-run not installed")
+
+// systemdVersionProbe checks once per agent run that systemd-run can reach a
+// user manager. Only a definitive answer is kept — a parsed version, an
+// unparseable one, or a missing binary; a failure to run the probe (a
+// cancelled context, a fork error) is reported and asked again next time.
+type systemdVersionProbe struct {
+	run func(ctx context.Context) (string, error)
+
+	mu   sync.Mutex
+	done bool
+	err  error
+}
+
+func (p *systemdVersionProbe) check(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.done {
+		return p.err
+	}
+	out, err := p.run(ctx)
+	if err != nil {
+		if errors.Is(err, errSystemdRunMissing) {
+			p.done, p.err = true, fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, err)
+			return p.err
+		}
+		return fmt.Errorf("systemd-run version probe failed: %w", err)
+	}
+	p.done = true
+	major, perr := systemdMajorVersion(out)
+	switch {
+	case perr != nil:
+		p.err = fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, perr)
+	case major < linuxSystemdMinVersion:
+		p.err = fmt.Errorf("%w: systemd %d is older than %d", ErrLinuxDesktopSpawnUnsupported, major, linuxSystemdMinVersion)
+	}
+	return p.err
 }
 
 // linuxDesktopSocketPathFor is the per-uid endpoint inside dir.

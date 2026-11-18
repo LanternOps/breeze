@@ -21,6 +21,18 @@ func TestParseProcStatStartTime(t *testing.T) {
 	}
 }
 
+func TestParseProcStatusUID(t *testing.T) {
+	ok := "Name:\tx\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n"
+	if uid, good := parseProcStatusUID(ok); !good || uid != 1000 {
+		t.Fatalf("uid %d %v", uid, good)
+	}
+	for _, bad := range []string{"", "Name:\tx\n", "Uid:\t1000\t0\t0\t0\n", "Uid:\tx\tx\n", "Uid:\t1000\n"} {
+		if _, good := parseProcStatusUID(bad); good {
+			t.Errorf("parsed %q", bad)
+		}
+	}
+}
+
 func TestLinuxDesktopPeerIdentity_Self(t *testing.T) {
 	start, uid, alive := linuxDesktopPeerIdentity(os.Getpid())
 	if !alive || start == 0 || uid != uint32(os.Getuid()) {

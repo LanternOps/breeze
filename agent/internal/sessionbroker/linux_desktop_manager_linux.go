@@ -22,12 +22,29 @@ func NewLinuxDesktopHelperManagerForHost(b *Broker, hooks LinuxDesktopHooks) (*L
 	if lookup == nil {
 		lookup = lookupLinuxLogindSession
 	}
-	detector := NewSessionDetector()
-	list := func(context.Context) ([]DetectedSession, error) { return detector.ListSessions() }
-	m := newLinuxDesktopHelperManager(b, newSystemdRunSpawner(), lookup, list, hooks, time.Now)
+	m := newLinuxDesktopHelperManager(b, newSystemdRunSpawner(), lookup, linuxGraphicalSessions, hooks, time.Now)
 	m.waylandDisplay = linuxSessionWaylandDisplay
 	m.attach()
 	return m, nil
+}
+
+// linuxGraphicalSessions lists the local graphical user sessions through
+// linuxsession, which resolves loginctl from the fixed system directories
+// (never PATH). The user names it returns go into `systemd-run -M <user>@`.
+func linuxGraphicalSessions(ctx context.Context) ([]DetectedSession, error) {
+	sessions, err := linuxsession.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DetectedSession, 0, len(sessions))
+	for _, s := range sessions {
+		uid, err := strconv.ParseUint(s.UID, 10, 32)
+		if err != nil {
+			continue
+		}
+		out = append(out, DetectedSession{UID: uint32(uid), Username: s.Username, Session: s.ID, LogindType: s.Type})
+	}
+	return out, nil
 }
 
 // linuxSessionWaylandDisplay finds the Wayland socket name of one logind
