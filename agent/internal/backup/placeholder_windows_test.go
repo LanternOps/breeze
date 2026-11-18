@@ -15,6 +15,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/breeze-rmm/agent/internal/backup/vss"
 )
 
 // Live Windows coverage for #7326. CI runs these by name in test-agent-windows
@@ -356,5 +358,141 @@ func TestHydratedCloudFile_BackupRestoreRoundTripOnWindows(t *testing.T) {
 	}
 	if string(got) != want {
 		t.Fatalf("restored content = %q, want %q", got, want)
+	}
+}
+
+const phcmDisguisePlaceholder = 1
+
+func setThreadPlaceholderMode(t *testing.T, mode int8) int8 {
+	t.Helper()
+	r, _, _ := procRtlSetThreadPlaceholderCompatibilityMode.Call(uintptr(uint8(mode)))
+	prev := int8(uint8(r))
+	if prev < 0 {
+		t.Fatalf("RtlSetThreadPlaceholderCompatibilityMode(%d) = %d", mode, prev)
+	}
+	return prev
+}
+
+// A walk started from a thread that disguises placeholders still detects an
+// online-only placeholder, because the walk exposes them on its own thread,
+// and it puts the caller's disguise mode back afterwards. The Lstat made from
+// the disguised thread first is the control: it shows what the walk would see
+// without exposePlaceholdersForWalk.
+func TestCloudPlaceholder_DetectedFromDisguisedThreadOnWindows(t *testing.T) {
+	if procRtlSetThreadPlaceholderCompatibilityMode.Find() != nil {
+		t.Skip("placeholder compatibility modes need Windows 10 1803 or later")
+	}
+	syncRoot := newTestSyncRoot(t)
+	placeholder := createPlaceholder(t, syncRoot, "Disguised.docx", 32*1024)
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	prev := setThreadPlaceholderMode(t, phcmDisguisePlaceholder)
+	defer setThreadPlaceholderMode(t, prev)
+
+	disguised := logEntry(t, "placeholder seen from a disguised thread (control)", placeholder)
+	t.Logf("disguise hides the placeholder from a plain stat: %v",
+		notStoredLocallyReason(platformRawWinAttrs(disguised)) == "" && disguised.Mode().IsRegular())
+
+	files, skips, err := NewBackupManager(BackupConfig{}).collectBackupFilesWithSkips(context.Background(), []string{syncRoot}, nil, nil)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if _, ok := manifestPathsWin(files)["path_0/Disguised.docx"]; ok {
+		t.Fatal("a placeholder walked from a disguised thread was captured: the upload would hydrate it")
+	}
+	if skips.notLocalTotal != 1 {
+		t.Fatalf("placeholder not recorded as not stored locally: %+v", skips)
+	}
+	if mode := threadPlaceholderCompatibilityMode(); mode != phcmDisguisePlaceholder {
+		t.Fatalf("the walk must restore the caller's mode: got %d, want %d", mode, phcmDisguisePlaceholder)
+	}
+}
+
+// Opt-in live check (BREEZE_VSS_LIVE=1, elevated) of the one thing CI does not
+// cover: whether wof.sys and cldflt.sys serve these files on a VSS shadow
+// copy. Either outcome is safe, and the test enforces that. A WOF or hydrated
+// cloud file is either backed up with its exact bytes or named on the
+// Warning, never errored and never wrong. An online-only placeholder is
+// always skipped and stays unhydrated. The log says which outcome this host
+// produced.
+func TestLive_WOFAndCloudFilesUnderVSS(t *testing.T) {
+	if os.Getenv("BREEZE_VSS_LIVE") != "1" {
+		t.Skip("set BREEZE_VSS_LIVE=1 to run live VSS tests (needs an elevated process)")
+	}
+	wofDir, err := os.MkdirTemp("", "breeze-7326-wof-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wofDir) })
+	syncRoot := newTestSyncRoot(t)
+	sysVol := filepath.VolumeName(os.Getenv("SystemRoot"))
+	if !strings.EqualFold(filepath.VolumeName(wofDir), sysVol) || !strings.EqualFold(filepath.VolumeName(syncRoot), sysVol) {
+		t.Skipf("temp dir is not on the system volume %s", sysVol)
+	}
+
+	wofWant := bytes.Repeat([]byte("breeze #7326 wof under vss\r\n"), 32*1024)
+	wofPath := filepath.Join(wofDir, "tool.exe")
+	if err := os.WriteFile(wofPath, wofWant, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("compact", "/c", "/exe:xpress4k", wofPath).CombinedOutput(); err != nil {
+		t.Fatalf("compact /exe: %v: %s", err, out)
+	}
+	cloudWant := "hydrated cloud file under vss"
+	cloudPath := createTempFile(t, syncRoot, "Budget.xlsx", cloudWant)
+	convertToPlaceholder(t, cloudPath)
+	placeholder := createPlaceholder(t, syncRoot, "Online.docx", 16*1024)
+
+	provider := privateTestLocalProvider(t, t.TempDir())
+	mgr := NewBackupManager(BackupConfig{
+		Provider:    provider,
+		Paths:       []string{wofDir, syncRoot},
+		StagingDir:  t.TempDir(),
+		VSSEnabled:  true,
+		VSSProvider: vss.NewProvider(vss.DefaultConfig()),
+	})
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	t.Logf("job status=%q files=%d errors=%d warning=%q", job.Status, job.FilesBackedUp, job.ErrorCount, job.Warning)
+	if job.ErrorCount != 0 {
+		t.Fatalf("a WOF or cloud file under VSS must be captured or reported, never errored: %q", job.Error)
+	}
+	if !strings.Contains(job.Warning, placeholder) {
+		t.Fatalf("the online-only placeholder must be named on the Warning: %q", job.Warning)
+	}
+	after := logEntry(t, "placeholder after VSS backup", placeholder)
+	if notStoredLocallyReason(platformRawWinAttrs(after)) == "" {
+		t.Fatal("the VSS backup hydrated the placeholder")
+	}
+
+	restoreRoot := t.TempDir()
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: job.Snapshot.ID, TargetPath: restoreRoot}, nil)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if res.FilesFailed != 0 {
+		t.Fatalf("restore result = %+v", res)
+	}
+	for _, c := range []struct {
+		label, path string
+		want        []byte
+	}{
+		{"WOF file", wofPath, wofWant},
+		{"hydrated cloud file", cloudPath, []byte(cloudWant)},
+	} {
+		got, readErr := os.ReadFile(filepath.Join(restoreRoot, stripVolumeAndLeadingSeparators(c.path)))
+		switch {
+		case readErr == nil && bytes.Equal(got, c.want):
+			t.Logf("%s under VSS: BACKED UP, restored byte-identical", c.label)
+		case readErr == nil:
+			t.Fatalf("%s under VSS restored with wrong content (%d bytes, want %d)", c.label, len(got), len(c.want))
+		case strings.Contains(job.Warning, c.path):
+			t.Logf("%s under VSS: NOT BACKED UP, reported on the Warning (its filter does not serve the shadow copy)", c.label)
+		default:
+			t.Fatalf("%s under VSS was neither restored nor reported: %v", c.label, readErr)
+		}
 	}
 }
