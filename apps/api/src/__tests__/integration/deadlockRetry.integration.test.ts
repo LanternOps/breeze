@@ -13,7 +13,7 @@
  * general savepoint-isolation proof; this file pins the 40P01 case specifically.
  *
  * The deadlock is induced deterministically, not by racing. Each step waits on
- * an explicit barrier, never on the clock:
+ * an explicit barrier, not a fixed sleep. Timeouts are only failure ceilings:
  *
  *   1. The competitor locks row B, then waits.
  *   2. The code-under-test locks row A (inside its savepoint), then waits.
@@ -59,14 +59,23 @@ function orgCtx(orgId: string): DbAccessContext {
   };
 }
 
-/** A one-shot barrier that fails loudly instead of hanging. */
+/**
+ * A one-shot barrier that fails loudly instead of hanging. `fail` releases the
+ * waiter with the other side's real error, so a setup failure surfaces at once
+ * and is not reported as a barrier timeout 30 s later.
+ */
 function barrier<T>(name: string) {
   let resolve!: (value: T) => void;
-  const reached = new Promise<T>((res) => {
+  let fail!: (error: unknown) => void;
+  const reached = new Promise<T>((res, rej) => {
     resolve = res;
+    fail = rej;
   });
+  // A failure nobody waits for is not an unhandled rejection.
+  reached.catch(() => undefined);
   return {
     resolve,
+    fail,
     wait: async (): Promise<T> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
@@ -144,9 +153,10 @@ describe('transient lock retry against real Postgres', () => {
       await codeHoldsA.wait();
       await ctx2.execute(sql`SELECT id FROM sites WHERE id = ${siteA.id}::uuid FOR UPDATE`);
     });
-    // Mark the rejection as handled while the code-under-test runs. It still
-    // fails the test, because `await competitorDone` below rethrows it.
-    competitorDone.catch(() => undefined);
+    // If the competitor fails before it holds B, release the code-under-test
+    // with the real error. This also marks the rejection as handled while the
+    // code-under-test runs; `await competitorDone` below still rethrows it.
+    competitorDone.catch((error) => competitorHoldsB.fail(error));
 
     let attempts = 0;
     let sawDeadlock = false;
@@ -189,6 +199,11 @@ describe('transient lock retry against real Postgres', () => {
           throw error;
         }
       });
+    }).catch((error: unknown) => {
+      // If this side failed before it held A, release the competitor so it
+      // rolls back and frees B now, not after its 30 s barrier ceiling.
+      codeHoldsA.fail(error);
+      throw error;
     });
 
     // The victim is fixed, so the competitor must finish cleanly.
