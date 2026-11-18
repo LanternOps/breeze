@@ -10,7 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"path"
+	"slices"
 )
 
 // ErrUnixServerNotRoot means the process that accepted the connection does
@@ -82,20 +83,14 @@ func CheckUnixServerIdentity(ev UnixServerEvidence) error {
 			return fmt.Errorf("%w: %s is writable by group %d (mode %v)", ErrUnixSocketDirUnsafe, d.Path, d.GID, d.Mode)
 		}
 	}
-	if last := ev.DirChain[len(ev.DirChain)-1].Path; filepath.Clean(last) != "/" {
+	// path, not filepath: the evidence is a Linux path on every host, and
+	// filepath.Clean("/") is `\` on Windows.
+	if last := ev.DirChain[len(ev.DirChain)-1].Path; path.Clean(last) != "/" {
 		return fmt.Errorf("%w: directory evidence stops at %s, not /", ErrUnixSocketDirUnsafe, last)
 	}
 	return nil
 }
 
 func trustedSocketDirGroup(gid uint32, trusted []uint32) bool {
-	if gid == 0 {
-		return true
-	}
-	for _, t := range trusted {
-		if gid == t {
-			return true
-		}
-	}
-	return false
+	return gid == 0 || slices.Contains(trusted, gid)
 }

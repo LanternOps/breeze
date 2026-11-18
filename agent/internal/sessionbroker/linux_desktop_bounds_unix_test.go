@@ -251,7 +251,7 @@ func TestLinuxDesktopHelper_FilterAndClampAreWired(t *testing.T) {
 		t.Fatalf("helper granted itself capabilities: %+v", caps)
 	}
 
-	for i := 0; i < linuxDesktopInboundStrikeLimit; i++ {
+	for i := range linuxDesktopInboundStrikeLimit {
 		if err := c.SendTyped("frame", ipc.TypeDesktopFrame, map[string]int{"i": i}); err != nil {
 			t.Fatalf("send frame: %v", err)
 		}

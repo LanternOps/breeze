@@ -238,7 +238,7 @@ func isLocalGraphicalLogindSession(out string) (graphical, ok bool) {
 
 func parseKeyValueLines(out string) map[string]string {
 	props := make(map[string]string)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		k, v, found := strings.Cut(strings.TrimSpace(line), "=")
 		if !found || k == "" {
 			continue

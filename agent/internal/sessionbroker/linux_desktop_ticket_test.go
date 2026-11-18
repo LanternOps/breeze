@@ -212,15 +212,13 @@ func TestLinuxDesktopTicket_ConcurrentConsume(t *testing.T) {
 	var wins atomic.Int32
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			<-start
 			if _, err := tk.consume(nonce, "3", 1000); err == nil {
 				wins.Add(1)
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

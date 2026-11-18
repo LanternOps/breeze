@@ -115,7 +115,7 @@ func TestConnFrameDeadline_TrickledFrameFails(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
-		for i := 0; i < len(frame); i++ {
+		for i := range len(frame) {
 			select {
 			case <-stop:
 				return

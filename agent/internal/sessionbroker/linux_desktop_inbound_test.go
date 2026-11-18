@@ -119,7 +119,7 @@ func TestLinuxDesktopInbound_SizeBounds(t *testing.T) {
 func TestLinuxDesktopInbound_ICECandidateCap(t *testing.T) {
 	st, _ := newInboundState(t)
 	env, size := iceEnv(t, inboundTestSession)
-	for i := 0; i < linuxDesktopMaxICEPerSession; i++ {
+	for i := range linuxDesktopMaxICEPerSession {
 		if err := checkLinuxDesktopInbound(env, size, "", st); err != nil {
 			t.Fatalf("candidate %d rejected: %v", i+1, err)
 		}
