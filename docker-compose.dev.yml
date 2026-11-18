@@ -2,7 +2,7 @@
 # Usage: docker compose -f docker-compose.dev.yml up
 #
 # Host ports bind to 127.0.0.1 only (#9382): this stack ships fixed throwaway
-# credentials (Postgres breeze/breeze, MinIO minioadmin/minioadmin), and a bare
+# credentials (Postgres breeze/breeze, RustFS rustfsadmin/rustfsadmin), and a bare
 # "5432:5432" publishes on every interface, so on a laptop on shared Wi-Fi the
 # dev database and object store are reachable from the LAN. Docker publishes
 # through its own NAT rules, so a host ufw/firewalld rule does not cover it.
@@ -96,9 +96,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - set in .env.dev}
       API_PORT: 3001
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?AGENT_ENROLLMENT_SECRET is required - set in .env.dev}
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
+      S3_ENDPOINT: http://rustfs:9000
+      S3_ACCESS_KEY: rustfsadmin
+      S3_SECRET_KEY: rustfsadmin
       S3_BUCKET: breeze
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
@@ -215,24 +215,27 @@ services:
     depends_on:
       - api
 
-  # MinIO for S3-compatible object storage
-  minio:
-    image: minio/minio:latest
-    container_name: breeze-minio-dev
+  # RustFS for S3-compatible object storage (#8350). Pinned by tag AND digest;
+  # bump both together, and the same pin in ci.yml's storage-compat job.
+  # Data starts empty: RustFS cannot read MinIO's on-disk format, so the old
+  # breeze-minio-dev-data volume is not reused (docker volume rm it when done).
+  rustfs:
+    image: rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+    container_name: breeze-rustfs-dev
     restart: unless-stopped
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:9000:9000"
       - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:9001:9001"
     volumes:
-      - minio_dev_data:/data
+      - rustfs_dev_data:/data
     networks:
       - breeze-dev-network
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -248,5 +251,5 @@ volumes:
     name: breeze-postgres-dev-data
   redis_dev_data:
     name: breeze-redis-dev-data
-  minio_dev_data:
-    name: breeze-minio-dev-data
+  rustfs_dev_data:
+    name: breeze-rustfs-dev-data

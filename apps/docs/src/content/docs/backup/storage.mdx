@@ -170,6 +170,69 @@ When backups go to a bucket you or your customer own on an S3-compatible service
 
 Breeze does not create buckets or manage these settings: it does not turn on Object Lock or versioning, write lifecycle rules, or create or scope access keys. Configure them in your storage provider's console. When Object Lock is already enabled on the bucket and a snapshot is made immutable with provider enforcement, by its backup policy or by hand (`POST /backup/snapshots/:id/immutability` with `"enforcement": "provider"`), Breeze places a Governance-mode retention date on that snapshot's objects. If the bucket does not have Object Lock enabled, the manual request is refused with `409`, and a policy-driven snapshot falls back to Breeze's own application-level immutability and records the reason on the snapshot (`immutabilityFallbackReason`).
 
+### Tested S3-compatible stores
+
+Breeze CI runs an S3-compatibility suite against **RustFS 1.0.6** (single node, path-style addressing, HTTP/1.1) on every change to the API. It is the same RustFS the development stack (`docker-compose.dev.yml`) runs. The suite exercises the calls Breeze itself makes:
+
+- Object upload and download with content type and metadata, and ranged reads
+- Presigned download URLs, and presigned uploads that refuse to overwrite (`If-None-Match: *`), including several uploads racing for the same key and an expired URL
+- Multipart uploads, both server-side (8 MiB parts) and presigned per part, with a completion that refuses to overwrite, abort, and listing of unfinished uploads
+- Paginated listing, and batch deletes of more than 1,000 keys
+
+Not verified against RustFS, so test them yourself before relying on them:
+
+- **Server-side encryption.** RustFS accepts SSE-S3 only when it is started with `RUSTFS_SSE_S3_MASTER_KEY` (or a KMS). See [Encryption](/backup/encryption/).
+- **Object Lock** and provider-enforced snapshot immutability.
+- **Multi-node (distributed) RustFS.**
+- **HTTP/2 clients.** RustFS does not answer `Expect: 100-continue` over HTTP/2 ([rustfs/rustfs#9460](https://github.com/rustfs/rustfs/issues/9460)), which can delay each multipart part. Breeze's own clients use HTTP/1.1.
+- **The agent's own S3 client.** It uses a subset of the calls above, plus SSE and Object Lock.
+
+Other S3-compatible services (AWS S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO) are supported but not covered by this suite.
+
+### Moving from MinIO to RustFS
+
+This applies if you run your own MinIO, either as the platform object store (`S3_ENDPOINT`) or as a backup storage target. Breeze does not need you to move. Do it only if you have decided to replace MinIO.
+
+**What is at stake.** A backup bucket often holds the only copy of your customers' data. An object that is missing or corrupted after the move means a restore point that cannot be restored, and you may not find out until someone needs it. RustFS cannot read MinIO's on-disk format, so you cannot point RustFS at MinIO's data directory. Every object has to be copied through the S3 API, then checked.
+
+**What does not carry over.** A copy with `rclone` keeps each object's current content and, with `--metadata`, its content type and user metadata. It does **not** copy:
+
+- **Older object versions and delete markers.** Only the current version of each object is copied. If you rely on versioning to recover from accidental deletes, that history stays in MinIO.
+- **Object Lock retention dates and legal holds.** Copies in RustFS are not immutable. Snapshots that Breeze marked immutable with provider enforcement are no longer protected by the storage layer in the new bucket. Object Lock must also be enabled when the RustFS bucket is created, if you want it at all.
+- **Encryption at rest.** Objects MinIO encrypted are decrypted on read and stored in whatever form the new bucket's own settings give them. For SSE-S3 on RustFS, start it with `RUSTFS_SSE_S3_MASTER_KEY` before you copy.
+- **Unfinished multipart uploads.** A backup running during the final copy can be lost, which is why backups are paused for it.
+- **ETags of large objects.** They can differ because the copy uses different part sizes. This is why the check below compares content rather than ETags.
+
+**Steps.**
+
+<Steps>
+1. **Stand up RustFS separately.** Give it its own disk or volume; never MinIO's. Create buckets with the same names. If you need Object Lock or versioning, turn them on now, as RustFS creates each bucket.
+
+2. **Copy while MinIO stays live.** Define two `rclone` remotes (`type = s3`, `provider = Other`, `force_path_style = true`), one for each store, then copy each bucket:
+
+   ```bash
+   rclone sync --metadata minio:breeze rustfs:breeze
+   ```
+
+   This first pass can take as long as it needs, because Breeze keeps working against MinIO.
+
+3. **Pause writes, then copy again.** In a maintenance window, pause backup schedules and let running backups finish. Run the same `rclone sync` again; it copies only what changed.
+
+4. **Check every object.** Compare the content of both buckets, which downloads both copies of every object:
+
+   ```bash
+   rclone check --download minio:breeze rustfs:breeze
+   ```
+
+   Continue only when it reports zero differences. Without `--download`, `rclone` cannot hash large multipart objects and compares only their sizes.
+
+5. **Switch Breeze over.**
+   - **Platform store:** set `S3_ENDPOINT`, `S3_ACCESS_KEY` and `S3_SECRET_KEY` in `.env` to the RustFS values and restart the API. Download links issued before the restart point at MinIO and stop working when it goes read-only; they expire after `S3_PRESIGN_TTL` anyway.
+   - **Backup targets:** edit each storage configuration's endpoint and keys, then run **Test connection**. It also checks that the store refuses overwrites, which backups depend on.
+
+6. **Prove that restores work before you retire MinIO.** Resume backups. Restore a file from the oldest restore point you must keep and from the newest one, and run integrity verification. Keep MinIO running read-only and untouched until those restores pass, and ideally until RustFS has served a full retention cycle. If anything fails, point Breeze back at MinIO: nothing there has changed, but restore points taken after the switch exist only in RustFS, so copy them back the same way first.
+</Steps>
+
 ---
 
 ## Testing Connectivity

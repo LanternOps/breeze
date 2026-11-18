@@ -162,7 +162,7 @@ This starts:
 - Redis on port 6379
 
 Object storage is not part of this stack. It is configured through the `S3_*`
-settings in `.env.example`; MinIO is only included in the legacy
+settings in `.env.example`; RustFS is only included in the legacy
 `docker-compose.dev.yml` stack.
 
 These publish on `127.0.0.1` only, so the dev services are reachable from this
