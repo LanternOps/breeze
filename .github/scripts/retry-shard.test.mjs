@@ -1091,15 +1091,17 @@ const alive = (pid) => {
 test('CLI --stall-minutes: a silent run is killed with its whole tree, named, not retried, exit 1', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
   const started = Date.now();
-  // 0.03 min = 1.8 s of silence.
-  const r = cli(['--runner', 'vitest', '--label', 'integration-5', '--stall-minutes', '0.03', '--', process.execPath, '-e', SILENT_HANG], { cwd });
-  let gpid = null;
+  // 0.1 min = 6 s of silence: wide enough that a slow child start on a loaded
+  // host cannot trip it before the child's first line.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-5', '--stall-minutes', '0.1', '--', process.execPath, '-e', SILENT_HANG], { cwd });
+  const pidFile = join(cwd, 'grandchild.pid');
+  const gpid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null;
   try {
     assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.ok(Date.now() - started < 30_000, 'the stall ended the run, not some outer timeout');
+    assert.ok(Date.now() - started < 60_000, 'the stall ended the run, not some outer timeout');
     assert.match(
       r.stdout,
-      /^::error title=Test stall::integration-5: no test output for 0\.03 min; last test file in the output: src\/__tests__\/integration\/stuck\.integration\.test\.ts; killed the run, not retrying$/m,
+      /^::error title=Test stall::integration-5: attempt 1: no test output for 0\.1 min; last test file in the output: src\/__tests__\/integration\/stuck\.integration\.test\.ts; killed the run, not retrying$/m,
     );
     // Not retried: a second attempt would only stall again.
     assert.equal(readFileSync(join(cwd, 'runs'), 'utf8'), '1');
@@ -1108,7 +1110,7 @@ test('CLI --stall-minutes: a silent run is killed with its whole tree, named, no
     assert.equal(report.first.stalled, true);
     assert.equal(report.attempts, 1);
     // The grandchild went down with the run, so it cannot hold the job open.
-    gpid = Number(readFileSync(join(cwd, 'grandchild.pid'), 'utf8'));
+    assert.ok(gpid, 'the child never started its grandchild');
     let dead = !alive(gpid);
     for (let i = 0; i < 50 && !dead; i++) {
       spawnSync('sleep', ['0.1']);
@@ -1120,19 +1122,22 @@ test('CLI --stall-minutes: a silent run is killed with its whole tree, named, no
   }
 });
 
-// Prints every 200 ms for ~3 s, then passes: output keeps resetting the clock.
+// Prints at once, then every 100 ms for ~4 s, then passes: output keeps
+// resetting the clock.
 const CHATTY_PASS = `
 let n = 0;
+console.log('stdout | src/a.test.ts > start');
 const t = setInterval(() => {
   console.log('stdout | src/a.test.ts > tick ' + n);
-  if (++n === 15) { clearInterval(t); process.exit(0); }
-}, 200);
+  if (++n === 40) { clearInterval(t); process.exit(0); }
+}, 100);
 `;
 
 test('CLI --stall-minutes: steady output never trips it; heartbeat lines carry memory and load', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
-  // 0.02 min = 1.2 s: shorter than the run, longer than any gap in it.
-  const r = cli(['--runner', 'vitest', '--label', 'integration-6', '--stall-minutes', '0.02', '--', process.execPath, '-e', CHATTY_PASS], { cwd });
+  // 0.05 min = 3 s: shorter than the run, far longer than any gap in it; the
+  // heartbeat (every 1.5 s) still lands inside the run.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-6', '--stall-minutes', '0.05', '--', process.execPath, '-e', CHATTY_PASS], { cwd });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.doesNotMatch(r.stdout, /Test stall/);
   assert.match(r.stdout, /^retry-shard: integration-6 heartbeat \+\d+\.\d min, last output \d+ s ago, mem free \d+\/\d+ MiB, load [\d.]+ [\d.]+ [\d.]+$/m);

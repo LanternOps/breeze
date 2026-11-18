@@ -283,23 +283,18 @@ const heartbeatLine = (label, elapsedMs, silentMs) => {
   return `retry-shard: ${label} heartbeat +${(elapsedMs / 60_000).toFixed(1)} min, last output ${Math.round(silentMs / 1000)} s ago, mem free ${mib(freemem())}/${mib(totalmem())} MiB, load ${load}\n`;
 };
 
-// SIGTERM to the attempt's process group (pnpm → vitest → its forks), then
-// SIGKILL if anything is still holding the pipes 10 s later. Returns a cancel.
-function killTree(child, signal) {
-  const send = (sig) => {
+// A signal to the attempt's whole process group (pnpm → vitest → its forks);
+// the child alone when the group is already gone or was never made.
+function signalTree(child, sig) {
+  try {
+    process.kill(-child.pid, sig);
+  } catch {
     try {
-      process.kill(-child.pid, sig);
+      child.kill(sig);
     } catch {
-      try {
-        child.kill(sig);
-      } catch {
-        // already gone
-      }
+      // already gone
     }
-  };
-  send(signal);
-  const hard = setTimeout(() => send('SIGKILL'), 10_000);
-  return () => clearTimeout(hard);
+  }
 }
 
 // ── Ledger context ───────────────────────────────────────────────────────
@@ -403,7 +398,7 @@ function parseCli(argv) {
 // log reads like plain `go test -v`.
 // With `stallMinutes`, the child leads its own process group so a stall can
 // take down every descendant, and the result carries `stalled`.
-function runAttempt(command, { cwd, runner, label, stallMinutes = null }) {
+function runAttempt(command, { cwd, runner, label, attempt = 1, stallMinutes = null }) {
   return new Promise((done) => {
     const dir = mkdtempSync(join(tmpdir(), 'retry-shard-'));
     const outPath = join(dir, 'stdout');
@@ -448,11 +443,17 @@ function runAttempt(command, { cwd, runner, label, stallMinutes = null }) {
     const watch = stallMinutes !== null;
     const child = spawn(command[0], command.slice(1), { cwd, stdio: ['inherit', 'pipe', 'pipe'], detached: watch });
     // In its own group the child no longer receives the terminal's or the
-    // runner's signals with us, so forward them to the whole group.
-    let cancelHardKill = () => {};
+    // runner's signals with us, so forward them to the whole group. One
+    // SIGKILL fallback per attempt, however many signals arrive: anything
+    // still holding the pipes 10 s after the first kill is not exiting.
+    let hardKill = null;
+    const killGroup = (sig) => {
+      signalTree(child, sig);
+      hardKill ??= setTimeout(() => signalTree(child, 'SIGKILL'), 10_000);
+    };
     const forward = (sig) => {
       interrupted = true;
-      if (watch) cancelHardKill = killTree(child, sig);
+      if (watch) killGroup(sig);
       else child.kill(sig);
     };
     process.on('SIGINT', forward);
@@ -482,9 +483,9 @@ function runAttempt(command, { cwd, runner, label, stallMinutes = null }) {
         const t = Date.now();
         process.stdout.write(heartbeatLine(label, t - startedAt, t - lastOutputAt));
         process.stdout.write(
-          `::error title=Test stall::${escapeData(`${label}: no test output for ${stallMinutes} min; last test file in the output: ${lastTestFile(tail) ?? 'none'}; killed the run, not retrying`)}\n`,
+          `::error title=Test stall::${escapeData(`${label}: attempt ${attempt}: no test output for ${stallMinutes} min; last test file in the output: ${lastTestFile(tail) ?? 'none'}; killed the run, not retrying`)}\n`,
         );
-        cancelHardKill = killTree(child, 'SIGTERM');
+        killGroup('SIGTERM');
       }, Math.min(15_000, Math.max(stallMs / 6, 100)));
     }
 
@@ -514,7 +515,10 @@ function runAttempt(command, { cwd, runner, label, stallMinutes = null }) {
       process.off('SIGTERM', forward);
       clearInterval(watchdog);
       clearInterval(heartbeat);
-      cancelHardKill();
+      clearTimeout(hardKill);
+      // `close` means the pipes closed, not that the group is empty: a member
+      // that holds no pipe and ignored SIGTERM would outlive the attempt.
+      if (watch && (stalled || interrupted)) signalTree(child, 'SIGKILL');
       if (pending) printGoLine(pending);
       for (const pkg of [...buffers.keys()]) flush(pkg);
       if (spawnError) process.stderr.write(`retry-shard: cannot run ${command[0]}: ${spawnError.message}\n`);
@@ -670,7 +674,7 @@ async function main(argv) {
     process.stdout.write(
       `::warning title=Retrying test shard::${escapeData(`${label}: attempt 1 failed with ${n} failing test(s); re-running the whole shard once`)}\n`,
     );
-    const second = await runAttempt(retryCommand, attemptOpts);
+    const second = await runAttempt(retryCommand, { ...attemptOpts, attempt: 2 });
     attempts = 2;
     const p2 = parseFailures(runner, second.output);
     secondResult = { code: second.code, stalled: second.stalled, ...p2 };
