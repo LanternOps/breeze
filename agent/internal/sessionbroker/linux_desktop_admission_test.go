@@ -62,6 +62,19 @@ func TestLinuxDesktopAdmission_Decision(t *testing.T) {
 	}
 }
 
+// The macOS desktop helper needs no ticket and keeps its existing grant.
+func TestAdmitLinuxDesktopHelper_DarwinUnchanged(t *testing.T) {
+	isLinux, reject := linuxDesktopAdmission("darwin", ipc.HelperRoleUser, desktopHelperAuth("", ""))
+	if isLinux || reject != "" {
+		t.Fatalf("darwin desktop helper: isLinux=%v reject=%q, want neither", isLinux, reject)
+	}
+	b := &Broker{helperPathsFn: func() []string { return nil }}
+	got := b.scopesForRole(ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "darwin", "")
+	if strings.Join(got, ",") != strings.Join(userHelperScopes, ",") {
+		t.Fatalf("darwin user helper scopes = %v, want %v", got, userHelperScopes)
+	}
+}
+
 func liveWaylandState() LogindSessionState {
 	return LogindSessionState{UID: 1000, Type: "wayland", State: "active", Class: "user", Exists: true}
 }
