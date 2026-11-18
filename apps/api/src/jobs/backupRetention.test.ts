@@ -235,6 +235,7 @@ const {
   resolveBackupManifestlessPrefixMaxAgeMs,
   normalizeStorageIdentity,
   orphanManifestSnapshotIds,
+  backupGcResumeCursorFor,
   BACKUP_GC_MAX_CANDIDATE_BUFFER_PER_GROUP,
   fingerprintLiveKeysBySnapshotId,
   listedKeysProvablyAllLive,
@@ -834,6 +835,95 @@ describe('sweepUnreferencedBackupObjects', () => {
     selectQueue.push(opts.retirements ?? []);
     selectQueue.push(opts.capability ?? []);
   }
+
+  // #12061: a sweep over large manifests ran past the next scheduled tick.
+  // A run now stops between storage identities once its time budget is spent,
+  // and the next run resumes at the identity it stopped at instead of starting
+  // over at the first one (which would starve every identity after it).
+  describe('time budget and resume cursor (#12061)', () => {
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+    const listedBuckets = () =>
+      iterateBackupObjectsMock.mock.calls
+        .filter(([input]) => (input as { prefix: string }).prefix === 'snapshots')
+        .map(([input]) => ((input as { providerConfig: { bucket: string } }).providerConfig).bucket);
+
+    it('sweeps every identity and reports no resume cursor when the budget is not spent', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() + 60_000 });
+
+      expect(listedBuckets()).toEqual(['backups', 'other-backups']);
+      expect(result.resumeCursor).toBeUndefined();
+    });
+
+    it('stops after the first identity once the deadline has passed, and names the next one to resume at', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1 });
+
+      // At least one identity always runs, so a run makes progress however small the budget.
+      expect(listedBuckets()).toEqual(['backups']);
+      expect(result.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+    });
+
+    it('resumes at the cursor identity, then wraps around to the ones before it', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      const result = await sweepUnreferencedBackupObjects({
+        resumeCursor: backupGcResumeCursorFor(identityKeyFor(second)),
+      });
+
+      expect(listedBuckets()).toEqual(['other-backups', 'backups']);
+      expect(result.resumeCursor).toBeUndefined();
+    });
+
+    it('advances across runs: each budget-stopped run picks up where the previous one stopped', async () => {
+      const third = { id: 'cfg-3', provider: 's3', providerConfig: { bucket: 'third-backups', region: 'us-east-1' } };
+
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      const first = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1 });
+      expect(listedBuckets()).toEqual(['backups']);
+      expect(first.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+
+      iterateBackupObjectsMock.mockClear();
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      const next = await sweepUnreferencedBackupObjects({ deadlineMs: Date.now() - 1, resumeCursor: first.resumeCursor });
+      expect(listedBuckets()).toEqual(['other-backups']);
+      expect(next.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(third)));
+
+      iterateBackupObjectsMock.mockClear();
+      pushRunLevel([destination, second, third]);
+      pushIdentity();
+      pushIdentity();
+      pushIdentity();
+      const last = await sweepUnreferencedBackupObjects({ resumeCursor: next.resumeCursor });
+      expect(listedBuckets()).toEqual(['third-backups', 'backups', 'other-backups']);
+      expect(last.resumeCursor).toBeUndefined();
+    });
+
+    it('starts from the first identity when the cursor names one that no longer exists', async () => {
+      pushRunLevel([destination, second]);
+      pushIdentity();
+      pushIdentity();
+
+      await sweepUnreferencedBackupObjects({ resumeCursor: backupGcResumeCursorFor('s3::gone::bucket') });
+
+      expect(listedBuckets()).toEqual(['backups', 'other-backups']);
+    });
+
+    it('does not put the storage identity itself in the cursor', () => {
+      const cursor = backupGcResumeCursorFor(identityKeyFor(second));
+      expect(cursor).not.toContain('other-backups');
+      expect(cursor).toMatch(/^[0-9a-f]{32}$/);
+    });
+  });
 
   describe('snapshot key layout barrier', () => {
     const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
@@ -2562,6 +2652,29 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(result.deleted).toBe(1);
   });
 
+  it('#12061: a run stopped by the deletion cap names the next identity, so the next run resumes there', async () => {
+    process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
+    const second = { id: 'cfg-2', provider: 's3', providerConfig: { bucket: 'other-backups', region: 'us-east-1' } };
+
+    pushRunLevel([destination, second]);
+    pushIdentity({ retained: [{ snapshotId: 'B' }] });
+
+    fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+    rootListingMock.mockResolvedValueOnce([
+      { key: 'snapshots/B/manifest.json', lastModified: old },
+      { key: 'snapshots/A/files/orphan-1.dat', lastModified: old },
+    ]);
+    deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan-1.dat'], failedKeys: [] });
+
+    const result = await sweepUnreferencedBackupObjects();
+
+    expect(result.deleted).toBe(1);
+    // The second identity was not listed this run; it is where the next run starts.
+    expect(rootListingMock).toHaveBeenCalledTimes(1);
+    expect(result.resumeCursor).toBe(backupGcResumeCursorFor(identityKeyFor(second)));
+  });
+
   it('grace window matches the default 48h', () => {
     expect(resolveBackupGcGraceMs()).toBe(48 * 60 * 60 * 1000);
   });
@@ -2718,6 +2831,16 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.deleted).toBe(0);
       expect(result.skippedIdentities).toBe(1);
       expect(result.blockedIdentities).toBe(0);
+    });
+
+    it('#12061: a run blocked by an unattributed row keeps the caller\'s resume cursor (nothing was visited)', async () => {
+      pushRunLevel([destination], [{ id: 'orphan-snap-1' }]);
+      const kept = await sweepUnreferencedBackupObjects({ resumeCursor: 'cursor-from-last-run' });
+      expect(kept.resumeCursor).toBe('cursor-from-last-run');
+
+      pushRunLevel([destination], [{ id: 'orphan-snap-1' }]);
+      const none = await sweepUnreferencedBackupObjects();
+      expect(none.resumeCursor).toBeUndefined();
     });
 
     it('belt-and-braces: fail-closed-skips every identity that coarsely collides on bucket+host despite normalizeStorageIdentity keeping them apart', async () => {

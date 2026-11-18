@@ -186,6 +186,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('maintenanceRebootWorker'),
   consumers('oemUpdatesWorker'),
   consumers('backupWorker'),
+  consumers('backupSnapshotCleanupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('backupSnapshotAttestationWorker'),
   consumers('backupWriteSessionJanitor'),

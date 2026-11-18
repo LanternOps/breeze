@@ -161,6 +161,8 @@ x-api-env: &api-env
   # Backup sweep tuning (worker role; optional, blank = default).
   BACKUP_GC_LIVE_SET_MAX_BYTES: ${BACKUP_GC_LIVE_SET_MAX_BYTES:-}
   BACKUP_GC_MAX_DELETES_PER_RUN: ${BACKUP_GC_MAX_DELETES_PER_RUN:-}
+  BACKUP_SNAPSHOT_CLEANUP_CRON: ${BACKUP_SNAPSHOT_CLEANUP_CRON:-}
+  BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: ${BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
