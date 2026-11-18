@@ -525,7 +525,8 @@
         "unverified": "Nicht geprüft",
         "failed": "Prüfung fehlgeschlagen",
         "failedWithSummary": "Prüfung fehlgeschlagen: {{summary}}",
-        "stale": "Erneut prüfen: Endpunkt geändert"
+        "stale": "Erneut prüfen: Endpunkt geändert",
+        "invalid": "Prüfdatensatz unlesbar: erneut prüfen"
       },
       "setPriceToEnable": "Preis festlegen, um zu aktivieren",
       "manual": {

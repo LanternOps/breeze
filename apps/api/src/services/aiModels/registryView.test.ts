@@ -340,6 +340,7 @@ describe('buildPartnerModelsSnapshot', () => {
         gw(O2, record({ endpointFingerprint: fp('https://old.example.com/v1') })),
         gw(O3, record({ passed: false, toolUse: false, summary: 'tool_call: no tool call returned' })),
         gw(O4, null),
+        gw(O5, record({ extra: 1 })),
         offering({ id: A }),
         offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }),
       ]);
@@ -349,6 +350,8 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(v(O2)).toMatchObject({ state: 'stale', at: '2026-10-01T00:00:00.000Z' });
       expect(v(O3)).toMatchObject({ state: 'failed', summary: 'tool_call: no tool call returned' });
       expect(v(O4)).toEqual({ state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: ABSENT_SURFACES });
+      // #12177: a record that is present but fails the schema is told apart from "never verified".
+      expect(v(O5)).toEqual({ state: 'invalid', at: null, harnessVersion: null, summary: null, surfaces: ABSENT_SURFACES });
       expect(v(A)).toBeNull();
       expect(v(B)).toBeNull();
       expect(v(null)).toBeNull(); // synthesized platform row
