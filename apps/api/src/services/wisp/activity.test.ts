@@ -328,13 +328,58 @@ describe('listActivity — specialist runs (#11084)', () => {
     expect(specialists[0]).toEqual({
       id: uid(1), at: t(3).toISOString(), kind: 'specialist', orgId: O1, title: 'Device troubleshooting · FRONT-DESK-01',
       detail: 'Asked to rebuild the Outlook profile', href: `/ai-agents/runs/${uid(1)}`, costCents: 7, runStatus: 'awaiting_approval',
+      pendingApprovals: 0, pendingIntentId: null,
     });
+    // Only an approval-parked run carries the pending-approval fields.
+    expect(specialists[1]).not.toHaveProperty('pendingApprovals');
     expect(specialists[1]).toMatchObject({ runStatus: 'running', at: t(2).toISOString() });
     // The assessment row is still an assessment.
     expect(items.find((i) => i.id === uid(3))).toMatchObject({ kind: 'assessment' });
     // The run query is pinned to the grant and selects both shapes.
     const q = render(h.wheres.ai_agent_runs![0]);
     expect(q.params).toEqual(expect.arrayContaining([G1, 'assessment', 'wisp_specialist']));
+  });
+
+  // `awaiting_approval` is terminal for a run: it stays there after its steps
+  // are decided. The count is what tells the Workers card whether anything is
+  // actually still waiting on a person.
+  it('an approval-parked specialist reports how many steps are still pending and the oldest one to open', async () => {
+    const pending = (n: number, runN: number, at: Date, over: Record<string, unknown> = {}) => ({
+      id: uid(n), orgId: O1, status: 'pending_approval', targetSummary: 'Restart Print Spooler', createdAt: at,
+      runId: uid(runN), ...over,
+    });
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(1), { status: 'awaiting_approval', finishedAt: t(5) }),
+      specialistRow(2, O1, t(2), { status: 'awaiting_approval', finishedAt: t(6) }),
+    ];
+    // The mock does not sort: rows are queued in the query's (created_at ASC) order.
+    h.rows.action_intents = [
+      pending(10, 1, t(3)),
+      pending(11, 1, t(4)),
+      // Decided, and another run's: neither counts for run 1 or run 2.
+      pending(12, 1, t(2), { status: 'completed' }),
+      pending(13, 99, t(1)),
+    ];
+    const { items } = await listActivity(ceiling());
+    const byId = new Map(items.filter((i) => i.kind === 'specialist').map((i) => [i.id, i]));
+    expect(byId.get(uid(1))).toMatchObject({ pendingApprovals: 2, pendingIntentId: uid(10) });
+    expect(byId.get(uid(2))).toMatchObject({ pendingApprovals: 0, pendingIntentId: null });
+    // The lookup is pinned to those runs, pending steps only, inside the ceiling's orgs.
+    const lookup = h.wheres.action_intents!.map(render).find((q) => q.params.includes(uid(2)));
+    expect(lookup?.params).toEqual(expect.arrayContaining([uid(1), uid(2), 'pending_approval', O1]));
+    // Bound to the right columns, all three required. (The mock does not run
+    // ORDER BY, so "oldest first" is pinned only by the fixture order above.)
+    expect(lookup?.sql).toMatch(/"requesting_agent_run_id" in \(/);
+    expect(lookup?.sql).toMatch(/"status" = \$\d+/);
+    expect(lookup?.sql).toMatch(/"org_id" in \(/);
+    expect(lookup?.sql).not.toMatch(/ or /i);
+  });
+
+  it('makes no pending-approval lookup when no specialist is approval-parked', async () => {
+    h.rows.ai_agent_runs = [specialistRow(1, O1, t(1))];
+    await listActivity(ceiling());
+    // One action_intents read: the approval timeline source, nothing else.
+    expect(h.calls.filter((c) => c === 'select:action_intents')).toHaveLength(1);
   });
 
   it('a specialist run in an org outside the ceiling is dropped (SQL org filter + belt)', async () => {

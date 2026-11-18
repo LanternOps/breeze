@@ -46,6 +46,7 @@ const DEV_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 const baseAuth = {
   user: { id: 'u1', email: 'tech@example.com', name: 'Tech' },
+  token: { mfa: true }, // an interactive session that cleared MFA, as the route twin requires
   orgId: null,
   partnerId: 'partner-1',
   scope: 'partner',

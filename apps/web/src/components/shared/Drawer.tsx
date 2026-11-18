@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { acquireScrollLock } from './scrollLock';
+import { tabbableNodes } from './tabbable';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -7,26 +8,6 @@ import { useTranslation } from 'react-i18next';
 // which still carries its own inline copy and was NOT migrated onto this
 // primitive — the two are independent duplicates; changes here do not
 // propagate there.
-const FOCUSABLE =
-  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
-
-/**
- * The genuinely TABBABLE nodes, in DOM order.
- *
- * `FOCUSABLE` alone is not that list. Its `button:not([disabled])` clause
- * matches a button whatever its tabindex, so a roving-tabindex radiogroup — the
- * pattern every option-card group in this app uses — contributes its
- * `tabindex="-1"` members too. Initial focus then landed on an UNSELECTED
- * option, and the group's own arrow handler moved selection off it on the first
- * ArrowRight: one keystroke from silently changing a privileged choice.
- * `node.tabIndex` reads the resolved value, so this filter is what the
- * selector's `[tabindex]:not([tabindex="-1"])` clause was always meant to do.
- */
-function tabbableNodes(root: HTMLElement | null): HTMLElement[] {
-  if (!root) return [];
-  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((node) => node.tabIndex >= 0);
-}
-
 export interface DrawerProps {
   open: boolean;
   onClose: () => void;

@@ -42,7 +42,7 @@ function auth(allowedDeviceIds?: string[], allowedSiteIds?: string[]): AuthConte
     // exact-device/site scoping for a real user session, not that refusal.
     principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: null,
     orgId: 'org-1',
     scope: 'organization',

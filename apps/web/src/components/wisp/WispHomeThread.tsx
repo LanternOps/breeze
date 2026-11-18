@@ -136,7 +136,8 @@ export default function WispHomeThread({
     pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
     sendMessage, approveExecution, clearPendingApproval, approvePlan, abortPlan, pauseAi,
     interruptResponse, isInterrupting, composerDraft, setComposerDraft, clearError,
-    wisp: storeWisp, sessionId: storeSessionId, isFlagged, flagSession, unflagSession,
+    wisp: storeWisp, sessionId: storeSessionId, wispPageComposerFocusRequest, setWispPageThreadId,
+    isFlagged, flagSession, unflagSession,
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
   const [checkIns, setCheckIns] = useState<WispCheckIn[]>([]);
@@ -175,6 +176,18 @@ export default function WispHomeThread({
     if (readOnly) return { threadId: wisp.threadId, excludeSessionId: null };
     return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
   }, [readOnly, wisp.threadId, live, storeSessionId]);
+  // While the composer is on screen this column is the conversation: the AI
+  // shortcut and header button focus it instead of opening the docked pane,
+  // and an open pane hands off to it (AiChatSidebar). Release only our own
+  // claim: a newer mount (another thread page) may have taken it since.
+  useEffect(() => {
+    if (!live) return;
+    setWispPageThreadId(wisp.threadId);
+    return () => {
+      if (useAiStore.getState().wispPageThreadId === wisp.threadId) setWispPageThreadId(null);
+    };
+  }, [live, wisp.threadId, setWispPageThreadId]);
+
   const timeline = useWispThreadTimeline(target, refreshKey);
   const threadMessages = useMemo(
     () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
@@ -441,6 +454,7 @@ export default function WispHomeThread({
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
+              focusRequest={wispPageComposerFocusRequest}
               onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}

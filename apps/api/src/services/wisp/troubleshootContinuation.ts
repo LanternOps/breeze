@@ -80,20 +80,11 @@ export async function continuationOf(args: {
   return { ok: true, chain: chain + 1 };
 }
 
-/** A released step's result as text for the seed (fenced and capped by the renderer). */
-function outcomeOf(status: string, result: unknown, errorCode: string | null): string | null {
-  if (status === 'failed') return errorCode ?? 'failed';
-  if (status !== 'completed' || result === null || result === undefined) return null;
-  if (typeof result === 'string') return result;
-  const r = result as Record<string, unknown>;
-  for (const key of ['summary', 'stdout', 'message']) if (typeof r[key] === 'string') return r[key] as string;
-  return JSON.stringify(result);
-}
-
 /**
  * The seed for a continuation of `priorRunId` (already checked by
  * `continuationOf`): the prior summary and each step it proposed, with its
- * status and, once released, its outcome. ≤ 4 KB.
+ * status and, once released, its outcome. The renderer describes each result
+ * by structure and fits the whole to TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES.
  */
 export async function buildContinuationSeed(priorRunId: string): Promise<string> {
   const { summary, steps } = await systemRead(async () => {
@@ -127,7 +118,8 @@ export async function buildContinuationSeed(priorRunId: string): Promise<string>
       steps: intents.map((i): ContinuationStep => ({
         label: labelOf.get(i.id) ?? i.actionName,
         status: i.status,
-        outcome: outcomeOf(i.status, i.result, i.errorCode),
+        result: i.result,
+        errorCode: i.errorCode,
       })),
     };
   });

@@ -30,7 +30,7 @@ import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { selectRunIntentsForCaller } from '../../services/aiAgents/runIntentsForCaller';
-import { CONTINUATION_NO_REPEAT_LINE } from '../../services/aiAgents/troubleshootProfile';
+import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES } from '../../services/aiAgents/troubleshootProfile';
 import type { AuthContext } from '../../middleware/auth';
 import { requestSpecialist } from '../../services/wisp/coordinator';
 import {
@@ -324,7 +324,7 @@ describe('continuation (real Postgres)', () => {
     expect(continuation.seed).toContain(CONTINUATION_NO_REPEAT_LINE);
     expect(continuation.seed).toContain('Found a corrupt profile.');
     expect(continuation.seed).toContain('Context note saved');
-    expect(Buffer.byteLength(continuation.seed, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(continuation.seed, 'utf8')).toBeLessThanOrEqual(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES);
     expect(run!.modeAtStart).toBe('shadow');
 
     const second = await admit(t, { continueFromRunId: prior.runId });

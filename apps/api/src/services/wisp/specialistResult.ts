@@ -48,6 +48,7 @@ import { devices } from '../../db/schema/devices';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
+import { summarizeStepResult } from './stepOutputSummary';
 import { captureException } from '../sentry';
 import { capAtBoundary } from '../../utils/capAtBoundary';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
@@ -164,20 +165,6 @@ function runPostText(
   const room = SPECIALIST_RESULT_BODY_MAX_CHARS - (waiting ? Array.from(waiting).length + 2 : 0);
   const summary = run.summary?.trim() ? cleanReport(run.summary, room) : 'The run left no summary. Open the run for its steps.';
   return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
-}
-
-/** A released step's result, as one short line of text (device output: cleaned and capped). */
-function stepOutcomeText(result: unknown, max: number): string {
-  if (result === null || result === undefined) return 'no result recorded';
-  const r = result as Record<string, unknown>;
-  const raw = typeof result === 'string'
-    ? result
-    : typeof r.summary === 'string' ? r.summary
-      : typeof r.stdout === 'string' ? r.stdout
-        : typeof r.message === 'string' ? r.message
-          : JSON.stringify(result);
-  const clean = cleanText(raw ?? '', max);
-  return clean.length > 0 ? clean : 'no output';
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +352,7 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
   const ran = intent.status === 'completed';
   const head = `Approved step ${ran ? 'ran' : 'failed'}: ${stepLabel} — `;
   const room = SPECIALIST_STEP_BODY_MAX_CHARS - Array.from(head).length;
-  const outcome = ran ? stepOutcomeText(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
+  const outcome = ran ? summarizeStepResult(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
   return deliver({
     userId: dest.userId,
     threadId: dest.threadId,

@@ -159,6 +159,37 @@ describe('aiStore notifications (#9429)', () => {
     useAiStore.getState().toggle();
     expect(closeAiNotification).toHaveBeenCalledTimes(1);
   });
+
+  // The /wisp page composer holds this conversation: open() and toggle() focus
+  // it instead of opening the pane, and the user is now looking at the chat.
+  it.each(['open', 'toggle'] as const)('%s() handed off to the /wisp page composer still closes the conversation\'s notifications', (action) => {
+    useAiStore.setState({
+      wisp: { threadId: 'thread-1', grantId: 'grant-1' } as never,
+      wispPageThreadId: 'thread-1',
+      wispPageComposerFocusRequest: 0,
+    });
+    useAiStore.getState()[action]();
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(1);
+    expect(closeAiNotification).toHaveBeenCalledWith(SIDEBAR, SID);
+  });
+
+  it('a /wisp page claim that closes the open pane on that thread closes the conversation\'s notifications too', () => {
+    useAiStore.setState({
+      isOpen: true, showHistory: false,
+      wisp: { threadId: 'thread-1', grantId: 'grant-1' } as never,
+      wispPageThreadId: null, wispPageComposerFocusRequest: 0,
+    });
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(closeAiNotification).toHaveBeenCalledWith(SIDEBAR, SID);
+  });
+
+  it('a claim that hands nothing off (pane closed) leaves notifications alone', () => {
+    useAiStore.setState({ isOpen: false, wisp: { threadId: 'thread-1', grantId: 'grant-1' } as never, wispPageThreadId: null });
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(closeAiNotification).not.toHaveBeenCalled();
+  });
 });
 
 describe('aiStore notifications on an attached turn (#9429 × #9427)', () => {
