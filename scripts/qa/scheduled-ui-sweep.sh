@@ -16,7 +16,7 @@
 #   QA_SOURCE_REPO     repo to add the worktree from     (default: this script's repo)
 #   QA_TIMEOUT         hard wall-clock cap for claude    (default 5h)
 #   QA_MODEL           optional --model
-#   QA_CLAUDE_AUTH_DIR claude.ai login profile dir (sets CLAUDE_SECURESTORAGE_CONFIG_DIR)
+#   QA_AGENT_TOKEN_FILE the agent's own `claude setup-token` token (default $QA_HOME/.agent-auth/oauth-token)
 #   QA_MAX_NEW_ISSUES  cap on issues filed per run       (default 10)
 #   QA_DRY_RUN=1       do everything except run claude (smoke-tests the plumbing)
 #   QA_FORCE=1         run even if origin/main hasn't moved since the last sweep
@@ -138,24 +138,29 @@ trap cleanup EXIT
 log "=== QA sweep $RUN_ID ==="
 
 # --- subscription auth only (never API billing) ------------------------------
-# An API key / alt provider in the environment silently overrides the claude.ai
-# login, so strip them and then require authMethod=claude.ai.
-# QA_CLAUDE_AUTH_DIR pins a specific claude.ai login profile (multi-account setups).
-# The agent runs with its own CLAUDE_CONFIG_DIR (agent_claude_dir: the sandbox
-# lets it write there and nowhere in ~/.claude), so the login is located through
-# CLAUDE_SECURESTORAGE_CONFIG_DIR, pinned here; ~/.claude is the default profile.
-export CLAUDE_SECURESTORAGE_CONFIG_DIR="${QA_CLAUDE_AUTH_DIR:-${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}}"
+# The agent signs in with its own long-lived claude.ai token (`claude
+# setup-token`, stored by install-schedule.sh --agent-token; agent_token_path),
+# never the developer's login: the sandbox gives it no keychain at all. An API
+# key / alt provider in the environment would override the token, so strip
+# them and then require authMethod=oauth_token on the first-party API.
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
       CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
+      CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_REFRESH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR \
+      CLAUDE_SECURESTORAGE_CONFIG_DIR \
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD   # no CLAUDE.md from the agent-writable RUN_DIR
-# Checked with the agent's config dir, so this proves the login the agent will use.
 reset_agent_claude_dir || { log "FATAL could not create the agent's claude config dir"; exit 1; }
-AUTH_METHOD="$(CLAUDE_CONFIG_DIR="$(agent_claude_dir)" claude auth status --json 2>/dev/null | jq -r '.authMethod // empty')"
-if [ "$AUTH_METHOD" != "claude.ai" ]; then
-  notify "QA sweep skipped: Claude is not logged in with a subscription for the agent (auth=${AUTH_METHOD:-none}). Set QA_CLAUDE_AUTH_DIR or run: claude auth login"
-  log "FATAL auth method '${AUTH_METHOD:-none}', expected claude.ai"; exit 1
+if ! load_agent_token; then
+  notify "QA sweep skipped: no agent token. Run: claude setup-token, then scripts/qa/install-schedule.sh --agent-token"
+  log "FATAL no usable agent token at $(agent_token_path)"; exit 1
 fi
-log "auth: claude.ai subscription"
+# Checked with the agent's own config + storage dirs, so this proves the login the agent will use.
+AUTH="$(with_agent_token env CLAUDE_CONFIG_DIR="$(agent_claude_dir)" CLAUDE_SECURESTORAGE_CONFIG_DIR="$(agent_claude_dir)" \
+  claude auth status --json 2>/dev/null | jq -r '"\(.authMethod // "none") \(.apiProvider // "none")"')"
+if [ "$AUTH" != "oauth_token firstParty" ]; then
+  notify "QA sweep skipped: the agent token is not a claude.ai subscription login (auth=${AUTH:-none})"
+  log "FATAL agent auth '${AUTH:-none}', expected 'oauth_token firstParty'"; exit 1
+fi
+log "auth: agent's own claude.ai token"
 
 # --- docker engine -----------------------------------------------------------
 ensure_docker() {
@@ -422,15 +427,15 @@ if ! { start_egress_proxy && start_gh_broker && qa_sandbox_profile "$AGENT_PROFI
   notify "QA sweep: agent sandbox/egress proxy failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
-# Reads under the home directory are an allow-list, so prove the agent's exact
-# command line still finds its claude.ai login (the keychain) from inside.
+# Prove the agent's exact command line signs in with its own token from inside
+# (no keychain is reachable there).
 build_agent_cmd claude auth status --json
-SB_AUTH="$("${AGENT_CMD[@]}" 2>/dev/null | jq -r '.authMethod // empty' 2>/dev/null)"
-if [ "$SB_AUTH" != claude.ai ]; then
-  notify "QA sweep: the agent cannot see its claude.ai login inside the sandbox; agent not started (see $LOG)"
-  log "FATAL in-sandbox auth method '${SB_AUTH:-none}', expected claude.ai"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
+SB_AUTH="$(with_agent_token "${AGENT_CMD[@]}" 2>/dev/null | jq -r '.authMethod // empty' 2>/dev/null)"
+if [ "$SB_AUTH" != oauth_token ]; then
+  notify "QA sweep: the agent cannot sign in inside the sandbox; agent not started (see $LOG)"
+  log "FATAL in-sandbox auth method '${SB_AUTH:-none}', expected oauth_token"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
-log "in-sandbox auth: claude.ai subscription"
+log "in-sandbox auth: agent's own claude.ai token"
 
 PROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
@@ -582,7 +587,7 @@ run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
   fi
   log "claude start [$3] (timeout $2)"
   build_agent_cmd claude "${args[@]}"   # sandbox-exec + proxy env around claude
-  ( set -C; exec gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$tr" 2> "$er" )
+  ( set -C; with_agent_token gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$tr" 2> "$er" )
   local rc=$?; restore_stack_env; log "claude exit [$3]=$rc"; return $rc
 }
 

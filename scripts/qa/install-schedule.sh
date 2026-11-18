@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Install (or update) the scheduled UI QA sweep as a macOS launchd agent.
 #
-#   scripts/qa/install-schedule.sh [--hours "1 13"] [--auth-dir ~/.claude-auth/<profile>] [--uninstall]
+#   scripts/qa/install-schedule.sh [--hours "1 13"] [--agent-token] [--uninstall]
+#
+# The agent signs in with its own long-lived claude.ai token, never your login
+# (its sandbox gives it no keychain). Make one with `claude setup-token` and
+# pass --agent-token once: the token is read from stdin (or a hidden prompt)
+# and stored, mode 600, at $QA_HOME/.agent-auth/oauth-token.
 #
 # Copies the runner (+ sweep-lib.sh, egress-proxy.py, gh-broker.py, qa-gh), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
 # which branch this checkout happens to be on) and loads a LaunchAgent that fires at
@@ -17,13 +22,13 @@ CHECKOUT="$(cd "$SRC_DIR/../.." && pwd)"            # checkout we bundle the ski
 # the installer from a throwaway worktree doesn't point the job at a temp path.
 REPO="$(cd "$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"
 HOURS="1"
-AUTH_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}"   # pin the login profile this is run from
+SET_TOKEN=0
 MINUTE="30"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --hours) HOURS="$2"; shift 2 ;;
-    --auth-dir) AUTH_DIR="$2"; shift 2 ;;
+    --agent-token) SET_TOKEN=1; shift ;;
     --uninstall)
       launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
       rm -f "$PLIST"; echo "uninstalled $LABEL (state kept in $QA_HOME)"; exit 0 ;;
@@ -32,6 +37,17 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$QA_HOME/bin" "$QA_HOME/runs"
+log() { echo "$*" >&2; }
+# shellcheck source=sweep-lib.sh
+. "$SRC_DIR/sweep-lib.sh"   # agent_token_path, load_agent_token, with_agent_token
+if [ "$SET_TOKEN" = 1 ]; then
+  [ -t 0 ] && printf 'Paste the token from `claude setup-token` (input hidden): ' >&2
+  IFS= read -rs TOKEN || true; [ -t 0 ] && echo >&2
+  TOKEN="$(printf '%s' "$TOKEN" | tr -d '[:space:]')"
+  TF="$(agent_token_path)"
+  ( umask 077; mkdir -p "$(dirname "$TF")" && rm -f "$TF" && printf '%s\n' "$TOKEN" > "$TF" ) || { echo "ERROR: could not write $TF"; exit 1; }
+  unset TOKEN
+fi
 [ -x /usr/bin/sandbox-exec ] && [ -x /usr/bin/python3 ] \
   || { echo "ERROR: needs /usr/bin/sandbox-exec and /usr/bin/python3 (agent sandbox + egress proxy)"; exit 1; }
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
@@ -61,7 +77,6 @@ cat > "$PLIST" <<PL
     <key>QA_HOME</key><string>$QA_HOME</string>
     <key>QA_SOURCE_REPO</key><string>$REPO</string>
     <key>HOME</key><string>$HOME</string>
-    <key>QA_CLAUDE_AUTH_DIR</key><string>$AUTH_DIR</string>
   </dict>
   <key>StartCalendarInterval</key><array>$INTERVALS</array>
   <key>StandardOutPath</key><string>$QA_HOME/launchd.out.log</string>
@@ -72,10 +87,18 @@ cat > "$PLIST" <<PL
 PL
 plutil -lint "$PLIST" >/dev/null
 
-# Refuse to install a job that would bill the API or run logged-out.
-AUTH="$(env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/bin:/bin" ${AUTH_DIR:+CLAUDE_SECURESTORAGE_CONFIG_DIR="$AUTH_DIR"} \
-        claude auth status --json 2>/dev/null | jq -r '"\(.authMethod) \(.email // "-") \(.subscriptionType // "-")"')"
-case "$AUTH" in claude.ai*) echo "auth: $AUTH" ;; *) echo "ERROR: no claude.ai subscription login for profile '${AUTH_DIR:-default}' ($AUTH)"; rm -f "$PLIST"; exit 1 ;; esac
+# Refuse to install a job that would bill the API or run logged-out: the agent's
+# own token must be in place and be a first-party claude.ai OAuth token.
+if ! load_agent_token; then
+  echo "ERROR: no usable agent token at $(agent_token_path). Run: claude setup-token, then $0 --agent-token"
+  rm -f "$PLIST"; exit 1
+fi
+CHK="$(mktemp -d)"
+AUTH="$(unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+        export CLAUDE_CONFIG_DIR="$CHK" CLAUDE_SECURESTORAGE_CONFIG_DIR="$CHK"   # the token alone, not a login profile
+        with_agent_token claude auth status --json 2>/dev/null | jq -r '"\(.authMethod) \(.apiProvider)"')"
+rm -rf "$CHK"
+case "$AUTH" in "oauth_token firstParty") echo "auth: agent token ($AUTH)" ;; *) echo "ERROR: the agent token is not a claude.ai subscription token ($AUTH)"; rm -f "$PLIST"; exit 1 ;; esac
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"

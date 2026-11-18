@@ -126,11 +126,17 @@ safe_title() {
 #     checkout, the per-user temp/cache dirs and /tmp. File contents there are
 #     denied except RUN_DIR, the worktree, the agent's TMPDIR and claude config
 #     dir, the runner's scripts and MCP install, the claude and node files
-#     themselves (not their directories), Playwright's browsers, user fonts,
-#     Chrome's own lock dirs and the login keychain (token refresh). ~/.claude, ~/.claude.json, ~/.ssh,
-#     ~/.config, shell history and rc files, the other keychains and the
-#     checkout's .env files are unreadable without being named. System paths
-#     outside the home directory stay readable.
+#     themselves (not their directories), Playwright's browsers, user fonts and
+#     Chrome's own lock dirs. ~/.claude, ~/.claude.json, ~/.ssh, ~/.config,
+#     shell history and rc files, every keychain and the checkout's .env files
+#     are unreadable without being named. System paths outside the home
+#     directory stay readable.
+#   - credentials: the agent signs in with its own long-lived token (claude
+#     setup-token; agent_token_path), handed to it in its environment by the
+#     runner. The developer's keychains -- the login keychain included -- are
+#     neither readable nor writable, so no claude.ai login, refresh token or
+#     other saved password of the developer's is within reach, and Chromium
+#     (Playwright: --use-mock-keychain --password-store=basic) needs none.
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
 #     ~/.ssh, git credential files, the egress audit log, other runs and this
 #     run's logs/transcripts are also denied by name, wherever they live.
@@ -171,12 +177,39 @@ _sb_ancestors() {
 egress_log_path() { printf '%s' "$QA_HOME/.audit/egress-$RUN_ID.log"; }
 # agent_claude_dir: the agent's CLAUDE_CONFIG_DIR. Its own, emptied before every
 # agent run (reset_agent_claude_dir), so the agent never writes the developer's
-# ~/.claude or ~/.claude.json and nothing it writes there outlives the run. The
-# claude.ai login is found through CLAUDE_SECURESTORAGE_CONFIG_DIR instead.
+# ~/.claude or ~/.claude.json and nothing it writes there outlives the run. It
+# is also the agent's CLAUDE_SECURESTORAGE_CONFIG_DIR, so claude never looks for
+# a developer login profile.
 agent_claude_dir() { printf '%s' "${AGENT_CLAUDE_DIR:-$QA_HOME/.claude-agent}"; }
 reset_agent_claude_dir() {
   local d; d="$(agent_claude_dir)"
   rm -rf "$d" && ( umask 077; mkdir -p "$d" )
+}
+
+# The agent's credential: a long-lived claude.ai token of its own (`claude
+# setup-token`: subscription billing, nothing to refresh or rotate), stored by
+# install-schedule.sh --agent-token. The sandbox denies the file and every
+# keychain; the runner reads it and hands the token over in the agent's
+# environment (never argv, which ps shows every local user). Nothing else the
+# runner starts gets it.
+agent_token_path() { printf '%s' "${QA_AGENT_TOKEN_FILE:-$QA_HOME/.agent-auth/oauth-token}"; }
+AGENT_OAUTH_TOKEN=""
+# load_agent_token: AGENT_OAUTH_TOKEN from agent_token_path. Refuses a missing,
+# linked, foreign or group/world-readable file and anything but one token line.
+load_agent_token() {
+  AGENT_OAUTH_TOKEN=""
+  local f t; f="$(agent_token_path)"
+  [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || { log "agent token: $f missing, linked or not ours"; return 1; }
+  case "$(stat -f '%Lp' "$f" 2>/dev/null)" in 400|600) ;; *) log "agent token: $f must be mode 600"; return 1 ;; esac
+  [ "$(wc -l < "$f" | tr -d ' ')" -le 1 ] || { log "agent token: $f must hold one line"; return 1; }
+  t="$(head -n 1 "$f")"
+  [[ "$t" =~ ^sk-ant-oat[0-9][0-9]-[A-Za-z0-9_-]+$ ]] && [ "${#t}" -ge 40 ] && [ "${#t}" -le 512 ] || { log "agent token: $f does not hold a claude setup-token token"; return 1; }
+  AGENT_OAUTH_TOKEN="$t"
+}
+# with_agent_token <cmd...>: run <cmd> with the agent's token in its environment.
+with_agent_token() {
+  [ -n "$AGENT_OAUTH_TOKEN" ] || { log "agent token not loaded"; return 1; }
+  CLAUDE_CODE_OAUTH_TOKEN="$AGENT_OAUTH_TOKEN" "$@"
 }
 
 qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
@@ -195,8 +228,10 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
   gitc="$(cd "$src" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd -P)"
   gitc="$(_sb_real "${gitc:-$src/.git}")" || { log "sandbox: bad git dir"; return 1; }
-  local wt_re src_re run_re home_re locked dtmp chrome_tmp=""
+  local wt_re src_re run_re home_re locked dtmp chrome_tmp="" tok
   wt_re="$(_sb_re "$wt")"; src_re="$(_sb_re "$src")"; run_re="$(_sb_re "$run")"; home_re="$(_sb_re "$home")"
+  # The agent's token file, wherever QA_AGENT_TOKEN_FILE puts it (it gets the token in its env).
+  tok="$(_sb_real "$(agent_token_path)" 2>/dev/null)" || tok="$qh/.agent-auth/oauth-token"
   # Chrome creates its ProcessSingleton lock dir in the per-user temp dir
   # whatever TMPDIR says; allow only its own randomly named dirs there.
   dtmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"; dtmp="${dtmp%/}"
@@ -261,10 +296,6 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   (subpath "$atmp")
   (subpath "$acfg")
 $chrome_tmp
-  ;; claude.ai token refresh: the login keychain is saved in-process as a temp
-  ;; file renamed over the db. Without it a rotated refresh token is lost.
-  (literal "$home/Library/Keychains/login.keychain-db")
-  (regex #"^$home_re/Library/Keychains/login\.keychain-db\.sb-[0-9a-f]+-[A-Za-z0-9]+$")
   (literal "/dev/null")
   (literal "/dev/zero")
   (literal "/dev/tty")
@@ -292,12 +323,7 @@ $chrome_tmp$xcrun_db
   (subpath "$qh/mcp")
 $tools  (subpath "$home/Library/Caches/ms-playwright")
   (subpath "$home/Library/Fonts")
-  (literal "$home/.CFUserTextEncoding")
-  ;; the login keychain and its save temp files (token refresh), plus the empty
-  ;; .fl<hex> lock files Security.framework opens to lock it
-  (literal "$home/Library/Keychains/login.keychain-db")
-  (regex #"^$home_re/Library/Keychains/login\.keychain-db\.sb-[0-9a-f]+-[A-Za-z0-9]+$")
-  (regex #"^$home_re/Library/Keychains/\.fl[0-9A-Fa-f]+$"))
+  (literal "$home/.CFUserTextEncoding"))
 
 ;; secrets: unreadable (and unwritable) by every process in the tree. file-read-data
 ;; is named as well as file-read*: a rule for the narrower operation outranks one
@@ -309,7 +335,11 @@ $tools  (subpath "$home/Library/Caches/ms-playwright")
   (literal "$qh/env.overrides")
   (subpath "$qh/.sandbox")
   (subpath "$qh/.publish")
+  (subpath "$qh/.agent-auth")
+  (literal "$tok")
   (subpath "$audit")
+  ;; every keychain (login included): the agent signs in with its own token
+  (subpath "$home/Library/Keychains")
   (regex #"^$wt_re/(.*/)?\.env[^/]*$")
   (regex #"^$src_re/(.*/)?\.env[^/]*$")
   (literal "$home/.git-credentials")
@@ -448,6 +478,7 @@ build_agent_cmd() {
     # userDataDir), so it stays read-only and the agent's registry is its own.
     "PWTEST_SERVER_REGISTRY=${AGENT_TMP:-$QA_HOME/.t}/pw-registry"
     "CLAUDE_CONFIG_DIR=$(agent_claude_dir)"
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR=$(agent_claude_dir)"
     "QA_GH_PORT=$GH_BROKER_PORT"
     "$@")
 }
@@ -560,13 +591,25 @@ EOF
     k="$(/usr/bin/python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$k" 2>/dev/null)" || continue
     case "$k" in *.js|*.mjs|*.cjs) continue ;; "$HOME"/*) rprobe "$(dirname "$k")" ;; esac   # system dirs stay readable
   done
-  for k in "$HOME"/Library/Keychains/*; do
-    case "${k##*/}" in login.keychain-db|login.keychain-db.sb-*) continue ;; esac
-    rprobe "$k"
-  done
   [ -n "$rd" ] && { fails="$fails home-store-readable"; log "sandbox: readable from inside:$rd"; }
+  # Keychains, the login keychain included (Strix r9): the agent has its own
+  # token, so no keychain file is readable or writable from inside, and
+  # security(1) -- which opens the keychain db in-process -- cannot read one either.
+  local kc="$HOME/Library/Keychains" kr="" kw=0
+  if [ -d "$kc" ]; then
+    rd=""; rprobe "$kc" "$kc"/* "$kc"/.fl*; kr="$rd"
+    if [ -f "$kc/login.keychain-db" ]; then
+      /usr/bin/security show-keychain-info "$kc/login.keychain-db" >/dev/null 2>&1 \
+        && sbx /usr/bin/security show-keychain-info "$kc/login.keychain-db" >/dev/null 2>&1 && kr="$kr security(1)"
+      sbx /bin/sh -c ': >> "$1"' _ "$kc/login.keychain-db" 2>/dev/null && kw=1   # opens for append, writes nothing
+    fi
+    if sbx /bin/sh -c ': > "$1"' _ "$kc/.qa-sandbox-probe.$$" 2>/dev/null; then kw=1; fi
+    rm -f "$kc/.qa-sandbox-probe.$$"
+  fi
+  [ -n "$kr" ] && { fails="$fails keychain-readable"; log "sandbox: keychain readable from inside:$kr"; }
+  [ "$kw" = 1 ] && { fails="$fails keychain-writable"; log "sandbox: keychain writable from inside"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, other keychains, the checkout and its .env))"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
 }
 
 # ---------------------------------------------------------------------------

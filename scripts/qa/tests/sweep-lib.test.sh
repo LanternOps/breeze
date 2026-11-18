@@ -8,7 +8,9 @@
 #   bash scripts/qa/tests/sweep-lib.test.sh
 #
 # The Seatbelt cases need macOS (sandbox-exec) and are skipped elsewhere.
-# QA_TEST_NETWORK=1 adds one live CONNECT through the proxy to api.github.com.
+# QA_TEST_NETWORK=1 adds one live CONNECT through the proxy to api.github.com
+# and the end-to-end self-check; QA_TEST_AGENT=1 (with QA_AGENT_TOKEN_FILE) adds
+# a real agent run (one model call + a headless page load) inside the sandbox.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
@@ -153,7 +155,7 @@ no_rundir_writes() {
 }
 check "runner: no write or append into RUN_DIR once an agent has started" "no_rundir_writes"
 check "runner: report.md is never opened by name after the agent ran" "! after_agent | grep -F '\$RUN_DIR/report.md'"
-check "runner: transcripts are created only at fresh paths, never clobbered" "grep -q 'runner_fresh_path \"\$tr\"' '$QA_DIR/scheduled-ui-sweep.sh' && grep -q 'set -C; exec gtimeout' '$QA_DIR/scheduled-ui-sweep.sh'"
+check "runner: transcripts are created only at fresh paths, never clobbered" "grep -q 'runner_fresh_path \"\$tr\"' '$QA_DIR/scheduled-ui-sweep.sh' && grep -q 'set -C; with_agent_token gtimeout' '$QA_DIR/scheduled-ui-sweep.sh'"
 
 # === every agent-written field bound for GitHub passes the secret gate ========
 # Built by concatenation so this file never holds a credential-shaped literal.
@@ -419,9 +421,14 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   rm -f "$T/.qa-utemp-canary" "${UCACHE}qa-ucache-canary.$$" "/private/tmp/qa-tmp-canary.$$"
   check "read: a hard link of an unreadable file cannot be made in RUN_DIR" "! sbx /bin/ln '$FAKE_HOME/.qa-unlisted-file' '$RUN_DIR/hl.json' 2>/dev/null && [ ! -e '$RUN_DIR/hl.json' ]"
   # What the run needs stays readable.
-  check "read: the login keychain db stays readable (claude.ai token refresh)" "[ \"\$(sbx /bin/cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = db ]"
-  : > "$FAKE_HOME/Library/Keychains/.flC23220F1"; echo x > "$FAKE_HOME/Library/Keychains/.flother"
-  check "read: the keychain's empty .fl<hex> lock files stay readable (Security.framework locks with them)" "sbx /bin/cat '$FAKE_HOME/Library/Keychains/.flC23220F1' && unread '$FAKE_HOME/Library/Keychains/.flother'"
+  # Strix r9: the agent authenticates with its own token (CLAUDE_CODE_OAUTH_TOKEN),
+  # so the developer's login keychain is neither readable nor writable.
+  : > "$FAKE_HOME/Library/Keychains/.flC23220F1"; echo tmp > "$FAKE_HOME/Library/Keychains/login.keychain-db.sb-c97cfa2e-AbC123"
+  check "read: the login keychain db, its save temp files and lock files are unreadable (Strix r9)" "unread '$FAKE_HOME/Library/Keychains/login.keychain-db' '$FAKE_HOME/Library/Keychains/login.keychain-db.sb-c97cfa2e-AbC123' '$FAKE_HOME/Library/Keychains/.flC23220F1'"
+  rm -f "$FAKE_HOME/Library/Keychains/login.keychain-db.sb-c97cfa2e-AbC123" "$FAKE_HOME/Library/Keychains/.flC23220F1"
+  mkdir -p "$QA_HOME/.agent-auth"; echo 'sk-ant-oat01-test' > "$QA_HOME/.agent-auth/oauth-token"
+  check "read: the agent's token file is unreadable from inside (it gets the token in its env)" "unread '$QA_HOME/.agent-auth/oauth-token' '$QA_HOME/.agent-auth'"
+  check "profile: no rule names the login keychain (Strix r9)" "! grep -q 'login.\\{0,3\\}keychain' '$PROF'"
   check "read: a per-user claude install under the home directory still runs" "[ \"\$(sbx '$FAKE_HOME/.toolbin/claude')\" = tool-ok ]"
   check "read: Playwright's browser cache and user fonts stay readable" "[ \"\$(sbx /bin/cat '$FAKE_HOME/Library/Caches/ms-playwright/chromium-1/chrome')\" = bin ] && sbx /bin/cat '$FAKE_HOME/Library/Fonts/f.ttf' >/dev/null"
   mkdir -p "$QA_HOME/mcp/node_modules/x" "$AGENT_CLAUDE_DIR"; echo mcp > "$QA_HOME/mcp/node_modules/x/i.js"; echo cfg > "$AGENT_CLAUDE_DIR/c.json"
@@ -499,13 +506,14 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   rm -f "/opt/homebrew/bin/.qa-planted-$$" "/private/tmp/qa-planted-$$" 2>/dev/null
   mkdir -p "$QA_HOME/mcp/node_modules/@playwright/mcp"; echo '// cli' > "$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js"
   check "write: the runner's pinned MCP install is read-only" "! planted '$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js' && [ \"\$(cat '$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js')\" = '// cli' ]"
-  # A claude.ai token refresh saves through the login keychain, which writes a
-  # login.keychain-db.sb-* temp file and renames it over login.keychain-db from
-  # inside the calling process. Losing that write loses a rotated refresh token.
+  # Strix r9: a keychain save is a temp file renamed over the db from inside the
+  # calling process. None of it is allowed: the login keychain is not the agent's.
   mkdir -p "$FAKE_HOME/Library/Keychains"; echo db > "$FAKE_HOME/Library/Keychains/login.keychain-db"
   echo meta > "$FAKE_HOME/Library/Keychains/metadata.keychain-db"
-  check "write: the login keychain can be saved (temp file + rename), as a token refresh needs" "sbx /bin/sh -c 'echo new > \"\$1.sb-c97cfa2e-AbC123\" && /bin/mv \"\$1.sb-c97cfa2e-AbC123\" \"\$1\"' _ '$FAKE_HOME/Library/Keychains/login.keychain-db' && [ \"\$(cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = new ]"
+  check "write: the login keychain cannot be saved (temp file + rename) (Strix r9)" "! sbx /bin/sh -c 'echo new > \"\$1.sb-c97cfa2e-AbC123\" && /bin/mv \"\$1.sb-c97cfa2e-AbC123\" \"\$1\"' _ '$FAKE_HOME/Library/Keychains/login.keychain-db' 2>/dev/null && [ \"\$(cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = db ] && [ ! -e '$FAKE_HOME/Library/Keychains/login.keychain-db.sb-c97cfa2e-AbC123' ]"
+  check "write: the login keychain cannot be written in place, renamed or removed (Strix r9)" "! planted '$FAKE_HOME/Library/Keychains/login.keychain-db' && ! sbx /bin/mv '$FAKE_HOME/Library/Keychains/login.keychain-db' '$FAKE_HOME/Library/Keychains/x' 2>/dev/null && ! sbx /bin/rm -f '$FAKE_HOME/Library/Keychains/login.keychain-db' 2>/dev/null && [ \"\$(cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = db ]"
   check "write: nothing else in ~/Library/Keychains is writable" "! planted '$FAKE_HOME/Library/Keychains/metadata.keychain-db' && ! planted '$FAKE_HOME/Library/Keychains/planted.keychain-db' && ! planted '$FAKE_HOME/Library/Keychains/login.keychain-db.evil'"
+  check "write: the agent's token file cannot be replaced from inside" "! planted '$QA_HOME/.agent-auth/oauth-token' && ! planted '$QA_HOME/.agent-auth/new'"
   check "write: the agent TMPDIR stays writable" "planted '$AGENT_TMP/scratch'"
   check "write: the agent's own claude config dir stays writable" "planted '$AGENT_CLAUDE_DIR/.claude.json'"
   check "write: /dev/null stays writable" "sbx /bin/sh -c 'echo x > /dev/null'"
@@ -887,23 +895,48 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
   check "selfcheck: control: the read-list profile really lost its home default deny" "grep -q '^(deny file-read-data (subpath \"$RHOME\") ' '$T/selfcheck.sb' && ! grep -q '^(deny file-read-data (subpath \"$RHOME\") ' '$T/readlist.sb'"
   check "selfcheck: a profile without the home read default-deny is caught" "! sandbox_selfcheck && grep -q 'home-readable' '$T/runner.log' && grep -q 'home-store-readable' '$T/runner.log'"
   grep -o 'readable from inside:.*' "$T/runner.log" | cut -c1-300
-  check "selfcheck: its probes leave nothing behind" "[ -z \"\$(ls -a \"\$HOME\" | grep -F .qa-sandbox-)\" ] && [ -z \"\$(ls -a '$T/bin' | grep -F .qa-sandbox-probe)\" ]"
+  # Strix r9: a profile that grants the login keychain again (the round-8 shape)
+  # must fail it, for reads and for writes.
+  { cat "$T/selfcheck.sb"; printf '(allow file-read-data file-write* (subpath "%s/Library/Keychains"))\n' "$RHOME"; } > "$T/keychain.sb"
+  AGENT_PROFILE="$T/keychain.sb"; : > "$T/runner.log"
+  if [ -f "$RHOME/Library/Keychains/login.keychain-db" ]; then
+    check "selfcheck: a profile that grants the login keychain is caught (read + write)" "! sandbox_selfcheck && grep -q 'keychain-readable' '$T/runner.log' && grep -q 'keychain-writable' '$T/runner.log'"
+  else skip "selfcheck: login keychain grant (no ~/Library/Keychains/login.keychain-db here)"; fi
+  check "selfcheck: its probes leave nothing behind" "[ -z \"\$(ls -a \"\$HOME\" | grep -F .qa-sandbox-)\" ] && [ -z \"\$(ls -a '$T/bin' | grep -F .qa-sandbox-probe)\" ] && [ -z \"\$(ls -a \"\$HOME/Library/Keychains\" 2>/dev/null | grep -F .qa-sandbox-)\" ]"
+  # === the real agent authenticates and drives the browser in the sandbox ===
+  # Opt-in (QA_TEST_AGENT=1; needs QA_AGENT_TOKEN_FILE, the file
+  # install-schedule.sh --agent-token writes, and npm): one small model call that
+  # loads one page in the headless browser, under the self-check profile, through
+  # the real proxy, with the developer's login keychain out of reach.
+  if [ "${QA_TEST_AGENT:-0}" = 1 ]; then
+    # A short TMPDIR, as the runner's ~/.breeze-qa/.t: Playwright's socket paths are capped.
+    AGENT_TMP="$(cd "$(mktemp -d /tmp/qa-at.XXXXXX)" && pwd -P)"
+    AGENT_PROFILE="$T/agent-live.sb"; qa_sandbox_profile "$AGENT_PROFILE"
+    PROBE_TITLE="qa-sandbox-probe-$$"
+    printf '<!doctype html><title>%s</title><p>ok</p>\n' "$PROBE_TITLE" > "$QA_WORKTREE/index.html"
+    check "agent: the agent token loads" "load_agent_token"
+    check "agent: the pinned Playwright MCP installs" "prewarm_mcp '$QA_DIR/qa-mcp.json' >/dev/null 2>&1"
+    mkdir -p "$RUN_DIR/browser"   # the MCP server's cwd, as the runner creates it
+    build_mcp_config "http://localhost:$QA_STACK_PORT" "$QA_DIR/qa-mcp.json" "$RUN_DIR/mcp.json"
+    reset_agent_claude_dir
+    build_agent_cmd claude auth status --json
+    check "agent: in-sandbox auth is the agent's own token" "[ \"\$(cd '$QA_WORKTREE' && with_agent_token \"\${AGENT_CMD[@]}\" 2>/dev/null | jq -r .authMethod)\" = oauth_token ]"
+    build_agent_cmd claude -p "Use the browser_navigate tool to open http://localhost:$QA_STACK_PORT/index.html, then reply with only the page title and nothing else." \
+      --permission-mode dontAsk --allowedTools mcp__playwright__browser_navigate --strict-mcp-config \
+      --mcp-config "$RUN_DIR/mcp.json" --add-dir "$RUN_DIR" --output-format text
+    N_BEFORE="$(grep -c 'api.anthropic.com' "$EGRESS_LOG")"
+    AGENT_OUT="$(cd "$QA_WORKTREE" && with_agent_token "${AGENT_CMD[@]}" 2>"$T/agent.err")"
+    echo "agent said: $(printf '%s' "$AGENT_OUT" | head -c 200)"
+    [ -s "$T/agent.err" ] && { echo "agent stderr:"; head -c 2000 "$T/agent.err"; echo; }
+    check "agent: the real agent authenticates and its browser loads the stack page" "printf '%s' \"\$AGENT_OUT\" | grep -qF '$PROBE_TITLE'"
+    check "agent: the model call left through the proxy" "[ \"\$(grep -c 'api.anthropic.com' '$EGRESS_LOG')\" -gt '$N_BEFORE' ]"
+    rm -f "$QA_WORKTREE/index.html"; rm -rf "$AGENT_TMP"
+  else
+    skip "real agent auth + browser inside the sandbox (set QA_TEST_AGENT=1 and QA_AGENT_TOKEN_FILE with QA_TEST_NETWORK=1, macOS)"
+  fi
   stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
 else
   skip "end-to-end sandbox self-check (set QA_TEST_NETWORK=1, macOS)"
-fi
-
-# === the real login keychain accepts a save from inside the sandbox ===========
-# Opt-in: adds a dummy generic-password item to the developer's login keychain
-# from inside the profile, then deletes it from outside.
-if [ "${QA_TEST_KEYCHAIN:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ] && [ -n "${AGENT_PROFILE:-}" ] && [ -f "$T/selfcheck.sb" ]; then
-  KSVC="breeze-qa-sandbox-probe-$$"
-  /usr/bin/sandbox-exec -f "$T/selfcheck.sb" /usr/bin/security add-generic-password -s "$KSVC" -a probe -w dummy-not-a-secret -U >/dev/null 2>&1
-  check "keychain: a sandboxed process can save to the login keychain (token refresh)" "/usr/bin/security find-generic-password -s '$KSVC' -a probe >/dev/null 2>&1"
-  /usr/bin/security delete-generic-password -s "$KSVC" -a probe >/dev/null 2>&1
-  check "keychain: the probe item is removed" "! /usr/bin/security find-generic-password -s '$KSVC' -a probe >/dev/null 2>&1"
-else
-  skip "login keychain save from inside the sandbox (set QA_TEST_KEYCHAIN=1 with QA_TEST_NETWORK=1, macOS)"
 fi
 
 # === agent + MCP launch wiring ================================================
@@ -922,6 +955,30 @@ if type build_agent_cmd >/dev/null 2>&1; then
   check "launch: Playwright's browser registry is the agent's own, not ~/Library/Caches/ms-playwright/b" "case \"\$joined\" in *\"PWTEST_SERVER_REGISTRY=\$QA_HOME/.t/pw-registry \"*) true;; *) false;; esac"
   check "launch: the agent gets the broker port, and no GitHub token from the runner's env" "case \"\$joined\" in *'QA_GH_PORT=9876'*'-u GH_TOKEN'*|*'-u GH_TOKEN'*'QA_GH_PORT=9876'*) true;; *) false;; esac"
   check "launch: the agent command follows the wrapper" "[ \"\${AGENT_CMD[\${#AGENT_CMD[@]}-3]}\" = claude ]"
+  check "launch: claude's secure storage is the agent's own dir, not a developer login profile" "case \"\$joined\" in *\"CLAUDE_SECURESTORAGE_CONFIG_DIR=\$QA_HOME/.claude-agent \"*) true;; *) false;; esac"
+  # Strix r9: the agent's credential is its own long-lived token (claude
+  # setup-token), handed over in its environment -- never on argv, which every
+  # local user can read with ps -- and never the developer's login keychain.
+  unset QA_AGENT_TOKEN_FILE; AGENT_OAUTH_TOKEN=""   # the default path, not a live leg's token
+  TOKF="$QA_HOME/.agent-auth/oauth-token"; mkdir -p "$(dirname "$TOKF")"
+  GOOD='sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz_0123456789-xyz'
+  ( umask 077; printf '%s\n' "$GOOD" > "$TOKF" )
+  check "token: a well-formed 0600 token file loads" "load_agent_token && [ \"\$AGENT_OAUTH_TOKEN\" = '$GOOD' ]"
+  check "token: it reaches the agent command's environment" "[ \"\$(with_agent_token /usr/bin/printenv CLAUDE_CODE_OAUTH_TOKEN)\" = '$GOOD' ]"
+  check "token: it is not exported to the runner's other children" "[ -z \"\$(/usr/bin/printenv CLAUDE_CODE_OAUTH_TOKEN)\" ]"
+  build_agent_cmd claude -p hi
+  check "token: it is never on the agent's argv" "case \"\${AGENT_CMD[*]}\" in *sk-ant-*|*CLAUDE_CODE_OAUTH_TOKEN*) false;; *) true;; esac"
+  chmod 644 "$TOKF"
+  check "token: a group/world-readable token file is refused" "! load_agent_token"
+  chmod 600 "$TOKF"; printf 'not-a-token\n' > "$TOKF"
+  check "token: a malformed token is refused" "! load_agent_token"
+  printf '%s\nsecond-line\n' "$GOOD" > "$TOKF"
+  check "token: a multi-line token file is refused" "! load_agent_token"
+  rm -f "$TOKF"; ( umask 077; printf '%s\n' "$GOOD" > "$T/real-token" ); ln -s "$T/real-token" "$TOKF"
+  check "token: a symlinked token file is refused" "! load_agent_token"
+  rm -f "$TOKF"
+  check "token: no token file fails closed" "! load_agent_token && [ -z \"\${AGENT_OAUTH_TOKEN:-}\" ]"
+  check "token: nothing runs with an empty token" "! with_agent_token /usr/bin/true"
 else
   bad "build_agent_cmd is defined"
 fi
