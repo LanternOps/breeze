@@ -121,6 +121,9 @@ outbox 004-split.json "{\"action\":\"create\",\"title\":$(json_str "[UI] marker-
 IOSFODNN7EXAMPLE"),\"body\":\"clean body\"}"
 outbox 005-cut.json "{\"action\":\"create\",\"title\":$(json_str "[UI] marker-cut $FILLER $FAKE_AKIA"),\"body\":\"clean body\"}"
 outbox 006-clean.json '{"action":"create","title":"[UI] marker-clean Devices page 500s","body":"clean body"}'
+# A character the title cleaner deletes must not hide a key from the gate.
+outbox 007-joined.json "{\"action\":\"create\",\"title\":$(json_str "[UI] marker-joined AKIA@IOSFODNN7EXAMPLE"),\"body\":\"clean body\"}"
+outbox 008-joined-tok.json "{\"action\":\"create\",\"title\":$(json_str "[UI] marker-joinedtok ${FAKE_TOKEN:0:20}#${FAKE_TOKEN:20}"),\"body\":\"clean body\"}"
 publish_outbox >/dev/null 2>&1
 check "gate: AWS key in a title is not published" "! grep -q 'marker-akia' '$GH_LOG'"
 check "gate: long token in a title is not published" "! grep -q 'marker-token' '$GH_LOG'"
@@ -128,6 +131,8 @@ check "gate: literal .env value in a title is not published" "! grep -q 'marker-
 check "gate: a key split across title lines is not published once they are joined" "! grep -q 'marker-split' '$GH_LOG'"
 check "gate: a key straddling the 200-char title cut is not half-published" "! grep -q 'marker-cut' '$GH_LOG'"
 check "gate: a clean title still publishes" "grep -q 'issue create --title \[UI\] marker-clean' '$GH_LOG'"
+check "gate: a key split by a character the title cleaner drops is not published" "! grep -q 'marker-joined ' '$GH_LOG' && ! grep -q 'IOSFODNN7EXAMPLE' '$GH_LOG'"
+check "gate: a token split by a dropped character is not published" "! grep -q 'marker-joinedtok' '$GH_LOG'"
 check "gate: rejected titles stay out of the runner log" "! grep -q 'marker-' '$T/runner.log' && ! grep -q 'IOSFODNN7EXAMPLE' '$T/runner.log'"
 check "gate: each rejected title is recorded by file name" "[ \"\$(grep -c 'REJECT 00[1-5]-.*secret-like title' '$T/runner.log')\" = 5 ]"
 

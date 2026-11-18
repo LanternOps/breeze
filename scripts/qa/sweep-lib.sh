@@ -495,7 +495,7 @@ publish_outbox() {
   gh -R "$QA_REPO" label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
   # Rejections name the outbox file, never the agent-written value: a refused
   # field may be the very secret the gate caught.
-  local created=0 comments=0 prs=0 f action title full_title issue labels bodyf pr result
+  local created=0 comments=0 prs=0 f action title full_title clean_title issue labels bodyf pr result
   local max_comments="${QA_MAX_COMMENTS:-20}"
   # One verdict per PR: if both phases wrote a pr_result for the same PR (e.g. a
   # BLOCKED from the self-hosted phase, then the hosted check), the newest wins.
@@ -520,12 +520,15 @@ publish_outbox() {
     case "$action" in
       create)
         full_title="$(jq -r '.title // empty' "$f" | tr -d '\n')"
-        # Same gate as the body, on the joined title before any cut: a key that
-        # straddles column 200 must not publish its first half.
-        if ! text_ok "$full_title"; then
+        # Same gate as the body, before any cut (a key that straddles column 200
+        # must not publish its first half), on the raw title AND on the cleaned
+        # one that is published: safe_title deletes characters, which can join
+        # the halves of a key the raw check saw apart (AKIA@XXXX...).
+        clean_title="$(safe_title "$full_title")"
+        if ! text_ok "$full_title" || ! text_ok "$clean_title"; then
           log "outbox REJECT $(basename "$f"): secret-like title"; continue
         fi
-        title="$(safe_title "$full_title" | cut -c1-200)"
+        title="$(printf '%s' "$clean_title" | cut -c1-200)"
         if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | grep -Eq '^\[(UI|QA)\] .{5,}'; then
           log "outbox REJECT $(basename "$f"): cap reached or bad title"; continue
         fi
