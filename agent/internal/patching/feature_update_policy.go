@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // FeatureUpdateMode is what an update ring decided about Windows feature
@@ -69,7 +68,7 @@ func (p FeatureUpdatePolicy) Allows(patch AvailablePatch) bool {
 }
 
 // featureUpdateVersionPattern is a Windows release token: two digits, H, 1 or 2.
-var featureUpdateVersionPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^\d{2}H[12]$`) })
+var featureUpdateVersionPattern = regexp.MustCompile(`^\d{2}H[12]$`)
 
 // ParseFeatureUpdatePolicy reads the heartbeat's feature_update_settings block.
 // Keys are accepted in camelCase and snake_case like every other config block.
@@ -104,7 +103,7 @@ func ParseFeatureUpdatePolicy(raw any) (FeatureUpdatePolicy, error) {
 		}
 		version, _ := str("targetVersion", "target_version")
 		version = strings.ToUpper(version)
-		if !featureUpdateVersionPattern().MatchString(version) {
+		if !featureUpdateVersionPattern.MatchString(version) {
 			return FeatureUpdatePolicy{}, fmt.Errorf("feature_update_settings.targetVersion %q is not a release like 25H2", version)
 		}
 		return FeatureUpdatePolicy{Mode: FeatureUpdatePin, Product: product, TargetVersion: version}, nil
@@ -122,15 +121,13 @@ func ParseFeatureUpdatePolicy(raw any) (FeatureUpdatePolicy, error) {
 // …", ".NET Framework 4.8.1 for Windows 11, version 24H2 …". The server-side
 // parser (@breeze/shared parseWindowsFeatureUpdateTitle) uses the same
 // expression; keep them identical.
-var windowsFeatureUpdateTitlePattern = sync.OnceValue(func() *regexp.Regexp {
-	return regexp.MustCompile(`(?i)^\s*(?:feature update to |upgrade to )?windows (10|11)\b[^\d]*?\bversion (\d{2}H[12])\b`)
-})
+var windowsFeatureUpdateTitlePattern = regexp.MustCompile(`(?i)^\s*(?:feature update to |upgrade to )?windows (10|11)\b[^\d]*?\bversion (\d{2}H[12])\b`)
 
 // ParseWindowsFeatureUpdateTitle extracts the product ("windows-11" /
 // "windows-10") and the upper-cased release ("24H2") from a feature-update
 // title. ok is false for any title that is not a Windows feature release.
 func ParseWindowsFeatureUpdateTitle(title string) (product, version string, ok bool) {
-	m := windowsFeatureUpdateTitlePattern().FindStringSubmatch(title)
+	m := windowsFeatureUpdateTitlePattern.FindStringSubmatch(title)
 	if m == nil {
 		return "", "", false
 	}

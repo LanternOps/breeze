@@ -7,14 +7,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var errWingetNotFound = errors.New("winget.exe not found under WindowsApps")
 
-var appInstallerDirRe = sync.OnceValue(func() *regexp.Regexp {
-	return regexp.MustCompile(`^Microsoft\.DesktopAppInstaller_([0-9]+(?:\.[0-9]+)*)_(?:x64|arm64)__8wekyb3d8bbwe$`)
-})
+var appInstallerDirRe = regexp.MustCompile(`^Microsoft\.DesktopAppInstaller_([0-9]+(?:\.[0-9]+)*)_(?:x64|arm64)__8wekyb3d8bbwe$`)
 
 // wingetLocator finds the SYSTEM-usable winget.exe under the versioned
 // WindowsApps folder, since the per-user PATH shim isn't reachable from the
@@ -78,7 +75,7 @@ func LocateSystemWinget() (path, version string, err error) {
 // parseAppInstallerVersion extracts the version string from a
 // Microsoft.DesktopAppInstaller_<ver>_<x64|arm64>__8wekyb3d8bbwe directory name.
 func parseAppInstallerVersion(dir string) (string, bool) {
-	m := appInstallerDirRe().FindStringSubmatch(dir)
+	m := appInstallerDirRe.FindStringSubmatch(dir)
 	if m == nil {
 		return "", false
 	}

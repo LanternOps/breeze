@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -25,9 +24,9 @@ const (
 	patchResultItemLimit  = 5000
 )
 
-var validAptPkgName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:@~-]{0,127}$`) })
-var validYumPkgName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:@~-]{0,127}$`) })
-var validBrewPkgName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._/@-]{0,255}$`) })
+var validAptPkgName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:@~-]{0,127}$`)
+var validYumPkgName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:@~-]{0,127}$`)
+var validBrewPkgName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._/@-]{0,255}$`)
 
 func commandOutputWithTimeout(timeout time.Duration, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -112,21 +111,21 @@ func truncatePatchDescription(value string) string {
 }
 
 func validateAptPackageName(name string) error {
-	if !validAptPkgName().MatchString(name) || strings.HasPrefix(name, "-") {
+	if !validAptPkgName.MatchString(name) || strings.HasPrefix(name, "-") {
 		return fmt.Errorf("invalid package name: %q", name)
 	}
 	return nil
 }
 
 func validateYumPackageName(name string) error {
-	if !validYumPkgName().MatchString(name) || strings.HasPrefix(name, "-") {
+	if !validYumPkgName.MatchString(name) || strings.HasPrefix(name, "-") {
 		return fmt.Errorf("invalid package name: %q", name)
 	}
 	return nil
 }
 
 func validateBrewPackageName(name string) error {
-	if !validBrewPkgName().MatchString(name) || strings.HasPrefix(name, "-") || strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
+	if !validBrewPkgName.MatchString(name) || strings.HasPrefix(name, "-") || strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
 		return fmt.Errorf("invalid package name: %q", name)
 	}
 	return nil
