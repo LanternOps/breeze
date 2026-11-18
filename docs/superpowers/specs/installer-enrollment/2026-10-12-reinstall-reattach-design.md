@@ -1210,7 +1210,9 @@ flagged by the #2764 collision path can be reattached from the banner.
   away instead of waiting for the next hardware send.
 - **When.** Attestation rides on the hardware send (startup, every 24 h, manual refresh). It runs
   once per process and again after 7 days, in the background with a 3-minute bound. A failure is
-  retried at the next hardware send. The agent keeps no local state: the server refreshes the
+  retried at the next hardware send, never within the attempt: the two POSTs are sent once (a
+  retried challenge spends the hourly budget, a retried completion finds its challenge consumed).
+  The agent keeps no local state: the server refreshes the
   time for the same EK, and a reinstall attests on its first start. The route's loop deferral
   (a server `Retry-After`) is checked before any key is created.
 - **Every TPM call runs under a deadline** (the probe 15 s, an attempt 3 minutes), in its own

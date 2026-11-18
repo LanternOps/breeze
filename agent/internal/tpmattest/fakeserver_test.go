@@ -6,19 +6,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
-	"math/big"
 
-	legacy "github.com/google/go-tpm/legacy/tpm2"
-	"github.com/google/go-tpm/legacy/tpm2/credactivation"
 	"github.com/google/go-tpm/tpm2"
 )
 
-// fakeServer is the API's half, done as the API does it (the API's
-// TypeScript MakeCredential matches go-tpm's credactivation byte for byte:
-// apps/api/src/services/tpmAttestation/makeCredential.test.ts).
+// fakeServer is the API's half, done as the API does it: the API's
+// TypeScript MakeCredential matches go-tpm's tpm2.CreateCredential byte for
+// byte, with a 32-byte seed and the EK's AES-128 key
+// (apps/api/src/services/tpmAttestation/makeCredential.test.ts).
 type fakeServer struct {
 	secret    []byte
 	completed []byte
@@ -31,28 +29,25 @@ func (s *fakeServer) Challenge(_ context.Context, ekPublic, akPublic []byte) (*C
 	if err != nil {
 		return nil, err
 	}
-	ekRSA, err := ek.Unique.RSA()
+	ekKey, err := tpm2.ImportEncapsulationKey(ek)
 	if err != nil {
 		return nil, err
 	}
-	pub := &rsa.PublicKey{N: new(big.Int).SetBytes(ekRSA.Buffer), E: 65537}
 	digest := sha256.Sum256(akPublic)
 	if s.tamperName {
 		digest[0] ^= 0xff
 	}
+	name := binary.BigEndian.AppendUint16(nil, uint16(tpm2.TPMAlgSHA256))
+	name = append(name, digest[:]...)
 	s.secret = make([]byte, 32)
 	if _, err := rand.Read(s.secret); err != nil {
 		return nil, err
 	}
-	id, enc, err := credactivation.Generate(&legacy.HashValue{Alg: legacy.AlgSHA256, Value: digest[:]}, pub, 16, s.secret)
+	id, enc, err := tpm2.CreateCredential(rand.Reader, ekKey, name, s.secret)
 	if err != nil {
 		return nil, err
 	}
-	encrypted := enc[2:]
-	for len(encrypted) != 256 {
-		encrypted = encrypted[2:]
-	}
-	return &Challenge{ID: "c-1", CredentialBlob: id[2:], EncryptedSecret: encrypted}, nil
+	return &Challenge{ID: "c-1", CredentialBlob: id, EncryptedSecret: enc}, nil
 }
 
 func (s *fakeServer) Complete(_ context.Context, _ string, secret []byte) error {

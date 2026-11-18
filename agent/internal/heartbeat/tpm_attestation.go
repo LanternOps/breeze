@@ -105,7 +105,16 @@ func (h *Heartbeat) attestationURL(action string) string {
 // on, the TPM is usable, none succeeded in the last tpmReattestAfter and the
 // server is not deferring the route.
 func (h *Heartbeat) maybeAttestTPM(available *bool) {
-	if !h.tpmEnabled.Load() || available == nil || !*available {
+	if !h.tpmEnabled.Load() {
+		return
+	}
+	if available == nil || !*available {
+		// The only other trace is tpm_available on the server: say why here.
+		if available == nil {
+			log.Debug("TPM availability unknown; skipping attestation")
+		} else {
+			log.Debug("no usable TPM 2.0; skipping attestation")
+		}
 		return
 	}
 	if last := h.tpmAttestedAt.Load(); last != 0 && time.Since(time.Unix(last, 0)) < tpmReattestAfter {
@@ -202,7 +211,12 @@ func (a tpmAttestationAPI) postAttestation(ctx context.Context, action string, p
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
 	}
-	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
+	// No retries: a retried challenge spends the device's hourly budget, and
+	// a completion retried after a lost reply finds its challenge consumed
+	// (403). A failed attempt is retried whole at the next hardware send.
+	once := h.retryCfg
+	once.MaxRetries = 0
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, once)
 	if err != nil {
 		h.noteLoopAnswer("POST", url, err)
 		return nil, err

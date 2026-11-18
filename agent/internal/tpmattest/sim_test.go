@@ -35,7 +35,7 @@ func TestTheEKIsTheDefaultTemplateTheAPIChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tpm.Close()
+	defer func() { _ = tpm.Close() }()
 	ek, err := createPrimary(tpm, tpm2.RSAEKTemplate)
 	if err != nil {
 		t.Fatal(err)

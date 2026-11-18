@@ -137,6 +137,30 @@ func TestTPMAttestationAPIReportsARefusalByCode(t *testing.T) {
 	}
 }
 
+func TestTPMAttestationPostsAreNotRetried(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	h := NewWithVersion(&config.Config{AgentID: "agent-1", AuthToken: "token", ServerURL: server.URL}, "1.2.3", nil, nil)
+	h.retryCfg.MaxRetries = 3
+	h.retryCfg.InitialDelay = time.Millisecond
+	h.retryCfg.MaxDelay = time.Millisecond
+	// A retried challenge would spend the hourly budget, and a retried
+	// completion would find its challenge consumed.
+	if _, err := (tpmAttestationAPI{h: h}).Challenge(context.Background(), []byte{1}, []byte{2}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if err := (tpmAttestationAPI{h: h}).Complete(context.Background(), "c-1", []byte{3}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("server saw %d requests, want 2 (one per call, no retries)", got)
+	}
+}
+
 func TestTheSwitchOffMeansNoTPMIsTouched(t *testing.T) {
 	server, received := captureHardwarePUT(t)
 	h := newMemoryHWTestHeartbeat(server.URL)
