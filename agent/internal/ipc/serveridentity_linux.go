@@ -76,6 +76,23 @@ func GatherUnixServerEvidence(conn *net.UnixConn, socketPath string) (UnixServer
 	return ev, nil
 }
 
+// VerifyUnixBrokerServer checks, before anything is sent, that the process
+// that accepted conn on socketPath is the root broker: SO_PEERCRED uid 0 and
+// a root-controlled directory chain (CheckUnixServerIdentity). Every Unix
+// client of the broker socket calls it: the user and desktop helpers, the
+// watchdog and breeze-backup.
+func VerifyUnixBrokerServer(conn net.Conn, socketPath string) error {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("ipc: broker connection is %T, not a unix socket", conn)
+	}
+	ev, err := GatherUnixServerEvidence(uc, socketPath)
+	if err != nil {
+		return err
+	}
+	return CheckUnixServerIdentity(ev)
+}
+
 // statModeToFileMode maps a raw st_mode onto the fs.FileMode bits
 // CheckUnixServerIdentity reads: the permission bits and whether the entry is
 // a directory. Anything that is not a directory is marked irregular so it can
