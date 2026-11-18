@@ -155,9 +155,10 @@ describe('generateExecutiveSummaryReport', () => {
       { title: 'Short title', severity: 'high', status: 'active', device: 'PC-1', triggeredAt: new Date('2026-11-08T10:00:00.000Z') },
     ]);
     const result = await generateExecutiveSummaryReport(ORG, {}, AUTHORITY);
-    const [long, short] = result.summary!.notableAlerts;
-    expect(long.title.length).toBeLessThanOrEqual(200);
-    expect(long.title.endsWith('…')).toBe(true);
-    expect(short.title).toBe('Short title');
+    const alerts = result.summary!.notableAlerts as Array<{ title: string }>;
+    const longTitle = alerts[0]!.title;
+    expect(longTitle.length).toBeLessThanOrEqual(200);
+    expect(longTitle.endsWith('…')).toBe(true);
+    expect(alerts[1]!.title).toBe('Short title');
   });
 });
