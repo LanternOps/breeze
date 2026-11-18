@@ -1292,6 +1292,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Expired-snapshot cleanup on its own single-slot queue, so a long run
+    // never holds a backupWorker slot (#12061).
+    name: 'backupSnapshotCleanupWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupSnapshotCleanupWorker');
+      return { init: m.initializeBackupSnapshotCleanupWorker, shutdown: m.shutdownBackupSnapshotCleanupWorker };
+    },
+  },
+  {
     name: 'backupSnapshotFileIndexWorker',
     placement: 'global',
     load: async () => {
