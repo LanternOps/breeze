@@ -374,6 +374,26 @@ func TestHandleCapturePprofCPUBusy(t *testing.T) {
 	}
 }
 
+func TestHandleCapturePprofCPUCancelled(t *testing.T) {
+	setCapturePprofCPUDuration(t, time.Hour)
+	h := newTestHeartbeatForDiag(t)
+	h.stopChan = make(chan struct{})
+	close(h.stopChan)
+
+	res := handleCapturePprof(h, Command{
+		ID: "cpu4", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "failed" || !strings.Contains(res.Error, "cancelled") {
+		t.Fatalf("status = %q, error = %q, want a failed cancelled capture", res.Status, res.Error)
+	}
+	// The profile was stopped: a new one can start.
+	if err := pprof.StartCPUProfile(io.Discard); err != nil {
+		t.Fatalf("StartCPUProfile after cancel: %v", err)
+	}
+	pprof.StopCPUProfile()
+}
+
 func TestHandleCapturePprofCPUSizeCap(t *testing.T) {
 	setCapturePprofCPUDuration(t, 50*time.Millisecond)
 	orig := maxProfileBytes

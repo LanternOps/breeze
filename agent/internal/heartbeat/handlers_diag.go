@@ -9,6 +9,7 @@ package heartbeat
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"runtime"
 	"runtime/pprof"
@@ -174,7 +175,7 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	if wantCPU {
-		b64, size, err := captureCPUProfile(time.Duration(capturePprofCPUDurationNs.Load()))
+		b64, size, err := captureCPUProfile(time.Duration(capturePprofCPUDurationNs.Load()), h.stopChan)
 		if err != nil {
 			return tools.CommandResult{Status: "failed", Error: err.Error()}
 		}
@@ -205,13 +206,19 @@ func capturePprofProfile(name string) (string, int, error) {
 
 // captureCPUProfile samples CPU for d and returns the profile base64-encoded
 // with its raw size. Only one CPU profile can run per process, so a second
-// concurrent start fails. Never forces a GC.
-func captureCPUProfile(d time.Duration) (string, int, error) {
+// concurrent start fails. Closing stop (agent shutdown) ends the capture
+// early with an error. Never forces a GC.
+func captureCPUProfile(d time.Duration, stop <-chan struct{}) (string, int, error) {
 	var buf bytes.Buffer
 	if err := pprof.StartCPUProfile(&buf); err != nil {
 		return "", 0, fmt.Errorf("CPU profile already running: %w", err)
 	}
-	time.Sleep(d)
+	select {
+	case <-time.After(d):
+	case <-stop:
+		pprof.StopCPUProfile()
+		return "", 0, errors.New("cpu profile capture was cancelled by agent shutdown")
+	}
 	pprof.StopCPUProfile()
 	if buf.Len() > maxProfileBytes {
 		return "", 0, fmt.Errorf("cpu profile is %d bytes, exceeds the %d byte result cap", buf.Len(), maxProfileBytes)
