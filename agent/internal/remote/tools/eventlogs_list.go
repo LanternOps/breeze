@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -74,8 +75,16 @@ func decodeEventLogRow(raw json.RawMessage) (EventLog, bool) {
 			LogName string `json:"LogName"`
 		}
 		if errName := json.Unmarshal(raw, &nameOnly); errName != nil {
-			eventLogListLog.Warn("skipping undecodable event log row", "error", errName.Error())
-			return EventLog{}, false
+			// Truncated output (cut mid-object): recover a fully quoted name
+			// so a one-log system still reports its real log.
+			recovered, found := recoverTruncatedLogName(raw)
+			if !found {
+				eventLogListLog.Warn("skipping undecodable event log row", "error", errName.Error())
+				return EventLog{}, false
+			}
+			eventLogListLog.Warn("event log row is truncated; reporting its name without a count",
+				"logName", recovered, "error", errName.Error())
+			return EventLog{Name: recovered, DisplayName: recovered}, true
 		}
 		eventLogListLog.Warn("event log row has an unexpected field type; reporting it without a count",
 			"logName", nameOnly.LogName, "error", err.Error())
@@ -91,6 +100,25 @@ func decodeEventLogRow(raw json.RawMessage) (EventLog, bool) {
 		log.MaxSizeBytes = *row.MaximumSizeInBytes
 	}
 	return log, true
+}
+
+// truncatedLogNameRE matches a complete (closing-quoted) LogName string value.
+var truncatedLogNameRE = regexp.MustCompile(`"LogName"\s*:\s*("(?:[^"\\]|\\.)*")`)
+
+// recoverTruncatedLogName pulls the LogName out of an object that was cut off
+// mid-stream. A name missing its closing quote is itself truncated and is not
+// returned: a guessed name is worse than the default list.
+func recoverTruncatedLogName(raw []byte) (string, bool) {
+	m := truncatedLogNameRE.FindSubmatch(raw)
+	if m == nil {
+		return "", false
+	}
+	var name string
+	if err := json.Unmarshal(m[1], &name); err != nil {
+		return "", false
+	}
+	name = strings.TrimSpace(name)
+	return name, name != ""
 }
 
 // scrapeEventLogNames is the line-based fallback for output that is not the
