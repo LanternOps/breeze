@@ -358,8 +358,7 @@ func TestLinuxDesktopHelper_PermanentRejectExits2(t *testing.T) {
 	client, _ := testLinuxDesktopClient(t, broker.sock)
 
 	code, err := RunLinuxDesktopHelper(client, make(chan struct{}), time.Hour)
-	var perm *PermanentRejectError
-	if !errors.As(err, &perm) {
+	if _, ok := errors.AsType[*PermanentRejectError](err); !ok {
 		t.Fatalf("err = %v, want a *PermanentRejectError", err)
 	}
 	if code != 2 {
@@ -390,8 +389,8 @@ func TestLinuxDesktopHelper_NoBrokerExits1(t *testing.T) {
 
 func TestAuthenticate_LinuxDesktopSendsTicket(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
 
 	env := LinuxDesktopEnv{LogindSessionID: "c7", SpawnTicket: testSpawnTicket(t), SocketPath: "/run/breeze/desktop/1000.sock"}
 	c := NewLinuxDesktopClient(env, ipc.DesktopContextUserSession)
@@ -427,8 +426,8 @@ func TestAuthenticate_LinuxDesktopSendsTicket(t *testing.T) {
 // ticket on any other role or binary kind.
 func TestAuthenticate_OtherHelpersSendNoTicket(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
 
 	c := NewWithOptions("/unused", ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
 	c.conn = ipc.NewConn(clientConn)

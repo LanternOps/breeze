@@ -19,7 +19,7 @@ func TestLinuxDesktopManager_NeverConnectingHelperExhausts(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Two 20 s connect timeouts outrun the 30 s chain: exhausted by ~45 s.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		r.clock.advance(time.Second)
 		r.tick()
 	}
@@ -31,7 +31,7 @@ func TestLinuxDesktopManager_NeverConnectingHelperExhausts(t *testing.T) {
 		t.Fatalf("spawned %d times, budget is %d", spawned, linuxDesktopMaxAttempts)
 	}
 	// Nothing respawns on its own afterwards, however long the session lives.
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		r.clock.advance(time.Second)
 		r.tick()
 	}
@@ -149,7 +149,7 @@ func TestLinuxDesktopManager_ShutdownThenCloseDoesNotRespawn(t *testing.T) {
 		t.Fatal("Shutdown left the helper session open")
 	}
 	r.ops.onClosed(s)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		r.clock.advance(time.Second)
 		r.tick()
 	}

@@ -179,10 +179,7 @@ func newLinuxDesktopHelperManager(ops linuxDesktopBrokerOps, sp linuxDesktopSpaw
 	if now == nil {
 		now = time.Now
 	}
-	start := now().UnixMilli()
-	if start < 0 {
-		start = 0
-	}
+	start := max(now().UnixMilli(), 0)
 	return &LinuxDesktopHelperManager{
 		bySession: make(map[string]*linuxDesktopEntry),
 		exhausted: make(map[string]linuxDesktopExhaustion),

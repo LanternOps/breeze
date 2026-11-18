@@ -480,7 +480,7 @@ func TestLinuxDesktopListener_HandshakeConcurrencyCap(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_ = c.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
 		_, err = c.Read(make([]byte, 1))
 		var ne net.Error

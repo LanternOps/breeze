@@ -299,11 +299,7 @@ func TestLinuxDesktopManager_EnsureSpawnsOnceConcurrently(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 20)
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs <- r.m.Ensure(context.Background(), ldSession)
-		}()
+		wg.Go(func() { errs <- r.m.Ensure(context.Background(), ldSession) })
 	}
 	time.Sleep(50 * time.Millisecond)
 	close(r.sp.gate)
@@ -462,7 +458,7 @@ func TestLinuxDesktopManager_CrashRespawnsWithBackoff(t *testing.T) {
 	}
 	var spawnTimes []time.Duration
 	start := r.clock.now()
-	for i := 0; i < 40; i++ { // 10 s in 250 ms steps
+	for range 40 { // 10 s in 250 ms steps
 		r.clock.advance(250 * time.Millisecond)
 		before := r.sp.startCount()
 		r.tick()
@@ -493,7 +489,7 @@ func TestLinuxDesktopManager_RetryBudgetNotResetByHelperTraffic(t *testing.T) {
 	}
 	// Each spawn connects (it may chatter as much as it likes) and dies within
 	// the stable window: connecting never refunds the budget.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		before := r.sp.startCount()
 		s := r.connect(t)
 		r.m.NoteDesktopStarted(ldSession)
@@ -520,7 +516,7 @@ func TestLinuxDesktopManager_IdleExitDoesNotRespawn(t *testing.T) {
 	s := r.connect(t)
 	r.clock.advance(time.Minute)
 	r.crash(s) // the helper exited on its own with no desktop session
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		r.clock.advance(time.Second)
 		r.tick()
 	}
@@ -590,7 +586,7 @@ func TestLinuxDesktopManager_SessionGoneStopsHelper(t *testing.T) {
 				t.Fatal("unit not stopped")
 			}
 			// Never respawned for a session logind no longer reports live.
-			for i := 0; i < 20; i++ {
+			for range 20 {
 				r.clock.advance(time.Second)
 				r.tick()
 			}

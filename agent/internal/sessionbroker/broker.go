@@ -2450,7 +2450,7 @@ func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener
 			Reason:    reason,
 			Permanent: true,
 		})
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -2614,7 +2614,7 @@ func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener
 			Reason:    "this endpoint admits only a Linux desktop helper with a spawn ticket",
 			Permanent: true,
 		})
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -2847,7 +2847,7 @@ func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener
 		if origin != nil {
 			if !origin.addSession(session) {
 				log.Warn("Linux desktop endpoint closed during handshake; refusing session", "uid", origin.uid)
-				conn.Close()
+				_ = conn.Close()
 				return
 			}
 			session.linuxDesktopOrigin = origin

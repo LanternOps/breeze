@@ -226,7 +226,7 @@ func TestParseLinuxDesktopUnitList(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 	var many strings.Builder
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		many.WriteString("breeze-desktop-helper-3-g1-deadbeef.service loaded active running\n")
 	}
 	if n := len(parseLinuxDesktopUnitList(many.String())); n != maxLinuxDesktopOrphanUnits {
