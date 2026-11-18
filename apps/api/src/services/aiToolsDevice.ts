@@ -908,7 +908,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_custom_fields',
-      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values.',
+      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values (values for the definitions on the returned page). Paged by definition: follow nextCursor while hasMore.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -917,18 +917,28 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
             enum: ['list_definitions', 'get_device_values'],
             description: 'Action: list_definitions to see available fields, get_device_values to see a device\'s field values'
           },
-          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' }
+          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' },
+          // Literals, not a module const: aiTools.ts calls registerDeviceTools inside
+          // an import cycle, before this module's top-level consts are initialised.
+          ...pageParamSchema(15, 100),
         },
         required: ['action']
       }
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const page = readPageArgs('query_custom_fields', input, { defaultLimit: 15, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      // Definitions are a small, name-ordered config list, read whole and paged here.
+      const definitionPage = <T>(all: T[]) => pageEnvelope({
+        key: 'definitions', items: all.slice(page.offset, page.offset + page.limit),
+        limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length,
+      });
 
       if (action === 'list_definitions') {
         const definitions = await readCustomFieldDefinitions(auth);
 
-        return JSON.stringify({ definitions, total: definitions.length });
+        return JSON.stringify(definitionPage(definitions));
       }
 
       if (action === 'get_device_values') {
@@ -955,11 +965,19 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(customFieldDefinitions.name);
 
+        // Values only for the definitions on this page — the value map is keyed
+        // by fieldKey and is as large as the definition list.
+        const envelope = definitionPage(definitions);
+        const values = (device.customFields ?? {}) as Record<string, unknown>;
+        const customFields: Record<string, unknown> = {};
+        for (const d of envelope.definitions as Array<{ fieldKey: string }>) {
+          if (Object.prototype.hasOwnProperty.call(values, d.fieldKey)) customFields[d.fieldKey] = values[d.fieldKey];
+        }
         return JSON.stringify({
           deviceId,
           hostname: device.hostname,
-          customFields: device.customFields ?? {},
-          definitions,
+          customFields,
+          ...envelope,
         });
       }
 

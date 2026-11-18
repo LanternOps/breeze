@@ -2585,6 +2585,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   query_custom_fields: z.object({
     action: z.enum(['list_definitions', 'get_device_values']),
     deviceId: uuid.optional(),
+    ...pageZodShape(15, 100),
   }).refine(
     (d) => d.action !== 'get_device_values' || !!d.deviceId,
     { message: 'deviceId is required for get_device_values' },
