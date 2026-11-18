@@ -115,8 +115,9 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Offerings already reported as invalid by this process. One report each: the
- * read runs on every snapshot and every candidate build. Bounded by clearing,
+ * Offerings already reported as invalid by this process. One report per run of
+ * invalid reads: the read runs on every snapshot and every candidate build, and
+ * a readable read of the offering removes it again. Bounded by clearing,
  * so a huge fleet re-reports at worst once per cap's worth of offerings.
  */
 const reportedInvalid = new Set<string>();
@@ -163,6 +164,9 @@ export function verifiedGatewayCapabilities(raw: unknown, currentFingerprint: st
   record: GatewayVerificationRecord | null;
 } {
   const read = readRecord(raw);
+  // A readable read re-arms the report, so an offering that is verified again
+  // and later corrupted again is reported again.
+  if (read.kind !== 'invalid' && opts?.offeringId) reportedInvalid.delete(opts.offeringId);
   if (read.kind === 'absent') return { capabilities: unverified(), state: 'unverified', record: null };
   if (read.kind === 'invalid') {
     if (opts?.offeringId) reportInvalid(opts.offeringId, read.issues);

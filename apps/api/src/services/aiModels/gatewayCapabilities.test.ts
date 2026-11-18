@@ -143,7 +143,7 @@ describe('gatewayCapabilities', () => {
 
     it('warns and reports once per offering, naming the offering and the failing paths/codes, never the values', () => {
       setup();
-      const bad = { breeze_verification: { ...rec(), passed: 'leaked-passed-value', extra: 'leaked-extra-value' } };
+      const bad = { breeze_verification: { ...rec(), passed: 'leaked-passed-value', leakedKeyName: 'leaked-extra-value' } };
       verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-1' });
       verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-1' });
       expect(warn).toHaveBeenCalledTimes(1);
@@ -162,10 +162,20 @@ describe('gatewayCapabilities', () => {
       const everything = JSON.stringify([warn.mock.calls, message, event.tags]);
       expect(everything).not.toContain('leaked-passed-value');
       expect(everything).not.toContain('leaked-extra-value');
-      expect(everything).not.toContain('extra');
+      expect(everything).not.toContain('leakedKeyName');
 
       // A different offering is its own report.
       verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-2' });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(h.captured).toHaveLength(2);
+    });
+
+    it('a readable read re-arms the report: re-verified then corrupted again reports again', () => {
+      setup();
+      const bad = { breeze_verification: { ...rec(), extra: 1 } };
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-rearm' });
+      expect(verifiedGatewayCapabilities(verifiedCapabilitiesTree(rec(), null), fp, { offeringId: 'off-rearm' }).state).toBe('verified');
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-rearm' });
       expect(warn).toHaveBeenCalledTimes(2);
       expect(h.captured).toHaveLength(2);
     });
