@@ -966,6 +966,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
     category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
     includeSuperseded: z.boolean().optional(),
+    includeDetails: z.boolean().optional(),
+    ...pageZodShape(15, 100),
   }),
 
   manage_org_documents: z.object({
@@ -1237,7 +1239,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   // Deliverable template sets W05 (#5573 spec 4.6/10).
-  list_deliverable_templates: z.object({ orgId: uuid.optional() }),
+  list_deliverable_templates: z.object({ orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) }),
 
   manage_deliverables: z.object({
     action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),

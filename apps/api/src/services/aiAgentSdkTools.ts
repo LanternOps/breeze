@@ -5599,6 +5599,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
         orgId: uuid,
         category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
         includeSuperseded: z.boolean().optional(),
+        includeDetails: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('list_org_documents')
     ),
@@ -5703,7 +5705,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'list_deliverable_templates',
       registryDescription('list_deliverable_templates'),
-      { orgId: uuid.optional() },
+      { orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) },
       makeHandler('list_deliverable_templates')
     ),
 

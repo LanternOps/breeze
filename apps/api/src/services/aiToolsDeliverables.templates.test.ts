@@ -95,7 +95,7 @@ describe('list_deliverable_templates handler (W05)', () => {
   it('passes the optional orgId filter and the partner-axis actor through', async () => {
     tpl.listTemplateSets.mockResolvedValueOnce([{ id: SET, ownerScope: 'partner', items: [] }]);
     const out = await call('list_deliverable_templates', { orgId: ORG });
-    expect(out).toEqual({ sets: [{ id: SET, ownerScope: 'partner', items: [] }], showing: 1 });
+    expect(out).toMatchObject({ sets: [{ id: SET, ownerScope: 'partner', itemCount: 0, items: [] }], showing: 1, total: 1, hasMore: false });
     expect(tpl.listTemplateSets).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'partner', partnerId: 'p1', partnerOrgAccess: 'selected' }),
       { orgId: ORG },
@@ -103,16 +103,16 @@ describe('list_deliverable_templates handler (W05)', () => {
   });
 
   // ── #5808 W03: the checklist wiring is visible, read-only ────────────────
-  it('exposes instructions and checklistTemplateId on each item', async () => {
-    // TemplateItemView is the full row, so both flow through — but the model
-    // only knows they exist if the DESCRIPTION says so, and a future narrowed
-    // projection would silently drop them.
+  it('exposes instructions and checklistTemplateId on each item with includeDetails', async () => {
+    // Both are opt-in since #6734 (a default page of full items is compacted),
+    // so the DESCRIPTION must name them and includeDetails must carry them —
+    // a narrowed projection must never drop them silently.
     tpl.listTemplateSets.mockResolvedValueOnce([{
       id: SET,
       ownerScope: 'partner',
       items: [{ id: 'i1', name: 'Sign-in log review', instructions: 'Runbook prose', checklistTemplateId: 'tcl-1' }],
     }]);
-    const out = await call('list_deliverable_templates', {});
+    const out = await call('list_deliverable_templates', { includeDetails: true });
     expect(out.sets[0].items[0]).toMatchObject({
       instructions: 'Runbook prose',
       checklistTemplateId: 'tcl-1',
