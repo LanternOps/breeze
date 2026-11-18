@@ -5,6 +5,8 @@ package backup
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +60,42 @@ func reparseTagOf(t *testing.T, path string) uint32 {
 	return tag
 }
 
+// withExposedPlaceholders runs fn on a locked thread that sees placeholders
+// as they are, the way the backup walk does.
+func withExposedPlaceholders(fn func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	release := exposePlaceholdersForWalk()
+	defer release()
+	fn()
+}
+
+// wofBackingProvider returns the WOF provider backing path
+// (FSCTL_GET_EXTERNAL_BACKING), or an error when wof.sys does not back it.
+// It works whether or not wof.sys hides the file's reparse point.
+func wofBackingProvider(path string) (uint32, error) {
+	const fsctlGetExternalBacking = 0x00090310 // CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 196, METHOD_BUFFERED, FILE_ANY_ACCESS)
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	h, err := windows.CreateFile(p, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	var buf [64]byte // WOF_EXTERNAL_INFO {Version, Provider} + provider info
+	var n uint32
+	if err := windows.DeviceIoControl(h, fsctlGetExternalBacking, nil, 0, &buf[0], uint32(len(buf)), &n, nil); err != nil {
+		return 0, err
+	}
+	if n < 8 {
+		return 0, fmt.Errorf("external backing info too short: %d bytes", n)
+	}
+	return binary.LittleEndian.Uint32(buf[4:8]), nil
+}
+
 func logEntry(t *testing.T, label, path string) os.FileInfo {
 	t.Helper()
 	info, err := os.Lstat(path)
@@ -103,11 +141,21 @@ func TestWOFCompressedFile_BackupRestoreRoundTripOnWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact /exe: %v: %s", err, out)
 	}
-	info := logEntry(t, "WOF file", path)
-	if tag := reparseTagOf(t, path); tag != ioReparseTagWOF {
-		t.Fatalf("compact /exe did not produce a WOF file: tag 0x%08X, output %s", tag, out)
+	t.Logf("compact /exe: %s", bytes.TrimSpace(out))
+	provider, err := wofBackingProvider(path)
+	if err != nil {
+		t.Fatalf("compact /exe did not produce a WOF-backed file: FSCTL_GET_EXTERNAL_BACKING: %v", err)
 	}
-	t.Logf("Go reports a WOF file as ModeIrregular: %v (the #7326 premise)", info.Mode()&os.ModeIrregular != 0)
+	t.Logf("WOF provider %d (2 = WOF_PROVIDER_FILE)", provider)
+	// The #7326 premise was that the collector sees this as a reparse point.
+	// With wof.sys attached it does not: wof.sys hides the reparse point, so
+	// Go reports a regular file. Logged, not asserted, either way the file
+	// must be captured.
+	var info os.FileInfo
+	withExposedPlaceholders(func() { info = logEntry(t, "WOF file", path) })
+	_, tagErr := readReparseData(path)
+	t.Logf("Go reports a WOF file as ModeIrregular: %v; reparse data visible: %v (%v)",
+		info.Mode()&os.ModeIrregular != 0, tagErr == nil, tagErr)
 
 	files, skips, err := NewBackupManager(BackupConfig{}).collectBackupFilesWithSkips(context.Background(), []string{root}, nil, nil)
 	if err != nil {
@@ -300,7 +348,13 @@ func TestCloudPlaceholder_NotHydratedByBackupOnWindows(t *testing.T) {
 	syncRoot := newTestSyncRoot(t)
 	createTempFile(t, syncRoot, "local.txt", "a plain local file beside the placeholder")
 	placeholder := createPlaceholder(t, syncRoot, "Report.docx", 64*1024)
-	before := logEntry(t, "unhydrated placeholder", placeholder)
+	before := logEntry(t, "unhydrated placeholder, default thread mode", placeholder)
+	withExposedPlaceholders(func() { logEntry(t, "unhydrated placeholder, exposed", placeholder) })
+	func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		t.Logf("default thread placeholder mode: %d (0 application default, 1 disguise, 2 expose)", threadPlaceholderCompatibilityMode())
+	}()
 	reason := notStoredLocallyReason(platformRawWinAttrs(before))
 	if reason == "" {
 		t.Fatalf("an unhydrated placeholder must carry OFFLINE or a RECALL attribute, attrs 0x%08X", platformRawWinAttrs(before))
@@ -340,8 +394,15 @@ func TestHydratedCloudFile_BackupRestoreRoundTripOnWindows(t *testing.T) {
 	want := "budget figures that live on this disk"
 	path := createTempFile(t, syncRoot, "Budget.xlsx", want)
 	convertToPlaceholder(t, path)
-	info := logEntry(t, "hydrated cloud file", path)
-	if tag := reparseTagOf(t, path); !isDataReparseTag(tag) || tag == ioReparseTagWOF {
+	logEntry(t, "hydrated cloud file, default thread mode", path)
+	// The walk exposes placeholders, so check the file the way it sees it.
+	var info os.FileInfo
+	var tag uint32
+	withExposedPlaceholders(func() {
+		info = logEntry(t, "hydrated cloud file, exposed", path)
+		tag = reparseTagOf(t, path)
+	})
+	if !isDataReparseTag(tag) || tag == ioReparseTagWOF {
 		t.Fatalf("converted file should carry a cloud reparse tag, got 0x%08X", tag)
 	}
 	if r := notStoredLocallyReason(platformRawWinAttrs(info)); r != "" {
