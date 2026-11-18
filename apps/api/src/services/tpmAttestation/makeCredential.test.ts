@@ -15,7 +15,7 @@ import {
 
 /**
  * #8318 T1 (spec 2026-10-12 §12.2 review gate): MakeCredential against
- * go-tpm's credactivation, through __tests__/vectors/makeCredential.vectors.json
+ * go-tpm's tpm2.CreateCredential, through __tests__/vectors/makeCredential.vectors.json
  * (generator: __tests__/vectors/gen). The credential blob is byte-exact for the same
  * seed; the encrypted seed is checked by decrypting it with the EK's private
  * key (OAEP draws its own randomness), both go-tpm's and ours.
@@ -73,7 +73,7 @@ describe('MakeCredential against go-tpm (#8318 T1)', () => {
     const one = makeCredential(ek, ak, b(v.secret));
     const two = makeCredential(ek, ak, b(v.secret));
     expect(one.credentialBlob.equals(two.credentialBlob)).toBe(false);
-    expect(decryptSeed(v, one.encryptedSecret)).toHaveLength(16);
+    expect(decryptSeed(v, one.encryptedSecret)).toHaveLength(32);
   });
 
   it('refuses a secret that does not fit a TPM2B_DIGEST, and a wrong seed size', () => {
@@ -82,7 +82,7 @@ describe('MakeCredential against go-tpm (#8318 T1)', () => {
     const ak = parseRsaPublic(b(v.akPublic));
     expect(() => makeCredential(ek, ak, Buffer.alloc(0))).toThrow();
     expect(() => makeCredential(ek, ak, Buffer.alloc(33))).toThrow();
-    expect(() => makeCredential(ek, ak, Buffer.alloc(32), Buffer.alloc(32))).toThrow();
+    expect(() => makeCredential(ek, ak, Buffer.alloc(32), Buffer.alloc(16))).toThrow();
   });
 });
 
@@ -124,6 +124,37 @@ describe('TPMT_PUBLIC checks (§12.1, §12.2)', () => {
       expect(akTemplateRefusal(withAttributes(ak, attrs & ~bit))).toBe('ak_attributes');
     }
     expect(akTemplateRefusal(withAttributes(ak, attrs | TPMA.decrypt))).toBe('ak_attributes');
+  });
+
+  it('refuses an AK with a symmetric algorithm or a scheme other than RSASSA/RSAPSS over SHA-256', () => {
+    const ak = b(v.akPublic);
+    const area = parseRsaPublic(ak);
+    expect(akTemplateRefusal(area)).toBeNull();
+    // Layout after the 4-byte attributes: authPolicy (TPM2B), then symmetric (u16 NULL), then scheme, hash.
+    const policyLen = ak.readUInt16BE(8);
+    const sym = 10 + policyLen;
+    const withScheme = (scheme: number, hash: number) => {
+      const copy = Buffer.from(ak);
+      copy.writeUInt16BE(scheme, sym + 2);
+      copy.writeUInt16BE(hash, sym + 4);
+      return parseRsaPublic(copy);
+    };
+    expect(akTemplateRefusal(withScheme(0x0016, 0x000b))).toBeNull(); // RSAPSS, SHA-256
+    expect(akTemplateRefusal(withScheme(0x0014, 0x000c))).toBe('ak_scheme'); // RSASSA, SHA-384
+    expect(akTemplateRefusal(withScheme(0x0017, 0x000b))).toBe('ak_scheme'); // OAEP
+    // A symmetric definition: algorithm, keyBits and mode inserted after the policy.
+    const withSym = Buffer.concat([ak.subarray(0, sym), Buffer.from([0x00, 0x06, 0x00, 0x80, 0x00, 0x43]), ak.subarray(sym + 2)]);
+    expect(akTemplateRefusal(parseRsaPublic(withSym))).toBe('ak_symmetric');
+  });
+
+  it('reads an RSAES scheme, which carries no hash', () => {
+    const ak = b(v.akPublic);
+    const sym = 10 + ak.readUInt16BE(8);
+    // RSAES replaces RSASSA and its hash: 2 bytes shorter.
+    const rsaes = Buffer.concat([ak.subarray(0, sym + 2), Buffer.from([0x00, 0x15]), ak.subarray(sym + 6)]);
+    const area = parseRsaPublic(rsaes);
+    expect(area.scheme).toEqual({ algorithm: 0x0015, hashAlg: null });
+    expect(akTemplateRefusal(area)).toBe('ak_scheme');
   });
 
   it('refuses a malformed area', () => {

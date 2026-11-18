@@ -9,7 +9,8 @@ import { objectName, rsaPublicKey, type RsaPublicArea } from './tpm2Public';
  * name is the AK's (TPM2_ActivateCredential).
  *
  * For an RSA EK with AES-128 (the default template):
- *   seed            = 16 random bytes (the EK's symmetric key size)
+ *   seed            = 32 random bytes (the EK's OAEP digest size: Part 1
+ *                     rev 1.83 B.10.3, as tpm2-tools and go-tpm's tpm2 do)
  *   encryptedSecret = RSA-OAEP(EK, seed, SHA-256, label "IDENTITY\0")
  *   symKey          = KDFa(SHA-256, seed, "STORAGE", AKname, ∅, 128)
  *   encIdentity     = AES-128-CFB(symKey, IV 0, TPM2B(secret))
@@ -20,10 +21,10 @@ import { objectName, rsaPublicKey, type RsaPublicArea } from './tpm2Public';
  * `credentialBlob` and `encryptedSecret` are the buffers of TPM2B_ID_OBJECT
  * and TPM2B_ENCRYPTED_SECRET, without their size: what the agent passes to
  * TPM2_ActivateCredential. Checked byte for byte against go-tpm's
- * credactivation (__tests__/vectors/, makeCredential.test.ts). Never log any of it.
+ * tpm2.CreateCredential (__tests__/vectors/, makeCredential.test.ts). Never log any of it.
  */
 
-const SEED_BYTES = 16;
+const SEED_BYTES = 32;
 const SYM_KEY_BITS = 128;
 const HASH_BITS = 256;
 
@@ -70,7 +71,7 @@ export type Credential = { credentialBlob: Buffer; encryptedSecret: Buffer };
  */
 export function makeCredential(ek: RsaPublicArea, ak: RsaPublicArea, secret: Buffer, seed: Buffer = randomBytes(SEED_BYTES)): Credential {
   if (secret.length < 1 || secret.length > 32) throw new Error('the credential secret must be 1 to 32 bytes');
-  if (seed.length !== SEED_BYTES) throw new Error('the seed must be 16 bytes');
+  if (seed.length !== SEED_BYTES) throw new Error('the seed must be 32 bytes');
   const akName = objectName(ak);
 
   const encryptedSecret = publicEncrypt(

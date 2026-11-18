@@ -13,6 +13,8 @@ export const TPM_ALG_AES = 0x0006;
 export const TPM_ALG_CFB = 0x0043;
 export const TPM_ALG_NULL = 0x0010;
 export const TPM_ALG_RSASSA = 0x0014;
+export const TPM_ALG_RSAES = 0x0015;
+export const TPM_ALG_RSAPSS = 0x0016;
 
 /** TPMA_OBJECT bits (Part 2 §8.3). */
 export const TPMA = {
@@ -94,8 +96,9 @@ export function parseRsaPublic(raw: Buffer): RsaPublicArea {
     ? { algorithm: TPM_ALG_NULL as typeof TPM_ALG_NULL }
     : { algorithm: symAlg, keyBits: r.u16(), mode: r.u16() };
   const schemeAlg = r.u16();
-  // Every RSA scheme but NULL carries one hash algorithm (TPMS_SCHEME_HASH).
-  const scheme = { algorithm: schemeAlg, hashAlg: schemeAlg === TPM_ALG_NULL ? null : r.u16() };
+  // Every RSA scheme carries one hash algorithm except NULL and RSAES, whose
+  // TPMS_ENC_SCHEME_RSAES is empty (Part 2 §11.2.3.2).
+  const scheme = { algorithm: schemeAlg, hashAlg: schemeAlg === TPM_ALG_NULL || schemeAlg === TPM_ALG_RSAES ? null : r.u16() };
   const keyBits = r.u16();
   const exponent = r.u32();
   const modulus = r.tpm2b();
@@ -161,13 +164,18 @@ export function ekTemplateRefusal(ek: RsaPublicArea): string | null {
 /**
  * Why an AK area is refused, or null (§12.2): a restricted signing key that
  * never left its TPM — restricted, sign, fixedTPM, fixedParent,
- * sensitiveDataOrigin — and not a decryption key, named with SHA-256.
+ * sensitiveDataOrigin — and not a decryption key, named with SHA-256, with no
+ * symmetric algorithm and an RSASSA or RSAPSS scheme over SHA-256.
  */
 export function akTemplateRefusal(ak: RsaPublicArea): string | null {
   if (ak.nameAlg !== TPM_ALG_SHA256) return 'ak_name_alg';
   const required = TPMA.restricted | TPMA.sign | TPMA.fixedTPM | TPMA.fixedParent | TPMA.sensitiveDataOrigin;
   if ((ak.attributes & required) !== required) return 'ak_attributes';
   if ((ak.attributes & TPMA.decrypt) !== 0) return 'ak_attributes';
+  if (ak.symmetric.algorithm !== TPM_ALG_NULL) return 'ak_symmetric';
+  if ((ak.scheme.algorithm !== TPM_ALG_RSASSA && ak.scheme.algorithm !== TPM_ALG_RSAPSS) || ak.scheme.hashAlg !== TPM_ALG_SHA256) {
+    return 'ak_scheme';
+  }
   if (ak.keyBits < 2048) return 'ak_key_bits';
   return null;
 }

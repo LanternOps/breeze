@@ -1,10 +1,12 @@
 // Command gen writes the MakeCredential test vectors the API's TypeScript
 // implementation (../../../makeCredential.ts) is checked against (#8318 T1, spec
 // 2026-10-12 §12.2 review gate). go-tpm is the reference: it serializes both
-// TPMT_PUBLIC areas, names the AK, and runs credactivation.Generate.
+// TPMT_PUBLIC areas, names the AK, and runs tpm2.CreateCredential, which
+// sizes the seed to the EK's OAEP digest (32 bytes for SHA-256, Part 1 rev
+// 1.83 B.10.3) and derives the EK's AES-128 key from it.
 //
-// The seed is fixed by replacing crypto/rand.Reader for the call, so the
-// credential blob (KDFa, AES-CFB, HMAC) is byte-exact. RSA-OAEP may draw its
+// The seed is fixed by feeding it first to the random reader CreateCredential
+// takes, so the credential blob (KDFa, AES-CFB, HMAC) is byte-exact. RSA-OAEP may draw its
 // own randomness, so the encrypted seed is checked by decrypting it with the
 // EK private key, which the vectors carry (test keys only).
 package main
@@ -22,8 +24,6 @@ import (
 	"io"
 	"os"
 
-	legacy "github.com/google/go-tpm/legacy/tpm2"
-	"github.com/google/go-tpm/legacy/tpm2/credactivation"
 	"github.com/google/go-tpm/tpm2"
 )
 
@@ -47,15 +47,6 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
-}
-
-// stripU16 removes one TPM2B size prefix, checking it matches.
-func stripU16(b []byte) []byte {
-	n := int(binary.BigEndian.Uint16(b))
-	if n != len(b)-2 {
-		panic(fmt.Sprintf("size prefix %d does not match %d bytes", n, len(b)-2))
-	}
-	return b[2:]
 }
 
 func ekPublic(key *rsa.PublicKey) tpm2.TPMTPublic {
@@ -95,34 +86,24 @@ func generate(name string, secretLen int) vector {
 	akPub := akPublic(&ak.PublicKey)
 	akName := must(tpm2.ObjectName(&akPub))
 
-	seed := make([]byte, 16) // the EK's AES-128: the seed is the symmetric key size
+	seed := make([]byte, sha256.Size) // the EK's OAEP digest size
 	must(io.ReadFull(rand.Reader, seed))
 	secret := make([]byte, secretLen)
 	must(io.ReadFull(rand.Reader, secret))
 
-	digest := sha256.Sum256(tpm2.Marshal(akPub))
-	aik := &legacy.HashValue{Alg: legacy.AlgSHA256, Value: digest[:]}
-	if !bytes.Equal(must(aik.Encode()), akName.Buffer) {
-		panic("legacy and tpm2 AK names differ")
+	ekKey := must(tpm2.ImportEncapsulationKey(&ekPub))
+	// CreateCredential reads the seed first, then OAEP's own randomness.
+	// It returns the buffers TPM2_ActivateCredential takes, with no outer
+	// TPM2B size prefix.
+	blob, encrypted, err := tpm2.CreateCredential(io.MultiReader(bytes.NewReader(seed), rand.Reader), ekKey, akName.Buffer, secret)
+	if err != nil {
+		panic(err)
 	}
-
-	real := rand.Reader
-	rand.Reader = io.MultiReader(bytes.NewReader(seed), real)
-	idObject, encSecret := func() ([]byte, []byte) {
-		defer func() { rand.Reader = real }()
-		id, enc, err := credactivation.Generate(aik, &ek.PublicKey, 16, secret)
-		if err != nil {
-			panic(err)
-		}
-		return id, enc
-	}()
-
-	// TPM2B_ID_OBJECT and TPM2B_ENCRYPTED_SECRET without their size prefix:
-	// the buffers TPM2_ActivateCredential takes.
-	blob := stripU16(idObject)
-	encrypted := stripU16(encSecret)
-	for len(encrypted) != 256 {
-		encrypted = stripU16(encrypted)
+	if len(encrypted) != 256 {
+		panic(fmt.Sprintf("the encrypted seed is %d bytes, not 256", len(encrypted)))
+	}
+	if n := int(binary.BigEndian.Uint16(blob)); n != sha256.Size {
+		panic(fmt.Sprintf("the integrity HMAC is %d bytes, not 32", n))
 	}
 	check := must(rsa.DecryptOAEP(sha256.New(), nil, ek, encrypted, append([]byte("IDENTITY"), 0)))
 	if !bytes.Equal(check, seed) {
@@ -147,7 +128,7 @@ func generate(name string, secretLen int) vector {
 
 func main() {
 	out := map[string]any{
-		"generator": "apps/api/src/services/tpmAttestation/__tests__/vectors/gen (go-tpm v0.9.8, legacy/tpm2/credactivation)",
+		"generator": "apps/api/src/services/tpmAttestation/__tests__/vectors/gen (go-tpm v0.9.8, tpm2.CreateCredential)",
 		"vectors": []vector{
 			generate("32-byte secret", 32),
 			generate("16-byte secret", 16),

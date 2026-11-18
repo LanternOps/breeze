@@ -1,7 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../db';
-import { deviceHardware, devices } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+import { db, withDbAccessContext } from '../../db';
+import { auditLogs, deviceHardware, devices } from '../../db/schema';
+import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate } from '../agentOwnDeviceRow';
+import type { CreateAuditLogParams } from '../auditService';
+import { markRequestAuditWritten } from '../auditService';
 import { getRedis } from '../redis';
 import { makeCredential } from './makeCredential';
 import {
@@ -65,6 +68,7 @@ export class TpmAttestationError extends Error {
       | 'TPM_CHALLENGE_INVALID',
     readonly status: 400 | 403 | 503,
     message: string,
+    /** For TPM_CHALLENGE_INVALID, `wrong_secret` when the challenge was this agent's and the answer was wrong. */
     readonly reason?: string,
   ) {
     super(message);
@@ -124,21 +128,31 @@ export async function issueAttestationChallenge(
  */
 export type BaselineOutcome = 'recorded' | 'refreshed' | 'mismatch';
 
+/** The audit row of a baseline outcome, built by the route from its request. */
+export type BaselineAuditBuilder = (action: 'device.tpm_baseline.recorded' | 'device.tpm_baseline.mismatch', orgId: string) => CreateAuditLogParams;
+
 /**
  * Step 2. Consumes the challenge whatever the answer. Returns how the
- * baseline moved, or null when the device row changed hands since auth (the
- * caller answers the stale-credential 401). Throws TpmAttestationError for a
+ * baseline moved; 'stale' when the device row changed hands since auth (the
+ * caller answers the stale-credential 401), 'not_found' when it is gone. Throws TpmAttestationError for a
  * missing, expired, foreign or wrong answer.
+ *
+ * Runs with no DB context held (the route self-manages its context, agentAuth
+ * SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS): the Redis GETDEL runs first,
+ * then ONE org-scoped transaction writes the baseline and, for a first
+ * baseline or a mismatch, its audit row, so the record and its audit commit
+ * together.
  */
 export async function completeAttestation(
-  agent: { deviceId: string; agentId: string },
+  agent: { deviceId: string; agentId: string; orgId: string; partnerId?: string | null },
   input: { challengeId: string; secret: string },
+  audit: BaselineAuditBuilder,
   now: Date = new Date(),
-): Promise<{ outcome: BaselineOutcome; orgId: string } | null> {
+): Promise<{ outcome: BaselineOutcome; orgId: string } | 'stale' | 'not_found'> {
   const redis = getRedis();
   if (!redis) throw new TpmAttestationError('TPM_CHALLENGE_UNAVAILABLE', 503, 'Attestation is unavailable right now');
   const raw = await redis.getdel(challengeKey(input.challengeId));
-  const invalid = () => new TpmAttestationError('TPM_CHALLENGE_INVALID', 403, 'The attestation challenge is invalid or expired');
+  const invalid = (reason?: string) => new TpmAttestationError('TPM_CHALLENGE_INVALID', 403, 'The attestation challenge is invalid or expired', reason);
   if (!raw) throw invalid();
   let stored: StoredChallenge;
   try {
@@ -149,41 +163,62 @@ export async function completeAttestation(
   if (stored.deviceId !== agent.deviceId || stored.agentId !== agent.agentId) throw invalid();
   const expected = Buffer.from(stored.secretSha256, 'hex');
   const given = createHash('sha256').update(Buffer.from(input.secret, 'base64')).digest();
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) throw invalid();
+  // This agent's own live challenge answered wrongly: the route audits it as
+  // a failed activation (a tampering signal), unlike an unknown challenge.
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) throw invalid('wrong_secret');
 
-  return db.transaction(async (tx) => {
-    // The row is still this install's (#8318 §6.4), held while the baseline is written.
-    const [device] = await tx
-      .select({ orgId: devices.orgId })
-      .from(devices)
-      .where(and(eq(devices.id, agent.deviceId), eq(devices.agentId, agent.agentId)))
-      .limit(1)
-      .for('share');
-    if (!device) return null;
-    const [current] = await tx
-      .select({ ek: deviceHardware.tpmEkPubSha256 })
-      .from(deviceHardware)
-      .where(eq(deviceHardware.deviceId, agent.deviceId))
-      .limit(1)
-      .for('update');
-    const outcome: BaselineOutcome = !current?.ek ? 'recorded' : current.ek === stored.ekSha256 ? 'refreshed' : 'mismatch';
-    // A proof of possession also says a TPM is there. The baseline itself is
-    // written only when there is none: a different EK never replaces it.
-    if (outcome === 'mismatch') {
-      // The row exists (it holds the baseline), so this is a plain UPDATE: an
-      // upsert's proposed INSERT row would carry a mismatch with no baseline
-      // and fail device_hardware_tpm_ek_mismatch_shape_chk before ON CONFLICT.
-      await tx
-        .update(deviceHardware)
-        .set({ tpmEkMismatchSha256: stored.ekSha256, tpmEkMismatchAt: now, tpmAvailable: true })
-        .where(eq(deviceHardware.deviceId, agent.deviceId));
+  const result = await withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: agent.orgId,
+      accessibleOrgIds: [agent.orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: agent.partnerId ?? null,
+    },
+    () => db.transaction(async (tx) => {
+      // The row is still this install's (#8318 §6.4). FOR NO KEY UPDATE, not
+      // FOR SHARE: it serializes two completions for the same device, so when
+      // there is no device_hardware row yet (nothing for the FOR UPDATE below
+      // to lock) the second one still sees the first one's baseline and
+      // records a mismatch instead of overwriting it.
+      const device = await selectOwnDeviceRowForUpdate(tx, agent, { orgId: devices.orgId });
+      if (!device) return (await ownDeviceRowChangedHands(tx, agent)) ? 'stale' as const : 'not_found' as const;
+      const [current] = await tx
+        .select({ ek: deviceHardware.tpmEkPubSha256 })
+        .from(deviceHardware)
+        .where(eq(deviceHardware.deviceId, agent.deviceId))
+        .limit(1)
+        .for('update');
+      const outcome: BaselineOutcome = !current?.ek ? 'recorded' : current.ek === stored.ekSha256 ? 'refreshed' : 'mismatch';
+      // A proof of possession also says a TPM is there. The baseline itself is
+      // written only when there is none: a different EK never replaces it.
+      if (outcome === 'mismatch') {
+        // The row exists (it holds the baseline), so this is a plain UPDATE: an
+        // upsert's proposed INSERT row would carry a mismatch with no baseline
+        // and fail device_hardware_tpm_ek_mismatch_shape_chk before ON CONFLICT.
+        await tx
+          .update(deviceHardware)
+          .set({ tpmEkMismatchSha256: stored.ekSha256, tpmEkMismatchAt: now, tpmAvailable: true })
+          .where(eq(deviceHardware.deviceId, agent.deviceId));
+      } else {
+        const set = { tpmEkPubSha256: current?.ek ?? stored.ekSha256, tpmAttestedAt: now, tpmAvailable: true };
+        await tx
+          .insert(deviceHardware)
+          .values({ deviceId: agent.deviceId, orgId: device.orgId, ...set, updatedAt: now })
+          .onConflictDoUpdate({ target: deviceHardware.deviceId, set });
+      }
+      // A first baseline, and a different EK held for review, are audited in
+      // this transaction. A refresh of the same key is not.
+      if (outcome !== 'refreshed') {
+        const { actorType = 'agent', partnerId: _partnerId, trigger: _trigger, ...row } = audit(
+          outcome === 'recorded' ? 'device.tpm_baseline.recorded' : 'device.tpm_baseline.mismatch',
+          device.orgId,
+        );
+        await tx.insert(auditLogs).values({ actorType, ...row, orgId: device.orgId, partnerId: null });
+      }
       return { outcome, orgId: device.orgId };
-    }
-    const set = { tpmEkPubSha256: current?.ek ?? stored.ekSha256, tpmAttestedAt: now, tpmAvailable: true };
-    await tx
-      .insert(deviceHardware)
-      .values({ deviceId: agent.deviceId, orgId: device.orgId, ...set, updatedAt: now })
-      .onConflictDoUpdate({ target: deviceHardware.deviceId, set });
-    return { outcome, orgId: device.orgId };
-  });
+    }),
+  );
+  if (typeof result === 'object' && result.outcome !== 'refreshed') markRequestAuditWritten();
+  return result;
 }

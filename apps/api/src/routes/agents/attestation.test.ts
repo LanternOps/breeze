@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 
 /**
  * #8318 T1: the attestation routes are off unless TPM_ATTESTATION_ENABLED is
- * 'true', and a different EK is audited as a mismatch held for review, never
- * as a replaced baseline. The service itself is covered against real
- * Postgres and Redis in tpmAttestation.integration.test.ts.
+ * 'true'; the route builds the baseline audit row the service writes in its
+ * own transaction, and audits a wrong answer to the agent's own challenge as
+ * a failed activation. The service itself is covered against real Postgres
+ * and Redis in tpmAttestation.integration.test.ts.
  */
 const mocks = vi.hoisted(() => ({
   issue: vi.fn(),
@@ -20,11 +21,13 @@ vi.mock('../../services/tpmAttestation', async () => {
 });
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
 vi.mock('../../services/redis', () => ({ getRedis: () => ({}) }));
-vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: mocks.writeAuditEvent }));
-vi.mock('../../services/agentOwnDeviceRow', () => ({ ownDeviceRowChangedHands: vi.fn(async () => false) }));
-vi.mock('../../db', () => ({ db: {} }));
+vi.mock('../../services/auditEvents', async () => {
+  const actual = await vi.importActual<typeof import('../../services/auditEvents')>('../../services/auditEvents');
+  return { ...actual, writeAuditEvent: mocks.writeAuditEvent };
+});
 
 import { attestationRoutes } from './attestation';
+import { TpmAttestationError } from '../../services/tpmAttestation';
 
 const DEVICE = '30000000-0000-4000-8000-000000000001';
 const ORG = '40000000-0000-4000-8000-000000000001';
@@ -93,20 +96,53 @@ describe('agent TPM attestation routes (#8318 T1)', () => {
   it.each([
     ['recorded', 'device.tpm_baseline.recorded'],
     ['mismatch', 'device.tpm_baseline.mismatch'],
-  ] as const)('audits a %s outcome as %s', async (outcome, action) => {
+  ] as const)('hands the service the %s audit row to write with the baseline', async (outcome, action) => {
     process.env.TPM_ATTESTATION_ENABLED = 'true';
-    mocks.complete.mockResolvedValue({ outcome, orgId: ORG });
+    mocks.complete.mockImplementation(async (_agent, _input, audit) => {
+      expect(audit(action, ORG)).toMatchObject({ action, orgId: ORG, resourceType: 'device', resourceId: DEVICE, actorType: 'agent', result: 'success' });
+      return { outcome, orgId: ORG };
+    });
     const res = await post(buildApp(), 'complete', completeBody);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ attested: true, baseline: outcome });
-    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action, resourceId: DEVICE, orgId: ORG }));
+    expect(mocks.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: DEVICE, agentId: 'agent-primary', orgId: ORG }),
+      completeBody,
+      expect.any(Function),
+    );
+    // Written by the service in its transaction, not after the fact.
+    expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
   });
 
-  it('does not audit a refresh of the baseline EK', async () => {
+  it('audits a wrong answer to its own challenge as a failed activation, and answers like any invalid challenge', async () => {
     process.env.TPM_ATTESTATION_ENABLED = 'true';
-    mocks.complete.mockResolvedValue({ outcome: 'refreshed', orgId: ORG });
+    mocks.complete.mockRejectedValue(new TpmAttestationError('TPM_CHALLENGE_INVALID', 403, 'The attestation challenge is invalid or expired', 'wrong_secret'));
     const res = await post(buildApp(), 'complete', completeBody);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'TPM_CHALLENGE_INVALID' });
+    expect(body).not.toHaveProperty('reason');
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.tpm_attestation.failed',
+      resourceId: DEVICE,
+      orgId: ORG,
+      result: 'failure',
+    }));
+  });
+
+  it('does not audit an unknown or expired challenge', async () => {
+    process.env.TPM_ATTESTATION_ENABLED = 'true';
+    mocks.complete.mockRejectedValue(new TpmAttestationError('TPM_CHALLENGE_INVALID', 403, 'The attestation challenge is invalid or expired'));
+    const res = await post(buildApp(), 'complete', completeBody);
+    expect(res.status).toBe(403);
     expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when the row changed hands, and 404 when it is gone', async () => {
+    process.env.TPM_ATTESTATION_ENABLED = 'true';
+    mocks.complete.mockResolvedValueOnce('stale');
+    expect((await post(buildApp(), 'complete', completeBody)).status).toBe(401);
+    mocks.complete.mockResolvedValueOnce('not_found');
+    expect((await post(buildApp(), 'complete', completeBody)).status).toBe(404);
   });
 });

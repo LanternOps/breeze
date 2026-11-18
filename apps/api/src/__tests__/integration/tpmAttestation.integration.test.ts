@@ -14,6 +14,9 @@
  *     replaces it, and is held in tpm_ek_mismatch_* for review;
  *   - a challenge is single use, even after a wrong answer, and bound to the
  *     device and agent that asked for it;
+ *   - two concurrent first completions with different EKs serialize on the
+ *     device row: one records the baseline, the other a mismatch;
+ *   - a first baseline and a mismatch are audited in the same transaction;
  *   - a row that changed hands since auth records nothing;
  *   - the inventory writer never touches the baseline (§5.1).
  */
@@ -22,13 +25,18 @@ import { createDecipheriv, createHmac, createPrivateKey, constants, privateDecry
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
-import { deviceHardware } from '../../db/schema';
+import { auditLogs, deviceHardware } from '../../db/schema';
 import { writeHardwareReport } from '../../services/inventoryChildSync';
 import { kdfaSha256 } from '../../services/tpmAttestation/makeCredential';
 import { objectName, parseRsaPublic } from '../../services/tpmAttestation/tpm2Public';
-import { completeAttestation, issueAttestationChallenge, type IssuedChallenge } from '../../services/tpmAttestation';
+import {
+  completeAttestation,
+  issueAttestationChallenge,
+  type BaselineAuditBuilder,
+  type IssuedChallenge,
+} from '../../services/tpmAttestation';
 import { db } from '../../db';
 import { createDevice, createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
@@ -75,14 +83,39 @@ async function seed() {
     currentPartnerId: partner.id,
     userId: null,
   };
-  return { org, device, agent: { deviceId: device.id, agentId }, context };
+  return { org, device, agent: { deviceId: device.id, agentId, orgId: org.id, partnerId: partner.id }, context };
+}
+
+const audit: BaselineAuditBuilder = (action, orgId) => ({
+  orgId,
+  action,
+  actorType: 'agent',
+  actorId: '00000000-0000-0000-0000-000000000000',
+  resourceType: 'device',
+  result: 'success',
+  initiatedBy: 'agent',
+});
+
+/** Completes outside any DB context, as the self-managed route does. */
+function complete(fx: Fx, challengeId: string, secret: string) {
+  return completeAttestation(fx.agent, { challengeId, secret }, (action, orgId) => ({ ...audit(action, orgId), resourceId: fx.device.id }));
+}
+
+async function auditActions(deviceId: string) {
+  const rows = await getTestDb()
+    .select({ action: auditLogs.action })
+    .from(auditLogs)
+    .where(and(eq(auditLogs.resourceId, deviceId), sql`${auditLogs.action} LIKE 'device.tpm_%'`));
+  return rows.map((r) => r.action).sort();
 }
 
 type Fx = Awaited<ReturnType<typeof seed>>;
 
 async function attest(fx: Fx, v: Vector) {
   const issued = await issueAttestationChallenge(fx.agent, { ekPublic: v.ekPublic, akPublic: v.akPublic });
-  return withDbAccessContext(fx.context, () => completeAttestation(fx.agent, { challengeId: issued.challengeId, secret: activate(v, issued) }));
+  const result = await complete(fx, issued.challengeId, activate(v, issued));
+  if (typeof result !== 'object') throw new Error(`attestation did not record: ${result}`);
+  return result;
 }
 
 async function hardwareRow(deviceId: string) {
@@ -104,11 +137,11 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     });
     expect(first!.tpmAttestedAt).toBeInstanceOf(Date);
 
-    expect((await attest(fx, vectors[0]!))?.outcome).toBe('refreshed');
+    expect((await attest(fx, vectors[0]!)).outcome).toBe('refreshed');
     const refreshed = await hardwareRow(fx.device.id);
 
     // A different proven EK: held for review, the baseline and its time untouched.
-    expect((await attest(fx, vectors[1]!))?.outcome).toBe('mismatch');
+    expect((await attest(fx, vectors[1]!)).outcome).toBe('mismatch');
     const held = await hardwareRow(fx.device.id);
     expect(held).toMatchObject({
       tpmEkPubSha256: vectors[0]!.ekSpkiSha256,
@@ -118,11 +151,35 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     expect(held!.tpmEkMismatchAt).toBeInstanceOf(Date);
 
     // The baseline EK again still refreshes, and the mismatch stays for review.
-    expect((await attest(fx, vectors[0]!))?.outcome).toBe('refreshed');
+    expect((await attest(fx, vectors[0]!)).outcome).toBe('refreshed');
     expect(await hardwareRow(fx.device.id)).toMatchObject({
       tpmEkPubSha256: vectors[0]!.ekSpkiSha256,
       tpmEkMismatchSha256: vectors[1]!.ekSpkiSha256,
     });
+    // Audited with the change: the first baseline and the mismatch, not the refreshes.
+    expect(await auditActions(fx.device.id)).toEqual(['device.tpm_baseline.mismatch', 'device.tpm_baseline.recorded']);
+  });
+
+  runDb('two concurrent first completions with different EKs: one baseline, one mismatch', async () => {
+    const fx = await seed();
+    const [a, b] = [vectors[0]!, vectors[1]!];
+    const issuedA = await issueAttestationChallenge(fx.agent, { ekPublic: a.ekPublic, akPublic: a.akPublic });
+    const issuedB = await issueAttestationChallenge(fx.agent, { ekPublic: b.ekPublic, akPublic: b.akPublic });
+    expect(await hardwareRow(fx.device.id)).toBeUndefined();
+
+    const results = await Promise.all([
+      complete(fx, issuedA.challengeId, activate(a, issuedA)),
+      complete(fx, issuedB.challengeId, activate(b, issuedB)),
+    ]);
+    const outcomes = results.map((r) => (typeof r === 'object' ? r.outcome : r));
+    expect([...outcomes].sort()).toEqual(['mismatch', 'recorded']);
+    const winner = outcomes[0] === 'recorded' ? a : b;
+    const loser = winner === a ? b : a;
+    expect(await hardwareRow(fx.device.id)).toMatchObject({
+      tpmEkPubSha256: winner.ekSpkiSha256,
+      tpmEkMismatchSha256: loser.ekSpkiSha256,
+    });
+    expect(await auditActions(fx.device.id)).toEqual(['device.tpm_baseline.mismatch', 'device.tpm_baseline.recorded']);
   });
 
   runDb('a mismatch cannot exist without a baseline (CHECK)', async () => {
@@ -141,15 +198,15 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     const v = vectors[0]!;
 
     const wrong = await issueAttestationChallenge(fx.agent, { ekPublic: v.ekPublic, akPublic: v.akPublic });
-    await expect(withDbAccessContext(fx.context, () => completeAttestation(fx.agent, { challengeId: wrong.challengeId, secret: Buffer.alloc(32).toString('base64') })))
-      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID', status: 403 });
+    await expect(complete(fx, wrong.challengeId, Buffer.alloc(32).toString('base64')))
+      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID', status: 403, reason: 'wrong_secret' });
     // Consumed by the wrong answer: the right one no longer counts.
-    await expect(withDbAccessContext(fx.context, () => completeAttestation(fx.agent, { challengeId: wrong.challengeId, secret: activate(v, wrong) })))
-      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID' });
+    await expect(complete(fx, wrong.challengeId, activate(v, wrong)))
+      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID', reason: undefined });
 
     const stolen = await issueAttestationChallenge(fx.agent, { ekPublic: v.ekPublic, akPublic: v.akPublic });
-    await expect(withDbAccessContext(other.context, () => completeAttestation(other.agent, { challengeId: stolen.challengeId, secret: activate(v, stolen) })))
-      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID' });
+    await expect(complete(other, stolen.challengeId, activate(v, stolen)))
+      .rejects.toMatchObject({ code: 'TPM_CHALLENGE_INVALID', reason: undefined });
     expect(await hardwareRow(fx.device.id)).toBeUndefined();
     expect(await hardwareRow(other.device.id)).toBeUndefined();
   });
@@ -159,8 +216,9 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     const v = vectors[0]!;
     const issued = await issueAttestationChallenge(fx.agent, { ekPublic: v.ekPublic, akPublic: v.akPublic });
     await getTestDb().execute(sql`UPDATE devices SET agent_id = ${`agent-next-${fx.device.id}`} WHERE id = ${fx.device.id}::uuid`);
-    expect(await withDbAccessContext(fx.context, () => completeAttestation(fx.agent, { challengeId: issued.challengeId, secret: activate(v, issued) }))).toBeNull();
+    expect(await complete(fx, issued.challengeId, activate(v, issued))).toBe('stale');
     expect(await hardwareRow(fx.device.id)).toBeUndefined();
+    expect(await auditActions(fx.device.id)).toEqual([]);
   });
 
   runDb('the inventory writer never touches the baseline (§5.1)', async () => {
