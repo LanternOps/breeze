@@ -82,7 +82,7 @@ func TestRunPumpsInstalledLogForwarder(t *testing.T) {
 		}
 	}()
 
-	client := NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "")
+	client := trustTestServer(NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, ""))
 	go func() { _ = client.Run() }()
 	t.Cleanup(client.Stop)
 
