@@ -403,6 +403,12 @@ jobs:
           node scripts/check-tauri-versions.mjs
         timeout-minutes: 10
 
+      # The deploy runbook runs this checker against each hosted region's live
+      # Caddyfile (#11647); keep it able to parse the current repo file.
+      - name: Test Caddy route parity checker
+        run: node --test scripts/prod/caddy-route-parity.test.mjs
+        timeout-minutes: 10
+
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
         timeout-minutes: 10

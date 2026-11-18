@@ -146,6 +146,21 @@ ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
 # every line must be OK; any SKEW means that service was never rolled.
 ```
 
+**The proxy config is not part of the image roll — check it for drift on every deploy (#11647).** The droplets run their own copy of `Caddyfile.prod`, not the repo file, so a route added in the repo never reaches production unless someone carries it over. `@webBillingAutopay` (added in v0.122.0) was missing from both regions for weeks, and `/billing/autopay` served the billing sidecar instead of the Autopay page. Run from a repo checkout (the script is pinned to the release's file by `--repo`):
+
+```bash
+git show v<new-version>:docker/Caddyfile.prod > /tmp/release.Caddyfile
+ssh root@<droplet> "cd /opt/breeze && docker compose exec -T caddy cat /etc/caddy/Caddyfile" | \
+  node scripts/prod/caddy-route-parity.mjs drift --running - --repo /tmp/release.Caddyfile
+# OK = every repo matcher is present and every /billing/<page> carve-out sits ahead of the sidecar route.
+# DRIFT lines name what to carry over. Hosted-only extra matchers are fine; a repo matcher
+# the region deliberately omits goes in --allow @name (say why in the deploy notes).
+node scripts/prod/caddy-route-parity.mjs smoke --url https://<region>.2breeze.app
+# Unauthenticated GETs: FAIL means that /billing/<page> returns the same response as /billing (the sidecar).
+```
+
+After carrying a route over: `docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile`, then `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile` (graceful, no restart), then run both checks again.
+
 **Required env vars added by v0.65+ — droplets without these refuse to start:**
 
 - `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` — base64 SPKI of the Ed25519 release manifest signing key. Source: `internal/release-keys/release-manifest.ed25519.pub` (the base64 between `-----BEGIN PUBLIC KEY-----` and `-----END PUBLIC KEY-----`, single line). The API config validator refuses to boot in production without it when `BINARY_SOURCE=github`.
