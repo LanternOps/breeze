@@ -816,7 +816,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   if (eventRows.length === 0 && agentLogRows.length === 0) gaps.push('No warning/error logs were found in the incident window.');
   if (metricRows.length === 0) gaps.push('No 5-minute metric rollups were available in the incident window.');
 
-  const noteFlags: string[] = [];
+  const flaggedNotes: Array<{ noteId: string; deviceId: string; flags: string[] }> = [];
   const evidence: RcaEvidenceItem[] = [
     ...buildAlertEvidence(
       alertRows,
@@ -843,8 +843,10 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       // get_alert_correlations `explain`. Summary and details separately, as
       // the preload does; details clipped first so the text shown is the text
       // sanitised.
+      const noteFlags: string[] = [];
       const summary = sanitizeUntrustedText(row.summary, DEVICE_NOTE_SUMMARY_MAX_LENGTH, noteFlags);
       const details = row.details ? sanitizeUntrustedText(summarizeJson(row.details), UNTRUSTED_FIELD_MAX_LENGTH, noteFlags) : '';
+      if (noteFlags.length > 0) flaggedNotes.push({ noteId: row.id, deviceId: row.deviceId, flags: noteFlags });
       return {
         id: `device_context:${row.id}`,
         source: 'device_context' as const,
@@ -897,9 +899,9 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       })),
   ];
 
-  if (noteFlags.length > 0) {
-    // The text is neutralised; record that a device note needed it.
-    console.warn('[alertCorrelationRca] device-note sanitisation flags:', noteFlags, 'group:', options.groupId);
+  if (flaggedNotes.length > 0) {
+    // The text is neutralised; record which device notes needed it.
+    console.warn('[alertCorrelationRca] device notes needed sanitising', { groupId: options.groupId, notes: flaggedNotes });
   }
 
   const timeline = rankEvidence(evidence, maxEvidenceItems);

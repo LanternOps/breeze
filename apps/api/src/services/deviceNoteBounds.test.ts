@@ -29,6 +29,12 @@ describe('deviceNoteBounds (#12140)', () => {
     expect(unattendedNoteContentError({ details: { n: 1n } })).toMatch(/details/);
   });
 
+  it('refuses details that are not a JSON object', () => {
+    for (const details of [['a'], 'text', 7, true]) {
+      expect(unattendedNoteContentError({ details })).toMatch(/details must be a JSON object/);
+    }
+  });
+
   it('accepts no details, null details and small details', () => {
     expect(unattendedNoteContentError({})).toBeNull();
     expect(unattendedNoteContentError({ details: null })).toBeNull();

@@ -620,6 +620,7 @@ describe('alert correlation RCA evidence builder', () => {
       resolvedAt: null,
     }];
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const result = await buildAlertCorrelationRca({
       orgId: ORG_ID,
       groupId: 'group-1',
@@ -630,6 +631,17 @@ describe('alert correlation RCA evidence builder', () => {
         { id: ALERT_1, orgId: ORG_ID, deviceId: DEVICE_ID, ruleId: 'rule-1', configPolicyId: null, configItemName: null, status: 'active', severity: 'critical', title: 'CPU high', message: 'CPU over 90%', context: {}, triggeredAt: new Date('2026-06-18T12:00:00Z'), acknowledgedAt: null, acknowledgedBy: null, acknowledgedByPrincipalId: null, resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionNote: null, resolutionReason: null, suppressedUntil: null, dismissedAt: null, dismissedBy: null, monitorId: null, episodeId: null, requiresHuman: false, subjectKey: null, topologySiteId: null, topologySourceKey: null, createdAt: new Date('2026-06-18T12:00:00Z'), ownerKind: 'device', ownerRef: null, partnerFeedXid: '1' },
       ],
     });
+
+    // The log names the note that needed neutralising, so it can be found.
+    expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      groupId: 'group-1',
+      notes: [expect.objectContaining({
+        noteId: 'ctx-injected',
+        deviceId: DEVICE_ID,
+        flags: expect.arrayContaining(['override_attempt']),
+      })],
+    }));
+    warn.mockRestore();
 
     const note = result.timeline.find((item) => item.id === 'device_context:ctx-injected');
     expect(note).toBeDefined();

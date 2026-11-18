@@ -1,10 +1,12 @@
 /**
  * Bounds on a device note (`set_device_context`) that is written with no
- * person approving it (#12140). Today that is the MCP server's Tier-2
- * dispatch, which has no approval card: the MCP route pins
- * `ToolExecutionContext.unattendedNoteWrite` for this tool and nothing else
- * sets it. A note a person approved, or one written in the in-app chat behind
- * the approval card, has none of these bounds.
+ * person approving it (#12140). They apply where
+ * `ToolExecutionContext.unattendedNoteWrite` is set, which today is only the
+ * MCP server's direct Tier-2 dispatch of this tool (routes/mcpServer.ts). A
+ * note written in the in-app chat behind the approval card has none of these
+ * bounds. Other callers that can reach the tool with no person approving it
+ * (agent runs, flow steps, Wisp unattended reads) do not set the flag and are
+ * not bounded here.
  *
  * Why: notes are persistent and org-wide, and every later prompt that loads a
  * device's notes reads them (get_device_context, the device-page preload,
@@ -65,10 +67,14 @@ export function unattendedNoteContentError(input: Record<string, unknown>): stri
     }
   }
   if (input.details === undefined || input.details === null) return null;
+  if (typeof input.details !== 'object' || Array.isArray(input.details)) {
+    return 'details must be a JSON object.';
+  }
   let serialised: string | undefined;
   try {
     serialised = JSON.stringify(input.details, null, 2);
   } catch {
+    // A cycle or a BigInt; tool input parsed from JSON has neither.
     serialised = undefined;
   }
   if (typeof serialised !== 'string') {

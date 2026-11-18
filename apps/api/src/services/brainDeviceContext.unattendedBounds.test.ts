@@ -48,7 +48,11 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 import { createDeviceContext } from './brainDeviceContext';
-import { UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE, UNATTENDED_NOTE_MAX_EXPIRY_DAYS } from './deviceNoteBounds';
+import {
+  UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE,
+  UNATTENDED_NOTE_MAX_EXPIRY_DAYS,
+  UNATTENDED_NOTE_UNAVAILABLE_MESSAGE,
+} from './deviceNoteBounds';
 import type { AuthContext } from '../middleware/auth';
 
 const auth = { orgCondition: () => undefined } as unknown as AuthContext;
@@ -78,11 +82,14 @@ describe('createDeviceContext — unattended bounds (#12140)', () => {
     expect(calls).not.toContain('insert');
   });
 
-  it('fails closed when the count is not a number', async () => {
+  it('fails closed on a count that is not a number, logs it, and does not claim the device is full', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     state.activeCount = undefined;
     const r = await createDeviceContext('dev-1', 'issue', 'note', null, auth, inDays(30), { unattended: true });
-    expect('error' in r).toBe(true);
+    expect(r).toEqual({ error: UNATTENDED_NOTE_UNAVAILABLE_MESSAGE });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('count'));
     expect(calls).not.toContain('insert');
+    log.mockRestore();
   });
 
   it('refuses outside a DB context (no transaction to hold the lock)', async () => {
