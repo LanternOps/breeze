@@ -48,6 +48,11 @@ export const BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS = {
 // renews it well inside that window.
 const LEASE_TTL_MS = 10 * 60_000;
 const LEASE_RENEW_EVERY_MS = 2 * 60_000;
+// A run stops renewing its lease once it has been going for this many times
+// its time budget. A run that hangs (a storage call that never returns) must
+// not hold the lease forever and silently turn every later run into a skip;
+// past the ceiling the lease lapses and the next scheduled run proceeds.
+const LEASE_CEILING_BUDGET_MULTIPLE = 2;
 // A cursor older than this is stale (orgs and destinations change); dropping
 // it only means the next run starts from the beginning.
 const CURSOR_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -109,11 +114,16 @@ async function readCursor(redis: RedisClient, key: string): Promise<string | nul
 }
 
 async function saveCursors(redis: RedisClient, cursors: BackupSnapshotCleanupCursors): Promise<void> {
-  for (const [phase, key] of Object.entries(BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS) as Array<[keyof BackupSnapshotCleanupCursors, string]>) {
+  // Each phase's cursor is saved independently: one failed write must not
+  // also leave the other phase's cursor stale.
+  const phases = Object.entries(BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS) as Array<[keyof BackupSnapshotCleanupCursors, string]>;
+  const outcomes = await Promise.allSettled(phases.map(async ([phase, key]) => {
     const value = cursors[phase];
     if (value) await redis.set(key, value, 'PX', CURSOR_TTL_MS);
     else await redis.del(key);
-  }
+  }));
+  const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  if (failure) throw failure.reason;
 }
 
 async function processCleanupJob(
@@ -130,22 +140,37 @@ async function processCleanupJob(
     return { skipped: 'already-running' };
   }
 
+  const startedAt = Date.now();
+  const budgetMs = resolveBackupSnapshotCleanupTimeBudgetMs();
+  const leaseCeilingAt = startedAt + LEASE_CEILING_BUDGET_MULTIPLE * budgetMs;
   const renew = setInterval(() => {
+    if (Date.now() > leaseCeilingAt) {
+      clearInterval(renew);
+      const message =
+        `[BackupSnapshotCleanupWorker] A cleanup run has been going for more than ${LEASE_CEILING_BUDGET_MULTIPLE}x ` +
+        'its time budget; no longer renewing its lease, so the next scheduled run can start. The run may be hung ' +
+        'on a storage or database call.';
+      console.error(message);
+      captureException(new Error(message));
+      return;
+    }
     redis.eval(RENEW_LEASE_SCRIPT, 1, BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY, token, String(LEASE_TTL_MS))
       .then((renewed) => {
         if (renewed !== 1) {
-          console.error('[BackupSnapshotCleanupWorker] Lost the cleanup run lease; another run may start before this one ends');
+          const message =
+            '[BackupSnapshotCleanupWorker] Lost the cleanup run lease; another run may start before this one ends';
+          console.error(message);
+          captureException(new Error(message));
         }
       })
       .catch((err: unknown) => {
         console.error('[BackupSnapshotCleanupWorker] Could not renew the cleanup run lease:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
       });
   }, LEASE_RENEW_EVERY_MS);
   renew.unref?.();
 
   try {
-    const startedAt = Date.now();
-    const budgetMs = resolveBackupSnapshotCleanupTimeBudgetMs();
     const [retentionCursor, gcCursor] = await Promise.all([
       readCursor(redis, BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS.retention),
       readCursor(redis, BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS.gc),
@@ -209,8 +234,6 @@ export async function initializeBackupSnapshotCleanupWorker(): Promise<void> {
     console.error(`[BackupSnapshotCleanupWorker] Job ${job?.id} failed:`, error);
   });
 
-  await removeLegacyBackupQueueSchedule();
-
   const q = getQueue();
   let currentKey: string | undefined;
   if (!cleanupScheduleDisabled()) {
@@ -239,6 +262,16 @@ export async function initializeBackupSnapshotCleanupWorker(): Promise<void> {
     if (repeatable.name === JOB_NAME && repeatable.key !== currentKey) {
       await q.removeRepeatableByKey(repeatable.key);
     }
+  }
+
+  // After the new schedule is in place, so a failure here cannot leave
+  // cleanup unscheduled. A leftover legacy schedule only queues no-op jobs on
+  // the shared backup queue (backupWorker.ts), and the next start retries.
+  try {
+    await removeLegacyBackupQueueSchedule();
+  } catch (err) {
+    console.error('[BackupSnapshotCleanupWorker] Could not remove the cleanup schedule from the shared backup queue:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   console.log('[BackupSnapshotCleanupWorker] Worker initialized');

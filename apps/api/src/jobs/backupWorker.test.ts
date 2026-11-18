@@ -733,7 +733,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       const saveCursors = vi.fn();
       const gcDeadlineMs = Date.now() + 60_000;
 
-      await processCleanupExpiredSnapshots({
+      const result = await processCleanupExpiredSnapshots({
         retentionDeadlineMs: Date.now() - 1,
         gcDeadlineMs,
         gcCursor: 'gc-prev',
@@ -742,8 +742,26 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
 
       // At least one org always runs, so retention makes progress however small the budget.
       expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a']);
+      expect(result.retentionDeferredOrgs).toBe(2);
       expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledWith({ deadlineMs: gcDeadlineMs, resumeCursor: 'gc-prev' });
       expect(saveCursors).toHaveBeenCalledWith({ retention: 'org-b', gc: 'gc-next' });
+    });
+
+    it('an org whose retention pass throws does not hold back the orgs after it or the sweep, and fails the run at the end', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }]),
+      });
+      cleanupExpiredSnapshotsMock
+        .mockRejectedValueOnce(new Error('candidate query failed'))
+        .mockResolvedValueOnce(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue(okSweep);
+      const saveCursors = vi.fn();
+
+      await expect(processCleanupExpiredSnapshots({ saveCursors })).rejects.toThrow(/retention failed for 1 org/);
+
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a', 'org-b']);
+      expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: null });
     });
 
     it('keeps the previous sweep cursor when the sweep throws', async () => {

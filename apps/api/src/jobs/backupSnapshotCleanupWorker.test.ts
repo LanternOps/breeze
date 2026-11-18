@@ -48,7 +48,8 @@ vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => redisFake),
 }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
 const processCleanupMock = vi.hoisted(() => vi.fn());
 vi.mock('./backupSnapshotCleanup', () => ({ processCleanupExpiredSnapshots: processCleanupMock }));
@@ -76,6 +77,8 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
     legacyBackupQueue.removeRepeatableByKey.mockReset();
     redisStore.clear();
     processCleanupMock.mockReset().mockResolvedValue({ deleted: 0 });
+    redisFake.eval.mockClear();
+    captureExceptionMock.mockReset();
     delete process.env.BACKUP_SNAPSHOT_CLEANUP_CRON;
     delete process.env.BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS;
   });
@@ -106,6 +109,15 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
 
       expect(legacyBackupQueue.removeRepeatableByKey).toHaveBeenCalledTimes(1);
       expect(legacyBackupQueue.removeRepeatableByKey).toHaveBeenCalledWith('legacy-cleanup');
+    });
+
+    it('still schedules cleanup when removing the legacy schedule fails', async () => {
+      legacyBackupQueue.getRepeatableJobs.mockRejectedValue(new Error('redis timeout'));
+
+      await expect(initializeBackupSnapshotCleanupWorker()).resolves.toBeUndefined();
+
+      expect(bullmq.queue.add).toHaveBeenCalledTimes(1);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -180,6 +192,45 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
       expect(processCleanupMock).toHaveBeenCalledTimes(1);
       // The first run released its lease, so the next scheduled run proceeds.
       expect(redisStore.has(BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY)).toBe(false);
+    });
+
+    describe('lease renewal', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const renewCalls = () => redisFake.eval.mock.calls.filter(([script]) => String(script).includes('PEXPIRE')).length;
+
+      it('renews while the run is within its ceiling, then stops renewing and reports a run that looks hung', async () => {
+        vi.useFakeTimers();
+        process.env.BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS = '600000'; // 10 min budget -> 20 min lease ceiling
+        processCleanupMock.mockImplementationOnce(() => new Promise(() => {})); // hangs
+
+        void __testOnly.processCleanupJob(cleanupJob);
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        expect(renewCalls()).toBe(1);
+        expect(captureExceptionMock).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(20 * 60_000);
+        const renewedBeforeCeiling = renewCalls();
+        expect(renewedBeforeCeiling).toBe(10);
+        expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+        expect(renewCalls()).toBe(renewedBeforeCeiling);
+      });
+
+      it('reports a lost lease', async () => {
+        vi.useFakeTimers();
+        processCleanupMock.mockImplementationOnce(() => new Promise(() => {}));
+
+        void __testOnly.processCleanupJob(cleanupJob);
+        await vi.waitFor(() => expect(processCleanupMock).toHaveBeenCalledTimes(1));
+        redisStore.set(BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY, 'someone-else');
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+        expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('releases the lease when the run fails', async () => {

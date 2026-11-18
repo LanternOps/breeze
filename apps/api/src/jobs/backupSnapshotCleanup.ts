@@ -102,6 +102,8 @@ export async function processCleanupExpiredSnapshots(
   let failed = 0;
   let retentionCursor: string | null = null;
   let retentionDeferredOrgs = 0;
+  // Orgs whose whole retention pass threw (distinct from per-row `failed`).
+  let orgsFailed = 0;
 
   for (const [index, orgId] of orgIds.entries()) {
     // #12061: stop between orgs once the retention deadline passes. The first
@@ -119,7 +121,19 @@ export async function processCleanupExpiredSnapshots(
     // candidate-row system context internally — deliberately NOT wrapped
     // here, so each row's retirement-insert + delete commits independently
     // of every other row and of the sweep below.
-    const result = await cleanupExpiredSnapshots(orgId);
+    let result: Awaited<ReturnType<typeof cleanupExpiredSnapshots>>;
+    try {
+      result = await cleanupExpiredSnapshots(orgId);
+    } catch (err) {
+      // One org's unexpected failure (its rows are isolated per row already;
+      // this is e.g. its candidate query failing) must not hold back every
+      // org after it, or the sweep. Counted as a failure, so the run still
+      // fails at the end (D17).
+      console.error(`[BackupWorker] cleanup-expired-snapshots: retention failed for org ${orgId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      orgsFailed += 1;
+      continue;
+    }
     deleted += result.deleted;
     skipped += result.skippedLegalHold + result.skippedImmutable;
     prunedByMaxVersions += result.prunedByMaxVersions;
@@ -171,8 +185,9 @@ export async function processCleanupExpiredSnapshots(
   }
 
   if (options.saveCursors) {
-    // Losing a cursor only means the next run starts from the beginning, so
-    // a Redis hiccup here must not fail a run whose work already committed.
+    // A failed save leaves the previous cursors in place (or none), so the
+    // next run repeats some work: slower, never wrong. A Redis hiccup here
+    // must not fail a run whose work already committed.
     try {
       await options.saveCursors({ retention: retentionCursor, gc: gcCursor });
     } catch (err) {
@@ -188,10 +203,14 @@ export async function processCleanupExpiredSnapshots(
   // after both row-level retention AND the GC sweep above have already run to
   // completion — a job whose retention had partial failures must not also
   // block that run's object-storage reclamation.
-  if (failed > 0) {
+  if (failed > 0 || orgsFailed > 0) {
+    const parts = [
+      ...(failed > 0 ? [`${failed} snapshot row delete(s) failed this run`] : []),
+      ...(orgsFailed > 0 ? [`retention failed for ${orgsFailed} org(s)`] : []),
+    ];
     throw new Error(
-      `[BackupWorker] cleanup-expired-snapshots: ${failed} snapshot row delete(s) failed this run — ` +
-      'see prior [BackupRetention] per-row error logs for detail; rows will be retried next run.'
+      `[BackupWorker] cleanup-expired-snapshots: ${parts.join('; ')} — ` +
+      'see prior [BackupRetention] / [BackupWorker] error logs for detail; they will be retried next run.'
     );
   }
 
