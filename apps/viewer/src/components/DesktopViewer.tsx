@@ -36,6 +36,7 @@ import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { InputSequencer } from '../lib/inputSequencer';
 import { ReliableInputRouter } from '../lib/reliableInput';
+import { GeometryHold } from '../lib/geometryHold';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
@@ -240,6 +241,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const lastCopyIntentAtRef = useRef<number | null>(null);
   const lastRemoteInputAtRef = useRef<number | null>(null);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
+  // #11754: after the agent announces a resolution change, pointer input is
+  // held until the video decodes a frame at the new size. Lifecycle is
+  // unit-tested in lib/geometryHold.test.ts.
+  const [geometryHold] = useState(() => new GeometryHold());
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
   // predates the input_capabilities handshake never answers, so this stays
@@ -1626,6 +1631,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setActiveMonitor(msg.index ?? 0);
             // Carries the new geometry epoch (and reset epoch) for input.
             reliableInput.onControlMessage(msg);
+            // A resolution change holds pointer input until the new size
+            // is on screen (#11754).
+            geometryHold.onControlMessage(msg, performance.now());
             // Request a keyframe so the browser decoder gets a fresh IDR
             // with the new resolution's SPS/PPS immediately.
             ch.send(JSON.stringify({ type: 'request_keyframe' }));
@@ -2108,6 +2116,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (blockLocalInput.error) setInputNotice(blockLocalInput.error);
   }, [blockLocalInput.error]);
 
+  // #11754: true while the video still shows the size from before an announced
+  // resolution change. Pointer coordinates are mapped from the decoded size, so
+  // a move, press or scroll now would land in the wrong place on the remote.
+  const pointerHeldForGeometry = useCallback(() => {
+    if (transport !== 'webrtc') return false;
+    const videoEl = videoRef.current;
+    return !!videoEl && geometryHold.shouldHold(videoEl.videoWidth, videoEl.videoHeight, performance.now());
+  }, [transport, geometryHold]);
+
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
     const pending = webrtcMouseMovePendingRef.current;
@@ -2126,8 +2143,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     webrtcMouseMovePendingRef.current = null;
     if (viewOnlyRef.current) return;
+    if (pointerHeldForGeometry()) return;
     reliableInput.send({ type: 'mouse_move', x: pending.x, y: pending.y });
-  }, [getInputSender, reliableInput]);
+  }, [getInputSender, reliableInput, pointerHeldForGeometry]);
 
   // Native wheel handler to enable preventDefault on non-passive listener
   useEffect(() => {
@@ -2151,6 +2169,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stepsX = rx.steps;
       }
       if (r.steps === 0 && stepsX === 0) return;
+      if (pointerHeldForGeometry()) return;
       const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
       sendInputFn(stepsX !== 0
         ? { type: 'mouse_scroll', x, y, delta: r.steps, deltaX: stepsX }
@@ -2159,7 +2178,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [transport, scaleCoordsFn, sendInputFn, reliableInput]);
+  }, [transport, scaleCoordsFn, sendInputFn, reliableInput, pointerHeldForGeometry]);
 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
@@ -2188,6 +2207,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // are dropped (they used to arrive as a left click).
     const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     if (!button) return;
+    // #11754: a press mapped against the old size would land in the wrong
+    // place. Drop it (and the pending move); its release then finds no pressed
+    // button and is not sent either.
+    if (pointerHeldForGeometry()) {
+      webrtcMouseMovePendingRef.current = null;
+      return;
+    }
     // Flush any pending RAF mouse_move so the cursor is at the correct
     // position when the button press fires (consistent with mouseup).
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -2203,7 +2229,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
-  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget, pointerHeldForGeometry]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (viewOnlyRef.current) return;
