@@ -240,8 +240,7 @@ export async function buildPolicyProbeConfigUpdate(
 
   // #12130: the org's own policies and its partner's partner-wide policies are
   // collected separately so the cap can reserve capacity for each. A probe both
-  // sides ask for counts as the org's own only when the org's copy is certain to
-  // be kept (see below).
+  // sides ask for is held by one of them (splitSharedClaims).
   const own = { registry: new Map<string, PolicyRegistryProbeUpdate>(), config: new Map<string, PolicyConfigProbeUpdate>() };
   const shared = { registry: new Map<string, PolicyRegistryProbeUpdate>(), config: new Map<string, PolicyConfigProbeUpdate>() };
 
@@ -257,44 +256,50 @@ export async function buildPolicyProbeConfigUpdate(
       if (!bucket.config.has(key)) bucket.config.set(key, probe);
     }
   }
-  // Strix (PR #12184): the org's copy of a probe both sides ask for may take the
-  // partner's claim only when every one of the org's own probes is kept, which
-  // the reserve guarantees up to RESERVED_PROBES_PER_SOURCE. Past that the org's
-  // copy can be truncated, so moving the claim would let an org policy author
-  // drop a partner-wide check by re-listing it. Then both copies stay, and the
-  // kept list is deduplicated below.
-  if (own.registry.size <= RESERVED_PROBES_PER_SOURCE) {
-    for (const key of own.registry.keys()) shared.registry.delete(key);
-  }
-  if (own.config.size <= RESERVED_PROBES_PER_SOURCE) {
-    for (const key of own.config.keys()) shared.config.delete(key);
-  }
-
-  const registryKept = capPolicyStateProbes(
+  const registry = splitSharedClaims(
     sortPolicyRegistryProbes(Array.from(own.registry.values())),
     sortPolicyRegistryProbes(Array.from(shared.registry.values())),
-    orgId, 'registry');
-  const configKept = capPolicyStateProbes(
+    (probe) => policyRegistryProbeKey(probe.registry_path, probe.value_name));
+  const config = splitSharedClaims(
     sortPolicyConfigProbes(Array.from(own.config.values())),
     sortPolicyConfigProbes(Array.from(shared.config.values())),
-    orgId, 'config');
+    (probe) => policyConfigProbeKey(probe.file_path, probe.config_key));
+
   return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(dedupeProbes(registryKept,
-      (probe) => policyRegistryProbeKey(probe.registry_path, probe.value_name))),
-    policy_config_state_probes: sortPolicyConfigProbes(dedupeProbes(configKept,
-      (probe) => policyConfigProbeKey(probe.file_path, probe.config_key))),
+    policy_registry_state_probes: sortPolicyRegistryProbes(capPolicyStateProbes(
+      registry.own, registry.shared, orgId, 'registry')),
+    policy_config_state_probes: sortPolicyConfigProbes(capPolicyStateProbes(
+      config.own, config.shared, orgId, 'config')),
   };
 }
 
-/** First occurrence of each key, so a probe both sources kept is sent once. */
-function dedupeProbes<T>(probes: T[], keyOf: (probe: T) => string): T[] {
-  const seen = new Set<string>();
-  return probes.filter((probe) => {
-    const key = keyOf(probe);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+/**
+ * Strix (PR #12184): which source holds a probe both sources ask for, so the
+ * two lists the cap splits are disjoint and a shared probe takes one slot.
+ *
+ * The org's sorted head, its first RESERVED_PROBES_PER_SOURCE probes, is always
+ * kept (apportionPolicyStateProbeCap guarantees each source that much). A
+ * probe in that head is the org's: the partner's rule is collected through the
+ * org's copy. Any other probe both ask for stays the partner's: an org copy
+ * past the head could be truncated, and taking the partner's claim with it
+ * would let an org policy author drop a chosen partner-wide check by re-listing
+ * it. The org's rule is then collected whenever the partner's copy is, and it
+ * frees an org slot for another of the org's probes.
+ *
+ * Both lists come in sorted and go out sorted; removing entries past the head
+ * leaves the head unchanged.
+ */
+function splitSharedClaims<T>(
+  ownSorted: T[],
+  sharedSorted: T[],
+  keyOf: (probe: T) => string,
+): { own: T[]; shared: T[] } {
+  const sharedKeys = new Set(sharedSorted.map(keyOf));
+  const ownHeadKeys = new Set(ownSorted.slice(0, RESERVED_PROBES_PER_SOURCE).map(keyOf));
+  return {
+    own: ownSorted.filter((probe) => ownHeadKeys.has(keyOf(probe)) || !sharedKeys.has(keyOf(probe))),
+    shared: sharedSorted.filter((probe) => !ownHeadKeys.has(keyOf(probe))),
+  };
 }
 
 /**

@@ -271,6 +271,41 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     expect(registry.some((p) => p.registry_path.endsWith('AAPartner\\Key0000'))).toBe(true);
   });
 
+  // Review of the Strix fix: a probe both sources list must not take a slot on
+  // each side. An org that clones its partner's 140-probe policy needs 140.
+  it('probes both sources list count once against the cap', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(140, partnerKey), assignedOwnerOrgId: null },
+        { rules: rulesDescending(140, partnerKey), assignedOwnerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    expect(probe!.policy_registry_state_probes).toHaveLength(140);
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes('probe list truncated'))).toHaveLength(0);
+  });
+
+  it('an org copy past its guaranteed head rides on the partner\'s claim and frees an org slot', async () => {
+    const earlyOrgKey = (n: number) => ({
+      type: 'registry_check', registryPath: `HKLM\\SOFTWARE\\AAAOrg\\Key${pad(n)}`, registryValueName: 'Enabled',
+    });
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(200, partnerKey), assignedOwnerOrgId: null },
+        // 200 own probes plus 50 copies of partner probes that sort after them.
+        { rules: [...rulesDescending(200, earlyOrgKey), ...rulesDescending(50, partnerKey)], assignedOwnerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    // Disjoint sets: org 200, partner 200, each guaranteed 128 of the 256.
+    expect(registry).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+    expect(countOf(registry, 'AAAOrg')).toBe(128);
+    expect(countOf(registry, 'AAPartner')).toBe(128);
+  });
+
   it('a probe kept by both sources is sent once', async () => {
     queue.push(
       [],

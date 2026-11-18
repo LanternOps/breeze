@@ -146,11 +146,8 @@ async function configRuleSubject(orgId: string, deviceId: string, payload: Confi
   if (!(await configComplianceRuleReachesOrg(rule, orgId))) return null;
   const org = await loadOrg(orgId);
 
-  // A rule set is identified by (feature link, name) across saves; the name is
-  // hashed to keep the key short (same scheme as the alert bridge's rule name).
-  const nameDigest = createHash('sha256').update(rule.name).digest('hex').slice(0, 32);
   return {
-    ref: `rule:${rule.featureLinkId}:${nameDigest}`,
+    ref: configRuleRef(rule.featureLinkId, rule.name),
     name: rule.name,
     policyName: rule.policyName,
     // The link's policy is the one that AUTHORED the rule set, so a rule a
@@ -165,6 +162,37 @@ async function configRuleSubject(orgId: string, deviceId: string, payload: Confi
       return !!row && hasProbeCapRule(row.details);
     },
   };
+}
+
+/**
+ * A rule set is identified by (feature link, name) across saves; the name is
+ * hashed to keep the key short (same scheme as the alert bridge's rule name).
+ */
+function configRuleRef(featureLinkId: string, ruleName: string): string {
+  return `rule:${featureLinkId}:${createHash('sha256').update(ruleName).digest('hex').slice(0, 32)}`;
+}
+
+/** The subject ref an event names, before any lookup (for the cheap repeat check). */
+function refFromPayload(payload: NotAssessedPayload & ConfigCompliancePayload): string | null {
+  if (typeof payload.configPolicyComplianceRuleId === 'string') {
+    return payload.configPolicyId && payload.configPolicyComplianceRuleName
+      ? configRuleRef(payload.configPolicyId, payload.configPolicyComplianceRuleName)
+      : null;
+  }
+  return typeof payload.policyId === 'string' ? `policy:${payload.policyId}` : null;
+}
+
+function noticeKey(ref: string, orgId: string, period: number): string {
+  return `policy-not-assessed:${ref}:${orgId}:${period}`;
+}
+
+/** Whether this period's notice is already out. Any Redis failure reads as "not yet". */
+async function alreadyNoticed(key: string): Promise<boolean> {
+  try {
+    return ((await getRedis()?.exists(key)) ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** true = this event owns the period's notice, false = already sent, null = Redis unavailable. */
@@ -189,10 +217,17 @@ function oneLine(text: string, max: number): string {
   return Array.from(text.replace(/[\r\n]+/g, ' ')).slice(0, max).join('');
 }
 
-async function notifyOwners(orgId: string, payload: NotAssessedPayload): Promise<void> {
+async function notifyOwners(
+  orgId: string,
+  payload: NotAssessedPayload,
+  now: number,
+  claimedKeys: string[],
+): Promise<void> {
   const deviceId = payload.deviceId!;
-  const subject = isConfigCompliancePayload(payload)
-    ? await configRuleSubject(orgId, deviceId, payload)
+  // Checked on an unknown so the false branch keeps the automation payload's type.
+  const raw: unknown = payload;
+  const subject = isConfigCompliancePayload(raw)
+    ? await configRuleSubject(orgId, deviceId, raw)
     : payload.policyId ? await automationPolicySubject(orgId, deviceId, payload.policyId) : null;
   if (!subject) return;
 
@@ -201,74 +236,84 @@ async function notifyOwners(orgId: string, payload: NotAssessedPayload): Promise
   if (!(await subject.stillNotAssessed())) return;
   if (subject.ownerScope === 'partner' && !subject.partnerId) return;
 
-  const now = Date.now();
   const period = Math.floor(now / NOT_ASSESSED_NOTICE_PERIOD_MS);
-  const dedupeKey = `policy-not-assessed:${subject.ref}:${orgId}:${period}`;
+  const dedupeKey = noticeKey(subject.ref, orgId, period);
   const periodEndSeconds = Math.ceil(((period + 1) * NOT_ASSESSED_NOTICE_PERIOD_MS - now) / 1000);
   const claimed = await claimMarker(dedupeKey, periodEndSeconds + MARKER_SLACK_SECONDS);
   if (claimed === false) return;
+  if (claimed) claimedKeys.push(dedupeKey);
 
-  try {
-    const recipients = subject.ownerScope === 'partner'
-      ? await resolvePartnerUsersWithPermission(subject.partnerId!, PERMISSIONS.DEVICES_WRITE)
-      : await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.DEVICES_WRITE);
-    if (recipients.length === 0) {
-      // Kept marker: with nobody to tell, re-resolving on every scan buys nothing.
-      console.warn(
-        `[policyNotAssessedNotice] ${subject.ref} is not assessed in org ${orgId} but its `
-        + `${subject.ownerScope} owner has nobody to notify`,
-      );
-      return;
-    }
+  const recipients = subject.ownerScope === 'partner'
+    ? await resolvePartnerUsersWithPermission(subject.partnerId!, PERMISSIONS.DEVICES_WRITE)
+    : await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.DEVICES_WRITE);
+  if (recipients.length === 0) {
+    // Kept marker: with nobody to tell, re-resolving on every scan buys nothing.
+    console.warn(
+      `[policyNotAssessedNotice] ${subject.ref} is not assessed in org ${orgId} but its `
+      + `${subject.ownerScope} owner has nobody to notify`,
+    );
+    return;
+  }
 
-    const orgName = oneLine(subject.orgName, 120);
-    const count = typeof payload.notAssessedRules === 'number' && payload.notAssessedRules > 0
-      ? payload.notAssessedRules
-      : 1;
-    const checks = count === 1 ? '1 check' : `${count} checks`;
-    const title = oneLine(`Compliance not assessed: ${subject.name} (${orgName})`, 255);
-    const inPolicy = subject.name === subject.policyName ? '' : ` (policy "${subject.policyName}")`;
-    const message =
-      `${checks} in "${subject.name}"${inPolicy} cannot be assessed on ${orgName}'s devices: `
-      + `the organization's compliance probe list is full (${MAX_POLICY_STATE_PROBES_PER_ORG} registry and `
-      + `${MAX_POLICY_STATE_PROBES_PER_ORG} config values, half reserved for the organization's own policies `
-      + 'and half for partner-wide policies). These checks are not evaluated, alerted on or remediated until '
-      + 'there is room. Remove registry or config checks this organization does not need.';
+  const orgName = oneLine(subject.orgName, 120);
+  const count = typeof payload.notAssessedRules === 'number' && payload.notAssessedRules > 0
+    ? payload.notAssessedRules
+    : 1;
+  const checks = count === 1 ? '1 check' : `${count} checks`;
+  const title = oneLine(`Compliance not assessed: ${subject.name} (${orgName})`, 255);
+  const inPolicy = subject.name === subject.policyName ? '' : ` (policy "${subject.policyName}")`;
+  const message =
+    `${checks} in "${subject.name}"${inPolicy} cannot be assessed on ${orgName}'s devices: `
+    + `the organization's compliance probe list is full (${MAX_POLICY_STATE_PROBES_PER_ORG} registry and `
+    + `${MAX_POLICY_STATE_PROBES_PER_ORG} config values, half reserved for the organization's own policies `
+    + 'and half for partner-wide policies). These checks are not evaluated, alerted on or remediated until '
+    + 'there is room. Remove registry or config checks this organization does not need.';
 
-    for (const userId of recipients) {
-      await createNotification({
-        userId,
+  for (const userId of recipients) {
+    await createNotification({
+      userId,
+      orgId,
+      type: 'system',
+      priority: 'high',
+      title,
+      message,
+      link: subject.link,
+      metadata: {
+        event: 'policy.not_assessed',
+        reason: PROBE_CAP_REASON,
+        ownerScope: subject.ownerScope,
         orgId,
-        type: 'system',
-        priority: 'high',
-        title,
-        message,
-        link: subject.link,
-        metadata: {
-          event: 'policy.not_assessed',
-          reason: PROBE_CAP_REASON,
-          ownerScope: subject.ownerScope,
-          orgId,
-          deviceId,
-          notAssessedRules: count,
-          ...subject.metadata,
-        },
-        dedupeKey,
-      });
-    }
-  } catch (err) {
-    if (claimed) await releaseMarker(dedupeKey);
-    throw err;
+        deviceId,
+        notAssessedRules: count,
+        ...subject.metadata,
+      },
+      dedupeKey,
+    });
   }
 }
 
 /**
  * Handle a `policy.not_assessed` event. Registered under subscriber id
  * `policy-not-assessed-notice` (eventSubscribers.ts). Throws on failure so
- * queue-mode dispatch retries; the marker is released first.
+ * queue-mode dispatch retries. A marker this event set is released on any
+ * failure, including the notice transaction failing to commit, so the retry or
+ * the next scan can notify.
  */
 export async function handlePolicyNotAssessedEvent(event: BreezeEvent): Promise<void> {
-  const payload = (event.payload ?? {}) as NotAssessedPayload;
+  const payload = (event.payload ?? {}) as NotAssessedPayload & ConfigCompliancePayload;
   if (payload.reason !== PROBE_CAP_REASON || typeof payload.deviceId !== 'string') return;
-  await dbModule.withSystemDbAccessContext(() => notifyOwners(event.orgId, payload));
+
+  // Fires per device per scan: once the period's notice is out, a repeat costs
+  // one Redis read and no database work.
+  const now = Date.now();
+  const ref = refFromPayload(payload);
+  if (ref && await alreadyNoticed(noticeKey(ref, event.orgId, Math.floor(now / NOT_ASSESSED_NOTICE_PERIOD_MS)))) return;
+
+  const claimedKeys: string[] = [];
+  try {
+    await dbModule.withSystemDbAccessContext(() => notifyOwners(event.orgId, payload, now, claimedKeys));
+  } catch (err) {
+    for (const key of claimedKeys) await releaseMarker(key);
+    throw err;
+  }
 }

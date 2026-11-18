@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   orgUsers: vi.fn(),
   redisSet: vi.fn(),
   redisDel: vi.fn(),
+  redisExists: vi.fn(),
   redisAvailable: true,
   loadRule: vi.fn(),
   ruleReachesOrg: vi.fn(),
@@ -46,7 +47,7 @@ vi.mock('./usersWithPermission', () => ({
   resolveUsersWithPermissionForOrg: h.orgUsers,
 }));
 vi.mock('./redis', () => ({
-  getRedis: () => (h.redisAvailable ? { set: h.redisSet, del: h.redisDel } : null),
+  getRedis: () => (h.redisAvailable ? { set: h.redisSet, del: h.redisDel, exists: h.redisExists } : null),
 }));
 vi.mock('./configComplianceAlertBridge', () => ({
   isConfigCompliancePayload: (p: unknown) =>
@@ -58,6 +59,7 @@ vi.mock('./configComplianceAlertBridge', () => ({
 
 import { handlePolicyNotAssessedEvent, NOT_ASSESSED_NOTICE_PERIOD_MS } from './policyNotAssessedNotice';
 import type { BreezeEvent } from './eventBus';
+import * as dbModule from '../db';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
@@ -94,6 +96,7 @@ const automationPayload = {
 };
 
 beforeEach(() => {
+  vi.mocked(dbModule.db.select).mockClear();
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   h.selectQueue.length = 0;
@@ -102,6 +105,7 @@ beforeEach(() => {
   h.orgUsers.mockReset().mockResolvedValue(['org-admin-1']);
   h.redisSet.mockReset().mockResolvedValue('OK');
   h.redisDel.mockReset().mockResolvedValue(1);
+  h.redisExists.mockReset().mockResolvedValue(0);
   h.redisAvailable = true;
   h.loadRule.mockReset();
   h.ruleReachesOrg.mockReset().mockResolvedValue(true);
@@ -226,6 +230,35 @@ describe('policy.not_assessed → owner notice', () => {
 
     expect(h.createNotification).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  // Events fire per device per scan; once the week's notice is out, a repeat
+  // must cost one Redis read, not the policy, org and compliance-row queries.
+  it('a repeat event whose week is already noticed does no database work', async () => {
+    h.redisExists.mockResolvedValue(1);
+    const bucket = Math.floor(NOW.getTime() / NOT_ASSESSED_NOTICE_PERIOD_MS);
+
+    await handlePolicyNotAssessedEvent(event(automationPayload));
+
+    expect(h.redisExists).toHaveBeenCalledWith(`policy-not-assessed:policy:${POLICY_ID}:${ORG_ID}:${bucket}`);
+    expect(dbModule.db.select).not.toHaveBeenCalled();
+    expect(h.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('releases the marker when the notice transaction fails to commit', async () => {
+    h.selectQueue.push(
+      [{ id: POLICY_ID, name: 'Partner baseline', orgId: null, partnerId: PARTNER_ID }],
+      [{ name: 'Contoso', partnerId: PARTNER_ID }],
+      [{ details: capDetails }],
+    );
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+      await fn();
+      throw new Error('commit failed');
+    });
+
+    await expect(handlePolicyNotAssessedEvent(event(automationPayload))).rejects.toThrow('commit failed');
+    expect(h.createNotification).toHaveBeenCalled();
+    expect(h.redisDel).toHaveBeenCalledWith(h.redisSet.mock.calls[0]![0]);
   });
 
   it('ignores any other reason', async () => {
