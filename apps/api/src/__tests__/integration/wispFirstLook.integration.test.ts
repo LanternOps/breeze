@@ -10,7 +10,7 @@
  *   - #11145: a batch nothing finished posts one couldn't-look post, which a later
  *     look does not block;
  *   - the browser zone lands in its own column and the resolver reads it;
- *   - #11428: the brief's Overnight counts split the grant's real runs into ran
+ *   - #11428: the brief's since-last-brief counts split the grant's real runs into ran
  *     and skipped-because-nothing-changed.
  */
 import './setup';
@@ -510,7 +510,7 @@ describe('brief overnight assessment counts (real Postgres, #11428)', () => {
     await run({ grantId: other.grantId, grantRevisionId: other.revisionId, status: 'completed', errorCode: null });
 
     const brief = await buildBrief(t.grantId, new Date(), { since });
-    expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual([
+    expect(brief.sections.find((s) => s.heading === 'Since your last brief')?.lines).toEqual([
       '4 assessments run',
       '2 assessments skipped — nothing had changed',
     ]);

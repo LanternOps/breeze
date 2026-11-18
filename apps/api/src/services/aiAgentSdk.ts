@@ -1617,6 +1617,40 @@ async function closePendingLedgerRowAsRefused(session: ActiveSession, executionI
   }
 }
 
+/** #11678 §1: why an intent-backed call that never ran was closed, by its intent's final status. */
+const INTENT_NOT_RUN_LEDGER_TEXT = {
+  rejected: 'Approval denied; the action was not executed.',
+  cancelled: 'Approval request cancelled; the action was not executed.',
+  expired: 'Approval request expired before a decision; the action was not executed.',
+} as const;
+
+/**
+ * #11678 §1: a Tier 3 call whose intent was denied, cancelled or expired while
+ * the chat waited never runs, so postToolUse never closes its `pending`
+ * ledger row. Close it `rejected` here (the status the Tier 2 path uses for
+ * the same outcome). Guarded on `pending`, so a writer that already
+ * terminal-marked the row wins. Best-effort: the verdict never depends on it.
+ */
+async function closePendingLedgerRowAsNotRun(
+  session: ActiveSession,
+  executionId: string,
+  outcome: keyof typeof INTENT_NOT_RUN_LEDGER_TEXT,
+): Promise<void> {
+  try {
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () =>
+        db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', errorMessage: INTENT_NOT_RUN_LEDGER_TEXT[outcome], completedAt: new Date() })
+          .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending'))),
+    );
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error('[AI-SDK] Failed to close a denied pending approval record:', executionId, err instanceof Error ? err.message : err);
+  }
+}
+
 /** Per call: set once a gate below has inserted this call's ai_tool_executions row (#10411). */
 interface PreHookLedgerState {
   rowWritten: boolean;
@@ -2956,6 +2990,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             closeOut?.kind === 'expired'
             || (closeOut?.kind === 'decided' && closeOut.status === 'expired')
           ) {
+            await closePendingLedgerRowAsNotRun(session, approvalExec.id, 'expired');
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -3035,6 +3070,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
+            await closePendingLedgerRowAsNotRun(session, approvalExec.id, decisionStatus);
             return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
           }
 

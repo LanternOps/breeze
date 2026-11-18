@@ -5249,7 +5249,7 @@
     "deviceRevoked": "Dispositivo revogado",
     "deviceRenamed": "Dispositivo renomeado",
     "approvalSecurity": "Segurança de aprovação",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Esses dispositivos podem confirmar aprovações de alto risco (acesso privilegiado, ações de IA) com biometria. Seu telefone se registra automaticamente quando você faz login no aplicativo móvel Breeze; você também pode registrar este navegador com Windows Hello ou Touch ID. Tudo isso é opcional – as aprovações ainda funcionam sem isso.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Esses dispositivos podem confirmar aprovações de alto risco (acesso privilegiado, ações de IA) com biometria. Seu telefone se registra automaticamente quando você faz login no aplicativo móvel Breeze; você também pode registrar este navegador com Windows Hello ou Touch ID. Aprovar uma solicitação de risco alto ou crítico exige um destes dispositivos, a menos que a política de aprovação do seu parceiro desative essa exigência. As demais aprovações funcionam sem eles.",
     "loadingApproverDevices": "Carregando dispositivos aprovadores…",
     "tryAgain": "Tente novamente",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Nenhum dispositivo aprovador registrado ainda. Faça login no aplicativo móvel Breeze em seu telefone e ele aparecerá aqui automaticamente ou registre este navegador abaixo para aprovar com biometria.",

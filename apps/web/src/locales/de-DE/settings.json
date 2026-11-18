@@ -5249,7 +5249,7 @@
     "deviceRevoked": "Gerät widerrufen",
     "deviceRenamed": "Gerät umbenannt",
     "approvalSecurity": "Zulassungssicherheit",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Diese Geräte können risikoreiche Genehmigungen (privilegierter Zugang, KI-Aktionen) mit biometrischen Daten bestätigen. Ihr Telefon registriert sich automatisch, wenn Sie sich bei der mobilen Breeze-App anmelden. Sie können diesen Browser auch bei Windows Hello oder Touch ID registrieren. All dies ist optional – Genehmigungen funktionieren auch ohne.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Diese Geräte können risikoreiche Genehmigungen (privilegierter Zugang, KI-Aktionen) mit biometrischen Daten bestätigen. Ihr Telefon registriert sich automatisch, wenn Sie sich bei der mobilen Breeze-App anmelden. Sie können diesen Browser auch bei Windows Hello oder Touch ID registrieren. Für die Genehmigung einer Anfrage mit hohem oder kritischem Risiko ist eines dieser Geräte erforderlich, sofern die Genehmigungsrichtlinie Ihres Partners dies nicht deaktiviert. Andere Genehmigungen funktionieren auch ohne.",
     "loadingApproverDevices": "Genehmigergeräte werden geladen…",
     "tryAgain": "Versuchen Sie es erneut",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Es sind noch keine genehmigenden Geräte registriert. Melden Sie sich auf Ihrem Telefon bei der mobilen Breeze-App an und sie wird hier automatisch angezeigt, oder registrieren Sie diesen Browser unten, um die Genehmigung mit einer Biometrie zu erhalten.",

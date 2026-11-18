@@ -309,7 +309,11 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'pattern key (e.g. phantom_incident_event) so Wisp can group them.');
   lines.push("- Known concern changed or is fixed → update_concern. To close it send status: 'resolved' with an "
     + 'outcome; a summary edit alone keeps it open.');
-  lines.push('- The person should act now → nudge (one concern, one next step).');
+  // #11678 §4: record_concern returns no id, so a concern raised this run has
+  // nothing a nudge can name until the next run lists it.
+  lines.push('- The person should act now → nudge (one concern, one next step). A nudge names a concern from the open '
+    + 'concerns list below; a concern recorded this run gets its id when the run ends and can be nudged on a later run. '
+    + 'Do not mention that in your summary.');
   lines.push('- A Tier-2/3 change would help → propose_action (it becomes an approval request; nothing runs).');
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
     + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');

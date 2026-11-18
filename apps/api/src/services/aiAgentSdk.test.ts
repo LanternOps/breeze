@@ -6780,6 +6780,69 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(updatedRows.every((r) => r.table === schema.aiToolExecutions)).toBe(true);
   });
 
+  // #11678 §1: a Tier 3 intent denied (or cancelled, or expired) while the
+  // chat waits on it never runs, so postToolUse never closes its ledger row.
+  // The gate closes it itself, or the row sits in `pending` forever.
+  describe('#11678: a Tier 3 intent that ends undecided-or-denied closes its pending row', () => {
+    beforeEach(() => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+      } as any);
+      vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+        values: vi.fn((values: Record<string, unknown>) => {
+          insertedRows.push({ table, values });
+          return { returning: vi.fn(async () => [{ id: 'exec-denied' }]) };
+        }),
+      })) as any);
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-denied' }));
+    });
+
+    // Ignore the intent-id stamp written once the intent exists; only status writes matter here.
+    async function statusUpdates() {
+      return (await ledgerUpdates()).filter((u) => 'status' in u);
+    }
+
+    it.each([
+      ['rejected', 'denied'],
+      ['cancelled', 'cancelled'],
+      ['expired', 'expired'],
+    ] as const)('a %s intent closes the row as rejected, saying it was %s', async (status, word) => {
+      mockWaitForIntentDecision.mockResolvedValueOnce(status);
+      const session = makeActiveSession();
+
+      const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-d');
+
+      expect(verdict).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(await ledgerInserts()).toEqual([expect.objectContaining({ status: 'pending' })]);
+      expect(await statusUpdates()).toEqual([expect.objectContaining({
+        status: 'rejected', errorMessage: expect.stringContaining(word), completedAt: expect.any(Date),
+      })]);
+    });
+
+    it('an intent the close-out expired at its deadline closes the row as rejected', async () => {
+      mockWaitForIntentDecision.mockResolvedValueOnce('pending_approval');
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'expired' });
+      const session = makeActiveSession();
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-e');
+
+      expect(await statusUpdates()).toEqual([expect.objectContaining({
+        status: 'rejected', errorMessage: expect.stringContaining('expired'),
+      })]);
+    });
+
+    it('an intent still pending before its deadline keeps its row pending (an approval may still run it)', async () => {
+      mockWaitForIntentDecision.mockResolvedValueOnce('pending_approval');
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'pending_approval' });
+      const session = makeActiveSession();
+
+      const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-p');
+
+      expect(verdict).toMatchObject({ allowed: false, error: expect.stringContaining('Approval still pending') });
+      expect(await statusUpdates()).toEqual([]);
+    });
+  });
+
   it('redacts secret-shaped text in the stored refusal reason', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
     vi.mocked(checkToolRateLimit).mockResolvedValue('Refused: password=hunter2 is not allowed');

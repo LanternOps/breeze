@@ -452,6 +452,22 @@ describe('seedContextForSession', () => {
     expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
+  it('says a chat reply cannot lift a kept standing instruction, and where the user can (#11678 §2)', () => {
+    const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => /standing instruction/i.test(l));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/never offer[^\n]*exception/i);
+    expect(line).toContain('/settings/wisp-memory');
+    expect(line).toMatch(/device page/i);
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+  });
+
+  it('tells Wisp the standing-state snapshot is Breeze\'s, never to be mentioned or credited to the user (#11678 §5)', () => {
+    const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => l.includes('wisp_standing_state'));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/Breeze adds it, not the user/);
+    expect(line).toMatch(/never mention the snapshot/i);
+  });
+
   it('tells the model which follow-up fits: one event → check-in, a condition → watch (#11685)', () => {
     const line = WISP_BEHAVIOUR_BLOCK.split('\n').find((l) => /one event/i.test(l));
     expect(line).toBeDefined();

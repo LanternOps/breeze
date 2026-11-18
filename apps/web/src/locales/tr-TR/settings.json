@@ -5249,7 +5249,7 @@
     "deviceRevoked": "Cihaz iptal edildi",
     "deviceRenamed": "Cihaz yeniden adlandırıldı",
     "approvalSecurity": "Onay güvenliği",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Bu cihazlar, yüksek riskli onayları (ayrıcalıklı erişim, yapay zeka eylemleri) biyometrik bir yöntemle doğrulayabilir. Breeze mobil uygulamasında oturum açtığınızda telefonunuz kendisini otomatik olarak kaydeder; bu tarayıcıyı Windows Hello veya Touch ID ile de kaydedebilirsiniz. Bunların hepsi isteğe bağlıdır; onaylar bu olmadan da çalışmaya devam eder.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Bu cihazlar, yüksek riskli onayları (ayrıcalıklı erişim, yapay zeka eylemleri) biyometrik bir yöntemle doğrulayabilir. Breeze mobil uygulamasında oturum açtığınızda telefonunuz kendisini otomatik olarak kaydeder; bu tarayıcıyı Windows Hello veya Touch ID ile de kaydedebilirsiniz. Ortağınızın onay ilkesi bunu kapatmadıkça, yüksek veya kritik riskli bir isteği onaylamak için bu cihazlardan biri gerekir. Diğer onaylar bunlar olmadan da çalışır.",
     "loadingApproverDevices": "Onaylayıcı cihazlar yükleniyor…",
     "tryAgain": "Tekrar deneyin",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Henüz kayıtlı onaylayıcı cihaz yok. Telefonunuzdaki Breeze mobil uygulamasında oturum açın; uygulama burada otomatik olarak görünür veya biyometri ile onaylamak için bu tarayıcıyı aşağıdan kaydedin.",
