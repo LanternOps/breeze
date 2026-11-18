@@ -113,14 +113,12 @@ func TestOrderedClockIsStrictlyIncreasingAcrossGoroutines(t *testing.T) {
 	const workers, per = 8, 2000
 	results := make([][]time.Time, workers)
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			for i := 0; i < per; i++ {
+	for w := range workers {
+		wg.Go(func() {
+			for range per {
 				results[w] = append(results[w], clock.now())
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 	seen := make(map[int64]bool, workers*per)
