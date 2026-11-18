@@ -457,6 +457,9 @@ describe('seedContextForSession', () => {
     expect(line).toBeDefined();
     expect(line).toMatch(/never offer[^\n]*exception/i);
     expect(line).toContain('/settings/wisp-memory');
+    // The memory page offers Confirm and Retract only; name the button it has.
+    expect(line).toMatch(/Retract/);
+    expect(line).not.toMatch(/forget|edit/i);
     expect(line).toMatch(/device page/i);
     expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
   });
