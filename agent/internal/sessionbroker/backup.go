@@ -52,6 +52,7 @@ var (
 	errBackupHelperReservationUsed   = errors.New("backup helper process reservation was already used")
 	errBackupHelperReservationFailed = errors.New("backup helper process reservation failed")
 	errBackupHelperAlreadyConnected  = errors.New("backup helper already connected")
+	errBackupHelperStopping          = errors.New("backup helper is stopping with the agent")
 )
 
 // backupHelperDiedError is the terminal error reported for a backup run whose
@@ -241,6 +242,14 @@ const (
 	backupRunRedispatching
 )
 
+// backupRunTerminalError is a forward error that is the run's whole terminal
+// failure, text included: the helper admitted the run and its session ended
+// before the forwarder resumed. A re-dispatch reports it as is rather than as
+// a run that a new helper never accepted.
+type backupRunTerminalError struct{ msg string }
+
+func (e *backupRunTerminalError) Error() string { return e.msg }
+
 // backupRun is one tracked async backup workload.
 type backupRun struct {
 	state backupRunState
@@ -290,6 +299,12 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 		s := bh.session
 		bh.mu.Unlock()
 		return s, nil
+	}
+	if bh.stopping {
+		// StopBackupHelper (agent shutdown) has begun: a helper started now
+		// would outlive the kill it is about to do, or run behind it.
+		bh.mu.Unlock()
+		return nil, errBackupHelperStopping
 	}
 	if bh.spawnDone != nil {
 		// A spawn for this helper is already in flight -- most commonly two
@@ -525,7 +540,7 @@ func (b *Broker) ClearBackupSession(session *Session) bool {
 	bh.session = nil
 	if bh.process != nil && session != nil && session.PID > 0 && bh.process.Pid == session.PID {
 		log.Info("reaping disconnected backup helper", "pid", bh.process.Pid, "sessionId", session.SessionID)
-		bh.reapDisconnectedLocked()
+		session.backupHelperExited = bh.reapDisconnectedLocked()
 	} else if bh.process != nil && session != nil {
 		// Admission binds the owning session to the tracked child, so this
 		// should not happen. The process is left for the respawn-time or
@@ -592,10 +607,10 @@ func (bh *backupHelper) killAndReapLocked() {
 // reapDisconnectedLocked reaps the resident backup helper process after its
 // session disconnected, then clears the process/cmd/reapOnce fields. Unlike
 // killAndReapLocked it waits before killing (see reapExiting). The caller
-// must hold bh.mu.
-func (bh *backupHelper) reapDisconnectedLocked() {
+// must hold bh.mu. The returned channel closes once the process is gone.
+func (bh *backupHelper) reapDisconnectedLocked() <-chan struct{} {
 	proc, cmd, once := bh.takeProcessLocked()
-	reapExiting(once, cmd, proc, backupHelperExitGrace)
+	return reapExiting(once, cmd, proc, backupHelperExitGrace)
 }
 
 // takeProcessLocked detaches the resident helper process from bh, returning
@@ -655,12 +670,22 @@ func killAndReap(once *sync.Once, cmd *exec.Cmd, proc *os.Process) {
 //
 // once is shared with every other kill site for the same child, exactly as
 // in killAndReap. Nothing here blocks the caller, which holds bh.mu.
-func reapExiting(once *sync.Once, cmd *exec.Cmd, proc *os.Process, grace time.Duration) {
+//
+// The returned channel closes once the process has been waited on, so a
+// caller can make sure it is gone before starting work it must not overlap
+// (redispatchQueuedBackupRuns). When another kill site already owns the reap
+// (the once has fired) it is closed at once: that site killed the process.
+func reapExiting(once *sync.Once, cmd *exec.Cmd, proc *os.Process, grace time.Duration) <-chan struct{} {
+	exited := make(chan struct{})
 	if once == nil || proc == nil {
-		return
+		close(exited)
+		return exited
 	}
+	owned := false
 	once.Do(func() {
+		owned = true
 		go func() {
+			defer close(exited)
 			waited := make(chan error, 1)
 			go func() { waited <- waitBackupHelper(cmd, proc) }()
 			var err error
@@ -678,6 +703,10 @@ func reapExiting(once *sync.Once, cmd *exec.Cmd, proc *os.Process, grace time.Du
 			reportReap(cmd, proc, err)
 		}()
 	})
+	if !owned {
+		close(exited)
+	}
+	return exited
 }
 
 // waitBackupHelper waits on a helper child so the OS releases its
@@ -877,10 +906,25 @@ func (b *Broker) forwardTrackedBackupRun(bh *backupHelper, session *Session, req
 	case bh.activeRuns[commandID] != run:
 		bh.mu.Unlock()
 		return env, nil
+	case run.state == backupRunDoomed && !started && !run.started:
+		// The helper admitted the run to its queue, then its session ended
+		// before this goroutine resumed: the run never started, exactly as a
+		// queued run the death path finds (#12193). Same rules: re-send it
+		// within the bound, otherwise it never started.
+		if !bh.stopping && run.redispatches < maxBackupRunRedispatches {
+			run.state = backupRunRedispatching
+			bh.mu.Unlock()
+			go b.redispatchQueuedBackupRuns(session, []string{commandID})
+			return env, nil
+		}
+		delete(bh.activeRuns, commandID)
+		stopping := bh.stopping
+		bh.mu.Unlock()
+		return env, &backupRunTerminalError{msg: queuedRunLostFailure(session, stopping)}
 	case run.state == backupRunDoomed:
 		delete(bh.activeRuns, commandID)
 		bh.mu.Unlock()
-		return env, fmt.Errorf("%s", backupSessionEndedError(session))
+		return env, &backupRunTerminalError{msg: backupSessionEndedError(session)}
 	case started || run.started:
 		run.state = backupRunExecuting
 		bh.mu.Unlock()

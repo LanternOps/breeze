@@ -2,9 +2,11 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -30,6 +32,21 @@ const backupProgressPhaseQueued = "queued"
 
 func backupRunNeverStarted(detail string) string {
 	return backupRunNeverStartedError + ": " + detail
+}
+
+// queuedRunLostFailure is the terminal error of a queued run whose helper
+// session ended and that is not re-sent: the agent is stopping, or the run
+// already used its maxBackupRunRedispatches re-sends.
+func queuedRunLostFailure(session *Session, stopping bool) string {
+	if stopping {
+		return backupRunNeverStarted("the agent stopped the backup helper while the run was queued")
+	}
+	detail := "the backup helper session ended while the run was queued"
+	if reason := session.CloseReason(); reason != "" {
+		detail += " (" + reason + ")"
+	}
+	return backupRunNeverStarted(detail +
+		fmt.Sprintf("; it had already been re-sent to a new helper %d times", maxBackupRunRedispatches))
 }
 
 // noteBackupRunProgress records that a tracked run left the helper's execution
@@ -170,16 +187,7 @@ func (b *Broker) reportBackupHelperDeath(session *Session) (redispatch []string)
 	}
 
 	if len(neverStarted) > 0 {
-		detail := "the backup helper session ended while the run was queued"
-		if reason := session.CloseReason(); reason != "" {
-			detail += " (" + reason + ")"
-		}
-		if stopping {
-			detail = "the agent stopped the backup helper while the run was queued"
-		} else {
-			detail += fmt.Sprintf("; it had already been re-sent to a new helper %d times", maxBackupRunRedispatches)
-		}
-		failure := backupRunNeverStarted(detail)
+		failure := queuedRunLostFailure(session, stopping)
 		for _, commandID := range neverStarted {
 			backupLog.Warn("backup helper session ended with a queued run, failing the job",
 				"sessionId", session.SessionID, "commandId", commandID, "error", failure)
@@ -208,6 +216,7 @@ func (b *Broker) redispatchQueuedBackupRuns(ended *Session, commandIDs []string)
 	if bh == nil {
 		return
 	}
+	awaitEndedBackupHelper(bh, ended)
 	for _, commandID := range commandIDs {
 		bh.mu.Lock()
 		run := bh.activeRuns[commandID]
@@ -237,6 +246,15 @@ func (b *Broker) redispatchQueuedBackupRuns(ended *Session, commandIDs []string)
 		// new entry decides who reports it: the new helper's own result or
 		// death once admitted, or the failure handled below.
 		env, err := b.forwardTrackedBackupRun(bh, session, req, timeout, redispatches+1)
+		var terminal *backupRunTerminalError
+		if errors.As(err, &terminal) {
+			// The new helper admitted it and its session ended too; the
+			// error already says how (started there, or out of re-sends).
+			backupLog.Warn("re-sent backup run lost with its new helper session, failing the job",
+				"commandId", commandID, "sessionId", session.SessionID, "error", terminal.msg)
+			b.reportSyntheticBackupFailure(session, commandID, terminal.msg, "-helper-death")
+			continue
+		}
 		if err != nil {
 			b.reportSyntheticBackupFailure(ended, commandID, backupRunNeverStarted(
 				"the backup helper session ended while the run was queued, and re-sending it to a new helper failed: "+err.Error()),
@@ -265,6 +283,49 @@ func (b *Broker) redispatchQueuedBackupRuns(ended *Session, commandIDs []string)
 		}
 		result.CommandID = commandID
 		b.reportBackupResult(ended, commandID+"-redispatch-result", result)
+	}
+}
+
+// endedBackupHelperClearWait bounds how long a re-dispatch waits for the
+// ended session to be cleared from the broker (finishHelperSession does it
+// right after the death report). Package var so tests can shrink it.
+var endedBackupHelperClearWait = 5 * time.Second
+
+// awaitEndedBackupHelper returns once the helper behind ended can no longer
+// run anything: its session is no longer the broker's backup session (so a
+// respawn cannot hand it back), and its process has exited. The second part
+// is what keeps a run from executing twice. A queued run reads as queued
+// until the helper's "starting" frame arrives; when the agent closed the
+// session itself (keepalive), that frame can be lost on the closed
+// connection, and the old helper only cancels its work once it notices the
+// drop. Waiting out its exit (ClearBackupSession's reap kills it after
+// backupHelperExitGrace) closes that window. Both waits are bounded; past the
+// bound the re-dispatch goes ahead with a warning.
+func awaitEndedBackupHelper(bh *backupHelper, ended *Session) {
+	deadline := time.Now().Add(endedBackupHelperClearWait)
+	for {
+		bh.mu.Lock()
+		current := bh.session
+		exited := ended.backupHelperExited
+		bh.mu.Unlock()
+		if current != ended {
+			if exited == nil {
+				return
+			}
+			select {
+			case <-exited:
+			case <-time.After(backupHelperExitGrace + endedBackupHelperClearWait):
+				backupLog.Warn("ended backup helper has not exited; re-sending queued runs anyway",
+					"sessionId", ended.SessionID, "pid", ended.PID)
+			}
+			return
+		}
+		if !time.Now().Before(deadline) {
+			backupLog.Warn("ended backup helper session still registered; re-sending queued runs anyway",
+				"sessionId", ended.SessionID)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
