@@ -2820,7 +2820,7 @@ func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener
 	if linuxDesktop != nil {
 		// Only the UI locale is taken from a Linux desktop helper's
 		// advertisements; consent, PAM and prompt support grant nothing.
-		session.enableLinuxDesktopInbound(*linuxDesktop, b.linuxWaylandCaptureAuthorized)
+		session.enableLinuxDesktopInbound(*linuxDesktop, b.linuxWaylandCaptureAuthorizer())
 		session.uiLocale = uiLocaleFromAuth(authReq)
 	} else {
 		applyAuthAdvertisements(session, helperRole, authReq)

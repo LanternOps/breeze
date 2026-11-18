@@ -1550,6 +1550,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		// Before Listen: a Linux desktop helper keeps a CanCapture claim only
+		// with desktop_wayland_helper on and the Wayland backend in this build
+		// (#12117); always false until that backend ships.
+		h.sessionBroker.SetLinuxWaylandCaptureAuthorized(
+			linuxWaylandCaptureAuthorizer(runtime.GOOS, cfg, desktop.WaylandBackendCompiled))
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
 		h.startPromptHost(config.GetDataDir())

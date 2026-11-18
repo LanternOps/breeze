@@ -111,6 +111,27 @@ func (b *Broker) RevokeLinuxDesktopTickets(logindSessionID string) {
 	b.linuxDesktopTickets.revokeSession(logindSessionID)
 }
 
+// SetLinuxWaylandCaptureAuthorized installs root's decision on whether a
+// Linux desktop helper may keep a CanCapture claim (#12117 W3: the
+// desktop_wayland_helper flag and a build with the Wayland backend). Call it
+// before Listen; each admitted helper session captures the function at
+// admission. nil denies capture.
+func (b *Broker) SetLinuxWaylandCaptureAuthorized(authorized func() bool) {
+	if authorized == nil {
+		authorized = func() bool { return false }
+	}
+	b.mu.Lock()
+	b.linuxWaylandCaptureAuthorized = authorized
+	b.mu.Unlock()
+}
+
+// linuxWaylandCaptureAuthorizer is the installed capture decision.
+func (b *Broker) linuxWaylandCaptureAuthorizer() func() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.linuxWaylandCaptureAuthorized
+}
+
 // runningBuildHash is the SHA-256 of the daemon's own executable, recorded
 // when the broker started; "" if it could not be read.
 func (b *Broker) runningBuildHash() string {

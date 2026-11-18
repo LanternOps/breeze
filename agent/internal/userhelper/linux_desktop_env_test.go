@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
 func testSpawnTicket(t *testing.T) string {
@@ -156,6 +158,18 @@ func TestDetectCapabilities_LinuxDesktopHelperWithBackend(t *testing.T) {
 	// No display at all still cannot capture.
 	if caps := detectCapabilitiesForOS("linux", ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession, ""); caps.CanCapture {
 		t.Fatal("no display: CanCapture must be false")
+	}
+}
+
+// The helper's capability check reads the desktop package's backend
+// registry (#12117 W3), where only the Linux desktop helper process
+// registers a backend. Nothing registers one in this build.
+func TestLinuxSessionBackendRegistered_ReadsDesktopRegistry(t *testing.T) {
+	if got, want := reflect.ValueOf(linuxSessionBackendRegistered).Pointer(), reflect.ValueOf(desktop.SessionBackendRegistered).Pointer(); got != want {
+		t.Fatal("linuxSessionBackendRegistered must be desktop.SessionBackendRegistered")
+	}
+	if linuxSessionBackendRegistered() {
+		t.Fatal("no session backend is registered in this build")
 	}
 }
 

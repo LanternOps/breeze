@@ -113,12 +113,30 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
+	// Capture config for this session (optionally targeting a display).
+	capConfig := m.CaptureConfig()
+	if displayIndex > 0 {
+		capConfig.DisplayIndex = displayIndex
+	}
+
+	// A process with a registered session backend (the Linux desktop
+	// helper, #12117) takes capture and input from one backend session;
+	// otherwise both are today's platform code. Opened before the Session
+	// exists because its input sink is fixed at construction; once the
+	// Session is published, doCleanup closes it.
+	backendSession, err := openRegisteredBackendSession(capConfig)
+	if err != nil {
+		_ = peerConn.Close()
+		return "", fmt.Errorf("failed to create screen capturer: %w", err)
+	}
+
 	// Create session early so external StopSession calls and peer callbacks can
 	// clean up even if we fail before returning an answer.
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewSafeInput(NewInputHandler(m.config.DesktopContext), sessionID),
+		backend:      backendSession,
+		inputHandler: NewSafeInput(sessionInputHandler(backendSession, m.config.DesktopContext), sessionID),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,
@@ -235,12 +253,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}()
 
 	// Create screen capturer (optionally targeting a specific display)
-	capConfig := m.CaptureConfig()
-	if displayIndex > 0 {
-		capConfig.DisplayIndex = displayIndex
-	}
 	capturerStart := time.Now()
-	capturer, err := openSessionCapturer(capConfig)
+	capturer, err := openSessionCaptureSource(session.backend, func() (ScreenCapturer, error) {
+		return openSessionCapturer(capConfig)
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
@@ -249,6 +265,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session.displayIndex = capConfig.DisplayIndex
 	session.captureConfig = capConfig
 	session.gpuVendor = m.gpuVendor
+	if session.backend != nil {
+		// The source can end on its own (the user stops sharing); that ends
+		// the session with share_stopped or capture_ended. Exits on
+		// session.done, like watchSessionLifetime, so not in session.wg.
+		go m.watchSessionBackend(sessionID, session, session.backend)
+	}
 
 	// Set display offset so input handler translates viewer-relative coords
 	// to virtual screen coords (required for multi-monitor setups). A session

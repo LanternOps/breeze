@@ -1734,9 +1734,10 @@ func detectDisplayEnv() string {
 }
 
 // linuxSessionBackendRegistered reports whether a capture backend for the
-// Linux desktop helper's session is compiled in and registered. Task 3.3 of
-// #12117 points it at the desktop session backend registry.
-var linuxSessionBackendRegistered = func() bool { return false }
+// Linux desktop helper's session is compiled in and registered: the desktop
+// session backend registry (#12117), where only the Linux desktop helper
+// process registers one. A variable so tests can stand in for it.
+var linuxSessionBackendRegistered = desktop.SessionBackendRegistered
 
 func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 	return detectCapabilitiesForOS(runtime.GOOS, binaryKind, desktopContext, detectDisplayEnv())

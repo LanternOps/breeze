@@ -49,6 +49,11 @@ type Session struct {
 	cursorDC          *webrtc.DataChannel
 	controlDC         *webrtc.DataChannel
 
+	// backend is the session backend session that supplies capturer and
+	// inputHandler when the process registered a SessionBackend (#12117);
+	// nil otherwise. Closed by doCleanup after the capturer.
+	backend BackendSession
+
 	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
 	// then, after it found no usable software encoder (#11392).
 	softwareSwapRetryAt atomic.Int64
@@ -701,6 +706,13 @@ func (s *Session) doCleanup() {
 		s.oldCapturers = nil
 		if s.capturer != nil {
 			s.capturer.Close()
+		}
+		// The backend session owns the capturer and the input sink; it is
+		// released after both are done with.
+		if s.backend != nil {
+			if err := s.backend.Close(); err != nil {
+				slog.Warn("Failed to close the capture session", "session", s.id, "error", err.Error())
+			}
 		}
 		// After the capturer: the display may sleep again only once nothing
 		// captures it (#10874).
