@@ -3,7 +3,7 @@
 #
 #   scripts/qa/install-schedule.sh [--hours "1 13"] [--auth-dir ~/.claude-auth/<profile>] [--uninstall]
 #
-# Copies the runner, MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
+# Copies the runner (+ sweep-lib.sh, egress-proxy.py), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
 # which branch this checkout happens to be on) and loads a LaunchAgent that fires at
 # the given local hours (default: 01:30 nightly). launchd catches up a missed fire on wake.
 set -euo pipefail
@@ -32,7 +32,11 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$QA_HOME/bin" "$QA_HOME/runs"
+[ -x /usr/bin/sandbox-exec ] && [ -x /usr/bin/python3 ] \
+  || { echo "ERROR: needs /usr/bin/sandbox-exec and /usr/bin/python3 (agent sandbox + egress proxy)"; exit 1; }
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
+install -m 0644 "$SRC_DIR/sweep-lib.sh" "$QA_HOME/bin/sweep-lib.sh"
+install -m 0755 "$SRC_DIR/egress-proxy.py" "$QA_HOME/bin/egress-proxy.py"
 install -m 0644 "$SRC_DIR/qa-mcp.json" "$QA_HOME/bin/qa-mcp.json"
 install -m 0644 "$SRC_DIR/qa-env.overrides" "$QA_HOME/bin/qa-env.overrides"
 install -m 0644 "$CHECKOUT/.claude/skills/ui-qa-sweep/SKILL.md" "$QA_HOME/bin/ui-qa-sweep.SKILL.md"   # contract travels with the runner
