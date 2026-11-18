@@ -170,6 +170,7 @@
       "consentFailed": "Onay başlatılamadı.",
       "retestFailed": "Bağlantı yeniden test edilemedi.",
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
+      "retestNeedsAttention": "Yeniden test tamamlandı, ancak bağlantı hâlâ dikkat gerektiriyor.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
       "disconnectSucceeded": "Breeze bağlantısı kesildi.",
@@ -192,6 +193,7 @@
       "grant_unexpected": "Microsoft, onaylanmış bildirimin dışındaki izinleri rapor ediyor.",
       "manifest_stale": "Verilen izinler daha eski bir bildirimi kullanıyor. Tekrar onay verin.",
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
+      "grant_reconciliation_unavailable": "Microsoft bağlantıyı kabul etti, ancak Breeze bu kiracının yönetici eylemleri uygulamasına hangi izinleri verdiğini okuyamıyor, bu nedenle izinler doğrulanamıyor. Yönetici eylemleri doğrulanana kadar duraklatılmış kalır.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
       "executor_unavailablePending": "Bağlantı tamamlanamadı. Bağlan'ı yeniden deneyin; sorun devam ederse destekle iletişime geçin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."

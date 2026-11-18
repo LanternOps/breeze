@@ -170,6 +170,7 @@
       "consentFailed": "Não foi possível iniciar o consentimento.",
       "retestFailed": "Não foi possível testar a conexão novamente.",
       "retestSucceeded": "O novo teste da conexão foi concluído.",
+      "retestNeedsAttention": "O novo teste foi concluído, mas a conexão ainda precisa de atenção.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
       "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
@@ -192,6 +193,7 @@
       "grant_unexpected": "A Microsoft informou permissões fora do manifesto aprovado.",
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
+      "grant_reconciliation_unavailable": "A Microsoft aceitou a conexão, mas o Breeze não consegue ler quais permissões este locatário concedeu ao app de ações administrativas, então elas não podem ser verificadas. As ações administrativas ficam pausadas até que sejam.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
