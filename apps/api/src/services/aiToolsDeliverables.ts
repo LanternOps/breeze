@@ -378,7 +378,7 @@ export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
   definition: {
     name: 'list_deliverable_templates',
     description:
-      "List accessible org template sets; partner-wide sets require a partner token. Returns each item's cadence, lead/grace days and artifact requirements; item instructions, description and checklistTemplateId only with includeDetails. Instructions and checklistTemplateId are INTERNAL — never repeat to a customer. Paged: follow nextCursor while hasMore. Read-only.",
+      "List accessible template sets (partner-wide sets need a partner token) with each item's cadence, lead/grace days and artifact requirement. includeDetails adds item instructions and checklistTemplateId — INTERNAL, never repeat to a customer. Paged: follow nextCursor while hasMore. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -438,10 +438,7 @@ export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   definition: {
     name: 'list_org_documents',
     description:
-      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, '
-      + 'exports, delivery evidence). Returns metadata only — titles, categories, sizes, versions and portal visibility — '
-      + 'never the file bytes. Set includeSuperseded to also list older versions. description/sha256/uploader only with '
-      + 'includeDetails. Paged: follow nextCursor while hasMore. Read-only.',
+      "List an organization's library documents (current versions; includeSuperseded adds older ones). Metadata only — title, category, size, version, portal visibility — never the file bytes. description/sha256/uploader only with includeDetails. Paged: follow nextCursor while hasMore. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: {
