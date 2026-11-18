@@ -211,7 +211,8 @@ describe('quotesPublic GET /:token', () => {
     expect(JSON.stringify(header)).not.toContain('do-not-serialize');
     // Sibling `presentation` field (Task 12) — no partner theme row preset, so
     // it falls through to the defaults, same as `branding.theme`/`pageSize`.
-    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+    // #12097: no page-size choice and no country → the (US) deployment default, Letter.
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'letter' });
   });
 
   it('resolves presentation.theme="condensed" from the partner default', async () => {

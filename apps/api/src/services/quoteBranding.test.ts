@@ -233,11 +233,21 @@ describe('resolveQuoteBranding', () => {
       expect(b.pageSize).toBe('a4');
     });
 
-    it('falls back to classic/a4 defaults when the partner is absent and there is no snapshot', async () => {
+    it('falls back to classic / the deployment page size when the partner is absent and there is no snapshot', async () => {
+      vi.stubEnv('BREEZE_REGION', 'eu');
       queue(null, baseBrand);
       const b = await resolveQuoteBranding(source({ presentationSnapshot: null }));
       expect(b.theme).toBe('classic');
       expect(b.pageSize).toBe('a4');
+      vi.unstubAllEnvs();
+    });
+
+    // #12097: a draft from a partner that never chose previews its region default.
+    it('a partner with no page-size choice previews its region default', async () => {
+      vi.stubEnv('BREEZE_REGION', 'eu');
+      queue({ ...basePartner, documentPageSize: null, billingAddressCountry: 'US' }, baseBrand);
+      expect((await resolveQuoteBranding(source({ presentationSnapshot: null }))).pageSize).toBe('letter');
+      vi.unstubAllEnvs();
     });
   });
 });

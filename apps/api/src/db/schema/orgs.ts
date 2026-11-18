@@ -136,7 +136,9 @@ export const partners = pgTable('partners', {
   // quote PDFs/HTML. Partner-owned deliberately (MSP identity, not per-org
   // config) — see the spec's carve-out justification.
   documentTheme: varchar('document_theme', { length: 32 }).notNull().default('classic'),
-  documentPageSize: varchar('document_page_size', { length: 8 }).notNull().default('letter'),
+  // #12097: NULL = never chosen → the partner's region default (Letter for
+  // US/CA, A4 elsewhere). Read through resolvePartnerPageSize, never raw.
+  documentPageSize: varchar('document_page_size', { length: 8 }),
   billingCompanyName: varchar('billing_company_name', { length: 255 }),
   billingPhone: varchar('billing_phone', { length: 40 }),
   billingWebsite: varchar('billing_website', { length: 255 }),
