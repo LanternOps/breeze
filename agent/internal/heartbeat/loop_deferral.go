@@ -88,9 +88,7 @@ func (d *loopDeferral) Record(key string, err error) (time.Time, bool) {
 
 // idSegment matches path segments that carry an identifier rather than a
 // route name: UUIDs and long hex/base64url-ish tokens.
-var idSegment = sync.OnceValue(func() *regexp.Regexp {
-	return regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9A-Za-z_-]{24,})$`)
-})
+var idSegment = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9A-Za-z_-]{24,})$`)
 
 // loopKey maps a request to its deferral key: "origin METHOD /route", with
 // the agent id (the segment after /agents/) and any id-shaped segment
@@ -105,7 +103,7 @@ func loopKey(method, rawURL string) string {
 		if s == "" {
 			continue
 		}
-		if (i > 0 && segs[i-1] == "agents") || idSegment().MatchString(s) {
+		if (i > 0 && segs[i-1] == "agents") || idSegment.MatchString(s) {
 			segs[i] = ":id"
 		}
 	}

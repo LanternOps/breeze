@@ -89,11 +89,11 @@ func verifyRebindDirective(d *RebindDirective, sourceAgentID string, pinned []st
 	if err != nil {
 		return err
 	}
-	if !identityUUIDPattern().MatchString(d.IntentID) {
+	if !identityUUIDPattern.MatchString(d.IntentID) {
 		return errors.New("rebind directive intent id is not a UUID")
 	}
-	if !identityUUIDPattern().MatchString(d.TargetDeviceID) || !identityUUIDPattern().MatchString(d.TargetOrgID) ||
-		!identityUUIDPattern().MatchString(d.TargetSiteID) {
+	if !identityUUIDPattern.MatchString(d.TargetDeviceID) || !identityUUIDPattern.MatchString(d.TargetOrgID) ||
+		!identityUUIDPattern.MatchString(d.TargetSiteID) {
 		return errors.New("rebind directive target device, org or site is not a UUID")
 	}
 	if !rebindExpiresAtPattern.MatchString(d.ExpiresAt) {

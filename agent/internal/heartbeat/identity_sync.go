@@ -124,9 +124,7 @@ const (
 var errIdentityAssertionStale = errors.New("assertion does not answer this agent's latest heartbeat")
 
 var (
-	identityUUIDPattern = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	})
+	identityUUIDPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	identityNoncePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{32}$`) })
 )
 
@@ -241,7 +239,7 @@ func verifyIdentityAssertion(a *IdentityAssertion, local identitySyncLocal) erro
 	if local.DeviceID == "" || a.DeviceID != local.DeviceID {
 		return errors.New("assertion is for a different device")
 	}
-	if !identityUUIDPattern().MatchString(a.OrgID) || !identityUUIDPattern().MatchString(a.SiteID) {
+	if !identityUUIDPattern.MatchString(a.OrgID) || !identityUUIDPattern.MatchString(a.SiteID) {
 		return errors.New("assertion org or site is not a UUID")
 	}
 	issuedAt, err := time.Parse(time.RFC3339, a.IssuedAt)
@@ -811,7 +809,7 @@ func identityEpochRefusalCode() string {
 // noteIdentityRejection records a refusal for the next beat to report. Only
 // for an org/site the server could have signed (UUIDs).
 func (h *Heartbeat) noteIdentityRejection(code, orgID, siteID string) {
-	if code == "" || !identityUUIDPattern().MatchString(orgID) || !identityUUIDPattern().MatchString(siteID) {
+	if code == "" || !identityUUIDPattern.MatchString(orgID) || !identityUUIDPattern.MatchString(siteID) {
 		return
 	}
 	h.identitySync.rejection.Store(&IdentityAssertionRejection{Code: code, OrgID: orgID, SiteID: siteID})
