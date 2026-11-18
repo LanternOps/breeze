@@ -201,7 +201,7 @@ func TestBackupHelperDeath_QueuedRun_RedispatchedToFreshHelper(t *testing.T) {
 // fails it like any running run, and it must never be sent again (that would
 // run the same backup twice).
 func TestBackupHelperDeath_QueuedRunThatStarted_IsFailedNotRedispatched(t *testing.T) {
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		rig := newBufferedBackupDeathRig(t)
 		spawned := make(chan *replacementHelper, 1)
 		calls := respawnTo(t, rig.broker, spawned)
@@ -316,7 +316,7 @@ func TestBackupHelperDeath_QueuedRun_RedispatchIsBounded(t *testing.T) {
 	rig.forwardQueueAsync(t, rig.helper, "cmd-q", ackQueued, nil)
 
 	rig.killHelper(t)
-	for i := 0; i < maxBackupRunRedispatches; i++ {
+	for range maxBackupRunRedispatches {
 		replacement := waitReplacement(t, spawned)
 		waitRequest(t, ackNext(replacement.helper, ackQueued))
 		waitRunState(t, rig.broker, "cmd-q", backupRunQueued)
