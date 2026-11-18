@@ -140,6 +140,8 @@ func TestValidateLinuxDesktopSpawnSpec(t *testing.T) {
 		"short ticket":         func(s *LinuxDesktopSpawnSpec) { s.Ticket = testSpawnTicket[:42] },
 		"ticket alphabet":      func(s *LinuxDesktopSpawnSpec) { s.Ticket = testSpawnTicket[:42] + "+" },
 		"relative exe":         func(s *LinuxDesktopSpawnSpec) { s.AgentExe = "breeze-agent" },
+		"windows exe":          func(s *LinuxDesktopSpawnSpec) { s.AgentExe = `C:\breeze\breeze-agent.exe` },
+		"windows socket":       func(s *LinuxDesktopSpawnSpec) { s.SocketPath = `C:\run\breeze\desktop\1000.sock` },
 		"exe with dots":        func(s *LinuxDesktopSpawnSpec) { s.AgentExe = "/usr/../tmp/breeze-agent" },
 		"socket other uid":     func(s *LinuxDesktopSpawnSpec) { s.SocketPath = "/run/breeze/desktop/1001.sock" },
 		"socket outside":       func(s *LinuxDesktopSpawnSpec) { s.SocketPath = "/tmp/1000.sock" },

@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -189,7 +190,10 @@ func validateLinuxDesktopSpawnSpec(s LinuxDesktopSpawnSpec) error {
 		return bad("generation")
 	case !linuxSpawnTicketPattern.MatchString(s.Ticket):
 		return bad("ticket shape")
-	case !filepath.IsAbs(s.AgentExe) || filepath.Clean(s.AgentExe) != s.AgentExe:
+	// path, not filepath, here and in validLinuxDesktopSocketPath: the spec
+	// is a Linux path on every host, and on Windows filepath.IsAbs rejects
+	// "/usr/..." (no volume) while accepting `C:\...`.
+	case !path.IsAbs(s.AgentExe) || path.Clean(s.AgentExe) != s.AgentExe:
 		return bad("agent executable path")
 	case !validLinuxDesktopSocketPath(s.SocketPath, s.Binding.UID):
 		return bad("socket path")
@@ -204,14 +208,14 @@ func validateLinuxDesktopSpawnSpec(s LinuxDesktopSpawnSpec) error {
 // validLinuxDesktopSocketPath accepts only <root>/desktop/<uid>.sock under
 // /run/breeze or /var/run/breeze — the same prefixes the helper accepts.
 func validLinuxDesktopSocketPath(p string, uid uint32) bool {
-	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
+	if !path.IsAbs(p) || path.Clean(p) != p {
 		return false
 	}
 	want := strconv.FormatUint(uint64(uid), 10) + ".sock"
-	if filepath.Base(p) != want {
+	if path.Base(p) != want {
 		return false
 	}
-	dir := filepath.Dir(p)
+	dir := path.Dir(p)
 	return dir == "/run/breeze/desktop" || dir == "/var/run/breeze/desktop"
 }
 
