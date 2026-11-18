@@ -276,8 +276,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           BUILD_VERSION: ${{ steps.version.outputs.version }}
-          # Allow weak-linking ScreenCaptureKit so the binary runs on macOS 12+
-          # where SCK doesn't exist (prevents dyld Symbol not found crash)
+          # Weak-link ScreenCaptureKit so a missing SCK symbol never crashes dyld.
+          # Go 1.27 binaries require macOS 13+ (LC_BUILD_VERSION minos 13.0).
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
           agent/scripts/build-edition.sh --edition self-host --component agent \
