@@ -156,6 +156,46 @@ func TestInstallFileWithoutSparseStaysFullyAllocated(t *testing.T) {
 	}
 }
 
+// TestApplyWinAttrsSparseKeepsRestoredMtime: BMR sets the recorded mtime
+// BEFORE the attributes, so releasing the zero runs must not move it to "now".
+func TestApplyWinAttrsSparseKeepsRestoredMtime(t *testing.T) {
+	content, holes := sparseCorpus()
+	path := filepath.Join(t.TempDir(), "bmr-mtime.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	recorded := time.Date(2023, 4, 5, 6, 7, 8, 0, time.UTC)
+	if err := os.Chtimes(path, recorded, recorded); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := ApplyWinAttrs(path, windows.FILE_ATTRIBUTE_SPARSE_FILE); err != nil {
+		t.Fatalf("ApplyWinAttrs: %v", err)
+	}
+	// Holes really were released, so this is not a vacuous no-op pass.
+	assertHoles(t, path, content, holes)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !info.ModTime().Equal(recorded) {
+		t.Fatalf("mtime = %v, want the restored %v", info.ModTime().UTC(), recorded)
+	}
+}
+
+// TestInstallFileWithAttrsEmptySparseFile: zero bytes in, an empty sparse
+// file out, no warnings.
+func TestInstallFileWithAttrsEmptySparseFile(t *testing.T) {
+	base := t.TempDir()
+	warnings, err := InstallFileWithAttrs(base, "empty.bin", writeBinarySource(t, nil), 0o644, time.Time{}, nil, windows.FILE_ATTRIBUTE_SPARSE_FILE)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("InstallFileWithAttrs = (%v, %v), want no warnings or error", warnings, err)
+	}
+	info, err := os.Stat(filepath.Join(base, "empty.bin"))
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("stat = (%v, %v), want an empty file", info, err)
+	}
+}
+
 // TestApplyWinAttrsRecreatesSparseHoles covers the pathname (BMR) restore
 // path, which writes the content BEFORE the attributes: setting the flag must
 // also release the zero runs already written as allocated zeroes.

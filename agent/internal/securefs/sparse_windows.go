@@ -3,6 +3,7 @@
 package securefs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,7 +66,18 @@ func zeroDataRanges(handle windows.Handle, holes []holeRange) error {
 // just read as zero are released, and nobody can write them in between, so the
 // file's bytes cannot change — even if the pathname were redirected, the only
 // effect on whatever file it reached would be deallocation of zeroes.
-// Directories are skipped: they carry no data stream to scan.
+//
+// Skipped: directories (no data stream to scan) and reparse points — the open
+// does not follow them, so a symlink, junction or cloud placeholder (which a
+// read would hydrate) is left exactly as the pathname restore published it.
+//
+// The caller has already set the file's mtime (BMR runs chtimes before the
+// attributes), and releasing ranges through a write handle is a write, so
+// timestamp updates are suspended on this handle before anything else.
+//
+// Cost: one extra sequential read of the file, paid only for files the
+// manifest marks sparse, and only on the pathname path — the primary restore
+// plans its holes during the copy it does anyway.
 func punchHolesByPath(p *uint16) error {
 	// Skip a directory before the writer-excluding open below, which would
 	// otherwise fail on any directory something else holds open — and a
@@ -75,7 +87,7 @@ func punchHolesByPath(p *uint16) error {
 	}
 	handle, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ, nil,
-		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return err
 	}
@@ -84,8 +96,14 @@ func punchHolesByPath(p *uint16) error {
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return err
 	}
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
 		return nil
+	}
+	// -1 in a FILE_BASIC_INFO time field suspends that timestamp's updates
+	// for every later operation on this handle; 0 leaves a field (and the
+	// attributes) unchanged.
+	if err := setBasicInfo(handle, &fileBasicInfo{LastAccessTime: -1, LastWriteTime: -1, ChangeTime: -1}); err != nil {
+		return fmt.Errorf("suspend timestamp updates: %w", err)
 	}
 	_, holes, err := planSparseCopy(nil, handleReader{handle}, sparseChunk)
 	if err != nil {
@@ -104,6 +122,11 @@ func (r handleReader) Read(p []byte) (int, error) {
 	}
 	var n uint32
 	if err := windows.ReadFile(r.handle, p, &n, nil); err != nil {
+		// A synchronous handle reports end of file as a 0-byte success, but
+		// some redirectors answer ERROR_HANDLE_EOF instead.
+		if errors.Is(err, windows.ERROR_HANDLE_EOF) {
+			return int(n), io.EOF
+		}
 		return int(n), err
 	}
 	if n == 0 {
