@@ -116,8 +116,12 @@ export async function createDeviceContext(
       console.error('[brainDeviceContext] card-free note reached the handler with an expiry past the cap; not written');
       return { error: NOTE_WRITE_UNAVAILABLE_MESSAGE };
     }
-    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${deviceId}`}, 0))`);
-    const counts = await countDeviceNotes(deviceId);
+    // Key the lock on the id as Postgres returned it, not as the caller spelled
+    // it: the column reads every case of a uuid as one device, so a raw-text
+    // key would give each spelling its own lock and let parallel writes pass
+    // the bound once per spelling.
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${device.id}`}, 0))`);
+    const counts = await countDeviceNotes(device.id);
     if (!cardFreeNoteFits(counts)) return { error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE };
   }
 
@@ -125,7 +129,7 @@ export async function createDeviceContext(
     .insert(brainDeviceContext)
     .values({
       orgId: device.orgId,
-      deviceId,
+      deviceId: device.id,
       contextType,
       summary,
       details,

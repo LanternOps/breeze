@@ -85,6 +85,22 @@ describe('card-free note bounds on a real Postgres (breeze_app)', () => {
     expect(await notesOn(device.id)).toBe(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
   });
 
+  // The model supplies the device id as text. Postgres reads every case of a
+  // uuid as the same device, so the lock must too, or each spelling takes its
+  // own lock and parallel writes pass the bound once per spelling.
+  it('parallel card-free notes stop at the bound whatever case the device id is spelled in', async () => {
+    const { org, device } = await fixture();
+    const auth = orgAuth(org.id);
+    const spellings = [device.id.toLowerCase(), device.id.toUpperCase()];
+
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => cardFreeWrite(org.id, spellings[i % 2]!, auth, i)),
+    );
+
+    expect(results.filter((r) => !('error' in r))).toHaveLength(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
+    expect(await notesOn(device.id)).toBe(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
+  });
+
   it(`parallel card-free notes stop at ${NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE} active notes; resolved and expired ones do not count`, async () => {
     const { org, device } = await fixture();
     const auth = orgAuth(org.id);
