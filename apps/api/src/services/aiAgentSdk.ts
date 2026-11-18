@@ -3831,7 +3831,54 @@ function approvedTopologyRun(toolName: string, output: string, isError: boolean)
   return { runId, state };
 }
 
-async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined, refusalLedgered: boolean): Promise<void> {
+/**
+ * Close the ai_tool_executions row the gate left `executing` for ONE call
+ * (#11994): by its id, still `executing`, and bound to this session (#12131).
+ * The id comes from an in-memory per-call store, so the filter does not trust
+ * it alone. A row already closed (or reaped) matches nothing.
+ */
+function closeExecutingLedgerRow(
+  session: ActiveSession,
+  executionId: string,
+  values: Partial<typeof aiToolExecutions.$inferInsert>,
+): Promise<unknown> {
+  return withDbAccessContext(
+    { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+    () =>
+      db.update(aiToolExecutions)
+        .set(values)
+        .where(and(
+          eq(aiToolExecutions.id, executionId),
+          eq(aiToolExecutions.sessionId, session.breezeSessionId),
+          eq(aiToolExecutions.status, 'executing'),
+        )),
+  );
+}
+
+/** A topology call's ledger output: the raw tool output is never persisted. */
+const TOPOLOGY_WITHHELD_OUTPUT = { topologyInvestigation: true, outputWithheld: true } as const;
+
+/**
+ * #12131: the topology early returns in createSessionPostToolUse still close
+ * the row the gate left `executing` for this call (an approved
+ * `diagnose_connectivity` release leaves one), so the ledger does not show a
+ * finished call as running until the stale-execution reaper. Same withheld
+ * output as the topology ledger row; never the raw tool output.
+ */
+async function closeTopologyExecutingRow(session: ActiveSession, toolName: string, executionId: string, isError: boolean, durationMs: number): Promise<void> {
+  try {
+    await closeExecutingLedgerRow(session, executionId, {
+      status: isError ? 'failed' : 'completed',
+      toolOutput: TOPOLOGY_WITHHELD_OUTPUT,
+      durationMs,
+      completedAt: new Date(),
+    });
+  } catch (err) {
+    console.error(`[AI-SDK] Failed to close topology tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined, refusalLedgered: boolean, executingRow: { executionId: string } | undefined): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
   // No tool row is written here, but the call must stop being pending or the
   // dropped-call fallback would misreport it (#7931).
@@ -3841,6 +3888,12 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
   if (run) session.eventBus.publish({ type: 'topology_diagnostic_run', ...run });
   // #10411: the pre hook already wrote this refused call's row.
   if (refusalLedgered) return;
+  // #12131: the gate already wrote this call's row (left `executing`); close
+  // it rather than writing a second row for the same call.
+  if (executingRow) {
+    await closeTopologyExecutingRow(session, toolName, executingRow.executionId, isError, durationMs);
+    return;
+  }
   try {
     await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -3848,7 +3901,7 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
         sessionId: session.breezeSessionId,
         toolName,
         toolInput: redactSensitiveToolInput(input),
-        toolOutput: { topologyInvestigation: true, outputWithheld: true },
+        toolOutput: TOPOLOGY_WITHHELD_OUTPUT,
         status: isError ? 'failed' : 'completed',
         durationMs,
         completedAt: new Date(),
@@ -3879,10 +3932,13 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // fallback, which persists that text (#7931).
     if (session.topologyTurnSealed) {
       claimToolUseId(session, toolName, sdkToolUseId);
+      // #12131: and its `executing` row closes now, output withheld, rather
+      // than waiting for the stale-execution reaper.
+      if (executingRow) await closeTopologyExecutingRow(session, toolName, executingRow.executionId, isError, durationMs);
       return;
     }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered);
+      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -4061,23 +4117,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // output to arrive, into another call's row.
       if (executingRow) {
         try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db.update(aiToolExecutions)
-                .set({
-                  status: isError ? 'failed' : 'completed',
-                  toolOutput: parsedOutput,
-                  errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-                  delegantToolCallId,
-                  durationMs,
-                  completedAt: new Date(),
-                })
-                .where(and(
-                  eq(aiToolExecutions.id, executingRow.executionId),
-                  eq(aiToolExecutions.status, 'executing'),
-                ))
-          );
+          await closeExecutingLedgerRow(session, executingRow.executionId, {
+            status: isError ? 'failed' : 'completed',
+            toolOutput: parsedOutput,
+            errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+            delegantToolCallId,
+            durationMs,
+            completedAt: new Date(),
+          });
         } catch (err) {
           persistenceError = true;
           console.error(`[AI-SDK] Failed to update approval execution record for ${toolName}:`, err instanceof Error ? err.message : err);
