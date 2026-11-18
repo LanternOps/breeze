@@ -69,6 +69,27 @@ ExecutorFailureCode {
   return 'organization_probe_failed';
 }
 
+const GRANT_RECONCILIATION_LOG_MESSAGE = '[m365-graph-actions-executor] grant reconciliation unavailable';
+
+/**
+ * The retest result carries only `grant_reconciliation_unavailable`; this line
+ * names the Graph step and typed code behind it (#12085) so an operator can
+ * tell a denied grant read from a timeout or an oversized response. Never logs
+ * a token, provider body, or tenant identifier.
+ */
+function logGrantReconciliationUnavailable(
+  observation: Awaited<ReturnType<MicrosoftGraphClient['probeTenant']>>,
+  correlationId: string,
+): void {
+  if (observation.observedGrants !== null) return;
+  console.warn(GRANT_RECONCILIATION_LOG_MESSAGE, {
+    operation: 'retest',
+    correlationId,
+    stage: observation.grantReconciliationFailure?.stage ?? null,
+    code: observation.grantReconciliationFailure?.code ?? null,
+  });
+}
+
 function verifiedResult(observation: Awaited<ReturnType<MicrosoftGraphClient['probeTenant']>>) {
   const reconciled = reconcileCustomerGraphActions(observation);
   const common = {
@@ -165,10 +186,11 @@ async function proveAdministratorIdentity(
  */
 async function proveApplication<T>(
   tokenClient: MicrosoftTokenClient,
-  tenantId: string,
+  input: { tenantId: string; correlationId: string },
   dependencies: ExecutorOperationDependencies,
   finish: (verified: ReturnType<typeof verifiedResult>) => T,
 ): Promise<T | ReturnType<typeof failed>> {
+  const { tenantId } = input;
   try {
     const accessToken = await tokenClient.acquireGraphAppToken({ tenantId });
     const observation = await dependencies.graphClient.probeTenant({ tenantId, accessToken });
@@ -177,6 +199,7 @@ async function proveApplication<T>(
       applicationId: dependencies.clientId,
     });
     if (proofError) return failed(proofError);
+    logGrantReconciliationUnavailable(observation, input.correlationId);
     return finish(verifiedResult(observation));
   } catch (error) {
     return failed(mappedFailure(error, error instanceof MicrosoftTokenClientError ? 'application' : 'probe'));
@@ -245,7 +268,10 @@ export async function retestOperation(
     } catch {
       return failed('credential_unavailable');
     }
-    return await proveApplication(tokenClient, request.tenantId, dependencies, (verified) => (
+    return await proveApplication(tokenClient, {
+      tenantId: request.tenantId,
+      correlationId: request.correlationId,
+    }, dependencies, (verified) => (
       retestResultSchema.parse(verified)
     ));
   } finally {

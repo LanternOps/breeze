@@ -39,7 +39,7 @@ func (h *Heartbeat) desktopClipboardReadResult(session *sessionbroker.Session, e
 		log.Warn("invalid desktop clipboard read payload", "helperSession", session.SessionID, "error", err.Error())
 		return ipc.DesktopClipboardReadResult{Error: "invalid request"}
 	}
-	if !desktopSessionIDPattern.MatchString(req.SessionID) {
+	if !desktopSessionIDPattern().MatchString(req.SessionID) {
 		log.Warn("dropping desktop clipboard read with invalid session ID",
 			"sessionId", req.SessionID, "helperSession", session.SessionID)
 		return ipc.DesktopClipboardReadResult{Error: "invalid session ID"}

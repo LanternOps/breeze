@@ -1209,6 +1209,7 @@
           "verified": "Yalnızca hazır olduğu doğrulandığında",
           "verifiedHelp": "Uyandır düğmesini yalnızca hazır bildiren veya önceki bir uyandırmayla çevrimiçi olduğu kanıtlanan cihazlar için göster. Diğer cihazlara bir kez test uyandırması gönderilebilir."
         },
+        "verifiedWarning": "Bu modda Uyandır düğmesi, bir cihazda uyandırma kanıtlanana (önceki bir uyandırmanın çevrimiçi olmasıyla) veya cihaz hazır bildirene kadar gizli kalır. Başlangıçta düğme çoğu cihazda gizli olur.",
         "aboutTitle": "Bu ayar hakkında",
         "aboutBody": "Bu ilke yalnızca Uyandır düğmesinin ne zaman görüneceğine karar verir. Breeze her cihazın Wake-on-LAN hazırlığını okur ancak BIOS, ağ bağdaştırıcısı veya Windows ayarlarını değiştirmez.",
         "panel": {
@@ -1258,6 +1259,8 @@
             "fast_startup_unknown": "Hızlı Başlatma durumu bilinmiyor",
             "nic_magic_packet_disabled": "Bağdaştırıcının magic packet ile uyandırması kapalı",
             "nic_magic_packet_unknown": "Magic packet ile uyandırma durumu bilinmiyor",
+            "nic_unreadable": "Kablolu bir bağdaştırıcı var ancak okunamadı",
+            "nic_cmdlets_unavailable": "Bu cihazda ağ bağdaştırıcısı ayarları okunamıyor",
             "nic_eee_enabled": "Energy-Efficient Ethernet açık",
             "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor"
           },

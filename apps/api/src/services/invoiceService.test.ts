@@ -849,6 +849,26 @@ describe('invoiceService guards', () => {
     expect(setArg.documentPageSize).toBe('letter');
   });
 
+  // #12097: null clears the choice; the response carries the region default it now prints on.
+  it('updatePartnerBillingSettings clears the page-size choice with null and returns the region default', async () => {
+    queueResult([{
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      documentTheme: 'classic', documentPageSize: null, billingAddressCountry: 'DE', settings: { secret: 'x' },
+    }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentPageSize: null },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty('documentPageSize', null);
+    expect(row).toMatchObject({ documentPageSize: 'a4', documentPageSizeChoice: null });
+    // The rows read back only to resolve the default never leave the service.
+    expect(row).not.toHaveProperty('settings');
+    expect(row).not.toHaveProperty('billingAddressCountry');
+  });
+
   it('updatePartnerBillingSettings clears the tax rate and markup when null', async () => {
     queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };

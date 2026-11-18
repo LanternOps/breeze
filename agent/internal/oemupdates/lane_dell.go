@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Dell Command Update lane (spec §5). Everything here that names a DCU flag,
@@ -61,11 +62,13 @@ var dellUpdateTypes = []struct{ category, flag string }{
 
 // dellBlockedIDPattern keeps a blocked id from carrying a separator or an
 // argument of its own into -localblockedswb.
-var dellBlockedIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var dellBlockedIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`) })
 
 // dellResultLine reads one doc-derived result line:
 // "[time] : <ID>: <title> - <type> - <version> -- <result>".
-var dellResultLine = regexp.MustCompile(`(?i)^(?:\[[^\]]*\]\s*:\s*)?([A-Z0-9]{5}):\s+(.+?)\s+-\s+(bios|firmware|driver|application)\s+-\s+(\S*)\s+--\s+(installed|failed|skipped|downloaded)\s*$`)
+var dellResultLine = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)^(?:\[[^\]]*\]\s*:\s*)?([A-Z0-9]{5}):\s+(.+?)\s+-\s+(bios|firmware|driver|application)\s+-\s+(\S*)\s+--\s+(installed|failed|skipped|downloaded)\s*$`)
+})
 
 // dellHost is how the lane looks at the machine. Every reader is a stat or a
 // file read: the availability gate must not spawn a process.
@@ -138,7 +141,7 @@ func (l *dellLane) Filter(cats []string, blocked []string) (FilterPlan, error) {
 		}
 	}
 	for _, id := range blocked {
-		if !dellBlockedIDPattern.MatchString(id) {
+		if !dellBlockedIDPattern().MatchString(id) {
 			return FilterPlan{}, runErr("invalid_blocked_id", fmt.Errorf("blocked id %q is not a Dell release id", id))
 		}
 	}
@@ -233,7 +236,7 @@ func readDellLog(path string) (items []Item, ok bool) {
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for sc.Scan() {
-		m := dellResultLine.FindStringSubmatch(sc.Text())
+		m := dellResultLine().FindStringSubmatch(sc.Text())
 		if m == nil {
 			continue
 		}

@@ -89,6 +89,7 @@ vi.mock('../services/redis', () => ({ getRedis: () => null })); // limiter fails
 vi.mock('../services/documentThemes', () => ({
   resolveThemeId: (t: unknown) => t ?? 'classic',
   resolvePageSize: (p: unknown) => p ?? 'letter',
+  resolvePartnerPageSize: (p: { documentPageSize?: unknown } | null | undefined) => p?.documentPageSize ?? 'letter',
 }));
 
 // Org-lifecycle gate (Wave 4 review fix C-A.1): each handler runs one extra

@@ -509,7 +509,7 @@ func TestHeartbeatResponsePinsTheKeyThenAppliesTheAssertion(t *testing.T) {
 	persistServerIdentityFn = config.PersistServerIdentity // the real write
 
 	reported := h.reportIdentityForBeat()
-	if reported == nil || !identityNoncePattern.MatchString(reported.Nonce) {
+	if reported == nil || !identityNoncePattern().MatchString(reported.Nonce) {
 		t.Fatalf("no usable nonce reported: %+v", reported)
 	}
 	a := goldenAssertion()

@@ -808,6 +808,22 @@ const DEVICE_NAME_CONTEXT_KEYS = new Set(['device', 'deviceName', 'hostname', 'd
  * alert's stored context carries are not used either: the token reads
  * "a device" rather than naming a device the report may not show. */
 function notableAlertTitle(title: string, context: unknown, device: string | null): string {
+  return capNotableAlertTitle(fillNotableAlertTitle(title, context, device));
+}
+
+/** Longest filled title the snapshot (and the PDF cover) will carry. */
+const NOTABLE_ALERT_TITLE_MAX = 200;
+
+/** Truncates after filling, so a long device name or token value cannot make
+ * the stored title unbounded. Counts code points so a surrogate pair is never
+ * split. */
+function capNotableAlertTitle(title: string): string {
+  const points = Array.from(title);
+  if (points.length <= NOTABLE_ALERT_TITLE_MAX) return title;
+  return points.slice(0, NOTABLE_ALERT_TITLE_MAX - 1).join('') + '…';
+}
+
+function fillNotableAlertTitle(title: string, context: unknown, device: string | null): string {
   if (device) return fillStoredAlertCopy({ title, context }, device).title;
   const stored = context && typeof context === 'object' && !Array.isArray(context)
     ? Object.fromEntries(Object.entries(context).filter(([k]) => !DEVICE_NAME_CONTEXT_KEYS.has(k)))

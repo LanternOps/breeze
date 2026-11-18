@@ -12,6 +12,7 @@ mod dev_build;
 mod linux_webkit_env;
 mod linux_webrtc;
 mod screenshot;
+mod session_end;
 mod session_menu;
 mod update_diagnostics;
 use update_diagnostics::{classify_update_error, UpdateFailStage, UpdateStep, UPDATER_LOG_FILE};
@@ -615,6 +616,109 @@ fn unregister_session(
     session_map.retain(|_, entry| entry.window_label != window.label());
     let mut device_map = lock_or_recover(&devices.0, "device_map");
     device_map.retain(|_, label| label != window.label());
+}
+
+/// #12129: the session window is showing this desktop session. Closing the
+/// window sends End for it natively (`session_end`), so the hang-up is
+/// recorded even when the page is hung. Called again on a transport switch
+/// that mints a new session, which replaces the old one.
+#[tauri::command]
+fn arm_session_end(
+    window: tauri::WebviewWindow,
+    api_url: String,
+    access_token: String,
+    session_id: String,
+    state: tauri::State<'_, session_end::SessionEndState>,
+) -> Result<(), String> {
+    let label = window.label();
+    let checked = if !label.starts_with("session-") {
+        Err("only a session window has a session to end".to_string())
+    } else if access_token.is_empty() {
+        Err("empty access token".to_string())
+    } else {
+        session_end::end_url(&api_url, &session_id).map(|_| ())
+    };
+    if let Err(err) = checked {
+        // Never the token. Closing this window will end the session as a
+        // dropped connection.
+        eprintln!("Not arming the native session end for {label}: {err}");
+        return Err(err);
+    }
+    let armed = state.arm(
+        label,
+        session_end::EndTarget {
+            api_url,
+            access_token,
+            session_id,
+        },
+    );
+    if !armed {
+        eprintln!("Not arming the native session end for {label}: the window is closing");
+    }
+    Ok(())
+}
+
+/// #12129: the page has sent End for `session_id` itself, or no longer shows
+/// it. A newer session armed in the same window is left alone.
+#[tauri::command]
+fn disarm_session_end(
+    window: tauri::WebviewWindow,
+    session_id: String,
+    state: tauri::State<'_, session_end::SessionEndState>,
+) {
+    state.disarm(window.label(), &session_id);
+}
+
+/// #12129: a close request for a session window showing a live session is held
+/// until End has been sent (bounded by `session_end::END_TIMEOUT`), then the
+/// window is destroyed whatever the outcome.
+fn hold_close_to_end_session(app: &tauri::AppHandle, label: &str, api: &tauri::CloseRequestApi) {
+    let Some(state) = app.try_state::<session_end::SessionEndState>() else {
+        return;
+    };
+    match state.on_close_requested(label) {
+        session_end::CloseDecision::Proceed => {}
+        session_end::CloseDecision::AlreadyClosing => api.prevent_close(),
+        session_end::CloseDecision::EndFirst(target) => {
+            api.prevent_close();
+            // Lets a responsive page stop reconnecting while End is in flight.
+            // Best effort: a hung page simply never handles it.
+            let _ = app.emit_to(label, "session-window-closing", ());
+            let app = app.clone();
+            let label = label.to_string();
+            tauri::async_runtime::spawn(async move {
+                // Destroys the window when dropped, so even a panic while
+                // sending End cannot leave the close held forever.
+                let _destroy = DestroyWindowOnDrop { app, label };
+                session_end::send_end(&target).await;
+            });
+        }
+    }
+}
+
+/// #12129: finishes a held close by destroying the window. If that fails, the
+/// next close request goes ahead instead of being held again.
+struct DestroyWindowOnDrop {
+    app: tauri::AppHandle,
+    label: String,
+}
+
+impl Drop for DestroyWindowOnDrop {
+    fn drop(&mut self) {
+        let destroyed = match self.app.get_webview_window(&self.label) {
+            Some(window) => window.destroy().map_err(|e| e.to_string()),
+            None => Ok(()),
+        };
+        if let Err(err) = destroyed {
+            eprintln!(
+                "Failed to close session window {} after ending its session: {err}",
+                self.label
+            );
+            if let Some(state) = self.app.try_state::<session_end::SessionEndState>() {
+                state.close_failed(&self.label);
+            }
+        }
+    }
 }
 
 /// Called by DesktopViewer when the device id is known.
@@ -1380,6 +1484,8 @@ pub fn run() {
             clear_pending_deep_link,
             register_session,
             unregister_session,
+            arm_session_end,
+            disarm_session_end,
             register_device,
             update_session_hostname,
             apply_pending_update,
@@ -1464,6 +1570,7 @@ pub fn run() {
             app.manage(DeepLinkState(Mutex::new(HashMap::new())));
             app.manage(SessionMap(Mutex::new(HashMap::new())));
             app.manage(DeviceMap(Mutex::new(HashMap::new())));
+            app.manage(session_end::SessionEndState::default());
             app.manage(WindowCounter(Mutex::new(0)));
             app.manage(PendingUpdate(Mutex::new(None)));
 
@@ -1550,7 +1657,13 @@ pub fn run() {
     app.run(|app_handle, event| {
         match event {
             tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if let WindowEvent::CloseRequested { api, .. } = &event {
+                    hold_close_to_end_session(app_handle, &label, api);
+                }
                 if let WindowEvent::Destroyed = event {
+                    if let Some(state) = app_handle.try_state::<session_end::SessionEndState>() {
+                        state.forget(&label);
+                    }
                     if let Some(sessions) = app_handle.try_state::<SessionMap>() {
                         let mut map = lock_or_recover(&sessions.0, "session_map");
                         map.retain(|_, entry| entry.window_label != label);

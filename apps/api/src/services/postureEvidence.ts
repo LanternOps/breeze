@@ -693,9 +693,11 @@ export async function loadPostureEvidence(
       avAssessed += 1;
       if (protection === 'protected') avProtected += 1;
     }
-    // A self-reported EDR counts only while it is protecting (real-time on) —
-    // the same rule that marks it active in the product inventory.
-    const reportsEdrProduct = Boolean(ss?.provider) && categoryForEndpointProvider(ss!.provider) === 'edr' && rtp === true;
+    // A self-reported EDR counts only while it is protecting (real-time on) and
+    // the row saying so is inside the evidence-age window — the same rule that
+    // marks it active in the product inventory. A product recorded long ago is
+    // not evidence of protection now (#12134).
+    const reportsEdrProduct = ssFresh && categoryForEndpointProvider(ss!.provider) === 'edr' && rtp === true;
     if (epAssessed && (isManaged || reportsEdrProduct)) edrProtected += 1;
 
     const enc = ss?.encryptionStatus ?? 'unknown';
@@ -787,7 +789,8 @@ export async function loadPostureEvidence(
     deviceProductEvidence.push({
       product: prettySecurityProvider(row.provider),
       category: categoryForEndpointProvider(row.provider),
-      active: row.realTimeProtection === true,
+      // A stale row still lists the product, but not as protecting (#12134).
+      active: row.realTimeProtection === true && withinDays(asOf, row.updatedAt, policy.maxSecurityStatusAgeDays),
       lastSyncStatus: null,
       deviceIds: [row.deviceId]
     });

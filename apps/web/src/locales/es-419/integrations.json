@@ -170,6 +170,7 @@
       "consentFailed": "No se pudo iniciar el consentimiento.",
       "retestFailed": "No se pudo volver a probar la conexión.",
       "retestSucceeded": "La nueva prueba de conexión finalizó.",
+      "retestNeedsAttention": "La nueva prueba finalizó, pero la conexión todavía requiere atención.",
       "disconnectWarning": "Al desconectar, Breeze dejará de usar esta conexión. El consentimiento de todo el inquilino de Microsoft permanecerá hasta que un administrador del cliente lo quite en Microsoft Entra.",
       "disconnectFailed": "No se pudo desconectar la conexión.",
       "disconnectSucceeded": "La conexión de Breeze se desconectó.",
@@ -192,6 +193,7 @@
       "grant_unexpected": "Microsoft informa permisos fuera del manifiesto aprobado.",
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
+      "grant_reconciliation_unavailable": "Microsoft aceptó la conexión, pero Breeze no puede leer qué permisos otorgó este inquilino a la app de acciones de administración, así que no se pueden verificar. Las acciones de administración permanecen en pausa hasta que se verifiquen.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
       "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."

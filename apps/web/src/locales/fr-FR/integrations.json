@@ -170,6 +170,7 @@
       "consentFailed": "Le consentement n’a pas pu être démarré.",
       "retestFailed": "La connexion n’a pas pu être retestée.",
       "retestSucceeded": "Le nouveau test de la connexion est terminé.",
+      "retestNeedsAttention": "Le nouveau test est terminé, mais la connexion nécessite toujours votre attention.",
       "disconnectWarning": "La déconnexion empêche Breeze d’utiliser cette connexion. Le consentement Microsoft à l’échelle du locataire reste actif jusqu’à ce qu’un administrateur du client le supprime dans Microsoft Entra.",
       "disconnectFailed": "La connexion n’a pas pu être déconnectée.",
       "disconnectSucceeded": "La connexion Breeze a été déconnectée.",
@@ -192,6 +193,7 @@
       "grant_unexpected": "Microsoft signale des autorisations en dehors du manifeste approuvé.",
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
+      "grant_reconciliation_unavailable": "Microsoft a accepté la connexion, mais Breeze ne peut pas lire les autorisations que ce locataire a accordées à l’application des actions d’administration ; elles ne peuvent donc pas être vérifiées. Les actions d’administration restent en pause jusqu’à leur vérification.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
       "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."

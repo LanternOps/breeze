@@ -35,7 +35,7 @@ import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEm
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
-import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolveThemeId, resolvePageSize, resolvePartnerPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { freezeDocumentFooter, resolveDocumentFooter } from './documentFooter';
 import { loadContractBlockRenderData, resolveQuoteAutoVariables, findUnresolvedVariables, loadContractPdfInputs, type ContractBlockRenderData } from './contractTemplateRender';
@@ -228,7 +228,7 @@ export async function freezeQuoteSentSnapshot(
   // later. Precedence matches resolveQuoteBranding exactly.
   const presentationSnapshot = quote.presentationSnapshot ?? {
     theme: resolveThemeId(partnerRow?.documentTheme),
-    pageSize: resolvePageSize(partnerRow?.documentPageSize),
+    pageSize: resolvePartnerPageSize(partnerRow),
   };
   // Render-locale snapshot (#3777): stamped ONCE at first claim from the
   // partner's language, never restamped (resendQuote does not write it); `??`
@@ -991,7 +991,7 @@ async function deliverQuoteEmail(
             }),
             currencyCode: quote.currencyCode ?? 'USD',
             theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
-            pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+            pageSize: resolvePageSize(presentationSnap?.pageSize ?? resolvePartnerPageSize(partnerRow)),
             // Send-time locale snapshot → partner language → 'en' (#3777).
             locale: frozenQuote.documentLocale ?? resolvePartnerDocumentLocale(partnerRow),
           };

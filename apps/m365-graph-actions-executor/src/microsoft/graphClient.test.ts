@@ -174,9 +174,47 @@ describe('MicrosoftGraphClient', () => {
       applicationId: APPLICATION_ID,
       organizationDisplayName: 'Contoso Ltd',
       observedGrants: null,
+      // #12085: which step failed and how, never the provider body.
+      grantReconciliationFailure: { stage: 'assignments', code: 'graph_permission_missing' },
     });
     expect(fetch).toHaveBeenCalledTimes(3);
     assertComplete();
+  });
+
+  it('names the resource lookup when the resource service principal read is denied', async () => {
+    const expected = routes();
+    expected[3] = {
+      ...expected[3]!,
+      response: new Response(JSON.stringify({ error: { code: 'Authorization_RequestDenied', message: 'secret detail' } }), { status: 403 }),
+    };
+    const { graph, assertComplete } = client(expected);
+
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+
+    expect(result.observedGrants).toBeNull();
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_permission_missing' });
+    assertComplete();
+  });
+
+  it('reports a bounded-response failure as its own code', async () => {
+    const expected = routes({ resource: {
+      appId: GRAPH_APPLICATION_ID,
+      appRoles: [
+        { id: ROLE_ID, value: 'Application.Read.All' },
+        { id: UNKNOWN_ROLE_ID, value: 'Unexpected.Read.All' },
+      ],
+    } });
+    const { graph } = client(expected, { maxItemCount: 4 });
+
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_response_too_large' });
+  });
+
+  it('omits the failure field when reconciliation completes', async () => {
+    const { graph } = client();
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+    expect(result).not.toHaveProperty('grantReconciliationFailure');
   });
 
   it('follows every valid assignment page and returns sorted unique grants', async () => {
@@ -377,10 +415,10 @@ describe('MicrosoftGraphClient', () => {
   });
 
   it.each([
-    ['assignment query denied', new Response('provider-secret', { status: 403 })],
-    ['assignment object malformed', json({ value: [{ appRoleId: 42, resourceId: RESOURCE_SP_ID }] })],
-    ['assignment body malformed', json({ value: 'not-an-array' })],
-  ])('returns complete proof but no partial grants when %s', async (_label, response) => {
+    ['assignment query denied', new Response('provider-secret', { status: 403 }), 'graph_permission_missing'],
+    ['assignment object malformed', json({ value: [{ appRoleId: 42, resourceId: RESOURCE_SP_ID }] }), 'graph_response_invalid'],
+    ['assignment body malformed', json({ value: 'not-an-array' }), 'graph_response_invalid'],
+  ])('returns complete proof but no partial grants when %s', async (_label, response, code) => {
     const expected = routes();
     expected[2] = {
       path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
@@ -394,6 +432,7 @@ describe('MicrosoftGraphClient', () => {
       applicationId: APPLICATION_ID,
       organizationDisplayName: 'Contoso Ltd',
       observedGrants: null,
+      grantReconciliationFailure: { stage: 'assignments', code },
     });
   });
 

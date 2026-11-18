@@ -4,6 +4,7 @@ import { organizations, partners, portalBranding } from '../db/schema';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { parseHexColor, partnerReportConventions, type ReportBranding } from '@breeze/shared/reportPdf';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
+import { resolvePartnerPageSize } from './documentThemes';
 import { checkPngImageData } from './pngDecodeLimits';
 
 /** Intrinsic width/height of a PNG data URL, or null for non-PNG data and for
@@ -68,7 +69,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
 
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize, billingAddressCountry: partners.billingAddressCountry })
       .from(partners)
       .where(eq(partners.id, org.partnerId!))
       .limit(1)
@@ -82,7 +83,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
 export async function loadReportBrandingForPartner(partnerId: string): Promise<ReportBranding> {
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize, billingAddressCountry: partners.billingAddressCountry })
       .from(partners)
       .where(eq(partners.id, partnerId))
       .limit(1)
@@ -94,7 +95,7 @@ export async function loadReportBrandingForPartner(partnerId: string): Promise<R
  *  loaders. `orgBrand` is the org override (org loader only); `logContext` only
  *  labels the non-embeddable-logo warning. */
 async function brandingFromPartnerRow(
-  row: { partnerName: string | null; partnerSettings: unknown; documentPageSize?: string | null } | undefined,
+  row: { partnerName: string | null; partnerSettings: unknown; documentPageSize?: string | null; billingAddressCountry?: string | null } | undefined,
   logContext: { orgId: string } | { partnerId: string },
   orgBrand?: { logoUrl: string | null; primaryColor: string | null; secondaryColor: string | null },
 ): Promise<ReportBranding> {
@@ -120,9 +121,17 @@ async function brandingFromPartnerRow(
     contactEmail: settings.contact?.email?.trim() || null,
     contactName: settings.contact?.name?.trim() || null,
     // #12048: the report prints on the page size the partner's quotes and
-    // invoices use, in its date order and hour cycle. Unknown values come back
-    // null so the renderer falls back instead of guessing.
-    ...partnerReportConventions({ documentPageSize: row.documentPageSize, settings: row.partnerSettings }),
+    // invoices use (#12097: its choice, else its region default), in its date
+    // order and hour cycle. Unknown formats come back null so the renderer
+    // falls back instead of guessing.
+    ...partnerReportConventions({
+      documentPageSize: resolvePartnerPageSize({
+        documentPageSize: row.documentPageSize,
+        billingAddressCountry: row.billingAddressCountry,
+        settings: row.partnerSettings,
+      }),
+      settings: row.partnerSettings,
+    }),
   };
 }
 

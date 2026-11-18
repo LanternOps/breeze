@@ -35,6 +35,9 @@ interface PartnerBilling {
   // #8604 labor line itemization defaults (absent on older APIs → defaults).
   invoiceLineGrouping?: 'entry' | 'day'; invoiceLineShowDate?: boolean; invoiceLineShowNote?: boolean; invoiceLineShowWorkedTime?: boolean;
   documentTheme: 'classic' | 'condensed'; documentPageSize: 'letter' | 'a4';
+  // #12097: the stored choice (null = region default) and the server's no-country default.
+  // Absent on older APIs → documentPageSize is the choice.
+  documentPageSizeChoice?: 'letter' | 'a4' | null; documentPageSizeFallback?: 'letter' | 'a4';
   // partners.name — the seller name documents print when billingCompanyName is
   // blank (sellerSnapshot: nonBlank(billingCompanyName) ?? nonBlank(name)).
   name?: string | null;
@@ -84,7 +87,9 @@ export default function PartnerBillingSettingsPage() {
   const [lineGrouping, setLineGrouping] = useState<'entry' | 'day'>('entry');
   const [footer, setFooter] = useState('');
   const [documentTheme, setDocumentTheme] = useState<'classic' | 'condensed'>('classic');
-  const [documentPageSize, setDocumentPageSize] = useState<'letter' | 'a4'>('letter');
+  // '' = no choice: documents follow the partner's region default (#12097).
+  const [documentPageSize, setDocumentPageSize] = useState<'letter' | 'a4' | ''>('');
+  const [pageSizeFallback, setPageSizeFallback] = useState<'letter' | 'a4'>('letter');
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
   const [website, setWebsite] = useState('');
@@ -127,7 +132,8 @@ export default function PartnerBillingSettingsPage() {
       setLineGrouping(p.invoiceLineGrouping === 'day' ? 'day' : 'entry');
       setFooter(p.invoiceFooter ?? '');
       setDocumentTheme(p.documentTheme ?? 'classic');
-      setDocumentPageSize(p.documentPageSize ?? 'letter');
+      setDocumentPageSize(p.documentPageSizeChoice !== undefined ? (p.documentPageSizeChoice ?? '') : (p.documentPageSize ?? ''));
+      setPageSizeFallback(p.documentPageSizeFallback === 'a4' ? 'a4' : 'letter');
       setCompanyName(p.billingCompanyName ?? '');
       setPhone(p.billingPhone ?? '');
       setWebsite(p.billingWebsite ?? '');
@@ -198,7 +204,7 @@ export default function PartnerBillingSettingsPage() {
             invoiceLineShowWorkedTime: lineShowWorkedTime,
             invoiceFooter: footer.trim() === '' ? null : footer,
             documentTheme,
-            documentPageSize,
+            documentPageSize: documentPageSize === '' ? null : documentPageSize,
             billingCompanyName: companyName.trim() === '' ? null : companyName.trim(),
             billingPhone: phone.trim() === '' ? null : phone.trim(),
             billingWebsite: website.trim() === '' ? null : website.trim(),
@@ -315,7 +321,7 @@ export default function PartnerBillingSettingsPage() {
           lineGrouping={lineGrouping} setLineGrouping={setLineGrouping}
           footer={footer} setFooter={setFooter}
           documentTheme={documentTheme} setDocumentTheme={setDocumentTheme}
-          documentPageSize={documentPageSize} setDocumentPageSize={setDocumentPageSize}
+          documentPageSize={documentPageSize} setDocumentPageSize={setDocumentPageSize} pageSizeFallback={pageSizeFallback}
           companyName={companyName} setCompanyName={setCompanyName}
           phone={phone} setPhone={setPhone}
           website={website} setWebsite={setWebsite} websiteInvalid={websiteInvalid}

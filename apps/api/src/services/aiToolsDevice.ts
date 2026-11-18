@@ -61,6 +61,7 @@ import {
   createDeviceContext,
   resolveDeviceContext,
 } from './brainDeviceContext';
+import { noteWriteCardFreeExpiryDays } from './aiNoteWrites';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -675,12 +676,18 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'contextType', 'summary'],
       },
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const deviceId = input.deviceId as string;
       const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
       const summary = input.summary as string;
       const details = (input.details as Record<string, unknown>) ?? null;
-      const expiresInDays = input.expiresInDays as number | undefined;
+      // A card-free note (aiNoteWrites.ts; the chat gate pins the flag, never
+      // the model) expires within NOTE_WRITE_AUTO_MAX_EXPIRY_DAYS, and gets
+      // that expiry when it names none.
+      const cardFree = context?.noteWriteCardFree === true;
+      const expiresInDays = cardFree
+        ? noteWriteCardFreeExpiryDays(input)
+        : input.expiresInDays as number | undefined;
 
       const expiresAt = expiresInDays
         ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
@@ -699,14 +706,16 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         summary,
         details,
         auth,
-        expiresAt
+        expiresAt,
+        cardFree ? { cardFree: true } : undefined
       );
 
       if ('error' in result) {
         return JSON.stringify({ error: result.error });
       }
 
-      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.`;
+      const expiry = cardFree ? ` It expires in ${expiresInDays} days.` : '';
+      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.${expiry}`;
     },
   });
 

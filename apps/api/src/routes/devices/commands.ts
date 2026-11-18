@@ -334,7 +334,8 @@ commandsRoutes.post(
         details: {
           deviceId,
           ...commandAuditDetails(command.id, data.type, data.payload || {}),
-          bulk: true
+          bulk: true,
+          delivery,
         }
       });
     }
@@ -965,7 +966,9 @@ commandsRoutes.post(
       details: {
         deviceId,
         enabled: data.enabled,
-        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled })
+        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled }),
+        delivery: res.delivery,
+        ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
       }
     });
 

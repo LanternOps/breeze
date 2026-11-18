@@ -11,8 +11,11 @@ import (
 // are decided only by magicPacket (the WakeOnMagicPacket enum) and eee (the raw
 // RegistryValue of the *EEE keyword). The script emits no localised text.
 type rawReadings struct {
-	Hiberboot any          `json:"hiberboot"`
-	Adapters  []rawAdapter `json:"adapters"`
+	Hiberboot any `json:"hiberboot"`
+	// NetAdapter is false when the NetAdapter cmdlets are missing. Absent is
+	// read as available.
+	NetAdapter *bool        `json:"netAdapter"`
+	Adapters   []rawAdapter `json:"adapters"`
 }
 
 type rawAdapter struct {
@@ -31,6 +34,9 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 		return nil, fmt.Errorf("parse wake readings: %w", err)
 	}
 	out := &WindowsReadings{FastStartup: "unknown"}
+	if r.NetAdapter != nil && !*r.NetAdapter {
+		out.NetAdapterCmdletsUnavailable = true
+	}
 	// HiberbootEnabled: 1 -> enabled, 0 -> disabled, anything else unknown.
 	switch v := r.Hiberboot.(type) {
 	case float64:

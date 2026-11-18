@@ -474,6 +474,8 @@ describe('device commands routes', () => {
           expect(response.status).toBe(201);
           expect(await response.json()).toMatchObject({ commands: bulkIds.map(deviceId => ({ deviceId })), failed: [], skipped: [], queuedOffline: [bulkIds[1]] });
           expect(events).toEqual(['begin', 'prepare-online', 'prepare-offline', 'commit', 'deliver', 'audit', 'audit']);
+          const audits = vi.mocked(writeRouteAudit).mock.calls.map(([, e]) => e);
+          expect(audits.map(e => e.details?.delivery)).toEqual([delivery, 'queued_offline']);
           expect(deliver).toHaveBeenCalledOnce();
           for (const deviceId of bulkIds) {
             expect(dispatchDeviceCommandMock).toHaveBeenCalledWith({ deviceId, type: 'reboot', payload: {}, userId: 'user-123', deferDelivery: true });
@@ -2734,6 +2736,13 @@ describe('device commands routes', () => {
           });
           expect(events).toEqual(['begin', 'prepare', 'commit', 'deliver', 'audit']);
           expect(deliver).toHaveBeenCalledOnce();
+          expect(writeRouteAudit).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              action: 'device.auto_update.set',
+              details: expect.objectContaining({ delivery, ...(cancelReason ? { cancelReason } : {}) }),
+            }),
+          );
         } finally {
           vi.mocked(withDbAccessContext).mockReset().mockImplementation(async (_ctx, fn) => fn());
         }

@@ -70,7 +70,7 @@ func (c *InterfacePollCommandV1) Validate() error {
 		return errors.New("unsupported interface poll version or family")
 	}
 	b := c.Binding
-	if !uuidPattern.MatchString(b.OrgID) || !uuidPattern.MatchString(b.SiteID) || !uuidPattern.MatchString(b.ArmID) || !validKey(b.AuthorityKey) {
+	if !uuidPattern().MatchString(b.OrgID) || !uuidPattern().MatchString(b.SiteID) || !uuidPattern().MatchString(b.ArmID) || !validKey(b.AuthorityKey) {
 		return errors.New("invalid binding")
 	}
 	if !validKey(c.ProducerEpoch) || !validKey(c.ConfigurationRevision) {
@@ -123,7 +123,7 @@ func (c *InterfacePollCommandV1) Validate() error {
 	}
 	ids, indexes := map[string]bool{}, map[int]bool{}
 	for i, t := range c.Interfaces {
-		if !uuidPattern.MatchString(t.InterfaceID) || !validKey(t.InterfaceEpoch) || t.IfIndex < 1 || t.IfIndex > 2147483647 {
+		if !uuidPattern().MatchString(t.InterfaceID) || !validKey(t.InterfaceEpoch) || t.IfIndex < 1 || t.IfIndex > 2147483647 {
 			return fmt.Errorf("interfaces[%d] is invalid", i)
 		}
 		if t.ExpectedName != nil && (*t.ExpectedName == "" || len(*t.ExpectedName) > 255) {

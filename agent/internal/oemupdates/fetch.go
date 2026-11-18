@@ -69,7 +69,7 @@ func checkFetchURL(raw string, allow LaneAllowlist) error {
 // file whose SHA-256 equals want is published at dest. Anything else leaves no
 // file behind.
 func Fetch(ctx context.Context, client *http.Client, rawURL, want string, allow LaneAllowlist, dest string) error {
-	if !sha256Pattern.MatchString(want) {
+	if !sha256Pattern().MatchString(want) {
 		return errors.New("pinned sha256 must be 64 lowercase hex characters")
 	}
 	if err := checkFetchURL(rawURL, allow); err != nil {

@@ -155,3 +155,24 @@ func TestParseEventLogListEmptyFallsBackToDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEventLogListTruncatedSingleObjectKeepsName(t *testing.T) {
+	// A one-log system prints a bare object; output cut mid-object must still
+	// report the real log, not the default four, and claim no count.
+	out := "{\r\n    \"LogName\":  \"Microsoft-Windows-PowerShell/Operational\",\r\n    \"RecordCount\":  41"
+	logs := wireLogs(t, parseEventLogList(out))
+	if len(logs) != 1 || logs[0]["name"] != "Microsoft-Windows-PowerShell/Operational" {
+		t.Fatalf("want the one truncated log by name, got %v", logs)
+	}
+	if v, ok := logs[0]["recordCount"]; ok {
+		t.Errorf("truncated row must not report a count, got %v", v)
+	}
+}
+
+func TestParseEventLogListTruncatedMidNameIsNotRecovered(t *testing.T) {
+	// A name cut off before its closing quote is a guess, not a name.
+	logs := wireLogs(t, parseEventLogList(`{"LogName":"Syst`))
+	if len(logs) != 4 {
+		t.Fatalf("want the default list, got %v", logs)
+	}
+}

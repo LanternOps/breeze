@@ -262,6 +262,12 @@ export async function closeAgentRunSession(
  */
 export async function recordRunTaskPrompt(sessionId: string, prompt: string): Promise<void> {
   await inSystemDbContext(async () => {
+    // Once per session: a failover hop (or a resumed run) is sent the same
+    // prompt again, and a second row would skew the transcript (#12133).
+    const [existing] = await db.select({ id: aiMessages.id }).from(aiMessages)
+      .where(and(eq(aiMessages.sessionId, sessionId), eq(aiMessages.role, 'user')))
+      .limit(1);
+    if (existing) return;
     await db.insert(aiMessages).values({ sessionId, role: 'user', content: prompt });
   });
 }

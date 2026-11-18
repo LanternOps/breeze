@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Info, Power } from 'lucide-react';
+import { AlertTriangle, Info, Power } from 'lucide-react';
 import { WAKE_BUTTON_MODES, WAKE_ON_LAN_PLATFORM_DEFAULT, type WakeButtonMode } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import type { FeatureTabProps } from './types';
@@ -113,6 +113,17 @@ export default function WakeOnLanTab({
             </label>
           ))}
         </fieldset>
+
+        {mode === 'verified' && (
+          <div
+            role="note"
+            data-testid="wake-verified-warning"
+            className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+            <p>{t('configurationPolicies.featureTabs.wakeOnLanTab.verifiedWarning')}</p>
+          </div>
+        )}
 
         <div className="rounded-md border bg-muted/40 px-4 py-3">
           <p className="text-sm font-medium">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutTitle')}</p>
