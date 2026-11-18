@@ -3346,6 +3346,28 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # WOF-compressed files and cloud placeholders (#7326). These compress a
+      # real file with `compact /exe`, register a throwaway Cloud Files sync
+      # root with no provider connected, and back both up: a WOF file and a
+      # hydrated cloud file must round-trip, an online-only placeholder must be
+      # skipped and stay unhydrated. The policy itself is covered portably in
+      # test-agent; TestLive_WOFAndCloudFilesUnderVSS is the opt-in (BREEZE_VSS_LIVE=1)
+      # lab check for shadow copies. Assert all five PASSED, not just exit 0.
+      - name: Run Windows WOF and cloud placeholder backup tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run '^Test(ExposePlaceholdersForWalk_SetsThreadModeOnWindows|WOFCompressedFile_BackupRestoreRoundTripOnWindows|CloudPlaceholder_NotHydratedByBackupOnWindows|CloudPlaceholder_DetectedFromDisguisedThreadOnWindows|HydratedCloudFile_BackupRestoreRoundTripOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the placeholder tests SKIPPED - WOF and cloud placeholder handling has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and
       # executor do, transitively). Same package set as the step above MINUS
