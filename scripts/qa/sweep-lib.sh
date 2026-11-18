@@ -37,6 +37,111 @@ for m in re.finditer(rb"[A-Za-z0-9+/=_-]{40,}", data):
 print("clean")
 ' "$1" "$2" 2>/dev/null
 }
+# _norm_scan <file> <max> <envvals>: the same checks again on two normalised
+# copies of the body (Strix r10), printing "clean" only when both pass. The
+# raw checks match per line and the body is published with its layout intact,
+# so a secret broken over lines, interleaved with spaces or zero-width
+# characters, or wrapped in code fences / quote / table / emphasis markers would
+# pass them and still read whole on GitHub. Every line is NFKC-folded, fence
+# lines (with their info string) are dropped, and control, format (zero-width,
+# soft hyphen, bidi) and combining characters and the markdown punctuation
+# ` * ~ > | \ # are removed. Then:
+#   flat   -- every whitespace character removed too. SECRET_RE (any space in
+#             it made optional) and each literal .env value, normalised the
+#             same way (when still >= 8 chars), must not occur.
+#   joined -- lines joined, a line with no space in it with no separator, two
+#             lines of words with one space. SECRET_RE, credentials in a URL
+#             and each .env value must not occur.
+#   chains -- consecutive lines that are nothing but token characters, joined,
+#             must not hold _body_scan's long token-like run. The heuristic is
+#             not run on the flat or joined copy: with spaces or line breaks
+#             gone, ordinary prose and a SHA next to a word form 40-char
+#             mixed-case runs, so nearly every report would be refused. A
+#             prefix-less token interleaved with words therefore stays out of
+#             a heuristic's reach; known values and prefixed tokens do not.
+_norm_scan() {
+  /usr/bin/python3 -I -c '
+import re, sys, unicodedata
+path, limit, envvals, secret = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+with open(path, "rb") as f:
+    data = f.read(limit + 1)
+if not data or len(data) > limit or b"\0" in data:
+    sys.exit(3)
+BREAKS = re.compile("[\n\r\v\f\x1c\x1d\x1e\x85  ]")
+FENCE = re.compile(r"\A[\s>]*(`{3,}|~{3,})")   # a fence line, info string and all
+MD = set("`*~>|\\#")
+DROP = {"Cc", "Cf", "Cs", "Co", "Cn", "Mn", "Me", "Zl", "Zp"}
+def norm_line(line, keep_spaces):
+    out = []
+    for ch in line:
+        if ch in MD:
+            continue
+        if ch.isspace():
+            if keep_spaces and out and out[-1] != " ":
+                out.append(" ")
+            continue
+        if unicodedata.category(ch) in DROP:
+            continue
+        out.append(ch)
+    return "".join(out).strip()
+TOKEN_LINE = re.compile(r"\A[A-Za-z0-9+/=_-]+\Z")
+def lines_of(b):
+    t = unicodedata.normalize("NFKC", b.decode("utf-8", "replace"))
+    return [ln for ln in BREAKS.split(t) if not FENCE.match(ln)]
+def flat_of(lines):
+    return "".join(norm_line(ln, False) for ln in lines)
+def joined_of(lines):
+    # A line with no space in it (a fragment) joins its neighbours with no
+    # separator; two lines of words join with one space.
+    out, prev = "", None
+    for ln in lines:
+        cur = norm_line(ln, True)
+        if not cur:
+            continue
+        if prev is not None:
+            out += "" if (" " not in prev or " " not in cur) else " "
+        out += cur
+        prev = cur
+    return out
+def token_chains(lines):
+    # Runs of consecutive lines that are nothing but token characters, joined.
+    # A blank line, a heading or a line of words ends a run, so a SHA on one
+    # line and a word on the next do not read as one token.
+    chains, cur = [], ""
+    for ln in lines:
+        n = norm_line(ln, True)
+        if n and not ln.lstrip(" >").startswith("#") and TOKEN_LINE.match(n):
+            cur += n
+            continue
+        if cur:
+            chains.append(cur)
+        cur = ""
+    if cur:
+        chains.append(cur)
+    return chains
+def tokenlike(s):
+    for m in re.finditer(r"[A-Za-z0-9+/=_-]{40,}", s):
+        t = m.group()
+        if re.search("[A-Z]", t) and re.search("[a-z]", t) and re.search("[0-9]", t):
+            return True
+    return False
+lines = lines_of(data)
+flat, joined = flat_of(lines), joined_of(lines)
+if re.search(secret.replace(" ", " ?"), flat) or re.search(secret, joined):
+    sys.exit(3)
+if re.search(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", joined):
+    sys.exit(3)
+if any(tokenlike(c) for c in token_chains(lines)):
+    sys.exit(3)
+with open(envvals, "rb") as f:
+    for v in f.read().splitlines():
+        vl = lines_of(v)
+        vf, vj = flat_of(vl), joined_of(vl)
+        if (len(vf) >= 8 and vf in flat) or (len(vj) >= 8 and vj in joined):
+            sys.exit(3)
+print("clean")
+' "$1" "$2" "$3" "$SECRET_RE" 2>/dev/null
+}
 # body_ok <file>: gate for anything headed to a PUBLIC GitHub sink. Fails
 # CLOSED: the body passes only when every check positively reports it clean. A
 # size it cannot bound, a missing redaction list or any tool failure rejects it.
@@ -56,6 +161,10 @@ body_ok() {
   # published, so a missing or unreadable list is a failed check, not an empty one.
   [ -f "$ENVVALS" ] && [ -r "$ENVVALS" ] || return 1
   if [ -s "$ENVVALS" ]; then _gate_clean -aqF -f "$ENVVALS" "$1" || return 1; fi
+  # The same checks on normalised copies: a secret split over lines,
+  # interleaved or fenced is caught whole (Strix r10).
+  verdict="$(_norm_scan "$1" "$QA_BODY_MAX" "$ENVVALS")" || return 1
+  [ "$verdict" = clean ] || return 1
   return 0
 }
 # text_ok <string>: body_ok for a single field (an issue title), via a private file.
@@ -117,9 +226,9 @@ safe_title() {
 # tree: claude, its Bash commands (gh), the Playwright MCP server and Chromium.
 # Unlike Claude Code permission rules, it binds every tool and every child
 # process, and the agent cannot change it once started.
-#   - network: three loopback ports only -- the QA stack (Caddy), the egress
-#     proxy and the gh broker -- so no other service listening on this Mac's
-#     loopback is reachable. Unix sockets are denied too (except the agent's own
+#   - network: three loopback ports only -- the QA stack (Caddy), the model
+#     forwarder and the gh broker -- so no other service listening on this
+#     Mac's loopback (the egress proxy included) is reachable. Unix sockets are denied too (except the agent's own
 #     TMPDIR), which also blocks DNS (mDNSResponder), docker.sock and ssh-agent;
 #     hostname lookups for the proxy's upstreams happen in the proxy.
 #   - reads: an allow-list under the home directory, QA_HOME, the developer
@@ -131,12 +240,14 @@ safe_title() {
 #     shell history and rc files, every keychain and the checkout's .env files
 #     are unreadable without being named. System paths outside the home
 #     directory stay readable.
-#   - credentials: the agent signs in with its own long-lived token (claude
-#     setup-token; agent_token_path), handed to it in its environment by the
-#     runner. The developer's keychains -- the login keychain included -- are
-#     neither readable nor writable, so no claude.ai login, refresh token or
-#     other saved password of the developer's is within reach, and Chromium
-#     (Playwright: --use-mock-keychain --password-store=basic) needs none.
+#   - credentials: the agent holds none. Its model calls go to the runner's
+#     loopback forwarder (model-forwarder.py), which adds the agent's own
+#     long-lived token (claude setup-token; agent_token_path) outside the
+#     sandbox; the agent has a placeholder. The developer's keychains -- the
+#     login keychain included -- are neither readable nor writable, so no
+#     claude.ai login, refresh token or other saved password of the developer's
+#     is within reach, and Chromium (Playwright: --use-mock-keychain
+#     --password-store=basic) needs none.
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
 #     ~/.ssh, git credential files, the egress audit log, other runs and this
 #     run's logs/transcripts are also denied by name, wherever they live.
@@ -188,10 +299,11 @@ reset_agent_claude_dir() {
 
 # The agent's credential: a long-lived claude.ai token of its own (`claude
 # setup-token`: subscription billing, nothing to refresh or rotate), stored by
-# install-schedule.sh --agent-token. The sandbox denies the file and every
-# keychain; the runner reads it and hands the token over in the agent's
-# environment (never argv, which ps shows every local user). Nothing else the
-# runner starts gets it.
+# install-schedule.sh --agent-token. The AGENT NEVER HOLDS IT (Strix r10): the
+# runner reads it and pipes it to the model forwarder (start_model_forwarder),
+# which adds it to the agent's model API requests outside the sandbox. The
+# agent gets a placeholder and ANTHROPIC_BASE_URL; the sandbox denies the file
+# and every keychain, so its environment, files and process memory hold none.
 agent_token_path() { printf '%s' "${QA_AGENT_TOKEN_FILE:-$QA_HOME/.agent-auth/oauth-token}"; }
 AGENT_OAUTH_TOKEN=""
 # load_agent_token: AGENT_OAUTH_TOKEN from agent_token_path. Refuses a missing,
@@ -206,11 +318,10 @@ load_agent_token() {
   [[ "$t" =~ ^sk-ant-oat[0-9][0-9]-[A-Za-z0-9_-]+$ ]] && [ "${#t}" -ge 40 ] && [ "${#t}" -le 512 ] || { log "agent token: $f does not hold a claude setup-token token"; return 1; }
   AGENT_OAUTH_TOKEN="$t"
 }
-# with_agent_token <cmd...>: run <cmd> with the agent's token in its environment.
-with_agent_token() {
-  [ -n "$AGENT_OAUTH_TOKEN" ] || { log "agent token not loaded"; return 1; }
-  CLAUDE_CODE_OAUTH_TOKEN="$AGENT_OAUTH_TOKEN" "$@"
-}
+# What the agent's claude sends as its OAuth token. Not a secret: the forwarder
+# discards it and sets the real one. It makes claude run in subscription
+# (oauth_token) mode, with the same request shape as a real login.
+AGENT_TOKEN_PLACEHOLDER="qa-model-forwarder-adds-the-credential"
 
 qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   local out="$1" home qh wt src run st sed_env atmp acfg gitc audit lib p
@@ -220,9 +331,11 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
     && acfg="$(_sb_real "$(agent_claude_dir)")" \
     && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" \
     && lib="$(_sb_real "$QA_LIB_DIR")" || { log "sandbox: bad path"; return 1; }
-  # The agent's network is these three loopback ports and nothing else.
-  for p in "${QA_STACK_PORT:-}" "${EGRESS_PORT:-}" "${GH_BROKER_PORT:-}"; do
-    [[ "$p" =~ ^[0-9]{1,5}$ ]] || { log "sandbox: stack/proxy/broker port missing or bad ('$p')"; return 1; }
+  # The agent's network is these three loopback ports and nothing else. The
+  # egress proxy is not one of them: the agent reaches the model only through
+  # the forwarder, which holds the credential and uses the proxy itself.
+  for p in "${QA_STACK_PORT:-}" "${MODEL_PORT:-}" "${GH_BROKER_PORT:-}"; do
+    [[ "$p" =~ ^[0-9]{1,5}$ ]] || { log "sandbox: stack/forwarder/broker port missing or bad ('$p')"; return 1; }
   done
   audit="$qh/.audit"
   # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
@@ -278,11 +391,11 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
 (version 1)
 (allow default)
 
-;; network: three loopback ports -- the QA stack, the egress proxy, the gh broker
+;; network: three loopback ports -- the QA stack, the model forwarder, the gh broker
 (deny network-outbound)
 (allow network-outbound
   (remote ip "localhost:$QA_STACK_PORT")
-  (remote ip "localhost:$EGRESS_PORT")
+  (remote ip "localhost:$MODEL_PORT")
   (remote ip "localhost:$GH_BROKER_PORT"))
 ;; unix sockets only in the agent's own TMPDIR (Playwright <-> Chromium)
 (allow network-outbound (remote unix-socket (subpath "$atmp")))
@@ -401,18 +514,19 @@ SB
 }
 
 # ---------------------------------------------------------------------------
-# Egress proxy: the only route off the machine for traffic the sandboxed process
-# tree originates. CONNECT to :443 of a fixed host allowlist (Anthropic, for the
-# model only); all else is refused and logged to egress_log_path, which the agent
-# cannot touch. GitHub is deliberately NOT on it: the agent reads GitHub only
-# through the gh broker below, which runs outside the sandbox and pins the repo.
+# Egress proxy: the only route off the machine for the agent's traffic. Since
+# Strix r10 its one client is the model forwarder (the agent cannot reach it):
+# CONNECT to :443 of a fixed host allowlist (the model API only); all else is
+# refused and logged to egress_log_path, which the agent cannot touch. GitHub
+# is deliberately NOT on it: the agent reads GitHub only through the gh broker
+# below, which runs outside the sandbox and pins the repo.
 # The QA stack's own containers are bounded separately (isolate_stack): they
 # run on an internal-only Docker network, so the app the agent administers
 # cannot be told to call out either.
 # ---------------------------------------------------------------------------
-# Exact hostnames only (the proxy refuses suffix entries): the model API, the
-# claude.ai OAuth token refresh, and claude.ai itself.
-QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,platform.claude.com,claude.ai}"
+# Exact hostnames only (the proxy refuses suffix entries): the model API. The
+# setup-token needs no refresh, and the forwarder sends nothing else.
+QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com}"
 EGRESS_PID=""; EGRESS_PORT=""; EGRESS_LOG=""
 # _start_daemon <port-var> <pid-var> <port-file> <cmd...>: start a loopback
 # helper that writes its port to <port-file>, and wait for it.
@@ -439,6 +553,37 @@ stop_egress_proxy() {
   EGRESS_PID=""; EGRESS_PORT=""
 }
 
+# Model forwarder: the agent's only route to the model, and the only process
+# holding its credential. Runs as the runner, outside the sandbox, on loopback;
+# forwards POST /v1/messages (+ count_tokens) and nothing else, through the
+# egress proxy, adding the token. Started after start_egress_proxy, before the
+# profile is written. The token goes over a pipe on stdin (not argv or the
+# environment, which `ps -E` shows other processes of this user), and the
+# runner drops its own copy once the forwarder holds it.
+MODEL_PID=""; MODEL_PORT=""; MODEL_LOG=""
+model_log_path() { printf '%s' "$QA_HOME/.audit/model-$RUN_ID.log"; }
+start_model_forwarder() {
+  local pf="$QA_HOME/.sandbox/model.port" port _
+  [ -n "$AGENT_OAUTH_TOKEN" ] || { log "model forwarder: agent token not loaded"; return 1; }
+  [[ "${EGRESS_PORT:-}" =~ ^[0-9]{1,5}$ ]] || { log "model forwarder: egress proxy not running"; return 1; }
+  MODEL_LOG="$(model_log_path)"
+  ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$(dirname "$MODEL_LOG")" && : >> "$MODEL_LOG" ) || return 1
+  rm -f "$pf"
+  printf '%s\n' "$AGENT_OAUTH_TOKEN" | /usr/bin/python3 -I "$QA_LIB_DIR/model-forwarder.py" \
+    --egress-port "$EGRESS_PORT" --port-file "$pf" --log "$MODEL_LOG" &
+  MODEL_PID=$!
+  for _ in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
+  port="$(tr -dc '0-9' < "$pf" 2>/dev/null)"
+  if [ -z "$port" ] || ! kill -0 "$MODEL_PID" 2>/dev/null; then stop_model_forwarder; return 1; fi
+  MODEL_PORT="$port"
+  AGENT_OAUTH_TOKEN=""   # the forwarder holds it now; the runner keeps no copy
+  log "model forwarder on 127.0.0.1:$MODEL_PORT (POST /v1/messages only, via the egress proxy; audit log: $MODEL_LOG)"
+}
+stop_model_forwarder() {
+  [ -n "$MODEL_PID" ] && kill "$MODEL_PID" 2>/dev/null
+  MODEL_PID=""; MODEL_PORT=""
+}
+
 # gh broker: the agent's only GitHub reader (qa-gh -> gh-broker.py). Runs as
 # the runner, outside the sandbox; read-only issue/PR verbs, every call pinned
 # to QA_REPO, each request logged next to the egress log.
@@ -460,15 +605,21 @@ stop_gh_broker() {
 }
 
 # build_agent_cmd <cmd...>: AGENT_CMD = <cmd> wrapped in the sandbox, with the
-# proxy as its only egress and the gh broker as its only GitHub reader. Needs
-# AGENT_PROFILE, EGRESS_PORT and GH_BROKER_PORT.
+# model forwarder as its only route out and the gh broker as its only GitHub
+# reader. It holds no credential: every Anthropic credential variable is
+# removed and claude gets the forwarder's placeholder. Needs AGENT_PROFILE,
+# MODEL_PORT and GH_BROKER_PORT.
 build_agent_cmd() {
-  local px="http://127.0.0.1:$EGRESS_PORT"
   AGENT_CMD=(/usr/bin/sandbox-exec -f "$AGENT_PROFILE"
     /usr/bin/env -u SSH_AUTH_SOCK -u GPG_AGENT_INFO -u DOCKER_HOST
     -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN
-    "HTTPS_PROXY=$px" "https_proxy=$px" "HTTP_PROXY=$px" "http_proxy=$px"
-    "ALL_PROXY=$px" "NO_PROXY=localhost,127.0.0.1,::1" "no_proxy=localhost,127.0.0.1,::1"
+    -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_REFRESH_TOKEN
+    -u CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR -u CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY
+    -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy
+    "ANTHROPIC_BASE_URL=http://127.0.0.1:$MODEL_PORT"
+    "CLAUDE_CODE_OAUTH_TOKEN=$AGENT_TOKEN_PLACEHOLDER"
+    "NO_PROXY=localhost,127.0.0.1,::1" "no_proxy=localhost,127.0.0.1,::1"
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1
     "TMPDIR=${AGENT_TMP:-$QA_HOME/.t}"
     "CLAUDE_CODE_TMPDIR=${AGENT_TMP:-$QA_HOME/.t}"
@@ -484,8 +635,8 @@ build_agent_cmd() {
 }
 
 # sandbox_selfcheck: prove the sandbox holds on THIS machine before an agent
-# runs under it (fail closed). Needs AGENT_PROFILE, the proxy, the gh broker
-# and QA_STACK_PORT. Every "must fail" probe has a control that must succeed
+# runs under it (fail closed). Needs AGENT_PROFILE, the proxy, the model
+# forwarder, the gh broker and QA_STACK_PORT. Every "must fail" probe has a control that must succeed
 # outside the sandbox, so a probe that could never succeed proves nothing.
 sandbox_selfcheck() {
   local fails="" canary="$QA_WORKTREE/.env.qa-sandbox-canary" lp lpid out
@@ -502,9 +653,40 @@ sandbox_selfcheck() {
   sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null https://1.1.1.1 2>/dev/null && fails="$fails direct-egress"
   # DNS: a name that resolves outside must not resolve inside.
   if dns env; then dns sbx && fails="$fails dns"; else fails="$fails dns-probe-inconclusive"; fi
-  sbx /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://example.com 2>/dev/null && fails="$fails proxy-open"
-  sbx /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.github.com/zen 2>/dev/null && fails="$fails proxy-allows-github"
-  sbx /usr/bin/curl -s -m 15 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.anthropic.com/ 2>/dev/null || fails="$fails proxy-blocks-anthropic"
+  # The egress proxy's allowlist (its one client is the model forwarder).
+  /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://example.com 2>/dev/null && fails="$fails proxy-open"
+  /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.github.com/zen 2>/dev/null && fails="$fails proxy-allows-github"
+  # Strix r10: the agent holds no credential and reaches the model only through
+  # the forwarder. The proxy itself is out of its reach.
+  if PORT="$EGRESS_PORT" tcp env; then
+    PORT="$EGRESS_PORT" tcp sbx && fails="$fails egress-proxy-reachable"
+  else fails="$fails egress-probe-inconclusive"; fi
+  local code fw="http://127.0.0.1:${MODEL_PORT:-0}" agent_env
+  code="$(sbx /usr/bin/curl --noproxy '*' -s -m 10 -o /dev/null -w '%{http_code}' "$fw/api/oauth/profile" 2>/dev/null)"
+  [ "$code" = 403 ] || fails="$fails forwarder-open-route($code)"
+  # One free request (count_tokens) proves the route and the token: 200, or a
+  # 400/404 about the probe's model, means the API accepted the credential.
+  code="$(sbx /usr/bin/curl --noproxy '*' -s -m 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d "{\"model\":\"${QA_PROBE_MODEL:-claude-haiku-5-5}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+    "$fw/v1/messages/count_tokens" 2>/dev/null)"
+  case "$code" in 200|400|404) ;; 401|403) fails="$fails model-auth-rejected($code)" ;; *) fails="$fails model-route-failed($code)" ;; esac
+  # The agent's exact environment (build_agent_cmd), printed from inside.
+  build_agent_cmd /usr/bin/env
+  agent_env="$(cd "$QA_WORKTREE" && "${AGENT_CMD[@]}" 2>/dev/null)"
+  case "$agent_env" in
+    *CLAUDE_CODE_OAUTH_TOKEN=*) ;;
+    *) fails="$fails agent-env-probe-inconclusive" ;;
+  esac
+  if printf '%s\n' "$agent_env" | LC_ALL=C grep -qE 'sk-ant-|^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_REFRESH_TOKEN)=' \
+     || ! printf '%s\n' "$agent_env" | grep -qxF "CLAUDE_CODE_OAUTH_TOKEN=$AGENT_TOKEN_PLACEHOLDER"; then
+    fails="$fails agent-env-credential"
+  fi
+  # ... nor does the forwarder's argv or environment, which the agent can list.
+  if [ -n "${MODEL_PID:-}" ] && /bin/ps -E -ww -o command= -p "$MODEL_PID" 2>/dev/null | grep -q model-forwarder; then
+    sbx /bin/ps -E -ww -o command= -p "$MODEL_PID" 2>/dev/null | LC_ALL=C grep -q 'sk-ant-' && fails="$fails forwarder-env-credential"
+  else fails="$fails forwarder-probe-inconclusive"; fi
+  [ -e "$(agent_token_path)" ] && sbx /bin/cat "$(agent_token_path)" >/dev/null 2>&1 && fails="$fails token-file-readable"
   # loopback: the stack port connects; any other listener on this Mac does not.
   PORT="$QA_STACK_PORT" tcp sbx || fails="$fails stack-unreachable"
   lp="$QA_HOME/.sandbox/selfcheck.port"; rm -f "$lp"
@@ -609,7 +791,7 @@ EOF
   [ -n "$kr" ] && { fails="$fails keychain-readable"; log "sandbox: keychain readable from inside:$kr"; }
   [ "$kw" = 1 ] && { fails="$fails keychain-writable"; log "sandbox: keychain writable from inside"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/forwarder/broker only (egress proxy unreachable), agent env + forwarder argv/env hold no credential, forwarder refuses non-model routes and the API accepts its token, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
 }
 
 # ---------------------------------------------------------------------------

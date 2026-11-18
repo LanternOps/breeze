@@ -3,12 +3,14 @@
 #
 #   scripts/qa/install-schedule.sh [--hours "1 13"] [--agent-token] [--uninstall]
 #
-# The agent signs in with its own long-lived claude.ai token, never your login
-# (its sandbox gives it no keychain). Make one with `claude setup-token` and
-# pass --agent-token once: the token is read from stdin (or a hidden prompt)
-# and stored, mode 600, at $QA_HOME/.agent-auth/oauth-token.
+# The agent's model calls carry its own long-lived claude.ai token, never your
+# login (its sandbox gives it no keychain). Make one with `claude setup-token`
+# and pass --agent-token once: the token is read from stdin (or a hidden prompt)
+# and stored, mode 600, at $QA_HOME/.agent-auth/oauth-token. The agent never
+# holds it: each run pipes it to a loopback model forwarder outside the
+# sandbox, which adds it to the agent's model API requests.
 #
-# Copies the runner (+ sweep-lib.sh, egress-proxy.py, gh-broker.py, qa-gh), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
+# Copies the runner (+ sweep-lib.sh, egress-proxy.py, model-forwarder.py, gh-broker.py, qa-gh), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
 # which branch this checkout happens to be on) and loads a LaunchAgent that fires at
 # the given local hours (default: 01:30 nightly). launchd catches up a missed fire on wake.
 set -euo pipefail
@@ -39,7 +41,7 @@ done
 mkdir -p "$QA_HOME/bin" "$QA_HOME/runs"
 log() { echo "$*" >&2; }
 # shellcheck source=sweep-lib.sh
-. "$SRC_DIR/sweep-lib.sh"   # agent_token_path, load_agent_token, with_agent_token
+. "$SRC_DIR/sweep-lib.sh"   # agent_token_path, load_agent_token
 if [ "$SET_TOKEN" = 1 ]; then
   [ -t 0 ] && printf 'Paste the token from `claude setup-token` (input hidden): ' >&2
   IFS= read -rs TOKEN || true; [ -t 0 ] && echo >&2
@@ -53,6 +55,7 @@ fi
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
 install -m 0644 "$SRC_DIR/sweep-lib.sh" "$QA_HOME/bin/sweep-lib.sh"
 install -m 0755 "$SRC_DIR/egress-proxy.py" "$QA_HOME/bin/egress-proxy.py"
+install -m 0755 "$SRC_DIR/model-forwarder.py" "$QA_HOME/bin/model-forwarder.py"   # holds the agent token; the agent never does
 install -m 0755 "$SRC_DIR/gh-broker.py" "$QA_HOME/bin/gh-broker.py"   # the agent's only GitHub reader (runs outside the sandbox)
 install -m 0755 "$SRC_DIR/qa-gh" "$QA_HOME/bin/qa-gh"                 # its client, run by the agent
 install -m 0644 "$SRC_DIR/qa-mcp.json" "$QA_HOME/bin/qa-mcp.json"
@@ -87,18 +90,18 @@ cat > "$PLIST" <<PL
 PL
 plutil -lint "$PLIST" >/dev/null
 
-# Refuse to install a job that would bill the API or run logged-out: the agent's
-# own token must be in place and be a first-party claude.ai OAuth token.
+# Refuse to install a job that would run logged-out: the agent's own token must
+# be in place and shaped like a claude.ai setup-token (sk-ant-oat..). The
+# forwarder only ever sends it as a subscription bearer token (never an API
+# key), and every run's self-check proves it against the API before the agent
+# starts.
 if ! load_agent_token; then
   echo "ERROR: no usable agent token at $(agent_token_path). Run: claude setup-token, then $0 --agent-token"
   rm -f "$PLIST"; exit 1
 fi
-CHK="$(mktemp -d)"
-AUTH="$(unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
-        export CLAUDE_CONFIG_DIR="$CHK" CLAUDE_SECURESTORAGE_CONFIG_DIR="$CHK"   # the token alone, not a login profile
-        with_agent_token claude auth status --json 2>/dev/null | jq -r '"\(.authMethod) \(.apiProvider)"')"
-rm -rf "$CHK"
-case "$AUTH" in "oauth_token firstParty") echo "auth: agent token ($AUTH)" ;; *) echo "ERROR: the agent token is not a claude.ai subscription token ($AUTH)"; rm -f "$PLIST"; exit 1 ;; esac
+# shellcheck disable=SC2034  # validated only; the installer keeps no copy
+AGENT_OAUTH_TOKEN=""
+echo "auth: agent token in place ($(agent_token_path))"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"

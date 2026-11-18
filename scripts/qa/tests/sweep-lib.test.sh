@@ -155,7 +155,7 @@ no_rundir_writes() {
 }
 check "runner: no write or append into RUN_DIR once an agent has started" "no_rundir_writes"
 check "runner: report.md is never opened by name after the agent ran" "! after_agent | grep -F '\$RUN_DIR/report.md'"
-check "runner: transcripts are created only at fresh paths, never clobbered" "grep -q 'runner_fresh_path \"\$tr\"' '$QA_DIR/scheduled-ui-sweep.sh' && grep -q 'set -C; with_agent_token gtimeout' '$QA_DIR/scheduled-ui-sweep.sh'"
+check "runner: transcripts are created only at fresh paths, never clobbered" "grep -q 'runner_fresh_path \"\$tr\"' '$QA_DIR/scheduled-ui-sweep.sh' && grep -q 'set -C; gtimeout' '$QA_DIR/scheduled-ui-sweep.sh'"
 
 # === every agent-written field bound for GitHub passes the secret gate ========
 # Built by concatenation so this file never holds a credential-shaped literal.
@@ -249,6 +249,91 @@ check "gate: a body one byte over the limit is rejected" "! body_ok '$T/over-lim
 check "gate: an oversize body never reaches the scanner" "! ( _body_scan() { echo scanned > '$T/scanned'; echo clean; }; body_ok '$T/over-limit.md' ) && [ ! -e '$T/scanned' ]"
 check "gate: a directory or missing path is rejected" "! body_ok '$T' && ! body_ok '$T/no-such-file'"
 
+# === Strix r10: a credential split, interleaved or fenced is still caught =====
+# The raw checks match per line; the body is published with its layout intact,
+# so the same checks also run on normalised copies (whitespace, zero-width,
+# control and markdown/fence punctuation removed; NFKC-folded).
+new_run gate-split
+printf 'literal-env-value-123\n' > "$ENVVALS"
+SKANT="sk-""ant-oat01-"; TOKQ="${FAKE_TOKEN:0:11}"   # pieces, so no line holds a whole token
+ZW=$'\xe2\x80\x8b'; ZWJ=$'\xe2\x80\x8d'; SHY=$'\xc2\xad'
+split_rejected() {  # split_rejected <name> <body>: body_ok must refuse it
+  printf '%s\n' "$2" > "$T/split.md"
+  check "split gate: $1" "! body_ok '$T/split.md'"
+}
+split_rejected "AWS key broken over two lines" "see AKIA
+IOSFODNN7EXAMPLE for details"
+split_rejected "AWS key broken over CRLF lines" "see AKIA"$'\r\n'"IOSFODNN7EXAMPLE"
+split_rejected "claude token prefix broken over lines" "token: sk-
+ant-oat01-${TOKQ}"
+split_rejected "claude token interleaved with spaces" "token: s k - a n t - o a t 0 1 - ${TOKQ}"
+split_rejected "claude token interleaved with zero-width characters" "token: sk-${ZW}ant-${ZWJ}oat01-${TOKQ}"
+split_rejected "AWS key with soft hyphens and zero-width joiners" "key AKIA${SHY}IOSF${ZWJ}ODNN7EXAMPLE"
+split_rejected "AWS key across a code fence" "key AKIA
+\`\`\`
+\`\`\`text
+IOSFODNN7EXAMPLE"
+split_rejected "AWS key in adjacent inline-code spans" 'key `AKIA``IOSFODNN7EXAMPLE`'
+split_rejected "AWS key across blockquote and table punctuation" "> AKIA
+> | IOSFODNN7 | EXAMPLE |"
+split_rejected "AWS key interleaved with emphasis markers" "key **AKIA**~~IOSFODNN7~~*EXAMPLE*"
+split_rejected "fullwidth (NFKC) claude token prefix" "token: ｓｋ－ａｎｔ－oat01-${TOKQ}"
+split_rejected "generic token in short lines (no prefix)" "${FAKE_TOKEN:0:10}
+${FAKE_TOKEN:10:10}
+${FAKE_TOKEN:20:10}
+${FAKE_TOKEN:30:10}
+${FAKE_TOKEN:40}"
+split_rejected "generic token in short fenced, quoted lines" "\`\`\`
+> ${FAKE_TOKEN:0:12}
+> ${FAKE_TOKEN:12:12}
+\`\`\`
+\`${FAKE_TOKEN:24}\`"
+split_rejected "literal .env value broken over lines" "value literal-env-
+value-123 here"
+split_rejected "literal .env value interleaved with spaces and zero-width" "value l i t e r a l - e n v - ${ZW}value-1 2 3"
+split_rejected "credentials in a URL broken over lines" "open https://admin:
+hunter2pass@stack.example/x"
+split_rejected "private key header broken over lines" "-----BEGIN RSA
+PRIVATE KEY-----"
+# Controls: ordinary report text must still pass after normalisation.
+cat > "$T/report-clean.md" <<'MD'
+## Devices page 500s on save
+
+Steps:
+1. Sign in at http://localhost:4321 as admin@example.com (seeded Admin).
+2. Open Settings > Users and click **Save** on row 2.
+
+| Page | Result | Commit |
+|------|--------|--------|
+| /devices | 500 | 0123456789abcdef0123456789abcdef01234567 |
+| /settings/users | OK | fedcba9876543210fedcba9876543210fedcba98 |
+
+```text
+TypeError: Cannot read properties of undefined (reading 'orgId')
+    at DeviceListQuery (apps/web/src/components/devices/DeviceList.tsx:142:17)
+```
+
+Expected: the row saves. Actual: HTTP 500 from PATCH /api/v1/devices/abc-123.
+See #555 and fix-the-devices-page-crash-when-the-filter-is-empty-12.
+Commit: 0123456789abcdef0123456789abcdef01234567
+Screenshots
+Commit:
+fedcba9876543210fedcba9876543210fedcba98
+## Repro
+Notes
+Stack: http://localhost:4321
+Login: admin@example.com
+MD
+check "split gate: control: a realistic multi-line report passes" "body_ok '$T/report-clean.md'"
+check "split gate: control: the log-sized clean body still passes" "body_ok '$T/logsized-clean.md'"
+check "split gate: a normaliser that crashes rejects the body" "! ( _norm_scan() { return 137; }; body_ok '$T/report-clean.md' )"
+check "split gate: a normaliser that exits 0 without a verdict rejects the body" "! ( _norm_scan() { :; }; body_ok '$T/report-clean.md' )"
+outbox 001-split.json "{\"action\":\"create\",\"title\":\"[UI] marker-split-body\",\"body\":$(json_str "see AKIA
+IOSFODNN7EXAMPLE")}"
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+publish_outbox >/dev/null 2>&1
+check "split gate: a create body with a split key is not published" "! grep -q 'marker-split-body' '$GH_LOG' && ! grep -q 'IOSFODNN7EXAMPLE' '$GH_LOG.bodies'"
+
 new_run gate-log
 QA_COMMENTABLE=" "; IN_SCOPE=" "
 outbox 001.json "{\"action\":\"comment\",\"issue\":$(json_str "marker-issue-$FAKE_AKIA"),\"body\":\"clean body\"}"
@@ -339,7 +424,8 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   HTTP2_PID=$!; sleep 1
   lport() { lsof -nP -a -p "$1" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}'; }
   HTTP_PORT="$(lport "$HTTP_PID")"; HTTP2_PORT="$(lport "$HTTP2_PID")"
-  QA_STACK_PORT="$HTTP_PORT"; EGRESS_PORT=1; GH_BROKER_PORT=2
+  # The egress proxy is the second listener: the agent no longer reaches it (Strix r10).
+  QA_STACK_PORT="$HTTP_PORT"; EGRESS_PORT="$HTTP2_PORT"; MODEL_PORT=3; GH_BROKER_PORT=2
   # Per-user stores the agent must not read (Strix r8): reads under the home
   # directory are an allow-list, not a list of known stores.
   mkdir -p "$FAKE_HOME/.claude/projects/-Users-dev-repo" "$FAKE_HOME/.claude/todos" "$FAKE_HOME/.ssh" \
@@ -549,6 +635,7 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "sandbox: the stack port is reachable as 127.0.0.1 too" "[ \"\$(sbx /usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP_PORT/README.md)\" = readme ]"
   check "sandbox: control: the second loopback listener answers outside the sandbox" "[ \"\$(/usr/bin/curl --noproxy '*' -s -m 5 http://127.0.0.1:$HTTP2_PORT/README.md)\" = readme ]"
   check "sandbox: any other loopback service on this Mac is unreachable" "! sbx /usr/bin/curl --noproxy '*' -s -m 5 -o /dev/null http://127.0.0.1:$HTTP2_PORT/README.md 2>/dev/null"
+  check "sandbox: the profile admits the model forwarder's port and not the egress proxy's" "grep -qF '(remote ip \"localhost:3\")' '$PROF' && ! grep -qF \"localhost:\$EGRESS_PORT\" '$PROF'"
   kill "$HTTP_PID" "$HTTP2_PID" 2>/dev/null; rm -rf "$AGENT_TMP"
 else
   skip "Seatbelt cases (needs macOS sandbox-exec and qa_sandbox_profile)"
@@ -672,6 +759,90 @@ stop_egress_proxy
 check "audit: the runner's proxy logs to the protected path" "[ -n '$WIRED_LOG' ] && grep -q 'DENY CONNECT example.com:443 ' '$WIRED_LOG'"
 check "audit: the runner's proxy writes no log into RUN_DIR" "[ ! -e '$RUN_DIR/egress.log' ]"
 check "audit: the tool rules also deny Edit on the run's logs" "grep -qF 'Edit(/\$RUN_DIR/*.log)' '$QA_DIR/scheduled-ui-sweep.sh' && grep -qF 'Edit(/\$RUN_DIR/*.err)' '$QA_DIR/scheduled-ui-sweep.sh' && grep -qF 'Edit(/\$RUN_DIR/transcript*)' '$QA_DIR/scheduled-ui-sweep.sh'"
+
+# === Strix r10: the agent never holds a credential ===========================
+# model-forwarder.py (runner side) holds the agent token and adds it to model
+# API requests only; the agent gets a placeholder and ANTHROPIC_BASE_URL.
+FW_PY="$QA_DIR/model-forwarder.py"
+fw_py() { /usr/bin/python3 -I - "$FW_PY" "$@" <<'PY'
+import importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("fw", sys.argv[1]); fw = importlib.util.module_from_spec(spec); spec.loader.exec_module(fw)
+case = sys.argv[2]
+if case == "routes":
+    for m, t in (("POST", "/v1/messages"), ("POST", "/v1/messages?beta=true"), ("POST", "/v1/messages/count_tokens"),
+                 ("POST", "/v1/messages/count_tokens?beta=true")):
+        assert fw.route_ok(m, t), (m, t)
+    for m, t in (("GET", "/v1/messages"), ("POST", "/api/oauth/profile"), ("POST", "/api/oauth/claude_cli/create_api_key"),
+                 ("POST", "/v1/messages/batches"), ("POST", "/v1/files"), ("POST", "/v1/messages?beta=true&x=1"),
+                 ("POST", "/v1/messages/../oauth"), ("POST", "http://api.anthropic.com/v1/messages"), ("POST", "/v1/messages#x"),
+                 ("POST", "/V1/messages"), ("POST", "//v1/messages"), ("POST", "/v1/messages/")):
+        assert not fw.route_ok(m, t), (m, t)
+elif case == "headers":
+    h = dict(fw.upstream_headers([("Authorization", "Bearer placeholder"), ("X-Api-Key", "k"), ("Cookie", "c"),
+                                  ("Proxy-Authorization", "p"), ("Host", "evil"), ("Content-Length", "1"),
+                                  ("anthropic-beta", "claude-code-20250219, oauth-2025-04-20"),
+                                  ("anthropic-version", "2023-06-01"), ("x-evil", "1"), ("content-type", "application/json")],
+                                 "sk-ant-oat01-REAL"))
+    assert h["authorization"] == "Bearer sk-ant-oat01-REAL", h
+    for k in ("x-api-key", "cookie", "proxy-authorization", "host", "content-length", "x-evil"):
+        assert k not in h, (k, h)
+    assert h["anthropic-beta"].split(",").count("oauth-2025-04-20") == 1 and "claude-code-20250219" in h["anthropic-beta"], h
+    assert h["anthropic-version"] == "2023-06-01" and h["content-type"] == "application/json"
+    h = dict(fw.upstream_headers([], "sk-ant-oat01-REAL"))
+    assert h["anthropic-beta"] == "oauth-2025-04-20", h
+elif case == "token":
+    good = "sk-ant-oat01-" + "A" * 40
+    assert fw.read_token(io.StringIO(good + "\n")) == good
+    for bad in ("", "not-a-token\n", good + "\n" + good + "\n", "sk-ant-api03-" + "A" * 40 + "\n", good + " x\n"):
+        try:
+            fw.read_token(io.StringIO(bad)); raise SystemExit("accepted %r" % bad)
+        except ValueError:
+            pass
+PY
+}
+check "forwarder: only POST to the model API (messages, count_tokens; ?beta=true) is forwarded" "fw_py routes"
+check "forwarder: client credentials and unlisted headers are dropped; its own bearer + oauth beta are set" "fw_py headers"
+check "forwarder: the token on stdin must be one setup-token line" "fw_py token"
+# Live, against a fake egress proxy that records CONNECTs (no network needed).
+new_run forwarder
+FAKEPX_LOG="$T/fakepx.log"; : > "$FAKEPX_LOG"
+/usr/bin/python3 -I - "$T/fakepx.port" "$FAKEPX_LOG" <<'PY' &
+import socket, sys, threading
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(8)
+open(sys.argv[1], "w").write(str(s.getsockname()[1]))
+def serve(c):
+    head = b""
+    while b"\r\n\r\n" not in head:
+        d = c.recv(4096)
+        if not d: return
+        head += d
+    with open(sys.argv[2], "a") as f: f.write(head.split(b"\r\n")[0].decode() + "\n")
+    c.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n"); c.close()   # then no TLS: the forwarder gets a 502
+while True:
+    c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
+PY
+FAKEPX_PID=$!
+for _ in $(seq 1 30); do [ -s "$T/fakepx.port" ] && break; sleep 0.1; done
+EGRESS_PORT="$(cat "$T/fakepx.port")"
+FWTOK='sk-ant-oat01-FwdTest_0123456789abcdefghijKLMNOPqrstuv-wxyz'
+AGENT_OAUTH_TOKEN=""
+check "forwarder: it does not start without a loaded token" "! start_model_forwarder"
+AGENT_OAUTH_TOKEN="$FWTOK"
+check "forwarder: the runner starts it" "start_model_forwarder && [ -n \"\$MODEL_PORT\" ]"
+check "forwarder: the runner drops its copy of the token once the forwarder holds it" "[ -z \"\$AGENT_OAUTH_TOKEN\" ]"
+fwcode() { curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -m 10 "$@"; }
+check "forwarder: a non-model route is refused" "[ \"\$(fwcode http://127.0.0.1:\$MODEL_PORT/api/oauth/profile)\" = 403 ]"
+check "forwarder: a POST to an OAuth endpoint is refused" "[ \"\$(fwcode -X POST -d '{}' http://127.0.0.1:\$MODEL_PORT/api/oauth/claude_cli/create_api_key)\" = 403 ]"
+check "forwarder: a refused route never leaves the machine" "[ ! -s '$FAKEPX_LOG' ]"
+fwcode -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:$MODEL_PORT/v1/messages?beta=true" >/dev/null
+check "forwarder: a model call goes out through the egress proxy, to api.anthropic.com only" "[ \"\$(cat '$FAKEPX_LOG')\" = 'CONNECT api.anthropic.com:443 HTTP/1.0' ]"
+check "forwarder: its argv and environment do not hold the token" "! ps -E -ww -o command= -p \"\$MODEL_PID\" | grep -qF \"\$FWTOK\" && ps -E -ww -o command= -p \"\$MODEL_PID\" | grep -q model-forwarder"
+check "forwarder: decisions go to the protected audit log, without the token" "[ \"\$(model_log_path)\" = '$QA_HOME/.audit/model-$RUN_ID.log' ] && grep -q 'DENY GET /api/oauth/profile' \"\$(model_log_path)\" && ! grep -qF \"\$FWTOK\" \"\$(model_log_path)\""
+stop_model_forwarder; kill "$FAKEPX_PID" 2>/dev/null
+check "forwarder: stop_model_forwarder stops it" "[ -z \"\$MODEL_PORT\" ]"
+check "wiring: the egress allowlist is the model API host only" "[ \"\$QA_EGRESS_ALLOW\" = api.anthropic.com ]"
+check "wiring: no runner path hands the token to a process environment" "! grep -q 'CLAUDE_CODE_OAUTH_TOKEN=\"\$AGENT\|with_agent_token' '$QA_DIR/scheduled-ui-sweep.sh' '$QA_DIR/sweep-lib.sh' '$QA_DIR/install-schedule.sh'"
+check "wiring: the installer ships the forwarder" "grep -q 'model-forwarder.py' '$QA_DIR/install-schedule.sh'"
 
 if [ "${QA_TEST_NETWORK:-0}" = 1 ]; then
   check "proxy: allowlisted host tunnels" "curl -s -m 15 -o /dev/null --proxy '$PX' https://api.github.com/zen"
@@ -876,10 +1047,29 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
   /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http3.log" 2>&1 &
   H3=$!; sleep 1; QA_STACK_PORT="$(lsof -nP -a -p "$H3" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}')"
   QA_GH_BIN="$T/ghb/gh" start_gh_broker && start_egress_proxy
+  # The forwarder needs a token: the live leg's own (QA_AGENT_TOKEN_FILE), else
+  # a well-formed fake one that the API must reject.
+  LIVE_TOKEN=0
+  if [ -n "${QA_AGENT_TOKEN_FILE:-}" ] && load_agent_token; then LIVE_TOKEN=1
+  else AGENT_OAUTH_TOKEN='sk-ant-oat01-NotARealToken_0123456789abcdefghijKLMNOP'; fi
+  start_model_forwarder
   AGENT_PROFILE="$T/selfcheck.sb"
   qa_sandbox_profile "$AGENT_PROFILE"
-  check "selfcheck: the real sandbox + proxy + broker pass the runner's self-check" "sandbox_selfcheck"
+  if [ "$LIVE_TOKEN" = 1 ]; then
+    check "selfcheck: the real sandbox + proxy + forwarder + broker pass the runner's self-check" "sandbox_selfcheck"
+  else
+    check "selfcheck: with a fake token, the only failure is the API rejecting it" "! sandbox_selfcheck && grep 'selfcheck FAILED' '$T/runner.log' | tail -1 | grep -qx '.*FAILED: model-auth-rejected(401)'"
+  fi
   grep 'selfcheck' "$T/runner.log" | tail -1
+  # Strix r10: the agent reaches the model only through the forwarder. A profile
+  # that admits the egress proxy again, or an agent environment that carries a
+  # credential, must fail the check.
+  { cat "$T/selfcheck.sb"; printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$EGRESS_PORT"; } > "$T/egress.sb"
+  AGENT_PROFILE="$T/egress.sb"; : > "$T/runner.log"
+  check "selfcheck: a profile that admits the egress proxy is caught" "! sandbox_selfcheck && grep -q 'egress-proxy-reachable' '$T/runner.log'"
+  AGENT_PROFILE="$T/selfcheck.sb"; : > "$T/runner.log"
+  check "selfcheck: an agent environment carrying a credential is caught" "! ( eval \"\$(declare -f build_agent_cmd | sed '1s/build_agent_cmd/_real_build_agent_cmd/')\"; build_agent_cmd() { _real_build_agent_cmd \"\$@\"; AGENT_CMD=(\"\${AGENT_CMD[@]:0:3}\" /usr/bin/env QA_LEAKED=sk-ant-oat01-leaked \"\${AGENT_CMD[@]:3}\"); }; sandbox_selfcheck ) && grep -q 'agent-env-credential' '$T/runner.log'"
+  check "selfcheck: the forwarder refuses non-model routes from inside" "grep -q 'DENY GET /api/oauth/profile' \"\$(model_log_path)\""
   # A profile that lets the agent reach any loopback port must fail it.
   sed 's/(remote ip "localhost:[0-9]*")/(remote ip "localhost:*")/' "$AGENT_PROFILE" > "$T/loose.sb"; AGENT_PROFILE="$T/loose.sb"
   check "selfcheck: a loopback-wide profile is caught" "! sandbox_selfcheck && grep -q 'other-loopback-port-open' '$T/runner.log'"
@@ -914,27 +1104,28 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
     AGENT_PROFILE="$T/agent-live.sb"; qa_sandbox_profile "$AGENT_PROFILE"
     PROBE_TITLE="qa-sandbox-probe-$$"
     printf '<!doctype html><title>%s</title><p>ok</p>\n' "$PROBE_TITLE" > "$QA_WORKTREE/index.html"
-    check "agent: the agent token loads" "load_agent_token"
+    check "agent: the live leg runs with a real token behind the forwarder" "[ '$LIVE_TOKEN' = 1 ]"
     check "agent: the pinned Playwright MCP installs" "prewarm_mcp '$QA_DIR/qa-mcp.json' >/dev/null 2>&1"
     mkdir -p "$RUN_DIR/browser"   # the MCP server's cwd, as the runner creates it
     build_mcp_config "http://localhost:$QA_STACK_PORT" "$QA_DIR/qa-mcp.json" "$RUN_DIR/mcp.json"
     reset_agent_claude_dir
     build_agent_cmd claude auth status --json
-    check "agent: in-sandbox auth is the agent's own token" "[ \"\$(cd '$QA_WORKTREE' && with_agent_token \"\${AGENT_CMD[@]}\" 2>/dev/null | jq -r .authMethod)\" = oauth_token ]"
+    check "agent: in-sandbox auth is the forwarder's placeholder on the first-party API" "[ \"\$(cd '$QA_WORKTREE' && \"\${AGENT_CMD[@]}\" 2>/dev/null | jq -r '.authMethod + \" \" + .apiProvider')\" = 'oauth_token firstParty' ]"
     build_agent_cmd claude -p "Use the browser_navigate tool to open http://localhost:$QA_STACK_PORT/index.html, then reply with only the page title and nothing else." \
       --permission-mode dontAsk --allowedTools mcp__playwright__browser_navigate --strict-mcp-config \
       --mcp-config "$RUN_DIR/mcp.json" --add-dir "$RUN_DIR" --output-format text
-    N_BEFORE="$(grep -c 'api.anthropic.com' "$EGRESS_LOG")"
-    AGENT_OUT="$(cd "$QA_WORKTREE" && with_agent_token "${AGENT_CMD[@]}" 2>"$T/agent.err")"
+    N_BEFORE="$(grep -c 'api.anthropic.com' "$EGRESS_LOG")"; M_BEFORE="$(grep -c 'ALLOW /v1/messages' "$(model_log_path)")"
+    AGENT_OUT="$(cd "$QA_WORKTREE" && "${AGENT_CMD[@]}" 2>"$T/agent.err")"
     echo "agent said: $(printf '%s' "$AGENT_OUT" | head -c 200)"
     [ -s "$T/agent.err" ] && { echo "agent stderr:"; head -c 2000 "$T/agent.err"; echo; }
     check "agent: the real agent authenticates and its browser loads the stack page" "printf '%s' \"\$AGENT_OUT\" | grep -qF '$PROBE_TITLE'"
-    check "agent: the model call left through the proxy" "[ \"\$(grep -c 'api.anthropic.com' '$EGRESS_LOG')\" -gt '$N_BEFORE' ]"
+    check "agent: the model call went through the forwarder" "[ \"\$(grep -c 'ALLOW /v1/messages' \"\$(model_log_path)\")\" -gt '$M_BEFORE' ]"
+    check "agent: the forwarder's call left through the egress proxy" "[ \"\$(grep -c 'api.anthropic.com' '$EGRESS_LOG')\" -gt '$N_BEFORE' ]"
     rm -f "$QA_WORKTREE/index.html"; rm -rf "$AGENT_TMP"
   else
     skip "real agent auth + browser inside the sandbox (set QA_TEST_AGENT=1 and QA_AGENT_TOKEN_FILE with QA_TEST_NETWORK=1, macOS)"
   fi
-  stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
+  stop_model_forwarder; stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
 else
   skip "end-to-end sandbox self-check (set QA_TEST_NETWORK=1, macOS)"
 fi
@@ -942,11 +1133,11 @@ fi
 # === agent + MCP launch wiring ================================================
 if type build_agent_cmd >/dev/null 2>&1; then
   new_run cmd
-  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; GH_BROKER_PORT=9876; AGENT_TMP="$QA_HOME/.t"; AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"
+  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; MODEL_PORT=5556; GH_BROKER_PORT=9876; AGENT_TMP="$QA_HOME/.t"; AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"
   build_agent_cmd claude -p hi
   joined="${AGENT_CMD[*]}"
   check "launch: agent runs under sandbox-exec with the generated profile" "[ \"\${AGENT_CMD[0]}\" = /usr/bin/sandbox-exec ] && [ \"\${AGENT_CMD[1]}\" = -f ] && [ \"\${AGENT_CMD[2]}\" = '$AGENT_PROFILE' ]"
-  check "launch: proxy env points at the loopback egress proxy" "case \"\$joined\" in *HTTPS_PROXY=http://127.0.0.1:4321*) true;; *) false;; esac"
+  check "launch: the model API is the loopback forwarder, and no proxy env reaches the agent" "case \"\$joined\" in *HTTPS_PROXY=*|*https_proxy=*) false;; *ANTHROPIC_BASE_URL=http://127.0.0.1:5556*) true;; *) false;; esac"
   check "launch: ssh-agent socket is not inherited" "case \"\$joined\" in *'-u SSH_AUTH_SOCK'*) true;; *) false;; esac"
   check "launch: agent gets its own TMPDIR" "case \"\$joined\" in *\"TMPDIR=\$QA_HOME/.t\"*) true;; *) false;; esac"
   check "launch: agent gets a throwaway claude config dir, not ~/.claude" "case \"\$joined\" in *\"CLAUDE_CONFIG_DIR=\$QA_HOME/.claude-agent \"*) true;; *) false;; esac"
@@ -964,10 +1155,19 @@ if type build_agent_cmd >/dev/null 2>&1; then
   GOOD='sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz_0123456789-xyz'
   ( umask 077; printf '%s\n' "$GOOD" > "$TOKF" )
   check "token: a well-formed 0600 token file loads" "load_agent_token && [ \"\$AGENT_OAUTH_TOKEN\" = '$GOOD' ]"
-  check "token: it reaches the agent command's environment" "[ \"\$(with_agent_token /usr/bin/printenv CLAUDE_CODE_OAUTH_TOKEN)\" = '$GOOD' ]"
   check "token: it is not exported to the runner's other children" "[ -z \"\$(/usr/bin/printenv CLAUDE_CODE_OAUTH_TOKEN)\" ]"
+  # Strix r10: the agent holds no credential at all. Its environment is the
+  # wrapper's (everything after sandbox-exec -f <profile>), run here directly.
+  MODEL_PORT=5555
+  build_agent_cmd /usr/bin/env
+  AGENT_ENV="$(ANTHROPIC_API_KEY=sk-ant-api03-runner ANTHROPIC_AUTH_TOKEN=runner-auth CLAUDE_CODE_OAUTH_TOKEN="$GOOD" \
+    CLAUDE_CODE_OAUTH_REFRESH_TOKEN=runner-refresh HTTPS_PROXY=http://127.0.0.1:4321 "${AGENT_CMD[@]:3}")"
+  check "token: the agent's environment holds no credential, even one the runner's env has" "! printf '%s' \"\$AGENT_ENV\" | grep -qE 'sk-ant-|runner-auth|runner-refresh|^ANTHROPIC_API_KEY=|^ANTHROPIC_AUTH_TOKEN=|^CLAUDE_CODE_OAUTH_REFRESH_TOKEN='"
+  check "token: the agent signs in with the forwarder's placeholder" "printf '%s\n' \"\$AGENT_ENV\" | grep -qx \"CLAUDE_CODE_OAUTH_TOKEN=\$AGENT_TOKEN_PLACEHOLDER\" && [ -n \"\$AGENT_TOKEN_PLACEHOLDER\" ]"
+  check "token: the agent's model API is the loopback forwarder" "printf '%s\n' \"\$AGENT_ENV\" | grep -qx 'ANTHROPIC_BASE_URL=http://127.0.0.1:5555'"
+  check "token: the agent gets no egress proxy (its only route out is the forwarder)" "! printf '%s\n' \"\$AGENT_ENV\" | grep -qiE '^(https?|all)_proxy='"
   build_agent_cmd claude -p hi
-  check "token: it is never on the agent's argv" "case \"\${AGENT_CMD[*]}\" in *sk-ant-*|*CLAUDE_CODE_OAUTH_TOKEN*) false;; *) true;; esac"
+  check "token: it is never on the agent's argv" "case \"\${AGENT_CMD[*]}\" in *sk-ant-*) false;; *) true;; esac"
   chmod 644 "$TOKF"
   check "token: a group/world-readable token file is refused" "! load_agent_token"
   chmod 600 "$TOKF"; printf 'not-a-token\n' > "$TOKF"
@@ -978,7 +1178,6 @@ if type build_agent_cmd >/dev/null 2>&1; then
   check "token: a symlinked token file is refused" "! load_agent_token"
   rm -f "$TOKF"
   check "token: no token file fails closed" "! load_agent_token && [ -z \"\${AGENT_OAUTH_TOKEN:-}\" ]"
-  check "token: nothing runs with an empty token" "! with_agent_token /usr/bin/true"
 else
   bad "build_agent_cmd is defined"
 fi

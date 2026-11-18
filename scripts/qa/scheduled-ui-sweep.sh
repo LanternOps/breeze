@@ -130,7 +130,7 @@ cleanup() {
   fi
   [ -f "$QA_WORKTREE/.env.pre-hosted" ] && mv "$QA_WORKTREE/.env.pre-hosted" "$QA_WORKTREE/.env"
   remove_stack_net
-  stop_egress_proxy; stop_gh_broker
+  stop_model_forwarder; stop_egress_proxy; stop_gh_broker
   rm -f "$ENVVALS"; rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -138,11 +138,14 @@ trap cleanup EXIT
 log "=== QA sweep $RUN_ID ==="
 
 # --- subscription auth only (never API billing) ------------------------------
-# The agent signs in with its own long-lived claude.ai token (`claude
+# The agent's model calls carry its own long-lived claude.ai token (`claude
 # setup-token`, stored by install-schedule.sh --agent-token; agent_token_path),
-# never the developer's login: the sandbox gives it no keychain at all. An API
-# key / alt provider in the environment would override the token, so strip
-# them and then require authMethod=oauth_token on the first-party API.
+# never the developer's login: the sandbox gives it no keychain at all. The
+# agent itself never holds the token (Strix r10): the runner pipes it to the
+# model forwarder (start_model_forwarder), which adds it to the agent's
+# requests outside the sandbox. An API key / alt provider in the environment
+# would change how claude authenticates, so strip them here, and the agent's
+# command strips them again (build_agent_cmd).
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
       CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
       CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_REFRESH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR \
@@ -153,14 +156,7 @@ if ! load_agent_token; then
   notify "QA sweep skipped: no agent token. Run: claude setup-token, then scripts/qa/install-schedule.sh --agent-token"
   log "FATAL no usable agent token at $(agent_token_path)"; exit 1
 fi
-# Checked with the agent's own config + storage dirs, so this proves the login the agent will use.
-AUTH="$(with_agent_token env CLAUDE_CONFIG_DIR="$(agent_claude_dir)" CLAUDE_SECURESTORAGE_CONFIG_DIR="$(agent_claude_dir)" \
-  claude auth status --json 2>/dev/null | jq -r '"\(.authMethod // "none") \(.apiProvider // "none")"')"
-if [ "$AUTH" != "oauth_token firstParty" ]; then
-  notify "QA sweep skipped: the agent token is not a claude.ai subscription login (auth=${AUTH:-none})"
-  log "FATAL agent auth '${AUTH:-none}', expected 'oauth_token firstParty'"; exit 1
-fi
-log "auth: agent's own claude.ai token"
+log "auth: agent's own claude.ai token loaded (held by the model forwarder only; proven against the API by the sandbox self-check)"
 
 # --- docker engine -----------------------------------------------------------
 ensure_docker() {
@@ -409,12 +405,13 @@ build_mcp_config "$BASE_URL" "$SCRIPT_DIR/qa-mcp.json" "$RUN_DIR/mcp.json" \
 
 # --- agent sandbox + egress (fixed before the agent starts) -------------------
 # The agent's whole process tree runs under a Seatbelt profile: network limited
-# to three loopback ports (stack, egress proxy, gh broker), env files/logs/gh
-# config unreadable, worktree and runner inputs read-only. Its own traffic
-# leaves the machine only through the egress proxy (Anthropic, :443); it reads
-# GitHub only through the gh broker (read-only, pinned to QA_REPO); the stack it
-# drives has no egress (secure_stack above). The profile is self-checked here;
-# if it doesn't hold, the agent never starts.
+# to three loopback ports (stack, model forwarder, gh broker), env files/logs/gh
+# config unreadable, worktree and runner inputs read-only. It holds no
+# credential: its model calls go to the forwarder, which adds the token and
+# leaves the machine through the egress proxy (api.anthropic.com:443 only); it
+# reads GitHub only through the gh broker (read-only, pinned to QA_REPO); the
+# stack it drives has no egress (secure_stack above). The profile is
+# self-checked here; if it doesn't hold, the agent never starts.
 AGENT_PROFILE="$QA_HOME/.sandbox/agent.sb"
 AGENT_TMP="$QA_HOME/.t"   # the agent's TMPDIR; the only place it may use unix sockets (kept short: 104-byte socket paths)
 rm -rf "$AGENT_TMP"
@@ -423,19 +420,19 @@ snapshot_commentable_issues   # outbox `comment` targets: open qa-sweep issues a
 log "commentable qa-sweep issues:${QA_COMMENTABLE:- none}"
 snapshot_open_issues   # the agent's dedupe list (its GitHub reader has no search)
 log "open issues for dedupe: $(wc -l < "$RUN_DIR/open-issues.tsv" | tr -d ' ')"
-if ! { start_egress_proxy && start_gh_broker && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
-  notify "QA sweep: agent sandbox/egress proxy failed its self-check; agent not started (see $LOG)"
+if ! { start_egress_proxy && start_model_forwarder && start_gh_broker && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
+  notify "QA sweep: agent sandbox/egress proxy/model forwarder failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
-# Prove the agent's exact command line signs in with its own token from inside
-# (no keychain is reachable there).
+# Prove the agent's exact command line runs in subscription mode on the
+# first-party API from inside: the forwarder's placeholder, never an API key.
 build_agent_cmd claude auth status --json
-SB_AUTH="$(with_agent_token "${AGENT_CMD[@]}" 2>/dev/null | jq -r '.authMethod // empty' 2>/dev/null)"
-if [ "$SB_AUTH" != oauth_token ]; then
+SB_AUTH="$("${AGENT_CMD[@]}" 2>/dev/null | jq -r '"\(.authMethod // "none") \(.apiProvider // "none")"' 2>/dev/null)"
+if [ "$SB_AUTH" != "oauth_token firstParty" ]; then
   notify "QA sweep: the agent cannot sign in inside the sandbox; agent not started (see $LOG)"
-  log "FATAL in-sandbox auth method '${SB_AUTH:-none}', expected oauth_token"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
+  log "FATAL in-sandbox auth '${SB_AUTH:-none}', expected 'oauth_token firstParty'"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
-log "in-sandbox auth: agent's own claude.ai token"
+log "in-sandbox auth: subscription mode via the model forwarder (the agent holds no credential)"
 
 PROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
@@ -517,8 +514,8 @@ fi
 # JavaScript (browser_evaluate, browser_run_code_unsafe), no request routing,
 # no local file upload/drop.
 # These permission rules are the first layer only. The enforcement layer the
-# agent cannot step around is the Seatbelt sandbox + egress proxy set up above
-# (qa_sandbox_profile/start_egress_proxy in sweep-lib.sh): it binds every tool,
+# agent cannot step around is the Seatbelt sandbox + model forwarder set up above
+# (qa_sandbox_profile/start_model_forwarder in sweep-lib.sh): it binds every tool,
 # every Bash command and the browser, not just the tools these rules name.
 PW_TOOLS=(
   browser_navigate browser_navigate_back browser_tabs browser_close browser_resize
@@ -586,8 +583,8 @@ run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
     return 1
   fi
   log "claude start [$3] (timeout $2)"
-  build_agent_cmd claude "${args[@]}"   # sandbox-exec + proxy env around claude
-  ( set -C; with_agent_token gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$tr" 2> "$er" )
+  build_agent_cmd claude "${args[@]}"   # sandbox-exec + forwarder env around claude
+  ( set -C; gtimeout --kill-after=2m "$2" "${AGENT_CMD[@]}" > "$tr" 2> "$er" )
   local rc=$?; restore_stack_env; log "claude exit [$3]=$rc"; return $rc
 }
 
@@ -657,7 +654,7 @@ else
   notify "QA sweep did not complete (exit $RC); cursor not advanced$HOSTED_NOTE. Log: $RUN_DIR"
 fi
 
-# keep 30 days of runs and their egress audit logs
+# keep 30 days of runs and their audit logs
 find "$QA_HOME/runs" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null
-find "$QA_HOME/.audit" -type f -name 'egress-*.log' -mtime +30 -delete 2>/dev/null
+find "$QA_HOME/.audit" -type f \( -name 'egress-*.log' -o -name 'model-*.log' -o -name 'gh-*.log' \) -mtime +30 -delete 2>/dev/null
 exit "$RC"

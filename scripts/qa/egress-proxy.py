@@ -2,8 +2,10 @@
 """CONNECT-only egress proxy for the scheduled QA sweep agent.
 
 The agent's process tree runs under a Seatbelt profile (qa-sandbox.sb) that
-allows outbound connections to loopback only, so this proxy is its only route
-off the machine. It is deliberately narrow:
+allows outbound connections to three loopback ports only. Its model calls go
+to the runner's model forwarder (model-forwarder.py), which adds the
+credential and is this proxy's one client, so this proxy is the only route off
+the machine for the agent's traffic. It is deliberately narrow:
 
   - the request line must be exactly `CONNECT <name>:443 HTTP/1.x`, matched on
     the raw bytes, where <name> is a plain DNS hostname: letters, digits, dots
@@ -20,7 +22,7 @@ off the machine. It is deliberately narrow:
 Everything else gets 403. Each decision is logged one per line to a file the
 agent cannot read or write.
 
-  egress-proxy.py --allow api.anthropic.com,platform.claude.com --port-file F --log L
+  egress-proxy.py --allow api.anthropic.com --port-file F --log L
 
 Python 3.9 stdlib only (the QA Mac's /usr/bin/python3).
 """
