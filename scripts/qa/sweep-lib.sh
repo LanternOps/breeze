@@ -26,74 +26,58 @@ body_ok() {
   [ -s "$ENVVALS" ] && LC_ALL=C grep -aqF -f "$ENVVALS" "$1" && return 1       # any literal .env value
   return 0
 }
-# text_ok <string>: body_ok + refs_ok for a single field (an issue title), via a private file.
+# text_ok <string>: body_ok for a single field (an issue title), via a private file.
 text_ok() {
   local tf rc
   tf="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.field.XXXXXX")" || return 1
-  printf '%s' "$1" > "$tf"; body_ok "$tf" && refs_ok "$tf"; rc=$?
+  printf '%s' "$1" > "$tf"; body_ok "$tf"; rc=$?
   rm -f "$tf"; return "$rc"
 }
-# refs_ok <file>: provenance gate for agent-written text bound for GitHub. The
-# agent can read GitHub only through the gh broker, which is pinned to QA_REPO,
-# so text that names ANOTHER repository (URL, OWNER/REPO#N, OWNER/REPO@sha) did
-# not come from a read it was allowed to make. The whole text is scanned: code
-# blocks get no exemption, because deciding what GitHub renders as code is
-# exactly the guess this gate must not depend on.
-refs_ok() {
-  local own r
-  own="$(printf '%s' "$QA_REPO" | tr '[:upper:]' '[:lower:]')"
-  [ -n "${own%%/*}" ] || return 1
-  for r in $(LC_ALL=C grep -aoiE 'api\.github\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|(github\.com|githubusercontent\.com)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' "$1" \
-             | sed -E 's#^[Aa][Pp][Ii]\.[^/]*/[Rr][Ee][Pp][Oo][Ss]/##; s#^[^/]*/##' | tr '[:upper:]' '[:lower:]' | sed -E 's/\.+$//; s/\.git$//'); do
-    [ "$r" = "$own" ] || return 1
-  done
-  for r in $(LC_ALL=C grep -aoE '(^|[^A-Za-z0-9_./-])[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+(#[0-9]+|@[0-9a-f]{7,40})' "$1" \
-             | sed -E 's#^[^A-Za-z0-9]##; s/[#@].*$//' | tr '[:upper:]' '[:lower:]'); do
-    [ "$r" = "$own" ] || return 1
-  done
-  return 0
-}
-# neutralize_refs <file>: rewrite text in place so GitHub cannot turn it into a
-# notification or a cross-repository backlink, wherever it lands in the markdown.
-# A zero-width joiner goes after every @, after anything shaped like an HTML
-# entity (GitHub decodes &#64; before it looks for mentions), after the # of a
-# reference glued to a preceding token (OWNER/REPO#N, including escaped forms),
-# and inside any GitHub host not followed by a plain path into QA_REPO. A bare #N
-# stays live: it can only point at QA_REPO. Runs after body_ok/refs_ok, on the
-# runner's private copy, and a failure means the text is not published.
-neutralize_refs() {
-  /usr/bin/python3 -I - "$1" "$QA_REPO" <<'PY'
+# fence_text <file>: rewrite agent-written text in place into the only form the
+# publisher posts: the text verbatim inside a fenced code block it cannot close.
+# This removes the capability instead of parsing for it: GitHub renders no link,
+# autolink, image, HTML, entity, mention or issue reference inside a code block,
+# so however a URL, host, mention or reference is spelled, it stays inert text.
+# A fence closes only on a line of at least as many backticks as it opened with,
+# and the fence is longer than every backtick run in the text. The one live
+# element is a runner-written "Related:" line after the fence listing the bare
+# #N numbers the text names; a bare number can only point into QA_REPO. As a
+# second layer, every @ gets a zero-width joiner and every `://` / `www.` is
+# defanged (`[:]//`, `www[.]`) for the raw text in notification emails. A
+# failure means the text is not published.
+fence_text() {
+  /usr/bin/python3 -I - "$1" <<'PY'
 import re, sys
 
-path, repo = sys.argv[1], sys.argv[2].lower().encode()
-if repo.count(b"/") != 1:
-    sys.exit(1)
-ZWJ = b"\xe2\x80\x8d"
-own_path = re.compile(rb"/" + re.escape(repo) + rb"(?:[/?#.,;:!]|$)")
-
-def host(m):
-    name, tail = m.group(1), m.group(2)
-    low = tail.lower()
-    if own_path.match(low) and not re.search(rb"\.\.|%|\\|//", low):
-        return m.group(0)
-    return name[:-4] + ZWJ + name[-4:] + tail
-
+path = sys.argv[1]
 with open(path, "rb") as f:
     text = f.read()
-text = re.sub(rb"(?i)(github\.com|githubusercontent\.com)([^\s<>()\[\]\"'`]*)", host, text)
-text = re.sub(rb"&(?=#[0-9xX]|[A-Za-z][A-Za-z0-9]{1,31};)", b"&" + ZWJ, text)
-text = text.replace(b"@", b"@" + ZWJ)
-text = re.sub(rb"(?<=[^\s(\[])#(?=[0-9])", b"#" + ZWJ, text)
+text = text.replace(b"@", b"@\xe2\x80\x8d")
+# Notification emails carry the raw text, and mail clients autolink it: defang
+# every scheme separator and www. host, with no exceptions.
+text = text.replace(b"://", b"[:]//")
+text = re.sub(rb"(?i)\b(www)\.", rb"\1[.]", text)
+longest = max((len(r) for r in re.findall(rb"`+", text)), default=0)
+fence = b"`" * max(3, longest + 1)
+refs = []
+for n in re.findall(rb"(?:^|(?<=[\s(\[,;:]))#([0-9]{1,7})(?![0-9A-Za-z_])", text):
+    if n not in refs and len(refs) < 20:
+        refs.append(n)
+out = fence + b"text\n" + text + (b"" if text.endswith(b"\n") else b"\n") + fence + b"\n"
+if refs:
+    out += b"\nRelated: " + b" ".join(b"#" + n for n in refs) + b"\n"
 with open(path, "wb") as f:
-    f.write(text)
+    f.write(out)
 PY
 }
-# neutral_text <string>: neutralize_refs for a single field (an issue title).
-neutral_text() {
-  local tf rc
-  tf="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.field.XXXXXX")" || return 1
-  printf '%s' "$1" > "$tf"; neutralize_refs "$tf" && cat "$tf"; rc=$?
-  rm -f "$tf"; return "$rc"
+# safe_title <string>: an issue title as plain text. Characters that form
+# mentions, references, entities, HTML or code (@ # & < > ` \) and anything
+# outside printable ASCII are dropped (whitespace becomes a space), and a
+# scheme separator is defanged. What remains is words and punctuation.
+safe_title() {
+  # \047 \042 \133 \135 = ' " [ ]  (octal: a bare [ opens a tr class)
+  printf '%s' "$1" | LC_ALL=C tr '\t\r\n' '   ' | LC_ALL=C tr -cd 'A-Za-z0-9 .,:;!?()/_+=%*\047\042\133\135-' \
+    | sed -e 's#://#[:]//#g' -e 's/  */ /g' -e 's/ *$//'
 }
 
 # ---------------------------------------------------------------------------
@@ -219,6 +203,7 @@ $locked
   (subpath "$lib")
   (literal "$(_sb_real "$STATE")")
   (literal "$run/commits.tsv")
+  (literal "$run/open-issues.tsv")
   (literal "$run/hosted-prs.txt")
   (literal "$run/mcp.json")
   (literal "$run/env-drift.md")
@@ -249,7 +234,9 @@ SB
 # run on an internal-only Docker network, so the app the agent administers
 # cannot be told to call out either.
 # ---------------------------------------------------------------------------
-QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,.anthropic.com,.claude.com,claude.ai,.claude.ai}"
+# Exact hostnames only (the proxy refuses suffix entries): the model API, the
+# claude.ai OAuth token refresh, and claude.ai itself.
+QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,platform.claude.com,claude.ai}"
 EGRESS_PID=""; EGRESS_PORT=""; EGRESS_LOG=""
 # _start_daemon <port-var> <pid-var> <port-file> <cmd...>: start a loopback
 # helper that writes its port to <port-file>, and wait for it.
@@ -466,6 +453,18 @@ snapshot_commentable_issues() {
   [ "$QA_COMMENTABLE" = " " ] && QA_COMMENTABLE=""
   return 0
 }
+# snapshot_open_issues: RUN_DIR/open-issues.tsv (number<TAB>title, read-only),
+# the agent's dedupe list. Fetched here with the runner's gh, before the agent
+# starts, so the agent's GitHub reader needs no search at all. Empty on failure.
+snapshot_open_issues() {
+  local out="$RUN_DIR/open-issues.tsv"
+  rm -f "$out"
+  # shellcheck disable=SC2016  # jq program
+  gh -R "$QA_REPO" issue list --state open --limit 3000 --json number,title \
+      --jq '.[] | "\(.number)\t\(.title | gsub("[\\t\\r\\n]"; " "))"' 2>/dev/null \
+    | LC_ALL=C grep -aE $'^[0-9]{1,7}\t' > "$out"
+  chmod 0444 "$out"
+}
 
 # snapshot_outbox: copy the agent's outbox into a runner-owned directory and
 # publish from there, so nothing the agent left running (or a symlink) can swap
@@ -515,25 +514,21 @@ publish_outbox() {
     if ! body_ok "$bodyf"; then
       log "outbox REJECT $(basename "$f"): empty/oversized/secret-like body"; continue
     fi
-    if ! refs_ok "$bodyf"; then
-      log "outbox REJECT $(basename "$f"): body references another repository"; continue
-    fi
-    if ! neutralize_refs "$bodyf"; then
-      log "outbox REJECT $(basename "$f"): could not neutralise the body"; continue
+    if ! fence_text "$bodyf"; then
+      log "outbox REJECT $(basename "$f"): could not fence the body"; continue
     fi
     case "$action" in
       create)
         full_title="$(jq -r '.title // empty' "$f" | tr -d '\n')"
-        title="$(printf '%s' "$full_title" | cut -c1-200)"
+        # Same gate as the body, on the joined title before any cut: a key that
+        # straddles column 200 must not publish its first half.
+        if ! text_ok "$full_title"; then
+          log "outbox REJECT $(basename "$f"): secret-like title"; continue
+        fi
+        title="$(safe_title "$full_title" | cut -c1-200)"
         if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | grep -Eq '^\[(UI|QA)\] .{5,}'; then
           log "outbox REJECT $(basename "$f"): cap reached or bad title"; continue
         fi
-        # Same gate as the body, on the joined title before the cut: a key that
-        # straddles column 200 must not publish its first half.
-        if ! text_ok "$full_title"; then
-          log "outbox REJECT $(basename "$f"): secret-like title (or a cross-repo reference)"; continue
-        fi
-        title="$(neutral_text "$title")" || { log "outbox REJECT $(basename "$f"): could not neutralise the title"; continue; }
         gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
       comment)
         issue="$(jq -r '.issue // empty' "$f")"
@@ -567,7 +562,7 @@ publish_outbox() {
   log "outbox: $created issue(s) created, $comments comment(s), $prs PR(s) annotated"
   local ledger="$PUBLISH_DIR/ledger.md"
   if [ -f "$RUN_DIR/ledger.md" ] && [ ! -L "$RUN_DIR/ledger.md" ]; then cp "$RUN_DIR/ledger.md" "$ledger"; fi
-  if [ -s "$ledger" ] && body_ok "$ledger" && refs_ok "$ledger" && neutralize_refs "$ledger"; then
+  if [ -s "$ledger" ] && body_ok "$ledger" && fence_text "$ledger"; then
     local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
                  --jq '[.[]|select(.title=="QA sweep ledger")][0].number // empty')"
     if [ -n "$n" ]; then gh -R "$QA_REPO" issue edit "$n" --body-file "$ledger" >/dev/null

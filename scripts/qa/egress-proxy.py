@@ -3,19 +3,31 @@
 
 The agent's process tree runs under a Seatbelt profile (qa-sandbox.sb) that
 allows outbound connections to loopback only, so this proxy is its only route
-off the machine. It tunnels CONNECT requests to port 443 of hosts on a fixed
-allowlist (set by the runner before the agent starts) and refuses everything
-else: other methods, other ports, IP literals, and unlisted hosts. Denials are
-logged one per line so a run's egress attempts can be audited.
+off the machine. It is deliberately narrow:
 
-  egress-proxy.py --allow api.anthropic.com,.claude.ai --port-file F --log L
+  - the request line must be exactly `CONNECT <name>:443 HTTP/1.x`, matched on
+    the raw bytes, where <name> is a plain DNS hostname: letters, digits, dots
+    and hyphens, LDH labels, no trailing dot, not numeric. A NUL, a control
+    character, a percent sign, an IP literal or any other port never gets past
+    this line, so nothing a client sends is reinterpreted by a later parser;
+  - the hostname must EQUAL an allowlist entry (lowercase). There is no suffix
+    or wildcard matching, and the allowlist itself is validated with the same
+    hostname rule at startup;
+  - the proxy resolves that exact validated name itself and dials only the
+    public (globally routable) addresses it resolved to, never loopback,
+    private, link-local or other special-use space.
 
-An entry starting with "." matches that domain and its subdomains. Python 3.9
-stdlib only (the QA Mac's /usr/bin/python3).
+Everything else gets 403. Each decision is logged one per line to a file the
+agent cannot read or write.
+
+  egress-proxy.py --allow api.anthropic.com,platform.claude.com --port-file F --log L
+
+Python 3.9 stdlib only (the QA Mac's /usr/bin/python3).
 """
 import argparse
 import ipaddress
 import os
+import re
 import select
 import socket
 import socketserver
@@ -23,49 +35,94 @@ import sys
 import time
 
 MAX_HEADER = 16384
+PORT = 443
+
+# One LDH label (RFC 1123), lowercase. Hostnames are compared after lowercasing.
+LABEL_RE = re.compile(r"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+# The whole request line, byte for byte. Case is normalised after the match.
+REQUEST_RE = re.compile(rb"\ACONNECT ([A-Za-z0-9.-]{1,253}):443 HTTP/1\.[01]\Z")
 
 
-def host_allowed(host, allow):
-    host = host.lower().rstrip(".")
-    if not host:
+def valid_hostname(name):
+    """True for a plain DNS name: >= 2 LDH labels, alphabetic TLD, no IP literal."""
+    if not isinstance(name, str) or not name or len(name) > 253 or name != name.lower():
         return False
+    labels = name.split(".")
+    if len(labels) < 2 or not all(LABEL_RE.match(label) for label in labels):
+        return False
+    if labels[-1].isdigit():
+        return False  # dotted-numeric forms (1.2.3.4, 0x7f.1, ...) are addresses, not names
     try:
-        ipaddress.ip_address(host.strip("[]"))
-        return False  # IP literals bypass the name allowlist
+        ipaddress.ip_address(name)
+        return False
     except ValueError:
-        pass
-    for entry in allow:
-        if entry.startswith("."):
-            if host == entry[1:] or host.endswith(entry):
-                return True
-        elif host == entry:
-            return True
-    return False
+        return True
 
 
-def parse_connect(head):
-    """Return (host, port) for a CONNECT request line, else None."""
-    try:
-        line = head.split(b"\r\n", 1)[0].decode("ascii")
-    except UnicodeDecodeError:
+def parse_allowlist(spec):
+    """Comma-separated exact hostnames -> frozenset; raises ValueError on any bad entry."""
+    allow = [h.strip().lower() for h in spec.split(",") if h.strip()]
+    if not allow:
+        raise ValueError("empty allowlist")
+    for h in allow:
+        if not valid_hostname(h):
+            raise ValueError("allowlist entries are exact hostnames (no '.suffix', wildcard or IP): %r" % h)
+    return frozenset(allow)
+
+
+def connect_target(line, allow):
+    """The allowlisted hostname a CONNECT request line names, else None."""
+    m = REQUEST_RE.match(line)
+    if not m:
         return None
-    parts = line.split(" ")
-    if len(parts) != 3 or parts[0] != "CONNECT" or not parts[2].startswith("HTTP/1."):
+    host = m.group(1).decode("ascii").lower()
+    if not valid_hostname(host) or host not in allow:
         return None
-    target = parts[1]
-    if target.startswith("["):
-        return None  # IPv6 literal
-    host, sep, port = target.rpartition(":")
-    if not sep or not port.isdigit():
-        return None
-    return host, int(port)
+    return host
+
+
+def public_addrs(infos):
+    """(family, sockaddr) for the globally routable entries of a getaddrinfo() result."""
+    out = []
+    for family, _, _, _, sockaddr in infos:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if ip.is_global and not ip.is_multicast:
+            out.append((family, sockaddr))
+    return out
+
+
+def dial(host, resolver=socket.getaddrinfo, timeout=15):
+    """Connect to port 443 of a validated hostname via its public addresses only."""
+    if not valid_hostname(host):
+        raise OSError("not a plain hostname")
+    addrs = public_addrs(resolver(host, PORT, 0, socket.SOCK_STREAM))
+    if not addrs:
+        raise OSError("no public address for %s" % host)
+    last = None
+    for family, sockaddr in addrs:
+        s = socket.socket(family, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect(sockaddr)
+            return s
+        except OSError as e:
+            last = e
+            s.close()
+    raise last or OSError("connect failed")
+
+
+def printable(b):
+    """Client-supplied bytes as one printable line, so they cannot forge a log entry."""
+    return "".join(chr(c) if 0x20 <= c <= 0x7E else "?" for c in b[:200])
 
 
 class Handler(socketserver.BaseRequestHandler):
     def log(self, verdict, target):
-        # The target is client-supplied: keep it on one line so a crafted request
-        # cannot write a second, forged audit entry.
-        target = "".join(c if " " <= c <= "~" else "?" for c in target)
         try:
             with open(self.server.log_path, "a") as f:
                 f.write("%s %s %s\n" % (time.strftime("%H:%M:%SZ", time.gmtime()), verdict, target))
@@ -93,16 +150,13 @@ class Handler(socketserver.BaseRequestHandler):
                     return self.refuse("<oversized request>")
         except OSError:
             return
-        parsed = parse_connect(head)
-        if parsed is None:
-            first = head.split(b"\r\n", 1)[0][:120].decode("ascii", "replace")
-            return self.refuse(repr(first))
-        host, port = parsed
-        target = "%s:%d" % (host, port)
-        if port != 443 or not host_allowed(host, self.server.allow):
-            return self.refuse(target)
+        line = head.split(b"\r\n", 1)[0]
+        host = connect_target(line, self.server.allow)
+        if host is None:
+            return self.refuse(printable(line))
+        target = "%s:%d" % (host, PORT)
         try:
-            upstream = socket.create_connection((host, port), timeout=15)
+            upstream = dial(host)
         except OSError:
             self.log("FAIL", target)
             try:
@@ -141,13 +195,14 @@ class Server(socketserver.ThreadingTCPServer):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--allow", required=True, help="comma-separated hosts; leading '.' = domain + subdomains")
+    ap.add_argument("--allow", required=True, help="comma-separated exact hostnames")
     ap.add_argument("--port-file", required=True)
     ap.add_argument("--log", required=True)
     args = ap.parse_args()
-    allow = [h.strip().lower() for h in args.allow.split(",") if h.strip()]
-    if not allow:
-        sys.exit("empty allowlist")
+    try:
+        allow = parse_allowlist(args.allow)
+    except ValueError as e:
+        sys.exit("egress-proxy: %s" % e)
     srv = Server(("127.0.0.1", 0), Handler)
     srv.allow = allow
     srv.log_path = args.log

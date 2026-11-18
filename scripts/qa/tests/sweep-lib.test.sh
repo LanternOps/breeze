@@ -23,6 +23,7 @@ skip() { SKIP=$((SKIP+1)); echo "skip - $1"; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }   # check <name> <shell-condition>
 
 # --- fake gh: logs argv, answers the few reads the publisher makes ------------
+REAL_GH="$(command -v gh 2>/dev/null || true)"   # for the opt-in live render check only
 mkdir -p "$T/bin"
 GH_LOG="$T/gh.log"; export GH_LOG
 cat > "$T/bin/gh" <<'GH'
@@ -30,6 +31,7 @@ cat > "$T/bin/gh" <<'GH'
 printf '%s\n' "$*" >> "$GH_LOG"
 prev=""; for a in "$@"; do [ "$prev" = --body-file ] && cat "$a" >> "$GH_LOG.bodies"; prev="$a"; done
 case "$*" in
+  *"issue list"*"--limit 3000"*) printf '555\t[UI] Devices page 500s\n556\t[QA] ledger\nnot-a-number\tjunk\n' ;;
   *"issue view"*"--json labels,state"*) echo "qa-sweep" ;;   # every issue "looks" open + qa-sweep live
   *"issue list"*"--label qa-sweep"*"--json number"*) printf '555\n556\n' ;;
 esac
@@ -76,6 +78,13 @@ publish_outbox >/dev/null 2>&1
 check "F4: fully qualified issue URL is rejected" "! grep -q 'attacker' '$GH_LOG'"
 check "F4: issue not in the pre-run snapshot is rejected even if it is open+qa-sweep now" "! grep -q 'issue comment 777' '$GH_LOG'"
 check "F4: snapshot issue gets the comment, pinned to the runner's repo" "grep -q '^-R LanternOps/breeze issue comment 555 ' '$GH_LOG'"
+
+# The agent's dedupe list is computed by the runner, so it needs no search.
+new_run open-issues
+snapshot_open_issues
+check "dedupe: the runner snapshots open issues for the agent" "[ \"\$(cat '$RUN_DIR/open-issues.tsv')\" = \"\$(printf '555\t[UI] Devices page 500s\n556\t[QA] ledger')\" ]"
+check "dedupe: the snapshot is read-only" "[ ! -w '$RUN_DIR/open-issues.tsv' ] || [ \"\$(id -u)\" = 0 ]"
+check "dedupe: the snapshot is fetched with the runner's gh, pinned, with no search text" "grep -q '^-R LanternOps/breeze issue list --state open --limit 3000' '$GH_LOG' && ! grep -q 'limit 3000.*--search' '$GH_LOG'"
 
 new_run comment-empty
 QA_COMMENTABLE=""   # snapshot failed -> fail closed
@@ -209,6 +218,7 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   check "sandbox: RUN_DIR's parents can be stat'ed (claude --add-dir / Edit rules resolve it)" "sbx /usr/bin/python3 -c 'import os,sys; os.lstat(os.path.dirname(sys.argv[1])); os.path.realpath(sys.argv[1])' '$RUN_DIR'"
   check "sandbox: RUN_DIR stays writable for the report/outbox" "sbx /bin/sh -c 'echo r > \"$RUN_DIR/report.md\"' && [ -s '$RUN_DIR/report.md' ]"
   check "F1: commits.tsv is not writable from inside" "! sbx /bin/sh -c 'echo x >> \"$RUN_DIR/commits.tsv\"' 2>/dev/null"
+  check "dedupe: open-issues.tsv cannot be planted or rewritten from inside" "! sbx /bin/sh -c 'echo x > \"$RUN_DIR/open-issues.tsv\"' 2>/dev/null"
   check "F5: RUN_DIR/.claude is not writable from inside" "! sbx /bin/sh -c 'mkdir -p \"$RUN_DIR/.claude/skills/x\"' 2>/dev/null"
   check "F5: no CLAUDE.md can be planted in RUN_DIR" "! sbx /bin/sh -c 'echo x > \"$RUN_DIR/CLAUDE.md\"' 2>/dev/null"
   check "sandbox: worktree is read-only" "! sbx /bin/sh -c 'echo x > \"$QA_WORKTREE/planted\"' 2>/dev/null"
@@ -283,7 +293,16 @@ fi
 
 # === egress proxy: the sandbox's only way off the machine ======================
 PX_LOG="$T/egress.log"; PX_PORT_FILE="$T/egress.port"
-/usr/bin/env python3 "$QA_DIR/egress-proxy.py" --allow api.github.com,.anthropic.com --port-file "$PX_PORT_FILE" --log "$PX_LOG" &
+# The allowlist is exact names only: a suffix entry would bring matching back.
+/usr/bin/python3 "$QA_DIR/egress-proxy.py" --allow .anthropic.com --port-file "$T/sfx.port" --log "$T/sfx.log" >/dev/null 2>&1 &
+SFX_PID=$!; sleep 1.5
+check "proxy: a suffix ('.domain') allowlist entry is refused at startup" "[ ! -s '$T/sfx.port' ] && ! kill -0 $SFX_PID 2>/dev/null"
+kill "$SFX_PID" 2>/dev/null
+/usr/bin/python3 "$QA_DIR/egress-proxy.py" --allow 'api.anthropic.com,1.2.3.4' --port-file "$T/ip.port" --log "$T/ip.log" >/dev/null 2>&1 &
+IPA_PID=$!; sleep 1.5
+check "proxy: an IP-literal allowlist entry is refused at startup" "[ ! -s '$T/ip.port' ] && ! kill -0 $IPA_PID 2>/dev/null"
+kill "$IPA_PID" 2>/dev/null
+/usr/bin/env python3 "$QA_DIR/egress-proxy.py" --allow api.github.com,api.anthropic.com --port-file "$PX_PORT_FILE" --log "$PX_LOG" &
 PROXY_PID=$!
 for _ in $(seq 1 30); do [ -s "$PX_PORT_FILE" ] && break; sleep 0.1; done
 PX="http://127.0.0.1:$(cat "$PX_PORT_FILE" 2>/dev/null)"
@@ -300,7 +319,7 @@ check "proxy: IP literal is refused" "[ \"\$(connect_code 140.82.112.6:443)\" = 
 check "proxy: allowlisted host on a non-443 port is refused" "[ \"\$(connect_code api.github.com:80)\" = 403 ]"
 check "proxy: look-alike suffix is refused" "[ \"\$(connect_code evilanthropic.com:443)\" = 403 ]"
 check "proxy: plain HTTP (non-CONNECT) is refused" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' --proxy '$PX' http://example.com/)\" = 403 ]"
-check "proxy: denials are logged" "grep -q 'DENY example.com:443' '$PX_LOG'"
+check "proxy: denials are logged" "grep -q 'DENY CONNECT example.com:443 ' '$PX_LOG'"
 raw_connect() {  # raw_connect <request-target>: send one CONNECT with an arbitrary target
   /usr/bin/python3 - "$(cat "$PX_PORT_FILE")" "$1" <<'PY'
 import socket, sys
@@ -311,7 +330,67 @@ PY
 }
 raw_connect 'forge\n12:00:00Z\tALLOW\tforged.example:443'
 check "proxy: a crafted target cannot forge an audit line" "! grep -q '^12:00:00Z' '$PX_LOG'"
-check "proxy: a crafted target is still recorded as one DENY line" "[ \"\$(grep -c 'DENY forge' '$PX_LOG')\" = 1 ]"
+check "proxy: a crafted target is still recorded as one DENY line" "[ \"\$(grep -c 'DENY .*forge' '$PX_LOG')\" = 1 ]"
+raw_status() {  # raw_status <authority, python escapes allowed> -> HTTP status of a raw CONNECT
+  /usr/bin/python3 -I - "$(cat "$PX_PORT_FILE")" "$1" <<'PY'
+import codecs, socket, sys
+target = codecs.decode(sys.argv[2], "unicode_escape").encode("latin-1")
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=20)
+s.sendall(b"CONNECT " + target + b" HTTP/1.1\r\n\r\n")
+print(s.recv(200).split(b" ")[1].decode())
+PY
+}
+# Every authority below is refused before any name lookup: only an exact,
+# plain [a-z0-9.-] hostname on the list ever reaches getaddrinfo().
+for a in 'example.com\x00.anthropic.com:443' 'api.anthropic.com\x00:443' 'api.anthropic.com.:443' \
+         'API.anthropic.com\x00x:443' 'api%2eanthropic.com:443' 'api.anthropic.com\t:443' 'api_anthropic.com:443' \
+         'sub.api.anthropic.com:443' 'console.anthropic.com:443' 'api.anthropic.com:0443' 'api.anthropic.com:443:443' \
+         '0x7f.1:443' '2130706433:443' '127.0.0.1:443' '[::1]:443' 'xn--api.anthropic.com\xe9:443' 'api..anthropic.com:443'; do
+  check "proxy: refuses authority '$a'" "[ \"\$(raw_status '$a')\" = 403 ]"
+done
+check "proxy: a NUL-bearing authority is logged as DENY, never ALLOW" "! grep -q 'ALLOW example.com' '$PX_LOG' && grep -q 'DENY .*example.com' '$PX_LOG'"
+# The decision and the dial are pure functions; exercise them without a network.
+px_py() { /usr/bin/python3 -I - "$QA_DIR/egress-proxy.py" "$@" <<'PY'
+import importlib.util, socket, sys
+spec = importlib.util.spec_from_file_location("px", sys.argv[1]); px = importlib.util.module_from_spec(spec); spec.loader.exec_module(px)
+allow = px.parse_allowlist("api.anthropic.com,platform.claude.com")
+case = sys.argv[2]
+if case == "decide-ok":
+    assert px.connect_target(b"CONNECT API.Anthropic.COM:443 HTTP/1.1", allow) == "api.anthropic.com"
+    assert px.connect_target(b"CONNECT platform.claude.com:443 HTTP/1.0", allow) == "platform.claude.com"
+elif case == "decide-no":
+    for line in (b"CONNECT example.com\x00.api.anthropic.com:443 HTTP/1.1", b"CONNECT api.anthropic.com:443 HTTP/1.1 ",
+                 b"CONNECT  api.anthropic.com:443 HTTP/1.1", b"GET api.anthropic.com:443 HTTP/1.1",
+                 b"CONNECT api.anthropic.com:443 HTTP/2", b"CONNECT claude.com:443 HTTP/1.1"):
+        assert px.connect_target(line, allow) is None, line
+elif case == "dial-public-only":
+    seen = []
+    def fake(host, port, *a, **k):
+        seen.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))]
+    try:
+        px.dial("api.anthropic.com", resolver=fake)
+        raise SystemExit("dialled a non-public address")
+    except OSError:
+        pass
+    assert seen == ["api.anthropic.com"], seen   # the exact validated name, nothing else
+elif case == "dial-validates":
+    def fake(*a, **k):
+        raise SystemExit("resolved an unvalidated name")
+    for bad in ("example.com\x00.api.anthropic.com", "api.anthropic.com.", "1.2.3.4"):
+        try:
+            px.dial(bad, resolver=fake); raise SystemExit("dialled " + repr(bad))
+        except OSError:
+            pass
+PY
+}
+check "proxy: an exact allowlisted name is accepted, case-insensitively" "px_py decide-ok"
+check "proxy: the request line must match the CONNECT grammar byte for byte" "px_py decide-no"
+check "proxy: it dials only public addresses resolved for the validated name" "px_py dial-public-only"
+check "proxy: dial() refuses a name that is not a plain hostname before resolving it" "px_py dial-validates"
+check "wiring: the default egress allowlist is exact hostnames (no '.suffix' entries)" "! printf '%s' \"\$QA_EGRESS_ALLOW\" | tr ',' '\n' | grep -q '^\.'"
 
 # The runner's wiring: the proxy really logs to the protected path, not RUN_DIR.
 new_run wiring
@@ -326,7 +405,7 @@ s.recv(200)
 PY
 fi
 stop_egress_proxy
-check "audit: the runner's proxy logs to the protected path" "[ -n '$WIRED_LOG' ] && grep -q 'DENY example.com:443' '$WIRED_LOG'"
+check "audit: the runner's proxy logs to the protected path" "[ -n '$WIRED_LOG' ] && grep -q 'DENY CONNECT example.com:443 ' '$WIRED_LOG'"
 check "audit: the runner's proxy writes no log into RUN_DIR" "[ ! -e '$RUN_DIR/egress.log' ]"
 check "audit: the tool rules also deny Edit on the run's logs" "grep -qF 'Edit(/\$RUN_DIR/*.log)' '$QA_DIR/scheduled-ui-sweep.sh' && grep -qF 'Edit(/\$RUN_DIR/*.err)' '$QA_DIR/scheduled-ui-sweep.sh' && grep -qF 'Edit(/\$RUN_DIR/transcript*)' '$QA_DIR/scheduled-ui-sweep.sh'"
 
@@ -364,6 +443,17 @@ check "broker: a branch name for pr view is refused" "refused pr view octo:main"
 check "broker: a repo: search qualifier is refused (GitHub ORs repeated scopes)" "refused issue list --search 'repo:octo/private secret'"
 check "broker: an org: search qualifier is refused" "refused pr list -S 'is:open org:octo'"
 check "broker: a negated/parenthesised scope qualifier is refused" "refused issue list --search 'x (user:octo)'"
+# No free-text query reaches gh at all: search text shares one query string
+# with gh's own repo: qualifier, so it is removed, not screened.
+check "broker: --search is gone, even a plain term" "refused issue list --search 'devices page 500'"
+check "broker: a boolean search cannot widen the pin" "refused pr list -S 'is:open OR is:open' && refused issue list --search=is:open\ OR\ is:closed"
+check "broker: --author is gone (a search qualifier in pr list)" "refused issue list --author octo && refused pr list -A octo"
+check "broker: --base is gone (a search qualifier in pr list)" "refused pr list --base main && refused pr list -B main"
+check "broker: labels come from a fixed list" "refused issue list --label bug && refused pr list -l 'qa-sweep repo:octo/private'"
+check "broker: an allowlisted label works" "qgh issue list --label qa-sweep --state open | tr '\n' ' ' | grep -qF '[--label] [qa-sweep]'"
+check "broker: --json takes known field names only" "refused issue list --json number,notAField && refused pr view 1 --json 'title,body '"
+check "broker: --json with known fields works" "qgh pr view 7 --json number,title,files | grep -qxF '[number,title,files]'"
+check "broker: issue state is typed per command (no 'merged' issues)" "refused issue list --state merged && qgh pr list --state merged | grep -qxF '[merged]'"
 check "broker: gh api is refused" "refused api repos/octo/private/contents/README.md"
 check "broker: write verbs are refused" "refused issue comment 1 --body hi && refused pr merge 1 && refused issue create --title x --body y"
 check "broker: --jq is refused (gh's jq can read the broker's environment)" "refused issue list --jq '\$ENV'"
@@ -373,8 +463,7 @@ check "broker: --hostname is refused" "refused issue list --hostname ghe.example
 check "broker: a second positional is refused" "refused pr view 1 2"
 check "broker: an unknown flag is refused" "refused issue list --foo bar"
 check "broker: --limit is bounded" "refused issue list --limit 100000"
-check "broker: control characters are refused" "refused issue list --search \"\$(printf 'a\nb')\""
-check "broker: a bare search term still works" "qgh issue list --search 'devices page 500' --state open | grep -qxF '[devices page 500]'"
+check "broker: control characters are refused" "refused issue list --label \"\$(printf 'qa-sweep\nb')\""
 check "broker: refusals are audit-logged" "grep -q '^[0-9:Z]* DENY .*octo/private' '$GHB_LOG'"
 check "broker: allowed calls are audit-logged with the pinned repo" "grep -q 'ALLOW issue list .*--repo LanternOps/breeze' '$GHB_LOG'"
 check "broker: qa-gh without QA_GH_PORT fails closed" "! env -u QA_GH_PORT '$QA_DIR/qa-gh' issue list >/dev/null 2>&1"
@@ -385,104 +474,98 @@ check "wiring: GitHub is not on the egress allowlist" "! printf '%s' \"\$QA_EGRE
 ALLOW_BLOCK="$(awk '/^ALLOWED_TOOLS=\(/{f=1} f{print} f&&/^\)/{exit}' "$QA_DIR/scheduled-ui-sweep.sh")"
 check "wiring: the agent's only Bash allow rule is qa-gh" "[ \"\$(printf '%s\n' \"\$ALLOW_BLOCK\" | grep -o '\"Bash(' | wc -l | tr -d ' ')\" = 1 ] && printf '%s' \"\$ALLOW_BLOCK\" | grep -qF '\"Bash(\$SCRIPT_DIR/qa-gh:*)\"'"
 check "wiring: plain gh is explicitly denied to the agent" "grep -qF '\"Bash(gh:*)\"' '$QA_DIR/scheduled-ui-sweep.sh'"
+check "wiring: the runner snapshots open issues before the agent and denies Edit on it" "grep -q '^snapshot_open_issues' '$QA_DIR/scheduled-ui-sweep.sh' && grep -qF 'Edit(/\$RUN_DIR/open-issues.tsv)' '$QA_DIR/scheduled-ui-sweep.sh'"
+check "wiring: the skill's scheduled mode no longer tells the agent to search" "! awk '/^## Scheduled mode/{f=1} /^## Logging format/{f=0} f' '$QA_DIR/../../.claude/skills/ui-qa-sweep/SKILL.md' | grep -q -- 'list[^.]*--search'"
 check "wiring: the installer ships the broker and its client" "grep -q 'gh-broker.py' '$QA_DIR/install-schedule.sh' && grep -q '/qa-gh\"' '$QA_DIR/install-schedule.sh'"
 
-# === outbox provenance: nothing that names another repository =================
-new_run refs
-QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
-outbox 001.json '{"action":"create","title":"[UI] marker-r1 leak","body":"copied from https://github.com/octo/private/blob/main/README.md"}'
-outbox 002.json '{"action":"create","title":"[UI] marker-r2 leak","body":"see octo/private#12 for context"}'
-outbox 003.json '{"action":"create","title":"[UI] marker-r3 leak","body":"fixed in octo/private@0123456789abcdef"}'
-outbox 004.json '{"action":"create","title":"[UI] marker-r4 leak","body":"raw: https://raw.githubusercontent.com/octo/private/main/x"}'
-outbox 005.json '{"action":"create","title":"[UI] marker-r5 leak","body":"api: api.github.com/repos/Octo/Private/contents"}'
-outbox 006.json '{"action":"create","title":"[UI] marker-r6 fenced leak","body":"```\nsee octo/private#1\n```"}'
-outbox 007.json '{"action":"create","title":"[UI] marker-r7 indented leak","body":"    ```\n\nsee octo/private#1"}'
-outbox 008.json '{"action":"create","title":"[UI] marker-r8 octo/private#3","body":"clean"}'
-outbox 009.json '{"action":"comment","issue":555,"body":"marker-r9 see https://github.com/octo/private/issues/1"}'
-outbox 010.json '{"action":"pr_result","pr":100,"result":"PASS","body":"marker-r10 cf. octo/private#9"}'
-outbox 020.json '{"action":"create","title":"[UI] marker-ok1 own refs","body":"Regressed by #100; see https://github.com/LanternOps/breeze/issues/555 and lanternops/breeze#7, LanternOps/breeze@0123456789abcdef."}'
-outbox 021.json '{"action":"create","title":"[UI] marker-ok2 code","body":"Mail admin@example.com; package `@playwright/mcp` and\n```\n@media (max-width: 600px) { }\n```\n@types/node too"}'
-publish_outbox >/dev/null 2>&1
-for n in 1 2 3 4 5 6 7 8; do
-  check "refs: entry $n (names another repo) is not published" "! grep -q 'marker-r$n ' '$GH_LOG'"
-done
-check "refs: a comment naming another repo is not published" "! grep -q 'issue comment 555' '$GH_LOG'"
-check "refs: a pr_result naming another repo is not published" "! grep -q 'pr comment 100' '$GH_LOG'"
-check "refs: references to this repo (URL, #N, OWNER/REPO#N, @sha) publish" "grep -q 'marker-ok1' '$GH_LOG'"
-check "refs: emails, npm scopes and code blocks are not mistaken for mentions/refs" "grep -q 'marker-ok2' '$GH_LOG'"
-check "refs: rejections name the file, not the text" "grep -q 'REJECT 001.json: body references another repository' '$T/runner.log' && ! grep -q 'octo' '$T/runner.log'"
-new_run refs-ledger
-QA_COMMENTABLE=" "; IN_SCOPE=" "
-printf 'ledger row, see github.com/octo/private\n' > "$RUN_DIR/ledger.md"
-publish_outbox >/dev/null 2>&1
-check "refs: a ledger naming another repo is not published" "! grep -q 'issue edit\|QA sweep ledger' '$GH_LOG'"
-
-# === outbox neutralising: published text cannot notify anyone or cross-link ===
-# Every payload below was rendered live by GitHub's own markdown API. The
-# expected value is exact, so a rule that stops firing shows up as a diff.
+# === outbox: agent text is published as inert plain text ======================
+# Capability removed, not parsed: every agent-written body goes out inside a
+# fenced code block it cannot close (the fence is longer than any backtick run
+# in the text). GitHub renders no link, autolink, mention, reference, entity or
+# HTML inside a code block, so how a URL or host is spelled no longer matters.
+# The only live references are #N numbers the runner lists outside the fence.
 Z=$'\xe2\x80\x8d'
-n_is() {  # n_is <name> <input> <expected>
+f_is() {  # f_is <name> <input> <expected>
   local got
-  printf '%s' "$2" > "$T/neutral.md"
-  neutralize_refs "$T/neutral.md" || { bad "neutralise: $1 (helper failed)"; return; }
-  got="$(cat "$T/neutral.md"; printf x)"; got="${got%x}"
-  if [ "$got" = "$3" ]; then ok "neutralise: $1"; else bad "neutralise: $1 (got: $got)"; fi
+  printf '%s' "$2" > "$T/fence.md"
+  fence_text "$T/fence.md" || { bad "fence: $1 (helper failed)"; return; }
+  got="$(cat "$T/fence.md"; printf x)"; got="${got%x}"
+  if [ "$got" = "$3" ]; then ok "fence: $1"; else bad "fence: $1 (got: $got)"; fi
 }
 QA_REPO="LanternOps/breeze"
-n_is "plain mention"             'hi @octocat'                'hi @'"$Z"'octocat'
-n_is "four-space fence"          $'    ```\n\nhi @octocat\n'  $'    ```\n\nhi @'"$Z"$'octocat\n'
-n_is "tab-indented fence"        $'\t```\n\nhi @octocat\n'    $'\t```\n\nhi @'"$Z"$'octocat\n'
-n_is "tilde fence, four spaces"  $'    ~~~\n\nhi @octocat\n'  $'    ~~~\n\nhi @'"$Z"$'octocat\n'
-n_is "slash before @"            'cc/@octocat'                'cc/@'"$Z"'octocat'
-n_is "dot before @"              'ping.@octocat'              'ping.@'"$Z"'octocat'
-n_is "dash before @"             'x-@octocat'                 'x-@'"$Z"'octocat'
-n_is "backslash-escaped @"       'hi \@octocat'               'hi \@'"$Z"'octocat'
-n_is "team mention"              'cc @LanternOps/core'        'cc @'"$Z"'LanternOps/core'
-n_is "decimal entity for @"      'hi &#64;octocat'            'hi &'"$Z"'#'"$Z"'64;octocat'
-n_is "padded decimal entity"     'hi &#00064;octocat'         'hi &'"$Z"'#'"$Z"'00064;octocat'
-n_is "hex entity for @"          'hi &#x40;octocat'           'hi &'"$Z"'#x40;octocat'
-n_is "upper-case hex entity"     'hi &#X40;octocat'           'hi &'"$Z"'#X40;octocat'
-n_is "named entity for @"        'hi &commat;octocat'         'hi &'"$Z"'commat;octocat'
-n_is "entity inside the login"   'hi @&#111;ctocat'           'hi @'"$Z"'&'"$Z"'#'"$Z"'111;ctocat'
-n_is "short ref"                 'see octo/private#12'        'see octo/private#'"$Z"'12'
-n_is "short ref, escaped hash"   'see octo/private\#12'       'see octo/private\#'"$Z"'12'
-n_is "short ref, escaped slash"  'see octo\/private#12'       'see octo\/private#'"$Z"'12'
-n_is "short ref, entity hash"    'see octo/private&#35;12'    'see octo/private&'"$Z"'#'"$Z"'35;12'
-n_is "commit ref"                'see octo/private@0123abc'   'see octo/private@'"$Z"'0123abc'
-n_is "URL, encoded owner"        'https://github.com/%6fcto/private/issues/1' 'https://github'"$Z"'.com/%6fcto/private/issues/1'
-n_is "URL, traversal out of own repo" 'https://github.com/LanternOps/breeze/../../octo/private/issues/1' 'https://github'"$Z"'.com/LanternOps/breeze/../../octo/private/issues/1'
-n_is "URL, other repo"           'https://github.com/octo/private/issues/1' 'https://github'"$Z"'.com/octo/private/issues/1'
-n_is "raw URL, other repo"       'https://raw.githubusercontent.com/octo/private/main/x' 'https://raw.githubusercontent'"$Z"'.com/octo/private/main/x'
-n_is "normal text is untouched"  'Devices page returns 500 on save.' 'Devices page returns 500 on save.'
-n_is "own-repo #N stays linked"  $'#7 first\nRegressed by #100 (#101), [#102].' $'#7 first\nRegressed by #100 (#101), [#102].'
-n_is "own-repo URL stays linked" 'See https://github.com/LanternOps/breeze/issues/555.' 'See https://github.com/LanternOps/breeze/issues/555.'
-n_is "own-repo URL, other case"  'https://github.com/lanternops/BREEZE/pull/9' 'https://github.com/lanternops/BREEZE/pull/9'
-n_is "ampersands are untouched"  'R&D, a & b, /devices?x=1&y=2' 'R&D, a & b, /devices?x=1&y=2'
-n_is "C# is untouched"           'C# 12 and issue # 4'        'C# 12 and issue # 4'
-printf 'a\377b @octocat' > "$T/neutral.md"
-neutralize_refs "$T/neutral.md"
-check "neutralise: invalid UTF-8 is handled byte-wise" "[ \"\$(cat '$T/neutral.md')\" = \"\$(printf 'a\377b @%soctocat' '$Z')\" ]"
-check "neutralise: an unreadable file fails closed" "! neutralize_refs '$T/does-not-exist.md'"
+f_is "plain text is fenced"        'Devices page returns 500.'  $'```text\nDevices page returns 500.\n```\n'
+f_is "a mention is fenced (and its @ defused as a second layer)" 'hi @octocat' $'```text\nhi @'"$Z"$'octocat\n```\n'
+f_is "encoded GitHub host stays inside the fence, scheme defanged" 'https://github%2ecom/evil/private' $'```text\nhttps[:]//github%2ecom/evil/private\n```\n'
+f_is "every scheme and www. host is defanged (no exceptions)" 'see http://localhost:3000/x, WWW.evil.com, ftp://h, https://github.com/LanternOps/breeze/issues/1' \
+  $'```text\nsee http[:]//localhost:3000/x, WWW[.]evil.com, ftp[:]//h, https[:]//github.com/LanternOps/breeze/issues/1\n```\n'
+f_is "a triple-backtick run cannot close a longer fence" $'a\n```\n@x' $'````text\na\n```\n@'"$Z"$'x\n````\n'
+f_is "the fence outgrows the longest run anywhere" 'x `````` y' $'```````text\nx `````` y\n```````\n'
+f_is "own-repo #N are listed by the runner outside the fence" $'Regressed by #100 (#101), see #100.\nC# 12, issue # 4, octo/private#9' \
+  $'```text\nRegressed by #100 (#101), see #100.\nC# 12, issue # 4, octo/private#9\n```\n\nRelated: #100 #101\n'
+check "fence: an unreadable file fails closed" "! fence_text '$T/does-not-exist.md'"
+printf 'a\377b `` @x' > "$T/fence.md"
+check "fence: invalid UTF-8 is handled byte-wise" "fence_text '$T/fence.md' && [ \"\$(head -1 '$T/fence.md')\" = '\`\`\`text' ]"
 
-new_run neutral
+# Titles are plain text with the reference/markup characters removed.
+t_is() { local got; got="$(safe_title "$2")"; if [ "$got" = "$3" ]; then ok "title: $1"; else bad "title: $1 (got: $got)"; fi; }
+t_is "mention, ref, entity, HTML and code characters are dropped" '[UI] cc @octo octo/private#3 &#64;x <b>`y`\' '[UI] cc octo octo/private3 64;x by'
+t_is "a scheme separator is defanged" '[QA] see https://evil.example/x' '[QA] see https[:]//evil.example/x'
+t_is "non-ASCII and control characters are dropped" $'[UI] caf\xc3\xa9 \xe2\x80\x8bok\tz' '[UI] caf ok z'
+t_is "an ordinary title is untouched" '[UI] Devices page 500s on save (Settings/Users), 2 rows' '[UI] Devices page 500s on save (Settings/Users), 2 rows'
+
+new_run fenced
 QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
-outbox 001.json '{"action":"create","title":"[UI] marker-n1 cc @title-user","body":"cc @body-user please look"}'
-outbox 002.json "{\"action\":\"comment\",\"issue\":555,\"body\":$(json_str 'ping.@comment-user and &#64;entity-user')}"
-outbox 003.json '{"action":"pr_result","pr":100,"result":"PASS","body":"x-@pr-user"}'
+outbox 001.json '{"action":"create","title":"[UI] marker-n1 cc @title-user","body":"cc @body-user see https://github%2ecom/evil/private and [x](/octo/private)"}'
+outbox 002.json "{\"action\":\"comment\",\"issue\":555,\"body\":$(json_str 'ping.@comment-user and &#64;entity-user, octo/private#1')}"
+outbox 003.json '{"action":"pr_result","pr":100,"result":"PASS","body":"x-@pr-user, regressed by #77"}'
 printf 'ledger row for @ledger-user\n' > "$RUN_DIR/ledger.md"
 publish_outbox >/dev/null 2>&1
-check "neutralise: a mention no longer blocks the report" "grep -q 'marker-n1' '$GH_LOG' && grep -q 'issue comment 555' '$GH_LOG' && grep -q 'pr comment 100' '$GH_LOG'"
-check "neutralise: issue titles reach gh dead" "grep -qF '@${Z}title-user' '$GH_LOG' && ! grep -qF '@title-user' '$GH_LOG'"
+check "outbox: links, mentions and cross-repo text no longer block a report" "grep -q 'marker-n1' '$GH_LOG' && grep -q 'issue comment 555' '$GH_LOG' && grep -q 'pr comment 100' '$GH_LOG' && grep -q 'issue edit\|QA sweep ledger' '$GH_LOG'"
+check "outbox: the title reaches gh without the @" "grep -qF 'issue create --title [UI] marker-n1 cc title-user ' '$GH_LOG'"
+check "outbox: every published body carries its agent text inside a fence" "[ \"\$(grep -c '^\`\`\`text\$' '$GH_LOG.bodies')\" = 4 ]"
 for u in body comment pr ledger; do
-  check "neutralise: the $u text reaches gh dead" "grep -qF '@${Z}$u-user' '$GH_LOG.bodies' && ! grep -qF '@$u-user' '$GH_LOG.bodies'"
+  check "outbox: the $u text sits inside the fence" "awk '/^\`\`\`text\$/{f=1;next} /^\`\`\`\$/{f=0} !f && /$u-user/{bad=1} END{exit bad}' '$GH_LOG.bodies' && grep -q '$u-user' '$GH_LOG.bodies'"
 done
-check "neutralise: an entity reaches gh dead" "grep -qF '&${Z}#${Z}64;entity-user' '$GH_LOG.bodies'"
-new_run neutral-fail
+check "outbox: the PR header is the only runner text above the fence" "grep -q '^### Scheduled UI QA: PASS' '$GH_LOG.bodies'"
+check "outbox: the runner lists #77 outside the fence" "grep -qx 'Related: #77' '$GH_LOG.bodies'"
+new_run fence-fail
 QA_COMMENTABLE=" "; IN_SCOPE=" "
-outbox 001.json '{"action":"create","title":"[UI] marker-nf1 report","body":"cc @someone"}'
+outbox 001.json '{"action":"create","title":"[UI] marker-ff1 report","body":"plain"}'
 printf 'ledger row\n' > "$RUN_DIR/ledger.md"
-( neutralize_refs() { return 1; }; publish_outbox >/dev/null 2>&1 )
-check "neutralise: nothing publishes if the neutraliser fails" "! grep -q 'issue create\|issue edit' '$GH_LOG'"
+( fence_text() { return 1; }; publish_outbox >/dev/null 2>&1 )
+check "outbox: nothing publishes if fencing fails" "! grep -q 'issue create\|issue edit' '$GH_LOG'"
+new_run title-empty
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+outbox 001.json '{"action":"create","title":"[UI] @@@@@@##","body":"plain"}'
+publish_outbox >/dev/null 2>&1
+check "outbox: a title that is empty once cleaned is rejected" "! grep -q 'issue create' '$GH_LOG' && grep -q 'REJECT 001.json' '$T/runner.log'"
+
+# Live proof against GitHub's own renderer (gfm mode, repo context = mentions
+# and references are processed exactly as in an issue). Opt-in: needs gh auth.
+if [ "${QA_TEST_GITHUB:-0}" = 1 ]; then
+  render_dead() {  # render_dead <payload>: fenced payload renders with no link and no mention
+    local html
+    printf '%s' "$1" > "$T/live.md"; fence_text "$T/live.md" || return 1
+    # Strip the runner's own Related line: it is meant to link.
+    sed -i.bak '/^Related: /d' "$T/live.md"
+    html="$(jq -Rs '{text: ., mode: "gfm", context: "LanternOps/breeze"}' < "$T/live.md" | "$REAL_GH" api markdown --input - 2>/dev/null)" || return 1
+    case "$html" in *"<a "*|*"user-mention"*|*"issue-link"*|*"<img"*) return 1 ;; esac
+    case "$html" in *"<pre"*) return 0 ;; *) return 1 ;; esac
+  }
+  for p in 'hi @octocat' 'https://github%2ecom/evil/private' 'https://git%68ub.com/x/y' '[x](/octo/private)' \
+           '<a href="/octo/private">x</a>' 'www.evil.com' '<https://evil.com>' 'mail a@b.com' 'see octo/private#12' \
+           '&#64;octocat' $'[x]: //evil.com\n[x]' $'```\n@octocat\n```' $'   ```\n@octocat' $'~~~\n@octocat' \
+           $'````\r@octocat' $'```   \n@octocat' $'\t```\n@octocat' $'</pre>@octocat' $'x\n```\n\n- @octocat' '#123 :smile:'; do
+    check "live: GitHub renders the fenced payload with no link or mention: $(printf '%q' "$p")" "render_dead \"\$p\""
+  done
+  # Control: the probe can fail. Unfenced, the same text renders live.
+  render_raw() { jq -Rns --arg t "$1" '{text: $t, mode: "gfm", context: "LanternOps/breeze"}' | "$REAL_GH" api markdown --input - 2>/dev/null; }
+  check "live: control: an unfenced mention renders as a mention" "render_raw 'hi @octocat' | grep -q 'user-mention'"
+  check "live: control: an unfenced relative link renders as a link" "render_raw '[x](/octo/private)' | grep -q '<a '"
+  check "live: control: the runner's Related line stays a live reference" "printf 'see #1\n' > '$T/rel.md' && fence_text '$T/rel.md' && jq -Rs '{text: ., mode: \"gfm\", context: \"LanternOps/breeze\"}' < '$T/rel.md' | \"\$REAL_GH\" api markdown --input - | grep -q 'issue-link'"
+else
+  skip "live GitHub render of fenced payloads (set QA_TEST_GITHUB=1)"
+fi
 
 # === QA stack egress: internal-only network (needs Docker) ====================
 if [ "${QA_TEST_DOCKER:-0}" = 1 ] && docker info >/dev/null 2>&1; then

@@ -407,6 +407,8 @@ rm -rf "$AGENT_TMP"
 prewarm_mcp "$SCRIPT_DIR/qa-mcp.json" || log "WARN: could not prefetch the Playwright MCP package (the sandboxed server resolves it offline)"
 snapshot_commentable_issues   # outbox `comment` targets: open qa-sweep issues as of now
 log "commentable qa-sweep issues:${QA_COMMENTABLE:- none}"
+snapshot_open_issues   # the agent's dedupe list (its GitHub reader has no search)
+log "open issues for dedupe: $(wc -l < "$RUN_DIR/open-issues.tsv" | tr -d ' ')"
 if ! { start_egress_proxy && start_gh_broker && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
   notify "QA sweep: agent sandbox/egress proxy failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
@@ -423,7 +425,8 @@ Run parameters:
 - ENV_DRIFT_FILE=$DRIFT (environment changes detected this run; empty = none)
 - PHASE=self-hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (PRs deferred to the hosted phase — do NOT emit pr_result for these; empty = none)
-- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader: run it exactly where the skill says \`gh\`, e.g. \`$SCRIPT_DIR/qa-gh issue list --label qa-sweep --state open\`; it is fixed to $QA_REPO)
+- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (every open issue at run start: number<TAB>title; grep it to dedupe)
+- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader: run it exactly where the skill says \`gh\`, e.g. \`$SCRIPT_DIR/qa-gh issue list --label qa-sweep --state open\`; it is fixed to $QA_REPO and has no search)
 You are unattended: never ask questions. You cannot write to GitHub directly; queue writes in RUN_DIR/outbox as the skill describes."
 
 # Flip the running stack to hosted mode in place (same DB, same data, same
@@ -513,7 +516,7 @@ ALLOWED_TOOLS=(
 DENIED_TOOLS=(
   "Skill"
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
-  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
+  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/open-issues.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
   "Edit(/$RUN_DIR/.claude/**)" "Edit(/$RUN_DIR/**/.claude/**)"
   "Edit(/$RUN_DIR/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.local.md)"
   "Edit(/$RUN_DIR/*.log)" "Edit(/$RUN_DIR/*.err)" "Edit(/$RUN_DIR/transcript*)"
@@ -567,7 +570,8 @@ Run parameters:
 - PHASE=hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (verify exactly these PRs; emit one pr_result each)
 - COMMITS_FILE=$RUN_DIR/commits.tsv
-- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader, fixed to $QA_REPO; use it where the skill says \`gh\`)
+- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (every open issue at run start: number<TAB>title; grep it to dedupe)
+- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader, fixed to $QA_REPO, no search; use it where the skill says \`gh\`)
 You are unattended: never ask questions. Queue GitHub writes in RUN_DIR/outbox as the skill describes."
     run_agent "$HPROMPT" "${QA_HOSTED_TIMEOUT:-90m}" "-hosted" && HOSTED_OK=1
   else

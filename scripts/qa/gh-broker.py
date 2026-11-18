@@ -4,17 +4,21 @@
 The agent runs under a Seatbelt profile with no route to GitHub and no read
 access to gh's config, so it cannot run gh itself. Its only way to read GitHub
 is scripts/qa/qa-gh, a client that hands its argv to this broker over loopback.
-The broker runs OUTSIDE the sandbox, as the runner, and is the policy:
+The broker runs OUTSIDE the sandbox, as the runner, and is the policy. It
+exposes fixed subcommands with typed arguments only, and no free text reaches
+gh, so nothing the agent writes can change what query gh builds:
 
   - only `issue list|view` and `pr list|view|diff`;
-  - only the flags listed in ALLOWED below; `-R/--repo/--hostname/--web`,
-    `--jq` / `--template` (gh's jq exposes the broker's environment via $ENV)
-    and anything unknown are refused;
   - `view`/`diff` take exactly one bare number (no URL, no OWNER/REPO#N, no
     branch name: gh resolves those to whatever repository they name);
-  - `--search` may not carry a scope qualifier (repo:, org:, user:, ...): gh
-    ANDs its own `repo:` into the query, and GitHub ORs repeated scopes, so an
-    extra one would widen the search to other repositories;
+  - list filters are `--state` (a fixed set per command), `--limit` (bounded)
+    and `--label` from LABELS. There is no `--search`, `--author` or `--base`:
+    gh turns those into GitHub search text beside its own `repo:` pin, where
+    operators and qualifiers can widen it. The sweep's dedupe list is computed
+    by the runner before the agent starts (RUN_DIR/open-issues.tsv);
+  - `--json` takes field names from JSON_FIELDS only; `-R/--repo/--hostname`,
+    `--web`, `--jq`/`--template` (gh's jq exposes the broker's environment via
+    $ENV) and anything unknown are refused;
   - the repository is always the one the runner fixed (`--repo`), and gh runs
     with the repo/host environment overrides removed.
 
@@ -37,41 +41,52 @@ MAX_OUTPUT = 4 * 1024 * 1024
 TIMEOUT = 90
 
 NUM_RE = re.compile(r"^[0-9]{1,7}$")
-JSON_FIELDS_RE = re.compile(r"^[A-Za-z][A-Za-z,]{0,400}$")
-STATE_RE = re.compile(r"^(open|closed|merged|all)$")
 LIMIT_RE = re.compile(r"^[0-9]{1,4}$")
-# Search qualifiers that pick WHICH repositories are searched. gh adds its own
-# `repo:<pinned>`; any of these would be OR-ed in beside it.
-SCOPE_QUALIFIER_RE = re.compile(r"(?i)(?:^|[\s(\-])(?:repo|org|user|owner|repository_id|project)\s*:")
+# The labels the sweep reads by. A label is a fixed token, never search text.
+LABELS = frozenset({"qa-sweep", "qa-swept", "qa-no-ui"})
+JSON_FIELDS = frozenset({
+    "number", "title", "state", "stateReason", "closed", "labels", "body", "comments", "author",
+    "createdAt", "updatedAt", "closedAt", "mergedAt", "mergeCommit", "url", "milestone", "assignees",
+    "files", "additions", "deletions", "changedFiles", "baseRefName", "headRefName", "isDraft",
+    "reviewDecision", "commits",
+})
+
 
 # value validators; None = boolean flag
-def _any(v):
-    return True
+def _one_of(*allowed):
+    return lambda v: v in allowed
+
 
 def _num(v):
     return bool(LIMIT_RE.match(v)) and 1 <= int(v) <= 1000
 
-def _search(v):
-    return not SCOPE_QUALIFIER_RE.search(v)
+
+def _label(v):
+    return v in LABELS
+
+
+def _fields(v):
+    names = v.split(",")
+    return 0 < len(names) <= len(JSON_FIELDS) and all(n in JSON_FIELDS for n in names)
+
 
 LIST_COMMON = {
-    "--state": lambda v: bool(STATE_RE.match(v)), "-s": lambda v: bool(STATE_RE.match(v)),
-    "--label": _any, "-l": _any,
-    "--search": _search, "-S": _search,
+    "--label": _label, "-l": _label,
     "--limit": _num, "-L": _num,
-    "--author": _any, "-A": _any,
-    "--json": lambda v: bool(JSON_FIELDS_RE.match(v)),
+    "--json": _fields,
 }
 VIEW_COMMON = {
     "--comments": None, "-c": None,
-    "--json": lambda v: bool(JSON_FIELDS_RE.match(v)),
+    "--json": _fields,
 }
+ISSUE_STATE = _one_of("open", "closed", "all")
+PR_STATE = _one_of("open", "closed", "merged", "all")
 ALLOWED = {
-    ("issue", "list"): (dict(LIST_COMMON), 0),
-    ("pr", "list"): (dict(LIST_COMMON, **{"--base": _any, "-B": _any}), 0),
+    ("issue", "list"): (dict(LIST_COMMON, **{"--state": ISSUE_STATE, "-s": ISSUE_STATE}), 0),
+    ("pr", "list"): (dict(LIST_COMMON, **{"--state": PR_STATE, "-s": PR_STATE}), 0),
     ("issue", "view"): (dict(VIEW_COMMON), 1),
     ("pr", "view"): (dict(VIEW_COMMON), 1),
-    ("pr", "diff"): ({"--name-only": None, "--patch": None, "--color": lambda v: v == "never"}, 1),
+    ("pr", "diff"): ({"--name-only": None, "--patch": None, "--color": _one_of("never")}, 1),
 }
 
 
