@@ -116,8 +116,12 @@ describe('M365 executor result schemas', () => {
       value: 'Directory.ReadWrite.All',
     } as const;
 
-    it('requires a mode on a complete result and rejects unknown modes', () => {
-      expect(retestResultSchema.safeParse(COMPLETE).success).toBe(false);
+    it('reads a complete result without a mode as exact (pre-#12085 executor) and rejects unknown modes', () => {
+      expect(retestResultSchema.safeParse(COMPLETE).success).toBe(true);
+      expect(retestResultSchema.safeParse({
+        ...COMPLETE,
+        observedGrants: [{ ...OBSERVED_GRANT, appRoleId: null }],
+      }).success).toBe(false);
       expect(retestResultSchema.safeParse({ ...COMPLETE, grantReconciliationMode: 'partial' }).success).toBe(false);
       expect(retestResultSchema.safeParse({ ...COMPLETE, grantReconciliationMode: 'graph_token_only' }).success).toBe(true);
     });

@@ -84,7 +84,10 @@ export const graphTokenRoleAssignmentSchema = z.object({
 
 const exactReconciliationFields = {
   grantReconciliation: z.literal('complete'),
-  grantReconciliationMode: z.literal('exact'),
+  // Optional only for deploy skew: an executor built before #12085 omits it,
+  // and such an executor only ever read the exact inventory. Every current
+  // executor sends it. graph_token_only (below) always requires it.
+  grantReconciliationMode: z.literal('exact').optional(),
   observedGrants: z.array(canonicalAppRoleAssignmentSchema),
   missingGrants: z.array(canonicalAppRoleAssignmentSchema),
   unexpectedGrants: z.array(canonicalAppRoleAssignmentSchema),

@@ -493,6 +493,7 @@ export function createMicrosoftGraphClient(
     try {
       const assignmentPath = `/v1.0/servicePrincipals/${applicationServicePrincipalId}/appRoleAssignments`;
       let rawAssignments: unknown[];
+      const requestsBeforeAssignments = budget.requests;
       try {
         rawAssignments = await collection(
           `${GRAPH_ORIGIN}${assignmentPath}`,
@@ -502,7 +503,11 @@ export function createMicrosoftGraphClient(
         );
       } catch (error) {
         // readFailure maps every non-license 403 to graph_permission_missing.
-        if (error instanceof GraphClientError && error.code === 'graph_permission_missing') {
+        // Only a denial of the FIRST page means "no Application.Read.All"; a
+        // 403 after a readable page is an inconsistent inventory, not a
+        // missing permission, and stays unavailable.
+        const firstPageDenied = budget.requests === requestsBeforeAssignments + 1;
+        if (firstPageDenied && error instanceof GraphClientError && error.code === 'graph_permission_missing') {
           const fallback = tokenRoles(tenantId, accessToken);
           return 'failure' in fallback
             ? { grants: null, failure: fallback.failure }

@@ -497,7 +497,7 @@ export function createConnectionService<
    */
   function retestPromotesManifest(result: Extract<RetestResult, { success: true }>): boolean {
     if (!deps.retestPromotesManifestOnlyWhenSatisfied) return true;
-    if (result.grantReconciliation !== 'complete') return false;
+    if (!isUsableObservation(result)) return false;
     if (result.manifestVersion !== deps.manifest.version) return false;
     return deriveGrantHealth({
       status: 'active',
@@ -506,6 +506,21 @@ export function createConnectionService<
       grantsVerifiedAt: new Date(result.grantsVerifiedAt),
       lastErrorCode: null,
     }, deps.manifest).missingGrants.length === 0;
+  }
+
+  /**
+   * Whether a verified result carries a grant observation this profile may
+   * store (#12085). `graph_token_only` is the Admin actions executor's
+   * fallback when the tenant denies the appRoleAssignments read; Read holds
+   * Application.Read.All and only ever reads the exact inventory, so that
+   * mode from any other profile's executor is refused and handled exactly
+   * like an unavailable reconciliation (fail-closed).
+   */
+  function isUsableObservation(
+    result: Extract<RetestResult, { success: true }>,
+  ): result is Extract<RetestResult, { success: true; grantReconciliation: 'complete' }> {
+    if (result.grantReconciliation !== 'complete') return false;
+    return result.grantReconciliationMode !== 'graph_token_only' || profile === 'customer-graph-actions';
   }
 
   async function distinguishTenantConflict(
@@ -1085,7 +1100,7 @@ export function createConnectionService<
         revokedAt: null,
         updatedAt: new Date(),
       };
-      const set = result.grantReconciliation === 'complete'
+      const set = isUsableObservation(result)
         ? (() => {
             const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
             const state = resultState('active', result.manifestVersion, result.observedGrants, grantsVerifiedAt);
@@ -1093,7 +1108,7 @@ export function createConnectionService<
               ...common,
               observedGrants: result.observedGrants,
               grantsVerifiedAt,
-              grantReconciliationMode: result.grantReconciliationMode,
+              grantReconciliationMode: result.grantReconciliationMode ?? 'exact',
               status: state.status,
               lastErrorCode: state.errorCode,
             };
@@ -1154,7 +1169,7 @@ export function createConnectionService<
       if (verifiedTenantId !== current.tenantId || result.tenantId !== current.tenantId) {
         return { connection: current, failureCode: 'tenant_mismatch' };
       }
-      if (result.grantReconciliation !== 'complete') {
+      if (!isUsableObservation(result)) {
         return { connection: current, failureCode: 'grant_reconciliation_unavailable' };
       }
 
@@ -1180,7 +1195,7 @@ export function createConnectionService<
             displayName: result.organizationDisplayName,
             observedGrants: result.observedGrants,
             grantsVerifiedAt,
-            grantReconciliationMode: result.grantReconciliationMode,
+            grantReconciliationMode: result.grantReconciliationMode ?? 'exact',
             lastVerifiedAt: verifiedAt,
             permissionManifestVersion: deps.manifest.version,
             consentGeneration: sql`${m365Connections.consentGeneration} + 1`,
@@ -1192,7 +1207,7 @@ export function createConnectionService<
             displayName: result.organizationDisplayName,
             observedGrants: result.observedGrants,
             grantsVerifiedAt,
-            grantReconciliationMode: result.grantReconciliationMode,
+            grantReconciliationMode: result.grantReconciliationMode ?? 'exact',
             lastVerifiedAt: verifiedAt,
             lastErrorCode: 'grant_missing',
             updatedAt: new Date(),
@@ -1285,7 +1300,7 @@ export function createConnectionService<
         lastVerifiedAt: verifiedAt,
         updatedAt: new Date(),
       };
-      const set = result.grantReconciliation === 'complete'
+      const set = isUsableObservation(result)
         ? (() => {
             const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
             const state = keepsStaleManifest
@@ -1295,7 +1310,7 @@ export function createConnectionService<
               ...common,
               observedGrants: result.observedGrants,
               grantsVerifiedAt,
-              grantReconciliationMode: result.grantReconciliationMode,
+              grantReconciliationMode: result.grantReconciliationMode ?? 'exact',
               status: state.status,
               lastErrorCode: state.errorCode,
             };

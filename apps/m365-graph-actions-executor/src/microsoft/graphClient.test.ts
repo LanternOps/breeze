@@ -593,6 +593,28 @@ describe('grant reconciliation fallback to the Graph token roles claim', () => {
     expect(result.grantReconciliationFailure).toEqual({ stage: 'assignments', code });
   });
 
+  it('never falls back when a later assignment page is denied after the first was readable', async () => {
+    const accessToken = jwt(VALID_CLAIMS);
+    const assignmentPath = `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`;
+    const expected: Route[] = [
+      ...routes().slice(0, 2),
+      {
+        path: assignmentPath,
+        response: json({
+          value: [{ appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID }],
+          '@odata.nextLink': `https://graph.microsoft.com${assignmentPath}?$skiptoken=next`,
+        }),
+      },
+      { path: assignmentPath, response: denied() },
+    ];
+    const { graph, assertComplete } = tokenClient(expected, accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.observedGrants).toBeNull();
+    expect(result).not.toHaveProperty('graphTokenRoles');
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'assignments', code: 'graph_permission_missing' });
+    assertComplete();
+  });
+
   it('never falls back when the resource lookup (not the assignment read) is denied', async () => {
     const accessToken = jwt(VALID_CLAIMS);
     const expected = routes();
