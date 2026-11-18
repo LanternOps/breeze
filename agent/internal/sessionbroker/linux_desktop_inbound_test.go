@@ -238,6 +238,39 @@ func TestLinuxDesktopInbound_CorrelatedResponses(t *testing.T) {
 	requireDrop(t, checkLinuxDesktopInbound(other, otherSize, ipc.TypeCommand, st), true)
 }
 
+// The envelope id is the helper's to choose, so reusing a pending command's
+// id must not let another message type skip the allowlist.
+func TestLinuxDesktopInbound_PendingIDWithWrongTypeStrikes(t *testing.T) {
+	for _, tc := range []struct{ pending, sent string }{
+		{ipc.TypeDesktopStart, ipc.TypeDesktopFrame},
+		{ipc.TypeDesktopStop, ipc.TypeDesktopStart},
+		{ipc.TypeDesktopFenceSync, ipc.TypeDesktopLeaseRenew},
+	} {
+		st, _ := newInboundState(t)
+		env, size := inboundEnv(t, tc.sent, map[string]string{"sessionId": inboundTestSession})
+		requireDrop(t, checkLinuxDesktopInbound(env, size, tc.pending, st), true)
+	}
+}
+
+// Accepted control traffic is rate-limited per connection; overflow is
+// dropped without striking until the quiet budget runs out.
+func TestLinuxDesktopInbound_ControlTrafficRateLimited(t *testing.T) {
+	st, clk := newInboundState(t)
+	env, size := inboundEnv(t, ipc.TypePing, nil)
+	for i := 0; i < linuxDesktopControlBurst; i++ {
+		if err := checkLinuxDesktopInbound(env, size, "", st); err != nil {
+			t.Fatalf("ping %d rejected: %v", i+1, err)
+		}
+	}
+	requireDrop(t, checkLinuxDesktopInbound(env, size, "", st), false)
+	caps, capsSize := inboundEnv(t, ipc.TypeCapabilities, ipc.Capabilities{})
+	requireDrop(t, checkLinuxDesktopInbound(caps, capsSize, "", st), false)
+	clk.Advance(linuxDesktopControlRefill)
+	if err := checkLinuxDesktopInbound(env, size, "", st); err != nil {
+		t.Fatalf("ping after refill rejected: %v", err)
+	}
+}
+
 // A reply that arrives after root stopped waiting is a benign race; a helper
 // that keeps sending them eventually counts as misbehaving.
 func TestLinuxDesktopInbound_LateRepliesAreQuietUntilBudgetSpent(t *testing.T) {

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"os/user"
 	"path/filepath"
+	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -54,12 +56,19 @@ func GatherUnixServerEvidence(conn *net.UnixConn, socketPath string) (UnixServer
 		return UnixServerEvidence{}, fmt.Errorf("ipc: resolve socket dir: %w", err)
 	}
 	ev := UnixServerEvidence{PeerUID: uid}
+	// An unresolvable IPC group only narrows what is trusted: the socket dir
+	// is then accepted group-writable for root's group alone.
+	if g, err := user.LookupGroup(IPCGroupName); err == nil {
+		if gid, err := strconv.ParseUint(g.Gid, 10, 32); err == nil {
+			ev.TrustedGroupIDs = []uint32{uint32(gid)}
+		}
+	}
 	for p := dir; ; p = filepath.Dir(p) {
 		var st unix.Stat_t
 		if err := unix.Lstat(p, &st); err != nil {
 			return UnixServerEvidence{}, fmt.Errorf("ipc: stat %s: %w", p, err)
 		}
-		ev.DirChain = append(ev.DirChain, DirEvidence{Path: p, UID: st.Uid, Mode: statModeToFileMode(st.Mode)})
+		ev.DirChain = append(ev.DirChain, DirEvidence{Path: p, UID: st.Uid, GID: st.Gid, Mode: statModeToFileMode(st.Mode)})
 		if p == filepath.Dir(p) { // reached "/"
 			break
 		}

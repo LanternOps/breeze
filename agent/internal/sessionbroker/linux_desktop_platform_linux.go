@@ -4,8 +4,11 @@ package sessionbroker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -88,6 +91,15 @@ func runLoginctl(ctx context.Context, loginctl string, args ...string) (string, 
 	args = append(args, "--no-pager")
 	out, err := procspawn.CommandContext(ctx, loginctl, args...).Output()
 	if err != nil {
+		// Keep loginctl's own explanation ("no session", a D-Bus error)
+		// and whether our deadline killed it.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("%w (%v)", err, ctxErr)
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("%w: %s", err, truncateUTF8(strings.TrimSpace(string(exitErr.Stderr)), 256))
+		}
 		return "", err
 	}
 	if len(out) > maxLoginctlOutput {

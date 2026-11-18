@@ -132,7 +132,11 @@ func (b *Broker) admitLinuxDesktopHelper(kernelUID uint32, peerHash string, req 
 	// self-update replaces the file on disk, a freshly spawned helper runs
 	// the new build while root still runs the old one. Checked before the
 	// ticket so a mismatched build does not burn it.
-	if self := b.runningBuildHash(); self == "" || peerHash != self {
+	self := b.runningBuildHash()
+	if self == "" {
+		return LinuxDesktopBinding{}, "running agent build hash unavailable; linux desktop helpers are refused"
+	}
+	if peerHash != self {
 		return LinuxDesktopBinding{}, "linux desktop helper is not the running agent build"
 	}
 	if !validLogindSessionID(req.LogindSessionID) {

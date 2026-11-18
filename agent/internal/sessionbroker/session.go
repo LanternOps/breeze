@@ -644,7 +644,8 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 		// A Linux desktop helper is filtered before anything else sees the
 		// message, including the pending-response match.
 		if s.linuxInbound != nil && !s.admitLinuxDesktopInbound(env) {
-			if s.IsClosed() {
+			// Struck out ends the loop even if the close itself failed.
+			if s.IsClosed() || s.linuxInbound.struckOut() {
 				return
 			}
 			continue

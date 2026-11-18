@@ -46,6 +46,12 @@ const (
 	// (late replies, traffic racing a stop) a connection gets before further
 	// ones count as violations, so "benign" cannot be used to flood root.
 	linuxDesktopInboundQuietDropLimit = 1024
+	// linuxDesktopControlBurst and linuxDesktopControlRefill rate-limit the
+	// accepted control traffic (ping, pong, disconnect, capabilities, log
+	// relay) per connection: a burst of this many, then one per refill. The
+	// stock helper pings once per 5 s idle and answers root's 30 s pings.
+	linuxDesktopControlBurst  = 32
+	linuxDesktopControlRefill = time.Second
 	// linuxDesktopMaxTrackedSessions is how many desktop sessions one
 	// connection remembers before finished ones are forgotten.
 	linuxDesktopMaxTrackedSessions = 64
@@ -82,13 +88,46 @@ type linuxDesktopInboundState struct {
 	strikes    int
 	quietDrops int
 	sessions   map[string]*linuxDesktopInboundSession
+	// controlTokens / controlRefilled are the control-traffic token bucket.
+	controlTokens   int
+	controlRefilled time.Time
 }
 
 func newLinuxDesktopInboundState(now func() time.Time) *linuxDesktopInboundState {
 	if now == nil {
 		now = time.Now
 	}
-	return &linuxDesktopInboundState{now: now, sessions: make(map[string]*linuxDesktopInboundSession)}
+	return &linuxDesktopInboundState{
+		now:             now,
+		sessions:        make(map[string]*linuxDesktopInboundSession),
+		controlTokens:   linuxDesktopControlBurst,
+		controlRefilled: now(),
+	}
+}
+
+// takeControlTokenLocked spends one control-traffic token, refilling first.
+func (st *linuxDesktopInboundState) takeControlTokenLocked() bool {
+	now := st.now()
+	if elapsed := now.Sub(st.controlRefilled); elapsed >= linuxDesktopControlRefill {
+		refill := int(elapsed / linuxDesktopControlRefill)
+		st.controlTokens = min(linuxDesktopControlBurst, st.controlTokens+refill)
+		st.controlRefilled = st.controlRefilled.Add(time.Duration(refill) * linuxDesktopControlRefill)
+	}
+	if st.controlTokens == 0 {
+		return false
+	}
+	st.controlTokens--
+	return true
+}
+
+// linuxDesktopReplyType is the envelope type a helper answers each root
+// command with.
+func linuxDesktopReplyType(cmd string) (string, bool) {
+	switch cmd {
+	case ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeDesktopFenceSync:
+		return cmd, true
+	}
+	return "", false
 }
 
 // noteDesktopStart records that root is starting sessionID on this
@@ -200,6 +239,10 @@ func checkLinuxDesktopInbound(env *ipc.Envelope, frameSize int, pendingCmd strin
 	}
 
 	switch env.Type {
+	case ipc.TypePing, ipc.TypePong, ipc.TypeDisconnect, ipc.TypeCapabilities, ipc.TypeHelperLog:
+		if !st.takeControlTokenLocked() {
+			return st.quietLocked("%s over the control-traffic rate", env.Type)
+		}
 	case ipc.TypeDesktopLocalICECandidate:
 		var notice ipc.DesktopLocalICECandidate
 		if err := json.Unmarshal(env.Payload, &notice); err != nil {
@@ -250,11 +293,16 @@ func checkLinuxDesktopInbound(env *ipc.Envelope, frameSize int, pendingCmd strin
 }
 
 // checkCommandResponseLocked bounds the reply to a command root has pending.
+// The envelope id is chosen by the helper, so the reply must also carry the
+// type root expects for that command; otherwise reusing a pending id would
+// let any message skip the allowlist.
 func (st *linuxDesktopInboundState) checkCommandResponseLocked(env *ipc.Envelope, frameSize int, pendingCmd string) error {
-	switch pendingCmd {
-	case ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeDesktopFenceSync:
-	default:
+	want, ok := linuxDesktopReplyType(pendingCmd)
+	if !ok {
 		return st.strikeLocked("reply to %q is not accepted from a Linux desktop helper", pendingCmd)
+	}
+	if env.Type != want {
+		return st.strikeLocked("reply to %s has type %q, want %q", pendingCmd, env.Type, want)
 	}
 	if frameSize > linuxDesktopMaxCommandResponse {
 		return st.strikeLocked("%s reply of %d bytes exceeds %d", pendingCmd, frameSize, linuxDesktopMaxCommandResponse)
@@ -310,19 +358,34 @@ func (s *Session) LinuxDesktopStartGeneration(desktopSessionID string) (generati
 }
 
 // noteLinuxDesktopCommand records root's own desktop commands before they
-// are sent, so a helper's first reply cannot outrun the record.
+// are sent, so a helper's first reply cannot outrun the record. Only
+// startCommand (SendCommand) calls it and records the pending command type;
+// desktop commands to a Linux desktop helper must go through that path, not
+// sendCommandAbandoningLateReply or sendCommandWithQuiescence.
 func (s *Session) noteLinuxDesktopCommand(cmdType string, payload any) {
 	if s.linuxInbound == nil {
 		return
 	}
 	switch cmdType {
 	case ipc.TypeDesktopStart:
-		if req, ok := payload.(ipc.DesktopStartRequest); ok {
+		switch req := payload.(type) {
+		case ipc.DesktopStartRequest:
 			s.linuxInbound.noteDesktopStart(req.SessionID, req.StartGeneration)
+		case *ipc.DesktopStartRequest:
+			s.linuxInbound.noteDesktopStart(req.SessionID, req.StartGeneration)
+		default:
+			log.Warn("desktop_start to a Linux desktop helper has an unrecognized payload; the session will not be recorded and its traffic will be refused",
+				"sessionId", s.SessionID, "payloadType", fmt.Sprintf("%T", payload))
 		}
 	case ipc.TypeDesktopStop:
-		if req, ok := payload.(ipc.DesktopStopRequest); ok {
+		switch req := payload.(type) {
+		case ipc.DesktopStopRequest:
 			s.linuxInbound.noteDesktopStop(req.SessionID)
+		case *ipc.DesktopStopRequest:
+			s.linuxInbound.noteDesktopStop(req.SessionID)
+		default:
+			log.Warn("desktop_stop to a Linux desktop helper has an unrecognized payload; the session stays recorded as live",
+				"sessionId", s.SessionID, "payloadType", fmt.Sprintf("%T", payload))
 		}
 	}
 }
