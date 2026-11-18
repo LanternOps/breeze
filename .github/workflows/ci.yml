@@ -4132,7 +4132,11 @@ jobs:
         # Whole-shard retry once on visible test failures (W1, #10744). A re-run
         # starts from the same DB state: globalSetup runs once per `vitest run`
         # and setup.ts TRUNCATEs around every test.
-        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-${{ matrix.shard }} --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+        # --stall-minutes (#12113): 10 min with no output kills the run, names
+        # the last test file seen and does not retry. The longest silence in a
+        # healthy shard is under a minute; the slowest file runs ~3.5 min. It
+        # also prints a memory/load heartbeat, so a lost runner leaves a trail.
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-${{ matrix.shard }} --budget-minutes 50 --stall-minutes 10 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
