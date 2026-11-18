@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -377,6 +378,21 @@ type Broker struct {
 	// linuxDesktopFrameDeadlineOverride shortens the Linux desktop helper frame
 	// deadline for this broker when nonzero (tests only).
 	linuxDesktopFrameDeadlineOverride time.Duration
+
+	// Per-uid Linux desktop helper endpoints (#12117,
+	// linux_desktop_listener.go), guarded by linuxDesktopMu, which is never
+	// held while taking mu. linuxDesktopSocketDir, linuxDesktopDirOwner and
+	// linuxDesktopChown are set in New and overridden only by tests before
+	// use.
+	linuxDesktopMu        sync.Mutex
+	linuxDesktopListeners map[uint32]*linuxDesktopListener
+	linuxDesktopClosed    bool
+	linuxDesktopSocketDir string
+	linuxDesktopDirOwner  uint32
+	linuxDesktopChown     func(path string, uid uint32) error
+	// linuxDesktopOwnerOf reports the owner uid of an endpoint path entry;
+	// nil means fileIdentity. Tests use it to simulate a non-root owner.
+	linuxDesktopOwnerOf func(fs.FileInfo) (uint32, bool)
 }
 
 // keepaliveTiming is the ping interval and pong timeout for this broker.
@@ -446,6 +462,11 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		linuxLogindLookup:      defaultLinuxLogindLookup(),
 
 		linuxWaylandCaptureAuthorized: func() bool { return false },
+
+		linuxDesktopListeners: make(map[uint32]*linuxDesktopListener),
+		linuxDesktopSocketDir: defaultLinuxDesktopSocketDir,
+		linuxDesktopDirOwner:  uint32(os.Geteuid()),
+		linuxDesktopChown:     defaultLinuxDesktopChown,
 	}
 	b.selfExeHash = recordRunningBuildHash()
 	b.selfHashes = b.computeAllowedHashes()
@@ -858,6 +879,13 @@ func (b *Broker) acceptingStopped() bool {
 }
 
 func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
+	return b.startAcceptedConnectionFrom(conn, nil)
+}
+
+// startAcceptedConnectionFrom is startAcceptedConnection for a connection
+// accepted on origin, a per-uid Linux desktop endpoint (nil for the shared
+// socket). Both share the pre-auth and shutdown accounting.
+func (b *Broker) startAcceptedConnectionFrom(conn net.Conn, origin *linuxDesktopListener) bool {
 	b.acceptMu.Lock()
 	if b.acceptStopped {
 		b.acceptMu.Unlock()
@@ -869,7 +897,7 @@ func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
 	b.acceptMu.Unlock()
 	go func() {
 		defer b.finishPreAuth(conn)
-		b.handleConnection(conn)
+		b.handleConnection(conn, origin)
 	}()
 	return true
 }
@@ -971,6 +999,10 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 		}
 	}
 	b.acceptMu.Unlock()
+
+	// The per-uid Linux desktop endpoints stop accepting with the shared
+	// socket; acceptStopped is already set, so none can be reopened.
+	b.closeLinuxDesktopListenersForShutdown()
 
 	// Started before the drain wait rather than after it, so a well-behaved
 	// listener still closes concurrently with the handlers finishing.
@@ -2287,7 +2319,16 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 	return admitted
 }
 
-func (b *Broker) handleConnection(rawConn net.Conn) {
+// handleConnection authenticates one connection. origin is the per-uid
+// Linux desktop endpoint it arrived on, or nil for the shared socket.
+func (b *Broker) handleConnection(rawConn net.Conn, origin *linuxDesktopListener) {
+	// A per-uid endpoint's handshake slot is released when the handshake
+	// ends, whichever way: at publication below, or on any early return.
+	endHandshake := func() {}
+	if origin != nil {
+		endHandshake = sync.OnceFunc(origin.endHandshake)
+	}
+	defer endHandshake()
 	if b.beforePreAuthRead != nil {
 		b.beforePreAuthRead()
 	}
@@ -2302,7 +2343,22 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	creds, err := ipc.GetPeerCredentials(rawConn)
 	if err != nil {
 		log.Warn("peer credential check failed", "error", err.Error())
+		if origin != nil {
+			// Nothing is said to a peer on a per-uid endpoint that has not
+			// been identified.
+			_ = rawConn.Close()
+			return
+		}
 		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeCredCheckFailed, err.Error(), false)
+		return
+	}
+	// A per-uid endpoint serves exactly one uid. The owner can chmod the
+	// socket, so the file mode is advisory: this kernel uid check, made
+	// before a single byte from the peer is read, is the control.
+	if origin != nil && creds.UID != origin.uid {
+		log.Warn("Linux desktop endpoint: peer uid does not own this endpoint; closing unread",
+			"endpointUID", origin.uid, "peerUID", creds.UID, "pid", creds.PID)
+		_ = rawConn.Close()
 		return
 	}
 
@@ -2397,6 +2453,21 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			Permanent: true,
 		})
 		conn.Close()
+		return
+	}
+	// The per-uid endpoint admits only a ticketed Linux desktop helper, and
+	// the shared socket no ticket. Checked before admission, so a refused
+	// peer never burns a ticket.
+	if reason := linuxDesktopEndpointReject(b.effectiveGOOS(), origin != nil, helperRole, authReq); reason != "" {
+		log.Warn("helper refused by endpoint rule", "reason", reason, "role", helperRole,
+			"binaryKind", truncateUTF8(authReq.BinaryKind, 64), "uid", creds.UID, "pid", creds.PID,
+			"desktopEndpoint", origin != nil)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    reason,
+			Permanent: true,
+		})
+		_ = conn.Close()
 		return
 	}
 
@@ -2546,6 +2617,18 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
 			Reason:    linuxReject,
+			Permanent: true,
+		})
+		_ = conn.Close()
+		return
+	}
+
+	if origin != nil && linuxDesktop == nil {
+		// Unreachable while the endpoint rule holds; refuse rather than
+		// admit anything else through a per-uid endpoint.
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "this endpoint admits only a Linux desktop helper with a spawn ticket",
 			Permanent: true,
 		})
 		_ = conn.Close()
@@ -2776,7 +2859,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 		helperReservation = nil
 	} else {
+		// A session from a per-uid endpoint is recorded on it first, so
+		// closing the endpoint can find it; refused once the endpoint closed.
+		if origin != nil {
+			if !origin.addSession(session) {
+				log.Warn("Linux desktop endpoint closed during handshake; refusing session", "uid", origin.uid)
+				_ = conn.Close()
+				return
+			}
+			session.linuxDesktopOrigin = origin
+		}
 		if err := b.registerNonLifecycleSession(identityKey, helperRole, session, backupReservation); err != nil {
+			if origin != nil {
+				origin.removeSession(session)
+			}
 			log.Warn("helper session registration refused after handshake",
 				"identity", identityKey,
 				"sessionId", authReq.SessionID,
@@ -2788,6 +2884,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	peerProcessPublished = true
 	b.finishPreAuth(rawConn)
+	endHandshake()
 
 	log.Info("user helper connected",
 		"identity", identityKey,
@@ -2829,6 +2926,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 // exercisable without standing up a full IPC handshake.
 func (b *Broker) finishHelperSession(session *Session) {
 	b.removeSession(session)
+	if session.linuxDesktopOrigin != nil {
+		session.linuxDesktopOrigin.removeSession(session)
+	}
 	if session.HelperRole == backupipc.HelperRoleBackup {
 		// Report before clearing the session pointer: the report has to see
 		// that this session is the one that owns the in-flight run.

@@ -60,6 +60,9 @@ type Session struct {
 	// are set with LinuxDesktop by enableLinuxDesktopInbound; nil otherwise.
 	linuxInbound           *linuxDesktopInboundState
 	linuxCaptureAuthorized func() bool
+	// linuxDesktopOrigin is the per-uid endpoint this session was admitted
+	// on (#12117), nil for the shared socket. Set once before registration.
+	linuxDesktopOrigin *linuxDesktopListener
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.

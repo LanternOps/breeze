@@ -48,8 +48,18 @@ func (f *fakeLogind) lookup(_ context.Context, id string) (LogindSessionState, e
 }
 
 // startLinuxDesktopBroker runs a real broker that treats itself as Linux,
-// with an injected logind answer and this test binary as the running build.
+// with an injected logind answer and this test binary as the running build,
+// and returns the test user's per-uid desktop endpoint: since W2 the only
+// place a ticketed helper is admitted.
 func startLinuxDesktopBroker(t *testing.T, logind *fakeLogind, extra ...func(*Broker)) (*Broker, string) {
+	t.Helper()
+	b, _, desk := startLinuxDesktopEndpoint(t, logind, extra...)
+	return b, desk
+}
+
+// startLinuxDesktopBrokerShared is startLinuxDesktopBroker without the
+// per-uid endpoint; it returns the shared socket.
+func startLinuxDesktopBrokerShared(t *testing.T, logind *fakeLogind, extra ...func(*Broker)) (*Broker, string) {
 	t.Helper()
 	hash := selfBinaryHash(t)
 	configure := []func(*Broker){func(b *Broker) {
@@ -151,7 +161,15 @@ func TestAdmitLinuxDesktopHelper_TicketOnUserHelperRejected(t *testing.T) {
 	}
 	req := selfDesktopHelperAuth("ld-user-ticket", nonce, "3")
 	req.BinaryKind = ipc.HelperBinaryUserHelper
-	requireRejected(t, attemptSelfHelperAuth(t, sock, req), "only valid for a Linux desktop helper")
+	// On the desktop endpoint the endpoint rule refuses it; on the shared
+	// socket no ticket is accepted at all.
+	requireRejected(t, attemptSelfHelperAuth(t, sock, req), "admits only a Linux desktop helper")
+	shared := b.socketPath
+	req.SessionID = "ld-user-ticket-shared"
+	requireRejected(t, attemptSelfHelperAuth(t, shared, req), "per-user desktop endpoint")
+	if b.SessionByID("ld-user-ticket") != nil || b.SessionByID("ld-user-ticket-shared") != nil {
+		t.Fatal("user helper with a ticket was admitted")
+	}
 }
 
 func TestAdmitLinuxDesktopHelper_ValidTicketGetsDesktopOnly(t *testing.T) {
@@ -324,7 +342,7 @@ func TestAdmitLinuxDesktopHelper_LogindMustConfirmLiveSession(t *testing.T) {
 // A user helper on Linux keeps exactly the grant it had before #12117.
 func TestAdmitLinuxUserHelperUnchanged(t *testing.T) {
 	skipIfRoot(t)
-	b, sock := startLinuxDesktopBroker(t, liveSelfLogind())
+	b, sock := startLinuxDesktopBrokerShared(t, liveSelfLogind())
 	req := ipc.AuthRequest{
 		ProtocolVersion: ipc.ProtocolVersion,
 		UID:             uint32(os.Getuid()),

@@ -619,7 +619,11 @@ type Heartbeat struct {
 	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu sync.RWMutex
 	sessionBroker *sessionbroker.Broker
-	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// linuxDesktopHelpers runs the Linux per-session desktop helpers
+	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
+	// in Start, read by Stop.
+	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
+	promptHost          *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
@@ -2458,6 +2462,8 @@ func (h *Heartbeat) Start() {
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
 		h.startSessionBannerSweep()
+		// Linux + desktop_wayland_helper only; a no-op otherwise.
+		h.startLinuxDesktopHelperManager()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())
@@ -2790,6 +2796,14 @@ func (h *Heartbeat) Stop() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
+
+		// Linux desktop helpers (#12117) are stopped first and synchronously
+		// (bounded to 5 s): every unit is collected and every hosted desktop
+		// session reported ended while the broker and the API link are still
+		// up, and nothing is respawned while the broker closes.
+		if m := h.linuxDesktopHelpers.Load(); m != nil {
+			m.Shutdown()
+		}
 
 		if h.stopBrokerAcceptingAndWait != nil {
 			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {
