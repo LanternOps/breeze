@@ -103,6 +103,8 @@ export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
   return conditions;
 }
 
+// Ordered by name, then id: names are not unique (an org and a partner-wide
+// definition may share one) and query_custom_fields pages this list.
 export async function readCustomFieldDefinitions(auth: AuthContext) {
   const conditions = customFieldDefinitionConditions(auth);
   return db
@@ -118,7 +120,7 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
     })
     .from(customFieldDefinitions)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(customFieldDefinitions.name);
+    .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 }
 
 // #5351 — per-slot memory inventory for get_device_details. A 4-socket
@@ -963,7 +965,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           })
           .from(customFieldDefinitions)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(customFieldDefinitions.name);
+          .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 
         // Values only for the definitions on this page — the value map is keyed
         // by fieldKey and is as large as the definition list.

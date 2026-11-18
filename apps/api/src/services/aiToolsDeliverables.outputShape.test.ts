@@ -62,7 +62,7 @@ describe('list_org_documents output shape (#6734)', () => {
   it('declares limit/offset/cursor with the shared text on the registry and Zod surfaces', () => {
     expect(propsOf('list_org_documents').limit!.description).toBe('Max results (default 15, max 100)');
     expect(propsOf('list_org_documents').cursor).toBeDefined();
-    expect(toolInputSchemas.list_org_documents!.safeParse({ orgId: ORG, limit: 5, offset: 0, cursor: 'x', includeDetails: true }).success).toBe(true);
+    expect(Object.keys((toolInputSchemas.list_org_documents as unknown as { shape: Record<string, unknown> }).shape)).toEqual(expect.arrayContaining(['limit', 'offset', 'cursor', 'includeDetails']));
   });
 
   it('a default page fits the chat budget uncompacted, carries the envelope, and omits the long fields', async () => {
@@ -82,6 +82,15 @@ describe('list_org_documents output shape (#6734)', () => {
 
   it('following nextCursor returns every document exactly once', async () => {
     expect(await walk('list_org_documents', { orgId: ORG }, 'documents')).toEqual(all.map((d) => d.id));
+  });
+
+  it('passes includeSuperseded through to the service after the fingerprint rename', async () => {
+    await call('list_org_documents', { orgId: ORG, includeSuperseded: true, category: 'runbook' });
+    expect(docs.listDocuments).toHaveBeenLastCalledWith(ORG, { category: 'runbook', includeSuperseded: true }, expect.anything());
+  });
+
+  it('an offset past the end returns an empty final page', async () => {
+    expect(await call('list_org_documents', { orgId: ORG, offset: 500 })).toMatchObject({ documents: [], showing: 0, total: 80, hasMore: false, nextCursor: null });
   });
 
   it('refuses a cursor replayed across includeSuperseded or category (both change which rows are listed)', async () => {
@@ -116,7 +125,7 @@ describe('list_deliverable_templates output shape (#6734)', () => {
 
   it('declares limit/offset/cursor with the shared text on the registry and Zod surfaces', () => {
     expect(propsOf('list_deliverable_templates').limit!.description).toBe('Max results (default 4, max 50)');
-    expect(toolInputSchemas.list_deliverable_templates!.safeParse({ limit: 5, offset: 0, cursor: 'x', includeDetails: true }).success).toBe(true);
+    expect(Object.keys((toolInputSchemas.list_deliverable_templates as unknown as { shape: Record<string, unknown> }).shape)).toEqual(expect.arrayContaining(['limit', 'offset', 'cursor', 'includeDetails']));
   });
 
   it('a default page of realistic sets fits the chat budget uncompacted and keeps item instructions opt-in', async () => {

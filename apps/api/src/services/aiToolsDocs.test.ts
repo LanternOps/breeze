@@ -109,7 +109,10 @@ describe('search_documentation handler', () => {
       const titles = (r: string) => (r.match(/^Title:/gm) || []).length;
       expect(titles(await handler({ query: 'security' }, mockAuth))).toBe(5);
       expect(titles(await handler({ query: 'security', limit: 2 }, mockAuth))).toBe(2);
-      // Out-of-range values clamp to [1, 5] instead of widening the result.
+      expect(titles(await handler({ query: 'security', limit: 1 }, mockAuth))).toBe(1);
+      expect(titles(await handler({ query: 'security', limit: 3.9 }, mockAuth))).toBe(3);
+      // The registry handler clamps out-of-range values to [1, 5] (the Zod
+      // surfaces reject them before the handler runs).
       expect(titles(await handler({ query: 'security', limit: 50 }, mockAuth))).toBe(5);
       expect(titles(await handler({ query: 'security', limit: 0 }, mockAuth))).toBe(5);
     });

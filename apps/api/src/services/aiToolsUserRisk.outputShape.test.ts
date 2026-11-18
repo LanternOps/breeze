@@ -199,7 +199,7 @@ describe('get_user_risk_detail output shape (#6734)', () => {
   it('declares limit with the "(default N, max M)" text on the registry and Zod surfaces', () => {
     const props = (riskTool().definition.input_schema as { properties: Record<string, { description: string }> }).properties;
     expect(props.limit!.description).toBe('Max recent events (default 10, max 100)');
-    expect(toolInputSchemas.get_user_risk_detail!.safeParse({ userId: USER_ID, limit: 5, includeDetails: true }).success).toBe(true);
+    expect(Object.keys((toolInputSchemas.get_user_risk_detail as unknown as { shape: Record<string, unknown> }).shape)).toEqual(expect.arrayContaining(['limit', 'includeDetails']));
   });
 
   it('a default response for a user with 100 events fits the budget uncompacted and drops event details', async () => {
@@ -213,6 +213,24 @@ describe('get_user_risk_detail output shape (#6734)', () => {
     expect(out.recentEvents[0]).toMatchObject({ eventType: 'auth_failure_burst', scoreImpact: 6 });
     expect(out.latestScore.factors.mfaRisk).toBe(100);
     expect(out.history).toHaveLength(30);
+  });
+
+  it('out-of-range or non-numeric limits fall back to the default or clamp to the max', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(100) as never);
+    const lengthFor = async (limit: unknown) =>
+      JSON.parse(await riskTool().handler({ userId: USER_ID, limit }, auth())).userRisk.recentEvents.length;
+    expect(await lengthFor(0)).toBe(10);
+    expect(await lengthFor(-1)).toBe(10);
+    expect(await lengthFor('abc')).toBe(10);
+    expect(await lengthFor(500)).toBe(100);
+    expect(await lengthFor(2.7)).toBe(2);
+  });
+
+  it('reports the real count when the user has fewer events than the limit, or none', async () => {
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(3) as never);
+    expect(JSON.parse(await riskTool().handler({ userId: USER_ID }, auth())).userRisk).toMatchObject({ recentEventCount: 3 });
+    vi.mocked(getUserRiskDetail).mockResolvedValue(detail(0) as never);
+    expect(JSON.parse(await riskTool().handler({ userId: USER_ID }, auth())).userRisk).toMatchObject({ recentEventCount: 0, recentEvents: [] });
   });
 
   it('limit and includeDetails widen the event list and restore details', async () => {

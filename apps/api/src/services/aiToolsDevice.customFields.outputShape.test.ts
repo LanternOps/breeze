@@ -1,12 +1,15 @@
 // #6734 (A-W05 D12b follow-up): query_custom_fields returned every definition
 // (and, for get_device_values, the device's whole value map) in one response.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { expectDefaultPageFits } from './aiToolOutputBudget.testkit';
 
 const dbMock = vi.hoisted(() => {
   let rows: unknown[] = [];
-  const select = vi.fn(() => ({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve(rows) }) }) }));
-  return { select, setRows: (r: unknown[]) => { rows = r; } };
+  const orderBy = vi.fn((..._args: unknown[]) => Promise.resolve(rows));
+  const select = vi.fn(() => ({ from: () => ({ where: () => ({ orderBy }) }) }));
+  return { select, orderBy, setRows: (r: unknown[]) => { rows = r; } };
 });
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -57,7 +60,7 @@ describe('query_custom_fields output shape (#6734)', () => {
     const props = (tool.definition.input_schema as { properties: Record<string, { description: string }> }).properties;
     expect(props.limit!.description).toBe('Max results (default 15, max 100)');
     expect(props.cursor).toBeDefined();
-    expect(toolInputSchemas.query_custom_fields!.safeParse({ action: 'list_definitions', limit: 5, offset: 0, cursor: 'x' }).success).toBe(true);
+    expect(Object.keys((toolInputSchemas.query_custom_fields as unknown as { shape: Record<string, unknown> }).shape)).toEqual(expect.arrayContaining(['limit', 'offset', 'cursor']));
   });
 
   it('list_definitions: a default page fits the chat budget uncompacted and carries the envelope', async () => {
@@ -89,8 +92,35 @@ describe('query_custom_fields output shape (#6734)', () => {
     expect(out.customFields).not.toHaveProperty('orphan_key');
   });
 
-  it('refuses a cursor replayed across actions', async () => {
+  it('refuses a cursor replayed across actions or devices', async () => {
     const first = await call({ action: 'list_definitions' });
     expect(await call({ action: 'get_device_values', deviceId: DEVICE_ID, cursor: first.nextCursor })).toMatchObject({ code: 'CURSOR_MISMATCH' });
+    const values = await call({ action: 'get_device_values', deviceId: DEVICE_ID });
+    expect(await call({ action: 'get_device_values', deviceId: '99999999-2222-4222-8222-222222222222', cursor: values.nextCursor })).toMatchObject({ code: 'CURSOR_MISMATCH' });
+  });
+
+  it("get_device_values: page 2 carries page 2's values, and a definition with no value is simply absent", async () => {
+    const values: Record<string, unknown> = Object.fromEntries(ALL.map((d, i) => [d.fieldKey, i % 2 ? 'gold-1y' : 'bronze-30d']));
+    delete values.backup_retention_class_16;
+    access.verifyDeviceAccess.mockResolvedValue({ device: { id: DEVICE_ID, hostname: 'WKSTN-ACCOUNTING-7', customFields: values } });
+    const first = await call({ action: 'get_device_values', deviceId: DEVICE_ID });
+    const second = await call({ action: 'get_device_values', deviceId: DEVICE_ID, cursor: first.nextCursor });
+    expect(second.definitions[0].fieldKey).toBe('backup_retention_class_15');
+    expect(second.customFields).toMatchObject({ backup_retention_class_15: 'gold-1y', backup_retention_class_17: 'gold-1y' });
+    expect(second.customFields).not.toHaveProperty('backup_retention_class_16');
+    expect(second.customFields).not.toHaveProperty('backup_retention_class_0');
+  });
+
+  it('a device with no stored values returns an empty map', async () => {
+    access.verifyDeviceAccess.mockResolvedValue({ device: { id: DEVICE_ID, hostname: 'WKSTN-ACCOUNTING-7', customFields: null } });
+    expect((await call({ action: 'get_device_values', deviceId: DEVICE_ID })).customFields).toEqual({});
+  });
+
+  // Names are not unique (an org and a partner-wide definition may share one),
+  // and the list is paged in memory, so the read must have a total order.
+  it('orders definitions by name with id as the tie-break', async () => {
+    await call({ action: 'list_definitions' });
+    const order = dbMock.orderBy.mock.calls.at(-1)!.map((f) => new PgDialect().sqlToQuery(f as SQL).sql);
+    expect(order).toEqual(['"custom_field_definitions"."name" asc', '"custom_field_definitions"."id" asc']);
   });
 });

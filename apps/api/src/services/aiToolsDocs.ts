@@ -281,7 +281,8 @@ export function registerDocsTools(aiTools: Map<string, AiTool>): void {
       const rawQuery = typeof input.query === 'string' ? input.query : '';
       const sectionFilter = typeof input.section === 'string' ? (input.section as DocsSection) : undefined;
       // The whole result is char-capped (DOCS_SEARCH_MAX_CHARS) regardless; `limit`
-      // only narrows the page count, so out-of-range values clamp to [1, MAX_PAGES].
+      // only narrows the page count. The Zod surfaces reject out-of-range values;
+      // on the registry path they clamp to [1, MAX_PAGES] here.
       const requested = Math.trunc(Number(input.limit));
       const maxPages = Number.isFinite(requested) && requested > 0 ? Math.min(requested, MAX_PAGES) : MAX_PAGES;
       return searchDocsIndex(typedDocsIndex, rawQuery, sectionFilter, maxPages);
