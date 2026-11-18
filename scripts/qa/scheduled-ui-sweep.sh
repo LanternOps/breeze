@@ -491,6 +491,7 @@ DENIED_TOOLS=(
   "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
   "Edit(/$RUN_DIR/.claude/**)" "Edit(/$RUN_DIR/**/.claude/**)"
   "Edit(/$RUN_DIR/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.local.md)"
+  "Edit(/$RUN_DIR/*.log)" "Edit(/$RUN_DIR/*.err)" "Edit(/$RUN_DIR/transcript*)"
   "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript*.jsonl)" "Read(/$RUN_DIR/claude*.err)"
   "mcp__playwright__browser_evaluate" "mcp__playwright__browser_run_code_unsafe"
   "mcp__playwright__browser_route" "mcp__playwright__browser_unroute"
@@ -587,6 +588,7 @@ else
   notify "QA sweep did not complete (exit $RC); cursor not advanced. Log: $RUN_DIR"
 fi
 
-# keep 30 days of runs
+# keep 30 days of runs and their egress audit logs
 find "$QA_HOME/runs" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null
+find "$QA_HOME/.audit" -type f -name 'egress-*.log' -mtime +30 -delete 2>/dev/null
 exit "$RC"

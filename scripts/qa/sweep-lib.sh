@@ -15,13 +15,23 @@ SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_
 # body_ok <file>: gate for anything headed to a PUBLIC GitHub sink.
 body_ok() {
   [ -s "$1" ] && [ "$(wc -c < "$1")" -le 60000 ] || return 1
-  grep -Eq "$SECRET_RE" "$1" && return 1
+  # Byte-wise matching (LC_ALL=C, -a): a NUL or invalid UTF-8 must not turn the
+  # file "binary" and hide what follows it from the checks below.
+  [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq "$(wc -c < "$1")" ] || return 1
+  LC_ALL=C grep -aEq "$SECRET_RE" "$1" && return 1
   # long token-like runs: 40+ chars mixing upper, lower AND digits (JWT/base64/API
   # keys). Hyphenated slugs and 40-hex SHAs don't trip it.
-  grep -oE '[A-Za-z0-9+/=_-]{40,}' "$1" | grep '[A-Z]' | grep '[a-z]' | grep -q '[0-9]' && return 1
-  grep -Eq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" && return 1  # creds in URLs
-  [ -s "$ENVVALS" ] && grep -qF -f "$ENVVALS" "$1" && return 1       # any literal .env value
+  LC_ALL=C grep -aoE '[A-Za-z0-9+/=_-]{40,}' "$1" | grep '[A-Z]' | grep '[a-z]' | grep -q '[0-9]' && return 1
+  LC_ALL=C grep -aEq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" && return 1  # creds in URLs
+  [ -s "$ENVVALS" ] && LC_ALL=C grep -aqF -f "$ENVVALS" "$1" && return 1       # any literal .env value
   return 0
+}
+# text_ok <string>: body_ok for a single field (an issue title), via a private file.
+text_ok() {
+  local tf rc
+  tf="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.field.XXXXXX")" || return 1
+  printf '%s' "$1" > "$tf"; body_ok "$tf"; rc=$?
+  rm -f "$tf"; return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -33,10 +43,14 @@ body_ok() {
 #     denied too, which also blocks DNS (mDNSResponder), docker.sock and
 #     ssh-agent; hostname lookups for the proxy's upstreams happen in the proxy.
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
-#     ~/.ssh, other runs and this run's logs/transcripts are unreadable.
-#   - writes: only RUN_DIR (minus the runner's inputs and any .claude/CLAUDE.md)
-#     and the usual caches; the worktree, runner state and persistence points
-#     (~/.claude config, shell rc files, LaunchAgents) are read-only.
+#     ~/.ssh, git credential files, the egress audit log, other runs and this
+#     run's logs/transcripts are unreadable.
+#   - writes: only RUN_DIR (minus the runner's inputs, its logs/transcripts and
+#     any .claude/CLAUDE.md) and the usual caches; the worktree, the developer
+#     checkout, runner state and persistence points (~/.claude config, git and gh
+#     config, shell rc files, LaunchAgents) are read-only.
+#   - gh's own config (~/.config/gh) stays READABLE: the agent's read-only gh
+#     queries cannot start without it, so the profile only blocks rewriting it.
 # ---------------------------------------------------------------------------
 _sb_real() {   # _sb_real <path>: physical path (parent must exist), refuses quotes/newlines
   local d b; d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
@@ -45,15 +59,33 @@ _sb_real() {   # _sb_real <path>: physical path (parent must exist), refuses quo
   printf '%s' "${d%/}/$b"
 }
 _sb_re() { printf '%s' "$1" | sed -e 's/[]*.[^$(){}?+|]/\\&/g'; }   # regex-escape a path ("[." would open a BSD collating element)
+# _sb_ancestors <path...>: a (literal) rule for each path and every directory
+# above it. Seatbelt matches the path at access time, so renaming a parent would
+# carry a protected file out from under its rule. Creating children stays allowed.
+_sb_ancestors() {
+  local p
+  for p in "$@"; do
+    while [ -n "$p" ] && [ "$p" != / ]; do printf '  (literal "%s")\n' "$p"; p="$(dirname "$p")"; done
+  done | sort -u
+}
+# egress_log_path: the proxy's audit trail. Outside RUN_DIR (the agent's scratch
+# space) and denied to the agent in qa_sandbox_profile.
+egress_log_path() { printf '%s' "$QA_HOME/.audit/egress-$RUN_ID.log"; }
 
 qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
-  local out="$1" home qh wt src run st sed_env atmp
+  local out="$1" home qh wt src run st sed_env atmp gitc audit
   home="$(_sb_real "$HOME")" && qh="$(_sb_real "$QA_HOME")" && wt="$(_sb_real "$QA_WORKTREE")" \
     && src="$(_sb_real "$QA_SOURCE_REPO")" && run="$(_sb_real "$RUN_DIR")" \
     && atmp="$(_sb_real "${AGENT_TMP:-$QA_HOME/.t}")" \
     && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" || { log "sandbox: bad path"; return 1; }
-  local wt_re src_re run_re home_re
+  audit="$qh/.audit"
+  # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
+  gitc="$(cd "$src" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd -P)"
+  gitc="$(_sb_real "${gitc:-$src/.git}")" || { log "sandbox: bad git dir"; return 1; }
+  local wt_re src_re run_re home_re locked
   wt_re="$(_sb_re "$wt")"; src_re="$(_sb_re "$src")"; run_re="$(_sb_re "$run")"; home_re="$(_sb_re "$home")"
+  locked="$(_sb_ancestors "$run" "$audit" "$wt" "$src" "$gitc" "$home/.config/gh" "$home/.config/git" \
+    "$home/.claude/skills" "$home/.ssh" "$home/Library/LaunchAgents")"
   ( umask 077; cat > "$out" ) <<SB
 (version 1)
 (allow default)
@@ -71,8 +103,11 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   (literal "$qh/env.overrides")
   (subpath "$qh/.sandbox")
   (subpath "$qh/.publish")
+  (subpath "$audit")
   (regex #"^$wt_re/(.*/)?\.env[^/]*$")
   (regex #"^$src_re/(.*/)?\.env[^/]*$")
+  (literal "$home/.git-credentials")
+  (literal "$home/.config/git/credentials")
   (subpath "$home/.ssh"))
 ;; contents only (file-read-data): RUN_DIR's parent must stay stat-able, or
 ;; claude cannot resolve --add-dir / its Edit rules for RUN_DIR
@@ -84,7 +119,13 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
 ;; read-only: the worktree, runner state, this run's trusted inputs, and the
 ;; places a planted file would outlive the run
 (deny file-write*
+$locked
   (subpath "$wt")
+  (subpath "$src")
+  (subpath "$gitc")
+  (literal "$home/.gitconfig")
+  (subpath "$home/.config/git")
+  (subpath "$home/.config/gh")
   (subpath "$qh/bin")
   (literal "$(_sb_real "$STATE")")
   (literal "$run/commits.tsv")
@@ -94,6 +135,8 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   (literal "$run/env-fingerprint.txt")
   (literal "$run/result")
   (subpath "$run/.claude")
+  (regex #"^$run_re/[^/]*\.(log|err)$")
+  (regex #"^$run_re/transcript[^/]*$")
   (regex #"^$run_re/(.*/)?CLAUDE(\.local)?\.md$")
   (subpath "$home/.claude/skills")
   (subpath "$home/.claude/commands")
@@ -109,21 +152,22 @@ SB
 # ---------------------------------------------------------------------------
 # Egress proxy: the sandbox's only route off the machine. CONNECT to :443 of a
 # fixed host allowlist (Anthropic for the model, GitHub for read-only gh); all
-# else is refused and logged to RUN_DIR/egress.log.
+# else is refused and logged to egress_log_path, which the agent cannot touch.
 # ---------------------------------------------------------------------------
 QA_EGRESS_ALLOW="${QA_EGRESS_ALLOW:-api.anthropic.com,.anthropic.com,.claude.com,claude.ai,.claude.ai,api.github.com,github.com}"
-EGRESS_PID=""; EGRESS_PORT=""
+EGRESS_PID=""; EGRESS_PORT=""; EGRESS_LOG=""
 start_egress_proxy() {
   local pf="$QA_HOME/.sandbox/egress.port"
-  ( umask 077; mkdir -p "$QA_HOME/.sandbox" ) || return 1
+  EGRESS_LOG="$(egress_log_path)"
+  ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$(dirname "$EGRESS_LOG")" && : >> "$EGRESS_LOG" ) || return 1
   rm -f "$pf"
-  /usr/bin/python3 "$QA_LIB_DIR/egress-proxy.py" --allow "$QA_EGRESS_ALLOW" --port-file "$pf" --log "$RUN_DIR/egress.log" &
+  /usr/bin/python3 "$QA_LIB_DIR/egress-proxy.py" --allow "$QA_EGRESS_ALLOW" --port-file "$pf" --log "$EGRESS_LOG" &
   EGRESS_PID=$!
   local _
   for _ in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
   EGRESS_PORT="$(tr -dc '0-9' < "$pf" 2>/dev/null)"
   [ -n "$EGRESS_PORT" ] && kill -0 "$EGRESS_PID" 2>/dev/null || { stop_egress_proxy; return 1; }
-  log "egress proxy on 127.0.0.1:$EGRESS_PORT (allow: $QA_EGRESS_ALLOW)"
+  log "egress proxy on 127.0.0.1:$EGRESS_PORT (allow: $QA_EGRESS_ALLOW; audit log: $EGRESS_LOG)"
 }
 stop_egress_proxy() {
   [ -n "$EGRESS_PID" ] && kill "$EGRESS_PID" 2>/dev/null
@@ -157,8 +201,12 @@ sandbox_selfcheck() {
   sbx /usr/bin/curl -s -m 10 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://example.com 2>/dev/null && fails="$fails proxy-open"
   sbx /usr/bin/curl -s -m 15 -o /dev/null --proxy "http://127.0.0.1:$EGRESS_PORT" https://api.github.com/zen 2>/dev/null || fails="$fails proxy-blocks-github"
   sbx /bin/sh -c ': >> "$1"' _ "$RUN_DIR/commits.tsv" 2>/dev/null && fails="$fails scope-writable"
+  [ -f "$EGRESS_LOG" ] || fails="$fails audit-log-missing"
+  sbx /bin/sh -c ': >> "$1"' _ "$EGRESS_LOG" 2>/dev/null && fails="$fails audit-log-writable"
+  sbx /bin/sh -c ': > "$1"' _ "$RUN_DIR/.sandbox-selfcheck" 2>/dev/null || fails="$fails run-dir-readonly"
+  rm -f "$RUN_DIR/.sandbox-selfcheck"
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files unreadable, no direct egress/DNS, proxy enforces allowlist, scope read-only)"
+  log "sandbox selfcheck OK (env files unreadable, no direct egress/DNS, proxy enforces allowlist, scope and audit log read-only, RUN_DIR writable)"
 }
 
 # build_mcp_config <base-url> <src-json> <out-json>: per-run Playwright MCP
@@ -227,7 +275,9 @@ publish_outbox() {
   gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
   gh -R "$QA_REPO" label create qa-swept --color 0E8A16 --description "Merged PR checked in the browser by the scheduled UI QA sweep (see QA comment)" >/dev/null 2>&1 || true
   gh -R "$QA_REPO" label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
-  local created=0 comments=0 prs=0 f action title issue labels bodyf pr result
+  # Rejections name the outbox file, never the agent-written value: a refused
+  # field may be the very secret the gate caught.
+  local created=0 comments=0 prs=0 f action title full_title issue labels bodyf pr result
   local max_comments="${QA_MAX_COMMENTS:-20}"
   # One verdict per PR: if both phases wrote a pr_result for the same PR (e.g. a
   # BLOCKED from the self-hosted phase, then the hosted check), the newest wins.
@@ -248,14 +298,20 @@ publish_outbox() {
     fi
     case "$action" in
       create)
-        title="$(jq -r '.title // empty' "$f" | tr -d '\n' | cut -c1-200)"
+        full_title="$(jq -r '.title // empty' "$f" | tr -d '\n')"
+        title="$(printf '%s' "$full_title" | cut -c1-200)"
         if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | grep -Eq '^\[(UI|QA)\] .{5,}'; then
-          log "outbox REJECT $(basename "$f"): cap reached or bad title '$title'"; continue
+          log "outbox REJECT $(basename "$f"): cap reached or bad title"; continue
+        fi
+        # Same gate as the body, on the joined title before the cut: a key that
+        # straddles column 200 must not publish its first half.
+        if ! text_ok "$full_title"; then
+          log "outbox REJECT $(basename "$f"): secret-like title"; continue
         fi
         gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
       comment)
         issue="$(jq -r '.issue // empty' "$f")"
-        [[ "$issue" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad issue '$issue'"; continue; }
+        [[ "$issue" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad issue"; continue; }
         # Target must be in the snapshot taken before the agent ran ...
         case "$QA_COMMENTABLE" in *" $issue "*) ;; *) log "outbox REJECT $(basename "$f"): #$issue was not an open qa-sweep issue at run start"; continue ;; esac
         [ "$comments" -lt "$max_comments" ] || { log "outbox REJECT $(basename "$f"): comment cap ($max_comments) reached"; continue; }
@@ -265,13 +321,13 @@ publish_outbox() {
           *) log "outbox REJECT $(basename "$f"): #$issue is not an open qa-sweep issue" ;; esac ;;
       pr_result)
         pr="$(jq -r '.pr // empty' "$f")"; result="$(jq -r '.result // empty' "$f")"
-        [[ "$pr" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad pr '$pr'"; continue; }
+        [[ "$pr" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad pr"; continue; }
         # IN_SCOPE is shell memory captured before the agent ran; commits.tsv is never re-read.
         case "$IN_SCOPE" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR #$pr not in this run's commit range"; continue ;; esac
         if [ "$result" = NO_UI ]; then
           gh -R "$QA_REPO" pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)); continue
         fi
-        case "$result" in PASS|PARTIAL|FAIL|BLOCKED) ;; *) log "outbox REJECT $(basename "$f"): bad result '$result'"; continue ;; esac
+        case "$result" in PASS|PARTIAL|FAIL|BLOCKED) ;; *) log "outbox REJECT $(basename "$f"): bad result"; continue ;; esac
         # One QA comment per PR per main SHA (a re-run of the same range doesn't double-post).
         if gh -R "$QA_REPO" pr view "$pr" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "<!-- breeze-qa-sweep main=${NEW_SHA:0:9} -->"; then
           log "outbox SKIP pr #$pr: already annotated for this sweep"; continue
@@ -279,7 +335,7 @@ publish_outbox() {
         { printf '<!-- breeze-qa-sweep main=%s -->\n### Scheduled UI QA: %s\n_Checked on main@%s (%s)._\n\n' \
             "${NEW_SHA:0:9}" "$result" "${NEW_SHA:0:9}" "$RUN_ID"; cat "$bodyf"; } > "$bodyf.pr"
         gh -R "$QA_REPO" pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh -R "$QA_REPO" pr edit "$pr" --add-label qa-swept >/dev/null && prs=$((prs+1)) ;;
-      *) log "outbox REJECT $(basename "$f"): unknown action '$action'" ;;
+      *) log "outbox REJECT $(basename "$f"): unknown action" ;;
     esac
   done
   log "outbox: $created issue(s) created, $comments comment(s), $prs PR(s) annotated"

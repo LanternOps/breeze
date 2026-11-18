@@ -63,6 +63,9 @@ def parse_connect(head):
 
 class Handler(socketserver.BaseRequestHandler):
     def log(self, verdict, target):
+        # The target is client-supplied: keep it on one line so a crafted request
+        # cannot write a second, forged audit entry.
+        target = "".join(c if " " <= c <= "~" else "?" for c in target)
         try:
             with open(self.server.log_path, "a") as f:
                 f.write("%s %s %s\n" % (time.strftime("%H:%M:%SZ", time.gmtime()), verdict, target))
