@@ -104,7 +104,20 @@ func (h *Heartbeat) handleHelperLocalICECandidate(session *sessionbroker.Session
 			UsernameFragment: notice.Candidate.UsernameFragment,
 		}
 	}
-	h.sendDesktopICE(notice.SessionID, notice.StartGeneration, notice.Seq, cand)
+	generation := notice.StartGeneration
+	if session.LinuxDesktop != nil {
+		// A Linux desktop helper is not trusted to name the generation: root
+		// stamps the one it recorded when it started this session on this
+		// connection (#12117).
+		recorded, ok := session.LinuxDesktopStartGeneration(notice.SessionID)
+		if !ok {
+			log.Warn("dropping desktop ICE candidate for a session this helper connection does not host",
+				"sessionId", notice.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		generation = recorded
+	}
+	h.sendDesktopICE(notice.SessionID, generation, notice.Seq, cand)
 }
 
 // onRemoteDesktopICECandidate is the WebSocket client's OnDesktopICECandidate.

@@ -28,7 +28,7 @@ func TestGatherUnixServerEvidence_SelfListener(t *testing.T) {
 	go func() {
 		c, err := ln.Accept()
 		if err == nil {
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			buf := make([]byte, 1)
 			_, _ = c.Read(buf)
 		}

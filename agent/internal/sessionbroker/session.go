@@ -24,6 +24,9 @@ type pendingResponse struct {
 	// the entry. A tombstone has no ch.
 	discard     bool
 	abandonedAt time.Time
+	// cmdType is the command this registration answers, recorded by
+	// startCommand for the Linux desktop helper's inbound filter.
+	cmdType string
 }
 
 // Session represents a connected user helper with verified identity.
@@ -52,6 +55,11 @@ type Session struct {
 	// per-session desktop helper (#12117), nil for every other helper. Set
 	// once before the session is registered and read-only afterwards.
 	LinuxDesktop *LinuxDesktopBinding
+	// linuxInbound filters what this helper may send, and
+	// linuxCaptureAuthorized is root's decision on its capture claim. Both
+	// are set with LinuxDesktop by enableLinuxDesktopInbound; nil otherwise.
+	linuxInbound           *linuxDesktopInboundState
+	linuxCaptureAuthorized func() bool
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
@@ -196,6 +204,7 @@ func (s *Session) startCommand(id, cmdType string, payload any) (func(timeout ti
 		ch:           ch,
 		expectedType: expectedResponseType(cmdType),
 		validate:     responseValidator(cmdType, payload),
+		cmdType:      cmdType,
 	}
 	done := s.done
 	s.mu.Unlock()
@@ -206,6 +215,7 @@ func (s *Session) startCommand(id, cmdType string, payload any) (func(timeout ti
 		s.mu.Unlock()
 	}
 
+	s.noteLinuxDesktopCommand(cmdType, payload)
 	if err := s.conn.SendTyped(id, cmdType, payload); err != nil {
 		unregister()
 		return nil, err
@@ -630,6 +640,14 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 		if err != nil {
 			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err.Error())
 			return
+		}
+		// A Linux desktop helper is filtered before anything else sees the
+		// message, including the pending-response match.
+		if s.linuxInbound != nil && !s.admitLinuxDesktopInbound(env) {
+			if s.IsClosed() {
+				return
+			}
+			continue
 		}
 		s.Touch()
 

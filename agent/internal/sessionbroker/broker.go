@@ -359,6 +359,32 @@ type Broker struct {
 	linuxDesktopTickets *linuxDesktopTickets
 	linuxLogindLookup   logindLookupFunc
 	selfExeHash         string
+	// linuxWaylandCaptureAuthorized is root's decision on whether a Linux
+	// desktop helper may claim capture. Always false until the capture backend
+	// ships behind its flag.
+	linuxWaylandCaptureAuthorized func() bool
+
+	// keepaliveIntervalOverride / keepaliveTimeoutOverride replace the
+	// package keepalive timing for this broker when nonzero. Tests set them
+	// before Listen, so a short schedule needs no write to package state
+	// that other brokers' keepalive goroutines read.
+	keepaliveIntervalOverride time.Duration
+	keepaliveTimeoutOverride  time.Duration
+	// linuxDesktopFrameDeadlineOverride shortens the Linux desktop helper frame
+	// deadline for this broker when nonzero (tests only).
+	linuxDesktopFrameDeadlineOverride time.Duration
+}
+
+// keepaliveTiming is the ping interval and pong timeout for this broker.
+func (b *Broker) keepaliveTiming() (interval, timeout time.Duration) {
+	interval, timeout = keepalivePingInterval, keepaliveTimeout
+	if b.keepaliveIntervalOverride > 0 {
+		interval = b.keepaliveIntervalOverride
+	}
+	if b.keepaliveTimeoutOverride > 0 {
+		timeout = b.keepaliveTimeoutOverride
+	}
+	return interval, timeout
 }
 
 // helperKillRetentionTTL is the hard cap on how long a helper key stays owned
@@ -405,6 +431,8 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		helperKeyRetentionTTL:  helperKillRetentionTTL,
 		linuxDesktopTickets:    newLinuxDesktopTickets(nil),
 		linuxLogindLookup:      defaultLinuxLogindLookup(),
+
+		linuxWaylandCaptureAuthorized: func() bool { return false },
 	}
 	b.selfExeHash = recordRunningBuildHash()
 	b.selfHashes = b.computeAllowedHashes()
@@ -2268,8 +2296,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	verifiedWinSessionID := peerWinSessionID(creds.PID)
 	baseIdentityKey := creds.IdentityKey()
 
-	// Wrap connection
+	// Wrap connection. Until the peer is admitted it may send one small auth
+	// request, so a hostile length header cannot make root allocate more.
 	conn := ipc.NewConn(rawConn)
+	conn.SetMaxRecvSize(preAuthMaxRecv)
 
 	// Step 2: Read auth request
 	// (Moved ahead of binary-path verification so the hash from the auth
@@ -2491,16 +2521,21 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		linuxReject = reason
 	}
 	if linuxReject != "" {
-		// Never log the ticket itself.
+		// Never log the ticket itself, and only a well-formed session id: the
+		// peer is not admitted, so the field is untrusted text.
+		logindSession := "<invalid>"
+		if validLogindSessionID(authReq.LogindSessionID) {
+			logindSession = authReq.LogindSessionID
+		}
 		log.Warn("Linux desktop helper admission rejected",
 			"reason", linuxReject, "uid", creds.UID, "pid", creds.PID,
-			"role", helperRole, "binaryKind", authReq.BinaryKind, "logindSession", authReq.LogindSessionID)
+			"role", helperRole, "logindSession", logindSession)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
 			Reason:    linuxReject,
 			Permanent: true,
 		})
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -2660,6 +2695,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Clear the handshake deadline
 	rawConn.SetDeadline(time.Time{})
 
+	// Admitted: lift the pre-auth cap. A Linux desktop helper stays tightly
+	// bounded for the life of the connection; every other role returns to
+	// the protocol maximum it always had.
+	if linuxDesktop != nil {
+		conn.SetMaxRecvSize(linuxDesktopHelperMaxRecv)
+		frameDeadline := linuxDesktopHelperFrameDeadline
+		if b.linuxDesktopFrameDeadlineOverride > 0 {
+			frameDeadline = b.linuxDesktopFrameDeadlineOverride
+		}
+		conn.SetFrameDeadline(frameDeadline)
+	} else {
+		conn.SetMaxRecvSize(0)
+	}
+
 	// Create session. The account name comes from the verified peer
 	// identity, never from the auth request.
 	accountName := b.peerAccountName(baseIdentityKey)
@@ -2675,7 +2724,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	if linuxDesktop != nil {
 		// Only the UI locale is taken from a Linux desktop helper's
 		// advertisements; consent, PAM and prompt support grant nothing.
-		session.LinuxDesktop = linuxDesktop
+		session.enableLinuxDesktopInbound(*linuxDesktop, b.linuxWaylandCaptureAuthorized)
 		session.uiLocale = uiLocaleFromAuth(authReq)
 	} else {
 		applyAuthAdvertisements(session, helperRole, authReq)
@@ -3628,7 +3677,8 @@ const keepaliveMaxSendFailures = 3
 // when the most recent pong we actually have is already too old — a
 // decision that is independent of this tick's outgoing ping.
 func (b *Broker) runKeepalive(session *Session) {
-	ticker := time.NewTicker(keepalivePingInterval)
+	interval, timeout := b.keepaliveTiming()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	sendFailures := 0
@@ -3645,7 +3695,7 @@ func (b *Broker) runKeepalive(session *Session) {
 			// most recently received pong (seeded to session creation time
 			// in NewSession), not the time since the ping we're about to
 			// send below.
-			if age := session.LastPongAge(); age > keepaliveTimeout {
+			if age := session.LastPongAge(); age > timeout {
 				log.Warn("keepalive pong timeout, closing stranded session",
 					"sessionId", session.SessionID,
 					"identity", session.IdentityKey,
@@ -3820,6 +3870,13 @@ func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *i
 	}
 	if !session.HasScope("clipboard") {
 		sanitized.CanClipboard = false
+	}
+	// A Linux desktop helper's claims are an upper bound, never a grant: root
+	// decides whether capture is allowed (#12117).
+	if session.LinuxDesktop != nil {
+		sanitized.CanNotify, sanitized.CanTray, sanitized.CanClipboard = false, false, false
+		sanitized.CanCapture = sanitized.CanCapture &&
+			session.linuxCaptureAuthorized != nil && session.linuxCaptureAuthorized()
 	}
 	// Caller verification (#6354 W02) is rendered only by the Assist helper
 	// that also owns the consent prompt; a native helper never qualifies.

@@ -49,7 +49,7 @@ func TestDialIPC_RefusedServerIsClosedBeforeAuth(t *testing.T) {
 			got <- err
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 		buf := make([]byte, 1)
 		_, err = c.Read(buf)
