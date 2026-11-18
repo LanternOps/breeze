@@ -31,6 +31,7 @@ export const RESTORE_POINT_ATTEMPT_STATUSES = [
   'insufficient_privileges',
   'verification_failed',
   'failed',
+  'interrupted',
 ] as const;
 export type RestorePointAttemptStatus = (typeof RESTORE_POINT_ATTEMPT_STATUSES)[number];
 
@@ -101,7 +102,7 @@ export const deviceRestorePointAttempts = pgTable('device_restore_point_attempts
   ),
   check(
     'device_restore_point_attempts_status_chk',
-    sql`${table.status} IN ('requested', 'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation', 'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed')`,
+    sql`${table.status} IN ('requested', 'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation', 'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed', 'interrupted')`,
   ),
 ]);
 

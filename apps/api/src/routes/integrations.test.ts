@@ -27,6 +27,34 @@ vi.mock('../services/urlSafety', () => ({
   safeFetch: (...args: unknown[]) => safeFetchMock(...args),
 }));
 
+// #12102: test actions are throttled per user and per org. Allowed by default;
+// a test turns a bucket off to see the 429.
+const rateLimiterMock = vi.hoisted(() => vi.fn());
+const fakeRedis = vi.hoisted(() => ({ fake: 'redis' }));
+const getRedisMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: (...args: unknown[]) => rateLimiterMock(...args),
+}));
+vi.mock('../services/redis', () => ({
+  getRedis: () => getRedisMock(),
+}));
+
+const allowAllTests = () => {
+  getRedisMock.mockReturnValue(fakeRedis);
+  rateLimiterMock.mockImplementation(async () => ({ allowed: true, remaining: 1, resetAt: new Date(Date.now() + 60_000) }));
+};
+
+// Real crypto by default; a test can observe or fail decryption (#12054).
+const decryptSecretSpy = vi.hoisted(() => vi.fn());
+vi.mock('../services/secretCrypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/secretCrypto')>();
+  decryptSecretSpy.mockImplementation(actual.decryptSecret);
+  return {
+    ...actual,
+    decryptSecret: (...args: Parameters<typeof actual.decryptSecret>) => decryptSecretSpy(...args),
+  };
+});
+
 import { integrationRoutes } from './integrations';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -55,6 +83,7 @@ describe('integration compatibility routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    allowAllTests();
     app = new Hono();
     app.route('/integrations', integrationRoutes);
   });
@@ -515,5 +544,371 @@ describe('integration compatibility routes', () => {
     });
     expect(read.status).toBe(200);
     expect(await read.text()).not.toContain('unsealable-api-key');
+  });
+});
+
+// #12054: the chat-integration "Test notification" button used to answer
+// `{ success: true, message: '<provider> test notification queued.' }` without
+// sending or queueing anything. A test must report a real dispatch outcome.
+describe('chat integration test notifications', () => {
+  let app: Hono;
+  const discordWebhook = 'https://discord.com/api/webhooks/123456789/private-webhook-token';
+
+  const post = (provider: string, body: Record<string, unknown>) =>
+    app.request(`/integrations/${provider}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+  const testAudits = (provider: string) =>
+    vi.mocked(writeRouteAudit).mock.calls
+      .map(([, event]) => event)
+      .filter((event) => event.action === `integration.${provider}.test`);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAllTests();
+    app = new Hono();
+    app.route('/integrations', integrationRoutes);
+  });
+
+  it('opens the stored webhook with the AAD it was sealed under', async () => {
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const res = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(200);
+    expect(decryptSecretSpy).toHaveBeenCalledWith(expect.any(String), {
+      aad: 'integration-settings:v1:communication.discord:org-123:["webhookUrl"]',
+    });
+  });
+
+  it('refuses the test when the stored webhook no longer decrypts', async () => {
+    const saved = await post('discord', { enabled: true, webhookUrl: discordWebhook });
+    expect(saved.status).toBe(200);
+    decryptSecretSpy.mockImplementationOnce(() => {
+      throw new Error('Unsupported state or unable to authenticate data');
+    });
+
+    const res = await post('discord', { enabled: true, webhookUrl: '********', test: true });
+
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain('enc:');
+    expect(JSON.parse(text).success).toBe(false);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(testAudits('discord')).toEqual([
+      expect.objectContaining({ details: { outcome: 'secret_unreadable' } }),
+    ]);
+  });
+
+  it('refuses a masked webhook when none is stored', async () => {
+    const cleared = await post('discord', { enabled: true, webhookUrl: '' });
+    expect(cleared.status).toBe(200);
+
+    const res = await post('discord', { enabled: true, webhookUrl: '********', test: true });
+
+    expect(res.status).toBe(400);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a destination the URL guard refuses as a 400 without echoing the token', async () => {
+    safeFetchMock.mockRejectedValueOnce(
+      Object.assign(new Error(`blocked ${discordWebhook}`), { name: 'SsrfBlockedError' }),
+    );
+
+    const res = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).not.toContain('private-webhook-token');
+    expect(testAudits('discord')).toEqual([expect.objectContaining({ details: { outcome: 'blocked' } })]);
+  });
+
+  it('posts a real message to the Discord webhook and reports it sent', async () => {
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const res = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.message).not.toMatch(/queued/i);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = safeFetchMock.mock.calls[0]!;
+    expect(url).toBe(discordWebhook);
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('error');
+    const sent = JSON.parse(init.body);
+    expect(typeof sent.content).toBe('string');
+    expect(sent.content.length).toBeGreaterThan(0);
+    // A test message must never ping @everyone/@here or a role.
+    expect(sent.allowed_mentions).toEqual({ parse: [] });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'integration.discord.test',
+      details: { outcome: 'ok' },
+    }));
+  });
+
+  it('tests the stored webhook when the UI sends back the masked value', async () => {
+    const saved = await post('discord', { enabled: true, webhookUrl: discordWebhook });
+    expect(saved.status).toBe(200);
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const res = await post('discord', { enabled: true, webhookUrl: '********', test: true });
+
+    expect(res.status).toBe(200);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+    expect(safeFetchMock.mock.calls[0]![0]).toBe(discordWebhook);
+  });
+
+  it('reports a webhook Discord rejects as a failure without echoing the token', async () => {
+    safeFetchMock.mockResolvedValueOnce(new Response('{"message":"Unknown Webhook"}', { status: 404 }));
+
+    const res = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain('private-webhook-token');
+    const body = JSON.parse(text);
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/404/);
+    const audits = testAudits('discord');
+    expect(audits).toEqual([expect.objectContaining({ details: { outcome: 'rejected' } })]);
+    expect(JSON.stringify(audits)).not.toContain('private-webhook-token');
+  });
+
+  it('reports a Discord server error or rate limit as a 502 failure', async () => {
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    const limited = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+    expect(limited.status).toBe(502);
+    expect((await limited.json()).success).toBe(false);
+
+    safeFetchMock.mockRejectedValueOnce(new Error('connect ETIMEDOUT https://discord.com/api/webhooks/123456789/private-webhook-token'));
+    const unreachable = await post('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+    expect(unreachable.status).toBe(502);
+    const text = await unreachable.text();
+    expect(text).not.toContain('private-webhook-token');
+    expect(JSON.parse(text).success).toBe(false);
+    expect(testAudits('discord').map((event) => event.details)).toEqual([
+      { outcome: 'unreachable' },
+      { outcome: 'unreachable' },
+    ]);
+  });
+
+  it('refuses to test a webhook that is not a Discord webhook URL', async () => {
+    for (const webhookUrl of [
+      'https://example.com/api/webhooks/1/token',
+      'http://discord.com/api/webhooks/1/token',
+      'https://discord.com/channels/1/2',
+      'https://discord.com.attacker.test/api/webhooks/1/token',
+      `https://user:pass${'@'}discord.com/api/webhooks/1/token`, // split so the email-domain guard does not read userinfo as an address,
+      'https://discord.com:8443/api/webhooks/1/token',
+    ]) {
+      const res = await post('discord', { enabled: true, webhookUrl, test: true });
+      expect(res.status, webhookUrl).toBe(400);
+      expect((await res.json()).success).toBe(false);
+    }
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to test Discord before a webhook URL is entered', async () => {
+    const res = await post('discord', { enabled: true, webhookUrl: '', test: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).success).toBe(false);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(testAudits('discord')).toEqual([expect.objectContaining({ details: { outcome: 'invalid' } })]);
+  });
+
+  it.each(['slack', 'teams'])('does not claim a %s test succeeded when nothing can be delivered', async (provider) => {
+    const res = await post(provider, { enabled: true, test: true });
+    const body = await res.json();
+    expect(res.status).toBe(422);
+    expect(body.success).toBe(false);
+    expect(body.error).toBeTruthy();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(testAudits(provider)).toEqual([expect.objectContaining({ details: { outcome: 'unsupported' } })]);
+  });
+});
+
+describe('integration test actions are throttled and do not save settings (#12102)', () => {
+  let app: Hono;
+  const discordWebhook = 'https://discord.com/api/webhooks/123456789/private-webhook-token';
+
+  const request = (path: string, body: Record<string, unknown>) =>
+    app.request(`/integrations/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+  const getCommunication = async () => {
+    const res = await app.request('/integrations/communication', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    return res.status === 200 ? (await res.json()).data : null;
+  };
+
+  // Deny exactly the bucket whose key starts with `prefix`; allow the rest.
+  const denyBucket = (prefix: string) =>
+    rateLimiterMock.mockImplementation(async (_redis: unknown, key: string) => (
+      key.startsWith(prefix)
+        ? { allowed: false, remaining: 0, resetAt: new Date(Date.now() + 42_000) }
+        : { allowed: true, remaining: 1, resetAt: new Date(Date.now() + 60_000) }
+    ));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    safeFetchMock.mockReset();
+    allowAllTests();
+    app = new Hono();
+    app.route('/integrations', integrationRoutes);
+  });
+
+  it('charges both the per-user and the per-org bucket before a Discord test goes out', async () => {
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const res = await request('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(200);
+    const keys = rateLimiterMock.mock.calls.map((call) => call[1]);
+    expect(keys).toEqual(['integration-test:user:user-123', 'integration-test:org:org-123']);
+    for (const call of rateLimiterMock.mock.calls) {
+      expect(call[0]).toBe(fakeRedis);
+      expect(call[3]).toBe(60);
+      expect(call[5]).toEqual({ refundOnReject: true });
+    }
+    // Generous enough that a person clicking Test a few times never hits it.
+    expect(rateLimiterMock.mock.calls[0]![2]).toBe(5);
+    expect(rateLimiterMock.mock.calls[1]![2]).toBe(10);
+  });
+
+  it.each([
+    ['user', 'integration-test:user:'],
+    ['org', 'integration-test:org:'],
+  ])('answers 429 with Retry-After and sends nothing when the %s bucket is spent (Discord)', async (label, prefix) => {
+    denyBucket(prefix);
+
+    const res = await request('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThanOrEqual(41);
+    const body = await res.json();
+    expect(body).toMatchObject({ success: false, code: 'RATE_LIMITED' });
+    expect(body.error).toMatch(/too many/i);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'integration.discord.test',
+      details: { outcome: 'rate_limited', bucket: label },
+    }));
+  });
+
+  it.each([
+    ['user', 'integration-test:user:'],
+    ['org', 'integration-test:org:'],
+  ])('answers 429 and makes no provider call when the %s bucket is spent (monitoring)', async (label, prefix) => {
+    denyBucket(prefix);
+
+    const res = await request('monitoring/test', {
+      provider: 'grafana',
+      config: { url: 'https://grafana.example.test', apiKey: 'typed-plaintext-key' },
+    });
+
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThanOrEqual(41);
+    expect(await res.json()).toMatchObject({ success: false, code: 'RATE_LIMITED' });
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'integration.monitoring.test',
+      details: { outcome: 'rate_limited', bucket: label },
+    }));
+  });
+
+  it('charges the monitoring test against the same per-user and per-org buckets', async () => {
+    safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+
+    await request('monitoring/test', {
+      provider: 'grafana',
+      config: { url: 'https://grafana.example.test', apiKey: 'typed-plaintext-key' },
+    });
+
+    expect(rateLimiterMock.mock.calls.map((call) => call[1])).toEqual([
+      'integration-test:user:user-123',
+      'integration-test:org:org-123',
+    ]);
+  });
+
+  it('does not throttle a plain save', async () => {
+    const res = await request('discord', { enabled: true, webhookUrl: discordWebhook });
+
+    expect(res.status).toBe(200);
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+  });
+
+  it('does not charge a test that could not send anything', async () => {
+    // No webhook to send to.
+    expect((await request('discord', { enabled: true, webhookUrl: '', test: true })).status).toBe(400);
+    // Nothing deliverable for Slack.
+    expect((await request('slack', { enabled: true, test: true })).status).toBe(422);
+    // A masked monitoring credential with nothing stored never resolves.
+    expect((await request('monitoring/test', {
+      provider: 'grafana',
+      config: { url: 'https://grafana.unstored.example.test', apiKey: '********' },
+    })).status).toBe(400);
+
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 503, not a rate limit, when the limiter store is unavailable', async () => {
+    getRedisMock.mockReturnValue(null);
+
+    const res = await request('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBeUndefined();
+    expect(body.error).not.toMatch(/too many/i);
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'integration.discord.test',
+      details: { outcome: 'throttle_unavailable' },
+    }));
+  });
+
+  it('does not save the submitted settings on a test request', async () => {
+    const saved = await request('discord', { enabled: true, webhookUrl: discordWebhook, messageTemplate: 'saved' });
+    expect(saved.status).toBe(200);
+    const before = await getCommunication();
+
+    safeFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const tested = await request('discord', {
+      enabled: false,
+      webhookUrl: 'https://discord.com/api/webhooks/987/other-token',
+      messageTemplate: 'only-tested',
+      test: true,
+    });
+    expect(tested.status).toBe(200);
+
+    const after = await getCommunication();
+    expect(after).toEqual(before);
+    expect(JSON.stringify(after)).not.toContain('only-tested');
+    expect(after.discord).not.toHaveProperty('test');
+    expect(vi.mocked(writeRouteAudit).mock.calls.map(([, event]) => event.action)).toEqual([
+      'integration.discord.save',
+      'integration.discord.test',
+    ]);
+  });
+
+  it.each(['slack', 'teams'])('does not save %s settings when an unsupported test is requested', async (provider) => {
+    const before = await getCommunication();
+
+    const res = await request(provider, { enabled: true, workspaceName: 'only-tested', test: true });
+
+    expect(res.status).toBe(422);
+    expect(await getCommunication()).toEqual(before);
   });
 });

@@ -126,6 +126,7 @@ import {
 } from '../../routes/terminalWs';
 import { remoteRoutes } from '../../routes/remote';
 import { vncViewerRoutes } from '../../routes/tunnels';
+import { createDesktopWsRoutes } from '../../routes/desktopWs';
 import { devices, remoteSessions, tunnelSessions, users } from '../../db/schema';
 import { db, withSystemDbAccessContext } from '../../db';
 import { expireStaleSessions, expireStaleSessionsForUser } from '../../routes/remote/helpers';
@@ -409,6 +410,31 @@ const WRITERS: WriterCase[] = [
     seedStatus: 'active',
     run: async (fx) => {
       const res = await jsonRequest(buildApp(), `/remote/sessions/${fx.sessionId}/end`, fx.token);
+      expect(res.status).toBe(200);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'operator_ended',
+    expectPhase: 'pending',
+    sendsStop: true,
+  },
+  {
+    // #11931: the desktop viewer app's hang-up, on its viewer token.
+    writer: 'routes/desktopWs.ts:POST /:id/viewer/end',
+    seedStatus: 'active',
+    run: async (fx) => {
+      verifyViewerAccessTokenMock.mockResolvedValue({
+        sub: fx.env.user.id,
+        email: fx.env.user.email,
+        sessionId: fx.sessionId,
+        jti: `jti-${fx.sessionId}`,
+        mfaSatisfied: true,
+      });
+      const app = new Hono();
+      app.route('/desktop-ws', createDesktopWsRoutes((() => async () => {}) as never));
+      const res = await app.request(`/desktop-ws/${fx.sessionId}/viewer/end`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer viewer.token' },
+      });
       expect(res.status).toBe(200);
     },
     expectStatus: 'disconnected',

@@ -188,6 +188,8 @@ describe('OfferingDrawer', () => {
     const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: NO_SURFACE_TURNS } });
     const { unmount } = render(<OfferingDrawer offering={gw} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByTestId('ai-offering-verify-hint').textContent).toMatch(/tool-calling test/i);
+    // The cost note (verifyCost) owns the token figure; the hint must not contradict it.
+    expect(screen.getByTestId('ai-offering-verify-hint').textContent).not.toMatch(/few thousand|\d[\d,]*\s*tokens/i);
     unmount();
     render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-offering-verify-hint')).toBeNull();

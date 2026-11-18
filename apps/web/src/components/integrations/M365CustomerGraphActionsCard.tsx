@@ -18,6 +18,7 @@ import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
+import { showToast } from "../shared/Toast";
 import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
@@ -35,11 +36,11 @@ const STATUSES = [
 ] as const;
 type ConnectionStatus = (typeof STATUSES)[number];
 
-// Actions mirrors the read lifecycle-outcome enum minus the read-only
-// reconciliation special case: the read profile needs Application.Read.All to
-// reconcile tenant grants and can surface `grant_reconciliation_unavailable`;
-// the actions profile holds neither Application.Read.All nor any equivalent, so
-// that code never applies here (any unexpected code falls back to `unknown`).
+// Actions mirrors the read lifecycle-outcome enum. Grant reconciliation reads
+// the app's appRoleAssignments, which Microsoft Graph gates on
+// Application.Read.All; the actions manifest does not hold it, so a tenant can
+// report `grant_reconciliation_unavailable` here too (#12085) and it needs
+// its own explanation rather than the generic `unknown` copy.
 const STABLE_ERROR_CODES = [
   "consent_expired",
   "consent_state_mismatch",
@@ -57,6 +58,7 @@ const STABLE_ERROR_CODES = [
   "grant_unexpected",
   "manifest_stale",
   "organization_probe_failed",
+  "grant_reconciliation_unavailable",
   "executor_unavailable",
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
@@ -324,6 +326,33 @@ function isStableErrorCode(value: string | null): value is StableErrorCode {
   return value !== null && (STABLE_ERROR_CODES as readonly string[]).includes(value);
 }
 
+function isRetestable(status: ConnectionStatus): boolean {
+  return status === "active" || status === "degraded";
+}
+
+/**
+ * The `errors.*` key for a stored lifecycle code. "Retest" wording only makes
+ * sense where the Retest button is shown; a connection that cannot be retested
+ * has to be connected again instead.
+ */
+function errorCopyKey(code: string, retestable: boolean): string {
+  if (!isStableErrorCode(code)) return "unknown";
+  return code === "executor_unavailable" && !retestable ? "executor_unavailablePending" : code;
+}
+
+/**
+ * A retest passed only if the connection is active with nothing outstanding:
+ * an active row kept on an older manifest still records `manifest_stale`.
+ */
+function retestPassed(connection: Connection | null): boolean {
+  return connection?.status === "active" && connection.lastErrorCode === null;
+}
+
+/** The retest route answers `{ connection }`; anything else is not a verified result. */
+function parseRetestedConnection(value: unknown): Connection | null {
+  return isRecord(value) ? parseConnection(value.connection) ?? null : null;
+}
+
 function statusIcon(status: ConnectionStatus) {
   if (status === "active") return CheckCircle2;
   if (status === "degraded") return AlertTriangle;
@@ -552,17 +581,30 @@ export default function M365CustomerGraphActionsCard({
     const connectionId = data.connection.id;
     void perform(target, "retest", async () => {
       try {
-        await runAction({
+        const retested = await runAction<Connection | null>({
           request: () => scopedRequest(
             target,
             () => fetchWithAuth(`/m365/customer-graph-actions/connections/${connectionId}/retest?orgId=${target.orgId}`, { method: "POST" }),
             {},
           ),
           errorFallback: t("m365CustomerGraphActions.actions.retestFailed"),
-          successMessage: () => isCurrent(target)
+          parseSuccess: parseRetestedConnection,
+          successMessage: (result) => isCurrent(target) && retestPassed(result)
             ? t("m365CustomerGraphActions.actions.retestSucceeded")
             : "",
         });
+        // The request completing is not the connection passing (#12085): a
+        // retest that leaves it needing attention says so, with the stored reason.
+        if (isCurrent(target) && !retestPassed(retested)) {
+          const reason = retested?.lastErrorCode
+            ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorCopyKey(retested.lastErrorCode, isRetestable(retested.status))}`)
+            : undefined;
+          showToast({
+            type: "warning",
+            message: t("m365CustomerGraphActions.actions.retestNeedsAttention"),
+            ...(reason ? { detail: reason } : {}),
+          });
+        }
         if (isCurrent(target)) await load(target);
       } catch (error) {
         if (isCurrent(target)) {

@@ -19,3 +19,14 @@ export type { DocumentQuoteLabels } from './labels/types';
 export { buildQuoteDocumentModel } from './quoteBuilder';
 export { QUOTE_DTO_FIXTURES, QUOTE_FIXTURE_IDS, type QuoteFixtureName } from './fixtures/quoteDtos';
 export { lineDescriptionProps, type StaffLineDescriptionInput, type StaffLineDescriptionLabels, type LineDescriptionProps } from './lineDescription';
+
+// ---- #12097: partner document page size (region default) ----
+export {
+  pageSizeForCountry,
+  explicitDocumentPageSize,
+  partnerDocumentPageSizeDefault,
+  resolvePartnerDocumentPageSize,
+  type PartnerPageSizeInput,
+  type DocumentPageSizeSource,
+  type DocumentPageSizeDefaultSource,
+} from './pageSize';

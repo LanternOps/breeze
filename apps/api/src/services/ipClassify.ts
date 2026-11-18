@@ -4,17 +4,27 @@ import { Queue } from 'bullmq';
 import { ipClassifyApiKey, ipClassifyProvider } from '../config/env';
 import type { IpClass } from '../db/schema/orgs';
 import { partnerTrustMode } from '../config/partnerTrustMode';
+import { offlineClassify } from './ipClassifyOffline';
+import {
+  IP_CLASS_SOURCE_NONE,
+  IP_CLASS_SOURCE_OFFLINE_PARTIAL,
+  type IpClassification,
+} from './ipClassifyOfflineData';
 import { getBullMQConnection, getRedis } from './redis';
+
+export type { IpClassification } from './ipClassifyOfflineData';
 
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const FETCH_TIMEOUT_MS = 3_000;
+/**
+ * How long one offline lookup waits for an in-flight dataset load. Lookups run
+ * in background jobs (ip-classify, partner-trust-promote), never on a request
+ * path; a lookup that gives up early classifies with what is loaded
+ * ('offline-partial' without the ASN database), and the promote job's
+ * signup-IP backfill retries it.
+ */
+const OFFLINE_WAIT_MS = 15_000;
 const ABUSE_SIGNALS_QUEUE = 'abuse-signals';
-
-export type IpClassification = {
-  ipClass: IpClass;
-  asn: number | null;
-  provider: string;
-};
 
 export type IpClassifyTarget =
   | { kind: 'partner'; partnerId: string; ip: string }
@@ -22,18 +32,25 @@ export type IpClassifyTarget =
 
 let queue: Queue<IpClassifyTarget> | null = null;
 
-// A private/loopback address (RFC 1918, ::1, fc00::/7) carries no signal
-// about the real-world network the request actually originated from — it's
-// what you see behind NAT, a reverse proxy, or in local dev. Mapping that to
-// 'residential' would assert a specific (and reassuring) network type that
-// was never actually observed; every unclassifiable address — private or
-// otherwise — gets the same honest 'unknown' label with no provider lookup.
-function offlineClassification(_ip: string): IpClassification {
-  return {
-    ipClass: 'unknown',
-    asn: null,
-    provider: 'none',
-  };
+/**
+ * The offline baseline (Tor exit list + hosting ASNs, #11698). It can prove
+ * `tor` and `hosting` and nothing else: absence from both lists is not
+ * evidence of a residential or business network, so a `residential` or
+ * `business` from it would be a bug. Clamp it to `unknown` with the partial
+ * marker so it can never satisfy the promotion gate. Private/loopback
+ * addresses come back `unknown` with source `none`.
+ */
+async function offlineClassification(ip: string): Promise<IpClassification> {
+  try {
+    const result = await offlineClassify(ip, { waitMs: OFFLINE_WAIT_MS });
+    if (result.ipClass === 'residential' || result.ipClass === 'business') {
+      return { ipClass: 'unknown', asn: result.asn, provider: IP_CLASS_SOURCE_OFFLINE_PARTIAL };
+    }
+    return result;
+  } catch (error) {
+    console.warn('[IPClassify] offline classification failed', error);
+    return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
+  }
 }
 
 function expandIpv6(ip: string): string[] | null {
@@ -130,7 +147,10 @@ export async function classifyIp(ip: string): Promise<IpClassification> {
   if (provider === 'none') return offlineClassification(ip);
 
   const prefix = ipCachePrefix(ip);
-  if (!prefix) return { ipClass: 'unknown', asn: null, provider };
+  // Nothing was judged (unparseable address, or the lookup failed below):
+  // source 'none', so the result is never mistaken for the provider's answer
+  // and the backfills retry it.
+  if (!prefix) return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
   const cacheKey = `ipclass:v1:${prefix}`;
   const redis = getRedis();
   if (redis) {
@@ -162,8 +182,9 @@ export async function classifyIp(ip: string): Promise<IpClassification> {
       }
     }
     return result;
-  } catch {
-    return { ipClass: 'unknown', asn: null, provider };
+  } catch (error) {
+    console.warn(`[IPClassify] ${provider} lookup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { ipClass: 'unknown', asn: null, provider: IP_CLASS_SOURCE_NONE };
   } finally {
     clearTimeout(timeout);
   }

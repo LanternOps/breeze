@@ -99,6 +99,11 @@ export const partners = pgTable('partners', {
   signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
   signupIpAsn: integer('signup_ip_asn'),
   signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
+  // Which classifier produced signupIpClass (#11698): a keyed provider name,
+  // 'offline' (Tor list + hosting ASNs checked), 'offline-partial' (Tor list
+  // only) or 'none' (private address). NULL = classified before this column
+  // existed; the promotion gate reads that as never classified.
+  signupIpClassSource: varchar('signup_ip_class_source', { length: 32 }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   autopayEnabled: boolean('autopay_enabled').notNull().default(false),
@@ -131,7 +136,9 @@ export const partners = pgTable('partners', {
   // quote PDFs/HTML. Partner-owned deliberately (MSP identity, not per-org
   // config) — see the spec's carve-out justification.
   documentTheme: varchar('document_theme', { length: 32 }).notNull().default('classic'),
-  documentPageSize: varchar('document_page_size', { length: 8 }).notNull().default('letter'),
+  // #12097: NULL = never chosen → the partner's region default (Letter for
+  // US/CA, A4 elsewhere). Read through resolvePartnerPageSize, never raw.
+  documentPageSize: varchar('document_page_size', { length: 8 }),
   billingCompanyName: varchar('billing_company_name', { length: 255 }),
   billingPhone: varchar('billing_phone', { length: 40 }),
   billingWebsite: varchar('billing_website', { length: 255 }),

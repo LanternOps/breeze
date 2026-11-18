@@ -30,11 +30,22 @@ export class GraphClientError extends Error {
   }
 }
 
+/**
+ * Why `observedGrants` is null: the step that failed and its typed code. Safe
+ * to log — it never carries a provider body, token, or identifier.
+ */
+export interface GrantReconciliationFailure {
+  readonly stage: 'assignments' | 'resource';
+  readonly code: GraphClientErrorCode;
+}
+
 export interface GraphTenantObservation {
   readonly tenantId: string;
   readonly applicationId: string;
   readonly organizationDisplayName: string;
   readonly observedGrants: readonly CanonicalAppRoleAssignment[] | null;
+  /** Present exactly when `observedGrants` is null. */
+  readonly grantReconciliationFailure?: GrantReconciliationFailure;
 }
 
 export interface MicrosoftGraphClient {
@@ -305,7 +316,9 @@ export function createMicrosoftGraphClient(
         signal: controller.signal,
       });
       const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
-      if (!response.ok) throw failure('graph_provider_rejected');
+      // Status-aware so a denied grant read names itself (#12085). The proof
+      // callers below still collapse every failure into their own fixed code.
+      if (!response.ok) throw readFailure(response, responseBody);
       return parseJson(responseBody);
     } catch (error) {
       if (error instanceof GraphClientError) throw error;
@@ -431,7 +444,11 @@ export function createMicrosoftGraphClient(
     applicationServicePrincipalId: string,
     accessToken: OpaqueAccessToken,
     budget: RequestBudget,
-  ): Promise<readonly CanonicalAppRoleAssignment[] | null> {
+  ): Promise<
+    | { grants: readonly CanonicalAppRoleAssignment[] }
+    | { grants: null; failure: GrantReconciliationFailure }
+  > {
+    let stage: GrantReconciliationFailure['stage'] = 'assignments';
     try {
       const assignmentPath = `/v1.0/servicePrincipals/${applicationServicePrincipalId}/appRoleAssignments`;
       const rawAssignments = await collection(
@@ -452,6 +469,7 @@ export function createMicrosoftGraphClient(
         assignments.push({ appRoleId: assignment.appRoleId, resourceId: assignment.resourceId });
       }
 
+      stage = 'resource';
       const resourceIds = [...new Set(assignments.map((assignment) => assignment.resourceId))].sort();
       const resources = new Map<string, { applicationId: string; values: Map<string, string | null> }>();
       for (const resourceId of resourceIds) {
@@ -494,9 +512,17 @@ export function createMicrosoftGraphClient(
         };
         byKey.set(`${grant.resourceApplicationId}/${grant.appRoleId}`, grant);
       }
-      return [...byKey.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, grant]) => grant);
-    } catch {
-      return null;
+      return {
+        grants: [...byKey.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, grant]) => grant),
+      };
+    } catch (error) {
+      return {
+        grants: null,
+        failure: {
+          stage,
+          code: error instanceof GraphClientError ? error.code : 'graph_response_invalid',
+        },
+      };
     }
   }
 
@@ -511,12 +537,13 @@ export function createMicrosoftGraphClient(
       const budget = { bytes: 0, requests: 0, items: 0 };
       const organizationDisplayName = await organizationProof(input.tenantId, input.accessToken, budget);
       const applicationServicePrincipalId = await applicationServicePrincipal(input.accessToken, budget);
-      const observedGrants = await grants(applicationServicePrincipalId, input.accessToken, budget);
+      const observed = await grants(applicationServicePrincipalId, input.accessToken, budget);
       return {
         tenantId: input.tenantId,
         applicationId: config.applicationId,
         organizationDisplayName,
-        observedGrants,
+        observedGrants: observed.grants,
+        ...(observed.grants === null ? { grantReconciliationFailure: observed.failure } : {}),
       };
     },
 

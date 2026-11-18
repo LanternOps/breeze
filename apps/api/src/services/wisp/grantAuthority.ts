@@ -226,6 +226,35 @@ export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: s
 }
 
 /**
+ * Wisp analysis sessions W02: the sites of `orgId` the ceiling reaches — the
+ * ceiling-wide allowlist ∩ the grantor's membership allowlist for that org —
+ * sorted. `null` = unrestricted on the site axis (NOT "no sites"); `[]` = no
+ * site at all. Admission feeds it to the analysis device frame so a
+ * site-limited grantor never gets a wider frame than they could see.
+ */
+export function ceilingSiteIdsForOrg(ceiling: Pick<GrantCeiling, 'siteIds' | 'orgTerms'>, orgId: string): string[] | null {
+  const sites = intersectSiteAllowlists(ceiling.siteIds, ceiling.orgTerms.get(orgId)?.siteIds ?? null);
+  return sites === null ? null : [...sites].sort();
+}
+
+/**
+ * Wisp analysis sessions W02: whether the ceiling holds `resource:action` for
+ * `orgId`, through the single comparator (`assertWithinCeiling`). A paused or
+ * ended ceiling, an org outside the ceiling and a site-restricted ceiling (the
+ * check names no site) all answer false: fail closed. Only a
+ * `CeilingViolationError` means "not held"; anything else is a bug and rethrows.
+ */
+export function ceilingHoldsPermission(ceiling: GrantCeiling, orgId: string, resource: string, action: string): boolean {
+  try {
+    assertWithinCeiling(ceiling, { orgId, permission: `${resource}:${action}` });
+    return true;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return false;
+    throw err;
+  }
+}
+
+/**
  * The tool term of a ceiling: which tools a call may name at all, whatever its
  * org, site or permission. It comes from the pinned revision alone (snapshot
  * denies and allowlist) plus the code's agent deny floor, so within one

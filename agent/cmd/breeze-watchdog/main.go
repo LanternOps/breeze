@@ -635,6 +635,9 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	// check.heartbeat_stale_server_unavailable (#8934): one entry per
 	// overload episode, not one per heartbeat tick.
 	var serverUnavailableJournaled bool
+	// controlPlaneBlockedJournaled does the same for
+	// check.heartbeat_stale_control_plane_blocked (#8868).
+	var controlPlaneBlockedJournaled bool
 
 	// --- STANDBY policy (#5252) ---------------------------------------
 	// Details of the shutdown the agent last announced. Only meaningful
@@ -884,12 +887,26 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 						"last_heartbeat":        healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
 					})
 				}
+			case watchdog.StaleControlPlaneBlocked:
+				// #8868: running, and a network filter is blocking its
+				// control plane. A restart cannot lift the filter.
+				// Journal on entry only.
+				if !controlPlaneBlockedJournaled {
+					controlPlaneBlockedJournaled = true
+					journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_control_plane_blocked", map[string]any{
+						"control_plane_blocked_at": healthChecker.LastKnownControlPlaneBlocked(agentState).Format(time.RFC3339),
+						"last_heartbeat":           healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
+					})
+				}
 			}
 			if decision != watchdog.StaleAuthRejected {
 				authRejectedJournaled = false
 			}
 			if decision != watchdog.StaleServerUnavailable {
 				serverUnavailableJournaled = false
+			}
+			if decision != watchdog.StaleControlPlaneBlocked {
+				controlPlaneBlockedJournaled = false
 			}
 
 		case env := <-ipcMessages:
@@ -1047,9 +1064,10 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 			// them. MONITORING will not restart it (StaleAuthRejected).
 			if ipcClient.IsConnected() && healthChecker.AgentAlive(agentState) {
 				journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
-					"last_heartbeat":     healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
-					"auth_rejected":      healthChecker.AgentAuthRejectedAlive(agentState),
-					"server_unavailable": healthChecker.AgentServerUnavailableAlive(agentState),
+					"last_heartbeat":        healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
+					"auth_rejected":         healthChecker.AgentAuthRejectedAlive(agentState),
+					"server_unavailable":    healthChecker.AgentServerUnavailableAlive(agentState),
+					"control_plane_blocked": healthChecker.AgentControlPlaneBlockedAlive(agentState),
 				})
 				// recovery.Reset() happens in the MONITORING block on the
 				// next tick — no need to duplicate it here.
@@ -1179,6 +1197,9 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 		if sync.ServerUnavailableAt != "" {
 			syncFields["serverUnavailableAt"] = sync.ServerUnavailableAt
 		}
+		if sync.ControlPlaneBlockedAt != "" {
+			syncFields["controlPlaneBlockedAt"] = sync.ControlPlaneBlockedAt
+		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", syncFields)
 		// #2796: an agent whose credentials the server rejects never sends a
 		// heartbeat-bearing sync, so without this it reads as wedged and gets
@@ -1208,6 +1229,20 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			} else {
 				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_server_unavailable", map[string]any{
 					"value": sync.ServerUnavailableAt, "error": perr.Error(),
+				})
+			}
+		}
+		// #8868: same shape for an agent whose control plane a network
+		// filter is blocking.
+		if health != nil && sync.ControlPlaneBlockedAt != "" {
+			if at, perr := time.Parse(time.RFC3339, sync.ControlPlaneBlockedAt); perr == nil {
+				health.NoteControlPlaneBlocked(at)
+				if sync.LastHeartbeat == "" {
+					health.NoteStateSync(time.Time{}, sync.ActiveBackupRuns)
+				}
+			} else {
+				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_control_plane_blocked", map[string]any{
+					"value": sync.ControlPlaneBlockedAt, "error": perr.Error(),
 				})
 			}
 		}
@@ -1282,9 +1317,10 @@ func applyFailoverTokenUpdate(fc *watchdog.FailoverClient, mon *authstate.Monito
 
 // Evidence a restart verification succeeded on (recoveryVerified).
 const (
-	verifiedViaHeartbeat         = "heartbeat"
-	verifiedViaAuthRejected      = "auth_rejected"
-	verifiedViaServerUnavailable = "server_unavailable"
+	verifiedViaHeartbeat           = "heartbeat"
+	verifiedViaAuthRejected        = "auth_rejected"
+	verifiedViaServerUnavailable   = "server_unavailable"
+	verifiedViaControlPlaneBlocked = "control_plane_blocked"
 )
 
 // recoveryVerified reports whether a restart dispatched before verifyDeadline
@@ -1302,6 +1338,9 @@ func recoveryVerified(s *state.AgentState, health *watchdog.HealthChecker, verif
 	}
 	if health != nil && health.LastKnownServerUnavailable(s).After(verifyDeadline) {
 		return true, verifiedViaServerUnavailable
+	}
+	if health != nil && health.LastKnownControlPlaneBlocked(s).After(verifyDeadline) {
+		return true, verifiedViaControlPlaneBlocked
 	}
 	return false, ""
 }

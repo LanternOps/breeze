@@ -14,6 +14,9 @@
 /** Per-source availability, printed on the cover and machine-readable. */
 export type ThreatSourceStatus = 'ok' | 'not_connected' | 'never_synced' | 'stale';
 
+/** A product whose agents count towards the device-coverage tiles (#12046). */
+export type ThreatDetectionAgentSource = 'huntress' | 'sentinelone' | 'edr';
+
 /**
  * The window the artifact ACTUALLY covers, which is not always the period.
  * Huntress's first sync fetches 24 hours only and later runs resume from
@@ -73,10 +76,36 @@ export type ThreatDetectionSummary = {
   coverage?: ThreatCoverage;
   /** null = unmeasured. */
   agentCoverage?: {
+    /** Huntress agents reported for the org, matched to a device or not. */
     huntressAgents: number | null;
     breezeDevices: number | null;
     agentsOffline: number | null;
+    /** Managed devices with no HUNTRESS agent. Kept for legacy readers; the
+     *  any-source count is `devicesWithoutDetectionAgent`. */
     devicesWithoutAgent: number | null;
+    /**
+     * #12046: managed devices with at least one detection agent from ANY
+     * integrated source (Huntress, SentinelOne, or an EDR-framework endpoint
+     * when the run may use EDR evidence). With `devicesWithoutDetectionAgent`
+     * it adds up to `breezeDevices`. Absent on snapshots before #12046; readers
+     * then derive a Huntress-only pair via `endpointCoverageCounts`. On the
+     * data-gap paths (Huntress not connected or never synced) it is present
+     * only when SentinelOne or EDR agents matched a managed device, counted
+     * from those alone — see `detectionAgentSources`.
+     */
+    devicesWithDetectionAgent?: number | null;
+    devicesWithoutDetectionAgent?: number | null;
+    /**
+     * #12046 follow-up: which sources the device pair above was counted from.
+     * Set whenever the pair is, on snapshots from this follow-up on; absent on
+     * earlier ones, whose pair always included Huntress. Without `huntress` (Huntress not connected or
+     * never synced, but SentinelOne or EDR agents found on managed devices)
+     * the pair counts those products only, and the reader is told so.
+     */
+    detectionAgentSources?: ThreatDetectionAgentSource[];
+    /** #12046: Huntress agents NOT matched to a device Breeze manages, so
+     *  counted in `huntressAgents` but in neither device tile. */
+    unmatchedAgents?: number | null;
     /**
      * EDR provider framework (#8164): endpoints an EDR connector reports for
      * this org. ADDITIVE and absent (or null) when the org has no EDR

@@ -1,0 +1,212 @@
+{
+  "_comment": "Shared wire contract for the heartbeat controlPlaneBlock object (#8868). The Go agent test asserts every valid entry round-trips through ControlPlaneBlockReport and that its sanitizers only produce values matching hostPattern/issuerPattern; the API parser (W2) must accept every valid entry and reject every invalid one. Hosts are reserved .example names only.",
+  "hostPattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$",
+  "issuerPattern": "^[\\x21-\\x7e]([\\x20-\\x7e]{0,62}[\\x21-\\x7e])?$",
+  "kinds": [
+    "web_filter",
+    "captive_portal",
+    "plaintext_unknown",
+    "untrusted_certificate"
+  ],
+  "clearedBy": [
+    "plain_success",
+    "unobserved"
+  ],
+  "valid": [
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 302,
+      "locationHost": "warn.filter-a.example"
+    },
+    {
+      "kind": "captive_portal",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 511
+    },
+    {
+      "kind": "plaintext_unknown",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "untrusted_certificate",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "certIssuer": "Example Inspect CA"
+    },
+    {
+      "kind": "untrusted_certificate",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 302,
+      "locationHost": "block.filter-b.example",
+      "clearedAt": "2026-10-18T10:00:00Z",
+      "clearedBy": "plain_success"
+    },
+    {
+      "kind": "plaintext_unknown",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "clearedAt": "2026-10-19T09:03:00Z",
+      "clearedBy": "unobserved"
+    },
+    {
+      "kind": "web_filter",
+      "host": "10.0.0.1",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "untrusted_certificate",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "certIssuer": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  ],
+  "invalid": [
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "extra": "x"
+    },
+    {
+      "kind": "isp_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "corporate_tls_inspection",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "locationHost": "Bad Host"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "locationHost": "warn.filter-a.example/warn"
+    },
+    {
+      "kind": "web_filter",
+      "host": "CP.Example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example:443",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 99
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 600
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "httpStatus": 302.5
+    },
+    {
+      "kind": "untrusted_certificate",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "certIssuer": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "kind": "untrusted_certificate",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "certIssuer": " padded "
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "clearedAt": "2026-10-18T10:00:00Z",
+      "clearedBy": "timeout"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "clearedBy": "plain_success"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z",
+      "clearedAt": "2026-10-18T10:00:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "yesterday",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "lastSeenAt": "2026-10-18T09:03:00Z"
+    },
+    {
+      "kind": "web_filter",
+      "host": "cp.example",
+      "firstSeenAt": "2026-10-18T09:00:00Z"
+    }
+  ]
+}

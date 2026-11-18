@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Wisp is a triage companion that works on behalf of one person. Once that person turns it on, Wisp keeps an eye on the estate they are allowed to see, notices things that need a human (a cluster of alerts, a stalled ticket, a failing patch ring), and tells them about it. It remembers preferences and decisions so it nags less over time, and it can hand focused jobs to specialists.
 
-Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier, and the only way past a card is a switch you turn on yourself: see [Unattended reads](#unattended-reads).
+Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier, and the only way past a card for anything that reads from or changes a device is a switch you turn on yourself: see [Unattended reads](#unattended-reads). Wisp's own bookkeeping (notes, concerns, check-ins) runs without a card.
 
 Wisp threads open at `/ai/wisp/thread/<id>`. Under an active grant the docked Breeze AI side panel speaks as Wisp (there is no toggle; see [Where you talk to Wisp](#where-you-talk-to-wisp)), and the **Wisp** entry in the AI section of the navigation opens the [Wisp home](#the-wisp-home).
 
@@ -84,7 +84,7 @@ You can link straight to a section: `/wisp#needs-you`, `#activity`, `#thread` an
 
 The thread page at `/ai/wisp/thread/<id>`, where nudges land, uses the same layout. The conversation is inline and is the same thread as the home, with the thread summary as its first post. The old **Open in chat** button is gone.
 
-The side panel, when it speaks as Wisp, has an **Open in Wisp** link that goes to the home; concerns are listed on the home, not in the sidebar. On mobile, the Wisp thread screen shows the brief sections, the full activity timeline and the linked items (read-only, each opening its item).
+The side panel, when it speaks as Wisp, keeps a two-row header. The first row shows Wisp's status and scope beside History, New and a **More actions** menu (**Open Wisp home**, **Flag conversation**, **Budget & check-ins**, **Refresh grant**, **Turn off Wisp**). The second row holds the **Working on** customer focus and a spend chip that opens today's budget, this month's AI usage, your credits and **Pause Wisp**. Attachments sit behind the paperclip in the composer, and the model and effort pickers sit inside it. The panel shows at most one notice at a time, in priority order: a pause, a spent budget, a wider grant available, then exhausted credits. On the Wisp home the page's own composer is the conversation, so the AI shortcut focuses it instead of opening the panel. Concerns are listed on the home, not in the sidebar. On mobile, the Wisp thread screen shows the brief sections, the full activity timeline and the linked items (read-only, each opening its item).
 
 ### Where you talk to Wisp
 
@@ -159,7 +159,7 @@ Unattended reads is a switch on your grant, off by default, under **Budget and c
 - read a registry key (`registry_operations` `read_key`);
 - read a registry value (`registry_operations` `get_value`);
 - query the Windows Security event log, with an optional filter by event ID, level, provider or age (`event_logs_query`);
-- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device.
+- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device. In a chat, saving a note does not depend on this switch: it runs without a card, within limits (10 per conversation; none while the device has 8 active notes or 5 saved in the last 24 hours; details up to 200 characters; expires within 30 days), unless the conversation is paused or a plan is running. Past a limit it asks on a card, with this switch on or off. The switch still decides it for device troubleshooting runs.
 
 Anything else still asks first. That includes every other event log channel, a Security query with a filter outside those four, and every registry write.
 
@@ -206,7 +206,7 @@ A check-in can wait for **a time** or **an event**:
 - **A time.** It fires after the delay Wisp chose.
 - **An event.** It fires when a device comes online, a script or device command finishes, or an agent run settles. Each has a deadline, 24 hours by default and at most 7 days. If the event has not happened by then, the check-in fires anyway and says so, for example "Did not happen by 15:40 UTC: the device is still offline". While it waits, its chip names the event and shows the deadline, for example "Waiting for the device to come online · gives up 3:30 PM". When it fires, Breeze re-reads the device, script, command or run, so a stale event fires nothing. Device commands are checked on Wisp's 5-minute tick only. A check-in whose device, script, command or run is deleted, or moves outside the grant, is cancelled with a reason instead of firing.
 
-By default a check-in only posts a reminder to the thread. A check-in can instead **check on its own**: when it fires, Wisp runs one read-only assessment of one organization under the grant and posts what it found, linked to the run. Scheduling one always asks for approval on a card, because it spends the grant's budget while nobody is watching. If the grant changed since the check-in was scheduled, today's budget is spent or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead.
+By default a check-in only posts a reminder to the thread. A check-in can instead **check on its own**: when it fires, Wisp runs one read-only assessment of one organization under the grant and posts what it found, linked to the run. Scheduling one does not ask for approval. The run changes nothing by itself: like any assessment it can raise concerns and propose up to three actions, and each proposed action waits on an approval card for a person. It runs once, a thread can hold at most five check-ins that are waiting or still checking, and each run counts against the grant's daily budget like any other background work. A day's budget spent on check-ins leaves none for Wisp's other background model work (assessments and specialist requests) until 00:00 UTC; events are still recorded. See [Budgets](#budgets). If the grant changed since the check-in was scheduled, today's budget is spent or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead.
 
 ## Memory
 
@@ -251,7 +251,7 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 | Kind | What it does | Starts |
 |---|---|---|
 | `sweep` | Collects evidence across the estate | On its own |
-| `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)). Available only when the server's analysis sandbox is on; otherwise Wisp says so | On its own |
+| `analysis` | Runs sandboxed analysis over a whole customer, one site, or chosen devices (see [AI Analysis Runs](/features/ai-analysis-runs/#investigations-from-wisp-chat)). Can continue from an earlier analysis under the same grant and use the files it produced. Available only when the server's analysis sandbox is on; otherwise Wisp says so | On its own |
 | `operator_recipe` | Runs an AI task recipe | After you approve |
 | `patch_plan` | Drafts a patch plan | After you approve |
 | `remediation_research` | Researches a fix for a problem | After you approve |
@@ -262,6 +262,8 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
 
 `launch_specialist` itself runs only `sweep`, `analysis`, `device_troubleshooting` and `assessment` on the call. A sweep needs an enabled sweep schedule for the organization. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+
+An `analysis` result comes back into the conversation on Wisp's next turn, with its findings and output files. Wisp can then continue from it (each continuation is one more step of the same investigation and can use every file the earlier steps produced) or start a fresh analysis when the question changes. An investigation stops at 8 continuations deep, 12 runs or $6.00 by default. Each analysis launch is checked against the grant's daily budget at an estimate of 100 ¢, so on a default Pro grant (200 ¢ a day) the [budget](#budgets) usually stops a long investigation first; raise it for that grant.
 
 A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
 

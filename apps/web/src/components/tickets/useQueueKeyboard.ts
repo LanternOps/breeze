@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { isFormDirtyBlocking, shouldHandleBareKey } from '@/lib/keyboard/bareKeyGuard';
 import { QUEUE_SHORTCUTS, type QueueAction } from './queueShortcuts';
 
@@ -38,9 +38,18 @@ function ownedByFocus(e: KeyboardEvent): boolean {
   return false;
 }
 
-export function useQueueKeyboard(h: QueueKeyboardHandlers): void {
+export function useQueueKeyboard(handlers: QueueKeyboardHandlers): void {
+  // One window listener for the hook's lifetime, reading the latest handlers
+  // from a ref. The ref is refreshed in a layout effect, which runs inside the
+  // commit, so a key pressed once a render is in the DOM always acts on that
+  // render. Re-subscribing from useEffect left a gap: passive effects can run in
+  // a later task than the commit, and a key pressed in between reached the
+  // previous render's handlers.
+  const latest = useRef(handlers);
+  useLayoutEffect(() => { latest.current = handlers; });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const h = latest.current;
       // j/k only move the selection and must keep working when held down, so
       // they skip the typing-cadence check (they still feed the clock).
       const bare = shouldHandleBareKey(e, { ignoreCadence: e.key === 'j' || e.key === 'k' });
@@ -67,5 +76,5 @@ export function useQueueKeyboard(h: QueueKeyboardHandlers): void {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [h]);
+  }, []);
 }

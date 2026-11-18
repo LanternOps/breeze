@@ -218,6 +218,11 @@ export const heartbeatSchema = z.object({
   // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
   // separately (a bad value is `invalid`: no state change, never coerced).
   watchdogInstall: z.unknown().optional(),
+  // #8868 — control-plane block episode. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/controlPlaneBlockHealth.parseControlPlaneBlock strict-parses it
+  // separately (a bad value is `invalid`: no change, never clears).
+  controlPlaneBlock: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),
@@ -452,6 +457,7 @@ export const heartbeatSchema = z.object({
     networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
     networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
     networkIsolationReady: z.boolean().optional().catch(undefined),
+    networkIsolationDeadMan: z.boolean().optional().catch(undefined),
 
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
@@ -708,9 +714,11 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
 }
 
 /**
- * The ten statuses an agent can report for a System Restore checkpoint
- * attempt (#4609, W06 #4757). Mirrors `Status` in
- * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * The eleven statuses an agent can report for a System Restore checkpoint
+ * attempt (#4609, W06 #4757; 'interrupted' #9163). Mirrors `Status` in
+ * agent/internal/systemrestore/types.go, except 'interrupted': the API accepts
+ * it ahead of the agent half of #9163, which adds `StatusInterrupted` (the
+ * API must be deployed first). 'requested' is deliberately absent:
  * it is server-only, written at command-creation time, and an agent claiming
  * it is malformed. Pinned against the shared union and the ledger statuses in
  * restorePointResultSchema.test.ts.
@@ -726,6 +734,7 @@ export const RESTORE_POINT_OUTCOME_STATUSES = [
   'insufficient_privileges',
   'verification_failed',
   'failed',
+  'interrupted',
 ] as const satisfies ReadonlyArray<RestorePointOutcome['status']>;
 
 const RESTORE_POINT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

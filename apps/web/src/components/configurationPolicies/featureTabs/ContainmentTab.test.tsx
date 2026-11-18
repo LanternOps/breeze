@@ -92,9 +92,28 @@ describe('ContainmentTab', () => {
 
   it('renders no controls for the settings later waves own', () => {
     render(<ContainmentTab {...props} existingLink={link(STORED)} />);
-    expect(screen.queryByText(/dead.?man/i)).toBeNull();
     expect(screen.queryByText(/release token/i)).toBeNull();
     expect(screen.queryByText(/relay/i)).toBeNull();
+  });
+
+  it('defaults the dead-man release to Off and shows the trade-off help text', () => {
+    render(<ContainmentTab {...props} />);
+    expect((screen.getByTestId('containment-dead-man') as HTMLSelectElement).value).toBe('0');
+    expect(screen.getByTestId('containment-dead-man-help')).toHaveTextContent(/releases itself/i);
+    expect(screen.getByTestId('containment-dead-man-help')).toHaveTextContent(/outage on the Breeze side/i);
+  });
+
+  it('shows the stored dead-man window, keeping a non-listed value as an option', () => {
+    render(<ContainmentTab {...props} existingLink={link({ ...STORED, deadManMinutes: 45 })} />);
+    expect((screen.getByTestId('containment-dead-man') as HTMLSelectElement).value).toBe('45');
+  });
+
+  it('saves the chosen dead-man window with every other stored key preserved', async () => {
+    render(<ContainmentTab {...props} existingLink={link({ ...STORED, deadManMinutes: 0 })} />);
+    fireEvent.change(screen.getByTestId('containment-dead-man'), { target: { value: '30' } });
+    fireEvent.click(screen.getByTestId('containment-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
+    expect(m.save.mock.calls[0][1].inlineSettings).toEqual({ ...STORED, deadManMinutes: 30 });
   });
 
   it('saves edits with version 1 and every untouched stored key preserved', async () => {

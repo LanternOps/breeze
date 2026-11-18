@@ -410,6 +410,16 @@ describe('PUBLIC_DEVICE_FIELDS — watchdog install raw columns stay private (#8
   );
 });
 
+// #8868 — the raw control-plane block columns (the jsonb carries
+// network-supplied host/issuer text) surface only through the derived
+// `controlPlaneBlock` notice on the detail response and the list mapper's kind.
+describe('PUBLIC_DEVICE_FIELDS — control-plane block raw columns stay private (#8868)', () => {
+  it.each(['controlPlaneBlockKind', 'controlPlaneBlock'])('excludes %s', (field) => {
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain(field);
+    expect(projectPublicDevice({ id: 'd', [field]: 'x' } as Record<string, unknown>)).not.toHaveProperty(field);
+  });
+});
+
 describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s device)', () => {
   const ORG_A = '00000000-0000-4000-8000-00000000000a';
   const ORG_B = '00000000-0000-4000-8000-00000000000b';

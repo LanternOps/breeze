@@ -7,9 +7,13 @@
  * here the reads are table-keyed fakes.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   wispEnabled: vi.fn(() => true),
+  aiWorkspaceEnabled: vi.fn(() => true),
+  wheres: [] as unknown[],
   resolveGrantCeiling: vi.fn(),
   captureException: vi.fn(),
   rows: {} as Record<string, unknown[]>,
@@ -21,7 +25,7 @@ const h = vi.hoisted(() => ({
   redisAvailable: true,
 }));
 
-vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
+vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled, aiWorkspaceEnabled: h.aiWorkspaceEnabled }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./grantAuthority')>()),
@@ -64,7 +68,8 @@ vi.mock('../../db', async () => {
   const select = () => {
     let rows: unknown[] = [];
     const chain: Record<string, unknown> = {};
-    for (const m of ['where', 'limit', 'orderBy', 'groupBy']) chain[m] = () => chain;
+    for (const m of ['limit', 'orderBy', 'groupBy']) chain[m] = () => chain;
+    chain.where = (cond: unknown) => { h.wheres.push(cond); return chain; };
     chain.from = (table: unknown) => {
       rows = h.rows[getTableName(table as Parameters<typeof getTableName>[0])] ?? [];
       return chain;
@@ -109,6 +114,8 @@ const run = (id: string, over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   h.wispEnabled.mockReturnValue(true);
+  h.aiWorkspaceEnabled.mockReturnValue(true);
+  h.wheres = [];
   h.resolveGrantCeiling.mockResolvedValue({ grantId: GRANT, revisionId: REV, orgIds: new Set([ORG]), siteIds: null });
   h.rows = {};
   h.readFails = null;
@@ -117,6 +124,78 @@ beforeEach(() => {
   h.redisFails = false;
   h.expireFails = false;
   h.redisAvailable = true;
+});
+
+const OUTCOME = {
+  summary: 'Three drivers crash.',
+  findings: [{ title: 'nvlddmkm', severity: 'high' as const, detail: '14 BSODs', artifactHandles: [] }],
+  artifactHandles: [],
+  proposedActions: [],
+};
+const paramsOf = (cond: unknown) => new PgDialect().sqlToQuery(cond as SQL).params;
+
+describe('specialistResultsForTurn: analysis runs (#11845)', () => {
+  it('delivers a settled analysis run with its parsed outcome and only its output files', async () => {
+    h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', outcome: { analysis: OUTCOME } })];
+    h.rows.ai_run_artifacts = [
+      { runId: 'run-a', handle: 'o1', name: 'out.csv', bytes: '10', contentType: 'text/csv', kind: 'output' },
+      { runId: 'run-a', handle: 'c1', name: 'devices.jsonl', bytes: '99', contentType: 'application/jsonl', kind: 'input_capture' },
+      { runId: 'run-a', handle: 's1', name: 'step1.py', bytes: '5', contentType: 'text/plain', kind: 'step_script' },
+    ];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results).toEqual([expect.objectContaining({
+      runId: 'run-a', profile: 'analysis', analysis: OUTCOME,
+      artifacts: [{ handle: 'o1', name: 'out.csv', bytes: 10, contentType: 'text/csv' }],
+    })]);
+  });
+
+  it('carries chain_depth on a delivered analysis run', async () => {
+    h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', chainDepth: 2, outcome: { analysis: OUTCOME } })];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results[0]).toMatchObject({ runId: 'run-a', chainDepth: 2 });
+  });
+
+  it('does not set chainDepth on a non-analysis run', async () => {
+    h.rows.ai_agent_runs = [run('run-t', { chainDepth: 3 })];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results[0]).not.toHaveProperty('chainDepth');
+  });
+
+  it('an outcome that fails the schema becomes null, never a throw', async () => {
+    h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', outcome: { analysis: { summary: 42 } } })];
+    expect((await specialistResultsForTurn(input))?.results[0]).toMatchObject({ analysis: null, summary: 'Summary of run-a' });
+    // An unreadable outcome is reported (paths only, never values), not silently dropped.
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException.mock.calls[0]![2]).toMatchObject({ runId: 'run-a', op: 'wisp.analysis_outcome_unreadable' });
+    expect(JSON.stringify(h.captureException.mock.calls[0])).not.toContain('42');
+  });
+
+  it('an analysis run with no outcome at all (failed, cancelled) has a null analysis', async () => {
+    h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', status: 'failed', outcome: null })];
+    expect((await specialistResultsForTurn(input))?.results[0]).toMatchObject({ analysis: null, status: 'failed' });
+    // No outcome submitted is the normal failed/cancelled case: nothing to report.
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('troubleshooting runs keep every artifact kind and carry no analysis key', async () => {
+    h.rows.ai_agent_runs = [run('run-t', { outcome: { analysis: OUTCOME } })];
+    h.rows.ai_run_artifacts = [{ runId: 'run-t', handle: 'c1', name: 'eventlog.txt', bytes: '7', contentType: 'text/plain', kind: 'input_capture' }];
+    const [result] = (await specialistResultsForTurn(input))!.results;
+    expect(result!.artifacts).toEqual([{ handle: 'c1', name: 'eventlog.txt', bytes: 7, contentType: 'text/plain' }]);
+    expect(result).not.toHaveProperty('analysis');
+  });
+
+  it('reads analysis rows only with the workspace on, and still keys on the exact session', async () => {
+    h.rows.ai_agent_runs = [];
+    await specialistResultsForTurn(input);
+    expect(paramsOf(h.wheres[0])).toEqual(expect.arrayContaining([SESSION, GRANT, 'device_troubleshooting', 'analysis']));
+    h.aiWorkspaceEnabled.mockReturnValue(false);
+    h.wheres = [];
+    await specialistResultsForTurn(input);
+    const params = paramsOf(h.wheres[0]);
+    expect(params).toEqual(expect.arrayContaining([SESSION, GRANT, 'device_troubleshooting']));
+    expect(params).not.toContain('analysis');
+  });
 });
 
 describe('specialistResultsForTurn', () => {

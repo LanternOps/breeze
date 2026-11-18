@@ -23,6 +23,7 @@ import {
   partners,
   deviceGroupMemberships,
   configPolicyAssignments,
+  configPolicyComplianceRules,
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
   configPolicyFeatureLinks,
@@ -65,6 +66,7 @@ import {
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { resolveWakeOnLanSettingsForDevice } from '../../services/featureConfigResolver';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { devicePolicyCacheOrg, readDevicePolicyCache, writeDevicePolicyCache, type DevicePolicyCacheOpts } from '../../services/devicePolicyCache';
@@ -91,7 +93,7 @@ import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
-import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { isAllowedPolicyConfigProbe, isAllowedPolicyRegistryProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
@@ -372,19 +374,30 @@ export {
 // Policy Probe Processing
 // ============================================
 
+/**
+ * localeCompare, then code points: localeCompare can tie two distinct strings,
+ * and the per-org cap keeps the head of this order, so a tie must not fall
+ * back to the order the rows were read in (#11976).
+ */
+function compareProbeText(left: string, right: string): number {
+  const byLocale = left.localeCompare(right);
+  if (byLocale !== 0) return byLocale;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
   return [...probes].sort((left, right) => {
-    const pathCompare = left.registry_path.localeCompare(right.registry_path);
+    const pathCompare = compareProbeText(left.registry_path, right.registry_path);
     if (pathCompare !== 0) return pathCompare;
-    return left.value_name.localeCompare(right.value_name);
+    return compareProbeText(left.value_name, right.value_name);
   });
 }
 
 export function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
   return [...probes].sort((left, right) => {
-    const pathCompare = left.file_path.localeCompare(right.file_path);
+    const pathCompare = compareProbeText(left.file_path, right.file_path);
     if (pathCompare !== 0) return pathCompare;
-    return left.config_key.localeCompare(right.config_key);
+    return compareProbeText(left.config_key, right.config_key);
   });
 }
 
@@ -408,7 +421,7 @@ export function derivePolicyStateProbesFromRules(rules: unknown): {
     if (type === 'registry_check') {
       const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
       const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
-      if (!registryPath || !valueName) {
+      if (!registryPath || !valueName || !isAllowedPolicyRegistryProbe(registryPath)) {
         continue;
       }
 
@@ -484,10 +497,50 @@ export async function buildPolicyProbeConfigUpdate(
       )
     );
 
+  // #11976: configuration-policy compliance rules are evaluated against the
+  // same collected state (evaluateDeviceComplianceFromConfigPolicy reads
+  // device_registry_state / device_config_state), so the agent has to collect
+  // their values too. Without this, a configuration-policy registry check
+  // reports "Registry value not found" for a value that exists, forever.
+  //
+  // The list is a per-org SUPERSET, like the automation-policy half above:
+  // every active policy the org can own (its own + its partner's partner-wide),
+  // with no assignment targeting. A probe on a device the rule does not target
+  // costs one read-only registry/file read; per-device targeting would break the
+  // per-org cache. The effective-links view carries links inherited from a
+  // parent policy, exactly as resolveComplianceAssignmentForDevice reads them.
+  const configPolicyOwnership = partnerId
+    ? or(
+        eq(configurationPolicies.orgId, orgId),
+        and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, partnerId))
+      )
+    : eq(configurationPolicies.orgId, orgId);
+
+  const complianceRows = await db
+    .select({ rules: configPolicyComplianceRules.rules })
+    .from(configPolicyComplianceRules)
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'compliance')
+      )
+    )
+    .innerJoin(
+      configurationPolicies,
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id)
+    )
+    .where(
+      and(
+        configPolicyOwnership,
+        eq(configurationPolicies.status, 'active')
+      )
+    );
+
   const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
   const configByKey = new Map<string, PolicyConfigProbeUpdate>();
 
-  for (const row of policyRows) {
+  for (const row of [...policyRows, ...complianceRows]) {
     const probes = derivePolicyStateProbesFromRules(row.rules);
     for (const probe of probes.registry) {
       const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
@@ -504,9 +557,35 @@ export async function buildPolicyProbeConfigUpdate(
   }
 
   return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(Array.from(registryByKey.values())),
-    policy_config_state_probes: sortPolicyConfigProbes(Array.from(configByKey.values()))
+    policy_registry_state_probes: capPolicyStateProbes(
+      sortPolicyRegistryProbes(Array.from(registryByKey.values())), orgId, 'registry'),
+    policy_config_state_probes: capPolicyStateProbes(
+      sortPolicyConfigProbes(Array.from(configByKey.values())), orgId, 'config')
   };
+}
+
+/**
+ * #11976: the most registry probes, and separately the most config probes, the
+ * heartbeat sends one org's agents. Every active policy the org can own feeds
+ * the list, so it is bounded here rather than by the number of rules authored.
+ */
+export const MAX_POLICY_STATE_PROBES_PER_ORG = 256;
+
+/**
+ * Keeps the first MAX_POLICY_STATE_PROBES_PER_ORG probes of an already-sorted
+ * list, so the kept set is the same on every beat whatever order the rows
+ * were read in. Rules past the cap are not collected and evaluate as "not
+ * found"; the warning names the org so the excess can be traced.
+ */
+function capPolicyStateProbes<T>(sorted: T[], orgId: string, kind: 'registry' | 'config'): T[] {
+  if (sorted.length <= MAX_POLICY_STATE_PROBES_PER_ORG) return sorted;
+  console.warn('[agents/helpers] policy state probe list truncated', {
+    orgId,
+    kind,
+    total: sorted.length,
+    kept: MAX_POLICY_STATE_PROBES_PER_ORG,
+  });
+  return sorted.slice(0, MAX_POLICY_STATE_PROBES_PER_ORG);
 }
 
 // ============================================
@@ -3804,6 +3883,28 @@ export interface WarrantySettings {
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+}
+
+// ============================================
+// Wake-on-LAN readiness collection config (#10838 W02)
+// ============================================
+
+export interface WakeOnLanConfigUpdate {
+  enabled: boolean;
+  configureSettings: false;
+  firmwareWrites: string[];
+}
+
+/**
+ * `enabled` = a wake_on_lan link resolves for the device, which tells the
+ * agent to collect and upload its read-only readiness snapshot. Writes are off
+ * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * Deliberately does NOT catch: the heartbeat omits the block on a resolver
+ * error so a transient failure never stops collection.
+ */
+export async function buildWakeOnLanConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WakeOnLanConfigUpdate> {
+  const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
+  return { enabled: settings !== null, configureSettings: false, firmwareWrites: [] };
 }
 
 // ============================================

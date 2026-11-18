@@ -25,6 +25,7 @@ import { resolveDraftBillTo, invoiceTicketNumberSql, invoiceTicketCategorySql, i
 import { freezeDocumentFooter } from './documentFooter';
 import { resolveOrgTaxRate, resolveOrgTaxRateOn, OrgNotVisibleForTaxError, PartnerNotVisibleForTaxError } from './taxRateResolver';
 import { stampedPresentation } from './invoicePresentation';
+import { partnerPageSizeWire } from './documentThemes';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -1259,7 +1260,8 @@ export async function updatePartnerBillingSettings(
     notifyCustomerOnBehalfAcceptance?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
-    documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4';
+    // #12097: null = no choice → the partner's region default.
+    documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4' | null;
     billingCompanyName?: string | null; billingPhone?: string | null; billingWebsite?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
     billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
@@ -1319,9 +1321,12 @@ export async function updatePartnerBillingSettings(
     agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
     agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
     agreementMaxReminders: partners.agreementMaxReminders,
+    // #12097: read back only to resolve the region default below, never returned.
+    billingAddressCountry: partners.billingAddressCountry, settings: partners.settings,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
-  return row;
+  const { billingAddressCountry: _country, settings: _settings, ...saved } = row;
+  return { ...saved, ...partnerPageSizeWire(row) };
 }
 
 /** Org billing-settings projection. `currencyCode` is included (#3778) so the

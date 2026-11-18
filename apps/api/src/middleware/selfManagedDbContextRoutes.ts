@@ -78,6 +78,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // Customer domain ownership check: a DNS (or HTTPS) lookup of the domain
   // between short reads; the verification service owns its own contexts.
   { method: 'POST', pattern: /^\/api\/v1\/orgs\/organizations\/[^/]+\/customer-domains\/[^/]+\/verification\/check\/?$/ },
+  // Trust Center publish and unpublish (#9087, spec trust-center §7 "live when
+  // the toast says so"): the publish must COMMIT before the serving set is
+  // reconciled against the DB, and the response waits for that reconcile.
+  // Under the request transaction the reconcile would read the pre-publish
+  // rows. The handler runs its DB work in one caller-scoped context, then
+  // reconciles with no context held.
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/publish\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/unpublish\/?$/ },
   // Billing portal session and support message: forwarded to the billing
   // service. The support handler reads the sender in a short caller-scoped
   // context; the portal handler does no DB work of its own.
@@ -484,6 +492,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transaction per contact, each under its own locks, so a batch of 500
   // holds no lock (source, org, contacts) across the whole batch.
   { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/created-contacts\/remove\/?$/ },
+  // Naming the report's source people (#8313 W6, spec §5.10) calls the
+  // module against the tenant-controlled base URL through safeFetch, which
+  // refuses to run inside a held DB context.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/source-users\/resolve\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100

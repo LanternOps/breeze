@@ -48,7 +48,7 @@ func (r ReleaseResult) Validate() error {
 	default:
 		return fmt.Errorf("unknown release outcome %q", r.Outcome)
 	}
-	if r.ErrorCode != nil && (len(*r.ErrorCode) == 0 || len(*r.ErrorCode) > maxErrorCodeLen || !errorCodePattern.MatchString(*r.ErrorCode)) {
+	if r.ErrorCode != nil && (len(*r.ErrorCode) == 0 || len(*r.ErrorCode) > maxErrorCodeLen || !errorCodePattern().MatchString(*r.ErrorCode)) {
 		return fmt.Errorf("invalid errorCode %q", *r.ErrorCode)
 	}
 	return nil

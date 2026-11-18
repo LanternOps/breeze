@@ -5,8 +5,10 @@ import {
   BACKUP_STATUS_BUCKET_MEMBERS,
   BACKUP_WARNING_AFTER_HOURS,
   EXTERNAL_BACKUP_STATUS_SEVERITY,
+  bucketForBackupRow,
   bucketForBackupStatus,
   deriveBackupHealth,
+  isOverdueBackup,
   mapBackupJobStatus,
   worstBackupStatus,
   saasWorkloadLabel,
@@ -73,9 +75,9 @@ describe('worstBackupStatus', () => {
 });
 
 describe('BACKUP_STATUS_BUCKET_MEMBERS', () => {
-  it('declares the six bucket ids in the order the Cove-email layout renders them', () => {
+  it('declares the bucket ids in the order the Cove-email layout renders them, overdue beside completed', () => {
     expect(BACKUP_STATUS_BUCKET_IDS).toEqual([
-      'no_backups', 'completed', 'completed_with_errors', 'in_progress', 'unsuccessful', 'other',
+      'no_backups', 'completed', 'overdue', 'completed_with_errors', 'in_progress', 'unsuccessful', 'other',
     ]);
     expect(Object.keys(BACKUP_STATUS_BUCKET_MEMBERS)).toEqual([...BACKUP_STATUS_BUCKET_IDS]);
   });
@@ -146,6 +148,30 @@ describe('bucketForBackupStatus', () => {
     // A future ALTER TYPE ... ADD VALUE reaches the read model before this file
     // is updated; a throw there would 500 the whole overview.
     expect(bucketForBackupStatus('brand_new_vendor_status' as ExternalBackupStatus)).toBe('other');
+  });
+
+  it('gives `overdue` no static members — no vendor status means "overdue" on its own', () => {
+    expect(BACKUP_STATUS_BUCKET_MEMBERS.overdue).toEqual([]);
+  });
+});
+
+describe('isOverdueBackup / bucketForBackupRow (#12025)', () => {
+  it.each([
+    ['over_48h', true],
+    ['never', true],
+    ['under_48h', false],
+    ['under_24h', false],
+  ] as const)('a completed last session with recency %s is overdue: %s', (recency, overdue) => {
+    expect(isOverdueBackup({ status: 'completed', recency })).toBe(overdue);
+    expect(bucketForBackupRow({ status: 'completed', recency })).toBe(overdue ? 'overdue' : 'completed');
+  });
+
+  it('never marks a non-completed status overdue — its own bucket already says it is not fine', () => {
+    for (const status of EXTERNAL_BACKUP_STATUSES) {
+      if (status === 'completed') continue;
+      expect(isOverdueBackup({ status, recency: 'over_48h' }), status).toBe(false);
+      expect(bucketForBackupRow({ status, recency: 'over_48h' })).toBe(bucketForBackupStatus(status));
+    }
   });
 });
 

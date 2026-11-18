@@ -9,6 +9,7 @@
  */
 
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { MFA_REQUIRED_CODE, MFA_REQUIRED_TOOL_MESSAGE } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { FLEET_HEALTH_ACTIONS } from './aiToolSchemasAlertTriage';
 import { listReliabilityDevices, summarizeReliabilityDevices, type ReliabilityListItem } from './reliabilityScoring';
@@ -324,8 +325,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       // requireMfa(); Tier 2 means it auto-executes, so the MFA and site-ceiling
       // proofs have to be re-established here or the AI/MCP path is a bypass.
       // Checked before input validation, matching the HTTP route's ordering.
+      // Deliberately stricter than mfaGatedToolError: an ai_agent / flow
+      // principal (no MFA claim) is refused too, as before — this Tier 2 write
+      // has no upstream approval to stand in for the factor.
       if (!hasSatisfiedMfa(auth)) {
-        return JSON.stringify({ error: 'MFA required' });
+        return JSON.stringify({ error: MFA_REQUIRED_TOOL_MESSAGE, code: MFA_REQUIRED_CODE });
       }
 
       if (typeof input.userId !== 'string' || !input.userId) {

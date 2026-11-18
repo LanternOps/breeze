@@ -17,7 +17,8 @@ export interface EvidenceCard {
     status: string;
     trustState: string;
   };
-  signup: { ip: string | null; ipClass: string; asn: number | null };
+  /** source: which classifier produced ipClass (see partners.signup_ip_class_source); null before #11698. */
+  signup: { ip: string | null; ipClass: string; asn: number | null; source: string | null };
   emailDomain: { domain: string | null; ageDays: null; hasMx: boolean | null };
   identity: {
     userName: string | null;
@@ -104,6 +105,7 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
       signupIp: partners.signupIp,
       signupIpClass: partners.signupIpClass,
       signupIpAsn: partners.signupIpAsn,
+      signupIpClassSource: partners.signupIpClassSource,
       billingCardholderName: partners.billingCardholderName,
       billingCardFingerprint: partners.billingCardFingerprint,
       billingDistinctPaymentMethods: partners.billingDistinctPaymentMethods,
@@ -180,7 +182,12 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
         status: partner.status,
         trustState: partner.trustState,
       },
-      signup: { ip: partner.signupIp, ipClass: partner.signupIpClass, asn: partner.signupIpAsn },
+      signup: {
+        ip: partner.signupIp,
+        ipClass: partner.signupIpClass,
+        asn: partner.signupIpAsn,
+        source: partner.signupIpClassSource ?? null,
+      },
       emailDomain: {
         domain,
         ageDays: null,
@@ -331,7 +338,7 @@ function renderCardText(card: EvidenceCard): string {
   return [
     `Partner: ${card.partner.name} (${card.partner.id})`,
     `Plan/status/trust: ${card.partner.plan} / ${card.partner.status} / ${card.partner.trustState}`,
-    `Signup IP: ${card.signup.ip ?? 'unknown'} (${card.signup.ipClass}, ASN ${card.signup.asn ?? 'unknown'})`,
+    `Signup IP: ${card.signup.ip ?? 'unknown'} (${card.signup.ipClass}, ASN ${card.signup.asn ?? 'unknown'}, classified by ${card.signup.source ?? 'not recorded'})`,
     `Email domain: ${card.emailDomain.domain ?? 'unknown'} (age: unknown; MX: ${card.emailDomain.hasMx ?? 'unknown'})`,
     `Cardholder/user: ${card.identity.cardholderName ?? 'unknown'} / ${card.identity.userName ?? 'unknown'} (match: ${card.identity.namesMatch ?? 'unknown'})`,
     `Billing: ${card.billing.distinctPaymentMethods} distinct payment methods; ${card.billing.failedAttempts} failed attempts`,

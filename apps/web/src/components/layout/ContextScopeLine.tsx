@@ -15,9 +15,12 @@ import { useTranslation } from 'react-i18next';
  *   fleet view, fleet page  → "Showing all organizations · N"
  *   fleet view, org-required→ "This page shows one organization at a time"
  *
- * Org view on an org page renders nothing (the trigger already says it), as do
- * partner-settings and device/self surfaces, and pages whose own heading states
- * the scope (isScopeInHeadingRoute — the devices list, #9035).
+ *   org view, org page      → the organization's name, below 640px only
+ *
+ * From 640px up, org view on an org page renders nothing (the trigger already
+ * says it). Partner-settings and device/self surfaces render nothing at any
+ * width, as do pages whose own heading states the scope
+ * (isScopeInHeadingRoute — the devices list, #9035).
  */
 export default function ContextScopeLine() {
   const { t } = useTranslation('common');
@@ -89,6 +92,28 @@ export default function ContextScopeLine() {
       >
         <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
         {t('layout.scope.orgRequiredLine')}
+      </p>
+    );
+  }
+
+  // Org view on an org page. From 640px up the header switcher shows the
+  // organization's name, so this line would only repeat it. Below that the
+  // switcher is icon-only (#11598) and nothing else on the page names the
+  // customer, so the name goes here: one quiet line that scrolls away with the
+  // content, not a second header row. CSS decides (`sm:hidden`), so there is no
+  // hydration flash. `aria-hidden` because the switcher keeps the name as its
+  // accessible text at every width.
+  const orgName = scope.scope === 'org' ? scope.org?.name : undefined;
+  if ((kind === 'org-or-all' || kind === 'org-required') && orgName) {
+    return (
+      <p
+        data-testid="context-scope-line"
+        data-kind="org"
+        aria-hidden="true"
+        className="mb-3 flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground sm:hidden"
+      >
+        <Building2 className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{orgName}</span>
       </p>
     );
   }

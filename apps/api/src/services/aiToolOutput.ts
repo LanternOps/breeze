@@ -52,7 +52,10 @@ type CompactConfig = {
  * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
  */
 const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
-  get_ai_agent_run: new Set(['summary']),
+  // #11966: `resultSummary` is a step's result, already compacted and bounded
+  // (STEP_RESULT_MAX_CHARS, mcpActionStatus.ts) under the step's own tool. A
+  // second cut here would drop the part the chat was asked about.
+  get_ai_agent_run: new Set(['summary', 'resultSummary']),
 };
 /**
  * A long-text key never drops below this, even in the tighter tiers (where
@@ -1310,7 +1313,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_script_execution_history: new Set(['stdout', 'stderr', 'errorMessage']),
   // A captured large result is read back window by window: without this the
   // artifact handle would be an unfenced route to the same device bytes.
-  read_artifact: new Set(['text']),
+  // #11845: `name` too, since an analysis run's output file is named by the
+  // model in the sandbox.
+  read_artifact: new Set(['text', 'name']),
   // ── Other device-reported text (#8852 W04) ─────────────────────────────
   // Every remaining tool in a command-dispatching aiTools*.ts file that
   // returns endpoint-authored strings (paths, names, OS error text, raw OS

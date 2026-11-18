@@ -116,6 +116,7 @@ import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 import { registerPortalEntraTenantRoutes } from './orgPortalEntraTenant';
 import { registerOrgPortalDirectoryRoutes } from './orgPortalDirectory';
+import { registerOrgPortalScimRoutes } from './orgPortalScim';
 import { registerOrgCustomerDomainRoutes } from './orgCustomerDomains';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
@@ -131,6 +132,7 @@ import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
 import { partnerVisibleOrgConditions } from '../services/partnerVisibleOrgs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { partnerPageSizeWire } from '../services/documentThemes';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
  * `security.allowedMethods` and drop the alias key so it is never persisted.
@@ -580,6 +582,15 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 // never dereferences `partners.*` at load time. Test files that
 // `vi.mock('../db/schema')` with a partial mock would otherwise fail to import
 // orgs.ts at all ("No 'partners' export is defined on the mock").
+// #12097: `documentPageSize` on the wire is the size the partner's documents
+// print on (its choice, else its region default) — never the raw nullable
+// column. `documentPageSizeChoice` carries the stored choice for the Billing →
+// Documents form. Every partner-row response goes through this beside
+// withMaskedSettings.
+function withPartnerPageSize<T extends { documentPageSize: string | null; billingAddressCountry: string | null; settings: unknown }>(row: T) {
+  return { ...row, ...partnerPageSizeWire(row) };
+}
+
 const partnerPublicColumns = () => ({
   id: partners.id,
   name: partners.name,
@@ -652,7 +663,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
     .orderBy(partners.createdAt, partners.id);
 
   return c.json({
-    data: data.map(withMaskedSettings),
+    data: data.map((row) => withMaskedSettings(withPartnerPageSize(row))),
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -740,7 +751,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
     }
   });
 
-  return c.json(withMaskedSettings(partner), 201);
+  return c.json(withMaskedSettings(partner ? withPartnerPageSize(partner) : partner), 201);
 });
 
 // --- Partner Self-Service (partner-scoped users) ---
@@ -1105,7 +1116,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   // wispEnabled (Wisp W03): computed per request, not a column — the web nav gate
   // for the Wisp memory page, sat beside the platform-granted aiForOfficeEnabled.
   return c.json(withMaskedSettings({
-    ...partner,
+    ...withPartnerPageSize(partner),
     settings: clampSessionTimeoutInSettings(partner.settings),
     wispEnabled: wispEnabled(),
   }));
@@ -1483,9 +1494,9 @@ orgRoutes.patch(
   });
 
   if (emailTemplateWarnings.length > 0) {
-    return c.json({ ...withMaskedSettings(partner), warnings: emailTemplateWarnings });
+    return c.json({ ...withMaskedSettings(withPartnerPageSize(partner)), warnings: emailTemplateWarnings });
   }
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 // --- Individual partner management (system-scoped) ---
@@ -1503,7 +1514,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', updatePartnerSchema), async (c) => {
@@ -1688,7 +1699,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     }
   });
 
-  return c.json(withMaskedSettings(partner));
+  return c.json(withMaskedSettings(withPartnerPageSize(partner)));
 });
 
 orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requireMfa(), async (c) => {
@@ -3061,6 +3072,8 @@ registerPortalAccessPolicyRoutes(orgRoutes);
 registerPortalEntraTenantRoutes(orgRoutes);
 // Customer-portal directory deprovisioning: status, apply/dismiss held runs, restore/remove a disabled sign-in — see routes/orgPortalDirectory.ts
 registerOrgPortalDirectoryRoutes(orgRoutes);
+// Customer-portal Entra SCIM provisioning tokens (portal_scim_tokens) — see routes/orgPortalScim.ts
+registerOrgPortalScimRoutes(orgRoutes);
 // Customer sender domains + ownership verification (customer_email_domains) — see routes/orgCustomerDomains.ts
 registerOrgCustomerDomainRoutes(orgRoutes);
 // Staff read-only "Customer view" of the portal read models (#9350)

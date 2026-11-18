@@ -39,7 +39,7 @@ import { buildOutcomeSdkTools } from '../../aiAgents/outcomeTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from '../sdkChildEnvGuards';
 import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy } from '../../aiToolSearchPolicy';
 import { buildTenantSdkTools, tenantMcpToolNames } from '../../toolSources/sdkBridge';
 import type { TenantToolDescriptor } from '../../toolSources/resolver';
@@ -232,6 +232,9 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         ...agentSdkWireOptions(opts.model),
         abortController: abort,
         stderr: (data: string) => observer.onStderr(data),
+        // #11817: the production mode, so a capture sees the same allow/deny
+        // decisions. Last, after every spread.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     });
     for await (const message of session) observer.onMessage(message);

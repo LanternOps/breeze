@@ -347,6 +347,22 @@ describe('billing settings routes', () => {
     expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
   });
 
+  // #12097: null = no choice; documents follow the partner's region default.
+  it('PATCH /partner/billing-settings accepts documentPageSize null (back to the region default)', async () => {
+    (svc.updatePartnerBillingSettings as any).mockResolvedValue({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      documentPageSize: 'a4', documentPageSizeChoice: null, documentPageSizeFallback: 'letter',
+    });
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentPageSize: null,
+    }));
+    expect(res.status).toBe(200);
+    expect(svc.updatePartnerBillingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ documentPageSize: null }),
+      expect.objectContaining({ partnerId: 'p1' })
+    );
+  });
+
   it('PATCH /partner/billing-settings rejects an invalid documentPageSize (→ 400, no service call)', async () => {
     const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
       currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentPageSize: 'legal'

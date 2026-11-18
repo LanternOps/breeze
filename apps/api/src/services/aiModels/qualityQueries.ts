@@ -151,7 +151,9 @@ WITH ledger AS (
     ${sources.failover ? sql`i.failover_hop` : sql`NULL::smallint`} AS failover_hop,
     ${chosenOffering(sources)} AS chosen_offering_id,
     ${groupKey(input.groupBy, sources)} AS gkey,
-    COALESCE('s:' || i.session_id::text, 'r:' || i.agent_run_id::text) AS conv
+    -- An agent run's calls also carry the run's own execution session (#11971):
+    -- the run is the conversation, so it wins.
+    COALESCE('r:' || i.agent_run_id::text, 's:' || i.session_id::text) AS conv
   FROM ai_invocations i
   WHERE ${ledgerWhere(input)} ${surfaceFilter} ${conversationFilter}
 ),
@@ -184,22 +186,24 @@ switched AS (
 ),
 facts AS (
   SELECT f.gkey, f.conv,
-    f.session_id IS NOT NULL AS is_session,
+    (f.session_id IS NOT NULL AND f.agent_run_id IS NULL) AS is_session,
     COALESCE(s.flagged_at IS NOT NULL AND NOT COALESCE(${autoFlag}, false), false) AS flagged,
     COALESCE(s.flagged_at IS NOT NULL AND COALESCE(${autoFlag}, false), false) AS auto_flagged,
-    CASE WHEN f.session_id IS NOT NULL THEN ${continued} END AS continued,
-    CASE WHEN f.session_id IS NOT NULL
+    CASE WHEN f.session_id IS NOT NULL AND f.agent_run_id IS NULL THEN ${continued} END AS continued,
+    CASE WHEN f.session_id IS NOT NULL AND f.agent_run_id IS NULL
       THEN COALESCE(s.status <> 'active'
         OR s.last_activity_at < (now() AT TIME ZONE 'UTC') - make_interval(hours => ${SESSION_IDLE_SETTLE_HOURS}), false)
       ELSE COALESCE(r.status IN (${terminal}), false) END AS settled,
     COALESCE(own.n, 0) + COALESCE(chain.n, 0) AS session_turns,
     r.status AS run_status
   FROM ordered f
-  LEFT JOIN ai_sessions s ON s.id = f.session_id
+  -- A run's execution session is not a chat session: none of its flags or
+  -- activity are session facts (#11971).
+  LEFT JOIN ai_sessions s ON s.id = f.session_id AND f.agent_run_id IS NULL
   LEFT JOIN ai_agent_runs r ON r.id = f.agent_run_id
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS n FROM ai_messages um WHERE um.session_id = f.session_id AND um.role = 'user'
-  ) own ON f.session_id IS NOT NULL
+  ) own ON f.session_id IS NOT NULL AND f.agent_run_id IS NULL
   ${chain}
   WHERE f.rn_desc = 1
 ),

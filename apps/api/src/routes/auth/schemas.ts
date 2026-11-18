@@ -1,7 +1,6 @@
 import { REATTACH_TARGET_VERSION_PATTERN } from '../../services/deviceReattach/protocol';
-import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema } from '@breeze/shared';
+import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema, migrationWindowOpenStepUpResourceSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -330,13 +329,8 @@ export const orgPaymentSettingsStepUpResource = z.object({
 });
 // Opening a ticket migration window (#8313): mirrors the POST
 // /migration-windows body the grant is consumed by (routes/migrationWindows.ts).
-export const migrationWindowOpenStepUpResource = z.object({
-  partnerId: z.string().guid(),
-  principalId: z.string().guid(),
-  orgIds: z.array(z.string().guid()).min(1).max(MIGRATION_WINDOW_MAX_ORGS),
-  endsAt: z.string().datetime(),
-  writesPerHour: z.number().int().optional(),
-});
+// The shape lives in @breeze/shared so the import wizard builds exactly what the grant binds.
+export const migrationWindowOpenStepUpResource = migrationWindowOpenStepUpResourceSchema;
 // Redirected authorization request: mirrors the request body of
 // POST /billing/autopay/requests when recipientOverride is set.
 export const autopayRequestRecipientStepUpResource = z.object({

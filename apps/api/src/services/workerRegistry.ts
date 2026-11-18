@@ -1292,6 +1292,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Expired-snapshot cleanup on its own single-slot queue, so a long run
+    // never holds a backupWorker slot (#12061).
+    name: 'backupSnapshotCleanupWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/backupSnapshotCleanupWorker');
+      return { init: m.initializeBackupSnapshotCleanupWorker, shutdown: m.shutdownBackupSnapshotCleanupWorker };
+    },
+  },
+  {
     name: 'backupSnapshotFileIndexWorker',
     placement: 'global',
     load: async () => {
@@ -2187,6 +2197,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('./portalSelfRegistration/worker');
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
+  // #11737 — hourly report-first retention for agent health and software
+  // inventory observation history. `global`: its closure is db + the
+  // retention runner, nothing socket-local.
+  {
+    name: 'observationRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/observationRetention');
+      return { init: m.initializeObservationRetention, shutdown: m.shutdownObservationRetention };
     },
   },
   {

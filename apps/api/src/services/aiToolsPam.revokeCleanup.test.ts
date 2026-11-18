@@ -40,7 +40,7 @@ function auth(): AuthContext {
   return {
     principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: null,
     orgId: 'org-1',
     scope: 'organization',

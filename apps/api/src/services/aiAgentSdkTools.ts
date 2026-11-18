@@ -48,6 +48,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { EXPORT_DATASETS, EXPORT_DATASET_PARAM_DESCRIPTION, EXPORT_FILTERS_PARAM_DESCRIPTION } from './aiToolsExportDatasetNames';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
@@ -1279,7 +1280,15 @@ function makeToolHandler(
         ? {
           orgId: captureSession.orgId,
           sessionId: captureSession.breezeSessionId,
-          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+          ...(captureSession.wispGrant
+            ? {
+              wispThreadId: captureSession.wispGrant.threadId,
+              // #11845: the grant pin from the ai_sessions row (trusted
+              // session context, never tool input) for read_artifact's
+              // analysis-output arm.
+              wispGrant: { grantId: captureSession.wispGrant.grantId, revisionId: captureSession.wispGrant.revisionId },
+            }
+            : {}),
         }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH
@@ -3697,9 +3706,9 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       'export_dataset',
       registryDescription('export_dataset'),
       {
-        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION),
         format: z.enum(['jsonl', 'csv']).optional(),
-        filters: z.record(z.string(), z.unknown()).optional(),
+        filters: z.record(z.string(), z.unknown()).optional().describe(EXPORT_FILTERS_PARAM_DESCRIPTION),
         deviceIds: z.array(z.string()).optional(),
         siteId: z.string().optional(),
         maxRows: z.number().optional(),

@@ -99,7 +99,9 @@ const reset = (over: Record<string, unknown> = {}) => {
     pendingApproval: null, pendingPlan: null, activePlan: null, approvalMode: 'per_step', isPaused: false,
     sendMessage: vi.fn(), approveExecution: vi.fn(), clearPendingApproval: vi.fn(), approvePlan: vi.fn(), abortPlan: vi.fn(),
     pauseAi: vi.fn(), interruptResponse: vi.fn(), isInterrupting: false, composerDraft: '', setComposerDraft: vi.fn(), clearError: vi.fn(),
-    wisp: null, sessionId: null,
+    wisp: null, sessionId: null, isFlagged: false, flagSession: vi.fn(), unflagSession: vi.fn(),
+    wispPageThreadId: null, wispPageComposerFocusRequest: 0,
+    setWispPageThreadId: vi.fn((id: string | null) => { Object.assign(h.state, { wispPageThreadId: id }); }),
     switchSession: vi.fn(async (id: string) => { Object.assign(h.state, { sessionId: id }); }),
     enterWispMode: vi.fn(async (w: typeof wisp) => { Object.assign(h.state, { wisp: w, sessionId: 's-new' }); }),
     ...over,
@@ -216,6 +218,55 @@ describe('WispHomeThread (W08 Task 9)', () => {
   it('shows no model picker for a paused grant', () => {
     render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
     expect(screen.queryByTestId('ai-model-picker-mock')).toBeNull();
+  });
+  // The page's composer is the conversation while it is on screen: the docked
+  // pane hands off to it and the AI shortcut focuses it (AiChatSidebar.wispHome.test).
+  describe('the page owns the conversation while its composer is on screen', () => {
+    it('claims the thread once the composer shows and releases it on unmount', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+      expect(h.state.wispPageThreadId).toBe('th-1');
+      view.unmount();
+      expect(h.state.wispPageThreadId).toBeNull();
+    });
+
+    it('releases the claim when the docked pane moves the store to another conversation', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+      act(() => { Object.assign(h.state, { wisp: null, sessionId: 's-plain' }); });
+      view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(h.state.wispPageThreadId).toBeNull();
+    });
+
+    it('does not release a claim another mount has taken since', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+      Object.assign(h.state, { wispPageThreadId: 'th-other' });
+      view.unmount();
+      expect(h.state.wispPageThreadId).toBe('th-other');
+    });
+
+    it.each(['paused', 'revoked'] as const)('claims nothing for a %s grant (no composer to focus)', (status) => {
+      render(<WispHomeThread {...extra} wisp={{ ...wisp, status }} lastSessionId={null} />);
+      expect(h.state.setWispPageThreadId).not.toHaveBeenCalledWith('th-1');
+    });
+
+    it('claims nothing while the open failed', async () => {
+      reset({ enterWispMode: vi.fn(async () => { throw new Error('createSession failed'); }) });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('wisp-home-thread-failed')).toBeInTheDocument();
+      expect(h.state.setWispPageThreadId).not.toHaveBeenCalledWith('th-1');
+    });
+
+    it('the composer takes the store’s focus requests (the shortcut and the pane’s hand-off button)', async () => {
+      reset({ wisp, sessionId: 's-live', wispPageComposerFocusRequest: 3 });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+      expect(kit.input.at(-1)?.focusRequest).toBe(3);
+    });
   });
 });
 
@@ -980,5 +1031,36 @@ describe('WispHomeThread check-ins (W05 #10996)', () => {
     expect(loads).toEqual(['/wisp/memory/captures?sessionId=s-live']);
     const ids = (kit.messages.at(-1)?.extras as Array<{ id: string }>).map((e) => e.id);
     expect(ids).toContain('wisp-instruction-i-1');
+  });
+
+  describe('flag conversation', () => {
+    it('the composer offers Flag for the bound session and flags it', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+      const flag = await screen.findByTestId('wisp-home-thread-flag');
+      expect(flag).toHaveAccessibleName('Flag conversation for review');
+      expect(flag).toHaveAttribute('aria-pressed', 'false');
+      fireEvent.click(flag);
+      expect(h.state.flagSession).toHaveBeenCalledTimes(1);
+      expect(h.state.unflagSession).not.toHaveBeenCalled();
+    });
+
+    it('a flagged session shows as flagged and the button unflags it', async () => {
+      reset({ wisp, sessionId: 's-live', isFlagged: true });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+      const flag = await screen.findByTestId('wisp-home-thread-flag');
+      expect(flag).toHaveAccessibleName('Unflag conversation');
+      expect(flag).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(flag);
+      expect(h.state.unflagSession).toHaveBeenCalledTimes(1);
+      expect(h.state.flagSession).not.toHaveBeenCalled();
+    });
+
+    it('stays with the composer when the thread has no linked-items panel', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      render(<WispHomeThread {...extra} links={null} wisp={wisp} lastSessionId="s-old" />);
+      expect(await screen.findByTestId('wisp-home-thread-flag')).toBeInTheDocument();
+      expect(screen.queryByTestId('wisp-composer-link')).toBeNull();
+    });
   });
 });

@@ -28,6 +28,9 @@ interface Props {
   onSort: (value: TicketSort) => void;
   showMerged: boolean;
   onShowMerged: (value: boolean) => void;
+  /** #8313: only tickets a migration window imported (`#imported=1`). */
+  importedOnly: boolean;
+  onImportedOnly: (value: boolean) => void;
   config: TicketConfig | null;
 }
 
@@ -138,6 +141,15 @@ export default function TicketQueueFilters(p: Props) {
               data-testid="ticket-list-show-merged"
             />
             {t('ticketsPage.showMerged')}
+          </label>
+          <label className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={p.importedOnly}
+              onChange={(e) => p.onImportedOnly(e.target.checked)}
+              data-testid="ticket-list-imported-only"
+            />
+            {t('ticketsPage.importedOnly')}
           </label>
     </div>
   );

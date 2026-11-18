@@ -203,6 +203,30 @@ describe('backup status report PDF', () => {
     expect(pdfText(doc)).not.toContain('Backup Status Report');
   });
 
+  it('prints an overdue completed row as "No recent backup" with its last success date (#12025)', () => {
+    const text = pdfText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...data,
+        rows: [row({ key: 'provider:old', name: 'OLD-SRV', status: 'completed', health: 'critical', recency: 'over_48h', covered: false, lastSuccessAt: '2026-03-23T12:00:00.000Z' })],
+      },
+    }));
+    // The narrow Status column wraps, so assert word by word.
+    for (const word of ['recent', 'Last:', 'Mar 23']) expect(text).toContain(word);
+  });
+
+  it('prints "No recent backup" without a Last: line when there was never a success (#12025)', () => {
+    const text = pdfText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...data,
+        rows: [row({ key: 'provider:never', name: 'NEVER-SRV', status: 'completed', health: 'critical', recency: 'never', covered: false, lastSuccessAt: null })],
+      },
+    }));
+    expect(text).toContain('recent');
+    expect(text).not.toContain('Last:');
+  });
+
   describe('Verified bootable column', () => {
     const withRows = (rows: BackupHealthRow[]) => pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows } }));
     const axcient = (partial: Partial<BackupHealthRow>) =>

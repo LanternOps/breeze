@@ -15,7 +15,8 @@ export interface CancelSubscriptionResult {
  * - `closed` — the billing service answered; the lists say what it closed and
  *   are empty when nothing was open (the call is idempotent).
  * - `unavailable` — 404: the billing service does not expose the endpoint
- *   (not deployed yet, or an older billing build). Nothing was closed.
+ *   (not deployed yet, or an older billing build). Nothing was closed. The
+ *   endpoint's own `unknown_partner` 404 is `failed`, not this.
  * - `failed` — any other error, including a timeout or a malformed body.
  *   Nothing is known to have been closed.
  *
@@ -295,7 +296,9 @@ export function createBreezeBillingClient(opts: {
         if (!res.ok) {
           const body = await res.text().catch(() => '');
           const detail = `Billing service returned ${res.status}: ${body.slice(0, 200)}`;
-          if (res.status === 404) {
+          // The endpoint's own 404 (`unknown_partner`: billing has no record of
+          // this partner) is a fault, not a missing deployment (#11952).
+          if (res.status === 404 && !/"error"\s*:\s*"unknown_partner"/.test(body)) {
             console.warn(`[breezeBillingClient] close-open-checkouts unavailable for partner ${partnerId}: 404`);
             return { status: 'unavailable', detail };
           }

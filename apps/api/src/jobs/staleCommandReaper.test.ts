@@ -904,16 +904,21 @@ describe('reapStaleBackupJobs', () => {
 
   describe('pending missed-schedule catch-ups (#11013)', () => {
     const MISSED = 'Missed: device was offline for the whole catch-up window';
-    const deferredRow = (catchUpUntil: Date, overrides: Record<string, unknown> = {}) => ({
-      id: 'job-catch-up',
-      deviceId: 'device-off',
-      errorLog: null,
-      createdAt: minutesAgo(600),
-      catchUpUntil,
-      deviceStatus: 'offline',
-      deviceLastSeenAt: minutesAgo(600),
-      ...overrides,
-    });
+    // createdAt and deviceLastSeenAt share ONE instant: the reason picker compares
+    // them strictly, so two separate minutesAgo() calls can straddle a clock tick (#12091).
+    const deferredRow = (catchUpUntil: Date, overrides: Record<string, unknown> = {}) => {
+      const scheduledAt = minutesAgo(600);
+      return {
+        id: 'job-catch-up',
+        deviceId: 'device-off',
+        errorLog: null,
+        createdAt: scheduledAt,
+        catchUpUntil,
+        deviceStatus: 'offline',
+        deviceLastSeenAt: scheduledAt,
+        ...overrides,
+      };
+    };
     const wireSet = (id = 'job-catch-up') => {
       const setMock = vi.fn(() => ({
         where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id }]) })),

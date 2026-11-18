@@ -12,7 +12,8 @@
  *   cancel_check_in    (T2)  scheduled | fired → cancelled
  *
  * Neither write shows an approval card under per_step: both are in
- * WISP_SELF_STATE_TOOLS (selfStateTools.ts) — schedule only adds a row, cancel
+ * WISP_SELF_STATE_TOOLS (selfStateTools.ts) — schedule adds a row (a `run` one
+ * also admits one assessment against this grant's budget when it fires), cancel
  * only touches this grant's own rows (`cancelCheckIn` is keyed on the grant).
  * Both keep Tier 2, so the executing audit row, the rate limits
  * (aiToolRateLimits.ts) and the ceiling gate still apply.
@@ -47,7 +48,7 @@
  * subject's, else the grant's scope org, else the thread's focus org when the
  * live ceiling holds it (`run_needs_org` otherwise), and that org must be
  * assessable, i.e. reached without a site term (`run_org_not_assessable`).
- * Unlike a notify check-in it keeps its per_step card (selfStateTools.ts).
+ * Like a notify check-in it shows no per_step card (selfStateTools.ts).
  *
  * The per-call ceiling gate (tool allowlist, denied tools, permission) is
  * `createSessionPreToolUse`, which runs before any handler; it is not repeated.

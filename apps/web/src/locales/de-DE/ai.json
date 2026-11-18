@@ -621,7 +621,12 @@
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
-    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen.",
+    "chainStep": "Schritt {{step}} dieser Untersuchung",
+    "goal": "Ziel: {{goal}}",
+    "findings": "Ergebnisse: {{count}}",
+    "findingsHigh": "({{count}} hoch)",
+    "files": "Dateien:"
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",
@@ -724,7 +729,14 @@
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
-      "dismissNote": "Schließen"
+      "dismissNote": "Schließen",
+      "menu": {
+        "label": "Weitere Aktionen",
+        "openHome": "Wisp-Startseite öffnen",
+        "settings": "Budget & Check-ins…",
+        "refresh": "Berechtigung erneuern…",
+        "revoke": "Wisp deaktivieren…"
+      }
     },
     "settings": {
       "title": "Budget und Check-in",
@@ -801,7 +813,14 @@
       "raise": "Heutiges Budget erhöhen",
       "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
       "seePlans": "Tarife ansehen",
-      "label": "Wisp-Ausgaben heute"
+      "label": "Wisp-Ausgaben heute",
+      "allAiMonth": "Gesamte KI diesen Monat: {{amount}}",
+      "allAiMessages": "{{formatted}} Nachrichten",
+      "allAiMessages_one": "{{formatted}} Nachricht",
+      "allAiMessages_other": "{{formatted}} Nachrichten"
+    },
+    "notice": {
+      "creditsExhausted": "Ihre KI-Credits sind aufgebraucht."
     },
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",
@@ -918,8 +937,9 @@
       "close": "Schließen"
     },
     "sidebar": {
-      "openHome": "In Wisp öffnen",
-      "meetWisp": "Wisp kennenlernen"
+      "meetWisp": "Wisp kennenlernen",
+      "handedOff": "Diese Unterhaltung ist auf der Seite geöffnet.",
+      "handedOffAction": "Auf der Seite fortfahren"
     },
     "partnerSwitch": {
       "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",
@@ -999,6 +1019,7 @@
         "queued": "In Warteschlange",
         "running": "Läuft",
         "awaiting_approval": "Wartet auf Genehmigung",
+        "no_approvals_pending": "Keine Genehmigung ausstehend",
         "completed": "Abgeschlossen",
         "failed": "Fehlgeschlagen"
       }
@@ -1111,5 +1132,20 @@
       "partnerEnforced_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
       "partnerEnforced_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
+    "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
+    "tryAgain": "Erneut versuchen",
+    "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
+  },
+  "aiNotifications": {
+    "responseReady": "Antwort bereit",
+    "needsApproval": "Benötigt Ihre Genehmigung",
+    "needsInput": "Benötigt Ihre Eingabe",
+    "failed": "Antwort fehlgeschlagen",
+    "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
+    "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }

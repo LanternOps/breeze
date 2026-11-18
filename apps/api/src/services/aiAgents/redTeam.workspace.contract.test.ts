@@ -54,7 +54,10 @@ vi.mock('../artifacts/artifactService', () => ({
   ARTIFACT_READ_MAX_CHARS: 6_000,
   resolveArtifact: async (handle: string, scope: { orgId: string }) => {
     const row = artifacts.get(handle);
-    return row && row.orgId === scope.orgId ? row : null;
+    // The real record carries `expiresAt`; stage() refuses an expired one.
+    return row && row.orgId === scope.orgId
+      ? { expiresAt: new Date(Date.now() + 86_400_000), ...row }
+      : null;
   },
   openArtifactStream: async (record: { body: Buffer }) => {
     const { Readable } = await import('node:stream');

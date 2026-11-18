@@ -21,6 +21,12 @@ export interface DisableIdentityInput {
    * to commit.
    */
   expect?: { directoryChain: string; verifySource?: () => Promise<DirectorySourceRecheckFailure | null> };
+  /**
+   * W9 (#11386, plan D10): extra details for the disable's audit row (SCIM
+   * passes `{ via: 'scim', scimTokenId }`). Merged UNDER the writer's own
+   * fields, so a caller can never overwrite identityId / blocker / reason.
+   */
+  auditDetails?: Record<string, unknown>;
   now?: Date;
 }
 export type DisableIdentityResult =

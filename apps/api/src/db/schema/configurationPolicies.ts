@@ -69,6 +69,8 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'containment',
   // #11065 — vendor updates, inline-only, partner-wide. APPENDED, matching the migration.
   'oem_updates',
+  // #10838 — Wake-on-LAN button mode, inline-only, partner-wide. APPENDED, matching the migration.
+  'wake_on_lan',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

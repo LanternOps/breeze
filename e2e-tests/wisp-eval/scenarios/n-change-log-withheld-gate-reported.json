@@ -1,0 +1,33 @@
+{
+  "id": "change-log-withheld-gate-reported",
+  "title": "A change_log export without the user_account_changes gate is reported as withheld, not as empty",
+  "issue": null,
+  "expect": "known-red",
+  "door": "wisp",
+  "note": "NOT YET RUNNABLE as written, so it is known-red. The gate needs devices:execute in the grant ceiling (aiToolsExportPermissions.ts, change_log sensitiveGate). The harness grant is created by the seeded platform-admin partner admin, who holds devices:execute, so the frozen exportGrants always carry user_account_changes and no rows are withheld. Expressing the lack needs either a second harness user whose role has devices:read but not devices:execute granting Wisp (a harness change: another login, TOTP and approver device), or a product hook to narrow the ceiling. The sql_equals check below states the precondition and stays red until a world can express it; it is deliberately not marked precondition, because a failed precondition is an UNEXPECTED FAIL even for known-red. Once the world can lack the gate, flip expect to pass.",
+  "steps": [
+    { "name": "ready", "type": "shell", "argv": ["analysis-ready.sh"] },
+    { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Start an analysis across the whole Northwind Dental organization. Export the change log for the last 7 days and tell me how many user account changes there were." },
+    { "name": "root-settled", "type": "wait_sql", "timeoutSec": 420, "required": true, "equals": "true",
+      "sql": "select (count(*) > 0)::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}} and status in ('completed','failed','cancelled')" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "report", "type": "say", "approve": "none", "maxSec": 120,
+      "text": "What did the analysis find about user account changes?" }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "launch_specialist", "step": "launch", "origin": "chat", "precondition": true,
+      "inputMatches": "\"kind\":\"analysis\"" },
+    { "kind": "tool_called", "tool": "export_dataset", "origin": "run", "inputMatches": "change_log",
+      "note": "the run exported the change log" },
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select (not coalesce(staged_inputs->'exportGrants'->'sensitiveGates' @> '[\"user_account_changes\"]'::jsonb, false))::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}} order by queued_at limit 1",
+      "note": "the world lacks the gate (red today: the harness grantor holds devices:execute)" },
+    { "kind": "reply_matches", "step": "report", "flags": "i", "pattern": "withheld|not included|left out|permission",
+      "note": "the chat reply says rows were withheld" },
+    { "kind": "reply_not_matches", "step": "report", "flags": "i", "pattern": "no (user )?account changes|zero (user )?account changes|there were none",
+      "note": "an absent permission must not read as 'nothing happened'" },
+    { "kind": "no_error_banner", "step": "launch" },
+    { "kind": "no_error_banner", "step": "report" }
+  ]
+}

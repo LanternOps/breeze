@@ -68,6 +68,10 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   allowSnapshotRevision: text('allow_snapshot_revision'),
   /** The revision the agent's journal says it last committed. Differs from the above until a change lands. */
   appliedPolicyRevision: text('applied_policy_revision'),
+  /** Base64 Ed25519 public key the agent pinned for offline release tokens (#10102); null = no token release. */
+  releaseTokenPublicKey: text('release_token_public_key'),
+  /** The policy's requireSignedReleaseToken as sent at start: the agent refuses codes. Never true without a key. */
+  releaseTokenRequired: boolean('release_token_required').notNull().default(false),
   /** Highest agent journal seq already read for policy events; the agent resends its journal every beat. */
   policyEventSeq: bigint('policy_event_seq', { mode: 'number' }).notNull().default(0),
   lastAgentReport: jsonb('last_agent_report').$type<SafeAgentReport | null>(),
@@ -127,6 +131,7 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   ),
   check('device_network_isolations_generation_chk', sql`generation >= 1`),
   check('device_network_isolations_journal_seq_chk', sql`last_journal_seq >= 0`),
+  check('device_network_isolations_release_token_chk', sql`(release_token_public_key IS NULL OR release_token_public_key ~ '^[A-Za-z0-9+/]{43}=$') AND (NOT release_token_required OR release_token_public_key IS NOT NULL)`),
 ]);
 
 export type DeviceNetworkIsolation = typeof deviceNetworkIsolations.$inferSelect;

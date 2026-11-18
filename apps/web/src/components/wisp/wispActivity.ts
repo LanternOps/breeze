@@ -30,6 +30,11 @@ function parseItem(raw: unknown): ActivityItem | null {
     costCents: typeof r.costCents === 'number' ? r.costCents : null,
     // Specialist items only; an unknown status is omitted rather than trusted.
     ...(isRunStatus(r.runStatus) ? { runStatus: r.runStatus } : {}),
+    // Approval-parked specialists only. A malformed count is dropped whole, so
+    // the Workers card falls back to the raw status instead of guessing.
+    ...(typeof r.pendingApprovals === 'number' && Number.isInteger(r.pendingApprovals) && r.pendingApprovals >= 0
+      ? { pendingApprovals: r.pendingApprovals, pendingIntentId: typeof r.pendingIntentId === 'string' ? r.pendingIntentId : null }
+      : {}),
   };
 }
 

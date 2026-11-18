@@ -303,6 +303,7 @@ describe('bindContactLoginForInvite', () => {
       authMethod: 'password',
       status: 'invited',
       browserAccess: 'granted',
+      disabledBy: null,
       invitedBy: 'tech-1',
       invitedAt: NOW,
       contactId: C,

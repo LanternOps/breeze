@@ -1465,6 +1465,19 @@
         "unknown": "une erreur non reconnue s’est produite"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqué par un filtre réseau",
+      "titleUntrustedCertificate": "Certificat du serveur non approuvé",
+      "webFilter": "Un filtre de sécurité sur le réseau de cet appareil répond à la place du serveur Breeze ({{locationHost}}). Il s'agit habituellement d'une fonction de sécurité du routeur du fournisseur Internet, d'un filtre Web du pare-feu ou d'une page de connexion du réseau.",
+      "captivePortal": "Le réseau de cet appareil retient les connexions sur une page de connexion (portail captif).",
+      "plaintextUnknown": "Un élément du réseau de cet appareil a répondu à la connexion Breeze en HTTP non chiffré au lieu de TLS.",
+      "untrustedCertificate": "La connexion au serveur Breeze a présenté un certificat que cet appareil n'approuve pas (émis par {{certIssuer}}). Il s'agit habituellement d'une inspection TLS par un pare-feu ou un proxy, d'un problème de certificat sur un serveur auto-hébergé ou d'un magasin de certificats racines désuet sur cet appareil. Breeze ne le contournera pas.",
+      "viaEch": "Actuellement joignable au moyen d'Encrypted Client Hello.",
+      "cleared": "A été bloqué du {{from}} au {{to}}.",
+      "lastKnown": "Dernier signalement : {{time}}. L'appareil ne s'est pas signalé depuis, cela pourrait donc ne plus s'appliquer.",
+      "howToFix": "Comment régler le problème",
+      "noDetail": "aucun détail"
+    },
     "logShipping": {
       "label": "Envoi des journaux",
       "state": {
@@ -1688,6 +1701,7 @@
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
       "productSku": "Numéro de produit",
+      "hardwareModel": "Modèle",
       "assetTag": "Étiquette d'actif",
       "location": "Emplacement",
       "source": "Source"
@@ -1706,6 +1720,7 @@
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
       "productSku": "Trier par numéro de produit",
+      "hardwareModel": "Trier par modèle",
       "assetTag": "Trier par étiquette d'actif",
       "location": "Trier par emplacement",
       "source": "Trier par source"
@@ -1863,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist n’a pas été installé par Breeze et le déploiement est désactivé, l’agent le laisse donc tel quel.",
       "unknown": "Breeze Assist est activé mais non installé."
     },
+    "controlPlaneBlockBadge": "Filtre réseau",
+    "controlPlaneBlockBadgeCertificate": "Certificat non approuvé",
+    "controlPlaneBlockLastKnownTooltip": "Dernier signalement : {{time}}; l'appareil ne s'est pas signalé depuis.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",
@@ -2812,6 +2830,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (une erreur inattendue s’est produite; réessayez)",
       "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site",
       "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés",
+      "bulkWakePolicySkipped": "{{count}} ignorés par la politique Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "Aucun réveil envoyé : {{count}} bloqués par la politique Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} n'ont pas pu être vérifiés, réessayez",
+      "bulkWakeAllLookupFailed": "Aucun réveil envoyé : {{count}} n'ont pas pu être vérifiés, réessayez",
       "scriptQueuedOneOffline": "Script « {{script}} » mis en file pour {{hostname}} — s'exécutera à la reconnexion de l'appareil"
     },
     "tryAgain": "Réessayer",
@@ -2866,7 +2888,9 @@
       "relayDisconnected": "relais déconnecté pendant l’envoi — réessayer",
       "missingTarget": "introuvables ou accès refusé",
       "removed": "supprimés",
-      "invalidRelay": "avec une sélection de relais non valide"
+      "invalidRelay": "avec une sélection de relais non valide",
+      "policyNotReady": "bloqués par leur politique Wake-on-LAN (non prêts)",
+      "policyLookupFailed": "dont la politique Wake-on-LAN n’a pas pu être vérifiée — réessayer"
     }
   },
   "filterAddDropdown": {
@@ -4876,6 +4900,7 @@
     "startDescription": "Bloquer le trafic réseau sauf les communications de gestion Breeze.",
     "releaseDescription": "Demander la suppression des règles d’isolement Breeze. Un appareil hors ligne reçoit la demande à sa reconnexion.",
     "serverWarning": "Il s’agit d’un système serveur. L’isolement peut interrompre les services d’autres appareils.",
+    "deadManUnsupported": "La politique de confinement de cet appareil définit une libération automatique (dead-man), mais la version de son agent ne la prend pas en charge. L'appareil sera isolé sans celle-ci.",
     "reason": "Motif",
     "ttlHours": "Durée (heures)",
     "incidentId": "Identifiant d’incident existant (facultatif)",
@@ -4899,6 +4924,20 @@
     "codeNext": "Code de l’heure suivante",
     "codeValidUntil": "Code actuel valable jusqu’au {{date}}",
     "codeError": "Impossible de charger les codes d’urgence. Réessayez.",
+    "tabCode": "Code d’urgence",
+    "tabToken": "Jeton de libération",
+    "issueToken": "Émettre un jeton de libération",
+    "hideToken": "Masquer le jeton",
+    "tokenLabel": "Jeton de libération",
+    "copyToken": "Copier le jeton",
+    "tokenCopied": "Copié",
+    "tokenCopyError": "Impossible de copier le jeton. Sélectionnez-le et copiez-le manuellement.",
+    "tokenQrAlt": "Code QR contenant le jeton de libération",
+    "tokenValidUntil": "Jeton valide jusqu’au {{date}}",
+    "tokenCommandHint": "Sur l’appareil isolé, exécutez cette commande en tant qu’administrateur ou root, en remplaçant <token> par le jeton :",
+    "tokenError": "Impossible d’émettre un jeton de libération. Réessayez.",
+    "tokenUnavailable": "Aucun jeton de libération n’est disponible pour cet isolement.",
+    "codesDisabledNote": "Les codes d’urgence sont désactivés pour cet appareil. Utilisez plutôt un jeton de libération signé.",
     "incidentHeading": "Isolement réseau",
     "retry": "Réessayer le statut d’isolement",
     "filterLabel": "Isolé",

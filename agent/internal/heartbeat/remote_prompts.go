@@ -326,7 +326,7 @@ var desktopUserEndStop = handleStopDesktop
 // the indicator (logged at Error). The API has already recorded
 // ended_by_user for it; that stays (a known limit, no new message).
 func (h *Heartbeat) endDesktopSessionByUser(sessionID string, onStopFailed func()) {
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		log.Warn("refusing to end a desktop session with an invalid session ID", "sessionId", sessionID)
 		return
 	}

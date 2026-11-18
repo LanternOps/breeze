@@ -5,6 +5,7 @@
  * raw provider output and is never shown. These strings are fixed text: no
  * provider body, host, or credential ever reaches them.
  */
+import type { AiStreamErrorCode } from '@breeze/shared/types/ai';
 import type { ProviderFailureCause } from './failover';
 
 export const PROVIDER_FAILURE_GENERIC_MESSAGE = 'The AI model could not complete this response. Try again.';
@@ -64,4 +65,25 @@ export function providerFailureMessage(
     ? ' Try again shortly.'
     : ' Try again shortly. If a backup model is configured, Breeze uses it while this one recovers.';
   return CAUSE_TEXT[cause] + next;
+}
+
+/**
+ * #9428: the machine code on a failed turn's `error` event, so a client can
+ * tell a failure "Try again" may fix (`provider_error`) from one it cannot.
+ * A context-window refusal wins: the same request would be refused again. A
+ * rate limit is not offered a retry (the client waits instead); a rejected key
+ * or an exhausted account needs an administrator. No terminal cause (an
+ * unclassified result, a crashed CLI) is a plain, retryable `provider_error`.
+ */
+export function providerFailureCode(
+  cause: ProviderFailureCause | null | undefined,
+  contextWindowExceeded: boolean,
+): Extract<AiStreamErrorCode, 'provider_error' | 'rate_limited' | 'provider_auth' | 'provider_quota' | 'context_window_exceeded'> {
+  if (contextWindowExceeded) return 'context_window_exceeded';
+  switch (cause) {
+    case 'rate_limited': return 'rate_limited';
+    case 'auth_failed': return 'provider_auth';
+    case 'quota_exhausted': return 'provider_quota';
+    default: return 'provider_error';
+  }
 }

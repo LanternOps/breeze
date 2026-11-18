@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -76,16 +77,16 @@ var hpReportSections = map[string]string{
 var (
 	// hpMaker is the API's rule (applicability.ts), checked again here on the whole
 	// trimmed string: HPE is not HP, and a near-miss must not authorize a flash.
-	hpMaker = regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`)
+	hpMaker = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`) })
 	// hpSoftPaqID is a SoftPaq number, with or without its sp prefix.
-	hpSoftPaqID = regexp.MustCompile(`(?i)^(?:sp)?([0-9]{1,9})$`)
+	hpSoftPaqID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^(?:sp)?([0-9]{1,9})$`) })
 )
 
-func isHPIdentity(maker string) bool { return hpMaker.MatchString(strings.TrimSpace(maker)) }
+func isHPIdentity(maker string) bool { return hpMaker().MatchString(strings.TrimSpace(maker)) }
 
 // hpSoftPaqNumber returns the bare number of a SoftPaq id, or "" if it is not one.
 func hpSoftPaqNumber(id string) string {
-	m := hpSoftPaqID.FindStringSubmatch(strings.TrimSpace(id))
+	m := hpSoftPaqID().FindStringSubmatch(strings.TrimSpace(id))
 	if m == nil {
 		return ""
 	}

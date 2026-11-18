@@ -106,7 +106,7 @@ function mockInsertSequence(rowsList: any[][]) {
 function makeAuth(): AuthContext {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: PARTNER_ID,
     orgId: ORG_ID,
     scope: 'organization',

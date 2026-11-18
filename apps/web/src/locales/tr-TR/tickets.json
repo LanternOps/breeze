@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} adım",
     "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı",
     "merged": "Birleştirildi",
-    "ageTitle": "Açılış {{created}} · Güncelleme {{updated}}"
+    "ageTitle": "Açılış {{created}} · Güncelleme {{updated}}",
+    "imported": "İçe aktarıldı"
   },
   "ticketArchivedList": {
     "emptyTitle": "Arşivlenmiş bilet yok.",
@@ -378,6 +379,7 @@
       "triage": "Triyaj sırası",
       "newest": "Önce en yeni",
       "oldest": "Önce en eski",
+      "updated": "Son güncellenen",
       "due": "Son tarih"
     },
     "priority": {
@@ -445,7 +447,9 @@
         "paused": "SLA duraklatıldı, {{relative}} kaldı",
         "breached": "SLA ihlal edildi"
       }
-    }
+    },
+    "importTickets": "Biletleri içe aktar",
+    "importedOnly": "Yalnızca içe aktarılanlar"
   },
   "ticketWorkbench": {
     "notFound": "Bilet bulunamadı. Silinmiş olabilir veya erişiminiz olmayabilir.",

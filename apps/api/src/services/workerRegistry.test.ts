@@ -90,7 +90,7 @@ const EXPECTED_WORKER_NAMES = [
   'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'oemUpdatesWorker', 'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
+  'oemUpdatesWorker', 'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotCleanupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
   // YARA/IOC scanning W01 (#6263) — dispatches security.scan agent commands.
   'securityScanWorker',
   'peripheralJobs',
@@ -157,6 +157,8 @@ const EXPECTED_WORKER_NAMES = [
   'imageCurrencyWorker',
   // Portal registration W6 (#11383).
   'portalSelfRegistrationWorker',
+  // Observation retention (#11737) — report-only.
+  'observationRetention',
   // High-volume table retention W1 (#4342, #11588) — report-only.
   'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
 ];

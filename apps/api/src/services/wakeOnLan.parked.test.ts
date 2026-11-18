@@ -31,6 +31,13 @@ vi.mock('./commandDispatch', () => ({
 }));
 vi.mock('../routes/agentWs', () => ({ isAgentConnected: vi.fn(() => true), sendCommandToAgent: vi.fn() }));
 vi.mock('./commandQueue', () => ({ CommandTypes: { WAKE_ON_LAN: 'wake_on_lan' } }));
+// No Wake-on-LAN policy applies: the gate is covered in wakeOnLan.test.ts.
+vi.mock('./wakeAvailability', async () => ({
+  ...(await vi.importActual<typeof import('./wakeAvailability')>('./wakeAvailability')),
+  resolveWakeAvailability: vi.fn(async (ids: readonly string[]) => new Map(ids.map(id => [id, {
+    show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false,
+  }]))),
+}));
 
 import { dispatchWake } from './wakeOnLan';
 import { sendCommandToAgent } from '../routes/agentWs';

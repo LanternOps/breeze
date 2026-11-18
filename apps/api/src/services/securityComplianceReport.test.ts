@@ -23,6 +23,15 @@ vi.mock('./securityComplianceReportEdr', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./securityComplianceReportEdr')>()),
   loadEdrDeviceCoverage: vi.fn(async () => new Set<string>()),
 }));
+// Site-scoped posture score (#12134): the latest per-device scores of the
+// in-scope devices are a seam here, so the positional sequence is unchanged.
+const postureScoreMocks = vi.hoisted(() => ({
+  listLatestPostureScoresByOrgs: vi.fn(),
+}));
+vi.mock('./securityPosture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./securityPosture')>()),
+  listLatestPostureScoresByOrgs: postureScoreMocks.listLatestPostureScoresByOrgs,
+}));
 // The partner approval-security policy is read through loadPartnerPolicy (a
 // system-context partner-axis read), not the positional db.select sequence.
 vi.mock('./authenticatorPolicy', async (importOriginal) => ({
@@ -132,6 +141,7 @@ describe('generateSecurityCompliancePostureReport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     backupProviderMocks.loadBackupProviderEvidence.mockResolvedValue({ evidence: [], coveredDeviceCount: 0 });
+    postureScoreMocks.listLatestPostureScoresByOrgs.mockResolvedValue([]);
     vulnerabilityMocks.loadOpenVulnerabilityCounts.mockResolvedValue(
       new Map([
         ['dev-1', { high: 2, critical: 1 }],
@@ -214,7 +224,134 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(summary.controls).not.toHaveProperty('backupConfigured');
     expect(summary.controls).not.toHaveProperty('dnsFilteringActive');
     expect(summary).not.toHaveProperty('privilegedAccess');
-    expect(summary).not.toHaveProperty('postureScore');
+    // The org-wide snapshot is never read; the score is the caller's own
+    // devices' (#12134) — none has one here, so it is unmeasured.
+    expect(postureScoreMocks.listLatestPostureScoresByOrgs).toHaveBeenCalledWith([ORG], ['dev-a']);
+    expect(summary.postureScore).toBeNull();
+  });
+
+  describe('figures that must reconcile on the PDF (#12044)', () => {
+    it('a checked-in device with no protection data is not assessed, never unprotected', async () => {
+      mockGeneratorQueries({ 2: [
+        { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: new Date() },
+        { id: 'dev-2', hostname: 'pc-2', osType: 'macos', siteName: 'HQ', lastSeenAt: new Date() },
+        { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote', lastSeenAt: new Date() },
+      ] });
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      const c = (r.summary as any).controls;
+      const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+      expect(byHost['pc-3'].protection).toBe('No data');
+      // pc-1 protected, pc-2 unprotected, pc-3 not assessed.
+      expect(c.unprotectedCount).toBe(1);
+      expect(c.anyAvUnknownCount).toBe(1);
+      expect(c.anyAvCoveragePct).toBe(50);
+    });
+
+    it('counts an EDR the device reports itself toward EDR coverage, as the product list does', async () => {
+      mockGeneratorQueries({
+        3: [
+          { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-2', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        ],
+      });
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      const s = r.summary as any;
+      // dev-1 Huntress (integration), dev-2 SentinelOne (self-reported); dev-3 not assessed.
+      expect(s.controls.edrCoveragePct).toBe(100);
+      expect(s.securityProducts.map((p: any) => p.product)).toEqual(expect.arrayContaining(['Huntress', 'SentinelOne']));
+    });
+
+    // #12134: the self-reported EDR claim is status-row evidence, so it obeys
+    // the same evidence-age window as every other status-derived control.
+    it('does not count a self-reported EDR from a stale status row', async () => {
+      const stale = new Date(Date.now() - 200 * 86_400_000);
+      mockGeneratorQueries({
+        2: [
+          { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: new Date() },
+          { id: 'dev-2', hostname: 'pc-2', osType: 'windows', siteName: 'HQ', lastSeenAt: new Date() },
+          { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote' },
+        ],
+        3: [
+          { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date() },
+          // Recorded 200 days ago (window 30): the device still checks in, so
+          // it is assessed — but this row is no longer evidence of an EDR.
+          { deviceId: 'dev-2', provider: 'sentinelone', realTimeProtection: true, definitionsDate: stale, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: stale },
+        ],
+      });
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      const s = r.summary as any;
+      // dev-1 Huntress; dev-2 assessed (recent check-in) with no current EDR evidence; dev-3 not assessed.
+      expect(s.controls.edrCoveragePct).toBe(50);
+      expect(s.controls.edrUnknownCount).toBe(1);
+      // The inventory agrees: the product is listed, but not as protecting.
+      const s1 = s.securityProducts.find((p: any) => p.product === 'SentinelOne');
+      expect(s1).toMatchObject({ active: false, activeDeviceCoverage: 0 });
+    });
+
+    // #12134: the cover's posture score covers the same devices as the rest.
+    it('scores only the in-scope devices under a site filter, not the org snapshot', async () => {
+      mockGeneratorQueries();
+      postureScoreMocks.listLatestPostureScoresByOrgs.mockResolvedValue([
+        { orgId: ORG, deviceId: 'dev-1', overallScore: 60 },
+        { orgId: ORG, deviceId: 'dev-2', overallScore: 71 },
+      ]);
+      const r = await generateSecurityCompliancePostureReport(ORG, { sites: [SITE_A] });
+      expect(postureScoreMocks.listLatestPostureScoresByOrgs).toHaveBeenCalledWith([ORG], ['dev-1', 'dev-2', 'dev-3']);
+      // mean(60, 71) = 65.5 → 66; the org-wide snapshot (82) is not used.
+      expect((r.summary as any).postureScore).toBe(66);
+    });
+
+    it('scores a site-restricted caller\'s devices only', async () => {
+      mockGeneratorQueries();
+      postureScoreMocks.listLatestPostureScoresByOrgs.mockResolvedValue([
+        { orgId: ORG, deviceId: 'dev-1', overallScore: 40 },
+      ]);
+      const r = await generateSecurityCompliancePostureReport(ORG, {}, authority([SITE_A]));
+      expect(postureScoreMocks.listLatestPostureScoresByOrgs).toHaveBeenCalledWith([ORG], ['dev-1', 'dev-2', 'dev-3']);
+      expect((r.summary as any).postureScore).toBe(40);
+    });
+
+    it('keeps the org snapshot score for an unfiltered org-wide run', async () => {
+      mockGeneratorQueries();
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      expect(postureScoreMocks.listLatestPostureScoresByOrgs).not.toHaveBeenCalled();
+      expect((r.summary as any).postureScore).toBe(82);
+    });
+
+    it('carries each device\'s last check-in so rows sharing a hostname can be told apart', async () => {
+      const seen = new Date('2026-11-09T08:00:00.000Z');
+      mockGeneratorQueries({ 2: [
+        { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: seen },
+        { id: 'dev-2', hostname: 'pc-1', osType: 'windows', siteName: 'HQ', lastSeenAt: null },
+      ] });
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      expect((r.rows as any[]).map((x) => x.lastSeenAt)).toEqual([seen.toISOString(), null]);
+    });
+
+    it('states how many managed devices the site filter left out (org-wide caller)', async () => {
+      mockGeneratorQueries();
+      const select = vi.mocked(db.select);
+      select.mockImplementation(((selection: Record<string, unknown> | undefined) =>
+        selectChain(selection && 'managedDeviceCount' in selection ? [{ managedDeviceCount: 7 }] : [])) as never);
+      const r = await generateSecurityCompliancePostureReport(ORG, { sites: [SITE_A] });
+      // 7 managed devices in the org, 3 in the selected sites.
+      expect((r.summary as any).excludedBySiteFilterCount).toBe(4);
+    });
+
+    it('never counts devices outside a site-restricted caller\'s sites', async () => {
+      mockGeneratorQueries();
+      const select = vi.mocked(db.select);
+      const r = await generateSecurityCompliancePostureReport(ORG, { sites: [SITE_A] }, authority([SITE_A]));
+      expect(r.summary).not.toHaveProperty('excludedBySiteFilterCount');
+      const countQueries = select.mock.calls.filter(([selection]) => selection && 'managedDeviceCount' in (selection as object));
+      expect(countQueries).toHaveLength(0);
+    });
+
+    it('omits the excluded count without a site filter', async () => {
+      mockGeneratorQueries();
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      expect(r.summary).not.toHaveProperty('excludedBySiteFilterCount');
+    });
   });
 
   it('merges managed EDR with native AV and flags unprotected devices', async () => {
@@ -231,13 +368,14 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect((r.summary as any).controls.edrCoveragePct).toBe(50);
     expect((r.summary as any).controls.edrUnknownCount).toBe(1);
     expect((r.summary as any).controls.anyAvUnknownCount).toBe(1);
-    expect((r.summary as any).controls.unprotectedCount).toBe(2);
+    // pc-3 is not assessed, so only pc-2 is unprotected (#12044).
+    expect((r.summary as any).controls.unprotectedCount).toBe(1);
   });
 
   it('counts an Elastic Defend device with RTP on as AV-covered, not unprotected (#2018)', async () => {
     mockGeneratorQueries({
       // dev-1: Huntress-managed (#5). dev-2: native Elastic Defend with RTP on.
-      // dev-3: no security_status row → unprotected.
+      // dev-3: no security_status row → not assessed (#12044).
       3: [
         { deviceId: 'dev-2', provider: 'elastic_defend', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
       ]
@@ -249,7 +387,7 @@ describe('generateSecurityCompliancePostureReport', () => {
     // (no evidence) is unknown and out of the assessed denominator (spec §19.7).
     expect(c.anyAvCoveragePct).toBe(100);
     expect(c.anyAvUnknownCount).toBe(1);
-    expect(c.unprotectedCount).toBe(1);
+    expect(c.unprotectedCount).toBe(0);
     const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
     expect(byHost['pc-2'].protection).toMatch(/Elastic Defend/i);
   });
@@ -723,9 +861,10 @@ describe('generateSecurityCompliancePostureReport', () => {
   // values independently derived from the pre-extraction rule
   // (`isManaged || (provider !== 'other' && realTimeProtection === true)`),
   // not from the new helper itself. The helper has no freshness gate, so a
-  // stale row with RTP on is still protected, and an absent status row is
-  // 'unknown' from the helper but folds into the report's existing
-  // unprotected bucket — the report exposes no third bucket.
+  // stale row with RTP on is still protected. #12044 changed the report's
+  // buckets on purpose: a device whose protection is 'unknown' (or that has no
+  // protection evidence) is NOT ASSESSED, never unprotected, and an EDR the
+  // device reports itself with RTP on counts toward EDR coverage.
   describe('protection extraction parity (byte-for-byte with the pre-extraction rule)', () => {
     async function protectionSlice(overrides: Partial<Record<number, any[]>>) {
       mockGeneratorQueries(overrides);
@@ -745,12 +884,12 @@ describe('generateSecurityCompliancePostureReport', () => {
 
     it('base Defender/other rows (lines 71-72): Huntress-managed + other/RTP-off + no-row', async () => {
       // dev-1 Huntress-managed (protected); dev-2 provider 'other' (unprotected);
-      // dev-3 no status row (unknown → unprotected bucket).
+      // dev-3 no status row (unknown → not assessed, #12044).
       // EDR/AV over assessed devices (spec §19.7): dev-3 has no evidence → 1 of 2.
       expect(await protectionSlice({})).toEqual({
         edrCoveragePct: 50,
         anyAvCoveragePct: 50,
-        unprotectedCount: 2,
+        unprotectedCount: 1,
         rows: [
           { hostname: 'pc-1', protectionManaged: true, realTimeProtection: true },
           { hostname: 'pc-2', protectionManaged: false, realTimeProtection: false },
@@ -765,10 +904,11 @@ describe('generateSecurityCompliancePostureReport', () => {
           { deviceId: 'dev-2', provider: 'elastic_defend', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
         ]
       })).toEqual({
-        // over assessed devices (spec §19.7): dev-3 has no evidence.
-        edrCoveragePct: 50,
+        // over assessed devices (spec §19.7): dev-3 has no evidence. Elastic
+        // Defend is an EDR the device reports with RTP on → EDR too (#12044).
+        edrCoveragePct: 100,
         anyAvCoveragePct: 100,
-        unprotectedCount: 1,
+        unprotectedCount: 0,
         rows: [
           { hostname: 'pc-1', protectionManaged: true, realTimeProtection: null },
           { hostname: 'pc-2', protectionManaged: false, realTimeProtection: true },
@@ -822,7 +962,7 @@ describe('generateSecurityCompliancePostureReport', () => {
       expect(c.anyAvUnknownCount).toBe(1);
     });
 
-    it('assessed/stale rows (lines 254-255): a no-row device is unknown → unprotected bucket', async () => {
+    it('assessed/stale rows (lines 254-255): a no-row device is not assessed, not unprotected (#12044)', async () => {
       const stale = new Date(Date.now() - 60 * 86400000);
       expect(await protectionSlice({
         2: [
@@ -837,10 +977,11 @@ describe('generateSecurityCompliancePostureReport', () => {
         4: [],
         5: [],
       })).toEqual({
-        // over assessed devices (spec §19.7): pc-n has no evidence → 2 of 2.
+        // over assessed devices (spec §19.7): pc-n has no evidence and pc-s's
+        // only evidence is stale, so only pc-a is assessed for AV.
         edrCoveragePct: 0,
         anyAvCoveragePct: 100,
-        unprotectedCount: 1,
+        unprotectedCount: 0,
         rows: [
           { hostname: 'pc-a', protectionManaged: false, realTimeProtection: true },
           { hostname: 'pc-s', protectionManaged: false, realTimeProtection: true },

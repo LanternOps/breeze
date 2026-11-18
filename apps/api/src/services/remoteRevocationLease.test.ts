@@ -29,6 +29,7 @@ import {
   REVOCATION_LEASE_PROTOCOL_VERSION,
   clampHardDeadline,
   evaluateRevocationRecheck,
+  issueRevocationLease,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
   revocationLeaseRedisKey,
@@ -459,6 +460,50 @@ describe('renewRevocationLease fence resync fields', () => {
   });
 });
 
+describe('issueRevocationLease', () => {
+  // #11840: the start payload carries each deadline twice — absolute, for
+  // agents already in the field, and as time remaining, which an agent
+  // measures from receipt so its own clock skew cannot shorten or stretch it.
+  it('ships the deadlines both as absolute times and as time remaining', async () => {
+    const grant = await issueRevocationLease({
+      sessionId: 'sess-1',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      permissionsEpoch: 7,
+      startMs: NOW - 60_000,
+      maxSessionDurationHours: 2,
+      now: () => NOW,
+      redis: null,
+    });
+    const hardDeadline = NOW - 60_000 + 2 * 60 * 60 * 1000;
+    expect(grant).toEqual({
+      token: `sess-1:${NOW}`,
+      expiresAt: NOW + REVOCATION_LEASE_TTL_MS,
+      expiresInMs: REVOCATION_LEASE_TTL_MS,
+      hardDeadline,
+      hardDeadlineInMs: hardDeadline - NOW,
+      renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
+      graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+    });
+  });
+
+  // 0 would read as "field absent" to the agent, which then falls back to the
+  // absolute deadline and so to its own clock. 1 ms ends the session at once.
+  it('reports an already-passed hard deadline as 1 ms remaining, never 0 or negative', async () => {
+    const grant = await issueRevocationLease({
+      sessionId: 'sess-1',
+      userId: 'user-1',
+      deviceId: 'dev-1',
+      permissionsEpoch: 7,
+      startMs: NOW - 3 * 60 * 60 * 1000,
+      maxSessionDurationHours: 1,
+      now: () => NOW,
+      redis: null,
+    });
+    expect(grant.hardDeadlineInMs).toBe(1);
+  });
+});
+
 describe('renewRevocationLease', () => {
   beforeEach(() => {
     vi.mocked(teardownDisconnectedSessions).mockClear();
@@ -503,6 +548,10 @@ describe('renewRevocationLease', () => {
       status: 'renewed',
       expiresAt: NOW + REVOCATION_LEASE_TTL_MS,
       hardDeadline: NOW + 3_600_000,
+      // #11840: the same deadlines as time remaining, for the agent to measure
+      // from receipt instead of against its own (possibly skewed) clock.
+      expiresInMs: REVOCATION_LEASE_TTL_MS,
+      hardDeadlineInMs: 3_600_000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
       startGeneration: '4',
@@ -708,7 +757,9 @@ describe('renewRevocationLease', () => {
     expect(result).toEqual({
       status: 'renewed',
       expiresAt: NOW + REVOCATION_LEASE_TTL_MS,
+      expiresInMs: REVOCATION_LEASE_TTL_MS,
       hardDeadline: NOW - 60_000 + 8 * 60 * 60 * 1000,
+      hardDeadlineInMs: 8 * 60 * 60 * 1000 - 60_000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
       startGeneration: '4',
@@ -801,7 +852,9 @@ describe('prepareRevocationLeaseForStart', () => {
     expect(result.lease).toEqual({
       token: expect.stringContaining('sess-1:'),
       expiresAt: NOW + REVOCATION_LEASE_TTL_MS,
+      expiresInMs: REVOCATION_LEASE_TTL_MS,
       hardDeadline: NOW - 60_000 + 8 * 60 * 60 * 1000,
+      hardDeadlineInMs: 8 * 60 * 60 * 1000 - 60_000,
       renewEverySec: 25,
       graceSec: 90,
     });

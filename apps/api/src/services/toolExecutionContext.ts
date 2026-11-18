@@ -10,6 +10,7 @@ import type { VerifiedDrPlan } from './drPlanDefinition';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -122,6 +123,14 @@ export type ToolExecutionContext = {
    * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
    */
   runTargets?: readonly string[];
+  /**
+   * Wisp analysis sessions W02 — the datasets and sensitive gates an analysis
+   * run may export, frozen at admission from the live grant ceiling
+   * (`staged_inputs.exportGrants`). `export_dataset` refuses any dataset
+   * outside it. ABSENT means legacy (`LEGACY_EXPORT_GRANTS`: the original
+   * seven datasets, no sensitive gate), never "everything".
+   */
+  exportGrants?: AiRunExportGrants;
   /** Bytes this run may still stage into artifacts. */
   stagedBytesRemaining?: number;
   /**
@@ -187,8 +196,19 @@ export type ToolExecutionContext = {
    * `wispThreadId` (Wisp W04, w00 A24) is present only when the chat session
    * is attached to a Wisp thread; it lets the read also match that thread's
    * attachments (see `ArtifactCallerAnchor.wispThreadId`).
+   *
+   * `wispGrant` (#11845) is present only on a `read_artifact` anchor of a
+   * Wisp chat session: the session's grant pin, which the handler resolves
+   * against the live ceiling into `ArtifactCallerAnchor.analysisOutputs` and
+   * never forwards itself.
    */
-  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
+  captureAnchor?: {
+    orgId: string;
+    runId?: string | null;
+    sessionId?: string | null;
+    wispThreadId?: string | null;
+    wispGrant?: { grantId: string; revisionId: string } | null;
+  };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
    * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a
@@ -254,6 +274,13 @@ export type ToolExecutionContext = {
    * was classified.
    */
   pinnedWispUnattendedRead?: WispUnattendedRead;
+  /**
+   * The chat gate let this `set_device_context` call run without an approval
+   * card (aiNoteWrites.ts). Set ONLY by `createSessionPreToolUse`, never from
+   * model arguments. The handler then caps the note's expiry and recounts the
+   * device's notes under a per-device lock before it writes.
+   */
+  noteWriteCardFree?: true;
   /**
    * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
    * its invocation tier, with the validated call. Set ONLY by

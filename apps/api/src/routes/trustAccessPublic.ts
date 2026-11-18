@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { z } from 'zod';
 import {
-  normalizeTrustPagePayload, trustAccessDownloadSchema, trustAccessRequestCreateSchema, trustAccessTokenBodySchema,
+  trustAccessDownloadSchema, trustAccessRequestCreateSchema, trustAccessTokenBodySchema,
   type TrustPagePublicPayload,
 } from '@breeze/shared';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -21,7 +21,8 @@ import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getBlobStream, BlobStorageError } from '../services/blobStorage';
 import { contentDispositionFor } from '../services/attachmentFilename';
-import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
+import { isServing, trustServingMember } from '../services/trustPage/servingSet';
+import { loadServedPayload } from '../services/trustPage/servedPayload';
 import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
 import { acceptsAccessRequest, createAccessRequest, openGrantedDocument, readGrant, recordGrantedDownload, verifyAccessRequest } from '../services/trustPage/access/requests';
 import { captureException } from '../services/sentry';
@@ -64,12 +65,10 @@ async function admit(partnerSlug: string, orgSlug: string | null): Promise<{ res
   if (!slugs) return null;
   if (await isServing(trustServingMember(slugs.partnerSlug, slugs.orgSlug ?? undefined)) === false) return null;
   const resolved = await sys(() => resolvePublishedTrustPage(slugs.partnerSlug, slugs.orgSlug));
-  if (!resolved?.snapshotId) return null;
-  const cached = await readCachedSnapshotPayload(resolved.snapshotId);
-  if (cached) return { resolved, payload: normalizeTrustPagePayload(cached) };
-  if (!resolved.payload) return null;
-  await cacheSnapshotPayload(resolved.snapshotId, resolved.payload);
-  return { resolved, payload: normalizeTrustPagePayload(resolved.payload) };
+  if (!resolved) return null;
+  // The same reader as the public page (normalization + the read-time CIS gate, #9087).
+  const payload = await loadServedPayload(resolved);
+  return payload ? { resolved, payload } : null;
 }
 
 trustAccessPublicRoutes.post('/requests', async (c) => {

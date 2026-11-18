@@ -11,7 +11,8 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { backupJobs, backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
+import { backupJobs, backupSnapshots } from '../db/schema/backup';
+import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { INDEX_BINDABLE_ATTESTATION_STATUSES, indexFailedOnAttestation } from './backupRestoreIntegrity';
 
@@ -182,7 +183,7 @@ export async function readSnapshotIndexView(
       attestationStatus: backupSnapshotAttestations.status,
       attestationManifestSha256: backupSnapshotAttestations.manifestSha256,
       referencedFiles: backupJobs.referencedFiles,
-      hasRows: sql<boolean>`EXISTS (SELECT 1 FROM ${backupSnapshotFiles} WHERE ${backupSnapshotFiles.snapshotDbId} = ${backupSnapshots.id})`,
+      hasRows: sql<boolean>`EXISTS (SELECT 1 FROM ${snapshotIndexEntries(backupSnapshots.id)})`,
     })
     .from(backupSnapshots)
     .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -112,11 +113,13 @@ var (
 	takeovers    = []string{TakeoverOK, TakeoverPolicyLocked, TakeoverNotAttempted}
 	bitlockerOut = []string{BitLockerOn, BitLockerSuspended, BitLockerOff, BitLockerUnknown}
 
-	sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	sha256Pattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{64}$`) })
 	// uuidPattern is zod 4's .uuid(): RFC 9562 version 1-8 and variant 10xx,
 	// plus the nil and max UUIDs.
-	uuidPattern      = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$`)
-	errorCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
+	uuidPattern = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$`)
+	})
+	errorCodePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`) })
 )
 
 // IsLane reports whether s is one of the four lanes.
@@ -317,7 +320,7 @@ func ParseRunRequest(raw []byte) (RunRequest, error) {
 // built. Run calls it with requireCommandID, because the command id becomes
 // the marker's, the flash section's and the verification's key.
 func (r RunRequest) validate(requireCommandID bool) error {
-	if requireCommandID && !uuidPattern.MatchString(r.CommandID) {
+	if requireCommandID && !uuidPattern().MatchString(r.CommandID) {
 		return errors.New("command id is not a uuid")
 	}
 	if !IsLane(r.Lane) {
@@ -357,7 +360,7 @@ func (r RunRequest) validate(requireCommandID bool) error {
 		return fmt.Errorf("more than %d escrowed protector ids", maxProtectorIDs)
 	}
 	for _, id := range r.EscrowedProtectorIDs {
-		if !uuidPattern.MatchString(id) {
+		if !uuidPattern().MatchString(id) {
 			return errors.New("an escrowed protector id is not a uuid")
 		}
 	}
@@ -381,7 +384,7 @@ func (t *ToolSpec) validate() error {
 	if err := validHTTPSURL(t.URL); err != nil {
 		return fmt.Errorf("url: %w", err)
 	}
-	if !sha256Pattern.MatchString(t.SHA256) {
+	if !sha256Pattern().MatchString(t.SHA256) {
 		return errors.New("sha256 must be 64 lowercase hex characters")
 	}
 	if t.Prerequisites == nil {
@@ -400,7 +403,7 @@ func (t *ToolSpec) validate() error {
 		if err := validHTTPSURL(p.URL); err != nil {
 			return fmt.Errorf("prerequisite url: %w", err)
 		}
-		if !sha256Pattern.MatchString(p.SHA256) {
+		if !sha256Pattern().MatchString(p.SHA256) {
 			return errors.New("prerequisite sha256 must be 64 lowercase hex characters")
 		}
 	}
@@ -493,7 +496,7 @@ func (r RunResult) Validate() error {
 		return errors.New("rawExitCode is out of range")
 	}
 	if r.ErrorCode != nil {
-		if n := len(*r.ErrorCode); n < 1 || n > maxErrorCodeLen || !errorCodePattern.MatchString(*r.ErrorCode) {
+		if n := len(*r.ErrorCode); n < 1 || n > maxErrorCodeLen || !errorCodePattern().MatchString(*r.ErrorCode) {
 			return errors.New("errorCode must be an identifier of 1 to 64 characters")
 		}
 	}
@@ -546,7 +549,7 @@ type Verification struct {
 
 // Validate applies the verification schema's rules.
 func (v Verification) Validate() error {
-	if !uuidPattern.MatchString(v.CommandID) {
+	if !uuidPattern().MatchString(v.CommandID) {
 		return errors.New("commandId is not a uuid")
 	}
 	if !contains(bitlockerOut, v.BitlockerAfter) {

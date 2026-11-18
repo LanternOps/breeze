@@ -927,6 +927,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'portal_directory_actions' < 'portal_directory_runs' < 'portal_user_identities'.
   'portal_directory_actions',
   'portal_directory_runs',
+  // portal_scim_tokens (W9 #11386): shape 1, a cascade leaf (references only
+  // organizations and users). localeCompare: 'portal_directory_runs' <
+  // 'portal_scim_tokens' < 'portal_user_identities'.
+  'portal_scim_tokens',
   // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
   'portal_user_identities',
   'portal_users',

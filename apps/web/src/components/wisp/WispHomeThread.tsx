@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { Flag, Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
 import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
 import { ActionError } from '@/lib/runAction';
@@ -136,7 +136,8 @@ export default function WispHomeThread({
     pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
     sendMessage, approveExecution, clearPendingApproval, approvePlan, abortPlan, pauseAi,
     interruptResponse, isInterrupting, composerDraft, setComposerDraft, clearError,
-    wisp: storeWisp, sessionId: storeSessionId,
+    wisp: storeWisp, sessionId: storeSessionId, wispPageComposerFocusRequest, setWispPageThreadId,
+    isFlagged, flagSession, unflagSession,
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
   const [checkIns, setCheckIns] = useState<WispCheckIn[]>([]);
@@ -175,6 +176,18 @@ export default function WispHomeThread({
     if (readOnly) return { threadId: wisp.threadId, excludeSessionId: null };
     return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
   }, [readOnly, wisp.threadId, live, storeSessionId]);
+  // While the composer is on screen this column is the conversation: the AI
+  // shortcut and header button focus it instead of opening the docked pane,
+  // and an open pane hands off to it (AiChatSidebar). Release only our own
+  // claim: a newer mount (another thread page) may have taken it since.
+  useEffect(() => {
+    if (!live) return;
+    setWispPageThreadId(wisp.threadId);
+    return () => {
+      if (useAiStore.getState().wispPageThreadId === wisp.threadId) setWispPageThreadId(null);
+    };
+  }, [live, wisp.threadId, setWispPageThreadId]);
+
   const timeline = useWispThreadTimeline(target, refreshKey);
   const threadMessages = useMemo(
     () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
@@ -354,6 +367,8 @@ export default function WispHomeThread({
     </>
   );
 
+  const flagLabel = isFlagged ? t('aiChatSidebar.unflagConversation') : t('aiChatSidebar.flagConversation');
+
   return (
     <section id="thread" className="flex min-h-0 flex-1 flex-col" data-testid="wisp-home-thread" aria-label={t('wisp.title')}>
       {!active ? (
@@ -439,24 +454,45 @@ export default function WispHomeThread({
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
+              focusRequest={wispPageComposerFocusRequest}
               onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
               placeholder={t('wisp.composer.placeholder')}
-              leftSlot={links === null ? undefined : (
-                <button
-                  type="button"
-                  data-testid="wisp-composer-link"
-                  aria-label={t('wisp.composer.link')}
-                  title={t('wisp.composer.link')}
-                  onClick={() => setPickerOpen(true)}
-                  disabled={links.filter(isPinnedLink).length >= WISP_THREAD_LINK_LIMIT}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-                >
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                </button>
+              leftSlot={(
+                <>
+                  {links !== null && (
+                    <button
+                      type="button"
+                      data-testid="wisp-composer-link"
+                      aria-label={t('wisp.composer.link')}
+                      title={t('wisp.composer.link')}
+                      onClick={() => setPickerOpen(true)}
+                      disabled={links.filter(isPinnedLink).length >= WISP_THREAD_LINK_LIMIT}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      <Plus className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
+                  {/* Flag this session for review: the docked panel's control, on the page that is the conversation. */}
+                  {storeSessionId && (
+                    <button
+                      type="button"
+                      data-testid="wisp-home-thread-flag"
+                      aria-label={flagLabel}
+                      aria-pressed={isFlagged}
+                      title={flagLabel}
+                      onClick={() => void (isFlagged ? unflagSession() : flagSession())}
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted ${
+                        isFlagged ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      <Flag className="h-4 w-4" fill={isFlagged ? 'currentColor' : 'none'} aria-hidden="true" />
+                    </button>
+                  )}
+                </>
               )}
             />
           </div>

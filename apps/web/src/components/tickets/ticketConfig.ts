@@ -51,6 +51,8 @@ export interface TicketSummary {
   // tickets; optional so older payloads and fixtures read as not merged.
   mergedIntoTicketId?: string | null;
   mergedAt?: string | null;
+  // #8313: the migration window that imported the ticket; null when live.
+  migrationWindowId?: string | null;
 }
 
 export interface TicketComment {

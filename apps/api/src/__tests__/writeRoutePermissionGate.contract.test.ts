@@ -143,6 +143,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/storage-sessions/:sessionId/:op': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/timeStatus.ts
   'PUT /api/v1/agents/:id/time-status': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/wakeStatus.ts
+  'PUT /api/v1/agents/:id/wake-status': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/token.ts
   'POST /api/v1/agents/:id/rotate-token': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'POST /api/v1/agents/:id/rotate-token/confirm': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
@@ -265,6 +267,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/desktop-ws/connect/exchange': 'device credential: one-time connect code exchange, live access re-authorized',
   'POST /api/v1/desktop-ws/:id/viewer/ws-ticket': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/offer': 'device credential: viewer access token + session access validation',
+  'POST /api/v1/desktop-ws/:id/viewer/end': 'device credential: viewer access token + session access validation (live remote:access re-check)',
   'POST /api/v1/desktop-ws/:id/viewer/ice': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/lease/renew': 'device credential: viewer access token bound to session owner',
   // routes/devPush.ts
@@ -424,6 +427,14 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/webhooks/flows/:flowId': 'webhook: signature/token authenticated (services/flows/webhook/verify.ts), no user permission',
   // routes/webhooks/edr.ts
   'POST /api/v1/webhooks/edr/:connectionId': 'webhook: EDR push hint; connection lookup + adapter secret verification in handler',
+  // routes/portalScim.ts (portal registration W9 #11386, plan D9): Entra SCIM provisioning.
+  // The org's SCIM bearer token is the credential (hashed, constant-time, bound to the
+  // org's proven tenant, re-checked under the row locks); every write is scoped to that
+  // org and tenant and audited; uniform 401; per-IP failure and per-org limits.
+  'POST /api/v1/scim/portal/v2/Users': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'PUT /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'PATCH /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'DELETE /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
   // routes/webhooks/emailProvider.ts
   'POST /api/v1/webhooks/email-provider/resend': 'webhook: Svix signature verified with configured webhook secret',
   // routes/webhooks/quickbooks.ts

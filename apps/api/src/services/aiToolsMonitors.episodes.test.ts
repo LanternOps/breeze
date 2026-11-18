@@ -75,7 +75,8 @@ function auth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
     principal: 'user',
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: null,
+    // Cleared MFA: reset_monitor_escalation is MFA-gated (aiToolMfaGate.ts).
+    token: { mfa: true },
     partnerId: null,
     orgId: ORG,
     scope: 'organization',

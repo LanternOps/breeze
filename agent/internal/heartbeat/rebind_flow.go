@@ -64,7 +64,7 @@ const (
 )
 
 // rebindAgentIDPattern is the server's agent id shape (it goes into a URL).
-var rebindAgentIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var rebindAgentIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`) })
 
 // rebindState is the per-process state of the rebind flow.
 type rebindState struct {

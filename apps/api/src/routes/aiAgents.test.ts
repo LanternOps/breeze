@@ -14,6 +14,7 @@ import {
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_RUN_CHAIN_MAX_STEPS,
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS,
   DEFAULT_IMPACT_WEIGHTS,
@@ -1433,6 +1434,27 @@ const runDetailResponseSchema = z.object({
         stdoutArtifactHandle: z.string().nullable(),
       }).strict()),
     }).strict().nullable(),
+    // Wisp analysis sessions W06 — lineage, goal, frozen scope and the chain.
+    // Always present; null/0 for every run that is not part of an analysis chain.
+    continuedFromRunId: z.string().nullable(),
+    chainRootRunId: z.string().nullable(),
+    chainDepth: z.number().int().min(0),
+    analysisGoal: z.string().nullable(),
+    analysisScope: z.object({
+      kind: z.enum(['devices', 'site', 'org']),
+      siteId: z.string().nullable(),
+      siteName: z.string().nullable(),
+      deviceCount: z.number(),
+    }).strict().nullable(),
+    chain: z.array(z.object({
+      id: z.string(),
+      step: z.number(),
+      continuedFromRunId: z.string().nullable(),
+      goal: z.string().nullable(),
+      status: z.string(),
+      costCents: z.number(),
+      queuedAt: z.string(),
+    }).strict()).nullable(),
   }).strict(),
 }).strict();
 
@@ -2446,6 +2468,8 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         }],
       },
     ]));
+    // W06 — the chain read (analysis only). This run is in no chain.
+    selectMock.mockReturnValueOnce(selectChain([]));
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -2589,6 +2613,105 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const parsed = runDetailResponseSchema.parse(body);
     expect(parsed.data.alertVerdict?.suggestedAction?.disposition).toBe('not_created');
     expect(parsed.data.alertVerdict?.suggestedAction?.reason).toBe('superseded_concurrently');
+  });
+});
+
+// Wisp analysis sessions W06 — the run page and the chat run card read the
+// chain and the frozen scope from this DTO.
+describe('GET /ai-agents/runs/:runId — analysis chain (W06)', () => {
+  const ROOT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const chainRow = (o: Record<string, unknown>) => ({
+    id: ROOT, continuedFromRunId: null, chainDepth: 0,
+    status: 'completed', costCents: 30, computeCents: 5, goal: 'export inventory',
+    queuedAt: new Date('2026-11-13T10:00:00Z'), ...o,
+  });
+
+  function mockAnalysisReads(
+    run: Record<string, unknown>,
+    chainRows: unknown[],
+    onChainWhere?: (p: unknown) => void,
+    onChainLimit?: (n: number) => void,
+  ) {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ profile: 'analysis', sessionId: null, intentIds: [], ...run })]));
+    selectMock.mockReturnValueOnce(selectChain([])); // intents
+    selectMock.mockReturnValueOnce(selectChain([])); // artifacts
+    selectMock.mockReturnValueOnce(selectChain([])); // workspace
+    selectMock.mockReturnValueOnce(selectChain(chainRows, onChainWhere, onChainLimit)); // chain
+  }
+
+  it('keys the chain read on the root for a continuation and pins it to the run org', async () => {
+    let where: unknown;
+    let limit: number | undefined;
+    mockAnalysisReads(
+      { continuedFromRunId: ROOT, chainRootRunId: ROOT, chainDepth: 1, triggerRef: { goal: 'count by OS' } },
+      [chainRow({}), chainRow({ id: RUN_ID, continuedFromRunId: ROOT, chainDepth: 1 })],
+      (p) => { where = p; },
+      (n) => { limit = n; },
+    );
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = runDetailResponseSchema.parse(await res.json());
+    expect(sqlParams(where)).toEqual(expect.arrayContaining([ORG_ID, ROOT]));
+    expect(sqlParams(where)).not.toContain(RUN_ID);
+    expect(limit).toBe(AI_AGENT_RUN_CHAIN_MAX_STEPS);
+    expect(body.data.chain!.map((s) => s.step)).toEqual([1, 2]);
+    expect(body.data.chain![0]!.costCents).toBe(35);
+    expect(body.data).toMatchObject({
+      chainDepth: 1, chainRootRunId: ROOT, continuedFromRunId: ROOT, analysisGoal: 'count by OS',
+    });
+  });
+
+  it('discovers the chain of a root run (no lineage of its own) by its own id', async () => {
+    let where: unknown;
+    mockAnalysisReads(
+      { chainRootRunId: null, chainDepth: 0 },
+      [chainRow({ id: RUN_ID }), chainRow({ id: ROOT, continuedFromRunId: RUN_ID, chainDepth: 1 })],
+      (p) => { where = p; },
+    );
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(sqlParams(where)).toEqual(expect.arrayContaining([ORG_ID, RUN_ID]));
+    expect(body.data.chain).toHaveLength(2);
+    expect(body.data.chainDepth).toBe(0);
+  });
+
+  it('applies the caller site ceiling to the chain read', async () => {
+    let where: unknown;
+    mockAnalysisReads({}, [], (p) => { where = p; });
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] }).request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
+  it('returns a null chain for an unchained analysis run', async () => {
+    mockAnalysisReads({}, [chainRow({ id: RUN_ID })]);
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(body.data.chain).toBeNull();
+  });
+
+  it('names the site for a site-scope run through an org-pinned sites read', async () => {
+    let siteWhere: unknown;
+    mockAnalysisReads({
+      stagedInputs: {
+        handles: [], deviceIds: ['d1'], region: 'us',
+        scope: { kind: 'site', siteId: SITE_ID, deviceCount: 1 },
+      },
+    }, []);
+    selectMock.mockReturnValueOnce(selectChain([{ name: 'Main office' }], (p) => { siteWhere = p; }));
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(sqlParams(siteWhere)).toEqual(expect.arrayContaining([SITE_ID, ORG_ID]));
+    expect(body.data.analysisScope).toEqual({ kind: 'site', siteId: SITE_ID, siteName: 'Main office', deviceCount: 1 });
+  });
+
+  it('makes no site read for an org-scope run and reports the frozen device count', async () => {
+    mockAnalysisReads({
+      stagedInputs: {
+        handles: [], deviceIds: ['d1', 'd2'], region: 'us',
+        scope: { kind: 'org', siteId: null, deviceCount: 412 },
+      },
+    }, []);
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(selectMock).toHaveBeenCalledTimes(5);
+    expect(body.data.analysisScope).toEqual({ kind: 'org', siteId: null, siteName: null, deviceCount: 412 });
   });
 });
 

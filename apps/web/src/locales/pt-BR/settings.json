@@ -595,7 +595,7 @@
       "verify": "Verificar",
       "verifyQueued": "Verificação do modelo na fila",
       "verifyFailed": "Não foi possível enfileirar a verificação do modelo.",
-      "verifyGatewayHint": "Executa um breve teste de chamada de ferramentas no seu endpoint (usa alguns milhares de tokens).",
+      "verifyGatewayHint": "Executa um teste de chamada de ferramentas no seu endpoint. Veja a nota de custo acima.",
       "remove": "Remover modelo",
       "removeTitle": "Remover este modelo?",
       "removeMessage": "“{{model}}” será excluído desta conexão. O histórico de uso e custos é mantido. Você pode adicioná-lo novamente depois.",
@@ -1010,6 +1010,7 @@
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
     "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
+    "logoLowRes": "Este logotipo tem {{width}} × {{height}} px. Relatórios, orçamentos e faturas o imprimem com até cerca de 64 mm (2,5 pol) de largura, então ele ficará borrado na impressão. Envie uma versão com pelo menos 600 px no lado maior.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",
@@ -3348,7 +3349,8 @@
           "turnCount": "Turnos",
           "summary": "Resumo",
           "computeCost": "Computação",
-          "computeEstimated": "(estimado)"
+          "computeEstimated": "(estimado)",
+          "scope": "Escopo"
         },
         "flags": {
           "budgetExceeded": "Orçamento excedido",
@@ -3434,6 +3436,24 @@
           "partialNote": "Contabilização parcial enquanto a autorização de política não supervisionada está desativada — isso pode subestimar a exposição real.",
           "unavailable": "Nenhuma política de agente ativa para a organização desta execução.",
           "loading": "Carregando orçamento…"
+        },
+        "scope": {
+          "org_one": "Organização inteira ({{count}} dispositivo no momento do início)",
+          "org_other": "Organização inteira ({{count}} dispositivos no momento do início)",
+          "site_one": "Site {{name}} ({{count}} dispositivo no momento do início)",
+          "site_other": "Site {{name}} ({{count}} dispositivos no momento do início)",
+          "siteUnnamed_one": "Um site ({{count}} dispositivo no momento do início)",
+          "siteUnnamed_other": "Um site ({{count}} dispositivos no momento do início)",
+          "devices_one": "{{count}} dispositivo selecionado",
+          "devices_other": "{{count}} dispositivos selecionados"
+        },
+        "chain": {
+          "title": "Esta investigação",
+          "description": "Cada etapa continuou a partir de uma anterior e pôde usar os arquivos produzidos pelas etapas anteriores.",
+          "step": "Etapa {{step}}",
+          "current": "Esta execução",
+          "open": "Abrir execução",
+          "noGoal": "Nenhum objetivo registrado"
         }
       },
       "triage": {
@@ -5266,14 +5286,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use sua chave de acesso ou código do autenticador em vez disso — recarregue a página para atualizar suas opções.",
     "pendingActivatesOnFirstApproval": "Pendente — ativa na primeira aprovação",
     "sessionExpiredReloadAndTryAgain": "Sessão expirada — recarregue a página e tente novamente.",
-    "registrationCancelled": "O registro foi cancelado."
+    "registrationCancelled": "O registro foi cancelado.",
+    "ssoVerificationExpired": "A verificação com seu provedor de identidade expirou ou já foi usada. Verifique novamente para registrar este dispositivo.",
+    "signInOptionsChanged": "Suas opções de login mudaram. Recarregue a página e tente novamente."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",
     "authenticatorCode": "Código do autenticador",
     "confirmYourPassword": "Confirme sua senha",
     "switchToAuthenticatorCode": "Usar o aplicativo autenticador em vez disso",
-    "usePasskeyInstead": "Usar sua chave de acesso em vez disso"
+    "usePasskeyInstead": "Usar sua chave de acesso em vez disso",
+    "ssoVerifyFirst": "Esta conta entra pelo seu provedor de identidade e não tem senha. Verifique primeiro com seu provedor e depois registre este dispositivo.",
+    "ssoVerifyButton": "Verificar com seu provedor de identidade",
+    "ssoVerified": "Identidade verificada. Registre este dispositivo em até 5 minutos."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Respostas automáticas",
@@ -8289,6 +8314,10 @@
     "heading": "Plano e recursos",
     "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
     "currentPlan": "Plano atual",
+    "changePlan": "Alterar plano",
+    "enrollmentPaused": "O registro de novos dispositivos está pausado: {{active}} de {{limit}} dispositivos.",
+    "enrollmentPausedNoCounts": "O registro de novos dispositivos está pausado porque sua conta atingiu o limite de dispositivos.",
+    "enrollmentPausedChangePlan": "Altere seu plano para adicionar mais.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",
@@ -8937,6 +8966,47 @@
       "stale": "Este lote mudou desde que você o abriu. Revise a lista atualizada e tente novamente.",
       "notHeld": "Este lote não está mais aguardando uma decisão.",
       "enforcementOff": "O desprovisionamento está no modo somente relatório neste servidor, então não há nada a aplicar."
+    }
+  },
+  "portalScim": {
+    "title": "Provisionamento do Microsoft Entra (SCIM)",
+    "description": "Deixe o locatário do Entra do cliente criar contas do portal para as pessoas atribuídas ao aplicativo Breeze Portal e desativá-las quando saírem.",
+    "loading": "Carregando o provisionamento…",
+    "retry": "Tentar novamente",
+    "refreshFailed": "Não foi possível atualizar. O que você vê pode estar desatualizado.",
+    "needsTenant": "Comprove acima o locatário da Microsoft desta organização antes de configurar o provisionamento.",
+    "tenantUrl": "URL do locatário",
+    "noBaseUrl": "O endereço público da API não está configurado, então a URL do locatário não pode ser exibida. Peça ao seu administrador que defina PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisionadas · {{deactivated}} desativadas pelo diretório",
+    "secretOnce": "Copie este token agora e cole no campo Token secreto do aplicativo do Entra. Ele não será exibido novamente.",
+    "secretToken": "Token secreto",
+    "secretDone": "Já copiei",
+    "lastUsed": "Último uso {{date}}",
+    "neverUsed": "Ainda não utilizado",
+    "notWorking": "Não está funcionando: o locatário comprovado desta organização mudou",
+    "revoke": "Revogar",
+    "label": "Nome do token",
+    "create": "Criar token de provisionamento",
+    "createSubmit": "Criar",
+    "cancel": "Cancelar",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "Não foi possível copiar para a área de transferência.",
+    "revokeConfirm": {
+      "title": "Revogar este token de provisionamento?",
+      "message": "O Entra para de provisionar com \"{{label}}\" imediatamente. As pessoas já provisionadas mantêm suas contas."
+    },
+    "toasts": {
+      "created": "Token de provisionamento criado.",
+      "revoked": "Token de provisionamento revogado."
+    },
+    "errors": {
+      "load": "Não foi possível carregar o provisionamento.",
+      "create": "Não foi possível criar o token de provisionamento.",
+      "revoke": "Não foi possível revogar o token de provisionamento.",
+      "tenantNotProven": "Comprove o locatário da Microsoft desta organização antes de criar um token de provisionamento.",
+      "limit": "Esta organização já tem dois tokens de provisionamento ativos. Revogue um primeiro.",
+      "notFound": "Esse token de provisionamento não existe mais."
     }
   }
 }

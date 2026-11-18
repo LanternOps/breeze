@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -35,17 +36,18 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id            string
-	peerConn      *webrtc.PeerConnection
-	videoTrack    *webrtc.TrackLocalStaticSample
-	dataChannel   *webrtc.DataChannel
-	inputHandler  InputHandler
-	capturer      ScreenCapturer
-	encoder       atomic.Pointer[VideoEncoder]
-	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync *clipboard.ClipboardSync
-	cursorDC      *webrtc.DataChannel
-	controlDC     *webrtc.DataChannel
+	id                string
+	peerConn          *webrtc.PeerConnection
+	videoTrack        *webrtc.TrackLocalStaticSample
+	dataChannel       *webrtc.DataChannel
+	inputHandler      InputHandler
+	capturer          ScreenCapturer
+	encoder           atomic.Pointer[VideoEncoder]
+	encoderPF         PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync     *clipboard.ClipboardSync
+	clipboardNotifier copyChordNotifier
+	cursorDC          *webrtc.DataChannel
+	controlDC         *webrtc.DataChannel
 
 	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
 	// then, after it found no usable software encoder (#11392).
@@ -316,9 +318,13 @@ func (m *SessionManager) notifyActivity() {
 
 // NewSessionManager creates a new session manager.
 // Eagerly loads OpenH264 in the background so the DLL is ready before
-// the first desktop session (avoids download timeout during IPC).
+// the first desktop session (avoids download timeout during IPC). Skipped under
+// go test: the preload downloads and dlopens the real library into the test
+// process, and with cgo that crashes later threads once the YARA engine runs.
 func NewSessionManager() *SessionManager {
-	go PreloadOpenH264()
+	if !testing.Testing() {
+		go PreloadOpenH264()
+	}
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 		config:   DefaultConfig(),
