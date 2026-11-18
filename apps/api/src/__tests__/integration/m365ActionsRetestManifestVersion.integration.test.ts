@@ -25,7 +25,7 @@ import { and, eq } from 'drizzle-orm';
 import {
   canonicalGrantKey,
   M365_PERMISSION_PROFILES,
-  type CanonicalAppRoleAssignment,
+  type M365ApplicationGrant,
   type RetestResult,
   type VerifyConsentIdentityResult,
 } from '@breeze/shared/m365';
@@ -113,7 +113,7 @@ const MANIFEST = M365_PERMISSION_PROFILES['customer-graph-actions'];
 const CURRENT = MANIFEST.version;
 const STALE = CURRENT - 1;
 
-function canonical(grants: readonly CanonicalAppRoleAssignment[]): CanonicalAppRoleAssignment[] {
+function canonical(grants: readonly M365ApplicationGrant[]): M365ApplicationGrant[] {
   return [...grants].sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right)));
 }
 
@@ -188,7 +188,7 @@ function health(row: unknown) {
 
 function retestResult(
   tenantId: string,
-  observed: CanonicalAppRoleAssignment[],
+  observed: M365ApplicationGrant[],
   applicationId = FAKE_ACTIONS_CONFIG.clientId,
   manifestVersion = CURRENT,
 ): RetestResult {
@@ -201,7 +201,7 @@ function retestResult(
     organizationDisplayName: 'Contoso Actions',
     manifestVersion,
     verifiedAt: new Date().toISOString(),
-    grantReconciliation: 'complete',
+    grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: observed,
     missingGrants: REQUIRED.filter((grant) => !observedKeys.has(canonicalGrantKey(grant))),
     unexpectedGrants: observed.filter((grant) => !requiredKeys.has(canonicalGrantKey(grant))),
@@ -483,7 +483,7 @@ describe('customer-graph-read Retest manifest behavior is unchanged (control)', 
           organizationDisplayName: 'Contoso',
           manifestVersion: READ.version,
           verifiedAt: new Date().toISOString(),
-          grantReconciliation: 'complete',
+          grantReconciliation: 'complete', grantReconciliationMode: 'exact',
           observedGrants: observed,
           missingGrants: readRequired.filter((grant) => !observedKeys.has(canonicalGrantKey(grant))),
           unexpectedGrants: [],

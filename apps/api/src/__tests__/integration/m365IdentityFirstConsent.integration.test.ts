@@ -135,7 +135,7 @@ function retestOk(tenantId: string, profile: Profile): RetestResult {
     organizationDisplayName: 'Contoso',
     manifestVersion: M365_PERMISSION_PROFILES[profile].version,
     verifiedAt: new Date().toISOString(),
-    grantReconciliation: 'complete',
+    grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: sortedGrants(profile),
     missingGrants: [],
     unexpectedGrants: [],

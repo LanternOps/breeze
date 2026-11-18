@@ -159,7 +159,8 @@
       "missing": "Fehlende Berechtigungen",
       "unexpectedAlert": "Unerwartete Berechtigungen erkannt",
       "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
-      "grantsVerifiedAt": "Berechtigungen geprüft"
+      "grantsVerifiedAt": "Berechtigungen geprüft",
+      "graphTokenOnly": "Graph-Berechtigungen geprüft. Berechtigungen für andere Microsoft-Ressourcen wurden nicht geprüft. Erteilen Sie Application.Read.All für eine vollständige Prüfung."
     },
     "actions": {
       "connect": "Verbinden",

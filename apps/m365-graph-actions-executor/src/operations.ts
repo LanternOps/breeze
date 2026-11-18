@@ -70,6 +70,8 @@ ExecutorFailureCode {
 }
 
 const GRANT_RECONCILIATION_LOG_MESSAGE = '[m365-graph-actions-executor] grant reconciliation unavailable';
+const GRAPH_TOKEN_FALLBACK_LOG_MESSAGE =
+  '[m365-graph-actions-executor] grant reconciliation used the Graph token roles claim';
 
 /**
  * The retest result carries only `grant_reconciliation_unavailable`; this line
@@ -82,6 +84,13 @@ function logGrantReconciliationUnavailable(
   correlationId: string,
 ): void {
   if (observation.observedGrants !== null) return;
+  if (observation.graphTokenRoles !== undefined) {
+    // Not a failure: the inventory read was denied (no Application.Read.All)
+    // and the token roles claim was used instead (#12085). Logged so an
+    // operator can see why the connection reports graph_token_only.
+    console.info(GRAPH_TOKEN_FALLBACK_LOG_MESSAGE, { operation: 'retest', correlationId });
+    return;
+  }
   console.warn(GRANT_RECONCILIATION_LOG_MESSAGE, {
     operation: 'retest',
     correlationId,
@@ -114,6 +123,7 @@ function verifiedResult(observation: Awaited<ReturnType<MicrosoftGraphClient['pr
   return {
     ...common,
     grantReconciliation: 'complete' as const,
+    grantReconciliationMode: reconciled.grantReconciliationMode,
     observedGrants: reconciled.observedGrants,
     missingGrants: reconciled.missingGrants,
     unexpectedGrants: reconciled.unexpectedGrants,

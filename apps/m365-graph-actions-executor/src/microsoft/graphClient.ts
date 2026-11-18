@@ -1,4 +1,5 @@
 import type { CanonicalAppRoleAssignment } from '@breeze/shared/m365';
+import { graphApplicationRolesFromToken } from './graphTokenRoles';
 import type { OpaqueAccessToken } from './tokenClient';
 
 const GRAPH_ORIGIN = 'https://graph.microsoft.com';
@@ -21,7 +22,8 @@ export type GraphClientErrorCode =
   | 'graph_permission_missing'
   | 'graph_license_required'
   | 'graph_not_found'
-  | 'graph_throttled';
+  | 'graph_throttled'
+  | 'graph_token_claims_invalid';
 
 export class GraphClientError extends Error {
   constructor(readonly code: GraphClientErrorCode, readonly retryAfterSeconds?: number) {
@@ -31,20 +33,32 @@ export class GraphClientError extends Error {
 }
 
 /**
- * Why `observedGrants` is null: the step that failed and its typed code. Safe
- * to log — it never carries a provider body, token, or identifier.
+ * Why no grant observation exists: the step that failed and its typed code.
+ * Safe to log — it never carries a provider body, token, or identifier.
+ * `token_claims` means the appRoleAssignments read was denied and the token
+ * fallback could not be used either.
  */
 export interface GrantReconciliationFailure {
-  readonly stage: 'assignments' | 'resource';
+  readonly stage: 'assignments' | 'resource' | 'token_claims';
   readonly code: GraphClientErrorCode;
 }
 
+/**
+ * Exactly one grant source is present:
+ * - `observedGrants` (non-null): the exact inventory from appRoleAssignments.
+ * - `graphTokenRoles`: the fallback (#12085) — Graph app role values from the
+ *   app-only token, used only when the inventory read was denied with 403.
+ *   Graph roles only; other resources were not checked.
+ * - neither: `grantReconciliationFailure` says why.
+ */
 export interface GraphTenantObservation {
   readonly tenantId: string;
   readonly applicationId: string;
   readonly organizationDisplayName: string;
   readonly observedGrants: readonly CanonicalAppRoleAssignment[] | null;
-  /** Present exactly when `observedGrants` is null. */
+  /** Present only when `observedGrants` is null and the token fallback succeeded. */
+  readonly graphTokenRoles?: readonly string[];
+  /** Present exactly when there is neither `observedGrants` nor `graphTokenRoles`. */
   readonly grantReconciliationFailure?: GrantReconciliationFailure;
 }
 
@@ -94,6 +108,8 @@ interface GraphClientConfig {
 
 interface GraphClientDependencies {
   fetch?: typeof fetch;
+  /** Clock for the token-fallback `exp` check; tests pin it. */
+  now?: () => Date;
 }
 
 interface RequestBudget {
@@ -247,6 +263,7 @@ export function createMicrosoftGraphClient(
   dependencies: GraphClientDependencies = {},
 ): MicrosoftGraphClient {
   const fetchImpl = dependencies.fetch ?? fetch;
+  const now = dependencies.now ?? (() => new Date());
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRequestCount = config.maxPageCount ?? DEFAULT_MAX_PAGE_COUNT;
   const maxItemCount = config.maxItemCount ?? DEFAULT_MAX_ITEM_COUNT;
@@ -440,23 +457,64 @@ export function createMicrosoftGraphClient(
     }
   }
 
+  /**
+   * The token fallback (#12085). Runs only after Graph answered the
+   * appRoleAssignments read with a plain 403 (an authorization denial, i.e. no
+   * Application.Read.All) — never on a timeout, 429, 5xx, 401, 404, license
+   * 403, or malformed response, which stay "unavailable".
+   */
+  function tokenRoles(tenantId: string, accessToken: OpaqueAccessToken):
+  | { graphTokenRoles: readonly string[] }
+  | { failure: GrantReconciliationFailure } {
+    try {
+      return {
+        graphTokenRoles: graphApplicationRolesFromToken(accessToken, {
+          tenantId,
+          clientId: config.applicationId,
+          now: now(),
+        }),
+      };
+    } catch {
+      return { failure: { stage: 'token_claims', code: 'graph_token_claims_invalid' } };
+    }
+  }
+
   async function grants(
+    tenantId: string,
     applicationServicePrincipalId: string,
     accessToken: OpaqueAccessToken,
     budget: RequestBudget,
   ): Promise<
     | { grants: readonly CanonicalAppRoleAssignment[] }
+    | { grants: null; graphTokenRoles: readonly string[] }
     | { grants: null; failure: GrantReconciliationFailure }
   > {
     let stage: GrantReconciliationFailure['stage'] = 'assignments';
     try {
       const assignmentPath = `/v1.0/servicePrincipals/${applicationServicePrincipalId}/appRoleAssignments`;
-      const rawAssignments = await collection(
-        `${GRAPH_ORIGIN}${assignmentPath}`,
-        assignmentPath,
-        accessToken,
-        budget,
-      );
+      let rawAssignments: unknown[];
+      const requestsBeforeAssignments = budget.requests;
+      try {
+        rawAssignments = await collection(
+          `${GRAPH_ORIGIN}${assignmentPath}`,
+          assignmentPath,
+          accessToken,
+          budget,
+        );
+      } catch (error) {
+        // readFailure maps every non-license 403 to graph_permission_missing.
+        // Only a denial of the FIRST page means "no Application.Read.All"; a
+        // 403 after a readable page is an inconsistent inventory, not a
+        // missing permission, and stays unavailable.
+        const firstPageDenied = budget.requests === requestsBeforeAssignments + 1;
+        if (firstPageDenied && error instanceof GraphClientError && error.code === 'graph_permission_missing') {
+          const fallback = tokenRoles(tenantId, accessToken);
+          return 'failure' in fallback
+            ? { grants: null, failure: fallback.failure }
+            : { grants: null, graphTokenRoles: fallback.graphTokenRoles };
+        }
+        throw error;
+      }
       const assignments: Array<{ appRoleId: string; resourceId: string }> = [];
       for (const assignment of rawAssignments) {
         if (!isRecord(assignment)
@@ -537,14 +595,17 @@ export function createMicrosoftGraphClient(
       const budget = { bytes: 0, requests: 0, items: 0 };
       const organizationDisplayName = await organizationProof(input.tenantId, input.accessToken, budget);
       const applicationServicePrincipalId = await applicationServicePrincipal(input.accessToken, budget);
-      const observed = await grants(applicationServicePrincipalId, input.accessToken, budget);
-      return {
+      const observed = await grants(input.tenantId, applicationServicePrincipalId, input.accessToken, budget);
+      const proof = {
         tenantId: input.tenantId,
         applicationId: config.applicationId,
         organizationDisplayName,
-        observedGrants: observed.grants,
-        ...(observed.grants === null ? { grantReconciliationFailure: observed.failure } : {}),
       };
+      if (observed.grants !== null) return { ...proof, observedGrants: observed.grants };
+      if ('graphTokenRoles' in observed) {
+        return { ...proof, observedGrants: null, graphTokenRoles: observed.graphTokenRoles };
+      }
+      return { ...proof, observedGrants: null, grantReconciliationFailure: observed.failure };
     },
 
     async readResource(input) {
