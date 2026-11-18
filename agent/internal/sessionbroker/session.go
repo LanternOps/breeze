@@ -103,6 +103,12 @@ type Session struct {
 	// what happened instead of guessing (#11044). Nil for any other close.
 	closeReason atomic.Pointer[string]
 
+	// backupHelperExited closes once the backup helper process behind this
+	// session has exited and been reaped (#12193). ClearBackupSession sets it;
+	// nil when the agent tracked no process for the session. Guarded by the
+	// broker's backup.mu.
+	backupHelperExited <-chan struct{}
+
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
 
