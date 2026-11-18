@@ -141,6 +141,7 @@ export type DocumentPartner = {
   billingEmail: string | null;
   documentTheme: string | null;
   documentPageSize: string | null;
+  billingAddressCountry: string | null;
   settings: unknown;
 };
 
@@ -182,6 +183,7 @@ export async function preloadCustomerDocumentBranding(
         billingEmail: partners.billingEmail,
         documentTheme: partners.documentTheme,
         documentPageSize: partners.documentPageSize,
+        billingAddressCountry: partners.billingAddressCountry,
         settings: partners.settings,
       }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1)));
     partner = row ?? null;

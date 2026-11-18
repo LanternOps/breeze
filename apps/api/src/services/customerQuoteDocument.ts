@@ -30,7 +30,7 @@ import { renderContractBlocksForClient } from './contractTemplateRender';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { toCustomerQuoteHeaderFields, toPublicQuoteStatus, withQuoteStatus } from './publicQuoteDto';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
-import { resolvePageSize, resolveThemeId } from './documentThemes';
+import { resolvePageSize, resolvePartnerPageSize, resolveThemeId } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { buildSellerSnapshot } from './sellerSnapshot';
 
@@ -211,7 +211,7 @@ export async function assembleCustomerQuoteDocument(
     supportEmail: brand?.supportEmail ?? null,
     supportPhone: brand?.supportPhone ?? null,
     theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
+    pageSize: resolvePageSize(snap?.pageSize ?? resolvePartnerPageSize(partner)),
   };
 
   return {

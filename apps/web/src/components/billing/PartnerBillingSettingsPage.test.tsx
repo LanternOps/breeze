@@ -479,6 +479,71 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
     });
   });
 
+  // #12097: a partner that never chose a page size follows its region default;
+  // the form shows that default, where it comes from, and saving keeps it unset.
+  describe('page size region default (#12097)', () => {
+    const loaded = (over: Record<string, unknown>) => json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      invoiceFooter: null, documentTheme: 'classic', documentPageSize: 'a4',
+      documentPageSizeChoice: null, documentPageSizeFallback: 'letter',
+      billingAddressCountry: 'DE', ...over,
+    });
+    const patchBody = () => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      return patch ? JSON.parse((patch[1] as RequestInit).body as string) : null;
+    };
+
+    it('shows "Region default" with the resolved size and its source, and saves null', async () => {
+      fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => (opts?.method === 'PATCH' ? json({ data: {} }) : loaded({})));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.value).toBe('');
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (A4)');
+      expect(screen.getByTestId('partner-billing-document-page-size-source').textContent).toMatch(/billing address/i);
+
+      fireEvent.click(screen.getByTestId('partner-billing-save'));
+      await waitFor(() => expect(patchBody()).toBeTruthy());
+      expect(patchBody()).toHaveProperty('documentPageSize', null);
+    });
+
+    it('follows the billing country live as it is edited', async () => {
+      fetchMock.mockImplementation(async () => loaded({}));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByTestId('partner-billing-country'), { target: { value: 'CA' } });
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (Letter)');
+    });
+
+    it('with no country anywhere, shows the server default and says so', async () => {
+      fetchMock.mockImplementation(async () => loaded({ billingAddressCountry: null, documentPageSizeFallback: 'a4' }));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+      const select = screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement;
+      expect(select.options[select.selectedIndex]!.textContent).toBe('Region default (A4)');
+      expect(screen.getByTestId('partner-billing-document-page-size-source').textContent).toMatch(/no country/i);
+    });
+
+    it('an explicit choice loads as that choice and still saves it', async () => {
+      fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => (
+        opts?.method === 'PATCH' ? json({ data: {} }) : loaded({ documentPageSize: 'letter', documentPageSizeChoice: 'letter' })));
+      renderPage();
+      await gotoDocumentsTab();
+      await waitFor(() => expect(screen.getByTestId('partner-billing-document-page-size')).toBeInTheDocument());
+      expect((screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement).value).toBe('letter');
+      expect(screen.queryByTestId('partner-billing-document-page-size-source')).toBeNull();
+      fireEvent.click(screen.getByTestId('partner-billing-save'));
+      await waitFor(() => expect(patchBody()).toBeTruthy());
+      expect(patchBody()).toHaveProperty('documentPageSize', 'letter');
+    });
+  });
+
   // #3430 — this form PATCHes the FULL payload, so a legacy scheme-less
   // billingWebsite would 400 an unrelated edit with only a toast naming the
   // wire field. The inline guard points at the offending field first. Website

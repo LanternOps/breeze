@@ -39,7 +39,7 @@ import { quoteAcceptances, quotes } from '../db/schema/quotes';
 import { users } from '../db/schema/users';
 import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
-import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
+import { registerThemeFonts, resolvePartnerPageSize, type DocumentPageSize } from './documentThemes';
 import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs, pdfTooLargeError } from './pdfMerge';
 import { PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
 import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngImageData, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
@@ -564,6 +564,9 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
         orgName: organizations.name,
         partnerName: partners.name,
         partnerPageSize: partners.documentPageSize,
+        // #12097: the region signal a partner with no page-size choice falls back to.
+        partnerBillingCountry: partners.billingAddressCountry,
+        partnerSettings: partners.settings,
       })
       .from(contractDocuments)
       .leftJoin(contractTemplates, eq(contractTemplates.id, contractDocuments.templateId))
@@ -629,7 +632,7 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
     parties: { seller: seller ?? nonBlank(row.partnerName), client: client ?? nonBlank(row.orgName) },
     source: isRequest ? { kind: 'request', requestId: row.agreementRequestId } : { kind: 'quote', quoteNumber: row.quoteNumber ?? null },
     how,
-    pageSize: resolvePageSize(row.partnerPageSize),
+    pageSize: resolvePartnerPageSize({ documentPageSize: row.partnerPageSize, billingAddressCountry: row.partnerBillingCountry, settings: row.partnerSettings }),
     certificateVersion: certificateVersionFromColumn(row.certificateVersion),
   };
 }
