@@ -20,8 +20,18 @@
 // what is left of N: a job that hits its timeout reports `cancelled` and hides
 // the real failure. A skipped retry leaves attempt 1's failure standing.
 //
+// `--stall-minutes N` (#12113) kills an attempt that printed nothing for N
+// minutes, with its whole process tree, and fails it with a `Test stall`
+// annotation naming the last test file the output mentioned. vitest's
+// testTimeout is a timer inside the test worker, so it cannot end a run whose
+// worker is not running timers (a synchronous loop, GC thrash, a teardown
+// waiting on a pool); without this such a run holds the job to its limit and
+// names nothing. A stalled attempt is never retried. While armed, the wrapper
+// also prints a heartbeat (free memory, load) every min(5 min, N/2), so a run
+// whose runner is lost mid-step leaves a resource trail in the log.
+//
 //   node .github/scripts/retry-shard.mjs --runner vitest|go --label <name> \
-//     [--go-dir <dir>] [--budget-minutes N] -- <command...>
+//     [--go-dir <dir>] [--budget-minutes N] [--stall-minutes N] -- <command...>
 //
 // A test that fails both attempts may still pass the job when it is in the
 // flaky ledger (.github/flaky-tests.json) AT THE BASE COMMIT ($CI_BASE_SHA)
@@ -37,7 +47,7 @@
 
 import { spawn } from 'node:child_process';
 import { appendFileSync, createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { freemem, loadavg, tmpdir, totalmem } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -254,6 +264,44 @@ export function budgetSkipReason({ budgetMinutes, elapsedMs, attemptMs }) {
   return `attempt 1 took ${min(attemptMs)} but only ${min(remainingMs)} of the ${budgetMinutes}-min retry budget is left, so a second attempt would hit the job timeout; attempt 1's failure stands`;
 }
 
+// ── Stall watchdog (#12113) ──────────────────────────────────────────────
+
+// vitest names a file on its result line (` ✓ <file> (N tests)`) and on every
+// console line (`stdout | <file> > <suite> > <test>`), so the last one in the
+// output is the file that was running or had just finished. It is a lead, not
+// proof: a file that hangs before printing anything is not named.
+const TEST_FILE = /[\w./@-]+\.test\.[cm]?[jt]sx?\b/g;
+
+export function lastTestFile(output) {
+  const matches = String(output).replace(ANSI, '').match(TEST_FILE);
+  return matches ? matches[matches.length - 1] : null;
+}
+
+const heartbeatLine = (label, elapsedMs, silentMs) => {
+  const mib = (b) => Math.round(b / 1_048_576);
+  const load = loadavg().map((l) => l.toFixed(2)).join(' ');
+  return `retry-shard: ${label} heartbeat +${(elapsedMs / 60_000).toFixed(1)} min, last output ${Math.round(silentMs / 1000)} s ago, mem free ${mib(freemem())}/${mib(totalmem())} MiB, load ${load}\n`;
+};
+
+// SIGTERM to the attempt's process group (pnpm → vitest → its forks), then
+// SIGKILL if anything is still holding the pipes 10 s later. Returns a cancel.
+function killTree(child, signal) {
+  const send = (sig) => {
+    try {
+      process.kill(-child.pid, sig);
+    } catch {
+      try {
+        child.kill(sig);
+      } catch {
+        // already gone
+      }
+    }
+  };
+  send(signal);
+  const hard = setTimeout(() => send('SIGKILL'), 10_000);
+  return () => clearTimeout(hard);
+}
+
 // ── Ledger context ───────────────────────────────────────────────────────
 
 // The ledger runner for a wrapped step: vitest by its label's job prefix
@@ -323,18 +371,20 @@ class UsageError extends Error {}
 function parseCli(argv) {
   const sep = argv.indexOf('--');
   if (sep === -1) throw new UsageError('missing `--` before the command');
-  const opts = { runner: null, label: null, goDir: '.', budgetMinutes: null };
+  const opts = { runner: null, label: null, goDir: '.', budgetMinutes: null, stallMinutes: null };
+  const minuteFlags = { '--budget-minutes': 'budgetMinutes', '--stall-minutes': 'stallMinutes' };
   const flags = argv.slice(0, sep);
   for (let i = 0; i < flags.length; i++) {
     const [k, v] = [flags[i], flags[i + 1]];
     if (k === '--runner') opts.runner = v;
     else if (k === '--label') opts.label = v;
     else if (k === '--go-dir') opts.goDir = v;
-    else if (k === '--budget-minutes') opts.budgetMinutes = v === undefined ? null : Number(v);
+    else if (k in minuteFlags) opts[minuteFlags[k]] = v === undefined ? null : Number(v);
     else throw new UsageError(`unknown option ${k}`);
     if (v === undefined) throw new UsageError(`${k} needs a value`);
-    if (k === '--budget-minutes' && (v.trim() === '' || !Number.isFinite(opts.budgetMinutes) || opts.budgetMinutes <= 0)) {
-      throw new UsageError('--budget-minutes must be a positive number');
+    if (k in minuteFlags) {
+      const n = opts[minuteFlags[k]];
+      if (v.trim() === '' || !Number.isFinite(n) || n <= 0) throw new UsageError(`${k} must be a positive number`);
     }
     i++;
   }
@@ -351,7 +401,9 @@ function parseCli(argv) {
 // Runs one attempt with stdin inherited, teeing stdout/stderr to temp files.
 // For go, stdout is `-json` events: each event's Output is re-printed so the
 // log reads like plain `go test -v`.
-function runAttempt(command, { cwd, runner }) {
+// With `stallMinutes`, the child leads its own process group so a stall can
+// take down every descendant, and the result carries `stalled`.
+function runAttempt(command, { cwd, runner, label, stallMinutes = null }) {
   return new Promise((done) => {
     const dir = mkdtempSync(join(tmpdir(), 'retry-shard-'));
     const outPath = join(dir, 'stdout');
@@ -393,15 +445,51 @@ function runAttempt(command, { cwd, runner }) {
       process.stdout.write(`${line}\n`);
     };
 
-    const child = spawn(command[0], command.slice(1), { cwd, stdio: ['inherit', 'pipe', 'pipe'] });
+    const watch = stallMinutes !== null;
+    const child = spawn(command[0], command.slice(1), { cwd, stdio: ['inherit', 'pipe', 'pipe'], detached: watch });
+    // In its own group the child no longer receives the terminal's or the
+    // runner's signals with us, so forward them to the whole group.
+    let cancelHardKill = () => {};
     const forward = (sig) => {
       interrupted = true;
-      child.kill(sig);
+      if (watch) cancelHardKill = killTree(child, sig);
+      else child.kill(sig);
     };
     process.on('SIGINT', forward);
     process.on('SIGTERM', forward);
 
+    // Every chunk resets the clock. The tail of the output is kept so a stall
+    // can name the last test file without re-reading the temp files.
+    const startedAt = Date.now();
+    let lastOutputAt = startedAt;
+    let tail = '';
+    let stalled = false;
+    let watchdog = null;
+    let heartbeat = null;
+    const seen = (chunk) => {
+      lastOutputAt = Date.now();
+      if (watch) tail = (tail + chunk.toString('utf8')).slice(-16_384);
+    };
+    if (watch) {
+      const stallMs = stallMinutes * 60_000;
+      heartbeat = setInterval(() => {
+        const t = Date.now();
+        process.stdout.write(heartbeatLine(label, t - startedAt, t - lastOutputAt));
+      }, Math.min(5 * 60_000, stallMs / 2));
+      watchdog = setInterval(() => {
+        if (stalled || Date.now() - lastOutputAt < stallMs) return;
+        stalled = true;
+        const t = Date.now();
+        process.stdout.write(heartbeatLine(label, t - startedAt, t - lastOutputAt));
+        process.stdout.write(
+          `::error title=Test stall::${escapeData(`${label}: no test output for ${stallMinutes} min; last test file in the output: ${lastTestFile(tail) ?? 'none'}; killed the run, not retrying`)}\n`,
+        );
+        cancelHardKill = killTree(child, 'SIGTERM');
+      }, Math.min(15_000, Math.max(stallMs / 6, 100)));
+    }
+
     child.stdout.on('data', (chunk) => {
+      seen(chunk);
       out.write(chunk);
       if (runner !== 'go') {
         process.stdout.write(chunk);
@@ -412,6 +500,7 @@ function runAttempt(command, { cwd, runner }) {
       for (const l of lines) printGoLine(l);
     });
     child.stderr.on('data', (chunk) => {
+      seen(chunk);
       err.write(chunk);
       process.stderr.write(chunk);
     });
@@ -423,6 +512,9 @@ function runAttempt(command, { cwd, runner }) {
     child.on('close', (code, signal) => {
       process.off('SIGINT', forward);
       process.off('SIGTERM', forward);
+      clearInterval(watchdog);
+      clearInterval(heartbeat);
+      cancelHardKill();
       if (pending) printGoLine(pending);
       for (const pkg of [...buffers.keys()]) flush(pkg);
       if (spawnError) process.stderr.write(`retry-shard: cannot run ${command[0]}: ${spawnError.message}\n`);
@@ -431,8 +523,9 @@ function runAttempt(command, { cwd, runner }) {
         if (++closed < 2) return;
         const output = `${readFileSync(outPath, 'utf8')}\n${readFileSync(errPath, 'utf8')}`;
         rmSync(dir, { recursive: true, force: true });
-        const exit = spawnError ? 127 : signal || interrupted ? null : code;
-        done({ code: exit, output });
+        // A stalled run is a failure whatever the child exited with on SIGTERM.
+        const exit = spawnError ? 127 : signal || interrupted || stalled ? null : code;
+        done({ code: exit, output, stalled });
       };
       out.end(finish);
       err.end(finish);
@@ -451,6 +544,7 @@ const MAX_REPORT_IDS = 200;
 // --budget-minutes refused it.
 export function noRetryReason(first, { budgetSkipped = false } = {}) {
   if (first.code === 0) return null;
+  if (first.stalled) return 'stalled';
   if (first.code === null) return 'signal';
   if (first.buildFailed) return 'build_failed';
   if (first.raceDetected) return 'race';
@@ -470,6 +564,7 @@ const reportAttempt = (a) => {
     buildFailed: Boolean(a.buildFailed),
     raceDetected: Boolean(a.raceDetected),
     timedOut: Boolean(a.timedOut),
+    stalled: Boolean(a.stalled),
   };
 };
 
@@ -532,7 +627,7 @@ async function main(argv) {
     opts = parseCli(argv);
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
-    process.stderr.write(`retry-shard: ${e.message}\nusage: retry-shard.mjs --runner vitest|go --label <name> [--go-dir <dir>] [--budget-minutes N] -- <command...>\n`);
+    process.stderr.write(`retry-shard: ${e.message}\nusage: retry-shard.mjs --runner vitest|go --label <name> [--go-dir <dir>] [--budget-minutes N] [--stall-minutes N] -- <command...>\n`);
     return 2;
   }
   const { runner, label } = opts;
@@ -540,11 +635,12 @@ async function main(argv) {
   const cwd = runner === 'go' ? resolve(opts.goDir) : process.cwd();
   if (runner === 'go' && !command.includes('-json')) command = [command[0], 'test', '-json', ...command.slice(2)];
 
+  const attemptOpts = { cwd, runner, label, stallMinutes: opts.stallMinutes };
   const firstStart = now();
-  const first = await runAttempt(command, { cwd, runner });
+  const first = await runAttempt(command, attemptOpts);
   const firstMs = now() - firstStart;
   const p1 = parseFailures(runner, first.output);
-  const firstResult = { code: first.code, ...p1 };
+  const firstResult = { code: first.code, stalled: first.stalled, ...p1 };
   if (p1.raceDetected && first.code !== 0) {
     process.stdout.write(
       `::error title=Data race::${escapeData(`${label}: the race detector reported a data race; not retrying (a clean re-run would hide it)`)}\n`,
@@ -574,10 +670,10 @@ async function main(argv) {
     process.stdout.write(
       `::warning title=Retrying test shard::${escapeData(`${label}: attempt 1 failed with ${n} failing test(s); re-running the whole shard once`)}\n`,
     );
-    const second = await runAttempt(retryCommand, { cwd, runner });
+    const second = await runAttempt(retryCommand, attemptOpts);
     attempts = 2;
     const p2 = parseFailures(runner, second.output);
-    secondResult = { code: second.code, ...p2 };
+    secondResult = { code: second.code, stalled: second.stalled, ...p2 };
     // The ledger is consulted only when the second attempt failed too.
     const ctx = second.code === 0 ? {} : quarantineContext({ runner, label, goDir: cwd });
     verdict = decide({ first: firstResult, second: secondResult, ...ctx });
