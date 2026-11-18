@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // newTestHeartbeatForDiag returns a zero-value Heartbeat for exercising
@@ -443,5 +444,53 @@ func TestHandleCapturePprofAllExcludesCPU(t *testing.T) {
 	}
 	if _, present := result["cpuProfileBase64"]; present {
 		t.Error("cpuProfileBase64 should not be present for profile=all")
+	}
+}
+
+// TestHandleCapturePprofAllFitsResultBudget verifies "all" stays inside the
+// command result budget when every profile it carries hits maxProfileBytes,
+// so adding a profile to "all" cannot silently push it past the server cap.
+func TestHandleCapturePprofAllFitsResultBudget(t *testing.T) {
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{ID: "all", Type: "capture_pprof"})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	worst := len(res.Stdout)
+	for k, v := range decodeDiagResult(t, res.Stdout) {
+		if strings.HasSuffix(k, "ProfileBase64") {
+			worst += base64.StdEncoding.EncodedLen(maxProfileBytes) - len(v.(string))
+		}
+	}
+	if worst > wire.CommandResultBudget {
+		t.Fatalf("worst-case all result is %d bytes, over the %d byte budget", worst, wire.CommandResultBudget)
+	}
+}
+
+// TestHandleCapturePprofIntervalRunsFromFinish verifies the slot is held while
+// a capture runs and the interval restarts when it finishes.
+func TestHandleCapturePprofIntervalRunsFromFinish(t *testing.T) {
+	h := newTestHeartbeatForDiag(t)
+	setCapturePprofCPUDuration(t, 100*time.Millisecond)
+	prev := setCapturePprofMinInterval(20 * time.Millisecond)
+	t.Cleanup(func() { setCapturePprofMinInterval(prev) })
+	goroutine := Command{ID: "g", Type: "capture_pprof", Payload: map[string]any{"profile": "goroutine"}}
+
+	done := make(chan string)
+	go func() {
+		done <- handleCapturePprof(h, Command{ID: "cpu", Type: "capture_pprof", Payload: map[string]any{"profile": "cpu"}}).Status
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if res := handleCapturePprof(h, goroutine); !strings.Contains(res.Error, "rate-limited") {
+		t.Fatalf("capture during a cpu capture: status = %q (error: %q), want rate-limited", res.Status, res.Error)
+	}
+	if status := <-done; status != "completed" {
+		t.Fatalf("cpu capture status = %q, want completed", status)
+	}
+	if res := handleCapturePprof(h, goroutine); !strings.Contains(res.Error, "rate-limited") {
+		t.Fatalf("capture right after the cpu capture finished: status = %q (error: %q), want rate-limited", res.Status, res.Error)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if res := handleCapturePprof(h, goroutine); res.Status != "completed" {
+		t.Fatalf("capture after the interval: status = %q (error: %q), want completed", res.Status, res.Error)
 	}
 }
