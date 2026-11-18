@@ -19,7 +19,7 @@ interface AutoresponseTicket {
 
 // Per-sender, per-partner autoresponse cap: 5 per sender per partner per hour.
 // This is a BACKSTOP, not the loop guard — mail loops are stopped first by
-// loopPrevention.ts (Auto-Submitted / Precedence / system-sender / self-domain).
+// loopPrevention.ts (Auto-Submitted / Precedence / system-sender / self-domain / X-Loop).
 // It is sized so a requester emailing about several separate issues in quick
 // succession is still acknowledged each time (#12201), while a runaway burst
 // that slips past loopPrevention is still bounded.
@@ -82,8 +82,9 @@ async function capAllows(partnerId: string, senderEmail: string): Promise<boolea
     // deployments). Key on the lowercased sender — loopPrevention + the
     // portal-user lookup already lowercase, so the cap must too, else
     // case-variant senders (Jane@x.com vs jane@x.com) would each get their own
-    // budget and bypass the cap. rateLimiter's metric/guard label is the
-    // `autoresponse` prefix only, so the address never lands in a label.
+    // budget and bypass the cap. rateLimiter's DB-context tripwire label is the
+    // `autoresponse` prefix only, so neither the partner id nor the address is
+    // in that label (its Redis-unavailable error log does print the full key).
     const cap = await rateLimiter(
       getRedis(),
       `autoresponse:${partnerId}:${senderEmail.trim().toLowerCase()}`,
@@ -104,7 +105,7 @@ async function capAllows(partnerId: string, senderEmail: string): Promise<boolea
  * (handled by ticketNotifyWorker) only when ALL hold:
  *   - the ticket belongs to the resolved partner (spec §6 re-assertion),
  *   - the partner has autoresponder enabled (default true),
- *   - no loop-prevention rule fires (Auto-Submitted/Precedence/system-sender/self-domain),
+ *   - no loop-prevention rule fires (Auto-Submitted/Precedence/system-sender/self-domain/X-Loop),
  *   - the per-sender, per-partner Redis cap (5 / hour, a backstop) has room.
  * Called ONLY on the created-for-known-sender path — never for quarantined,
  * ignored, or closed-continuation mail (spec §5: never autorespond to unknown).

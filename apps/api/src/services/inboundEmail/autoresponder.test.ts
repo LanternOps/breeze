@@ -92,11 +92,14 @@ describe('maybeSendAutoresponse', () => {
     // Redis error must SUPPRESS the autoresponse, never propagate into the tx.
     rateLimiterMock.mockRejectedValue(new Error('redis down'));
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
-    await expect(maybeSendAutoresponse(n(), 'p-1', ticket)).resolves.toBeUndefined();
-    expect(emitMock).not.toHaveBeenCalled();
-    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(infoSpy).toHaveBeenCalledWith('[InboundEmail] autoresponse suppressed', expect.objectContaining({ reason: 'rate-capped' }));
-    infoSpy.mockRestore();
+    try {
+      await expect(maybeSendAutoresponse(n(), 'p-1', ticket)).resolves.toBeUndefined();
+      expect(emitMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect(infoSpy).toHaveBeenCalledWith('[InboundEmail] autoresponse suppressed', expect.objectContaining({ reason: 'rate-capped' }));
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('fails CLOSED (suppresses) when the autoresponderEnabled settings read throws — never rolls back ticket creation (FIX 1)', async () => {
@@ -167,14 +170,17 @@ describe('maybeSendAutoresponse — per-sender, per-partner cap (#12201)', () =>
 
   it('suppresses the 6th autoresponse within the hour for the same sender + partner (reason rate-capped)', async () => {
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
-    for (let i = 0; i < 6; i += 1) {
-      await maybeSendAutoresponse(n(), 'p-1', ticketFor('p-1', `t-${i}`));
-      now += 5 * 60 * 1000; // 6 sends over 25 minutes
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        await maybeSendAutoresponse(n(), 'p-1', ticketFor('p-1', `t-${i}`));
+        now += 5 * 60 * 1000; // 6 sends over 25 minutes
+      }
+      expect(emitMock.mock.calls.map((c) => c[0].ticketId)).toEqual(['t-0', 't-1', 't-2', 't-3', 't-4']);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy).toHaveBeenCalledWith('[InboundEmail] autoresponse suppressed', expect.objectContaining({ reason: 'rate-capped', ticketId: 't-5' }));
+    } finally {
+      infoSpy.mockRestore();
     }
-    expect(emitMock.mock.calls.map((c) => c[0].ticketId)).toEqual(['t-0', 't-1', 't-2', 't-3', 't-4']);
-    expect(infoSpy).toHaveBeenCalledTimes(1);
-    expect(infoSpy).toHaveBeenCalledWith('[InboundEmail] autoresponse suppressed', expect.objectContaining({ reason: 'rate-capped', ticketId: 't-5' }));
-    infoSpy.mockRestore();
   });
 
   it('acknowledges again once the hour window has slid past the burst', async () => {
