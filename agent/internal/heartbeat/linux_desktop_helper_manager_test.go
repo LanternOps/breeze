@@ -90,3 +90,35 @@ func TestStartLinuxDesktopHelperManager_FlagOffConstructsNothing(t *testing.T) {
 		t.Fatal("manager constructed with the flag off")
 	}
 }
+
+// Root's clamp on a Linux desktop helper's capture claim (#12117 W3): the
+// flag on Linux AND a build that carries the Wayland backend.
+func TestLinuxWaylandCaptureAuthorizer(t *testing.T) {
+	on := &config.Config{DesktopWaylandHelper: true}
+	off := &config.Config{DesktopWaylandHelper: false}
+	cases := []struct {
+		name     string
+		goos     string
+		cfg      *config.Config
+		compiled bool
+		want     bool
+	}{
+		{"linux, flag on, backend compiled", "linux", on, true, true},
+		{"linux, flag on, no backend", "linux", on, false, false},
+		{"linux, flag off, backend compiled", "linux", off, true, false},
+		{"linux, no config", "linux", nil, true, false},
+		{"darwin, flag on, backend compiled", "darwin", on, true, false},
+		{"windows, flag on, backend compiled", "windows", on, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := linuxWaylandCaptureAuthorizer(tc.goos, tc.cfg, tc.compiled)(); got != tc.want {
+				t.Fatalf("authorized = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// This build: even with the flag on, a helper's capture claim is clamped.
+	if linuxWaylandCaptureAuthorizer("linux", on, desktop.WaylandBackendCompiled)() {
+		t.Fatal("W3 must clamp every Linux desktop helper's CanCapture to false")
+	}
+}

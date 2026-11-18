@@ -17,6 +17,14 @@ func linuxDesktopHelperEnabled(goos string, cfg *config.Config) bool {
 	return goos == "linux" && cfg != nil && cfg.DesktopWaylandHelper
 }
 
+// linuxWaylandCaptureAuthorizer is root's clamp on a Linux desktop helper's
+// CanCapture claim (#12117): the flag on Linux and a build that carries the
+// Wayland capture backend. Fixed at start, like the manager itself.
+func linuxWaylandCaptureAuthorizer(goos string, cfg *config.Config, backendCompiled bool) func() bool {
+	allowed := linuxDesktopHelperEnabled(goos, cfg) && backendCompiled
+	return func() bool { return allowed }
+}
+
 // startLinuxDesktopHelperManager builds the manager and runs it until the
 // agent stops. Called from Start after the broker is listening.
 func (h *Heartbeat) startLinuxDesktopHelperManager() {

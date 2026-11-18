@@ -623,7 +623,20 @@ type Heartbeat struct {
 	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
 	// in Start, read by Stop.
 	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
-	promptHost          *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// linuxHosted maps a desktop session id to its live mark on the Linux
+	// desktop helper of a logind session (#12117 W3), released exactly once
+	// when its owner is forgotten. linuxHostedMu also orders that release
+	// with the owner's removal (forgetDesktopOwner).
+	linuxHostedMu  sync.Mutex
+	linuxHosted    map[string]linuxHostedMark
+	linuxHostedSeq uint64
+	// Test seams for Linux desktop routing; production leaves them nil.
+	linuxDesktopHelperOverride linuxDesktopHelperController
+	linuxActiveSeatSession     func(context.Context) (*sessionbroker.DetectedSession, error)
+	// desktopDirectStart replaces h.desktopMgr.StartSession on the direct
+	// in-root start path; tests only.
+	desktopDirectStart func(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy) (string, error)
+	promptHost         *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
@@ -1540,6 +1553,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		// Before Listen: a Linux desktop helper keeps a CanCapture claim only
+		// with desktop_wayland_helper on and the Wayland backend in this build
+		// (#12117); always false until that backend ships.
+		h.sessionBroker.SetLinuxWaylandCaptureAuthorized(
+			linuxWaylandCaptureAuthorizer(runtime.GOOS, cfg, desktop.WaylandBackendCompiled))
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
 		h.startPromptHost(config.GetDataDir())

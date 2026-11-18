@@ -186,3 +186,19 @@ func TestIsLocalGraphicalLogindSession(t *testing.T) {
 		t.Error("output without Type accepted")
 	}
 }
+
+func TestSetLinuxWaylandCaptureAuthorized(t *testing.T) {
+	b := New("/tmp/test-capture-authorized.sock", nil)
+	if b.linuxWaylandCaptureAuthorizer()() {
+		t.Fatal("a new broker must not authorize Linux desktop helper capture")
+	}
+	b.SetLinuxWaylandCaptureAuthorized(func() bool { return true })
+	if !b.linuxWaylandCaptureAuthorizer()() {
+		t.Fatal("the installed authorizer was not used")
+	}
+	// nil fails closed rather than leaving a nil func to call.
+	b.SetLinuxWaylandCaptureAuthorized(nil)
+	if b.linuxWaylandCaptureAuthorizer()() {
+		t.Fatal("a nil authorizer must deny capture")
+	}
+}
