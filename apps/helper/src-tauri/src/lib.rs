@@ -2880,6 +2880,7 @@ mod tests {
             ("ipc/message.rs", prod_of(include_str!("ipc/message.rs"))),
             ("ipc/notifications.rs", prod_of(include_str!("ipc/notifications.rs"))),
             ("ipc/prompt.rs", prod_of(include_str!("ipc/prompt.rs"))),
+            ("ipc/server_identity_unix.rs", prod_of(include_str!("ipc/server_identity_unix.rs"))),
             ("ipc/token.rs", prod_of(include_str!("ipc/token.rs"))),
             ("ipc/transport.rs", prod_of(include_str!("ipc/transport.rs"))),
         ];

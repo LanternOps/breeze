@@ -49,9 +49,15 @@ const (
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
-	role       ipc.HelperRole // "system" or "user"
-	binaryKind string
-	context    string
+	// serverVerifier decides, before any byte of the auth handshake is sent,
+	// whether the process that accepted the connection is the broker. Set to
+	// the platform verifier by NewWithOptions (Unix only; Windows verifies
+	// inside its own dialIPC). Tests substitute it to talk to a non-root
+	// listener.
+	serverVerifier func(conn net.Conn, socketPath string) error
+	role           ipc.HelperRole // "system" or "user"
+	binaryKind     string
+	context        string
 	// connMu guards conn against the Stop-from-another-goroutine race the
 	// reconnect supervisor creates; see connect and currentConn.
 	connMu     sync.Mutex
@@ -123,14 +129,15 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 		binaryKind = ipc.HelperBinaryUserHelper
 	}
 	c := &Client{
-		socketPath: socketPath,
-		role:       role,
-		binaryKind: binaryKind,
-		context:    context,
-		stopChan:   make(chan struct{}),
-		desktopMgr: newHelperDesktopManager(context),
-		executor:   executor.New(nil),
-		pending:    make(map[string]chan *ipc.Envelope),
+		socketPath:     socketPath,
+		serverVerifier: platformServerVerifier,
+		role:           role,
+		binaryKind:     binaryKind,
+		context:        context,
+		stopChan:       make(chan struct{}),
+		desktopMgr:     newHelperDesktopManager(context),
+		executor:       executor.New(nil),
+		pending:        make(map[string]chan *ipc.Envelope),
 	}
 	show := showNativePromptOS
 	if role == ipc.HelperRoleSystem {

@@ -323,6 +323,14 @@ type AuthRequest struct {
 	// prompt host negotiates it to a catalog locale (promptcatalog.Negotiate)
 	// for the strings it renders for this session. Additive (#10190 W03).
 	UILocale string `json:"uiLocale,omitempty"`
+
+	// LogindSessionID and SpawnTicket are presented only by the Linux
+	// per-session desktop helper (#12117): the logind session root spawned it
+	// into, and the single-use ticket root minted for that spawn. The broker
+	// treats both as claims; the ticket is checked against the kernel uid and
+	// root's own record. Any other helper presenting either is refused.
+	LogindSessionID string `json:"logindSessionId,omitempty"`
+	SpawnTicket     string `json:"spawnTicket,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.

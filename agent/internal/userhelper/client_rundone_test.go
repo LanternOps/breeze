@@ -108,7 +108,7 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	accepted := make(chan struct{})
 	drop := serveOneHelperHandshake(t, ln, accepted)
 
-	client := NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+	client := trustTestServer(NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession))
 
 	runReturned := make(chan error, 1)
 	go func() { runReturned <- client.Run() }()
@@ -177,7 +177,7 @@ func TestRunPassesTheAgentsTCCNoticeFlagToTheLoop(t *testing.T) {
 		}
 		accepted := make(chan struct{})
 		drop := serveOneHelperHandshakeWith(t, ln, accepted, flag)
-		client := NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+		client := trustTestServer(NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession))
 		runReturned := make(chan error, 1)
 		go func() { runReturned <- client.Run() }()
 		select {

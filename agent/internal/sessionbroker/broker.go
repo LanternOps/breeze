@@ -350,6 +350,41 @@ type Broker struct {
 	// liveness probe (OpenProcess on Windows, indeterminate elsewhere).
 	nowFn               func() time.Time
 	helperKeyPIDAliveFn func(pid uint32) (alive, known bool)
+
+	// Linux per-session desktop helper (#12117). linuxDesktopTickets holds the
+	// single-use spawn tickets; linuxLogindLookup reads logind during
+	// admission (nil off Linux); selfExeHash (guarded by mu) is the SHA-256 of
+	// the daemon's own executable, recorded once at start, which an admitted
+	// desktop helper's binary must equal.
+	linuxDesktopTickets *linuxDesktopTickets
+	linuxLogindLookup   logindLookupFunc
+	selfExeHash         string
+	// linuxWaylandCaptureAuthorized is root's decision on whether a Linux
+	// desktop helper may claim capture. Always false until the capture backend
+	// ships behind its flag.
+	linuxWaylandCaptureAuthorized func() bool
+
+	// keepaliveIntervalOverride / keepaliveTimeoutOverride replace the
+	// package keepalive timing for this broker when nonzero. Tests set them
+	// before Listen, so a short schedule needs no write to package state
+	// that other brokers' keepalive goroutines read.
+	keepaliveIntervalOverride time.Duration
+	keepaliveTimeoutOverride  time.Duration
+	// linuxDesktopFrameDeadlineOverride shortens the Linux desktop helper frame
+	// deadline for this broker when nonzero (tests only).
+	linuxDesktopFrameDeadlineOverride time.Duration
+}
+
+// keepaliveTiming is the ping interval and pong timeout for this broker.
+func (b *Broker) keepaliveTiming() (interval, timeout time.Duration) {
+	interval, timeout = keepalivePingInterval, keepaliveTimeout
+	if b.keepaliveIntervalOverride > 0 {
+		interval = b.keepaliveIntervalOverride
+	}
+	if b.keepaliveTimeoutOverride > 0 {
+		timeout = b.keepaliveTimeoutOverride
+	}
+	return interval, timeout
 }
 
 // helperKillRetentionTTL is the hard cap on how long a helper key stays owned
@@ -394,7 +429,12 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		goos:                   runtime.GOOS,
 		helperKeyRetention:     make(map[HelperKey]retainedHelperKey),
 		helperKeyRetentionTTL:  helperKillRetentionTTL,
+		linuxDesktopTickets:    newLinuxDesktopTickets(nil),
+		linuxLogindLookup:      defaultLinuxLogindLookup(),
+
+		linuxWaylandCaptureAuthorized: func() bool { return false },
 	}
+	b.selfExeHash = recordRunningBuildHash()
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
 	return b
@@ -980,7 +1020,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser {
+		if s.accountIdentity == identity && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			if betterSession(s, best) {
 				best = s
 			}
@@ -991,7 +1031,7 @@ func (b *Broker) SessionForUser(username string) *Session {
 	}
 
 	for _, s := range b.sessions {
-		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && betterSession(s, best) {
+		if s.accountIdentity == identity && takesPerUserWork(goos, s.HelperRole) && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1811,7 +1851,7 @@ func (b *Broker) FindUserSession(winSessionID string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && betterSession(s, best) {
+		if s.WinSessionID == winSessionID && s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) && betterSession(s, best) {
 			best = s
 		}
 	}
@@ -1824,7 +1864,7 @@ func (b *Broker) userHelperSessions() []*Session {
 
 	sessions := make([]*Session, 0, len(b.sessions))
 	for _, s := range b.sessions {
-		if s.HelperRole == ipc.HelperRoleUser {
+		if s.HelperRole == ipc.HelperRoleUser && !isLinuxDesktopSession(s) {
 			sessions = append(sessions, s)
 		}
 	}
@@ -1837,7 +1877,7 @@ func (b *Broker) userHelperSessionForKey(sessionKey string) *Session {
 
 	var best *Session
 	for _, s := range b.sessions {
-		if s.HelperRole != ipc.HelperRoleUser {
+		if s.HelperRole != ipc.HelperRoleUser || isLinuxDesktopSession(s) {
 			continue
 		}
 		match := s.WinSessionID == sessionKey || s.IdentityKey == sessionKey
@@ -2256,8 +2296,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	verifiedWinSessionID := peerWinSessionID(creds.PID)
 	baseIdentityKey := creds.IdentityKey()
 
-	// Wrap connection
+	// Wrap connection. Until the peer is admitted it may send one small auth
+	// request, so a hostile length header cannot make root allocate more.
 	conn := ipc.NewConn(rawConn)
+	conn.SetMaxRecvSize(preAuthMaxRecv)
 
 	// Step 2: Read auth request
 	// (Moved ahead of binary-path verification so the hash from the auth
@@ -2464,6 +2506,39 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
+	// Step 7b: Linux per-session desktop helper admission (#12117). Runs after
+	// the path and hash checks, so a peer that is not an agent build cannot
+	// burn a ticket, and before anything else is granted. A Linux desktop
+	// helper earns the desktop scope only through a spawn ticket; without one
+	// it is refused outright, never downgraded to the user helper grant.
+	var linuxDesktop *LinuxDesktopBinding
+	isLinuxDesktop, linuxReject := linuxDesktopAdmission(b.effectiveGOOS(), helperRole, authReq)
+	if linuxReject == "" && isLinuxDesktop {
+		binding, reason := b.admitLinuxDesktopHelper(creds.UID, peerHash, authReq)
+		if reason == "" {
+			linuxDesktop = &binding
+		}
+		linuxReject = reason
+	}
+	if linuxReject != "" {
+		// Never log the ticket itself, and only a well-formed session id: the
+		// peer is not admitted, so the field is untrusted text.
+		logindSession := "<invalid>"
+		if validLogindSessionID(authReq.LogindSessionID) {
+			logindSession = authReq.LogindSessionID
+		}
+		log.Warn("Linux desktop helper admission rejected",
+			"reason", linuxReject, "uid", creds.UID, "pid", creds.PID,
+			"role", helperRole, "logindSession", logindSession)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    linuxReject,
+			Permanent: true,
+		})
+		_ = conn.Close()
+		return
+	}
+
 	// Step 8: Reject duplicate session IDs
 	b.mu.RLock()
 	if _, exists := b.sessions[authReq.SessionID]; exists {
@@ -2540,7 +2615,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	var scopes []string
+	if linuxDesktop != nil {
+		// Exactly the desktop scope: no consent, prompt or messaging grant
+		// from the helper's advertisements.
+		scopes = append([]string(nil), linuxDesktopHelperScopes...)
+	} else {
+		scopes = b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	}
 	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
 	if err != nil {
 		log.Warn("failed to retain authenticated peer process handle", "pid", creds.PID, "error", err.Error())
@@ -2588,6 +2670,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Send auth response
+	// Darwin-only (AgentHandlesTCCNotice), so always false for a Linux
+	// desktop helper.
 	handlesTCCNotice := b.agentHandlesTCCNoticeFor(helperRole, authReq, scopes)
 	authResp := ipc.AuthResponse{
 		Accepted:              true,
@@ -2611,6 +2695,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Clear the handshake deadline
 	rawConn.SetDeadline(time.Time{})
 
+	// Admitted: lift the pre-auth cap. A Linux desktop helper stays tightly
+	// bounded for the life of the connection; every other role returns to
+	// the protocol maximum it always had.
+	if linuxDesktop != nil {
+		conn.SetMaxRecvSize(linuxDesktopHelperMaxRecv)
+		frameDeadline := linuxDesktopHelperFrameDeadline
+		if b.linuxDesktopFrameDeadlineOverride > 0 {
+			frameDeadline = b.linuxDesktopFrameDeadlineOverride
+		}
+		conn.SetFrameDeadline(frameDeadline)
+	} else {
+		conn.SetMaxRecvSize(0)
+	}
+
 	// Create session. The account name comes from the verified peer
 	// identity, never from the auth request.
 	accountName := b.peerAccountName(baseIdentityKey)
@@ -2623,7 +2721,14 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	applyAuthAdvertisements(session, helperRole, authReq)
+	if linuxDesktop != nil {
+		// Only the UI locale is taken from a Linux desktop helper's
+		// advertisements; consent, PAM and prompt support grant nothing.
+		session.enableLinuxDesktopInbound(*linuxDesktop, b.linuxWaylandCaptureAuthorized)
+		session.uiLocale = uiLocaleFromAuth(authReq)
+	} else {
+		applyAuthAdvertisements(session, helperRole, authReq)
+	}
 	session.agentHandlesTCCNotice.Store(handlesTCCNotice)
 	session.peerProcess = peerProcessRef
 
@@ -3572,7 +3677,8 @@ const keepaliveMaxSendFailures = 3
 // when the most recent pong we actually have is already too old — a
 // decision that is independent of this tick's outgoing ping.
 func (b *Broker) runKeepalive(session *Session) {
-	ticker := time.NewTicker(keepalivePingInterval)
+	interval, timeout := b.keepaliveTiming()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	sendFailures := 0
@@ -3589,7 +3695,7 @@ func (b *Broker) runKeepalive(session *Session) {
 			// most recently received pong (seeded to session creation time
 			// in NewSession), not the time since the ping we're about to
 			// send below.
-			if age := session.LastPongAge(); age > keepaliveTimeout {
+			if age := session.LastPongAge(); age > timeout {
 				log.Warn("keepalive pong timeout, closing stranded session",
 					"sessionId", session.SessionID,
 					"identity", session.IdentityKey,
@@ -3764,6 +3870,13 @@ func sanitizeCapabilitiesForSession(session *Session, caps *ipc.Capabilities) *i
 	}
 	if !session.HasScope("clipboard") {
 		sanitized.CanClipboard = false
+	}
+	// A Linux desktop helper's claims are an upper bound, never a grant: root
+	// decides whether capture is allowed (#12117).
+	if session.LinuxDesktop != nil {
+		sanitized.CanNotify, sanitized.CanTray, sanitized.CanClipboard = false, false, false
+		sanitized.CanCapture = sanitized.CanCapture &&
+			session.linuxCaptureAuthorized != nil && session.linuxCaptureAuthorized()
 	}
 	// Caller verification (#6354 W02) is rendered only by the Assist helper
 	// that also owns the consent prompt; a native helper never qualifies.
