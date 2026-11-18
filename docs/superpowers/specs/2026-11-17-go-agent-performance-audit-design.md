@@ -155,3 +155,150 @@ Waves 2 to 4 cover `breeze-agent` and `breeze-desktop-helper`.
 - Benchmark names.
 - Where profiles are stored.
 - The exact config key for the memory limit.
+
+## Appendix: ranked audit
+
+Measured 2026-11-17/18 on the wave 1 branch.
+
+### Lab environment
+
+| VM | vCPU | RAM |
+|---|---|---|
+| Win11-26H2-01 | 4 | 4 GB |
+| Win10-22H2-01 | 2 | 2 GB |
+| Win2025-01 | 4 | 4 GB |
+
+- Build: Go 1.27.4, `build-edition.sh --edition self-host`, `GOOS=windows GOARCH=amd64 CGO_ENABLED=0` (`-s -w`, no `-trimpath`, no PGO).
+- Harness: `agent/scripts/perf/run-lab.sh`, one VM running at a time, enrolled against a local worktree stack.
+- Runs per VM: 5 × `idle` (1800 s), 5 × `scan` (600 s: one `refresh_inventory` plus one patch scan), and 1 extra `idle` run for profiles only, so captures do not disturb the measured runs.
+- Deviation: no libvirt snapshots exist, so runs were **not snapshot-reverted**. Each run backed up `C:\ProgramData\Breeze`, ran the test agent, and restored it. Hashes matched after all 33 runs.
+- Deviation: only `idle` and `scan` were measured. `desktop` (needs a WebRTC viewer) and `transfer` (no API path moves 500 MB to the agent) are not automated, so remote desktop and `breeze-desktop-helper` have no runtime numbers.
+- Steady = median of the second half of the run's 10-second samples. CPU = process CPU seconds over the whole run. Spread = min to max of the 5 runs.
+
+### Baselines
+
+**Win11-26H2-01**
+
+| Metric | idle median | idle spread | scan median | scan spread |
+|---|---|---|---|---|
+| Working set, steady (MB) | 44.2 | 43.7-44.5 | 43.4 | 42.4-43.8 |
+| Working set, peak (MB) | 47.6 | 47.3-47.9 | 48.4 | 47.7-49.5 |
+| Private bytes, steady (MB) | 63.9 | 63.4-64.7 | 65.0 | 63.8-65.4 |
+| Private bytes, peak (MB) | 67.4 | 67.0-68.4 | 68.4 | 66.4-70.3 |
+| CPU (s per run) | 1.48 | 1.25-6.25 | 0.94 | 0.83-1.88 |
+| Handles, steady | 611 | 546-620 | 560 | 549-611 |
+| Goroutines | 54 | 54-54 | 54 | 54-54 |
+| Go `sysBytes` (MB) | 25.5 | 21.5-25.8 | 21.8 | 21.5-25.5 |
+| Go `heapInuseBytes` (MB) | 5.9 | 5.7-7.0 | 5.6 | 5.5-5.7 |
+
+**Win10-22H2-01**
+
+| Metric | idle median | idle spread | scan median | scan spread |
+|---|---|---|---|---|
+| Working set, steady (MB) | 34.3 | 27.3-34.8 | 35.2 | 33.5-35.9 |
+| Working set, peak (MB) | 36.2 | 33.7-39.4 | 40.3 | 39.1-44.5 |
+| Private bytes, steady (MB) | 64.3 | 64.1-65.4 | 64.8 | 63.4-65.2 |
+| Private bytes, peak (MB) | 66.6 | 64.9-67.0 | 67.2 | 66.1-69.0 |
+| CPU (s per run) | 4.70 | 4.25-6.38 | 3.44 | 3.23-4.27 |
+| Handles, steady | 581 | 512-615 | 523 | 516-552 |
+| Goroutines | 54 | 54-56 | 54 | 54-54 |
+| Go `sysBytes` (MB) | 25.5 | 21.5-25.8 | 21.8 | 21.5-25.5 |
+| Go `heapInuseBytes` (MB) | 8.7 | 5.8-8.9 | 5.6 | 5.5-5.8 |
+
+**Win2025-01**
+
+| Metric | idle median | idle spread | scan median | scan spread |
+|---|---|---|---|---|
+| Working set, steady (MB) | 47.5 | 46.1-48.0 | 48.3 | 46.1-48.5 |
+| Working set, peak (MB) | 49.5 | 47.8-49.9 | 48.9 | 48.8-49.0 |
+| Private bytes, steady (MB) | 65.9 | 65.7-66.7 | 66.6 | 64.6-67.0 |
+| Private bytes, peak (MB) | 67.6 | 67.1-69.5 | 68.1 | 67.7-69.7 |
+| CPU (s per run) | 1.44 | 1.08-3.84 | 0.81 | 0.66-1.22 |
+| Handles, steady | 622 | 548-669 | 554 | 551-579 |
+| Goroutines | 54 | 54-56 | 54 | 54-56 |
+| Go `sysBytes` (MB) | 25.8 | 25.5-26.0 | 25.5 | 21.8-26.0 |
+| Go `heapInuseBytes` (MB) | 6.0 | 5.8-9.4 | 5.9 | 5.9-7.6 |
+
+- Idle CPU is 0.08% of one core (Win11, Win2025) to 0.26% (Win10, 2 vCPU).
+- The Go runtime holds about 25 MB of 64-66 MB private bytes; the live Go heap is 6-9 MB.
+- Patch scans: 12 of 15 completed. 3 failed with `wuauserv is StartPending ... An instance of the service is already running` (Win10 runs 4-5, Win2025 run 4).
+
+### Binary sizes
+
+| Binary | Bytes | With `-trimpath` | Change |
+|---|---|---|---|
+| `breeze-agent.exe` | 35,917,312 | 35,824,128 | -0.26% |
+| `breeze-desktop-helper.exe` | 16,327,680 | 16,259,584 | -0.42% |
+
+### Hotspots (idle, 3 VMs merged)
+
+CPU: 30 × 30 s profiles, 900 s profiled. On Windows the profiler also samples threads parked in system calls: 99.6% of the 87 s of samples sit flat in `runtime.cgocall`/`syscall.syscalln`, against 1.4-4.7 s of real process CPU per 30 minutes. Go code on CPU is under 1%. The cumulative view shows where the agent waits:
+
+| cum% | Function |
+|---|---|
+| 29.1 | `bytes.(*Buffer).ReadFrom` (reading child process output) |
+| 11.0 | `heartbeat.(*Heartbeat).staggerStartup.func1` |
+| 10.9 | `security.CollectStatus` via `sendSecurityStatus` |
+| 10.7 | `patching.(*WindowsUpdateProvider).searchUpdates` via `sendPatchInventory` |
+| 9.3 | `collectors.runCollectorCommand` |
+| 7.2 | `security.runCommand` |
+| 7.0 | `collectors.(*EventLogCollector).collectWindowsStreams` |
+| 4.3 | `collectors.(*BootPerformanceCollector).Collect` |
+
+Heap, allocated over each profile run's lifetime (378 MB total):
+
+| flat% | Function |
+|---|---|
+| 47.9 | `gopsutil/v3/process.(*Process).ExeWithContext`, via `NameWithContext` from `sendInventory`, `sendProcessSample`, `sendNetworkInventory`, `sendConnectionsInventory` and `mgmtdetect` |
+| 10.9 | `svcquery.queryBaseConfig` |
+| 8.7 | `runtime/pprof.StartCPUProfile` (the capture itself; 16.7% cum for `runtime/pprof`) |
+| 3.7 | `compress/flate.(*fastGen).addBlock` |
+| 2.5 | `svc/mgr.(*Mgr).ListServices` |
+
+Heap in use (12.4 MB across 3 profiles): `regexp` compilation holds 29.0%, almost all from package `init` (`patching`, `collectors/workloads`) and `executor.(*SecurityValidator).initPatterns`.
+
+### Fleet baseline (to be run)
+
+Run against production by someone with access. Results pending.
+
+```sql
+SELECT d.os_type,
+  count(DISTINCT m.device_id) AS devices, count(*) AS samples,
+  percentile_cont(0.5)  WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'sysBytes')::bigint)       AS sys_p50,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'sysBytes')::bigint)       AS sys_p95,
+  percentile_cont(0.5)  WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'heapInuseBytes')::bigint) AS heap_inuse_p50,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'heapInuseBytes')::bigint) AS heap_inuse_p95,
+  percentile_cont(0.5)  WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'goroutines')::int)        AS goroutines_p50,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY (m.custom_metrics->'agentRuntime'->>'goroutines')::int)        AS goroutines_p95
+FROM device_metrics m JOIN devices d ON d.id = m.device_id
+WHERE m.timestamp > now() - interval '7 days' AND m.custom_metrics ? 'agentRuntime'
+GROUP BY ROLLUP (d.os_type) ORDER BY d.os_type NULLS LAST;
+```
+
+| os_type | devices | samples | sys p50 | sys p95 | heapInuse p50 | heapInuse p95 | goroutines p50 | goroutines p95 |
+|---|---|---|---|---|---|---|---|---|
+| | | | | | | | | |
+
+### Ranked candidates
+
+Ordered by measured share, then break risk. Shares are from the merged idle profiles.
+
+1. Cache process name and exe by PID and start time (new, wave 4): 47.9% of allocation, in `gopsutil` `ExeWithContext`; low-medium risk (stale PID reuse).
+2. Lazy-compile package-level regular expressions (new, wave 4): 29.0% of live heap, about 1.2 MB per agent; low risk.
+3. `svcquery.queryBaseConfig` buffer reuse (new, wave 4): 10.9% of allocation; low risk.
+4. `-trimpath` (wave 2): -0.26% agent, -0.42% helper size; very low risk; hygiene, exempt from the win rule.
+5. GC arms `GOGC=50` / soft memory limit (wave 2): can only act on the 6-9 MB live heap inside 64-66 MB private bytes; low gain, medium risk.
+6. Regular expressions compiled inside functions (wave 4): 2.65% of allocation at idle; 40 call sites, mostly macOS and Linux; `executor.SanitizeOutput` compiles 7 per script run, which idle does not hit; low risk.
+7. `go fix ./...` and `modernize` (wave 3): no measured share; low risk; hygiene.
+8. `json.Marshal` on heartbeat and inventory paths (wave 4): 1.6% of allocation, 0% of live heap; low risk.
+9. `io.ReadAll` on large bodies (wave 4): 0.13% of allocation at idle; scan not profiled; low risk.
+10. PGO (wave 2): Go code is under 1% of idle CPU samples, and idle CPU is 0.08-0.26% of a core; near-zero gain at idle; medium risk (binary growth, stale profile).
+11. Remote desktop buffer reuse (wave 4): not measured, `desktop` is not automated; unranked until a desktop workload exists.
+
+### Goroutine leaks
+
+`goroutineleak` reported 0 leaked goroutines on all three VMs (53 goroutines in each `goroutine` profile). No bug issues to file.
+
+### Other bug issues to file
+
+- Patch scan fails when `wuauserv` is `StartPending` (3 of 15 scans): the pre-check treats a service that is already starting as a start failure.
