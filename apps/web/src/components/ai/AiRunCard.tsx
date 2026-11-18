@@ -12,6 +12,13 @@ import type { ChatRunProgressEntry, ChatRunState } from '@/stores/processStreamE
 
 /** Poll cadence, matching the run detail page's DETAIL_POLL_INTERVAL_MS. */
 const POLL_INTERVAL_MS = 5_000;
+/**
+ * The settled cost and files of a run that finished live come from ONE extra
+ * poll. If that read fails (or still sees the run in progress) it is retried
+ * this many times, this far apart, then the card stops polling (#12137).
+ */
+const SETTLING_POLL_RETRIES = 2;
+const SETTLING_POLL_RETRY_MS = 2_000;
 
 interface PolledArtifact {
   id: string;
@@ -174,8 +181,8 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   useEffect(() => {
     // A live TERMINAL result normally ends polling, but `polled` may still hold
     // an in-progress response (partial cost). So unless a settled poll has
-    // already landed, take exactly ONE more poll to land the settled state
-    // (cost, files). A live `awaiting_approval` is different: it carries a
+    // already landed, take ONE more poll to land the settled state (cost,
+    // files), retried at most SETTLING_POLL_RETRIES times if it fails. A live `awaiting_approval` is different: it carries a
     // count but not the steps, so the poll keeps running to load them and
     // stops itself below once nothing is left for this viewer to decide.
     const current = polledRef.current;
@@ -186,6 +193,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
     let cancelled = false;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let settlingRetriesLeft = SETTLING_POLL_RETRIES;
 
     const tick = async () => {
       if (cancelled || settled) return;
@@ -201,7 +209,9 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
           if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
-            if (oneShot) { settled = true; return; }
+            // The settling poll is done once it reads the run as settled; a read
+            // that still says in progress falls through to the bounded retry.
+            if (oneShot && isSettled(body.data.status)) { settled = true; return; }
             // Keep polling a settled run only while a pending step is THIS
             // viewer's to decide (it leaves the list once decided). A step
             // only someone else can decide never ends this tab's polling.
@@ -220,7 +230,15 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
         // A transient failure is not worth a visible error on a card whose
         // whole job is "this is still working" — the next tick retries.
       }
-      if (cancelled || settled || oneShot) return;
+      if (cancelled || settled) return;
+      if (oneShot) {
+        // A failed or stale settling poll gets a short, bounded retry; the
+        // settled cost is otherwise shown from a single request.
+        if (settlingRetriesLeft <= 0) return;
+        settlingRetriesLeft -= 1;
+        timer = setTimeout(() => void tick(), SETTLING_POLL_RETRY_MS);
+        return;
+      }
       timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
     };
 

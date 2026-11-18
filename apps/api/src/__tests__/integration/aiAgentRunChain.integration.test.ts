@@ -9,11 +9,13 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
-import { aiAgentRuns, aiAgents } from '../../db/schema';
+import { aiAgentRuns, aiAgents, devices, organizationUsers } from '../../db/schema';
 import { aiAgentsRoutes } from '../../routes/aiAgents';
-import { createIntegrationTestClient, createSite } from './db-utils';
+import { clearPermissionCache } from '../../services/permissions';
+import { createIntegrationTestClient, createSite, type IntegrationTestClient } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -115,5 +117,160 @@ describe('run detail lists the analysis chain (real PostgreSQL as breeze_app)', 
     const strangerDto = (await (await reader.get(`/ai-agents/runs/${stranger}`)).json() as { data: RunDetail }).data;
     expect(strangerDto.chain).toBeNull();
     expect(strangerDto.analysisScope).toEqual({ kind: 'devices', siteId: null, siteName: null, deviceCount: 1 });
+  });
+});
+
+// #12137: the chain read spans runs, so the tenant and site boundaries need
+// their own proof against real RLS, not only the mocked-db unit suite.
+
+async function seedAgent(reader: IntegrationTestClient): Promise<string> {
+  const [agent] = await getTestDb().insert(aiAgents).values({
+    orgId: reader.env.organization.id, partnerId: null, kind: 'triage', name: 'Chain triage',
+    createdBy: reader.env.user.id,
+  }).returning();
+  if (!agent) throw new Error('agent fixture insert failed');
+  return agent.id;
+}
+
+async function seedDevice(orgId: string, siteId: string, label: string): Promise<string> {
+  const [device] = await getTestDb().insert(devices).values({
+    orgId,
+    siteId,
+    agentId: `chain-${label}-${randomUUID().slice(0, 8)}`,
+    hostname: `chain-${label}`,
+    osType: 'linux',
+    osVersion: '1',
+    architecture: 'amd64',
+    agentVersion: '1',
+    status: 'online',
+  }).returning();
+  if (!device) throw new Error('device fixture insert failed');
+  return device.id;
+}
+
+async function seedChainRun(o: {
+  agentId: string;
+  orgId: string;
+  label: string;
+  queuedAt: Date;
+  deviceId?: string | null;
+  continuedFromRunId?: string | null;
+  chainRootRunId?: string | null;
+  chainDepth?: number;
+}): Promise<string> {
+  const [row] = await getTestDb().insert(aiAgentRuns).values({
+    agentId: o.agentId,
+    orgId: o.orgId,
+    deviceId: o.deviceId ?? null,
+    triggerKind: 'manual',
+    dedupeKey: `chain-boundary-${o.label}-${randomUUID()}`,
+    modeAtStart: 'shadow',
+    policySnapshot: { schemaVersion: 1 } as never,
+    status: 'completed',
+    finishedAt: new Date(),
+    profile: 'analysis',
+    continuedFromRunId: o.continuedFromRunId ?? null,
+    chainRootRunId: o.chainRootRunId ?? null,
+    chainDepth: o.chainDepth ?? 0,
+    triggerRef: { source: 'chat_analysis', goal: `goal ${o.label}` },
+    stagedInputs: { handles: [], deviceIds: [], region: 'us' },
+    costCents: 10,
+    outcome: {},
+    queuedAt: o.queuedAt,
+  } as never).returning({ id: aiAgentRuns.id });
+  return row!.id;
+}
+
+const at = (m: number) => new Date(Date.UTC(2026, 10, 14, 10, m));
+
+async function readChain(reader: IntegrationTestClient, runId: string): Promise<string[] | null> {
+  const res = await reader.get(`/ai-agents/runs/${runId}`);
+  expect(res.status, runId).toBe(200);
+  return ((await res.json()) as { data: RunDetail }).data.chain?.map((s) => s.id) ?? null;
+}
+
+describe('run detail chain honours the tenant and site boundaries (real PostgreSQL as breeze_app)', () => {
+  runDb('another org cannot open any step of a chain, and each org lists only its own chain', async () => {
+    const app = makeApp();
+    const perms = [{ resource: 'ai_agents', action: 'read' }];
+    const readerA = await createIntegrationTestClient(app, { scope: 'organization', rolePermissions: perms });
+    const readerB = await createIntegrationTestClient(app, { scope: 'organization', rolePermissions: perms });
+    const orgA = readerA.env.organization.id;
+    const orgB = readerB.env.organization.id;
+    expect(orgA).not.toBe(orgB);
+
+    const agentA = await seedAgent(readerA);
+    const rootA = await seedChainRun({ agentId: agentA, orgId: orgA, label: 'a-root', queuedAt: at(0) });
+    const leafA = await seedChainRun({
+      agentId: agentA, orgId: orgA, label: 'a-leaf', queuedAt: at(1),
+      continuedFromRunId: rootA, chainRootRunId: rootA, chainDepth: 1,
+    });
+    const agentB = await seedAgent(readerB);
+    const rootB = await seedChainRun({ agentId: agentB, orgId: orgB, label: 'b-root', queuedAt: at(2) });
+    const leafB = await seedChainRun({
+      agentId: agentB, orgId: orgB, label: 'b-leaf', queuedAt: at(3),
+      continuedFromRunId: rootB, chainRootRunId: rootB, chainDepth: 1,
+    });
+
+    // Positive control: each org reads its own chain whole, and only it.
+    expect(await readChain(readerA, leafA)).toEqual([rootA, leafA]);
+    expect(await readChain(readerA, rootA)).toEqual([rootA, leafA]);
+    expect(await readChain(readerB, leafB)).toEqual([rootB, leafB]);
+
+    // Across the org boundary every step is opaque, root and member alike.
+    for (const runId of [rootA, leafA]) {
+      expect((await readerB.get(`/ai-agents/runs/${runId}`)).status, runId).toBe(404);
+    }
+    for (const runId of [rootB, leafB]) {
+      expect((await readerA.get(`/ai-agents/runs/${runId}`)).status, runId).toBe(404);
+    }
+  });
+
+  runDb('a site-restricted caller sees only the chain steps whose device is in its sites', async () => {
+    const app = makeApp();
+    const reader = await createIntegrationTestClient(app, {
+      scope: 'organization',
+      rolePermissions: [{ resource: 'ai_agents', action: 'read' }],
+    });
+    const orgId = reader.env.organization.id;
+    const hiddenSite = await createSite({ orgId, name: 'Hidden chain site' });
+    const visibleDevice = await seedDevice(orgId, reader.env.site.id, 'visible');
+    const hiddenDevice = await seedDevice(orgId, hiddenSite.id, 'hidden');
+    const agentId = await seedAgent(reader);
+
+    const root = await seedChainRun({ agentId, orgId, label: 'root', queuedAt: at(0), deviceId: visibleDevice });
+    const hiddenStep = await seedChainRun({
+      agentId, orgId, label: 'hidden', queuedAt: at(1), deviceId: hiddenDevice,
+      continuedFromRunId: root, chainRootRunId: root, chainDepth: 1,
+    });
+    const deviceLessStep = await seedChainRun({
+      agentId, orgId, label: 'device-less', queuedAt: at(2), deviceId: null,
+      continuedFromRunId: root, chainRootRunId: root, chainDepth: 1,
+    });
+    const visibleStep = await seedChainRun({
+      agentId, orgId, label: 'visible', queuedAt: at(3), deviceId: visibleDevice,
+      continuedFromRunId: root, chainRootRunId: root, chainDepth: 1,
+    });
+    const leaf = await seedChainRun({
+      agentId, orgId, label: 'leaf', queuedAt: at(4), deviceId: visibleDevice,
+      continuedFromRunId: hiddenStep, chainRootRunId: root, chainDepth: 2,
+    });
+
+    // Positive control: unrestricted, the chain lists every step.
+    expect(await readChain(reader, leaf)).toEqual([root, hiddenStep, deviceLessStep, visibleStep, leaf]);
+
+    await getTestDb().update(organizationUsers).set({ siteIds: [reader.env.site.id] }).where(and(
+      eq(organizationUsers.userId, reader.env.user.id),
+      eq(organizationUsers.orgId, orgId),
+    ));
+    await clearPermissionCache(reader.env.user.id);
+
+    // The chain drops the steps the caller could not open (another site's
+    // device, no device), from a member and from the root alike.
+    expect(await readChain(reader, leaf)).toEqual([root, visibleStep, leaf]);
+    expect(await readChain(reader, root)).toEqual([root, visibleStep, leaf]);
+    for (const runId of [hiddenStep, deviceLessStep]) {
+      expect((await reader.get(`/ai-agents/runs/${runId}`)).status, runId).toBe(404);
+    }
   });
 });
