@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID } from './profiles';
 
 const guidSchema = z.string().guid();
 const timestampSchema = z.string().datetime({ offset: true });
@@ -70,11 +71,37 @@ const verifiedResultFields = {
   verifiedAt: timestampSchema,
 } as const;
 
-const completeReconciliationFields = {
+/**
+ * A grant observed through the Graph token fallback (#12085): a Microsoft
+ * Graph role whose id is the manifest's (required roles) or unresolved (any
+ * other role, `appRoleId: null`). The value is always present.
+ */
+export const graphTokenRoleAssignmentSchema = z.object({
+  resourceApplicationId: z.literal(MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID),
+  appRoleId: guidSchema.nullable(),
+  value: z.string().min(1),
+}).strict();
+
+const exactReconciliationFields = {
   grantReconciliation: z.literal('complete'),
+  grantReconciliationMode: z.literal('exact'),
   observedGrants: z.array(canonicalAppRoleAssignmentSchema),
   missingGrants: z.array(canonicalAppRoleAssignmentSchema),
   unexpectedGrants: z.array(canonicalAppRoleAssignmentSchema),
+  grantsVerifiedAt: timestampSchema,
+} as const;
+
+/**
+ * Complete for Microsoft Graph only: the appRoleAssignments read was denied,
+ * so app roles on other resources were not checked. Missing grants always
+ * come from the manifest and keep their ids.
+ */
+const graphTokenOnlyReconciliationFields = {
+  grantReconciliation: z.literal('complete'),
+  grantReconciliationMode: z.literal('graph_token_only'),
+  observedGrants: z.array(graphTokenRoleAssignmentSchema),
+  missingGrants: z.array(canonicalAppRoleAssignmentSchema),
+  unexpectedGrants: z.array(graphTokenRoleAssignmentSchema),
   grantsVerifiedAt: timestampSchema,
 } as const;
 
@@ -92,10 +119,14 @@ const executorFailureResultSchema = z.object({
   errorCode: executorFailureCodeSchema,
 }).strict();
 
-const retestVerifiedResultSchema = z.discriminatedUnion('grantReconciliation', [
+const retestVerifiedResultSchema = z.union([
   z.object({
     ...verifiedResultFields,
-    ...completeReconciliationFields,
+    ...exactReconciliationFields,
+  }).strict(),
+  z.object({
+    ...verifiedResultFields,
+    ...graphTokenOnlyReconciliationFields,
   }).strict(),
   z.object({
     ...verifiedResultFields,

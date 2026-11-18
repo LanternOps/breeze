@@ -91,6 +91,7 @@ describe('M365 executor result schemas', () => {
     const result = {
       ...VERIFIED_RESULT,
       grantReconciliation: 'complete',
+      grantReconciliationMode: 'exact',
       observedGrants: [OBSERVED_GRANT],
       missingGrants: [],
       unexpectedGrants: [],
@@ -98,6 +99,67 @@ describe('M365 executor result schemas', () => {
     } as const;
 
     expect(retestResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  describe('grant reconciliation mode (#12085)', () => {
+    const COMPLETE = {
+      ...VERIFIED_RESULT,
+      grantReconciliation: 'complete',
+      observedGrants: [OBSERVED_GRANT],
+      missingGrants: [],
+      unexpectedGrants: [],
+      grantsVerifiedAt: '2026-07-14T18:30:00.000Z',
+    } as const;
+    const UNRESOLVED_GRAPH_ROLE = {
+      resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+      appRoleId: null,
+      value: 'Directory.ReadWrite.All',
+    } as const;
+
+    it('requires a mode on a complete result and rejects unknown modes', () => {
+      expect(retestResultSchema.safeParse(COMPLETE).success).toBe(false);
+      expect(retestResultSchema.safeParse({ ...COMPLETE, grantReconciliationMode: 'partial' }).success).toBe(false);
+      expect(retestResultSchema.safeParse({ ...COMPLETE, grantReconciliationMode: 'graph_token_only' }).success).toBe(true);
+    });
+
+    it('rejects a mode on an unavailable result', () => {
+      expect(retestResultSchema.safeParse({
+        ...VERIFIED_RESULT,
+        grantReconciliation: 'unavailable',
+        grantReconciliationMode: 'exact',
+        errorCode: 'grant_reconciliation_unavailable',
+        observedGrants: null,
+        missingGrants: null,
+        unexpectedGrants: null,
+        grantsVerifiedAt: null,
+      }).success).toBe(false);
+    });
+
+    it('allows a value-only (null appRoleId) Graph role only in graph_token_only mode', () => {
+      const withExtra = {
+        ...COMPLETE,
+        observedGrants: [OBSERVED_GRANT, UNRESOLVED_GRAPH_ROLE],
+        unexpectedGrants: [UNRESOLVED_GRAPH_ROLE],
+      };
+      expect(retestResultSchema.safeParse({ ...withExtra, grantReconciliationMode: 'graph_token_only' }).success).toBe(true);
+      expect(retestResultSchema.safeParse({ ...withExtra, grantReconciliationMode: 'exact' }).success).toBe(false);
+    });
+
+    it('requires a value and the Graph resource on a null-id grant, and an id on a missing grant', () => {
+      const base = { ...COMPLETE, grantReconciliationMode: 'graph_token_only' } as const;
+      expect(retestResultSchema.safeParse({
+        ...base,
+        unexpectedGrants: [{ ...UNRESOLVED_GRAPH_ROLE, value: null }],
+      }).success).toBe(false);
+      expect(retestResultSchema.safeParse({
+        ...base,
+        unexpectedGrants: [{ ...UNRESOLVED_GRAPH_ROLE, resourceApplicationId: '44444444-4444-4444-8444-444444444444' }],
+      }).success).toBe(false);
+      expect(retestResultSchema.safeParse({
+        ...base,
+        missingGrants: [UNRESOLVED_GRAPH_ROLE],
+      }).success).toBe(false);
+    });
   });
 
   it('accepts verified tenant proof when grant reconciliation is unavailable', () => {

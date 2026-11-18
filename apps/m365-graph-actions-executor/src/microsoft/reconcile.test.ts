@@ -195,3 +195,77 @@ describe('reconcileCustomerGraphActions', () => {
     }
   });
 });
+
+describe('reconcileCustomerGraphActions — reconciliation mode (#12085)', () => {
+  const GRAPH = '00000003-0000-0000-c000-000000000000';
+  const required = getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!;
+  const requiredValues = required.map((grant) => grant.value);
+  const byKey = (a: CanonicalAppRoleAssignment, b: CanonicalAppRoleAssignment) =>
+    `${a.resourceApplicationId}/${a.appRoleId}`.localeCompare(`${b.resourceApplicationId}/${b.appRoleId}`);
+
+  function fromToken(graphTokenRoles: readonly string[]) {
+    return reconcileCustomerGraphActions(
+      { ...PROOF, observedGrants: null, graphTokenRoles },
+      { currentDate: VERIFIED_AT },
+    );
+  }
+
+  it('reports exact mode for an inventory observation', () => {
+    const result = reconcileCustomerGraphActions({ ...PROOF, observedGrants: [...required] }, { currentDate: VERIFIED_AT });
+    expect(result.grantReconciliation).toBe('complete');
+    expect(result).toMatchObject({ grantReconciliationMode: 'exact' });
+  });
+
+  it('reports no mode when reconciliation is unavailable', () => {
+    const result = reconcileCustomerGraphActions({ ...PROOF, observedGrants: null }, { currentDate: VERIFIED_AT });
+    expect(result).not.toHaveProperty('grantReconciliationMode');
+  });
+
+  it('is active in graph_token_only mode when the token carries exactly the required Graph roles', () => {
+    const result = fromToken([...requiredValues].reverse());
+
+    expect(result).toMatchObject({
+      outcome: 'active',
+      grantReconciliation: 'complete',
+      grantReconciliationMode: 'graph_token_only',
+      missingGrants: [],
+      unexpectedGrants: [],
+      grantsVerifiedAt: VERIFIED_AT.toISOString(),
+    });
+    // Observed grants carry the manifest's real Graph appRoleIds, matched by value.
+    expect(result.observedGrants).toEqual([...required].sort(byKey));
+  });
+
+  it('is missing in graph_token_only mode when a required Graph role is absent from the token', () => {
+    const dropped = required.find((grant) => grant.value === 'User.RevokeSessions.All')!;
+    const result = fromToken(requiredValues.filter((value) => value !== dropped.value));
+
+    expect(result.outcome).toBe('missing');
+    expect(result).toMatchObject({ grantReconciliationMode: 'graph_token_only' });
+    expect(result.missingGrants).toEqual([dropped]);
+    expect(result.unexpectedGrants).toEqual([]);
+  });
+
+  it('reports an extra Graph role as drift, with its value and a null appRoleId', () => {
+    const extra = { resourceApplicationId: GRAPH, appRoleId: null, value: 'Directory.ReadWrite.All' };
+    const result = fromToken([...requiredValues, 'Directory.ReadWrite.All']);
+
+    expect(result.outcome).toBe('unexpected');
+    expect(result).toMatchObject({ grantReconciliationMode: 'graph_token_only' });
+    expect(result.missingGrants).toEqual([]);
+    expect(result.unexpectedGrants).toEqual([extra]);
+    expect(result.observedGrants).toContainEqual(extra);
+  });
+
+  it('reports missing and unexpected together, and an empty roles claim as everything missing', () => {
+    expect(fromToken(['Directory.ReadWrite.All']).outcome).toBe('missing_and_unexpected');
+    const none = fromToken([]);
+    expect(none.outcome).toBe('missing');
+    expect(none.missingGrants).toHaveLength(required.length);
+  });
+
+  it('compares Graph role values exactly (case-sensitive)', () => {
+    const result = fromToken([...requiredValues.filter((v) => v !== 'User.ReadWrite.All'), 'user.readwrite.all']);
+    expect(result.outcome).toBe('missing_and_unexpected');
+  });
+});

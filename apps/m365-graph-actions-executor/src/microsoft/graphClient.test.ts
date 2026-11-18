@@ -174,8 +174,9 @@ describe('MicrosoftGraphClient', () => {
       applicationId: APPLICATION_ID,
       organizationDisplayName: 'Contoso Ltd',
       observedGrants: null,
-      // #12085: which step failed and how, never the provider body.
-      grantReconciliationFailure: { stage: 'assignments', code: 'graph_permission_missing' },
+      // #12085: which step failed and how, never the provider body. The 403
+      // sends it to the token fallback, which cannot read this opaque token.
+      grantReconciliationFailure: { stage: 'token_claims', code: 'graph_token_claims_invalid' },
     });
     expect(fetch).toHaveBeenCalledTimes(3);
     assertComplete();
@@ -415,10 +416,12 @@ describe('MicrosoftGraphClient', () => {
   });
 
   it.each([
-    ['assignment query denied', new Response('provider-secret', { status: 403 }), 'graph_permission_missing'],
-    ['assignment object malformed', json({ value: [{ appRoleId: 42, resourceId: RESOURCE_SP_ID }] }), 'graph_response_invalid'],
-    ['assignment body malformed', json({ value: 'not-an-array' }), 'graph_response_invalid'],
-  ])('returns complete proof but no partial grants when %s', async (_label, response, code) => {
+    // A 403 now tries the token fallback (#12085); this opaque test token
+    // cannot be decoded, so it stays unavailable at the token_claims stage.
+    ['assignment query denied', new Response('provider-secret', { status: 403 }), 'token_claims', 'graph_token_claims_invalid'],
+    ['assignment object malformed', json({ value: [{ appRoleId: 42, resourceId: RESOURCE_SP_ID }] }), 'assignments', 'graph_response_invalid'],
+    ['assignment body malformed', json({ value: 'not-an-array' }), 'assignments', 'graph_response_invalid'],
+  ])('returns complete proof but no partial grants when %s', async (_label, response, stage, code) => {
     const expected = routes();
     expected[2] = {
       path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
@@ -432,7 +435,7 @@ describe('MicrosoftGraphClient', () => {
       applicationId: APPLICATION_ID,
       organizationDisplayName: 'Contoso Ltd',
       observedGrants: null,
-      grantReconciliationFailure: { stage: 'assignments', code },
+      grantReconciliationFailure: { stage, code },
     });
   });
 
@@ -492,6 +495,147 @@ describe('MicrosoftGraphClient', () => {
       message: 'graph_request_invalid',
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// #12085: the Admin actions permission set has no Application.Read.All, so
+// Graph denies the appRoleAssignments read. The executor then falls back to the
+// roles claim of the app-only token it acquired itself (graph_token_only).
+describe('grant reconciliation fallback to the Graph token roles claim', () => {
+  const NOW = new Date('2026-11-18T12:00:00.000Z');
+  const NOW_SECONDS = Math.floor(NOW.getTime() / 1000);
+  const VALID_CLAIMS = {
+    aud: 'https://graph.microsoft.com',
+    tid: TENANT_ID,
+    appid: APPLICATION_ID,
+    idtyp: 'app',
+    exp: NOW_SECONDS + 3600,
+    roles: ['User.ReadWrite.All', 'Organization.Read.All'],
+  };
+
+  function jwt(claims: Record<string, unknown>): OpaqueAccessToken {
+    const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${part({ alg: 'RS256', typ: 'JWT' })}.${part(claims)}.c2lnbmF0dXJl` as OpaqueAccessToken;
+  }
+
+  function deniedRoutes(assignmentsResponse: Response): Route[] {
+    return [
+      ...routes().slice(0, 2),
+      {
+        path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
+        response: assignmentsResponse,
+      },
+    ];
+  }
+
+  function tokenClient(expectedRoutes: Route[], accessToken: OpaqueAccessToken) {
+    const remaining = [...expectedRoutes];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      const expected = remaining.shift();
+      expect(expected, `unexpected Graph request ${url.href}`).toBeDefined();
+      expect(url.pathname).toBe(expected!.path);
+      expect(init).toMatchObject({ headers: { authorization: `Bearer ${accessToken}` } });
+      return typeof expected!.response === 'function' ? await expected!.response() : expected!.response;
+    });
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetch as typeof globalThis.fetch, now: () => NOW },
+    );
+    return { graph, fetch, assertComplete: () => expect(remaining).toEqual([]) };
+  }
+
+  const denied = () => new Response(
+    JSON.stringify({ error: { code: 'Authorization_RequestDenied', message: 'Insufficient privileges' } }),
+    { status: 403 },
+  );
+
+  it('falls back to the token roles claim when appRoleAssignments is denied (403)', async () => {
+    const accessToken = jwt(VALID_CLAIMS);
+    const { graph, fetch, assertComplete } = tokenClient(deniedRoutes(denied()), accessToken);
+
+    await expect(graph.probeTenant({ tenantId: TENANT_ID, accessToken })).resolves.toEqual({
+      tenantId: TENANT_ID,
+      applicationId: APPLICATION_ID,
+      organizationDisplayName: 'Contoso Ltd',
+      observedGrants: null,
+      graphTokenRoles: ['Organization.Read.All', 'User.ReadWrite.All'],
+    });
+    // No resource lookup: the Graph service principal read needs the same
+    // Application.Read.All grant whose absence put us here.
+    expect(fetch).toHaveBeenCalledTimes(3);
+    assertComplete();
+  });
+
+  it('falls back on a bare 403 with no Graph error body', async () => {
+    const accessToken = jwt(VALID_CLAIMS);
+    const { graph } = tokenClient(deniedRoutes(new Response('', { status: 403 })), accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.graphTokenRoles).toEqual(['Organization.Read.All', 'User.ReadWrite.All']);
+  });
+
+  it.each([
+    ['a 500', () => new Response('', { status: 500 }), 'graph_provider_rejected'],
+    ['a 503', () => new Response('', { status: 503 }), 'graph_provider_rejected'],
+    ['a 429', () => new Response('', { status: 429, headers: { 'retry-after': '5' } }), 'graph_throttled'],
+    ['a 401', () => new Response('', { status: 401 }), 'graph_provider_rejected'],
+    ['a 404', () => new Response('', { status: 404 }), 'graph_not_found'],
+    ['a license 403', () => new Response(
+      JSON.stringify({ error: { code: 'Authentication_RequestFromNonPremiumTenantOrB2CTenant' } }),
+      { status: 403 },
+    ), 'graph_license_required'],
+  ])('never falls back on %s: reconciliation stays unavailable', async (_label, response, code) => {
+    const accessToken = jwt(VALID_CLAIMS);
+    const { graph } = tokenClient(deniedRoutes(response()), accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.observedGrants).toBeNull();
+    expect(result).not.toHaveProperty('graphTokenRoles');
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'assignments', code });
+  });
+
+  it('never falls back when the resource lookup (not the assignment read) is denied', async () => {
+    const accessToken = jwt(VALID_CLAIMS);
+    const expected = routes();
+    expected[3] = { ...expected[3]!, response: denied() };
+    const { graph } = tokenClient(expected, accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.observedGrants).toBeNull();
+    expect(result).not.toHaveProperty('graphTokenRoles');
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_permission_missing' });
+  });
+
+  it.each([
+    ['audience', { aud: 'https://outlook.office365.com' }],
+    ['tenant', { tid: '66666666-6666-4666-8666-666666666666' }],
+    ['client', { appid: '88888888-8888-4888-8888-888888888888' }],
+    ['expiry', { exp: NOW_SECONDS - 1 }],
+  ])('is unavailable, not active, when the token %s claim does not match', async (_label, override) => {
+    const accessToken = jwt({ ...VALID_CLAIMS, ...override });
+    const { graph } = tokenClient(deniedRoutes(denied()), accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.observedGrants).toBeNull();
+    expect(result).not.toHaveProperty('graphTokenRoles');
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'token_claims', code: 'graph_token_claims_invalid' });
+  });
+
+  it('is unavailable when the token cannot be decoded at all', async () => {
+    const accessToken = 'not-a-jwt' as OpaqueAccessToken;
+    const { graph } = tokenClient(deniedRoutes(denied()), accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result.observedGrants).toBeNull();
+    expect(result.grantReconciliationFailure).toEqual({ stage: 'token_claims', code: 'graph_token_claims_invalid' });
+  });
+
+  it('keeps the exact inventory when it is readable, even if the token would also decode', async () => {
+    const accessToken = jwt({ ...VALID_CLAIMS, roles: ['Something.Else.All'] });
+    const { graph } = tokenClient(routes(), accessToken);
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+    expect(result).not.toHaveProperty('graphTokenRoles');
+    expect(result.observedGrants).toEqual([{
+      resourceApplicationId: GRAPH_APPLICATION_ID,
+      appRoleId: ROLE_ID,
+      value: 'Application.Read.All',
+    }]);
   });
 });
 
