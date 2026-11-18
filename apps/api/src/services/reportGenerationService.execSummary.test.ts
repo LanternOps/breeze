@@ -147,4 +147,18 @@ describe('generateExecutiveSummaryReport', () => {
       { title: 'Service stopped', severity: 'high', status: 'resolved', device: null, triggeredAt: '2026-11-07T10:00:00.000Z' },
     ]);
   });
+
+  it('caps a filled notable-alert title at a fixed length (#12135)', async () => {
+    const longName = 'H'.repeat(5000);
+    mockGeneratorQueries(undefined, [
+      { title: '{{device}} is down', context: { device: longName }, severity: 'critical', status: 'active', device: longName, triggeredAt: new Date('2026-11-08T10:00:00.000Z') },
+      { title: 'Short title', severity: 'high', status: 'active', device: 'PC-1', triggeredAt: new Date('2026-11-08T10:00:00.000Z') },
+    ]);
+    const result = await generateExecutiveSummaryReport(ORG, {}, AUTHORITY);
+    const alerts = result.summary!.notableAlerts as Array<{ title: string }>;
+    const longTitle = alerts[0]!.title;
+    expect(longTitle.length).toBeLessThanOrEqual(200);
+    expect(longTitle.endsWith('…')).toBe(true);
+    expect(alerts[1]!.title).toBe('Short title');
+  });
 });
