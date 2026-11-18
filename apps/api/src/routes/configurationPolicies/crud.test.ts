@@ -48,6 +48,8 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   // #8053 — invalidateRemoteAccessCache drops again after the request commits.
   runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  // #8636 — the invalidator announces to other instances after commit.
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 
 // Configure the db.select().from().where().limit() chain to report whether the

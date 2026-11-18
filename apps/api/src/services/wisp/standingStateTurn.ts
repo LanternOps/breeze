@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { wispEnabled } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { getRedis } from '../redis';
+import { registerClusterInvalidator } from '../clusterInvalidator';
 import { captureException } from '../sentry';
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
 import { loadStandingStateFacts, renderPausedStandingStateBlock, renderStandingStateBlock, type StandingStateFacts } from './standingLoop';
@@ -50,6 +51,8 @@ const factsCache = new Map<string, CachedFacts>();
  * grant evicted here can at worst re-cache one read from before the action.
  */
 const forgetGeneration = new Map<string, number>();
+/** Bumped when every grant is forgotten at once (a cluster resync, #8636). */
+let forgetAllEpoch = 0;
 
 /** What a dispatched turn records with `markStandingStateSent`. */
 export type StandingStateTurn = { block: string; hash: string };
@@ -62,26 +65,40 @@ export function clearStandingStateCache(): void {
   forgetGeneration.clear();
 }
 
-/**
- * Forget this process's cached facts for one grant (every revision and
- * viewer), so the next turn reads them fresh. Called after a user acts on the
- * grant's check-ins or concerns (#11611): without it, a question asked right
- * after the action is answered from facts read before it. Another API
- * process still serves its copy until the 60 s TTL ends.
- */
-export function forgetStandingStateFacts(grantId: string): void {
+function forgetLocal(grantId?: string): void {
+  if (grantId === undefined) {
+    forgetAllEpoch += 1;
+    factsCache.clear();
+    return;
+  }
   const prefix = `${grantId}:`;
   for (const key of factsCache.keys()) {
     if (key.startsWith(prefix)) factsCache.delete(key);
   }
   // A read already in flight saw the pre-action rows: it must not re-cache them.
+  // Read before the delete (the delete only moves the grant to the newest slot).
+  const next = (forgetGeneration.get(grantId) ?? 0) + 1;
   forgetGeneration.delete(grantId);
-  forgetGeneration.set(grantId, (forgetGeneration.get(grantId) ?? 0) + 1);
+  forgetGeneration.set(grantId, next);
   while (forgetGeneration.size > FACTS_CACHE_MAX_ENTRIES) {
     const oldest = forgetGeneration.keys().next().value;
     if (oldest === undefined) break;
     forgetGeneration.delete(oldest);
   }
+}
+
+const standingFactsInvalidator = registerClusterInvalidator('wisp-standing-state-facts', forgetLocal);
+
+/**
+ * Forget the cached facts for one grant (every revision and viewer), so the
+ * next turn reads them fresh. Called after a user acts on the grant's
+ * check-ins or concerns (#11611): without it, a question asked right after the
+ * action is answered from facts read before it. This process forgets at once;
+ * every other API process forgets once the caller's transaction commits (W05
+ * cluster cache bus, #8636), or at the 60 s TTL while Redis is down.
+ */
+export function forgetStandingStateFacts(grantId: string): void {
+  standingFactsInvalidator.invalidateAroundCommit(grantId);
 }
 
 /** Spend counts as changed only when it crosses one of these steps of the daily budget. */
@@ -118,6 +135,7 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 
   const generation = forgetGeneration.get(input.grantId) ?? 0;
+  const allEpoch = forgetAllEpoch;
   let facts: TurnFacts;
   try {
     // The live ceiling only: a paused one is reserved for history reads
@@ -137,7 +155,7 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
     facts = err.kind === 'paused' ? 'paused' : null;
   }
   // Forgotten while this read ran (a user action, #11611): use it for this turn, never cache it.
-  if ((forgetGeneration.get(input.grantId) ?? 0) !== generation) return facts;
+  if ((forgetGeneration.get(input.grantId) ?? 0) !== generation || forgetAllEpoch !== allEpoch) return facts;
   factsCache.delete(key);
   factsCache.set(key, { readAt: now.getTime(), facts });
   while (factsCache.size > FACTS_CACHE_MAX_ENTRIES) {

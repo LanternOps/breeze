@@ -5,7 +5,7 @@
  * deleting the WHERE clause from the service leaves such a suite green, which
  * is exactly how the verification-gating filters shipped unasserted.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -73,6 +73,9 @@ function queuedUpdateBuilder(values: Record<string, unknown>) {
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
+  // #8636 — invalidateLlmProviderCatalogCache goes through the cluster invalidator.
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
   db: {
     select: vi.fn(() => queuedSelectBuilder()),
     insert: vi.fn(() => ({ values: vi.fn(queuedInsertBuilder) })),
@@ -92,6 +95,8 @@ vi.mock('./aiModels/platformModels', () => ({
 }));
 
 import { db, withSystemDbAccessContext } from '../db';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
 import {
   CURRENT_HARNESS_VERSION,
   activateRevision,
@@ -614,5 +619,57 @@ describe('LLM provider catalog service', () => {
 
       await expect(getCatalogEntryName(ENTRY_ID)).resolves.toBeNull();
     });
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'llm-provider-catalog';
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a remote drop makes the next listed-provider read go back to the DB', async () => {
+    queueListedRead();
+    const first = await getListedProviders();
+    const selectCallsAfterFirstRead = vi.mocked(db.select).mock.calls.length;
+    expect(await getListedProviders()).toBe(first);
+    expect(db.select).toHaveBeenCalledTimes(selectCallsAfterFirstRead);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    dbState.selectResults.push([]);
+    expect(await getListedProviders()).toEqual([]);
+    expect(vi.mocked(db.select).mock.calls.length).toBeGreaterThan(selectCallsAfterFirstRead);
+  });
+
+  it('the writer call publishes [name, null] (the catalog is global)', () => {
+    invalidateLlmProviderCatalogCache();
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a read in flight when a remote drop lands is discarded, not served or cached', async () => {
+    let release!: () => void;
+    dbState.gate = new Promise<void>((resolve) => { release = resolve; });
+    // The parked read consumes these pre-delisting rows.
+    queueListedRead();
+    const inflight = getListedProviders();
+
+    getClusterCacheTarget(NAME)!.invalidate();
+    // Appended after the pre-delisting rows: only the retry sees the delisted world.
+    dbState.selectResults.push([]);
+    dbState.gate = null;
+    release();
+
+    await expect(inflight).resolves.toEqual([]);
+    expect(await getListedProviders()).toEqual([]);
   });
 });

@@ -7,6 +7,8 @@ import {
   ipAllowlistMode,
   isBlocked,
 } from './ipAllowlist';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
 
 const serviceMocks = vi.hoisted(() => ({
   getTrustedClientIpOrUndefined: vi.fn(),
@@ -36,6 +38,9 @@ vi.mock('../db', () => {
     },
     runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    // #8636 — clearPartnerAllowlistCache goes through the cluster invalidator.
+    runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
   };
 });
 
@@ -380,5 +385,60 @@ describe('ipAllowlistMode', () => {
       process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = value;
       expect(ipAllowlistMode()).toBe('enforce');
     });
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'partner-ip-allowlist';
+  const row = (...cidrs: string[]) => [{ settings: { security: { ipAllowlist: cidrs } } }];
+  let limit: any;
+  let published: Array<[string, string | null]>;
+
+  beforeEach(async () => {
+    const mod = await import('../db');
+    limit = (mod.db as any).__limit;
+    limit.mockReset();
+    clearPartnerAllowlistCache('p1');
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a remote drop makes the next read go back to the DB', async () => {
+    limit.mockResolvedValueOnce(row('10.0.0.0/8')).mockResolvedValueOnce(row('192.0.2.0/24'));
+    expect(await readPartnerAllowlist('p1')).toEqual(['10.0.0.0/8']);
+    expect(await readPartnerAllowlist('p1')).toEqual(['10.0.0.0/8']);
+    expect(limit).toHaveBeenCalledTimes(1);
+
+    getClusterCacheTarget(NAME)!.invalidate('p1');
+
+    expect(await readPartnerAllowlist('p1')).toEqual(['192.0.2.0/24']);
+    expect(limit).toHaveBeenCalledTimes(2);
+  });
+
+  it('the writer call publishes [name, partnerId]', () => {
+    clearPartnerAllowlistCache('p1');
+    expect(published).toEqual([[NAME, 'p1']]);
+  });
+
+  it('a read in flight when a remote drop lands answers its caller but is not cached', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limit
+      .mockImplementationOnce(async () => { await gate; return row('10.0.0.0/8'); })
+      .mockResolvedValueOnce(row('192.0.2.0/24'));
+    const inFlight = readPartnerAllowlist('p1');
+
+    getClusterCacheTarget(NAME)!.invalidate('p1');
+    release();
+    expect(await inFlight).toEqual(['10.0.0.0/8']);
+
+    expect(await readPartnerAllowlist('p1')).toEqual(['192.0.2.0/24']);
+    expect(limit).toHaveBeenCalledTimes(2);
   });
 });

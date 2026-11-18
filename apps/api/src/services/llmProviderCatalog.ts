@@ -9,6 +9,7 @@ import {
 import { listCatalogMappableModelIds } from './aiModels/platformModels';
 import { assertSafeUrl } from './urlSafety';
 import { FIDELITY_HARNESS_VERSION } from './llm/providerFidelityHarness';
+import { registerClusterInvalidator } from './clusterInvalidator';
 
 /**
  * Activation/listing gates read this; the harness stamps it onto every
@@ -320,13 +321,25 @@ export async function getCatalogEntryName(entryId: string): Promise<string | nul
   });
 }
 
-export function invalidateLlmProviderCatalogCache(): void {
+function dropListedProvidersLocal(): void {
   listedProvidersCache = null;
   listedProvidersCacheLoadedAt = 0;
   // Both halves matter: dropping only the cache leaves an in-flight read free
   // to repopulate it with pre-mutation rows under a fresh TTL.
   listedProvidersCacheEpoch += 1;
   listedProvidersInflight = null;
+}
+
+// The catalog is global, so the cluster key is always null (the whole cache).
+const listedProvidersInvalidator = registerClusterInvalidator('llm-provider-catalog', () => dropListedProvidersLocal());
+
+/**
+ * Drop the listed-providers cache on this instance now, and on every other API
+ * instance once the caller's transaction commits (#8636): a delisting must not
+ * stay listed on another replica for the 5 min TTL.
+ */
+export function invalidateLlmProviderCatalogCache(): void {
+  listedProvidersInvalidator.invalidateAroundCommit();
 }
 
 export async function createCatalogEntry(input: {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mockCatalogRows = [
   {
@@ -22,6 +22,9 @@ vi.mock('../db', () => ({
       from: vi.fn().mockResolvedValue(mockCatalogRows),
     })),
   },
+  // #8636 — invalidateCatalogCache goes through the cluster invalidator.
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -39,7 +42,10 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-import { enrichFromCatalog, primeCatalogCache } from './thirdPartyEnrichment';
+import { db } from '../db';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
+import { enrichFromCatalog, invalidateCatalogCache, primeCatalogCache } from './thirdPartyEnrichment';
 
 describe('enrichFromCatalog', () => {
   beforeEach(async () => {
@@ -174,5 +180,66 @@ describe('enrichFromCatalog', () => {
       severity: 'unknown',
     });
     expect(out.matchedCatalogId).toBe('cat-firefox');
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'third-party-package-catalog';
+  const firefox = (friendlyName: string) => ({ ...mockCatalogRows[0]!, friendlyName });
+  const enrichFirefox = () => enrichFromCatalog({
+    source: 'third_party',
+    packageId: 'Mozilla.Firefox',
+    title: 'firefox',
+    vendor: null,
+    severity: 'unknown',
+  });
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+    invalidateCatalogCache();
+    published.length = 0;
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a remote drop makes the next lookup reload the catalog from the DB', async () => {
+    await primeCatalogCache();
+    const selectsAfterPrime = vi.mocked(db.select).mock.calls.length;
+    await enrichFirefox();
+    expect(vi.mocked(db.select).mock.calls.length).toBe(selectsAfterPrime);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    await enrichFirefox();
+    expect(vi.mocked(db.select).mock.calls.length).toBe(selectsAfterPrime + 1);
+  });
+
+  it('the writer call publishes [name, null] (the catalog is global)', () => {
+    invalidateCatalogCache();
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a load in flight when a remote drop lands is not stored: the caller gets the reloaded rows', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(db.select)
+      .mockImplementationOnce((() => ({ from: () => gate.then(() => [firefox('Old Firefox')]) })) as never)
+      .mockImplementationOnce((() => ({ from: () => Promise.resolve([firefox('New Firefox')]) })) as never);
+    const selectsBefore = vi.mocked(db.select).mock.calls.length;
+    const inFlight = enrichFirefox();
+
+    getClusterCacheTarget(NAME)!.invalidate();
+    release();
+
+    expect((await inFlight).title).toBe('New Firefox');
+    // The pre-drop load was discarded, the reload is what is cached now.
+    expect((await enrichFirefox()).title).toBe('New Firefox');
+    expect(vi.mocked(db.select).mock.calls.length).toBe(selectsBefore + 2);
   });
 });

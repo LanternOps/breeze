@@ -55,6 +55,7 @@ import {
 } from '../db';
 import { aiKillState as aiKillStateTable } from '../db/schema/aiKillState';
 import { users } from '../db/schema/users';
+import { registerClusterInvalidator } from './clusterInvalidator';
 
 export interface AiKillStateSnapshot {
   killed: boolean;
@@ -69,6 +70,21 @@ const DEFAULT_SNAPSHOT: AiKillStateSnapshot = { killed: false, epoch: 0 };
 
 let cachedSnapshot: AiKillStateSnapshot = DEFAULT_SNAPSHOT;
 let cachedAt = 0;
+
+/**
+ * #8636: a flip through `bumpAiKillState` on one API instance expires every
+ * other instance's TTL through the W05 cluster cache bus, so their next
+ * `readAiKillState()` re-reads the row instead of waiting out the 5 s. The
+ * received drop only expires the TTL: it keeps the last snapshot (the sync
+ * seam keeps answering with it until that re-read lands, exactly as at TTL
+ * expiry) and does no I/O. A flip by direct SQL publishes nothing and stays
+ * bounded by the TTL.
+ */
+let killStateGeneration = 0;
+const killStateInvalidator = registerClusterInvalidator('ai-kill-state', () => {
+  killStateGeneration += 1;
+  cachedAt = 0;
+});
 
 function selectGlobalRow() {
   return db
@@ -118,6 +134,7 @@ export async function readAiKillState(): Promise<AiKillStateSnapshot> {
   const now = Date.now();
   if (now - cachedAt < CACHE_TTL_MS) return cachedSnapshot;
 
+  const generationAtStart = killStateGeneration;
   try {
     const row = await readGlobalRowSystemScoped();
     cachedSnapshot = row
@@ -127,7 +144,9 @@ export async function readAiKillState(): Promise<AiKillStateSnapshot> {
     console.error('[aiKillState] failed to read ai_kill_state — failing closed', { error });
     cachedSnapshot = { killed: true, epoch: -1 };
   }
-  cachedAt = now;
+  // Invalidated while this read ran: the row may have been read before the
+  // flip, so keep the TTL expired and let the next call read again.
+  if (generationAtStart === killStateGeneration) cachedAt = now;
   return cachedSnapshot;
 }
 
@@ -248,6 +267,15 @@ export async function bumpAiKillState(
     throw new Error("aiKillState: UPDATE affected no row — the seed row (id='global') is missing");
   }
 
+  // Every other instance re-reads on its next readAiKillState(). Announce it
+  // in the same transaction scope as the write: after the ambient commit when
+  // the write joined a system-scoped ambient transaction; at once when it ran
+  // in its own (already committed) transaction, so a later rollback of the
+  // caller's request transaction cannot swallow the announcement of a flip
+  // that did commit. (Inside a transaction the deferred second local drop
+  // expires this process's TTL once more after commit: one extra re-read.)
+  if (ambientScope === 'system') killStateInvalidator.invalidateAroundCommit();
+  else runOutsideDbContext(() => killStateInvalidator.invalidateAroundCommit());
   cachedSnapshot = { killed: row.killed, epoch: row.epoch };
   cachedAt = Date.now();
   return cachedSnapshot;

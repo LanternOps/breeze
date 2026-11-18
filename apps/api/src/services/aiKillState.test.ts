@@ -21,6 +21,9 @@ vi.mock('../db', () => {
     getCurrentDbAccessContext: vi.fn(() => undefined),
     runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    // #8636 — bumpAiKillState invalidates through the cluster invalidator.
+    runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
   };
 });
 
@@ -31,6 +34,8 @@ import {
   readAiKillState,
   readAiKillStateRow,
 } from './aiKillState';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
 
 async function getLimitMock() {
   const mod = await import('../db');
@@ -278,5 +283,62 @@ describe('_resetAiKillStateCacheForTest', () => {
 
     _resetAiKillStateCacheForTest();
     expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'ai-kill-state';
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a received drop keeps the sync snapshot but makes the next readAiKillState re-read the row', async () => {
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{ killed: false, epoch: 0 }]).mockResolvedValueOnce([{ killed: true, epoch: 1 }]);
+    expect(await readAiKillState()).toEqual({ killed: false, epoch: 0 });
+    expect(await readAiKillState()).toEqual({ killed: false, epoch: 0 });
+    expect(limit).toHaveBeenCalledTimes(1);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    // The sync seam keeps answering with the last snapshot until the re-read lands.
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 1 });
+    expect(limit).toHaveBeenCalledTimes(2);
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: true, epoch: 1 });
+  });
+
+  it('bumpAiKillState publishes [name, null]', async () => {
+    const returning = await getReturningMock();
+    returning.mockResolvedValueOnce([{ killed: true, epoch: 2 }]);
+    await bumpAiKillState(true, 'manual stop', 'user-1');
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a read in flight when a received drop lands answers its caller but does not refresh the TTL', async () => {
+    const limit = await getLimitMock();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limit
+      .mockImplementationOnce(async () => { await gate; return [{ killed: false, epoch: 0 }]; })
+      .mockResolvedValueOnce([{ killed: true, epoch: 1 }]);
+    const inFlight = readAiKillState();
+
+    getClusterCacheTarget(NAME)!.invalidate();
+    release();
+    expect(await inFlight).toEqual({ killed: false, epoch: 0 });
+
+    // The pre-flip read did not stamp the TTL, so the next call reads again.
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 1 });
+    expect(limit).toHaveBeenCalledTimes(2);
   });
 });
