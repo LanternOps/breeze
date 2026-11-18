@@ -340,12 +340,20 @@ describe('run transcript (#11971)', () => {
     .flatMap((i) => (Array.isArray(i.values) ? i.values : [i.values]) as Array<Record<string, unknown>>);
 
   it('recordRunTaskPrompt stores what the run was told as the session\'s user message, in a system context', async () => {
+    dbMockState.selectQueues.ai_messages = [[]]; // no user row yet
     await recordRunTaskPrompt(SESSION_ID, 'Investigate alert A on device D.');
 
     expect(rowsWritten()).toEqual([
       expect.objectContaining({ sessionId: SESSION_ID, role: 'user', content: 'Investigate alert A on device D.' }),
     ]);
     expect(dbMockState.contextDuringWrites).toEqual(['system']);
+  });
+
+  it('recordRunTaskPrompt writes once per session: a failover hop (or a resumed run) does not store the prompt again (#12133)', async () => {
+    dbMockState.selectQueues.ai_messages = [[{ id: 'existing-user-row' }]];
+    await recordRunTaskPrompt(SESSION_ID, 'Investigate alert A on device D.');
+
+    expect(rowsWritten()).toEqual([]);
   });
 
   it('recordRunAssistantTurn stores the answer and each Breeze tool call, inputs redacted, in turn order', async () => {
