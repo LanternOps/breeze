@@ -74,7 +74,7 @@ mod tests {
     const SHOW_NOTICE: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/show.notice.json");
 
     fn message(id: &str) -> MessageShow {
-        let exp = chrono::DateTime::from_timestamp_millis(NOW + 3_600_000).unwrap().to_rfc3339();
+        let exp = crate::timestamp::rfc3339_from_millis(NOW + 3_600_000);
         serde_json::from_str(&format!(
             r##"{{"messageId":"{id}","title":"Maintenance tonight","body":"Please save your work.","severity":"info","requiresAck":false,"expiresAt":"{exp}","branding":{{"companyName":"Example IT","displayName":"Example","accent":null}}}}"##
         ))
