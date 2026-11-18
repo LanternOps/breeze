@@ -21,6 +21,35 @@ export function pickReauthTier(
   return 'password';
 }
 
+/** #9007: the tiers approver-device registration can be proved with.
+ *
+ * `sso` is NOT a {@link ReauthTier}: only `POST /authenticator/register-grant`
+ * accepts an SSO re-auth grant (exchanged once for a `register_approver_device`
+ * grant). Every other step-up endpoint takes a password, TOTP code or passkey,
+ * so keeping `sso` out of the shared union stops a caller from offering a proof
+ * its endpoint would refuse. */
+export type RegisterReauthTier = ReauthTier | 'sso';
+
+/** #9007: {@link pickReauthTier} plus the server's passwordless road. An
+ * account with no password (SSO-provisioned) and no passkey or TOTP proves
+ * itself with a fresh IdP re-auth instead of a password it does not have.
+ *
+ * It never outranks a stronger factor, mirroring the server: register-grant
+ * 403s `stronger_factor_required` before either proof is read. Only an
+ * explicit `hasPassword === false` selects it; `undefined` (unknown, e.g. a
+ * session from before the field) keeps the password road, the same fail-safe
+ * as the profile page's Change-password gate. SMS-only falls through to `sso`
+ * for the same reason it falls to `password` in the shared picker. */
+export function pickRegisterReauthTier(
+  passkeyCount: number,
+  mfaMethod: string | null,
+  totpEnrolled?: boolean,
+  hasPassword?: boolean,
+): RegisterReauthTier {
+  const tier = pickReauthTier(passkeyCount, mfaMethod, totpEnrolled);
+  return tier === 'password' && hasPassword === false ? 'sso' : tier;
+}
+
 /** #10650: the proof a step-up prompt offers as "Use authenticator app
  * instead" beside the passkey. A user who lost the passkey and signed in with
  * the authenticator would otherwise be stranded on a passkey-only prompt. */
@@ -35,10 +64,14 @@ export function alternateReauthTier(
 }
 
 type Props = {
-  tier: ReauthTier;
+  tier: RegisterReauthTier;
   reauthValue: string;
   onChange: (value: string) => void;
   disabled: boolean;
+  /** #9007: the IdP round-trip, used only when `tier === 'sso'`. `verified`
+   * means a re-auth grant is in hand; `onStart` leaves for the IdP (absent =
+   * no way to start one here, so the button is disabled). */
+  sso?: { verified: boolean; starting: boolean; onStart?: () => void };
 };
 
 /**
@@ -47,8 +80,34 @@ type Props = {
  * existing_factor_step_up_required) is the intended second consumer —
  * tracked as a PR #2710 follow-up, not yet wired up.
  */
-export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: Props) {
+export default function StepUpPrompt({ tier, reauthValue, onChange, disabled, sso }: Props) {
   const { t } = useTranslation('settings');
+
+  if (tier === 'sso') {
+    if (sso?.verified) {
+      return (
+        // role="status": this appears on the return from the IdP while focus
+        // lands on Register, so announce that verification succeeded.
+        <p role="status" className="text-xs text-muted-foreground" data-testid="approver-stepup-sso-verified">
+          {t('stepUpPrompt.ssoVerified')}
+        </p>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">{t('stepUpPrompt.ssoVerifyFirst')}</p>
+        <button
+          type="button"
+          onClick={() => sso?.onStart?.()}
+          disabled={disabled || !sso?.onStart || sso.starting}
+          data-testid="approver-stepup-sso-start"
+          className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {t('stepUpPrompt.ssoVerifyButton')}
+        </button>
+      </div>
+    );
+  }
 
   if (tier === 'passkey') {
     return (

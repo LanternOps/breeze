@@ -62,6 +62,7 @@ import {
   resolveDeviceContext,
 } from './brainDeviceContext';
 import { unattendedNoteContentError, unattendedNoteExpiryDays } from './deviceNoteBounds';
+import { noteWriteCardFreeExpiryDays } from './aiNoteWrites';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -681,19 +682,23 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
       const summary = input.summary as string;
       const details = (input.details as Record<string, unknown>) ?? null;
-      // #12140: a note no person approves is bounded in size and expiry here
-      // and in active notes per device by the service; see deviceNoteBounds.ts.
-      // Both signals are pinned by server code, never by the model: the MCP
-      // dispatch's flag, and a Wisp unattended-reads classification of this call.
+      // #12140 / #11986: a note no person approves is bounded in size and expiry
+      // here and in active notes per device by the service (one locked path,
+      // brainDeviceContext.ts). Both signals are pinned by server code, never
+      // by the model: the MCP dispatch's flag / a Wisp unattended-reads
+      // classification (unattended), and the chat gate's card-free flag.
       const unattended = context?.unattendedNoteWrite === true
         || context?.pinnedWispUnattendedRead?.kind === 'device_context';
+      const cardFree = context?.noteWriteCardFree === true;
       if (unattended) {
         const contentError = unattendedNoteContentError(input);
         if (contentError) return JSON.stringify({ error: contentError });
       }
       const expiresInDays = unattended
         ? unattendedNoteExpiryDays(input)
-        : input.expiresInDays as number | undefined;
+        : cardFree
+          ? noteWriteCardFreeExpiryDays(input)
+          : input.expiresInDays as number | undefined;
 
       const expiresAt = expiresInDays
         ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
@@ -713,14 +718,16 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         details,
         auth,
         expiresAt,
-        unattended ? { unattended: true } : undefined
+        unattended || cardFree
+          ? { ...(unattended && { unattended: true }), ...(cardFree && { cardFree: true }) }
+          : undefined
       );
 
       if ('error' in result) {
         return JSON.stringify({ error: result.error });
       }
 
-      const expiry = unattended ? ` It expires in ${expiresInDays} days.` : '';
+      const expiry = unattended || cardFree ? ` It expires in ${expiresInDays} days.` : '';
       return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.${expiry}`;
     },
   });

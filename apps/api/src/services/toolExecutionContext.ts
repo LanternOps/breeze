@@ -275,6 +275,13 @@ export type ToolExecutionContext = {
    */
   pinnedWispUnattendedRead?: WispUnattendedRead;
   /**
+   * The chat gate let this `set_device_context` call run without an approval
+   * card (aiNoteWrites.ts). Set ONLY by `createSessionPreToolUse`, never from
+   * model arguments. The handler then caps the note's expiry and recounts the
+   * device's notes under a per-device lock before it writes.
+   */
+  noteWriteCardFree?: true;
+  /**
    * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
    * its invocation tier, with the validated call. Set ONLY by
    * `createSessionPreToolUse`'s flow branch — never from model arguments —

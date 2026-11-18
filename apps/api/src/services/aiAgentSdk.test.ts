@@ -7095,6 +7095,82 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
     await flushDeferredToolFailureFlags(session);
     expect(sessionFlags).toEqual([]);
   });
+
+  // #12131: the close binds the row to its session as well as its id and
+  // `executing` status — the id comes from an in-memory store, so the filter
+  // must not trust it alone.
+  /** The values each `eq(column, value)` term of a `where(and(...))` compares against. */
+  function whereValues(where: unknown): unknown[] {
+    return ((where as { _and?: Array<{ _eq?: unknown[] }> })._and ?? []).map((term) => term._eq?.[1]);
+  }
+
+  it('closes the call\'s executing row by id, status AND session (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step', breezeSessionId: 'session-12131' });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ who: 'a' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-12131']));
+  });
+
+  // #12131: a call whose row the gate left `executing` must not keep it
+  // `executing` (until the stale-execution reaper) when its post hook takes a
+  // topology early return. The topology paths withhold raw tool output, so the
+  // row closes with the same withheld marker the topology ledger row carries.
+  const WITHHELD = { topologyInvestigation: true, outputWithheld: true };
+
+  it('a sealed (timed-out) topology turn closes the call\'s executing row without its raw output (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step', pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    // The turn times out while the call is still running (streamingSessionManager C1).
+    session.topologyTurnSealed = true;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]!.values).toMatchObject({ status: 'completed', toolOutput: WITHHELD });
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-1']));
+    expect(JSON.stringify(ledgerUpdates)).not.toContain('LATE-RAW-OUTPUT');
+    // No second ledger row for the call.
+    expect(ledgerIds).toEqual([execA]);
+  });
+
+  it('a topology investigation closes the call\'s executing row instead of writing a second one (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({
+      approvalMode: 'per_step',
+      pendingTurnToolExecutionCount: 0,
+      toolUseNames: new Map(),
+      topologyInvestigation: {
+        investigationId: 'session-1', allowedToolNames: new Set(['execute_command']), append: vi.fn(), startBlock: vi.fn(), noteUsage: vi.fn(() => true),
+        beforeToolCall: vi.fn(async () => ({ allowed: true as const })), complete: vi.fn(), abort: vi.fn(),
+      },
+    });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ secret: 'RAW-OUTPUT' }), true, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]!.values).toMatchObject({ status: 'failed', toolOutput: WITHHELD, durationMs: 5 });
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-1']));
+    expect(JSON.stringify(ledgerUpdates)).not.toContain('RAW-OUTPUT');
+    expect(ledgerIds).toEqual([execA]);
+  });
 });
 
 // #11968: an input refusal the model corrects on its next call must not flag

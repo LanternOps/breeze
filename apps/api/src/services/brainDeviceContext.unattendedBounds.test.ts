@@ -13,9 +13,9 @@ vi.mock('../db', () => ({
     select: vi.fn((projection?: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
-          if (projection && 'n' in projection) {
+          if (projection && 'active' in projection) {
             calls.push('count');
-            return Promise.resolve([{ n: state.activeCount }]);
+            return Promise.resolve([{ active: state.activeCount, recent: 0 }]);
           }
           return { limit: () => { calls.push('device'); return Promise.resolve(state.deviceRows); } };
         },
@@ -34,6 +34,7 @@ vi.mock('../db/schema', () => ({
     details: 'details', createdAt: 'created_at', expiresAt: 'expires_at', resolvedAt: 'resolved_at',
   },
   devices: { id: 'id', orgId: 'org_id' },
+  aiToolExecutions: {},
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -41,6 +42,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   or: vi.fn((...args: unknown[]) => ({ _or: args })),
   gt: vi.fn((...args: unknown[]) => ({ _gt: args })),
+  inArray: vi.fn((...args: unknown[]) => ({ _inArray: args })),
   isNull: vi.fn((col: unknown) => ({ _isNull: col })),
   desc: vi.fn((col: unknown) => ({ _desc: col })),
   count: vi.fn(() => ({ _count: true })),
@@ -82,6 +84,19 @@ describe('createDeviceContext — unattended bounds (#12140)', () => {
     const lock = calls.find((c) => c.startsWith('execute:'))!;
     expect(lock).toContain(`brain_device_context:${stored}`);
     expect(lock).not.toContain(stored.toUpperCase());
+  });
+
+  it('two differently-cased spellings written in parallel share one lock key (Strix #12152)', async () => {
+    const stored = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    state.deviceRows = [{ id: stored, orgId: 'org-1' }];
+    await Promise.all([
+      createDeviceContext(stored, 'issue', 'a', null, auth, inDays(30), { unattended: true }),
+      createDeviceContext(stored.toUpperCase(), 'issue', 'b', null, auth, inDays(30), { unattended: true }),
+    ]);
+    const locks = calls.filter((c) => c.startsWith('execute:'));
+    expect(locks).toHaveLength(2);
+    expect(locks[0]).toBe(locks[1]);
+    expect(locks[0]).toContain(`brain_device_context:${stored}`);
   });
 
   it('writes nothing once the device has the maximum active notes', async () => {
