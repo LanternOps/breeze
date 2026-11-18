@@ -81,8 +81,9 @@ export interface InvoiceBranding {
    *  and a fallback name/email were resolved. Never set for an issued
    *  invoice, so this is a no-op there. */
   billToEmailFallback?: string | null;
-  /** Partner document page-size default, used only when the invoice carries no
-   *  frozen `document_page_size` (drafts/legacy). Unset → A4. */
+  /** The partner's page size (its choice, else its region default —
+   *  resolvePartnerPageSize, #12097), used only when the invoice carries no
+   *  frozen `document_page_size` (drafts/legacy). Left unset by a caller → A4. */
   pageSize?: DocumentPageSize | null;
 }
 

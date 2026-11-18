@@ -211,10 +211,11 @@ describe('portal quotes GET /quotes/:id', () => {
       supportEmail: 'help@lantern.test',
       supportPhone: '+1 555 0100',
       theme: 'classic',
-      pageSize: 'a4',
+      // #12097: no page-size choice and no country → the (US) deployment default, Letter.
+      pageSize: 'letter',
     });
     // Sibling `presentation` field (Task 12) — same resolved values.
-    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'letter' });
   });
 
   it('resolves presentation.theme="condensed" from the partner default', async () => {
@@ -253,7 +254,7 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, secondaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'a4' });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, secondaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'letter' }); // #12097: no page-size choice and no country → the (US) deployment default, Letter.
   });
 
   it("falls back to the partner's own Branding settings (logo + colours) when the org has no portal branding", async () => {

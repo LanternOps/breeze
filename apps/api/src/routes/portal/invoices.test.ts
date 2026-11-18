@@ -480,7 +480,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     dbResults.push([]); dbResults.push([]); dbResults.push([]);
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
-    expect((await res.json()).branding).toEqual({ partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
+    expect((await res.json()).branding).toEqual({ partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'letter' }); // #12097: no page-size choice and no country → the (US) deployment default, Letter.
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {
