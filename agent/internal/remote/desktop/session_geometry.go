@@ -117,7 +117,7 @@ func (s *Session) applyCaptureGeometry(cap ScreenCapturer, w, h int, reason stri
 	// input and move the geometry epoch before anything else changes.
 	s.resetInputGeometry(reason)
 	s.adoptCaptureSize(cap, w, h)
-	s.refreshInputGeometry(index)
+	s.refreshInputGeometry(cap, index)
 
 	body := s.monitorSwitchedMessage(index, w, h)
 	body["reason"] = reason
@@ -163,15 +163,29 @@ func (s *Session) adoptCaptureBounds(cap ScreenCapturer) (resized bool) {
 // refreshInputGeometry makes the input handler re-read the screen metrics it
 // caches (Windows virtual-screen size, macOS backing scale) and re-applies the
 // display offset: a mode change on one monitor moves the origin of the others.
-func (s *Session) refreshInputGeometry(index int) {
+//
+// On a secure desktop (UAC, Winlogon) the offset stays at the origin, as
+// handleDesktopSwitch set it on entry: that desktop is captured from the
+// primary display's origin, so a monitor origin would displace every click.
+func (s *Session) refreshInputGeometry(cap ScreenCapturer, index int) {
 	if s.inputHandler == nil {
 		return
 	}
 	if r, ok := s.inputHandler.(ScreenGeometryRefresher); ok {
 		r.RefreshScreenGeometry()
 	}
-	applyDisplayOffset(s.inputHandler, index, &s.cursorOffsetX, &s.cursorOffsetY)
+	if dsn, ok := cap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
+		s.inputHandler.SetDisplayOffset(0, 0)
+		s.cursorOffsetX.Store(0)
+		s.cursorOffsetY.Store(0)
+		return
+	}
+	applySessionDisplayOffset(s.inputHandler, index, &s.cursorOffsetX, &s.cursorOffsetY)
 }
+
+// applySessionDisplayOffset is applyDisplayOffset; a var so tests can observe
+// whether the transition re-applied the monitor origin.
+var applySessionDisplayOffset = applyDisplayOffset
 
 // ensureEncoderDimensions resizes enc to w x h when it is configured for
 // another size, forcing an IDR at the new size. It reports whether enc can

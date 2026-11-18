@@ -4,6 +4,7 @@ import (
 	"errors"
 	"image"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -492,5 +493,61 @@ func TestHardwareResizeFailureSwapsToSoftwareWithoutBackoff(t *testing.T) {
 
 	if w, h, _, encodes, _ := sw.snapshot(); w != 2880 || h != 1800 || encodes != 1 {
 		t.Fatalf("software encoder %dx%d encodes %d on the next frame; want 2880x1800 and the frame encoded", w, h, encodes)
+	}
+}
+
+// secureResizingCapturer is a resizingCapturer on a secure desktop (UAC,
+// Winlogon), captured at the primary display's origin.
+type secureResizingCapturer struct {
+	resizingCapturer
+}
+
+func (c *secureResizingCapturer) ConsumeDesktopSwitch() bool { return false }
+func (c *secureResizingCapturer) OnSecureDesktop() bool      { return true }
+
+// Strix review: a resolution change while a secure desktop is shown keeps the
+// input offset at the origin, as the desktop switch onto it set it. Re-applying
+// the monitor's virtual-screen origin would shift every click off the dialog.
+func TestResolutionChangeOnSecureDesktopKeepsOriginOffset(t *testing.T) {
+	recordAnnouncements(t)
+	applied := 0
+	prev := applySessionDisplayOffset
+	applySessionDisplayOffset = func(h InputHandler, idx int, x, y *atomic.Int32) {
+		applied++
+		h.SetDisplayOffset(1920, 0) // a secondary monitor's origin
+		x.Store(1920)
+	}
+	t.Cleanup(func() { applySessionDisplayOffset = prev })
+
+	inner := &refreshRecorder{}
+	si := NewSafeInput(inner, "geom")
+	t.Cleanup(si.Close)
+	s, _, _, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	cap := &secureResizingCapturer{resizingCapturer: resizingCapturer{w: 1920, h: 1080}}
+	s.capturer = cap
+	s.inputHandler = si
+	s.displayIndex = 1
+	s.adoptCaptureSize(cap, 1920, 1080)
+
+	cap.setSize(1280, 1024)
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	if applied != 0 {
+		t.Fatalf("the monitor origin was re-applied on a secure desktop (%d times)", applied)
+	}
+	if got := s.cursorOffsetX.Load(); got != 0 {
+		t.Fatalf("cursor offset X = %d on a secure desktop, want 0", got)
+	}
+	if calls := inner.snapshot(); !hasCall(calls, "offset:0,0") {
+		t.Fatalf("input offset not held at the origin on a secure desktop: %v", calls)
+	}
+
+	// Off the secure desktop the transition re-applies the monitor origin.
+	s2, cap2, _, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	s2.adoptCaptureSize(cap2, 1920, 1080)
+	cap2.setSize(1280, 1024)
+	s2.captureAndSendFrame(16 * time.Millisecond)
+	if applied != 1 {
+		t.Fatalf("the monitor origin was not re-applied on the default desktop (applied=%d)", applied)
 	}
 }
