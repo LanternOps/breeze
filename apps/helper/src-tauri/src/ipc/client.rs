@@ -2469,7 +2469,7 @@ mod prompt_auth_tests {
         let now: i64 = 1_793_000_000_000;
         let messages = std::sync::Arc::new(super::super::message::MessageBridge::default());
         let prompts = std::sync::Arc::new(PromptBridge::default());
-        let exp = chrono::DateTime::from_timestamp_millis(now + 3_600_000).unwrap().to_rfc3339();
+        let exp = crate::timestamp::rfc3339_from_millis(now + 3_600_000);
         let show: MessageShow = serde_json::from_str(&format!(
             r##"{{"messageId":"m-1","title":"t","body":"b","severity":"info","requiresAck":false,"expiresAt":"{exp}","branding":{{}}}}"##
         ))

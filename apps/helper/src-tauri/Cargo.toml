@@ -26,7 +26,10 @@ reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots
 tokio = { version = "1", features = ["sync", "net", "io-util", "time", "rt", "macros"] }
 futures-util = "0.3"
 whoami = "2"
-chrono = "0.4"
+# Timestamps and RFC 3339 parsing (src/timestamp.rs). Replaces chrono, which
+# is unmaintained (RUSTSEC-2026-0543, #12126). Already in Cargo.lock through
+# tauri (cookie, plist): no new crate. `local-offset` = the helper.log clock.
+time = { version = "0.3.47", features = ["local-offset"] }
 hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"

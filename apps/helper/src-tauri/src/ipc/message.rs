@@ -244,9 +244,9 @@ impl MessageTracker {
             "critical" => Severity::Critical,
             _ => return ShowAction::Reject("invalid severity".into()),
         };
-        let expires_ms = match chrono::DateTime::parse_from_rfc3339(&req.expires_at) {
-            Ok(t) => t.timestamp_millis(),
-            Err(_) => return ShowAction::Reject("invalid expiresAt".into()),
+        let expires_ms = match crate::timestamp::parse_rfc3339_millis(&req.expires_at) {
+            Some(ms) => ms,
+            None => return ShowAction::Reject("invalid expiresAt".into()),
         };
         if self.active.contains_key(&req.message_id) {
             return ShowAction::AlreadyShown;
@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn future() -> String {
-        chrono::DateTime::from_timestamp_millis(NOW + 3_600_000).unwrap().to_rfc3339()
+        crate::timestamp::rfc3339_from_millis(NOW + 3_600_000)
     }
 
     fn show(sev: &str, ack: bool) -> MessageShow {

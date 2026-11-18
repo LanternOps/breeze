@@ -39,9 +39,13 @@ ignore = [
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
   # TIME-LIMITED — EXPIRES 2027-02-16. RUSTSEC-2026-0543: chrono is unmaintained.
-  # Informational notice, not a vulnerability. chrono is a direct dependency
-  # (timestamps / RFC 3339 parsing in lib.rs and ipc/*). Remove this entry when
-  # chrono is replaced or upgraded; review/remove by the expiry date.
-  # Tracked in #12126.
+  # Informational notice, not a vulnerability. The helper no longer depends on
+  # chrono (replaced by `time` in src/timestamp.rs) and does not compile it:
+  # `cargo tree -i chrono --target all -e all` is empty. It stays in Cargo.lock
+  # only because serde_with (via tauri-utils) names it in weak `chrono_0_4?/...`
+  # features, which Cargo locks without activating, and cargo-audit scans the
+  # lockfile. Same situation as the viewer. Remove this entry when serde_with /
+  # tauri-utils drop that optional dependency; review/remove by the expiry
+  # date. Tracked in #12126.
   "RUSTSEC-2026-0543", # chrono
 ]
