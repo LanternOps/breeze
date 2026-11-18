@@ -233,7 +233,7 @@ func isWingetUpdateNotApplicable(code int) bool {
 }
 
 func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
-	if !validWingetPkgID.MatchString(patchID) {
+	if !validWingetPkgID().MatchString(patchID) {
 		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", patchID)
 	}
 	if p.isUserScopeOnly(patchID) {
@@ -308,7 +308,7 @@ func wingetInstalledResult(patchID, combined string) InstallResult {
 }
 
 func (p *SystemWingetProvider) Uninstall(patchID string) error {
-	if !validWingetPkgID.MatchString(patchID) {
+	if !validWingetPkgID().MatchString(patchID) {
 		return fmt.Errorf("invalid winget package ID: %q", patchID)
 	}
 	if p.isUserScopeOnly(patchID) {
@@ -334,7 +334,7 @@ func (p *SystemWingetProvider) Uninstall(patchID string) error {
 // (false, nil) rather than an error. Only a failure to invoke the process at
 // all (run returning a non-nil err) is treated as an error here.
 func (p *SystemWingetProvider) IsInstalled(id string) (bool, error) {
-	if !validWingetPkgID.MatchString(id) {
+	if !validWingetPkgID().MatchString(id) {
 		return false, fmt.Errorf("invalid winget package ID: %q", id)
 	}
 	stdout, _, code, err := p.run(p.wingetPath, systemIsInstalledArgs(id), systemWingetScanTimeout)
@@ -353,7 +353,7 @@ func (p *SystemWingetProvider) IsInstalled(id string) (bool, error) {
 // input criteria" or exits non-zero) is a failure, never a silent fallback to
 // latest.
 func (p *SystemWingetProvider) InstallExact(id, version string) (InstallResult, error) {
-	if !validWingetPkgID.MatchString(id) {
+	if !validWingetPkgID().MatchString(id) {
 		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", id)
 	}
 	args := systemInstallArgs(id)

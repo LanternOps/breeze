@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/hosttool"
@@ -60,7 +61,7 @@ type cmdRunner func(ctx context.Context, path string, args ...string) (cmdOutput
 // local node's qemu or lxc guest list. The node segment has the same charset
 // validNodeName enforces, so it can never be "..", start with "-" or carry a
 // separator.
-var pveshPathPattern = regexp.MustCompile(`^/nodes/[A-Za-z0-9][A-Za-z0-9-]{0,62}/(qemu|lxc)$`)
+var pveshPathPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^/nodes/[A-Za-z0-9][A-Za-z0-9-]{0,62}/(qemu|lxc)$`) })
 
 // allowedCommand reports whether path+args is one of the read-only commands
 // this package runs:
@@ -73,7 +74,7 @@ func allowedCommand(path string, args []string) bool {
 	case isSystemPowerShell(path):
 		return slices.Equal(args, hypervArgs)
 	case path == proxmoxPvesh:
-		return len(args) == 4 && args[0] == "get" && pveshPathPattern.MatchString(args[1]) &&
+		return len(args) == 4 && args[0] == "get" && pveshPathPattern().MatchString(args[1]) &&
 			args[2] == "--output-format" && args[3] == "json"
 	}
 	return false

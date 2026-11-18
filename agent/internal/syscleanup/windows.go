@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -226,14 +227,14 @@ func systemRoot() string {
 
 // DISM reports 1024-based sizes with a two-character suffix ("1.64 GB"), which
 // matches neither apt's 1000-based grammar nor dnf's single-letter one.
-var dismSizePattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(bytes|KB|MB|GB|TB)$`)
+var dismSizePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(bytes|KB|MB|GB|TB)$`) })
 
 var dismUnitFactor = map[string]float64{
 	"bytes": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30, "TB": 1 << 40,
 }
 
 func parseDismSize(text string) (int64, bool) {
-	match := dismSizePattern.FindStringSubmatch(strings.TrimSpace(text))
+	match := dismSizePattern().FindStringSubmatch(strings.TrimSpace(text))
 	if match == nil {
 		return 0, false
 	}
@@ -248,9 +249,13 @@ func parseDismSize(text string) (int64, bool) {
 	return int64(math.Round(bytes)), true
 }
 
-var dismBackupsPattern = regexp.MustCompile(`Backups and Disabled Features\s*:\s*([0-9.]+\s*(?:bytes|KB|MB|GB|TB))`)
-var dismCachePattern = regexp.MustCompile(`Cache and Temporary Data\s*:\s*([0-9.]+\s*(?:bytes|KB|MB|GB|TB))`)
-var dismRecommendedNoPattern = regexp.MustCompile(`Component Store Cleanup Recommended\s*:\s*No`)
+var dismBackupsPattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`Backups and Disabled Features\s*:\s*([0-9.]+\s*(?:bytes|KB|MB|GB|TB))`)
+})
+var dismCachePattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`Cache and Temporary Data\s*:\s*([0-9.]+\s*(?:bytes|KB|MB|GB|TB))`)
+})
+var dismRecommendedNoPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`Component Store Cleanup Recommended\s*:\s*No`) })
 
 // parseDismAnalyze sums the two reclaimable fields of AnalyzeComponentStore
 // and reports whether Windows recommends the cleanup.
@@ -269,8 +274,8 @@ var dismRecommendedNoPattern = regexp.MustCompile(`Component Store Cleanup Recom
 //
 // An unrecognised body is unknown, never 0.
 func parseDismAnalyze(stdout string) (bytes int64, known bool, recommended bool) {
-	backups := dismBackupsPattern.FindStringSubmatch(stdout)
-	cache := dismCachePattern.FindStringSubmatch(stdout)
+	backups := dismBackupsPattern().FindStringSubmatch(stdout)
+	cache := dismCachePattern().FindStringSubmatch(stdout)
 	if backups == nil || cache == nil {
 		return 0, false, false
 	}
@@ -279,7 +284,7 @@ func parseDismAnalyze(stdout string) (bytes int64, known bool, recommended bool)
 	if !backupOK || !cacheOK {
 		return 0, false, false
 	}
-	return backupBytes + cacheBytes, true, !dismRecommendedNoPattern.MatchString(stdout)
+	return backupBytes + cacheBytes, true, !dismRecommendedNoPattern().MatchString(stdout)
 }
 
 // ---------------------------------------------------------------------------

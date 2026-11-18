@@ -77,7 +77,7 @@ import (
 )
 
 var log = logging.L("heartbeat")
-var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+var desktopSessionIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`) })
 
 const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
@@ -2079,7 +2079,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop lease renew payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(renew.SessionID) {
+		if !desktopSessionIDPattern().MatchString(renew.SessionID) {
 			log.Warn("dropping desktop lease renew with invalid session ID",
 				"sessionId", renew.SessionID, "helperSession", session.SessionID)
 			return
@@ -2102,7 +2102,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop peer disconnect payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop peer disconnect with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2120,7 +2120,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop clipboard summary payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop clipboard summary with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2320,7 +2320,7 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID, reason string) 
 	if h.wsClient == nil {
 		return
 	}
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		log.Warn("refusing to send desktop disconnect notification with invalid session ID", "sessionId", sessionID)
 		return
 	}

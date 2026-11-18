@@ -9,6 +9,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -76,13 +77,15 @@ type InterfaceMetricEnvelopeV1 struct {
 }
 
 var (
-	decimalUint64Pattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`)
-	reasonPattern        = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	uuidPattern          = regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$`)
-	utcTimestampPattern  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$`)
-	adminStatuses        = map[string]bool{"up": true, "down": true, "testing": true, "unknown": true}
-	operStatuses         = map[string]bool{"up": true, "down": true, "testing": true, "unknown": true, "dormant": true, "not_present": true, "lower_layer_down": true}
-	collectionOutcomes   = map[string]bool{"complete": true, "partial": true, "failed": true, "unsupported": true, "not_attempted": true}
+	decimalUint64Pattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(0|[1-9][0-9]{0,19})$`) })
+	reasonPattern        = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z][a-z0-9_]*$`) })
+	uuidPattern          = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$`)
+	})
+	utcTimestampPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$`) })
+	adminStatuses       = map[string]bool{"up": true, "down": true, "testing": true, "unknown": true}
+	operStatuses        = map[string]bool{"up": true, "down": true, "testing": true, "unknown": true, "dormant": true, "not_present": true, "lower_layer_down": true}
+	collectionOutcomes  = map[string]bool{"complete": true, "partial": true, "failed": true, "unsupported": true, "not_attempted": true}
 )
 
 // DecimalCounter renders a counter without any float conversion.
@@ -137,16 +140,16 @@ func (s *InterfaceMetricSampleV1) Normalize() {
 
 func validKey(v string) bool { return v != "" && len(v) <= 255 && utf8.ValidString(v) }
 func validReason(v string) bool {
-	return len(v) <= 64 && reasonPattern.MatchString(v)
+	return len(v) <= 64 && reasonPattern().MatchString(v)
 }
 func parseUTC(v string) (time.Time, error) {
-	if !utcTimestampPattern.MatchString(v) {
+	if !utcTimestampPattern().MatchString(v) {
 		return time.Time{}, fmt.Errorf("timestamp %q must be UTC ISO-8601", v)
 	}
 	return time.Parse(time.RFC3339Nano, v)
 }
 func parseDecimal(v string) (uint64, error) {
-	if !decimalUint64Pattern.MatchString(v) {
+	if !decimalUint64Pattern().MatchString(v) {
 		return 0, fmt.Errorf("%q is not an unsigned decimal", v)
 	}
 	return strconv.ParseUint(v, 10, 64)
@@ -154,7 +157,7 @@ func parseDecimal(v string) (uint64, error) {
 
 // Validate enforces the same rules as the shared TypeScript schema.
 func (s *InterfaceMetricSampleV1) Validate() error {
-	if !uuidPattern.MatchString(s.InterfaceID) {
+	if !uuidPattern().MatchString(s.InterfaceID) {
 		return errors.New("interfaceId must be a UUID")
 	}
 	if !validKey(s.InterfaceEpoch) {
@@ -237,7 +240,7 @@ func (e *InterfaceMetricEnvelopeV1) Validate() error {
 	if _, err := parseDecimal(e.Sequence); err != nil {
 		return fmt.Errorf("sequence: %w", err)
 	}
-	if e.CommandID != nil && !uuidPattern.MatchString(*e.CommandID) {
+	if e.CommandID != nil && !uuidPattern().MatchString(*e.CommandID) {
 		return errors.New("commandId must be a UUID")
 	}
 	started, err := parseUTC(e.StartedAt)

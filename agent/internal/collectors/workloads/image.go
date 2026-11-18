@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ImageRef is a container image reference split into the parts the API stores.
@@ -21,12 +22,12 @@ type ImageRef struct {
 }
 
 var (
-	imageIDPattern = regexp.MustCompile(`^(sha256:)?[0-9a-f]{12,64}$`)
-	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	imageIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(sha256:)?[0-9a-f]{12,64}$`) })
+	digestPattern  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^sha256:[0-9a-f]{64}$`) })
 )
 
 // IsImageID reports whether ref is a bare image id rather than a name.
-func IsImageID(ref string) bool { return imageIDPattern.MatchString(ref) }
+func IsImageID(ref string) bool { return imageIDPattern().MatchString(ref) }
 
 // NormalizeImage splits ref the way the container engines resolve it.
 //
@@ -101,7 +102,7 @@ func PickRepoDigest(repository string, repoDigests []string) string {
 			continue
 		}
 		digest := entry[i+1:]
-		if !digestPattern.MatchString(digest) {
+		if !digestPattern().MatchString(digest) {
 			continue
 		}
 		if NormalizeImage(entry[:i]).Repository == repository {

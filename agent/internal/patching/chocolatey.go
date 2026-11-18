@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // validChocoPkgName matches valid Chocolatey package names (alphanumeric, dots, hyphens).
-var validChocoPkgName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,127}$`)
+var validChocoPkgName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,127}$`) })
 
 // ChocolateyProvider integrates with Chocolatey on Windows.
 type ChocolateyProvider struct{}
@@ -47,7 +48,7 @@ func (c *ChocolateyProvider) Scan() ([]AvailablePatch, error) {
 		if len(parts) < 3 {
 			continue
 		}
-		if !validChocoPkgName.MatchString(parts[0]) {
+		if !validChocoPkgName().MatchString(parts[0]) {
 			continue
 		}
 
@@ -70,7 +71,7 @@ func (c *ChocolateyProvider) Scan() ([]AvailablePatch, error) {
 
 // Install upgrades a Chocolatey package.
 func (c *ChocolateyProvider) Install(patchID string) (InstallResult, error) {
-	if !validChocoPkgName.MatchString(patchID) {
+	if !validChocoPkgName().MatchString(patchID) {
 		return InstallResult{}, fmt.Errorf("invalid package name: %q", patchID)
 	}
 	output, err := commandCombinedOutputWithTimeout(patchMutateTimeout, "choco", "upgrade", "-y", patchID)
@@ -86,7 +87,7 @@ func (c *ChocolateyProvider) Install(patchID string) (InstallResult, error) {
 
 // Uninstall removes a Chocolatey package.
 func (c *ChocolateyProvider) Uninstall(patchID string) error {
-	if !validChocoPkgName.MatchString(patchID) {
+	if !validChocoPkgName().MatchString(patchID) {
 		return fmt.Errorf("invalid package name: %q", patchID)
 	}
 	output, err := commandCombinedOutputWithTimeout(patchMutateTimeout, "choco", "uninstall", "-y", patchID)
@@ -120,7 +121,7 @@ func (c *ChocolateyProvider) GetInstalled() ([]InstalledPatch, error) {
 		if len(parts) < 2 {
 			continue
 		}
-		if !validChocoPkgName.MatchString(parts[0]) {
+		if !validChocoPkgName().MatchString(parts[0]) {
 			continue
 		}
 

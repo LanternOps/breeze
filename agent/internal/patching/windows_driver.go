@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Windows Update driver search for vendor lanes (#11065). The search itself is
@@ -76,7 +77,7 @@ func driverUpdateFrom(id string, read func(property string) (string, error)) (Dr
 var (
 	surfaceManufacturers   = map[string]bool{"surface": true, "microsoft surface": true}
 	microsoftManufacturers = map[string]bool{"microsoft": true, "microsoft corporation": true}
-	surfaceModel           = regexp.MustCompile(`(?i)^surface\s`)
+	surfaceModel           = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^surface\s`) })
 )
 
 // IsSurfaceDriverUpdate matches on the whole manufacturer string, never a
@@ -86,7 +87,7 @@ func IsSurfaceDriverUpdate(u DriverUpdate) bool {
 	if surfaceManufacturers[maker] {
 		return true
 	}
-	return microsoftManufacturers[maker] && surfaceModel.MatchString(strings.TrimSpace(u.DriverModel))
+	return microsoftManufacturers[maker] && surfaceModel().MatchString(strings.TrimSpace(u.DriverModel))
 }
 
 // ClassifyDriverUpdate is deliberately one-sided. A firmware update taken for a
@@ -111,9 +112,9 @@ func ClassifyDriverUpdate(u DriverUpdate) DriverKind {
 // as the API matches a device to its lane. UNCONFIRMED for Dell, HP and Lenovo: their
 // lab waves capture what Windows Update really says and correct these.
 var (
-	dellManufacturer   = regexp.MustCompile(`(?i)^dell(?: inc\.?)?$`)
-	hpManufacturer     = regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`)
-	lenovoManufacturer = regexp.MustCompile(`(?i)^lenovo$`)
+	dellManufacturer   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^dell(?: inc\.?)?$`) })
+	hpManufacturer     = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`) })
+	lenovoManufacturer = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^lenovo$`) })
 )
 
 // pcLaneDriverClasses are the DriverClass values of a PC's own hardware. UNCONFIRMED,
@@ -154,11 +155,11 @@ func driverUpdateOwner(u DriverUpdate) string {
 	}
 	maker := strings.TrimSpace(u.DriverManufacturer)
 	switch {
-	case dellManufacturer.MatchString(maker):
+	case dellManufacturer().MatchString(maker):
 		return "dell"
-	case hpManufacturer.MatchString(maker):
+	case hpManufacturer().MatchString(maker):
 		return "hp"
-	case lenovoManufacturer.MatchString(maker):
+	case lenovoManufacturer().MatchString(maker):
 		return "lenovo"
 	}
 	return ""

@@ -74,7 +74,7 @@ func (h *Heartbeat) handleHelperLocalICECandidate(session *sessionbroker.Session
 		log.Warn("invalid desktop ICE candidate payload", "error", err.Error())
 		return
 	}
-	if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+	if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 		log.Warn("dropping desktop ICE candidate with invalid session ID",
 			"sessionId", notice.SessionID, "helperSession", session.SessionID)
 		return
@@ -121,7 +121,7 @@ func (h *Heartbeat) onRemoteDesktopICECandidate(msg websocket.DesktopICECandidat
 }
 
 func (h *Heartbeat) applyRemoteDesktopICECandidate(msg websocket.DesktopICECandidateMessage) {
-	if !desktopSessionIDPattern.MatchString(msg.SessionID) {
+	if !desktopSessionIDPattern().MatchString(msg.SessionID) {
 		log.Warn("dropping relayed desktop ICE candidate with invalid session ID", "sessionId", msg.SessionID)
 		return
 	}

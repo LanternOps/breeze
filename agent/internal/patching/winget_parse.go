@@ -5,10 +5,11 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // validWingetPkgID matches valid winget package identifiers (e.g. "Mozilla.Firefox", "Google.Chrome").
-var validWingetPkgID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$`)
+var validWingetPkgID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$`) })
 
 // errWingetNoTable reports that winget's output contained neither a parsable
 // result table nor a recognized "matched nothing" message, so the run cannot be
@@ -101,7 +102,7 @@ func parseWingetUpgradeOutput(output string) ([]AvailablePatch, error) {
 		}
 
 		name, id, version, available := extractUpgradeColumns(line, cols)
-		if id == "" || !validWingetPkgID.MatchString(id) {
+		if id == "" || !validWingetPkgID().MatchString(id) {
 			continue
 		}
 
@@ -150,7 +151,7 @@ func parseWingetListOutput(output string) []InstalledPatch {
 		}
 
 		name, id, version := extractListColumns(line, cols)
-		if id == "" || !validWingetPkgID.MatchString(id) {
+		if id == "" || !validWingetPkgID().MatchString(id) {
 			continue
 		}
 

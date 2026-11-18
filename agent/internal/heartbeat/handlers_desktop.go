@@ -1018,7 +1018,7 @@ func requireValidatedDesktopSessionID(payload map[string]any) (string, *tools.Co
 }
 
 func validateDesktopSessionID(sessionID string) error {
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		return fmt.Errorf("invalid sessionId")
 	}
 	return nil
