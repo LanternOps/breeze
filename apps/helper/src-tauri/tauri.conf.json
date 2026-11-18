@@ -21,7 +21,12 @@
     ],
     "resources": [
       "assist-requirements.json"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "template": "wix/main.wxs"
+      }
+    }
   },
   "app": {
     "windows": [],
