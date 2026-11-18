@@ -68,6 +68,10 @@ describe('buildQualityQuery', () => {
     expect(sql).toContain('(f.session_id IS NOT NULL AND f.agent_run_id IS NULL) AS is_session');
   });
 
+  it('#12133: the own-message count is skipped for agent runs (their turns come from the run record)', () => {
+    expect(render(base()).sql).toMatch(/\) own ON f\.session_id IS NOT NULL AND f\.agent_run_id IS NULL/);
+  });
+
   it('orders a conversation by turn time, not insert time', () => {
     const { sql } = render(base());
     expect(sql).toContain('COALESCE(i.occurred_at, i.created_at) AS at');
