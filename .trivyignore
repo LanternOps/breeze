@@ -92,11 +92,13 @@ CVE-2026-93687
 #
 # Evidence (full detail in the JSON entry's reason):
 #  - api / api-compose images: picomatch has no production path into
-#    @breeze/api (`pnpm why picomatch --prod` is empty), and the api runner now
-#    ships only the production dependency closure, so neither image contains it.
+#    @breeze/api (`pnpm why picomatch --prod` is empty). The api runner
+#    (apps/api/Dockerfile) now copies a prod-only install; api-compose was
+#    already `pnpm deploy --prod`. Neither image contains picomatch.
 #  - web, portal, web-compose images: astro → @astrojs/internal-helpers puts
 #    picomatch 4.0.7 in the production closure (bundled into
-#    dist/server/entry.mjs); 4.0.4 sits in node_modules only via devDependencies.
+#    dist/server/entry.mjs). web and portal also carry 4.0.4 in node_modules
+#    via devDependencies only; web-compose (`pnpm deploy --prod`) does not.
 #    Its only runtime caller is @astrojs/react's include/exclude filter, which is
 #    null because both options are baked as undefined. A negative runtime test
 #    on each built image (instrumented picomatch/parse counters plus a module-

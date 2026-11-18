@@ -101,6 +101,16 @@ describe(`${DOCKERFILE} runner ships production dependencies only`, () => {
     ).toEqual([]);
   });
 
+  it('copies no node_modules path from a stage that only received node_modules by COPY (e.g. builder)', () => {
+    // builder has no install of its own; it gets deps' dev-inclusive tree by
+    // `COPY --from=deps`, so the FROM-chain check above would exempt it.
+    const viaCopyOnly = runner.copiesFrom
+      .filter((c) => /node_modules/.test(c.text))
+      .filter((c) => nearestInstall(byName, c.stage) === null)
+      .map((c) => c.text);
+    expect(viaCopyOnly).toEqual([]);
+  });
+
   it('rebuilds node_modules when the --prod install inherits a dev-inclusive tree', () => {
     // `pnpm install --prod` over an existing dev-inclusive node_modules only
     // unlinks the dev packages; they stay in node_modules/.pnpm and still ship
@@ -117,8 +127,12 @@ describe(`${DOCKERFILE} runner ships production dependencies only`, () => {
       const inheritsDevTree = nearestInstall(byName, stage.from) !== null;
       if (!inheritsDevTree) continue;
       const install = stage.installs.at(-1)!;
-      expect(install, `${stage.name}: delete node_modules before the --prod install`).toMatch(
-        /\brm\s+-rf\s+[^&;]*\bnode_modules\b[^&;]*(&&|;)\s*pnpm\s+(install|i)\b[^&;]*--prod\b/,
+      // The ROOT tree must be a token of its own: deleting only apps/*/node_modules
+      // or node_modules/.cache leaves the dev packages in node_modules/.pnpm.
+      const rm = /\brm\s+-rf\s+([^&;]*)(&&|;)\s*pnpm\s+(install|i)\b[^&;]*--prod\b/.exec(install);
+      expect(rm, `${stage.name}: delete node_modules before the --prod install`).not.toBeNull();
+      expect(rm![1]!.split(/\s+/), `${stage.name}: the rm must delete the root node_modules`).toEqual(
+        expect.arrayContaining([expect.stringMatching(/^(\.\/|\/app\/)?node_modules\/?$/)]),
       );
     }
   });
