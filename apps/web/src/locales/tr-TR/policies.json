@@ -68,7 +68,9 @@
       "check": "Kontrol et",
       "lastChecked": "Son Kontrol Edildi",
       "noComplianceResultsYetAssignThisPolicy": "Henüz uyumluluk sonucu yok. Bu politikayı cihazlara atayın ve uyumluluk kuralları ekleyin; durum bir sonraki değerlendirmeden sonra görünür.",
-      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır."
+      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır.",
+      "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+      "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Bu politika için bir kuruluş seçin.",

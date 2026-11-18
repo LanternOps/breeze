@@ -240,7 +240,8 @@ export async function buildPolicyProbeConfigUpdate(
 
   // #12130: the org's own policies and its partner's partner-wide policies are
   // collected separately so the cap can reserve capacity for each. A probe both
-  // sides ask for counts as the org's own.
+  // sides ask for counts as the org's own only when the org's copy is certain to
+  // be kept (see below).
   const own = { registry: new Map<string, PolicyRegistryProbeUpdate>(), config: new Map<string, PolicyConfigProbeUpdate>() };
   const shared = { registry: new Map<string, PolicyRegistryProbeUpdate>(), config: new Map<string, PolicyConfigProbeUpdate>() };
 
@@ -256,19 +257,44 @@ export async function buildPolicyProbeConfigUpdate(
       if (!bucket.config.has(key)) bucket.config.set(key, probe);
     }
   }
-  for (const key of own.registry.keys()) shared.registry.delete(key);
-  for (const key of own.config.keys()) shared.config.delete(key);
+  // Strix (PR #12184): the org's copy of a probe both sides ask for may take the
+  // partner's claim only when every one of the org's own probes is kept, which
+  // the reserve guarantees up to RESERVED_PROBES_PER_SOURCE. Past that the org's
+  // copy can be truncated, so moving the claim would let an org policy author
+  // drop a partner-wide check by re-listing it. Then both copies stay, and the
+  // kept list is deduplicated below.
+  if (own.registry.size <= RESERVED_PROBES_PER_SOURCE) {
+    for (const key of own.registry.keys()) shared.registry.delete(key);
+  }
+  if (own.config.size <= RESERVED_PROBES_PER_SOURCE) {
+    for (const key of own.config.keys()) shared.config.delete(key);
+  }
 
+  const registryKept = capPolicyStateProbes(
+    sortPolicyRegistryProbes(Array.from(own.registry.values())),
+    sortPolicyRegistryProbes(Array.from(shared.registry.values())),
+    orgId, 'registry');
+  const configKept = capPolicyStateProbes(
+    sortPolicyConfigProbes(Array.from(own.config.values())),
+    sortPolicyConfigProbes(Array.from(shared.config.values())),
+    orgId, 'config');
   return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(capPolicyStateProbes(
-      sortPolicyRegistryProbes(Array.from(own.registry.values())),
-      sortPolicyRegistryProbes(Array.from(shared.registry.values())),
-      orgId, 'registry')),
-    policy_config_state_probes: sortPolicyConfigProbes(capPolicyStateProbes(
-      sortPolicyConfigProbes(Array.from(own.config.values())),
-      sortPolicyConfigProbes(Array.from(shared.config.values())),
-      orgId, 'config')),
+    policy_registry_state_probes: sortPolicyRegistryProbes(dedupeProbes(registryKept,
+      (probe) => policyRegistryProbeKey(probe.registry_path, probe.value_name))),
+    policy_config_state_probes: sortPolicyConfigProbes(dedupeProbes(configKept,
+      (probe) => policyConfigProbeKey(probe.file_path, probe.config_key))),
   };
+}
+
+/** First occurrence of each key, so a probe both sources kept is sent once. */
+function dedupeProbes<T>(probes: T[], keyOf: (probe: T) => string): T[] {
+  const seen = new Set<string>();
+  return probes.filter((probe) => {
+    const key = keyOf(probe);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -277,6 +303,9 @@ export async function buildPolicyProbeConfigUpdate(
  * the list, so it is bounded here rather than by the number of rules authored.
  */
 export const MAX_POLICY_STATE_PROBES_PER_ORG = 256;
+
+/** #12130: the share of the cap each source (org-owned, partner-wide) is guaranteed. */
+const RESERVED_PROBES_PER_SOURCE = Math.floor(MAX_POLICY_STATE_PROBES_PER_ORG / 2);
 
 /**
  * #12130: how many of each source's probes the cap keeps. The org's own

@@ -125,7 +125,7 @@ export type RemediationAfterCommit = { afterCommit?: () => Promise<void> };
  * failing transition raised nothing.
  */
 export type DeferredPolicyEvent = {
-  type: 'policy.evaluated' | 'policy.violation' | 'policy.compliant' | 'policy.remediation.triggered';
+  type: 'policy.evaluated' | 'policy.violation' | 'policy.compliant' | 'policy.remediation.triggered' | 'policy.not_assessed';
   orgId: string;
   payload: Record<string, unknown>;
   source: string;
@@ -1062,6 +1062,23 @@ function evaluateDeviceRules(
   return { passed, notAssessed, details };
 }
 
+/**
+ * How many rules were not assessed because the org's probe list is full
+ * (`reason: 'probe_cap'`). Strix (PR #12184): such a rule must be announced on
+ * its own `policy.not_assessed` event, whatever the rule set's status, so its
+ * owner hears about it instead of reading a quiet `pending`. A rule that is not
+ * collectable at all (`not_collectable`) is an authoring error its own message
+ * names, and is not counted.
+ */
+function probeCapNotAssessedRules(details: RuleEvaluationDetail[]): number {
+  return details.filter((detail) => detail.passed === null && detail.data?.reason === 'probe_cap').length;
+}
+
+/** The `policy.not_assessed` payload: the evaluation's payload plus why and how many. */
+function notAssessedPayload(payload: Record<string, unknown>, notAssessedRules: number): Record<string, unknown> {
+  return { ...payload, reason: 'probe_cap', notAssessedRules };
+}
+
 /** A rule set's status from its evaluation (#12130: not assessed -> pending). */
 function statusOf(evaluation: DeviceRuleEvaluation): 'compliant' | 'non_compliant' | 'pending' {
   if (evaluation.passed) return 'compliant';
@@ -1709,6 +1726,24 @@ function policyEventsFor(
   remediationRunId: string | null,
   source: string,
   checkedAt: Date,
+  notAssessedRules: number,
+): DeferredPolicyEvent[] {
+  const events = statusEventsFor(policy, device, status, previousStatus, remediationRunId, source, checkedAt);
+  if (notAssessedRules > 0) {
+    const { payload } = events[0]!;
+    events.push({ type: 'policy.not_assessed', orgId: device.orgId, payload: notAssessedPayload(payload, notAssessedRules), source });
+  }
+  return events;
+}
+
+function statusEventsFor(
+  policy: PolicyRow,
+  device: TargetDevice,
+  status: EvaluationStatus,
+  previousStatus: string | null,
+  remediationRunId: string | null,
+  source: string,
+  checkedAt: Date,
 ): DeferredPolicyEvent[] {
   const payload = {
     policyId: policy.id,
@@ -1942,7 +1977,8 @@ export async function evaluatePolicy(
     if (observeOnly) {
       continue;
     }
-    const events = policyEventsFor(policy, device, status, existing?.status ?? null, remediationRunId, source, checkedAt);
+    const events = policyEventsFor(policy, device, status, existing?.status ?? null, remediationRunId, source, checkedAt,
+      probeCapNotAssessedRules(evaluation.details));
     if (deferredEvents) {
       deferredEvents.push(...events);
     } else {
@@ -2288,6 +2324,15 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         type: status === 'non_compliant' ? 'policy.violation' : 'policy.compliant',
         orgId: deviceOrgId,
         payload: eventPayload,
+        source,
+      });
+    }
+    const notAssessedRules = probeCapNotAssessedRules(ruleDetails);
+    if (notAssessedRules > 0) {
+      events.push({
+        type: 'policy.not_assessed',
+        orgId: deviceOrgId,
+        payload: notAssessedPayload(eventPayload, notAssessedRules),
         source,
       });
     }

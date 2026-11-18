@@ -68,7 +68,9 @@
       "check": "Vérifié",
       "lastChecked": "Dernière vérification",
       "noComplianceResultsYetAssignThisPolicy": "Aucun résultat de conformité pour l’instant. Attribuer cette politique aux dispositifs et ajouter des règles de conformité ; Le statut apparaît après la prochaine évaluation.",
-      "summary": "Affichage du premier {{shown}} de {{total}} Résultats — Le résumé ci-dessous reflète uniquement cette page."
+      "summary": "Affichage du premier {{shown}} de {{total}} Résultats — Le résumé ci-dessous reflète uniquement cette page.",
+      "notCollectedProbeLimit": "Non collecté (limite de sondes)",
+      "notCollectedProbeLimitHint": "La liste des sondes de conformité de cette organisation est pleine : au moins une vérification ici n'est pas collectée. Elle n'est ni évaluée, ni signalée, ni corrigée tant que la liste n'a pas de place."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Choisissez une organisation pour cette politique.",

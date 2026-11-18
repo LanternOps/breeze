@@ -68,7 +68,9 @@
       "check": "Comprobar",
       "lastChecked": "Última comprobación",
       "noComplianceResultsYetAssignThisPolicy": "Aún no hay resultados de cumplimiento. Asigne esta política a dispositivos y agregue reglas de cumplimiento; El estado aparece después de la siguiente evaluación.",
-      "summary": "Mostrando el primero {{shown}} de {{total}} resultados: el resumen a continuación refleja esta página únicamente."
+      "summary": "Mostrando el primero {{shown}} de {{total}} resultados: el resumen a continuación refleja esta página únicamente.",
+      "notCollectedProbeLimit": "No recopilado (límite de sondeos)",
+      "notCollectedProbeLimitHint": "La lista de sondeos de cumplimiento de esta organización está llena, por lo que al menos una comprobación de aquí no se recopila. No se evalúa, no genera alertas ni se corrige hasta que la lista tenga espacio."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleccione una organización para esta política.",

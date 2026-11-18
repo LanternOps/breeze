@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Bir yapılandırma ilkesi atayın"
+    "assignPolicy": "Bir yapılandırma ilkesi atayın",
+    "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+    "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",

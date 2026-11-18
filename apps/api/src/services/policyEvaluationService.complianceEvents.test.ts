@@ -433,7 +433,7 @@ describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not col
     resolveRulesMock.mockResolvedValue([REGISTRY_RULE]);
   });
 
-  it('records pending, publishes only policy.evaluated and dispatches no remediation', async () => {
+  it('records pending, publishes policy.evaluated and policy.not_assessed, and dispatches no remediation', async () => {
     publishEventMock.mockResolvedValue('event-id');
     const upserts: Array<Record<string, unknown>> = [];
     insertMock.mockImplementation(() => ({
@@ -449,7 +449,19 @@ describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not col
     expect(result.results).toEqual([
       expect.objectContaining({ complianceRuleId: REGISTRY_RULE.id, status: 'pending', remediationTriggered: false }),
     ]);
-    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated']);
+    // Strix (PR #12184): a rule the probe cap left uncollected is announced on
+    // its own event, never only as a quiet `pending`; still no violation.
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.not_assessed']);
+    expect(publishEventMock.mock.calls[1]![1]).toBe(ORG_ID);
+    expect(publishEventMock.mock.calls[1]![2]).toMatchObject({
+      configPolicyComplianceRuleId: REGISTRY_RULE.id,
+      configPolicyComplianceRuleName: REGISTRY_RULE.name,
+      configPolicyId: REGISTRY_RULE.featureLinkId,
+      deviceId: DEVICE.id,
+      status: 'pending',
+      reason: 'probe_cap',
+      notAssessedRules: 1,
+    });
     // Only the compliance upsert: no automation run was inserted.
     expect(upserts).toHaveLength(1);
     expect(upserts[0]).toMatchObject({ status: 'pending' });
@@ -496,6 +508,9 @@ describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not col
     const result = await scanAndEvaluateConfigPolicyCompliance();
 
     expect(result.results).toEqual([expect.objectContaining({ status: 'non_compliant' })]);
+    // The failed rule raises its violation; the uncollected one is still announced.
+    expect(publishEventMock.mock.calls.map((c) => c[0]))
+      .toEqual(['policy.evaluated', 'policy.violation', 'policy.not_assessed']);
     // triggerConfigPolicyRemediation looks for a matching automation once per
     // attempted remediation; the unassessed registry rule must not be one.
     const { automations } = await import('../db/schema');

@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "No se informaron resultados de cumplimiento. Asigne una Política de configuración con reglas de cumplimiento a este dispositivo o espere la próxima evaluación.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Asignar una política de configuración"
+    "assignPolicy": "Asignar una política de configuración",
+    "notCollectedProbeLimit": "No recopilado (límite de sondeos)",
+    "notCollectedProbeLimitHint": "La lista de sondeos de cumplimiento de esta organización está llena, por lo que al menos una comprobación de aquí no se recopila. No se evalúa, no genera alertas ni se corrige hasta que la lista tenga espacio."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} se movió a {{orgName}}",

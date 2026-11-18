@@ -168,6 +168,14 @@ Every time a policy is evaluated against a device, the result is stored in the `
 | `pending` | Not yet evaluated, or no rule failed but at least one could not be assessed because its registry or config value is not collected from the device. A `pending` result raises no violation and runs no remediation. |
 | `error` | Evaluation failed due to an internal error |
 
+### Probe limit
+
+An organization's agents collect at most 256 registry values and 256 config values for compliance checks. Half of each limit is reserved for the organization's own policies and half for its partner's partner-wide policies. A side that needs less than its half leaves the rest to the other. A check past the limit is not collected, so it cannot be assessed:
+
+- The console shows **Not collected (probe limit)** for that rule set instead of **Pending**.
+- A `policy.not_assessed` event is published. The rule's owner gets an in-app notice: the partner's full-access staff for a partner-wide rule, or the organization's policy managers for its own rule. The notice is sent at most once a week per rule and organization while the check stays uncollected.
+- The check raises no violation and runs no remediation. Remove registry or config checks the organization does not need to bring it back under the limit.
+
 ## Policy actions
 
 ### Deactivate
@@ -320,6 +328,7 @@ The policy evaluation service publishes events to the internal event bus for dow
 | `policy.evaluated` | After every device evaluation (compliant or non-compliant) |
 | `policy.violation` | When a device evaluates as `non_compliant` |
 | `policy.compliant` | When a device evaluates as `compliant` |
+| `policy.not_assessed` | When at least one rule was not assessed because the organization's probe limit is full (`reason: "probe_cap"`, `notAssessedRules`). Published alongside the status events, never instead of a violation |
 | `policy.remediation.triggered` | When enforcement is `enforce` and a remediation automation run is created |
 
 All events include the policy ID, device ID, hostname, compliance status, enforcement level, and evaluation timestamp.
@@ -380,7 +389,7 @@ Configuration Policy compliance rules are evaluated on a scheduled basis by the 
 4. Evaluates each compliance rule against the device's telemetry context.
 5. Upserts the result into `automation_policy_compliance` with `policyId: null` and `configPolicyId` set to the feature link ID.
 6. If enforcement is `enforce` and the device is non-compliant, triggers remediation via a linked automation and dispatches it to the device.
-7. Publishes `policy.evaluated`, `policy.violation`, or `policy.compliant` events.
+7. Publishes `policy.evaluated`, `policy.violation`, or `policy.compliant` events, plus `policy.not_assessed` when a rule was left uncollected by the probe limit.
 
 ## Troubleshooting
 

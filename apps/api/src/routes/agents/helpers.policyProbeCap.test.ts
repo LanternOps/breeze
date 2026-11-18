@@ -248,6 +248,45 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     expect(registry).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
   });
 
+  // Strix (PR #12184): an org policy that re-lists a partner-wide probe must not
+  // take the partner's claim when its own copy can be truncated. Here the org has
+  // more than its reserve, and its copy sorts after the org's kept head.
+  it('an org copy that can be truncated does not remove the partner\'s claim', async () => {
+    const earlyOrgKey = (n: number) => ({
+      type: 'registry_check', registryPath: `HKLM\\SOFTWARE\\AAAOrg\\Key${pad(n)}`, registryValueName: 'Enabled',
+    });
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(100, partnerKey), assignedOwnerOrgId: null },
+        { rules: [...rulesDescending(200, earlyOrgKey), partnerKey(0)], assignedOwnerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    // 301 probes: the org keeps 156 (its 200 own sort first, so its copy of
+    // partnerKey(0) is cut), the partner keeps all 100 of its own.
+    expect(registry).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+    expect(countOf(registry, 'AAPartner')).toBe(100);
+    expect(registry.some((p) => p.registry_path.endsWith('AAPartner\\Key0000'))).toBe(true);
+  });
+
+  it('a probe kept by both sources is sent once', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(10, partnerKey), assignedOwnerOrgId: null },
+        // partnerKey(0) sorts first among the org's 151 probes, so the org keeps it too.
+        { rules: [...rulesDescending(150, orgKey), partnerKey(0)], assignedOwnerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    const keys = registry.map((p) => `${p.registry_path}::${p.value_name}`.toLowerCase());
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(countOf(registry, 'AAPartner')).toBe(10);
+  });
+
   it('the truncation warning names the per-source counts', async () => {
     queue.push(
       [],
