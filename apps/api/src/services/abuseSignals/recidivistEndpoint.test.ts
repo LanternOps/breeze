@@ -96,7 +96,19 @@ describe('isDeniedHostname', () => {
   });
 
   it('denies a generic role name with a short numeric suffix', () => {
-    for (const h of ['dc01', 'DC-01', 'dc_2', 'server1', 'server-2', 'server2019', 'srv-01', 'pc-0042']) {
+    for (const h of ['dc01', 'DC-01', 'dc_2', 'server1', 'server-2', 'server2019', 'server9999', 'dc9999', 'srv-01', 'pc-0042']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies a generic role name with a single-letter suffix', () => {
+    for (const h of ['SERVER-A', 'dc-b', 'pc-a', 'srv-x']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies fused role compounds', () => {
+    for (const h of ['appserver', 'mailserver', 'dbserver', 'vpn', 'rdsh01']) {
       expect(isDeniedHostname(h), h).toBe(true);
     }
   });
@@ -136,6 +148,16 @@ describe('isDeniedHostname', () => {
       'server.contoso.local', // generic label, distinctive domain
       'srvacme01', // generic prefix fused to a site token
       'pc-48213', // 5-digit asset tag
+      'server12345', // 5 fused digits: an asset tag, not a sequence number
+      'dc12345',
+      'pc-2019-0042', // 8 digits split across labels: still an asset tag
+      'server-12-34-56-78',
+      'file-acme-server', // distinctive label in the middle
+      'server.local.acmecorp', // ...or at the end
+      'kingstn.local',
+      'server-kingstn',
+      'сервер-бухгалтерия', // non-Latin names are distinctive, not "too short"
+      'касса-1',
       'kingstn',
       'vps-7f3a9c',
     ]) {
@@ -472,6 +494,28 @@ describe('computeRecidivistSignals', () => {
   // 'server' row keeps an open signal alive forever.
   it('ignores a hostname match on a generic role name already in the corpus', () => {
     expect(computeRecidivistSignals([match({ kind: 'hostname', value: 'server' })], cfg)).toEqual([]);
+  });
+
+  it('drops generic hostname matches before the evidence cap, so they never take up evidence slots', () => {
+    const matches = [
+      ...Array.from({ length: 12 }, (_, i) => match({ kind: 'hostname', value: 'server', otherPartnerId: `partner-suspended-${i}` })),
+      ...Array.from({ length: 3 }, (_, i) => match({ kind: 'hostname', value: `acme-host-${i}`, otherPartnerId: `partner-other-${i}` })),
+    ];
+    const signals = computeRecidivistSignals(matches, cfg);
+    expect(signals).toHaveLength(1);
+    const evidence = signals[0]!.evidence as { matches: Array<{ value: string }> };
+    expect(evidence.matches.map((m) => m.value)).toEqual(['acme-host-0', 'acme-host-1', 'acme-host-2']);
+  });
+
+  it('only filters hostname matches — a guid or ip value is never run through the hostname deny rule', () => {
+    const signals = computeRecidivistSignals(
+      [
+        match({ kind: 'hostname', value: 'finance-pc-01', otherPartnerId: 'partner-suspended' }),
+        match({ kind: 'egress_ip', value: '10.0.0.1', otherPartnerId: 'partner-suspended' }),
+      ],
+      cfg,
+    );
+    expect((signals[0]!.evidence as { axes: string[] }).axes).toEqual(['hostname_ip']);
   });
 
   it('does not upgrade a generic hostname plus a same-counterpart ip match to hostname_ip', () => {
