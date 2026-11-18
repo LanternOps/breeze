@@ -151,19 +151,33 @@ function fixture(replies: TokenReply[]) {
       privateKeyPem: PRIVATE_KEY_PEM,
     })),
   };
+  // Raw MSAL errors, captured before the broker maps them to a code, so a
+  // test can tell nonce_mismatch from any other credential_unavailable.
+  const msalErrors: unknown[] = [];
   // The production configuration, plus only the fake network.
-  const createConfidentialClient = ({ authority }: { authority: string }): ConfidentialClientPort =>
-    new ConfidentialClientApplication({
+  const createConfidentialClient = ({ authority }: { authority: string }): ConfidentialClientPort => {
+    const cca = new ConfidentialClientApplication({
       ...msalConfidentialClientConfiguration(
         { certificatePem: CERTIFICATE_PEM, privateKeyPem: PRIVATE_KEY_PEM }, CLIENT_ID, authority,
       ),
       system: { networkClient: entra.networkClient },
     }) as unknown as ConfidentialClientPort;
+    const byCode = cca.acquireTokenByCode.bind(cca);
+    cca.acquireTokenByCode = async (request) => {
+      try {
+        return await byCode(request);
+      } catch (error) {
+        msalErrors.push(error);
+        throw error;
+      }
+    };
+    return cca;
+  };
   const broker = createDelegatedCredentialBroker(
     { clientId: CLIENT_ID, certificateProvider, tokenCache },
     { createConfidentialClient },
   );
-  return { broker, tokenCache, posts: entra.posts };
+  return { broker, tokenCache, posts: entra.posts, msalErrors };
 }
 
 async function consent(broker: ReturnType<typeof fixture>['broker']) {
@@ -197,11 +211,12 @@ describe('delegated broker against real msal-node — consent redemption', () =>
   });
 
   it('rejects an ID token whose nonce is not the session nonce', async () => {
-    const { broker } = fixture([
+    const { broker, msalErrors } = fixture([
       tokenSuccess({ accessToken: 'consent-access', refreshToken: 'refresh-1', nonce: 'replayed-nonce' }),
     ]);
 
     await expect(consent(broker)).rejects.toMatchObject({ code: 'credential_unavailable' });
+    expect(msalErrors).toEqual([expect.objectContaining({ errorCode: 'nonce_mismatch' })]);
   });
 });
 
