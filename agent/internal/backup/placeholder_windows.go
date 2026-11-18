@@ -14,9 +14,10 @@ import (
 // (PHCM_DISGUISE_PLACEHOLDER), with the reparse point and the offline and
 // sparse bits hidden. Microsoft documents that most applications see
 // placeholders exposed and that Windows may disguise them for some
-// applications. A disguised walk cannot tell an unhydrated placeholder from a
-// local file, and the upload would then download it, so the walk sets its own
-// thread to expose them.
+// applications. The CI runner's default resolved to disguised, with only
+// RECALL_ON_DATA_ACCESS still visible. The walk sets its own thread to expose
+// placeholders, so the policy does not depend on which bits a disguised view
+// keeps.
 var (
 	modNtdll                                       = windows.NewLazySystemDLL("ntdll.dll")
 	procRtlSetThreadPlaceholderCompatibilityMode   = modNtdll.NewProc("RtlSetThreadPlaceholderCompatibilityMode")

@@ -37,8 +37,22 @@ import (
 //     but no longer WOF-compressed or cloud-managed.
 //
 // The walk also asks Windows to expose placeholders on its thread
-// (exposePlaceholdersForWalk), since a process in "disguise" mode sees cloud
-// placeholders as plain files with these attributes hidden.
+// (exposePlaceholdersForWalk), so classification does not depend on the
+// process's default mode.
+//
+// Observed on a Windows Server runner (placeholder_windows_test.go logs it):
+//
+//   - wof.sys hides a WOF file's reparse point from user mode entirely
+//     (attributes 0x20, FSCTL_GET_REPARSE_POINT: not a reparse point), so Go
+//     reports a regular file and it was already backed up. The WOF branch
+//     here covers a volume where the tag is visible. There, wof.sys is
+//     usually not serving the file, so the open probe fails and the file is
+//     reported, not read.
+//   - In the default (application-default) mode an unhydrated placeholder
+//     looked like a regular file with only RECALL_ON_DATA_ACCESS showing
+//     (0x00400020). Before this policy the walk captured it and the upload
+//     downloaded it. Exposed, it shows REPARSE_POINT|SPARSE|OFFLINE|
+//     RECALL_ON_DATA_ACCESS and is ModeIrregular.
 
 // Windows file attributes and reparse tags the policy keys on, spelled out so
 // it builds and is tested on every platform.

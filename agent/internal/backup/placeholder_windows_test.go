@@ -434,11 +434,12 @@ func setThreadPlaceholderMode(t *testing.T, mode int8) int8 {
 	return prev
 }
 
-// A walk started from a thread that disguises placeholders still detects an
-// online-only placeholder, because the walk exposes them on its own thread,
-// and it puts the caller's disguise mode back afterwards. The Lstat made from
-// the disguised thread first is the control: it shows what the walk would see
-// without exposePlaceholdersForWalk.
+// A walk started from a thread that disguises placeholders still skips an
+// online-only placeholder, and it puts the caller's disguise mode back
+// afterwards. The Lstat from the disguised thread logs what a disguised walk
+// would see. On the CI runner RECALL_ON_DATA_ACCESS stays visible even when
+// disguised, so detection does not rely on exposePlaceholdersForWalk there.
+// The expose call is defence in case a Windows build hides that bit too.
 func TestCloudPlaceholder_DetectedFromDisguisedThreadOnWindows(t *testing.T) {
 	if procRtlSetThreadPlaceholderCompatibilityMode.Find() != nil {
 		t.Skip("placeholder compatibility modes need Windows 10 1803 or later")
