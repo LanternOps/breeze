@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -65,7 +66,7 @@ func (r *Reporter) Report(ctx context.Context, o Outcome) error {
 	r.mu.Unlock()
 
 	var lastErr error
-	for attempt := 0; attempt < reportAttempts; attempt++ {
+	for attempt := range reportAttempts {
 		if attempt > 0 {
 			wait := reportBackoff[min(attempt-1, len(reportBackoff)-1)]
 			var httpErr *api.ErrHTTPStatus
@@ -112,9 +113,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // structured summary either way.
 func ResultFor(o Outcome, durationMs int64) tools.CommandResult {
 	summary := map[string]any{"steps": o.Steps}
-	for k, v := range o.Details {
-		summary[k] = v
-	}
+	maps.Copy(summary, o.Details)
 	if len(o.Warnings) > 0 {
 		summary["warnings"] = o.Warnings
 	}

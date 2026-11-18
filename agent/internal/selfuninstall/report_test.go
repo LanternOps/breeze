@@ -85,7 +85,7 @@ func TestReporterDoesNotRepeatARefusal(t *testing.T) {
 
 func TestReporterGivesUpAfterBoundedAttempts(t *testing.T) {
 	var errs []error
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		errs = append(errs, errors.New("timeout"))
 	}
 	sub := &fakeSubmitter{errs: errs}
