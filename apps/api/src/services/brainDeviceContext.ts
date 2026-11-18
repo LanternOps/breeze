@@ -104,7 +104,7 @@ export async function createDeviceContext(
   if (opts?.cardFree || opts?.unattended) {
     // One locked path for both bounded writes. `cardFree` (chat gate, #11986):
     // past a bound the model is sent back to the card. `unattended` alone (MCP
-    // dispatch, #12140) has no card: past the bound the note is refused with a
+    // dispatch #12140, flow steps #12161) has no card: past the bound the note is refused with a
     // message that says what to do. Either way the lock key is the id Postgres
     // returned, never the caller's spelling.
     const noCard = !opts.cardFree;

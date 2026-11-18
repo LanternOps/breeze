@@ -685,7 +685,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // #12140 / #11986: a note no person approves is bounded in size and expiry
       // here and in active notes per device by the service (one locked path,
       // brainDeviceContext.ts). Both signals are pinned by server code, never
-      // by the model: the MCP dispatch's flag / a Wisp unattended-reads
+      // by the model: the MCP / flow-step dispatch flag / a Wisp unattended-reads
       // classification (unattended), and the chat gate's card-free flag.
       const unattended = context?.unattendedNoteWrite === true
         || context?.pinnedWispUnattendedRead?.kind === 'device_context';

@@ -1,13 +1,25 @@
 /**
  * Bounds on a device note (`set_device_context`) that is written with no
- * person approving it (#12140). They apply when the server pins either
- *   - `ToolExecutionContext.unattendedNoteWrite`: the MCP server's direct
- *     Tier-2 dispatch of this tool (routes/mcpServer.ts), or
+ * person approving it (#12140, #12161). They apply when the server pins either
+ *   - `ToolExecutionContext.unattendedNoteWrite` (`unattendedNoteWriteContext`
+ *     below), set by every dispatcher that runs the tool at Tier 2 with no
+ *     approval step: the MCP server's direct dispatch (routes/mcpServer.ts)
+ *     and a flow's Tier-1/2 core tool step (flows/stepExecutor.ts: only a
+ *     Tier-3 step parks, so a Tier-2 step runs unattended whatever triggered
+ *     the run: a schedule, an event, `run_flow` / `flow__<slug>` over MCP or
+ *     in a chat), or
  *   - `ToolExecutionContext.pinnedWispUnattendedRead` of kind `device_context`:
- *     a Wisp grant's unattended-reads switch let the note run without a card.
- * A note written in the in-app chat behind the approval card has none of these
- * bounds. Callers that pin neither (agent runs outside a Wisp grant, flow
- * steps) are not bounded here.
+ *     a Wisp grant's unattended-reads switch let the note run without a card
+ *     (in a chat, or in a device troubleshooting run).
+ * The in-app chat's card-free path (aiNoteWrites.ts) has its own bounds, and
+ * past them the note shows the card. A note a person approves has none of
+ * these bounds: one approved on a chat card, as an approved plan step, in a
+ * session the user put in auto-approve mode, or released from an approved
+ * action intent (jobs/intentReleaseWorker.ts). An agent run outside a Wisp
+ * grant is one of the last: `checkAgentGuardrails` never allows this Tier-2
+ * write unattended (it is not read-only and not in the act manifest), so it
+ * becomes a proposal a person approves. Every `executeTool` call site is
+ * classified against this list in deviceNoteWriteCallers.contract.test.ts.
  *
  * Why: notes are persistent and org-wide, and every later prompt that loads a
  * device's notes reads them (get_device_context, the device-page preload,
@@ -92,4 +104,15 @@ export function unattendedNoteContentError(input: Record<string, unknown>): stri
 export function unattendedNoteExpiryDays(input: Record<string, unknown>): number {
   const days = input.expiresInDays;
   return typeof days === 'number' ? days : UNATTENDED_NOTE_MAX_EXPIRY_DAYS;
+}
+
+/**
+ * The tool context a dispatcher that runs `toolName` with no person approving
+ * it passes to `executeTool`, or undefined for a tool these bounds do not
+ * cover (whose call keeps its arguments unchanged). One definition, so every
+ * unattended dispatcher reaches the same handler bounds and the same locked
+ * recount (brainDeviceContext.ts `createDeviceContext`).
+ */
+export function unattendedNoteWriteContext(toolName: string): { unattendedNoteWrite: true } | undefined {
+  return toolName === 'set_device_context' ? { unattendedNoteWrite: true } : undefined;
 }
