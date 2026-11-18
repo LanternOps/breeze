@@ -43,6 +43,9 @@ const BINDING_CORPUS: Row[] = [
   // #11044: the agent closed the helper's session itself (keepalive).
   ['failed', 'agent closed the backup helper session (keepalive timeout: no reply from the helper for 1m0s)', 'agent'],
   ['failed', 'agent closed the backup helper session (keepalive pings to the helper failed 3 times in a row)', 'agent'],
+  // #12193: a queued run lost with its helper session that could not be re-sent.
+  ['failed', 'backup run never started: the backup helper session ended while the run was queued (keepalive timeout: no reply from the helper for 1m0s); it had already been re-sent to a new helper 2 times', 'agent'],
+  ['failed', 'backup run never started: the agent stopped the backup helper while the run was queued', 'agent'],
   ['failed', 'IPC recv error: ipc: read header: EOF', 'agent'],
   ['failed', 'IPC recv error: ipc: message too large: 2065852772', 'agent'],
   ['failed', 'The backup reported a different snapshot than it was allowed to write.', 'agent'],
@@ -276,6 +279,10 @@ const CAUSE_CORPUS: CauseRow[] = [
   ['session is no longer usable: the control plane kept rate limiting', 'storage', 'storage_session_expired'],
   ['backup helper exited unexpectedly', 'agent', 'helper_stopped'],
   ['agent closed the backup helper session (keepalive timeout: no reply from the helper for 1m0s)', 'agent', 'helper_stopped'],
+  ['backup run never started: the backup helper session ended while the run was queued (keepalive timeout: no reply from the helper for 1m0s); it had already been re-sent to a new helper 2 times', 'agent', 'never_started'],
+  ['backup run never started: the agent stopped the backup helper while the run was queued', 'agent', 'never_started'],
+  // The re-send's own failure can quote the helper-stopped text; the run still never started.
+  ['backup run never started: the backup helper session ended while the run was queued, and re-sending it to a new helper failed: backup helper exited unexpectedly', 'agent', 'never_started'],
   ['context canceled', 'unknown', 'run_cancelled_on_device'],
   ['[stale-backup-reaper] Backup dispatch never completed', 'timeout', 'never_started'],
   ['[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes', 'timeout', 'no_agent_signal'],
