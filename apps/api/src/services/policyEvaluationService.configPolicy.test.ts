@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { __failedRuleRemediations, __isComplianceCheckDue, evaluateConfigPolicyComplianceRule } from './policyEvaluationService';
-import { policyConfigProbeKey, policyRegistryProbeKey } from './policyStateProbes';
+import {
+  collectedPolicyStateProbesOf,
+  derivePolicyStateProbesFromRules,
+  policyConfigProbeKey,
+  policyRegistryProbeKey,
+} from './policyStateProbes';
 
 // Helper to build a minimal complianceRule object.
 // Cast as `any` to satisfy the Drizzle inferred type.
@@ -611,6 +616,31 @@ describe('rules whose value is not collected (#12130)', () => {
       device: { id: 'dev-1', hostname: 'mac', osType: 'macos', osVersion: '15.0' },
     });
     expect(evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG] }), 'dev-1', ctx).status).toBe('compliant');
+  });
+
+  it('names the reason: probe_cap for a collectable location, not_collectable otherwise', () => {
+    const reasonOf = (r: unknown) => (evaluateConfigPolicyComplianceRule(makeRule({ rules: [r] }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected })).details[0]!.data as { reason?: string }).reason;
+    expect(reasonOf(REG)).toBe('probe_cap');
+    expect(reasonOf(CFG)).toBe('probe_cap');
+    expect(reasonOf({ ...REG, registryPath: 'HKLM\\SAM\\SAM\\Domains' })).toBe('not_collectable');
+    expect(reasonOf({ ...CFG, configFilePath: '/etc/app/custom.conf' })).toBe('not_collectable');
+  });
+
+  it('agrees with the real probe builder: an off-allowlist config_check is not assessed, an allowlisted absent key fails', () => {
+    const offList = { ...CFG, configFilePath: '/etc/app/custom.conf', configKey: 'Mode' };
+    const onList = { ...CFG, configFilePath: '  /etc/ssh/sshd_config ', configKey: 'permitrootlogin' };
+    const collected = collectedPolicyStateProbesOf({
+      policy_registry_state_probes: [],
+      policy_config_state_probes: derivePolicyStateProbesFromRules([offList, onList]).config,
+    });
+    const ctx = makeContext({ collectedProbes: collected });
+    const off = evaluateConfigPolicyComplianceRule(makeRule({ rules: [offList] }), 'dev-1', ctx);
+    expect(off.status).toBe('pending');
+    expect(off.details[0]!.data).toMatchObject({ outcome: 'not_collected', reason: 'not_collectable' });
+    const on = evaluateConfigPolicyComplianceRule(makeRule({ rules: [onList] }), 'dev-1', ctx);
+    expect(on.status).toBe('non_compliant');
+    expect(on.details[0]!.data).toMatchObject({ outcome: 'not_found' });
   });
 
   it('remediation never runs for a rule that was not assessed', () => {

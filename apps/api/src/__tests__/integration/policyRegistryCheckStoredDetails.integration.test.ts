@@ -161,7 +161,7 @@ describe('configuration-policy registry_check stored details (#11976) — real P
     expect(ruleResults[0]).toMatchObject({
       ruleType: 'registry_check',
       passed: null,
-      data: { outcome: 'not_collected', expectedValue: '1' },
+      data: { outcome: 'not_collected', expectedValue: '1', reason: 'probe_cap' },
     });
   });
 });

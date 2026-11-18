@@ -22,7 +22,9 @@ import {
   scanDueComplianceChecks,
 } from './featureConfigResolver';
 import { isManagedAutomation } from './aiAgents/managedAutomation';
+import { isAllowedPolicyConfigProbe, isAllowedPolicyRegistryProbe } from '../routes/agents/policyProbeSafety';
 import {
+  MAX_POLICY_STATE_PROBES_PER_ORG,
   loadCollectedPolicyStateProbes,
   policyConfigProbeKey,
   policyRegistryProbeKey,
@@ -248,7 +250,29 @@ type RuleEvaluationDetail = {
 /** What a registry_check / config_check found (#11976, #12130). */
 type StateRuleOutcome = 'matched' | 'mismatched' | 'not_found' | 'not_collected';
 
-const NOT_COLLECTED_REASON = 'the per-organization probe list is full, or the location is not collectable';
+/**
+ * #12130: a rule whose value is not on the org's probe list, so it was never
+ * read. `reason` says which case it is: `probe_cap` (the location is
+ * collectable but the per-org list is full; it clears when rules are removed)
+ * or `not_collectable` (the agent never reads this location: a permanent
+ * authoring error to fix in the rule).
+ */
+function notCollectedDetail(
+  ruleType: string,
+  target: string,
+  collectable: boolean,
+  data: Record<string, unknown>,
+): RuleEvaluationDetail {
+  return {
+    ruleType,
+    passed: null,
+    message: collectable
+      ? `Not assessed: ${target} is not collected because this organization's compliance probe list is full `
+        + `(${MAX_POLICY_STATE_PROBES_PER_ORG} per kind). Remove unused rules to bring it under the limit.`
+      : `Not assessed: ${target} is not a location the agent collects for compliance checks. Change the rule's path or key.`,
+    data: { ...data, reason: collectable ? 'probe_cap' : 'not_collectable' },
+  };
+}
 
 type DeviceEvaluationContext = {
   device: TargetDevice;
@@ -850,13 +874,8 @@ function evaluateRegistryCheckRule(
   // for it predates the probe leaving the list and is no longer refreshed.
   if (context.collectedProbes
     && !context.collectedProbes.registry.has(policyRegistryProbeKey(registryPath, valueName))) {
-    return {
-      ruleType: rule.type,
-      passed: null,
-      message: `Not assessed: ${registryPath}\\${valueName} is not collected from this organization's devices `
-        + `(${NOT_COLLECTED_REASON}).`,
-      data: data('not_collected'),
-    };
+    return notCollectedDetail(rule.type, `${registryPath}\\${valueName}`,
+      isAllowedPolicyRegistryProbe(registryPath), data('not_collected'));
   }
 
   const normalizedPath = normalizeRegistryPath(registryPath);
@@ -917,13 +936,8 @@ function evaluateConfigCheckRule(
 
   if (context.collectedProbes
     && !context.collectedProbes.config.has(policyConfigProbeKey(filePath, configKey))) {
-    return {
-      ruleType: rule.type,
-      passed: null,
-      message: `Not assessed: ${filePath} -> ${configKey} is not collected from this organization's devices `
-        + `(${NOT_COLLECTED_REASON}).`,
-      data: data('not_collected'),
-    };
+    return notCollectedDetail(rule.type, `${filePath} -> ${configKey}`,
+      isAllowedPolicyConfigProbe(filePath, configKey), data('not_collected'));
   }
 
   const normalizedFilePath = normalizeConfigPath(filePath);

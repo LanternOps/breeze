@@ -15,6 +15,7 @@
  * existing import sites and the suites that mock `./helpers` keep working.
  */
 import { and, eq, isNull, or } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -198,8 +199,18 @@ export async function buildPolicyProbeConfigUpdate(
       )
     : eq(configurationPolicies.orgId, orgId);
 
-  const complianceRows: ProbeSourceRow[] = await db
-    .select({ rules: configPolicyComplianceRules.rules, ownerOrgId: configurationPolicies.orgId })
+  // #12130: a link inherited from a parent policy is classified by the policy
+  // that AUTHORED it (`sourcePolicyId`), so a partner-wide parent's rules count
+  // as partner-wide under an org-owned child. Left join: a source row this
+  // context cannot read falls back to the assigned policy's owner.
+  const sourcePolicies = alias(configurationPolicies, 'probe_source_policy');
+  const complianceRows: ProbeSourceRow[] = (await db
+    .select({
+      rules: configPolicyComplianceRules.rules,
+      assignedOwnerOrgId: configurationPolicies.orgId,
+      sourceId: sourcePolicies.id,
+      sourceOwnerOrgId: sourcePolicies.orgId,
+    })
     .from(configPolicyComplianceRules)
     .innerJoin(
       configPolicyEffectiveFeatureLinks,
@@ -212,12 +223,20 @@ export async function buildPolicyProbeConfigUpdate(
       configurationPolicies,
       eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id)
     )
+    .leftJoin(
+      sourcePolicies,
+      eq(configPolicyEffectiveFeatureLinks.sourcePolicyId, sourcePolicies.id)
+    )
     .where(
       and(
         configPolicyOwnership,
         eq(configurationPolicies.status, 'active')
       )
-    );
+    ))
+    .map((row) => ({
+      rules: row.rules,
+      ownerOrgId: row.sourceId ? row.sourceOwnerOrgId : row.assignedOwnerOrgId,
+    }));
 
   // #12130: the org's own policies and its partner's partner-wide policies are
   // collected separately so the cap can reserve capacity for each. A probe both
@@ -284,6 +303,8 @@ function apportionPolicyStateProbeCap(
  * is not collected; the evaluator reports it as not assessed (#12130). The
  * warning names the org and the per-source counts so the excess can be traced.
  */
+const DROPPED_PROBE_SAMPLE = 10;
+
 function capPolicyStateProbes<T>(
   ownSorted: T[],
   sharedSorted: T[],
@@ -293,13 +314,16 @@ function capPolicyStateProbes<T>(
   const total = ownSorted.length + sharedSorted.length;
   if (total <= MAX_POLICY_STATE_PROBES_PER_ORG) return [...ownSorted, ...sharedSorted];
   const { ownKept, sharedKept } = apportionPolicyStateProbeCap(ownSorted.length, sharedSorted.length);
-  console.warn('[agents/helpers] policy state probe list truncated', {
+  const dropped = [...ownSorted.slice(ownKept), ...sharedSorted.slice(sharedKept)];
+  console.warn('[policyStateProbes] policy state probe list truncated', {
     orgId,
     kind,
     total,
     kept: ownKept + sharedKept,
     orgOwned: { total: ownSorted.length, kept: ownKept },
     partnerWide: { total: sharedSorted.length, kept: sharedKept },
+    // Which rules go unassessed; the evaluator names each one per device too.
+    droppedSample: dropped.slice(0, DROPPED_PROBE_SAMPLE),
   });
   return [...ownSorted.slice(0, ownKept), ...sharedSorted.slice(0, sharedKept)];
 }

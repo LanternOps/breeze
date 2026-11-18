@@ -15,6 +15,7 @@ const { dbMock, queue } = vi.hoisted(() => {
     const chain: any = {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
       limit: vi.fn(() => Promise.resolve(rows)),
     };
@@ -193,8 +194,8 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     queue.push(
       [],
       [
-        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
-        { rules: rulesDescending(200, orgKey), ownerOrgId: 'org-1' },
+        { rules: rulesDescending(300, partnerKey), assignedOwnerOrgId: null },
+        { rules: rulesDescending(200, orgKey), assignedOwnerOrgId: 'org-1' },
       ],
     );
     const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
@@ -210,7 +211,7 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
   it('an org that needs less than its share leaves the rest to partner-wide probes', async () => {
     queue.push(
       [{ rules: rulesDescending(50, orgKey), ownerOrgId: 'org-1' }],
-      [{ rules: rulesDescending(300, partnerKey), ownerOrgId: null }],
+      [{ rules: rulesDescending(300, partnerKey), assignedOwnerOrgId: null }],
     );
     const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
     const registry = probe!.policy_registry_state_probes;
@@ -222,8 +223,8 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     queue.push(
       [],
       [
-        { rules: rulesDescending(40, partnerKey), ownerOrgId: null },
-        { rules: rulesDescending(400, orgKey), ownerOrgId: 'org-1' },
+        { rules: rulesDescending(40, partnerKey), assignedOwnerOrgId: null },
+        { rules: rulesDescending(400, orgKey), assignedOwnerOrgId: 'org-1' },
       ],
     );
     const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
@@ -236,8 +237,8 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     queue.push(
       [],
       [
-        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
-        { rules: [...rulesDescending(10, orgKey), partnerKey(299)], ownerOrgId: 'org-1' },
+        { rules: rulesDescending(300, partnerKey), assignedOwnerOrgId: null },
+        { rules: [...rulesDescending(10, orgKey), partnerKey(299)], assignedOwnerOrgId: 'org-1' },
       ],
     );
     const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
@@ -251,8 +252,8 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
     queue.push(
       [],
       [
-        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
-        { rules: rulesDescending(200, orgKey), ownerOrgId: 'org-1' },
+        { rules: rulesDescending(300, partnerKey), assignedOwnerOrgId: null },
+        { rules: rulesDescending(200, orgKey), assignedOwnerOrgId: 'org-1' },
       ],
     );
     await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
@@ -266,5 +267,29 @@ describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', (
       orgOwned: { total: 200, kept: 128 },
       partnerWide: { total: 300, kept: 128 },
     });
+    // The dropped rules are named: the org's sorted tail first, then the partner's.
+    const sample = (capWarnings[0]![1] as { droppedSample: Array<{ registry_path: string }> }).droppedSample;
+    expect(sample).toHaveLength(10);
+    expect(sample[0]!.registry_path).toBe('HKLM\\SOFTWARE\\ZZOrg\\Key0128');
+  });
+
+  it('a link inherited from a partner-wide parent counts as partner-wide under an org-owned child', async () => {
+    queue.push(
+      [],
+      [
+        // Inherited: assigned through the org's child, authored by the partner-wide parent.
+        { rules: rulesDescending(300, orgKey), assignedOwnerOrgId: 'org-1', sourceId: 'parent', sourceOwnerOrgId: null },
+        { rules: rulesDescending(300, partnerKey), assignedOwnerOrgId: 'org-1', sourceId: 'child', sourceOwnerOrgId: 'org-1' },
+      ],
+    );
+    await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const capWarnings = warn.mock.calls.filter((call) => String(call[0]).includes('probe list truncated'));
+    expect(capWarnings[0]![1] as object).toMatchObject({
+      orgOwned: { total: 300, kept: 128 },
+      partnerWide: { total: 300, kept: 128 },
+    });
+    const sample = (capWarnings[0]![1] as { droppedSample: Array<{ registry_path: string }> }).droppedSample;
+    // The child's own (AAPartner-named) rules are the org-owned tail here.
+    expect(sample[0]!.registry_path).toBe('HKLM\\SOFTWARE\\AAPartner\\Key0128');
   });
 });
