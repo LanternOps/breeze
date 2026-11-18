@@ -28,6 +28,7 @@ GH_LOG="$T/gh.log"; export GH_LOG
 cat > "$T/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
+prev=""; for a in "$@"; do [ "$prev" = --body-file ] && cat "$a" >> "$GH_LOG.bodies"; prev="$a"; done
 case "$*" in
   *"issue view"*"--json labels,state"*) echo "qa-sweep" ;;   # every issue "looks" open + qa-sweep live
   *"issue list"*"--label qa-sweep"*"--json number"*) printf '555\n556\n' ;;
@@ -46,7 +47,7 @@ new_run() {   # fresh RUN_DIR + publisher state for one scenario
   QA_HOME="$T/home-$1"; mkdir -p "$QA_HOME"
   QA_REPO="LanternOps/breeze"; NEW_SHA="0123456789abcdef"; RUN_ID="test-$1"
   ENVVALS="$T/envvals-$1"; : > "$ENVVALS"; MAX_NEW_ISSUES=10
-  : > "$GH_LOG"; : > "$T/runner.log"
+  : > "$GH_LOG"; : > "$GH_LOG.bodies"; : > "$T/runner.log"
 }
 outbox() { printf '%s' "$2" > "$RUN_DIR/outbox/$1"; }
 
@@ -386,7 +387,7 @@ check "wiring: the agent's only Bash allow rule is qa-gh" "[ \"\$(printf '%s\n' 
 check "wiring: plain gh is explicitly denied to the agent" "grep -qF '\"Bash(gh:*)\"' '$QA_DIR/scheduled-ui-sweep.sh'"
 check "wiring: the installer ships the broker and its client" "grep -q 'gh-broker.py' '$QA_DIR/install-schedule.sh' && grep -q '/qa-gh\"' '$QA_DIR/install-schedule.sh'"
 
-# === outbox provenance: nothing that names another repository, no mentions ====
+# === outbox provenance: nothing that names another repository =================
 new_run refs
 QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
 outbox 001.json '{"action":"create","title":"[UI] marker-r1 leak","body":"copied from https://github.com/octo/private/blob/main/README.md"}'
@@ -394,16 +395,16 @@ outbox 002.json '{"action":"create","title":"[UI] marker-r2 leak","body":"see oc
 outbox 003.json '{"action":"create","title":"[UI] marker-r3 leak","body":"fixed in octo/private@0123456789abcdef"}'
 outbox 004.json '{"action":"create","title":"[UI] marker-r4 leak","body":"raw: https://raw.githubusercontent.com/octo/private/main/x"}'
 outbox 005.json '{"action":"create","title":"[UI] marker-r5 leak","body":"api: api.github.com/repos/Octo/Private/contents"}'
-outbox 006.json '{"action":"create","title":"[UI] marker-r6 ping","body":"cc @someone please look."}'
-outbox 007.json '{"action":"create","title":"[UI] marker-r7 ping","body":"cc @LanternOps/core"}'
+outbox 006.json '{"action":"create","title":"[UI] marker-r6 fenced leak","body":"```\nsee octo/private#1\n```"}'
+outbox 007.json '{"action":"create","title":"[UI] marker-r7 indented leak","body":"    ```\n\nsee octo/private#1"}'
 outbox 008.json '{"action":"create","title":"[UI] marker-r8 octo/private#3","body":"clean"}'
 outbox 009.json '{"action":"comment","issue":555,"body":"marker-r9 see https://github.com/octo/private/issues/1"}'
 outbox 010.json '{"action":"pr_result","pr":100,"result":"PASS","body":"marker-r10 cf. octo/private#9"}'
 outbox 020.json '{"action":"create","title":"[UI] marker-ok1 own refs","body":"Regressed by #100; see https://github.com/LanternOps/breeze/issues/555 and lanternops/breeze#7, LanternOps/breeze@0123456789abcdef."}'
-outbox 021.json '{"action":"create","title":"[UI] marker-ok2 code","body":"Mail admin@example.com; package `@playwright/mcp` and\n```\n@media (max-width: 600px) { }\nsee octo/private#1\n```\n@types/node too"}'
+outbox 021.json '{"action":"create","title":"[UI] marker-ok2 code","body":"Mail admin@example.com; package `@playwright/mcp` and\n```\n@media (max-width: 600px) { }\n```\n@types/node too"}'
 publish_outbox >/dev/null 2>&1
 for n in 1 2 3 4 5 6 7 8; do
-  check "refs: entry $n (another repo / mention) is not published" "! grep -q 'marker-r$n ' '$GH_LOG'"
+  check "refs: entry $n (names another repo) is not published" "! grep -q 'marker-r$n ' '$GH_LOG'"
 done
 check "refs: a comment naming another repo is not published" "! grep -q 'issue comment 555' '$GH_LOG'"
 check "refs: a pr_result naming another repo is not published" "! grep -q 'pr comment 100' '$GH_LOG'"
@@ -415,6 +416,73 @@ QA_COMMENTABLE=" "; IN_SCOPE=" "
 printf 'ledger row, see github.com/octo/private\n' > "$RUN_DIR/ledger.md"
 publish_outbox >/dev/null 2>&1
 check "refs: a ledger naming another repo is not published" "! grep -q 'issue edit\|QA sweep ledger' '$GH_LOG'"
+
+# === outbox neutralising: published text cannot notify anyone or cross-link ===
+# Every payload below was rendered live by GitHub's own markdown API. The
+# expected value is exact, so a rule that stops firing shows up as a diff.
+Z=$'\xe2\x80\x8d'
+n_is() {  # n_is <name> <input> <expected>
+  local got
+  printf '%s' "$2" > "$T/neutral.md"
+  neutralize_refs "$T/neutral.md" || { bad "neutralise: $1 (helper failed)"; return; }
+  got="$(cat "$T/neutral.md"; printf x)"; got="${got%x}"
+  if [ "$got" = "$3" ]; then ok "neutralise: $1"; else bad "neutralise: $1 (got: $got)"; fi
+}
+QA_REPO="LanternOps/breeze"
+n_is "plain mention"             'hi @octocat'                'hi @'"$Z"'octocat'
+n_is "four-space fence"          $'    ```\n\nhi @octocat\n'  $'    ```\n\nhi @'"$Z"$'octocat\n'
+n_is "tab-indented fence"        $'\t```\n\nhi @octocat\n'    $'\t```\n\nhi @'"$Z"$'octocat\n'
+n_is "tilde fence, four spaces"  $'    ~~~\n\nhi @octocat\n'  $'    ~~~\n\nhi @'"$Z"$'octocat\n'
+n_is "slash before @"            'cc/@octocat'                'cc/@'"$Z"'octocat'
+n_is "dot before @"              'ping.@octocat'              'ping.@'"$Z"'octocat'
+n_is "dash before @"             'x-@octocat'                 'x-@'"$Z"'octocat'
+n_is "backslash-escaped @"       'hi \@octocat'               'hi \@'"$Z"'octocat'
+n_is "team mention"              'cc @LanternOps/core'        'cc @'"$Z"'LanternOps/core'
+n_is "decimal entity for @"      'hi &#64;octocat'            'hi &'"$Z"'#'"$Z"'64;octocat'
+n_is "padded decimal entity"     'hi &#00064;octocat'         'hi &'"$Z"'#'"$Z"'00064;octocat'
+n_is "hex entity for @"          'hi &#x40;octocat'           'hi &'"$Z"'#x40;octocat'
+n_is "upper-case hex entity"     'hi &#X40;octocat'           'hi &'"$Z"'#X40;octocat'
+n_is "named entity for @"        'hi &commat;octocat'         'hi &'"$Z"'commat;octocat'
+n_is "entity inside the login"   'hi @&#111;ctocat'           'hi @'"$Z"'&'"$Z"'#'"$Z"'111;ctocat'
+n_is "short ref"                 'see octo/private#12'        'see octo/private#'"$Z"'12'
+n_is "short ref, escaped hash"   'see octo/private\#12'       'see octo/private\#'"$Z"'12'
+n_is "short ref, escaped slash"  'see octo\/private#12'       'see octo\/private#'"$Z"'12'
+n_is "short ref, entity hash"    'see octo/private&#35;12'    'see octo/private&'"$Z"'#'"$Z"'35;12'
+n_is "commit ref"                'see octo/private@0123abc'   'see octo/private@'"$Z"'0123abc'
+n_is "URL, encoded owner"        'https://github.com/%6fcto/private/issues/1' 'https://github'"$Z"'.com/%6fcto/private/issues/1'
+n_is "URL, traversal out of own repo" 'https://github.com/LanternOps/breeze/../../octo/private/issues/1' 'https://github'"$Z"'.com/LanternOps/breeze/../../octo/private/issues/1'
+n_is "URL, other repo"           'https://github.com/octo/private/issues/1' 'https://github'"$Z"'.com/octo/private/issues/1'
+n_is "raw URL, other repo"       'https://raw.githubusercontent.com/octo/private/main/x' 'https://raw.githubusercontent'"$Z"'.com/octo/private/main/x'
+n_is "normal text is untouched"  'Devices page returns 500 on save.' 'Devices page returns 500 on save.'
+n_is "own-repo #N stays linked"  $'#7 first\nRegressed by #100 (#101), [#102].' $'#7 first\nRegressed by #100 (#101), [#102].'
+n_is "own-repo URL stays linked" 'See https://github.com/LanternOps/breeze/issues/555.' 'See https://github.com/LanternOps/breeze/issues/555.'
+n_is "own-repo URL, other case"  'https://github.com/lanternops/BREEZE/pull/9' 'https://github.com/lanternops/BREEZE/pull/9'
+n_is "ampersands are untouched"  'R&D, a & b, /devices?x=1&y=2' 'R&D, a & b, /devices?x=1&y=2'
+n_is "C# is untouched"           'C# 12 and issue # 4'        'C# 12 and issue # 4'
+printf 'a\377b @octocat' > "$T/neutral.md"
+neutralize_refs "$T/neutral.md"
+check "neutralise: invalid UTF-8 is handled byte-wise" "[ \"\$(cat '$T/neutral.md')\" = \"\$(printf 'a\377b @%soctocat' '$Z')\" ]"
+check "neutralise: an unreadable file fails closed" "! neutralize_refs '$T/does-not-exist.md'"
+
+new_run neutral
+QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
+outbox 001.json '{"action":"create","title":"[UI] marker-n1 cc @title-user","body":"cc @body-user please look"}'
+outbox 002.json "{\"action\":\"comment\",\"issue\":555,\"body\":$(json_str 'ping.@comment-user and &#64;entity-user')}"
+outbox 003.json '{"action":"pr_result","pr":100,"result":"PASS","body":"x-@pr-user"}'
+printf 'ledger row for @ledger-user\n' > "$RUN_DIR/ledger.md"
+publish_outbox >/dev/null 2>&1
+check "neutralise: a mention no longer blocks the report" "grep -q 'marker-n1' '$GH_LOG' && grep -q 'issue comment 555' '$GH_LOG' && grep -q 'pr comment 100' '$GH_LOG'"
+check "neutralise: issue titles reach gh dead" "grep -qF '@${Z}title-user' '$GH_LOG' && ! grep -qF '@title-user' '$GH_LOG'"
+for u in body comment pr ledger; do
+  check "neutralise: the $u text reaches gh dead" "grep -qF '@${Z}$u-user' '$GH_LOG.bodies' && ! grep -qF '@$u-user' '$GH_LOG.bodies'"
+done
+check "neutralise: an entity reaches gh dead" "grep -qF '&${Z}#${Z}64;entity-user' '$GH_LOG.bodies'"
+new_run neutral-fail
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+outbox 001.json '{"action":"create","title":"[UI] marker-nf1 report","body":"cc @someone"}'
+printf 'ledger row\n' > "$RUN_DIR/ledger.md"
+( neutralize_refs() { return 1; }; publish_outbox >/dev/null 2>&1 )
+check "neutralise: nothing publishes if the neutraliser fails" "! grep -q 'issue create\|issue edit' '$GH_LOG'"
 
 # === QA stack egress: internal-only network (needs Docker) ====================
 if [ "${QA_TEST_DOCKER:-0}" = 1 ] && docker info >/dev/null 2>&1; then
