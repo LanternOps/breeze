@@ -1775,6 +1775,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_user_risk_detail: z.object({
     userId: uuid,
     orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional().describe('Max recent events (default 10, max 100)'),
+    includeDetails: z.boolean().optional(),
   }),
 
   assign_security_training: z.object({
