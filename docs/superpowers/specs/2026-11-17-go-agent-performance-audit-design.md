@@ -232,6 +232,8 @@ Measured 2026-11-17/18 on the wave 1 branch.
 
 ### Hotspots (idle, 3 VMs merged)
 
+All profiles were captured at idle; scan was not profiled. Every hotspot and every ranked share below is idle-only. Heap sizes are pprof units (MiB).
+
 CPU: 30 × 30 s profiles, 900 s profiled. On Windows the profiler also samples threads parked in system calls: 99.6% of the 87 s of samples sit flat in `runtime.cgocall`/`syscall.syscalln`, against 1.4-4.7 s of real process CPU per 30 minutes. Go code on CPU is under 1%. The cumulative view shows where the agent waits:
 
 | cum% | Function |
@@ -259,7 +261,7 @@ Heap in use (12.4 MB across 3 profiles): `regexp` compilation holds 29.0%, almos
 
 ### Fleet baseline (to be run)
 
-Run against production by someone with access. Results pending.
+Run against production by someone with access. Results pending. Wave 2 (GC arms and the other runtime knobs) cannot be gated until this table is filled; the spec requires it before wave 2 ships.
 
 ```sql
 SELECT d.os_type,
@@ -281,19 +283,19 @@ GROUP BY ROLLUP (d.os_type) ORDER BY d.os_type NULLS LAST;
 
 ### Ranked candidates
 
-Ordered by measured share, then break risk. Shares are from the merged idle profiles.
+Ordered by the basis of each share, strongest first: in-use heap (reaches RSS), then allocation only, then hygiene, then nothing measured at idle. Within a basis, by share, then break risk. All shares are from the merged idle profiles.
 
-1. Cache process name and exe by PID and start time (new, wave 4): 47.9% of allocation, in `gopsutil` `ExeWithContext`; low-medium risk (stale PID reuse).
-2. Lazy-compile package-level regular expressions (new, wave 4): 29.0% of live heap, about 1.2 MB per agent; low risk.
-3. `svcquery.queryBaseConfig` buffer reuse (new, wave 4): 10.9% of allocation; low risk.
-4. `-trimpath` (wave 2): -0.26% agent, -0.42% helper size; very low risk; hygiene, exempt from the win rule.
-5. GC arms `GOGC=50` / soft memory limit (wave 2): can only act on the 6-9 MB live heap inside 64-66 MB private bytes; low gain, medium risk.
-6. Regular expressions compiled inside functions (wave 4): 2.65% of allocation at idle; 40 call sites, mostly macOS and Linux; `executor.SanitizeOutput` compiles 7 per script run, which idle does not hit; low risk.
-7. `go fix ./...` and `modernize` (wave 3): no measured share; low risk; hygiene.
-8. `json.Marshal` on heartbeat and inventory paths (wave 4): 1.6% of allocation, 0% of live heap; low risk.
-9. `io.ReadAll` on large bodies (wave 4): 0.13% of allocation at idle; scan not profiled; low risk.
-10. PGO (wave 2): Go code is under 1% of idle CPU samples, and idle CPU is 0.08-0.26% of a core; near-zero gain at idle; medium risk (binary growth, stale profile).
-11. Remote desktop buffer reuse (wave 4): not measured, `desktop` is not automated; unranked until a desktop workload exists.
+1. Lazy-compile package-level regular expressions (new, wave 4). Basis: in-use heap. 29.0% of in-use heap at idle, about 1.2 MiB per agent; low risk.
+2. Cache process name and exe by PID and start time (new, wave 4). Basis: allocation only. 47.9% of allocation at idle, in `gopsutil` `ExeWithContext`. No CPU, GC or RSS cost is attributed (Go code is under 1% of idle CPU, live heap 6-9 MB), so the win is unproven; low-medium risk (stale PID reuse).
+3. `svcquery.queryBaseConfig` buffer reuse (new, wave 4). Basis: allocation only. 10.9% of allocation at idle; win unproven; low risk.
+4. `json.Marshal` on heartbeat and inventory paths (wave 4). Basis: allocation only. 1.6% of allocation, 0% of in-use heap at idle; win unproven; low risk.
+5. `io.ReadAll` on large bodies (wave 4). Basis: allocation only. 0.13% of allocation at idle; scan not profiled; win unproven; low risk.
+6. `-trimpath` (wave 2). Basis: binary size. -0.26% agent, -0.42% helper; very low risk; hygiene, exempt from the win rule.
+7. `go fix ./...` and `modernize` (wave 3). Basis: hygiene. No measured share; low risk.
+8. GC arms `GOGC=50` / soft memory limit (wave 2). Basis: none measured. At idle it can only act on the 6-9 MB live heap inside 64-66 MB private bytes; low gain at idle, medium risk; gated on the fleet baseline.
+9. Regular expressions compiled inside functions (wave 4). Basis: none measured at idle. The 2.65% cumulative allocation of `regexp.Compile` is mostly the init-time and package-level compiles counted in item 1; in-function compiles are not hit at idle. 40 call sites, mostly macOS and Linux; `executor.SanitizeOutput` compiles 7 per script run; low risk.
+10. PGO (wave 2). Basis: none measured at idle. Go code is under 1% of idle CPU samples and idle CPU is 0.08-0.26% of a core, so near-zero gain at idle; scan (0.8-3.4 s CPU per 600 s) was not profiled; medium risk (binary growth, stale profile).
+11. Remote desktop buffer reuse (wave 4). Not measured; `desktop` is not automated; unranked until a desktop workload exists.
 
 ### Goroutine leaks
 
