@@ -162,6 +162,41 @@ check "gate: a NUL byte cannot hide a token from the gate" "! body_ok '$T/nul.md
 check "gate: invalid UTF-8 cannot hide a token from the gate" "! body_ok '$T/badutf.md'"
 check "gate: plain text passes" "body_ok '$T/plain.md'"
 
+# === Strix r7: the secret gate fails CLOSED ===================================
+# The gate passes a body only on a positive "clean" verdict. A check that errors,
+# is killed, or is cut short by SIGPIPE under pipefail rejects the body.
+new_run gate-closed
+# Log-sized: ~38 KB of token-shaped lines (fills a pipe). The old `| grep -q`
+# consumer exited at its first hit and SIGPIPEd the greps above it, so under
+# pipefail a body full of tokens was reported clean some of the time.
+for i in $(seq 1 700); do printf 'line %04d %s\n' "$i" "$FAKE_TOKEN"; done > "$T/logsized-token.md"
+LOWER="$(printf 'abcdefghij%.0s' 1 2 3 4 5)"   # 50 chars, no upper/digit: not token-like
+for i in $(seq 1 700); do printf 'line %04d %s\n' "$i" "$LOWER"; done > "$T/logsized-clean.md"
+leaks=0; for _ in $(seq 1 60); do body_ok "$T/logsized-token.md" && leaks=$((leaks+1)); done
+check "gate: a log-sized body full of tokens is rejected every time under pipefail (60/60)" "[ $leaks = 0 ]"
+check "gate: control: a log-sized body with no token passes" "body_ok '$T/logsized-clean.md'"
+check "gate: a 40-hex SHA and a long hyphenated slug are not tokens" "printf 'sha 0123456789abcdef0123456789abcdef01234567 and fix-the-devices-page-crash-when-the-filter-is-empty-12\n' > '$T/sha.md' && body_ok '$T/sha.md'"
+# A broken or killed checker is a rejection, never a pass.
+mkdir -p "$T/grep-err" "$T/grep-killed"
+printf '#!/bin/sh\nexit 2\n' > "$T/grep-err/grep"; printf '#!/bin/sh\nkill -PIPE $$\n' > "$T/grep-killed/grep"
+chmod +x "$T/grep-err/grep" "$T/grep-killed/grep"
+check "gate: grep failing (exit 2) rejects the body" "! ( PATH='$T/grep-err':\"\$PATH\"; body_ok '$T/plain.md' )"
+check "gate: grep killed by a signal rejects the body" "! ( PATH='$T/grep-killed':\"\$PATH\"; body_ok '$T/plain.md' )"
+printf 'literal-env-value-123\n' > "$ENVVALS"; chmod 000 "$ENVVALS"
+check "gate: an unreadable .env value list rejects the body" "[ \"\$(id -u)\" = 0 ] || ! body_ok '$T/plain.md'"
+chmod 600 "$ENVVALS"; rm -f "$ENVVALS"
+check "gate: a missing .env value list rejects the body" "! body_ok '$T/plain.md'"
+: > "$ENVVALS"
+check "gate: an empty .env value list (no .env files) still passes clean text" "body_ok '$T/plain.md'"
+check "gate: a token scanner that crashes rejects the body" "! ( _body_scan() { return 137; }; body_ok '$T/plain.md' )"
+check "gate: a token scanner that exits 0 without a verdict rejects the body" "! ( _body_scan() { :; }; body_ok '$T/plain.md' )"
+# Size is bounded before anything scans it.
+head -c 60000 /dev/zero | tr '\0' 'a' > "$T/at-limit.md"; head -c 60001 /dev/zero | tr '\0' 'a' > "$T/over-limit.md"
+check "gate: a body at the size limit passes" "body_ok '$T/at-limit.md'"
+check "gate: a body one byte over the limit is rejected" "! body_ok '$T/over-limit.md'"
+check "gate: an oversize body never reaches the scanner" "! ( _body_scan() { echo scanned > '$T/scanned'; echo clean; }; body_ok '$T/over-limit.md' ) && [ ! -e '$T/scanned' ]"
+check "gate: a directory or missing path is rejected" "! body_ok '$T' && ! body_ok '$T/no-such-file'"
+
 new_run gate-log
 QA_COMMENTABLE=" "; IN_SCOPE=" "
 outbox 001.json "{\"action\":\"comment\",\"issue\":$(json_str "marker-issue-$FAKE_AKIA"),\"body\":\"clean body\"}"
@@ -220,6 +255,7 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   RUN_DIR="$QA_HOME/runs/$RUN_ID"; mkdir -p "$RUN_DIR/outbox"   # real layout: runs live under QA_HOME
   QA_WORKTREE="$QA_HOME/worktree"; QA_SOURCE_REPO="$T/source-repo"
   STACK_ENV_DIR="$QA_HOME/.stack-env"; STATE="$QA_HOME/state.json"; AGENT_TMP="$QA_HOME/.t"
+  AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"
   mkdir -p "$AGENT_TMP"
   mkdir -p "$QA_WORKTREE/apps/api" "$QA_SOURCE_REPO" "$STACK_ENV_DIR" "$QA_HOME/runs/older" "$QA_HOME/bin" "$RUN_DIR/.claude"
   echo 'SESSION_SECRET=parked' > "$STACK_ENV_DIR/.env"
@@ -311,6 +347,48 @@ if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   rm -f "$QA_DIR/.qa-planted"
   check "lib: the runner's own scripts (qa-gh, broker, lib) are read-only" "! sbx /bin/sh -c 'echo x > \"$QA_DIR/.qa-planted\"' 2>/dev/null && ! sbx /bin/sh -c 'echo x >> \"$QA_DIR/qa-gh\"' 2>/dev/null"
   rm -f "$QA_DIR/.qa-planted"
+  # Strix r7: writes are an allow-list (RUN_DIR, the agent TMPDIR, the agent's own
+  # throwaway claude config dir), not a deny-list under (allow default). Anything
+  # the profile does not name -- a PATH directory, a dotfile, a cache the next
+  # unsandboxed run executes from -- is read-only.
+  mkdir -p "$FAKE_HOME/.local/bin" "$FAKE_HOME/.claude/projects/p/memory" "$FAKE_HOME/.npm/_npx/abc" \
+    "$FAKE_HOME/Library/Caches/ms-playwright/chromium-1" "$AGENT_CLAUDE_DIR"
+  echo '{}' > "$FAKE_HOME/.claude.json"
+  planted() { sbx /bin/sh -c 'echo x >> "$1"' _ "$1" 2>/dev/null; }
+  check "write: a PATH directory (~/.local/bin) is read-only (no planted claude/gh)" "! planted '$FAKE_HOME/.local/bin/claude' && ! planted '$FAKE_HOME/.local/bin/gh' && [ ! -e '$FAKE_HOME/.local/bin/claude' ]"
+  check "write: the home directory itself is read-only" "! planted '$FAKE_HOME/.qa-planted' && ! planted '$FAKE_HOME/.npmrc'"
+  check "write: ~/.claude.json (mcpServers, hooks) is read-only" "! planted '$FAKE_HOME/.claude.json' && ! planted '$FAKE_HOME/.claude.json.tmp'"
+  check "write: the developer's claude config dir is read-only (memory, handoff, settings)" "! planted '$FAKE_HOME/.claude/projects/p/memory/MEMORY.md' && ! planted '$FAKE_HOME/.claude/planted.json'"
+  check "write: npx's package cache is read-only (the cached MCP server)" "! planted '$FAKE_HOME/.npm/_npx/abc/planted.js'"
+  check "write: Playwright's browser cache is read-only (the Chromium binary)" "! planted '$FAKE_HOME/Library/Caches/ms-playwright/chromium-1/planted'"
+  mkdir -p "$FAKE_HOME/Library/Caches/ms-playwright/b"
+  check "write: Playwright's shared browser registry is read-only (descriptors other clients trust)" "! planted '$FAKE_HOME/Library/Caches/ms-playwright/b/browser@planted'"
+  check "write: an arbitrary path outside the allow-list is read-only" "! planted '$T/outside-planted' && ! planted '/private/tmp/qa-planted-$$' && [ ! -e '/private/tmp/qa-planted-$$' ]"
+  if [ -d /opt/homebrew/bin ] && [ -w /opt/homebrew/bin ]; then
+    check "write: /opt/homebrew/bin (gh, node) is read-only" "! planted '/opt/homebrew/bin/.qa-planted-$$' && [ ! -e '/opt/homebrew/bin/.qa-planted-$$' ]"
+  else skip "write: /opt/homebrew/bin (not writable by this user)"; fi
+  rm -f "/opt/homebrew/bin/.qa-planted-$$" "/private/tmp/qa-planted-$$" 2>/dev/null
+  mkdir -p "$QA_HOME/mcp/node_modules/@playwright/mcp"; echo '// cli' > "$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js"
+  check "write: the runner's pinned MCP install is read-only" "! planted '$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js' && [ \"\$(cat '$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js')\" = '// cli' ]"
+  # A claude.ai token refresh saves through the login keychain, which writes a
+  # login.keychain-db.sb-* temp file and renames it over login.keychain-db from
+  # inside the calling process. Losing that write loses a rotated refresh token.
+  mkdir -p "$FAKE_HOME/Library/Keychains"; echo db > "$FAKE_HOME/Library/Keychains/login.keychain-db"
+  echo meta > "$FAKE_HOME/Library/Keychains/metadata.keychain-db"
+  check "write: the login keychain can be saved (temp file + rename), as a token refresh needs" "sbx /bin/sh -c 'echo new > \"\$1.sb-c97cfa2e-AbC123\" && /bin/mv \"\$1.sb-c97cfa2e-AbC123\" \"\$1\"' _ '$FAKE_HOME/Library/Keychains/login.keychain-db' && [ \"\$(cat '$FAKE_HOME/Library/Keychains/login.keychain-db')\" = new ]"
+  check "write: nothing else in ~/Library/Keychains is writable" "! planted '$FAKE_HOME/Library/Keychains/metadata.keychain-db' && ! planted '$FAKE_HOME/Library/Keychains/planted.keychain-db' && ! planted '$FAKE_HOME/Library/Keychains/login.keychain-db.evil'"
+  check "write: the agent TMPDIR stays writable" "planted '$AGENT_TMP/scratch'"
+  check "write: the agent's own claude config dir stays writable" "planted '$AGENT_CLAUDE_DIR/.claude.json'"
+  check "write: /dev/null stays writable" "sbx /bin/sh -c 'echo x > /dev/null'"
+  # Chrome puts its ProcessSingleton lock in the per-user temp dir whatever
+  # TMPDIR says; only its own com.google.Chrome.* / org.chromium.Chromium.* dirs
+  # there are writable, not the shared directory other apps use.
+  DTMP="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"; DTMP="${DTMP%/}"
+  if [ -n "$DTMP" ] && [ -d "$DTMP" ]; then
+    check "write: Chrome's own temp dir under the per-user temp dir is writable" "sbx /bin/sh -c 'mkdir \"\$1\" && echo x > \"\$1/SingletonLock\"' _ '$DTMP/com.google.Chrome.qa$$' && [ -s '$DTMP/com.google.Chrome.qa$$/SingletonLock' ]"
+    check "write: the rest of the per-user temp dir is read-only" "! planted '$DTMP/qa-planted-$$' && ! sbx /bin/mkdir '$DTMP/com.google.Chrome' 2>/dev/null"
+    rm -rf "$DTMP/com.google.Chrome.qa$$" "$DTMP/qa-planted-$$"
+  else skip "write: per-user temp dir (getconf DARWIN_USER_TEMP_DIR unavailable)"; fi
   # A developer checkout that is itself a linked worktree keeps its config in the main repo.
   LINK_MAIN="$T/link-main"; git init -q "$LINK_MAIN"
   git -C "$LINK_MAIN" -c user.name=qa -c user.email=qa@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m init
@@ -656,6 +734,7 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
   QA_WORKTREE="$QA_HOME/worktree"; QA_SOURCE_REPO="$T/source-repo"; mkdir -p "$QA_WORKTREE"
   STACK_ENV_DIR="$QA_HOME/.stack-env"; STATE="$QA_HOME/state.json"; AGENT_TMP="$QA_HOME/.t"
   mkdir -p "$STACK_ENV_DIR" "$AGENT_TMP"; echo '{}' > "$STATE"; echo 'v' > "$ENVVALS"
+  AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"; mkdir -p "$AGENT_CLAUDE_DIR"
   printf 'x\n' > "$RUN_DIR/commits.tsv"; echo readme > "$QA_WORKTREE/README.md"
   /usr/bin/python3 -m http.server 0 --bind 127.0.0.1 --directory "$QA_WORKTREE" > "$T/http3.log" 2>&1 &
   H3=$!; sleep 1; QA_STACK_PORT="$(lsof -nP -a -p "$H3" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR==2{n=split($9,a,":");print a[n]}')"
@@ -667,21 +746,44 @@ if [ "${QA_TEST_NETWORK:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ]; then
   # A profile that lets the agent reach any loopback port must fail it.
   sed 's/(remote ip "localhost:[0-9]*")/(remote ip "localhost:*")/' "$AGENT_PROFILE" > "$T/loose.sb"; AGENT_PROFILE="$T/loose.sb"
   check "selfcheck: a loopback-wide profile is caught" "! sandbox_selfcheck && grep -q 'other-loopback-port-open' '$T/runner.log'"
+  # A profile whose writes are a deny-list again (no default deny) must fail it:
+  # every writable PATH directory and the home directory are probed.
+  sed '/^(deny file-write\*)$/d' "$T/selfcheck.sb" > "$T/denylist.sb"; AGENT_PROFILE="$T/denylist.sb"; : > "$T/runner.log"
+  check "selfcheck: control: the deny-list profile really lost its default deny" "! grep -qx '(deny file-write\*)' '$T/denylist.sb' && grep -qx '(deny file-write\*)' '$T/selfcheck.sb'"
+  check "selfcheck: a deny-list write profile is caught (PATH dir + home writable)" "! sandbox_selfcheck && grep -q 'path-dir-writable' '$T/runner.log' && grep -q 'home-writable' '$T/runner.log'"
+  check "selfcheck: its probes leave nothing behind" "[ -z \"\$(ls -a \"\$HOME\" | grep -F .qa-sandbox-probe)\" ] && [ -z \"\$(ls -a '$T/bin' | grep -F .qa-sandbox-probe)\" ]"
   stop_egress_proxy; stop_gh_broker; kill "$H3" 2>/dev/null
 else
   skip "end-to-end sandbox self-check (set QA_TEST_NETWORK=1, macOS)"
 fi
 
+# === the real login keychain accepts a save from inside the sandbox ===========
+# Opt-in: adds a dummy generic-password item to the developer's login keychain
+# from inside the profile, then deletes it from outside.
+if [ "${QA_TEST_KEYCHAIN:-0}" = 1 ] && [ -x /usr/bin/sandbox-exec ] && [ -n "${AGENT_PROFILE:-}" ] && [ -f "$T/selfcheck.sb" ]; then
+  KSVC="breeze-qa-sandbox-probe-$$"
+  /usr/bin/sandbox-exec -f "$T/selfcheck.sb" /usr/bin/security add-generic-password -s "$KSVC" -a probe -w dummy-not-a-secret -U >/dev/null 2>&1
+  check "keychain: a sandboxed process can save to the login keychain (token refresh)" "/usr/bin/security find-generic-password -s '$KSVC' -a probe >/dev/null 2>&1"
+  /usr/bin/security delete-generic-password -s "$KSVC" -a probe >/dev/null 2>&1
+  check "keychain: the probe item is removed" "! /usr/bin/security find-generic-password -s '$KSVC' -a probe >/dev/null 2>&1"
+else
+  skip "login keychain save from inside the sandbox (set QA_TEST_KEYCHAIN=1 with QA_TEST_NETWORK=1, macOS)"
+fi
+
 # === agent + MCP launch wiring ================================================
 if type build_agent_cmd >/dev/null 2>&1; then
   new_run cmd
-  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; GH_BROKER_PORT=9876; AGENT_TMP="$QA_HOME/.t"
+  AGENT_PROFILE="$T/agent.sb"; EGRESS_PORT=4321; GH_BROKER_PORT=9876; AGENT_TMP="$QA_HOME/.t"; AGENT_CLAUDE_DIR="$QA_HOME/.claude-agent"
   build_agent_cmd claude -p hi
   joined="${AGENT_CMD[*]}"
   check "launch: agent runs under sandbox-exec with the generated profile" "[ \"\${AGENT_CMD[0]}\" = /usr/bin/sandbox-exec ] && [ \"\${AGENT_CMD[1]}\" = -f ] && [ \"\${AGENT_CMD[2]}\" = '$AGENT_PROFILE' ]"
   check "launch: proxy env points at the loopback egress proxy" "case \"\$joined\" in *HTTPS_PROXY=http://127.0.0.1:4321*) true;; *) false;; esac"
   check "launch: ssh-agent socket is not inherited" "case \"\$joined\" in *'-u SSH_AUTH_SOCK'*) true;; *) false;; esac"
   check "launch: agent gets its own TMPDIR" "case \"\$joined\" in *\"TMPDIR=\$QA_HOME/.t\"*) true;; *) false;; esac"
+  check "launch: agent gets a throwaway claude config dir, not ~/.claude" "case \"\$joined\" in *\"CLAUDE_CONFIG_DIR=\$QA_HOME/.claude-agent \"*) true;; *) false;; esac"
+  check "launch: claude's own temp files stay in the agent TMPDIR (not /tmp/claude-UID)" "case \"\$joined\" in *\"CLAUDE_CODE_TMPDIR=\$QA_HOME/.t \"*) true;; *) false;; esac"
+  check "launch: zsh heredoc temp files stay in the agent TMPDIR" "case \"\$joined\" in *\"TMPPREFIX=\$QA_HOME/.t/zsh \"*) true;; *) false;; esac"
+  check "launch: Playwright's browser registry is the agent's own, not ~/Library/Caches/ms-playwright/b" "case \"\$joined\" in *\"PWTEST_SERVER_REGISTRY=\$QA_HOME/.t/pw-registry \"*) true;; *) false;; esac"
   check "launch: the agent gets the broker port, and no GitHub token from the runner's env" "case \"\$joined\" in *'QA_GH_PORT=9876'*'-u GH_TOKEN'*|*'-u GH_TOKEN'*'QA_GH_PORT=9876'*) true;; *) false;; esac"
   check "launch: the agent command follows the wrapper" "[ \"\${AGENT_CMD[\${#AGENT_CMD[@]}-3]}\" = claude ]"
 else
@@ -690,7 +792,28 @@ fi
 if type build_mcp_config >/dev/null 2>&1; then
   new_run mcp
   build_mcp_config "http://localhost:55001" "$QA_DIR/qa-mcp.json" "$RUN_DIR/mcp.json"
-  check "launch: MCP server resolves its package offline (no registry egress)" "jq -r '.mcpServers.playwright.args[1]' '$RUN_DIR/mcp.json' | grep -q 'npm_config_offline=true'"
+  # Strix r7: npm/npx need a writable cache, and a writable ~/.npm/_npx is a planted
+  # package. The runner installs the pinned server; the sandbox only runs node on it.
+  check "launch: no npm or npx runs inside the sandbox" "! jq -r '.mcpServers.playwright | [.command] + .args | .[]' '$RUN_DIR/mcp.json' | grep -qE '(^|/)(npx|npm)$|^-y$|^@playwright/mcp@'"
+  check "launch: MCP server is node on the runner's pinned install" "jq -e --arg c '$(mcp_cli_path)' '.mcpServers.playwright.args | index(\$c)' '$RUN_DIR/mcp.json' >/dev/null && [ \"\$(jq -r '.mcpServers.playwright.args[2]' '$RUN_DIR/mcp.json')\" = \"\$(command -v node)\" ]"
+  check "launch: the pinned install lives under QA_HOME, outside every writable root" "case '$(mcp_cli_path)' in '$QA_HOME'/mcp/*) true;; *) false;; esac"
+  # prewarm_mcp: a fake npm records its argv and installs whatever version it is told.
+  mkdir -p "$T/npmbin"
+  cat > "$T/npmbin/npm" <<'NPM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NPM_LOG"
+[ "${FAKE_NPM_FAIL:-0}" = 1 ] && exit 1
+prefix=""; prev=""; for a in "$@"; do [ "$prev" = --prefix ] && prefix="$a"; prev="$a"; done
+mkdir -p "$prefix/node_modules/@playwright/mcp"; echo '// cli' > "$prefix/node_modules/@playwright/mcp/cli.js"
+printf '{"name":"@playwright/mcp","version":"%s"}\n' "${FAKE_NPM_VERSION:-0.0.84}" > "$prefix/node_modules/@playwright/mcp/package.json"
+NPM
+  chmod +x "$T/npmbin/npm"; export NPM_LOG="$T/npm.log"; : > "$NPM_LOG"
+  check "prewarm: installs the pinned package into the runner's own prefix" "PATH='$T/npmbin':\"\$PATH\" prewarm_mcp '$QA_DIR/qa-mcp.json' && [ -f '$(mcp_cli_path)' ] && grep -q -- '--prefix $QA_HOME/mcp' '$NPM_LOG' && grep -q '@playwright/mcp@0.0.84' '$NPM_LOG'"
+  check "prewarm: package install scripts do not run" "grep -q -- '--ignore-scripts' '$NPM_LOG'"
+  check "prewarm: a failed refresh keeps a verified install" "FAKE_NPM_FAIL=1 PATH='$T/npmbin':\"\$PATH\" prewarm_mcp '$QA_DIR/qa-mcp.json'"
+  check "prewarm: an install of any other version is refused" "! FAKE_NPM_VERSION=9.9.9 PATH='$T/npmbin':\"\$PATH\" prewarm_mcp '$QA_DIR/qa-mcp.json'"
+  rm -rf "$QA_HOME/mcp"
+  check "prewarm: no install at all fails closed" "! FAKE_NPM_FAIL=1 PATH='$T/npmbin':\"\$PATH\" prewarm_mcp '$QA_DIR/qa-mcp.json'"
   check "launch: Chrome runs without its own renderer sandbox (it cannot nest in Seatbelt)" "jq -e '.mcpServers.playwright.args | index(\"--no-sandbox\")' '$RUN_DIR/mcp.json' >/dev/null"
   check "launch: MCP keeps --allowed-origins as navigation hygiene" "jq -e '.mcpServers.playwright.args | index(\"--allowed-origins\")' '$RUN_DIR/mcp.json' >/dev/null"
   check "launch: MCP cwd is RUN_DIR/browser" "jq -e --arg d '$RUN_DIR/browser' '.mcpServers.playwright.args | index(\$d)' '$RUN_DIR/mcp.json' >/dev/null"

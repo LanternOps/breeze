@@ -12,18 +12,50 @@
 QA_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
-# body_ok <file>: gate for anything headed to a PUBLIC GitHub sink.
+QA_BODY_MAX=60000
+# _gate_clean <grep args...>: true only when grep positively reports "no match"
+# (exit 1). A match (0), an error (2) or death by a signal (>128) all reject, so
+# a check that cannot run never reads as "nothing found".
+_gate_clean() { local rc=0; LC_ALL=C grep "$@" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 1 ]; }
+# _body_scan <file> <max>: one process reads at most <max>+1 bytes, once, and
+# prints "clean" only when the file is non-empty, within <max>, NUL-free and has
+# no long token-like run: 40+ chars mixing upper, lower AND digits (JWT/base64/
+# API keys; hyphenated slugs and 40-hex SHAs don't trip it). No pipeline, so no
+# stage can be cut short (SIGPIPE under pipefail) and turn a hit into a miss.
+_body_scan() {
+  /usr/bin/python3 -I -c '
+import re, sys
+limit = int(sys.argv[2])
+with open(sys.argv[1], "rb") as f:
+    data = f.read(limit + 1)
+if not data or len(data) > limit or b"\0" in data:
+    sys.exit(3)
+for m in re.finditer(rb"[A-Za-z0-9+/=_-]{40,}", data):
+    t = m.group()
+    if re.search(rb"[A-Z]", t) and re.search(rb"[a-z]", t) and re.search(rb"[0-9]", t):
+        sys.exit(3)
+print("clean")
+' "$1" "$2" 2>/dev/null
+}
+# body_ok <file>: gate for anything headed to a PUBLIC GitHub sink. Fails
+# CLOSED: the body passes only when every check positively reports it clean. A
+# size it cannot bound, a missing redaction list or any tool failure rejects it.
 body_ok() {
-  [ -s "$1" ] && [ "$(wc -c < "$1")" -le 60000 ] || return 1
-  # Byte-wise matching (LC_ALL=C, -a): a NUL or invalid UTF-8 must not turn the
-  # file "binary" and hide what follows it from the checks below.
-  [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq "$(wc -c < "$1")" ] || return 1
-  LC_ALL=C grep -aEq "$SECRET_RE" "$1" && return 1
-  # long token-like runs: 40+ chars mixing upper, lower AND digits (JWT/base64/API
-  # keys). Hyphenated slugs and 40-hex SHAs don't trip it.
-  LC_ALL=C grep -aoE '[A-Za-z0-9+/=_-]{40,}' "$1" | grep '[A-Z]' | grep '[a-z]' | grep -q '[0-9]' && return 1
-  LC_ALL=C grep -aEq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" && return 1  # creds in URLs
-  [ -s "$ENVVALS" ] && LC_ALL=C grep -aqF -f "$ENVVALS" "$1" && return 1       # any literal .env value
+  local size verdict
+  [ -f "$1" ] || return 1
+  size="$(wc -c < "$1" | tr -d ' ')" || return 1
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$size" -gt 0 ] && [ "$size" -le "$QA_BODY_MAX" ] || return 1   # bounded before anything scans it
+  verdict="$(_body_scan "$1" "$QA_BODY_MAX")" || return 1
+  [ "$verdict" = clean ] || return 1
+  # Byte-wise matching (LC_ALL=C, -a): invalid UTF-8 must not turn the file
+  # "binary" and hide what follows it (NULs are already refused above).
+  _gate_clean -aEq "$SECRET_RE" "$1" || return 1
+  _gate_clean -aEq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" || return 1   # creds in URLs
+  # Any literal .env value. The runner builds this list before anything is
+  # published, so a missing or unreadable list is a failed check, not an empty one.
+  [ -f "$ENVVALS" ] && [ -r "$ENVVALS" ] || return 1
+  if [ -s "$ENVVALS" ]; then _gate_clean -aqF -f "$ENVVALS" "$1" || return 1; fi
   return 0
 }
 # text_ok <string>: body_ok for a single field (an issue title), via a private file.
@@ -93,10 +125,15 @@ safe_title() {
 #   - secrets: env files (parked or not), the redaction list, machine overrides,
 #     ~/.ssh, git credential files, the egress audit log, other runs and this
 #     run's logs/transcripts are unreadable.
-#   - writes: only RUN_DIR (minus the runner's inputs, its logs/transcripts and
-#     any .claude/CLAUDE.md) and the usual caches; the worktree, the developer
-#     checkout, runner state and persistence points (~/.claude config, git and gh
-#     config, shell rc files, LaunchAgents) are read-only.
+#   - writes: an allow-list, not a deny-list. Every write is denied except to
+#     RUN_DIR (minus the runner's inputs, its logs/transcripts and any
+#     .claude/CLAUDE.md), the agent's TMPDIR, its throwaway claude config dir
+#     (CLAUDE_CONFIG_DIR, reset each run) and the few /dev nodes a process
+#     needs. A path this profile does not name -- a PATH directory such as
+#     ~/.local/bin or /opt/homebrew/bin, ~/.claude or ~/.claude.json, the npx and
+#     Playwright caches, shell rc files, LaunchAgents -- fails closed, so nothing
+#     the next unsandboxed run executes or loads can be planted. The worktree,
+#     the developer checkout and runner state are additionally denied by name.
 #   - GitHub: the agent has NO route to it (not on the egress allowlist) and
 #     cannot read gh's config/token store. Its only reader is qa-gh, a client of
 #     the runner's gh broker (gh-broker.py), which runs outside the sandbox,
@@ -123,12 +160,22 @@ _sb_ancestors() {
 # egress_log_path: the proxy's audit trail. Outside RUN_DIR (the agent's scratch
 # space) and denied to the agent in qa_sandbox_profile.
 egress_log_path() { printf '%s' "$QA_HOME/.audit/egress-$RUN_ID.log"; }
+# agent_claude_dir: the agent's CLAUDE_CONFIG_DIR. Its own, emptied before every
+# agent run (reset_agent_claude_dir), so the agent never writes the developer's
+# ~/.claude or ~/.claude.json and nothing it writes there outlives the run. The
+# claude.ai login is found through CLAUDE_SECURESTORAGE_CONFIG_DIR instead.
+agent_claude_dir() { printf '%s' "${AGENT_CLAUDE_DIR:-$QA_HOME/.claude-agent}"; }
+reset_agent_claude_dir() {
+  local d; d="$(agent_claude_dir)"
+  rm -rf "$d" && ( umask 077; mkdir -p "$d" )
+}
 
 qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
-  local out="$1" home qh wt src run st sed_env atmp gitc audit lib p
+  local out="$1" home qh wt src run st sed_env atmp acfg gitc audit lib p
   home="$(_sb_real "$HOME")" && qh="$(_sb_real "$QA_HOME")" && wt="$(_sb_real "$QA_WORKTREE")" \
     && src="$(_sb_real "$QA_SOURCE_REPO")" && run="$(_sb_real "$RUN_DIR")" \
     && atmp="$(_sb_real "${AGENT_TMP:-$QA_HOME/.t}")" \
+    && acfg="$(_sb_real "$(agent_claude_dir)")" \
     && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" \
     && lib="$(_sb_real "$QA_LIB_DIR")" || { log "sandbox: bad path"; return 1; }
   # The agent's network is these three loopback ports and nothing else.
@@ -139,8 +186,14 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
   gitc="$(cd "$src" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd -P)"
   gitc="$(_sb_real "${gitc:-$src/.git}")" || { log "sandbox: bad git dir"; return 1; }
-  local wt_re src_re run_re home_re locked
+  local wt_re src_re run_re home_re locked dtmp chrome_tmp=""
   wt_re="$(_sb_re "$wt")"; src_re="$(_sb_re "$src")"; run_re="$(_sb_re "$run")"; home_re="$(_sb_re "$home")"
+  # Chrome creates its ProcessSingleton lock dir in the per-user temp dir
+  # whatever TMPDIR says; allow only its own randomly named dirs there.
+  dtmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)"; dtmp="${dtmp%/}"
+  if [ -n "$dtmp" ] && dtmp="$(_sb_real "$dtmp")"; then
+    chrome_tmp="  (regex #\"^$(_sb_re "$dtmp")/(com\\.google\\.Chrome|org\\.chromium\\.Chromium)\\.[^/]+(/.*)?\$\")"
+  fi
   locked="$(_sb_ancestors "$run" "$audit" "$wt" "$src" "$gitc" "$lib" "$home/.config/gh" "$home/.config/git" \
     "$home/.claude/skills" "$home/.ssh" "$home/Library/LaunchAgents")"
   ( umask 077; cat > "$out" ) <<SB
@@ -155,6 +208,25 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
   (remote ip "localhost:$GH_BROKER_PORT"))
 ;; unix sockets only in the agent's own TMPDIR (Playwright <-> Chromium)
 (allow network-outbound (remote unix-socket (subpath "$atmp")))
+
+;; writes: an allow-list. Deny every write, then allow only what the run needs.
+;; Last match wins, so the secret and read-only denies below still carve the
+;; runner's inputs out of RUN_DIR. Anything not named here fails closed.
+(deny file-write*)
+(allow file-write*
+  (subpath "$run")
+  (subpath "$atmp")
+  (subpath "$acfg")
+$chrome_tmp
+  ;; claude.ai token refresh: the login keychain is saved in-process as a temp
+  ;; file renamed over the db. Without it a rotated refresh token is lost.
+  (literal "$home/Library/Keychains/login.keychain-db")
+  (regex #"^$home_re/Library/Keychains/login\.keychain-db\.sb-[0-9a-f]+-[A-Za-z0-9]+$")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (regex #"^/dev/fd/[0-9]+$"))
 
 ;; secrets: unreadable (and unwritable) by every process in the tree
 (deny file-read* file-write*
@@ -295,6 +367,13 @@ build_agent_cmd() {
     "ALL_PROXY=$px" "NO_PROXY=localhost,127.0.0.1,::1" "no_proxy=localhost,127.0.0.1,::1"
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1
     "TMPDIR=${AGENT_TMP:-$QA_HOME/.t}"
+    "CLAUDE_CODE_TMPDIR=${AGENT_TMP:-$QA_HOME/.t}"
+    "TMPPREFIX=${AGENT_TMP:-$QA_HOME/.t}/zsh"
+    # Playwright registers each browser in ~/Library/Caches/ms-playwright/b,
+    # which other Playwright clients trust (one rm -rf's a descriptor's
+    # userDataDir), so it stays read-only and the agent's registry is its own.
+    "PWTEST_SERVER_REGISTRY=${AGENT_TMP:-$QA_HOME/.t}/pw-registry"
+    "CLAUDE_CONFIG_DIR=$(agent_claude_dir)"
     "QA_GH_PORT=$GH_BROKER_PORT"
     "$@")
 }
@@ -340,8 +419,27 @@ sandbox_selfcheck() {
   sbx /bin/sh -c ': >> "$1"' _ "$GH_BROKER_LOG" 2>/dev/null && fails="$fails gh-audit-log-writable"
   sbx /bin/sh -c ': > "$1"' _ "$RUN_DIR/.sandbox-selfcheck" 2>/dev/null || fails="$fails run-dir-readonly"
   rm -f "$RUN_DIR/.sandbox-selfcheck"
+  # Writes are an allow-list: the home directory and every PATH directory this
+  # user can write outside the sandbox (the control) must be read-only inside it,
+  # so no `claude`/`gh` can be planted for the next unsandboxed run.
+  local d pw="" probe=".qa-sandbox-probe.$$"
+  wprobe() {   # wprobe <dir>: true if the sandbox could create a file in <dir>
+    if sbx /bin/sh -c ': > "$1"' _ "$1/$probe" 2>/dev/null; then rm -f "$1/$probe"; return 0; fi
+    return 1
+  }
+  if [ -w "$HOME" ]; then wprobe "$HOME" && fails="$fails home-writable"; else fails="$fails home-probe-inconclusive"; fi
+  [ -f "$HOME/.claude.json" ] && sbx /bin/sh -c ': >> "$1"' _ "$HOME/.claude.json" 2>/dev/null && fails="$fails claude-config-writable"
+  while IFS= read -r d; do
+    case "$d" in /*) ;; *) continue ;; esac
+    [ -d "$d" ] && [ -w "$d" ] || continue
+    case "$d/" in "$RUN_DIR"/*|"${AGENT_TMP:-$QA_HOME/.t}"/*|"$(agent_claude_dir)"/*) continue ;; esac
+    wprobe "$d" && pw="$pw $d"
+  done <<EOF
+$(printf '%s' "$PATH" | tr ':' '\n')
+EOF
+  [ -n "$pw" ] && { fails="$fails path-dir-writable"; log "sandbox: PATH dirs writable from inside:$pw"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/proxy/broker only, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only)"
 }
 
 # ---------------------------------------------------------------------------
@@ -417,28 +515,40 @@ remove_stack_net() {
 
 # build_mcp_config <base-url> <src-json> <out-json>: per-run Playwright MCP
 # config. The server starts in RUN_DIR/browser (with --ignore-roots its cwd is
-# its file workspace) and resolves its npm package from the cache only, since
-# the sandbox has no route to the registry (prewarm_mcp fills the cache).
+# its file workspace) as `node <cli.js>` on the runner's pinned install
+# (prewarm_mcp): no npm or npx runs inside the sandbox.
 # --allowed-origins is navigation hygiene; the sandbox is the egress control.
 # --no-sandbox: Chrome's own renderer sandbox can't be applied inside a Seatbelt
 # profile (renderers crash), so the Seatbelt profile confines the whole browser
 # instead -- every renderer inherits its file and network limits.
 build_mcp_config() {
-  local origin; origin="$(printf '%s' "$1" | sed -E 's#^(https?://[^/]+).*#\1#')"
-  # shellcheck disable=SC2016  # $o/$out are jq variables; $0/$1/$@ belong to the sh wrapper
-  jq --arg o "$origin" --arg out "$RUN_DIR/browser" '
+  local origin node; origin="$(printf '%s' "$1" | sed -E 's#^(https?://[^/]+).*#\1#')"
+  node="$(command -v node)" || return 1
+  # shellcheck disable=SC2016  # $o/$out/$node/$cli are jq variables; $0/$1/$@ belong to the sh wrapper
+  jq --arg o "$origin" --arg out "$RUN_DIR/browser" --arg node "$node" --arg cli "$(mcp_cli_path)" '
     .mcpServers.playwright |= (. + {
       command: "/bin/sh",
-      args: (["-c", "export npm_config_offline=true; cd \"$1\" || exit 1; shift; exec \"$0\" \"$@\"", .command, $out] + .args
+      args: (["-c", "cd \"$1\" || exit 1; shift; exec \"$0\" \"$@\"", $node, $out, $cli]
+             + (.args | map(select(. != "-y" and (startswith("@playwright/mcp@") | not))))
              + ["--allowed-origins", $o, "--output-dir", $out, "--no-sandbox"])
     })' "$2" > "$3"
 }
-# prewarm_mcp <src-json>: fetch the pinned MCP package into the npx cache (runs
-# outside the sandbox, before the agent).
+# The Playwright MCP server, installed by the runner into its own prefix. npm and
+# npx need a writable cache, and a writable ~/.npm/_npx is a package the next
+# unsandboxed npx would execute, so neither runs inside the sandbox: the agent
+# only starts node on this install, which it cannot write.
+mcp_cli_path() { printf '%s' "$QA_HOME/mcp/node_modules/@playwright/mcp/cli.js"; }
+# prewarm_mcp <src-json>: install the pinned version (outside the sandbox,
+# before the agent). True only when exactly that version is in place; a failed
+# refresh falls back to an existing install of the same version.
 prewarm_mcp() {
-  local pkg; pkg="$(jq -r '.mcpServers.playwright.args[] | select(startswith("@playwright/mcp@"))' "$1" | head -1)"
+  local pkg have; pkg="$(jq -r '.mcpServers.playwright.args[] | select(startswith("@playwright/mcp@"))' "$1" | head -1)"
   [ -n "$pkg" ] || return 1
-  npx -y "$pkg" --version >/dev/null 2>&1
+  ( umask 077; mkdir -p "$QA_HOME/mcp" ) || return 1
+  npm install --prefix "$QA_HOME/mcp" --no-save --no-audit --no-fund --ignore-scripts --loglevel=error "$pkg" >/dev/null 2>&1 \
+    || log "WARN: could not refresh $pkg; checking the existing install"
+  have="$(jq -r '.version // empty' "$QA_HOME/mcp/node_modules/@playwright/mcp/package.json" 2>/dev/null)"
+  [ "$have" = "${pkg##*@}" ] && [ -f "$(mcp_cli_path)" ]
 }
 
 # ---------------------------------------------------------------------------

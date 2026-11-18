@@ -141,13 +141,18 @@ log "=== QA sweep $RUN_ID ==="
 # An API key / alt provider in the environment silently overrides the claude.ai
 # login, so strip them and then require authMethod=claude.ai.
 # QA_CLAUDE_AUTH_DIR pins a specific claude.ai login profile (multi-account setups).
-[ -n "${QA_CLAUDE_AUTH_DIR:-}" ] && export CLAUDE_SECURESTORAGE_CONFIG_DIR="$QA_CLAUDE_AUTH_DIR"
+# The agent runs with its own CLAUDE_CONFIG_DIR (agent_claude_dir: the sandbox
+# lets it write there and nowhere in ~/.claude), so the login is located through
+# CLAUDE_SECURESTORAGE_CONFIG_DIR, pinned here; ~/.claude is the default profile.
+export CLAUDE_SECURESTORAGE_CONFIG_DIR="${QA_CLAUDE_AUTH_DIR:-${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}}"
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
       CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD   # no CLAUDE.md from the agent-writable RUN_DIR
-AUTH_METHOD="$(claude auth status --json 2>/dev/null | jq -r '.authMethod // empty')"
+# Checked with the agent's config dir, so this proves the login the agent will use.
+reset_agent_claude_dir || { log "FATAL could not create the agent's claude config dir"; exit 1; }
+AUTH_METHOD="$(CLAUDE_CONFIG_DIR="$(agent_claude_dir)" claude auth status --json 2>/dev/null | jq -r '.authMethod // empty')"
 if [ "$AUTH_METHOD" != "claude.ai" ]; then
-  notify "QA sweep skipped: Claude is not logged in with a subscription (auth=${AUTH_METHOD:-none}). Run: claude auth login"
+  notify "QA sweep skipped: Claude is not logged in with a subscription for the agent (auth=${AUTH_METHOD:-none}). Set QA_CLAUDE_AUTH_DIR or run: claude auth login"
   log "FATAL auth method '${AUTH_METHOD:-none}', expected claude.ai"; exit 1
 fi
 log "auth: claude.ai subscription"
@@ -388,7 +393,12 @@ log "hosted-phase PRs: $HOSTED_PRS"
 
 # Per-run browser config (see build_mcp_config). With --ignore-roots the
 # server's cwd is its file workspace, so it starts in RUN_DIR/browser, never in
-# the worktree; file:// stays blocked (Playwright MCP default).
+# the worktree; file:// stays blocked (Playwright MCP default). The server is
+# installed here, outside the sandbox: no npm runs inside it.
+if ! prewarm_mcp "$SCRIPT_DIR/qa-mcp.json"; then
+  notify "QA sweep: could not install the pinned Playwright MCP server; agent not started"
+  log "FATAL Playwright MCP install"; exit 1
+fi
 build_mcp_config "$BASE_URL" "$SCRIPT_DIR/qa-mcp.json" "$RUN_DIR/mcp.json" \
   || { notify "QA sweep: could not build the MCP config"; exit 1; }
 
@@ -404,7 +414,6 @@ AGENT_PROFILE="$QA_HOME/.sandbox/agent.sb"
 AGENT_TMP="$QA_HOME/.t"   # the agent's TMPDIR; the only place it may use unix sockets (kept short: 104-byte socket paths)
 rm -rf "$AGENT_TMP"
 ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$STACK_ENV_DIR" "$AGENT_TMP" )
-prewarm_mcp "$SCRIPT_DIR/qa-mcp.json" || log "WARN: could not prefetch the Playwright MCP package (the sandboxed server resolves it offline)"
 snapshot_commentable_issues   # outbox `comment` targets: open qa-sweep issues as of now
 log "commentable qa-sweep issues:${QA_COMMENTABLE:- none}"
 snapshot_open_issues   # the agent's dedupe list (its GitHub reader has no search)
@@ -546,6 +555,12 @@ run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
   [ -n "${QA_MODEL:-}" ] && args+=(--model "$QA_MODEL")
   if ! hide_stack_env; then
     restore_stack_env; log "FATAL could not move the stack env files out of the worktree; agent not started"
+    return 1
+  fi
+  # A fresh config dir per agent run: nothing one run writes there (settings,
+  # hooks, memory) reaches the next one, e.g. the hosted phase.
+  if ! reset_agent_claude_dir; then
+    restore_stack_env; log "FATAL could not reset the agent's claude config dir; agent not started"
     return 1
   fi
   log "claude start [$3] (timeout $2)"
