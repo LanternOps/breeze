@@ -33,7 +33,9 @@ func TestBuildSystemdRunArgv_Exact(t *testing.T) {
 		"--setenv=XDG_SESSION_ID=3",
 		"--setenv=XDG_SESSION_TYPE=wayland",
 		"--setenv=BREEZE_LOGIND_SESSION=3",
-		"--setenv=BREEZE_SPAWN_TICKET=" + testSpawnTicket,
+		// The ticket is passed through systemd-run's own environment, never
+		// argv: a process command line is readable by every local user.
+		"--setenv=BREEZE_SPAWN_TICKET",
 		"--setenv=BREEZE_IPC_SOCKET=/run/breeze/desktop/1000.sock",
 		"--", "/usr/local/bin/breeze-agent", "desktop-helper",
 	}
@@ -159,19 +161,22 @@ func TestValidateLinuxDesktopSpawnSpec(t *testing.T) {
 	}
 }
 
-func TestRedactSpawnArgv_HidesTicket(t *testing.T) {
-	argv := buildSystemdRunArgv(validSpawnSpec(), "u.service")
-	red := redactSpawnArgv(argv)
-	joined := strings.Join(red, " ")
-	if strings.Contains(joined, testSpawnTicket) {
-		t.Fatalf("redacted argv still carries the ticket: %s", joined)
+func TestBuildSystemdRunArgv_TicketNotInArgv(t *testing.T) {
+	for _, arg := range buildSystemdRunArgv(validSpawnSpec(), "u.service") {
+		if strings.Contains(arg, testSpawnTicket) {
+			t.Fatalf("argv carries the ticket: %q", arg)
+		}
 	}
-	if !slices.Contains(red, "--setenv=BREEZE_SPAWN_TICKET=<redacted>") {
-		t.Fatalf("redacted argv lost the ticket placeholder: %q", red)
+}
+
+func TestLinuxDesktopSpawnEnv_MinimalWithTicket(t *testing.T) {
+	got := linuxDesktopSpawnEnv(testSpawnTicket)
+	want := []string{"PATH=/usr/bin:/bin", "LANG=C", "BREEZE_SPAWN_TICKET=" + testSpawnTicket}
+	if !slices.Equal(got, want) {
+		t.Fatalf("env %q, want %q", got, want)
 	}
-	// The input is not mutated.
-	if !slices.Contains(argv, "--setenv=BREEZE_SPAWN_TICKET="+testSpawnTicket) {
-		t.Fatal("redactSpawnArgv mutated its input")
+	if got := linuxDesktopSpawnEnv(""); !slices.Equal(got, want[:2]) {
+		t.Fatalf("env without ticket %q, want %q", got, want[:2])
 	}
 }
 

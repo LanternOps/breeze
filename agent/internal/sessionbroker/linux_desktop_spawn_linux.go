@@ -33,7 +33,7 @@ func (s *systemdRunSpawner) probe(ctx context.Context) error {
 			s.probeErr = fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, err)
 			return
 		}
-		out, _, err := runSpawnCommand(ctx, bin, []string{"--version"})
+		out, _, err := runSpawnCommand(ctx, bin, []string{"--version"}, "")
 		if err != nil {
 			s.probeErr = fmt.Errorf("%w: systemd-run --version: %v", ErrLinuxDesktopSpawnUnsupported, err)
 			return
@@ -77,14 +77,14 @@ func (s *systemdRunSpawner) Start(ctx context.Context, spec LinuxDesktopSpawnSpe
 		return "", fmt.Errorf("%w: %v", ErrLinuxDesktopSpawnUnsupported, err)
 	}
 	argv := buildSystemdRunArgv(spec, unit)
-	_, stderr, err := runSpawnCommand(ctx, bin, argv)
+	_, stderr, err := runSpawnCommand(ctx, bin, argv, spec.Ticket)
 	if err != nil {
 		msg := spawnStderrForError(stderr, spec.Ticket)
 		if sentinel := classifySystemdRunFailure(msg); sentinel != nil {
 			return "", fmt.Errorf("%w: %s", sentinel, msg)
 		}
 		log.Warn("systemd-run failed to start the Linux desktop helper",
-			"argv", redactSpawnArgv(argv), "uid", spec.Binding.UID, "error", err.Error(), "stderr", msg)
+			"argv", argv, "uid", spec.Binding.UID, "error", err.Error(), "stderr", msg)
 		return "", fmt.Errorf("systemd-run: %w: %s", err, msg)
 	}
 	return unit, nil
@@ -98,7 +98,7 @@ func (s *systemdRunSpawner) Stop(ctx context.Context, username, unit string) err
 	if err != nil {
 		return err
 	}
-	_, stderr, err := runSpawnCommand(ctx, bin, buildSystemctlStopArgv(username, unit))
+	_, stderr, err := runSpawnCommand(ctx, bin, buildSystemctlStopArgv(username, unit), "")
 	if err != nil {
 		return fmt.Errorf("systemctl stop %s: %w: %s", unit, err, spawnStderrForError(stderr, ""))
 	}
@@ -113,7 +113,7 @@ func (s *systemdRunSpawner) ListUnits(ctx context.Context, username string) ([]s
 	if err != nil {
 		return nil, err
 	}
-	out, stderr, err := runSpawnCommand(ctx, bin, buildSystemctlListUnitsArgv(username))
+	out, stderr, err := runSpawnCommand(ctx, bin, buildSystemctlListUnitsArgv(username), "")
 	if err != nil {
 		msg := spawnStderrForError(stderr, "")
 		if sentinel := classifySystemdRunFailure(msg); sentinel != nil {
@@ -128,14 +128,14 @@ func (s *systemdRunSpawner) ListUnits(ctx context.Context, username string) ([]s
 const maxSpawnCommandOutput = 64 << 10
 
 // runSpawnCommand runs bin with argv under a linuxDesktopSpawnTimeout
-// deadline, a fixed minimal environment and bounded output buffers. The
-// returned error never carries argv (which may hold a ticket); callers
-// scrub stderr with spawnStderrForError.
-func runSpawnCommand(ctx context.Context, bin string, argv []string) (stdout, stderr []byte, err error) {
+// deadline, the fixed minimal environment (plus ticket, when non-empty, for
+// systemd-run to pass through) and bounded output buffers. Callers scrub
+// stderr with spawnStderrForError.
+func runSpawnCommand(ctx context.Context, bin string, argv []string, ticket string) (stdout, stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(ctx, linuxDesktopSpawnTimeout)
 	defer cancel()
 	cmd := procspawn.CommandContext(ctx, bin, argv...)
-	cmd.Env = []string{linuxDesktopChildPath, "LANG=C"}
+	cmd.Env = linuxDesktopSpawnEnv(ticket)
 	cmd.Dir = "/"
 	var out, errOut cappedBuffer
 	out.max, errOut.max = maxSpawnCommandOutput, maxSpawnCommandOutput

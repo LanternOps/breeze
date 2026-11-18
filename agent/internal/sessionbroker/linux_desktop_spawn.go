@@ -170,13 +170,28 @@ func buildSystemdRunArgv(spec LinuxDesktopSpawnSpec, unit string) []string {
 		"--setenv=XDG_SESSION_ID=" + b.LogindSessionID,
 		"--setenv=XDG_SESSION_TYPE=wayland",
 		"--setenv=BREEZE_LOGIND_SESSION=" + b.LogindSessionID,
-		"--setenv=" + linuxSpawnTicketEnv + "=" + spec.Ticket,
+		// Name only: systemd-run copies the value from its own environment
+		// (linuxDesktopSpawnEnv). A command line is readable by every local
+		// user through /proc/<pid>/cmdline; an environment only by root and
+		// the same uid.
+		"--setenv=" + linuxSpawnTicketEnv,
 		"--setenv=BREEZE_IPC_SOCKET=" + spec.SocketPath,
 		"--", spec.AgentExe, "desktop-helper",
 	}
 }
 
 const linuxSpawnTicketEnv = "BREEZE_SPAWN_TICKET"
+
+// linuxDesktopSpawnEnv is the whole environment of a spawn command: a fixed
+// PATH and locale, never root's own environment, plus the ticket for
+// systemd-run to pass through when one is given.
+func linuxDesktopSpawnEnv(ticket string) []string {
+	env := []string{linuxDesktopChildPath, "LANG=C"}
+	if ticket != "" {
+		env = append(env, linuxSpawnTicketEnv+"="+ticket)
+	}
+	return env
+}
 
 // buildSystemctlStopArgv stops one helper unit in username's user manager.
 func buildSystemctlStopArgv(username, unit string) []string {
@@ -186,19 +201,6 @@ func buildSystemctlStopArgv(username, unit string) []string {
 // buildSystemctlListUnitsArgv lists the helper units in username's manager.
 func buildSystemctlListUnitsArgv(username string) []string {
 	return []string{"-M", username + "@", "--user", "list-units", "--all", "--plain", "--no-legend", "--no-pager", linuxDesktopUnitPrefix + "*"}
-}
-
-// redactSpawnArgv returns a copy of argv that is safe to log.
-func redactSpawnArgv(argv []string) []string {
-	out := make([]string, len(argv))
-	prefix := "--setenv=" + linuxSpawnTicketEnv + "="
-	for i, a := range argv {
-		if strings.HasPrefix(a, prefix) {
-			a = prefix + "<redacted>"
-		}
-		out[i] = a
-	}
-	return out
 }
 
 // spawnStderrForError keeps at most maxSpawnStderrBytes of a command's
