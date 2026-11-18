@@ -36,7 +36,7 @@ import {
   connectionNeedsConsentReconciliation,
   M365_PERMISSION_PROFILES,
   M365_WRITE_ACTION_REQUIRED_ROLES,
-  type CanonicalAppRoleAssignment,
+  type M365ApplicationGrant,
   type M365WriteAction,
   type RetestResult,
   type VerifyConsentIdentityResult,
@@ -122,7 +122,7 @@ const CURRENT = MANIFEST.version;
 const PRE_M1 = 2;
 const PRE_M1_ROLES = new Set(['User.ReadWrite.All', 'User-PasswordProfile.ReadWrite.All']);
 
-function canonical(grants: readonly CanonicalAppRoleAssignment[]): CanonicalAppRoleAssignment[] {
+function canonical(grants: readonly M365ApplicationGrant[]): M365ApplicationGrant[] {
   return [...grants].sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right)));
 }
 
@@ -208,7 +208,7 @@ async function seedActiveRow(
   env: Env,
   tenantId: string,
   manifestVersion: number,
-  grants: CanonicalAppRoleAssignment[],
+  grants: M365ApplicationGrant[],
   grantsVerifiedAt: Date | null,
 ) {
   const initiated = await initiateCustomerGraphActionsConsent({
@@ -243,7 +243,7 @@ async function actionsRow(orgId: string) {
   });
 }
 
-function retestResult(tenantId: string, observed: CanonicalAppRoleAssignment[]): RetestResult {
+function retestResult(tenantId: string, observed: M365ApplicationGrant[]): RetestResult {
   const requiredKeys = new Set(REQUIRED.map(canonicalGrantKey));
   const observedKeys = new Set(observed.map(canonicalGrantKey));
   return {
@@ -253,7 +253,7 @@ function retestResult(tenantId: string, observed: CanonicalAppRoleAssignment[]):
     organizationDisplayName: 'Contoso Actions',
     manifestVersion: CURRENT,
     verifiedAt: new Date().toISOString(),
-    grantReconciliation: 'complete',
+    grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: observed,
     missingGrants: REQUIRED.filter((grant) => !observedKeys.has(canonicalGrantKey(grant))),
     unexpectedGrants: observed.filter((grant) => !requiredKeys.has(canonicalGrantKey(grant))),

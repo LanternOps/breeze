@@ -7,6 +7,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/pion/webrtc/v4"
 )
@@ -77,6 +78,66 @@ func TestHelperLocalICECandidateIsForwardedToTheControlPlane(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the helper's late candidate never reached the control plane")
+	}
+}
+
+// A Linux desktop helper does not get to name the start generation: root
+// forwards the one it recorded when it started the session (#12117).
+func TestLinuxDesktopICE_ForwardsRootGeneration(t *testing.T) {
+	session, _ := newLeaseBridgeHelper(t, "helper-linux-ice")
+	session.MarkLinuxDesktopForTest(sessionbroker.LinuxDesktopBinding{UID: 1000, LogindSessionID: "3", Generation: 1}, "desk-ice", "7")
+	sent := make(chan sentICE, 1)
+	h := &Heartbeat{
+		sessionBroker:    newTestBrokerWithSessions(t, session),
+		isHeadless:       true,
+		desktopMgr:       desktop.NewSessionManager(),
+		desktopICESender: recordingICESender(sent),
+	}
+	h.rememberDesktopOwner("desk-ice", session.SessionID)
+
+	payload, _ := json.Marshal(ipc.DesktopLocalICECandidate{
+		SessionID:       "desk-ice",
+		StartGeneration: "999",
+		Seq:             1,
+		Candidate:       &ipc.ICECandidate{Candidate: "candidate:9 1 udp 16777215 198.51.100.7 3478 typ relay"},
+	})
+	h.handleUserHelperMessage(session, &ipc.Envelope{ID: "ice-1", Type: ipc.TypeDesktopLocalICECandidate, Payload: payload})
+
+	select {
+	case got := <-sent:
+		if got.generation != "7" {
+			t.Fatalf("forwarded generation %q, want root's recorded 7", got.generation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("candidate never reached the control plane")
+	}
+}
+
+// The owner table alone is not enough for a Linux desktop helper: the session
+// must be one root started on this connection.
+func TestLinuxDesktopICE_UnrecordedSessionDropped(t *testing.T) {
+	session, _ := newLeaseBridgeHelper(t, "helper-linux-ice-2")
+	session.MarkLinuxDesktopForTest(sessionbroker.LinuxDesktopBinding{UID: 1000, LogindSessionID: "3", Generation: 1}, "desk-other", "7")
+	sent := make(chan sentICE, 1)
+	h := &Heartbeat{
+		sessionBroker:    newTestBrokerWithSessions(t, session),
+		isHeadless:       true,
+		desktopMgr:       desktop.NewSessionManager(),
+		desktopICESender: recordingICESender(sent),
+	}
+	h.rememberDesktopOwner("desk-ice", session.SessionID)
+
+	payload, _ := json.Marshal(ipc.DesktopLocalICECandidate{
+		SessionID:       "desk-ice",
+		StartGeneration: "999",
+		Candidate:       &ipc.ICECandidate{Candidate: "candidate:9 1 udp 16777215 198.51.100.7 3478 typ relay"},
+	})
+	h.handleUserHelperMessage(session, &ipc.Envelope{ID: "ice-1", Type: ipc.TypeDesktopLocalICECandidate, Payload: payload})
+
+	select {
+	case got := <-sent:
+		t.Fatalf("candidate for an unrecorded session was forwarded: %#v", got)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

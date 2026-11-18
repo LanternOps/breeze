@@ -38,7 +38,7 @@ function retestResultFixture() {
     organizationDisplayName: 'Contoso',
     manifestVersion: 2,
     verifiedAt: '2026-07-14T16:00:00.000Z',
-    grantReconciliation: 'complete' as const,
+    grantReconciliation: 'complete' as const, grantReconciliationMode: 'exact' as const,
     observedGrants: [],
     missingGrants: [],
     unexpectedGrants: [],

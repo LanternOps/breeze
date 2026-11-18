@@ -619,7 +619,24 @@ type Heartbeat struct {
 	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu sync.RWMutex
 	sessionBroker *sessionbroker.Broker
-	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// linuxDesktopHelpers runs the Linux per-session desktop helpers
+	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
+	// in Start, read by Stop.
+	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
+	// linuxHosted maps a desktop session id to its live mark on the Linux
+	// desktop helper of a logind session (#12117 W3), released exactly once
+	// when its owner is forgotten. linuxHostedMu also orders that release
+	// with the owner's removal (forgetDesktopOwner).
+	linuxHostedMu  sync.Mutex
+	linuxHosted    map[string]linuxHostedMark
+	linuxHostedSeq uint64
+	// Test seams for Linux desktop routing; production leaves them nil.
+	linuxDesktopHelperOverride linuxDesktopHelperController
+	linuxActiveSeatSession     func(context.Context) (*sessionbroker.DetectedSession, error)
+	// desktopDirectStart replaces h.desktopMgr.StartSession on the direct
+	// in-root start path; tests only.
+	desktopDirectStart func(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy) (string, error)
+	promptHost         *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
@@ -1536,6 +1553,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		// Before Listen: a Linux desktop helper keeps a CanCapture claim only
+		// with desktop_wayland_helper on and the Wayland backend in this build
+		// (#12117); always false until that backend ships.
+		h.sessionBroker.SetLinuxWaylandCaptureAuthorized(
+			linuxWaylandCaptureAuthorizer(runtime.GOOS, cfg, desktop.WaylandBackendCompiled))
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
 		h.startPromptHost(config.GetDataDir())
@@ -2458,6 +2480,8 @@ func (h *Heartbeat) Start() {
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
 		h.startSessionBannerSweep()
+		// Linux + desktop_wayland_helper only; a no-op otherwise.
+		h.startLinuxDesktopHelperManager()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())
@@ -2790,6 +2814,14 @@ func (h *Heartbeat) Stop() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
+
+		// Linux desktop helpers (#12117) are stopped first and synchronously
+		// (bounded to 5 s): every unit is collected and every hosted desktop
+		// session reported ended while the broker and the API link are still
+		// up, and nothing is respawned while the broker closes.
+		if m := h.linuxDesktopHelpers.Load(); m != nil {
+			m.Shutdown()
+		}
 
 		if h.stopBrokerAcceptingAndWait != nil {
 			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {

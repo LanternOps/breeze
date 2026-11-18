@@ -106,11 +106,16 @@ describe('inline settings reference round-trip', () => {
   // day (featureConfigResolver.maintenanceOccurrenceStart) and the reboot
   // sweep only reaches online devices (maintenanceRebootWorker), so the
   // reference must say both.
-  it('maintenance: the reference names the fixed weekly/monthly day, rebootIfPending, and the online requirement', () => {
+  // #9574: the day is now configurable; the reference documents both fields,
+  // their defaults (the old fixed days) and the short-month rule.
+  it('maintenance: the reference documents the day fields, rebootIfPending, and the online requirement', () => {
     const reference = POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.maintenance;
-    expect(reference).toMatch(/weekly[^.]*Sunday/);
-    expect(reference).toMatch(/monthly[^.]*1st/);
-    expect(reference).toMatch(/no day-of-week or day-of-month field/);
+    expect(reference).toMatch(/dayOfWeek\?: "sun"\|"mon"\|"tue"\|"wed"\|"thu"\|"fri"\|"sat"/);
+    expect(reference).toMatch(/dayOfMonth\?: 1-31/);
+    expect(reference).toMatch(/weekly[^.]*default Sunday/);
+    expect(reference).toMatch(/monthly[^.]*default the 1st/);
+    expect(reference).toMatch(/last day of (a )?shorter month/);
+    expect(reference).not.toMatch(/no day-of-week or day-of-month field/);
     expect(reference).toMatch(/\brebootIfPending\b/);
     expect(reference).toMatch(/online/);
     expect(reference).toMatch(/"" or null = 00:00/);

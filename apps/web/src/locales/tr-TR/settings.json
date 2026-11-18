@@ -525,7 +525,8 @@
         "unverified": "Doğrulanmadı",
         "failed": "Doğrulama başarısız",
         "failedWithSummary": "Doğrulama başarısız: {{summary}}",
-        "stale": "Yeniden doğrulayın: uç nokta değişti"
+        "stale": "Yeniden doğrulayın: uç nokta değişti",
+        "invalid": "Doğrulama kaydı okunamıyor: yeniden doğrulayın"
       },
       "setPriceToEnable": "Etkinleştirmek için bir fiyat belirleyin",
       "manual": {

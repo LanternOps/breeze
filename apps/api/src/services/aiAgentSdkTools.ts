@@ -2601,6 +2601,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         query: z.string().min(1).max(500),
         section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+        limit: z.number().int().min(1).max(5).optional().describe('Max pages (default 5, max 5)'),
       },
       makeHandler('search_documentation')
     ),
@@ -3434,6 +3435,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        ...pageZodShape(20, 100),
       },
       makeHandler('get_vulnerability_report')
     ),
@@ -5599,6 +5601,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
         orgId: uuid,
         category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
         includeSuperseded: z.boolean().optional(),
+        includeDetails: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('list_org_documents')
     ),
@@ -5703,7 +5707,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'list_deliverable_templates',
       registryDescription('list_deliverable_templates'),
-      { orgId: uuid.optional() },
+      { orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) },
       makeHandler('list_deliverable_templates')
     ),
 

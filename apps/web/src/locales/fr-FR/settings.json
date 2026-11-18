@@ -525,7 +525,8 @@
         "unverified": "Non vérifié",
         "failed": "Échec de la vérification",
         "failedWithSummary": "Échec de la vérification : {{summary}}",
-        "stale": "À revérifier : point de terminaison modifié"
+        "stale": "À revérifier : point de terminaison modifié",
+        "invalid": "Enregistrement de vérification illisible : revérifier"
       },
       "setPriceToEnable": "Définissez un prix pour activer",
       "manual": {

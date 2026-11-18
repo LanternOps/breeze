@@ -200,7 +200,7 @@ export async function upsertEnvOffering(input: {
       .where(and(eq(partnerAiModels.id, existing.id), eq(partnerAiModels.partnerId, input.partnerId)));
   }
   const fingerprint = endpointFingerprint({ kind: 'openai_compatible', baseUrl: input.baseUrl, providerConfig: null });
-  const verified = verifiedGatewayCapabilities(existing.capabilities, fingerprint).state === 'verified';
+  const verified = verifiedGatewayCapabilities(existing.capabilities, fingerprint, { offeringId: existing.id }).state === 'verified';
   return { id: existing.id, created: false, repriced, verified };
 }
 

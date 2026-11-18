@@ -226,8 +226,8 @@ describe('GET /policies/compliance/device/:deviceId (#1876)', () => {
     const body = JSON.parse(text) as { data: Array<{ details: { ruleResults: Array<{ data: Record<string, unknown> }> } }> };
     const [registryResult, configResult] = body.data[0]!.details.ruleResults;
     expect(registryResult!.data).toEqual({ expectedValue: '1' });
-    // config_check details are left as they were.
-    expect(configResult!.data).toEqual({ expectedValue: 'no', actualValue: 'yes' });
+    // #12130: config_check follows the same model.
+    expect(configResult!.data).toEqual({ expectedValue: 'no' });
   });
 
   it('returns 200 with no site restriction (unrestricted org/partner caller)', async () => {

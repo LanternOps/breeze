@@ -65,6 +65,52 @@ describe('ComplianceStatusTab', () => {
     expect(screen.getAllByTestId('compliance-status-row')).toHaveLength(2);
   });
 
+  // Strix (PR #12184): a rule set left uncollected by the per-org probe cap is
+  // stored as `pending`, and must not read as "not evaluated yet".
+  it('shows "Not collected (probe limit)" instead of Pending for a probe-cap rule set', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: [
+          {
+            id: 'c1',
+            configItemName: 'Firewall on',
+            deviceId: 'dev-1',
+            status: 'pending',
+            details: {
+              ruleResults: [
+                { ruleType: 'registry_check', passed: null, message: 'Not assessed', data: { outcome: 'not_collected', reason: 'probe_cap' } },
+              ],
+            },
+            lastCheckedAt: '2026-06-24T10:00:00.000Z',
+            updatedAt: '2026-06-24T10:00:00.000Z',
+            deviceHostname: 'DESKTOP-1',
+          },
+          {
+            id: 'c2',
+            configItemName: 'Firewall on',
+            deviceId: 'dev-2',
+            status: 'pending',
+            details: {},
+            lastCheckedAt: null,
+            updatedAt: '2026-06-24T10:00:00.000Z',
+            deviceHostname: 'DESKTOP-2',
+          },
+        ],
+        overall: { total: 2, compliant: 0, nonCompliant: 0, unknown: 2 },
+        pagination: { page: 1, limit: 50, total: 2 },
+      })
+    );
+
+    render(<ComplianceStatusTab policyId="pol-1" />);
+
+    await screen.findByText('DESKTOP-1');
+    const rows = screen.getAllByTestId('compliance-status-row');
+    expect(rows[0]).toHaveTextContent('Not collected (probe limit)');
+    expect(rows[0]).not.toHaveTextContent('Pending');
+    expect(rows[1]).toHaveTextContent('Pending');
+    expect(screen.getAllByTestId('compliance-status-probe-limit')).toHaveLength(1);
+  });
+
   it('warns that the summary is page-scoped when results exceed the page', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({

@@ -159,7 +159,8 @@
       "missing": "Permissões ausentes",
       "unexpectedAlert": "Permissões inesperadas detectadas",
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
-      "grantsVerifiedAt": "Permissões verificadas"
+      "grantsVerifiedAt": "Permissões verificadas",
+      "graphTokenOnly": "Permissões do Graph verificadas. As permissões em outros recursos da Microsoft não foram verificadas; conceda Application.Read.All para uma verificação completa."
     },
     "actions": {
       "connect": "Conectar",

@@ -515,13 +515,19 @@ func consentCaptureTarget(goos, target string, helper *sessionbroker.Session) st
 // sameConsentPrincipal reports whether the capture helper serves the desktop
 // the consenting helper's user answered on. On Windows the capture helper runs
 // as SYSTEM inside the user's session, so the WTS session is the binding; on
-// macOS the capture helper runs as the user. Linux has no capture helper.
+// macOS the capture helper runs as the user. On Linux the capture helper is
+// the user's own desktop helper, admitted with a spawn ticket for one logind
+// session (#12117): the consenting user must be that helper's uid, and a
+// capture that is not such a helper never matches.
 func sameConsentPrincipal(goos string, consent, capture *sessionbroker.Session) bool {
 	switch goos {
 	case "windows":
 		return consent.WinSessionID != "" && consent.WinSessionID == capture.WinSessionID
 	case "darwin":
 		return consent.IdentityKey != "" && consent.IdentityKey == capture.IdentityKey
+	case "linux":
+		return capture.LinuxDesktop != nil && consent.UID != 0 &&
+			consent.UID == capture.UID && capture.LinuxDesktop.UID == capture.UID
 	default:
 		return true
 	}

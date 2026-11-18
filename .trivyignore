@@ -81,3 +81,32 @@ CVE-2025-71330
 #
 # Added 2026-10-03 (Trivy DB refresh).
 CVE-2026-93687
+
+# picomatch — CVE-2026-112366 is the Trivy-DB id for GHSA-fc5q-39xc-vjpf (ReDoS
+# via single-branch repeated extglobs such as +(*a)), which the npm audit gate
+# already excepts (scripts/security/npm-audit-exceptions.json, tracking #12155,
+# raised in #12114). No fixed release: the advisory covers <= 4.0.7, 4.0.7 is
+# the latest, and the upstream fix PRs are unreleased. GitHub and VulnCheck
+# withdrew the advisory on 2026-11-18 as disputed; Trivy still reports it from
+# a DB built before the withdrawal, and NVD still lists the CVE.
+#
+# Evidence (full detail in the JSON entry's reason):
+#  - api / api-compose images: picomatch has no production path into
+#    @breeze/api (`pnpm why picomatch --prod` is empty). The api runner
+#    (apps/api/Dockerfile) now copies a prod-only install; api-compose was
+#    already `pnpm deploy --prod`. Neither image contains picomatch.
+#  - web, portal, web-compose images: astro → @astrojs/internal-helpers puts
+#    picomatch 4.0.7 in the production closure (bundled into
+#    dist/server/entry.mjs). web and portal also carry 4.0.4 in node_modules
+#    via devDependencies only; web-compose (`pnpm deploy --prod`) does not.
+#    Its only runtime caller is @astrojs/react's include/exclude filter, which is
+#    null because both options are baked as undefined. A negative runtime test
+#    on each built image (instrumented picomatch/parse counters plus a module-
+#    load hook, driven by +(*a) payloads in path, query and headers) recorded 0
+#    calls and 0 picomatch loads; the positive control (include baked as a glob)
+#    recorded 1 picomatch and 1 parse call.
+# Remove together with that exception; its `expires` date is the re-review
+# deadline for this ignore too.
+#
+# Added 2026-11-18 (Trivy Filesystem/Image Scan red on main, run 44358740909).
+CVE-2026-112366

@@ -2160,11 +2160,24 @@ func runUserHelper() {
 }
 
 func runDesktopHelper() {
+	if runtime.GOOS == "linux" {
+		runLinuxDesktopHelper() // linux_desktop_helper.go
+		return
+	}
 	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
 }
 
 func desktopHelperRole() ipc.HelperRole {
-	if runtime.GOOS == "darwin" {
+	return desktopHelperRoleFor(runtime.GOOS)
+}
+
+// desktopHelperRoleFor is the desktop helper's role on goos. On macOS and
+// Linux it runs as the logged-in user (on Linux the broker admits a user-role
+// desktop helper only with a spawn ticket, #12117); on Windows it is the
+// SYSTEM helper in the user's session.
+func desktopHelperRoleFor(goos string) ipc.HelperRole {
+	switch goos {
+	case "darwin", "linux":
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem
@@ -2193,6 +2206,14 @@ func openHelperPanicFile(path string) (*os.File, error) {
 }
 
 func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
+	runHelperProcessWith(name, role, context, binaryKind, nil)
+}
+
+// runHelperProcessWith is runHelperProcess with an optional Linux desktop
+// helper launch environment. With one, the helper dials the socket the agent
+// named, authenticates once with the spawn ticket, and exits when that
+// connection ends instead of reconnecting (#12117).
+func runHelperProcessWith(name string, role ipc.HelperRole, context, binaryKind string, linuxDesktop *userhelper.LinuxDesktopEnv) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
 	// helper subcommand routed through runHelperProcess — because all of
@@ -2263,6 +2284,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
 		socketPath = cfg.IPCSocketPath
+	}
+	if linuxDesktop != nil {
+		socketPath = linuxDesktop.SocketPath
 	}
 
 	// Ship helper logs to the API under the same agent identity.
@@ -2389,6 +2413,10 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// The helper is the same build as the agent: its prompt renderer
 	// version is the agent version (#10190 AuthRequest.rendererVersion).
 	userhelper.SetRendererVersion(version)
+	if linuxDesktop != nil {
+		runLinuxDesktopHelperClient(name, linuxDesktop, context, done)
+		return
+	}
 	sup := &userhelper.Supervisor{
 		Name: name,
 		Policy: userhelper.ReconnectPolicy{

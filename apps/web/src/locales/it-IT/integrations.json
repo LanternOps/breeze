@@ -159,7 +159,8 @@
       "missing": "Autorizzazioni mancanti",
       "unexpectedAlert": "Rilevate autorizzazioni inattese",
       "unknownPermission": "Autorizzazione sconosciuta (ruolo {{appRoleId}})",
-      "grantsVerifiedAt": "Autorizzazioni verificate"
+      "grantsVerifiedAt": "Autorizzazioni verificate",
+      "graphTokenOnly": "Autorizzazioni Graph verificate. Le autorizzazioni sulle altre risorse Microsoft non sono state verificate; concedi Application.Read.All per un controllo completo."
     },
     "actions": {
       "connect": "Connetti",

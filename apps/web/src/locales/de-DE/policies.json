@@ -68,7 +68,9 @@
       "check": "Überprüfen",
       "lastChecked": "Zuletzt überprüft",
       "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung.",
-      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider."
+      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider.",
+      "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
+      "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Wählen Sie eine Organisation für diese Richtlinie aus.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Am Ende benachrichtigen",
         "sendNotificationWhenWindowCloses": "Benachrichtigung senden, wenn das Fenster geschlossen wird.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Wöchentliche Fenster öffnen jeden Sonntag zur Startzeit in der ausgewählten Zeitzone.",
-        "monthlyOpensOnTheFirst": "Monatliche Fenster öffnen am 1. jedes Monats zur Startzeit in der ausgewählten Zeitzone."
+        "dayOfWeek": "Wochentag",
+        "dayOfWeekHint": "Der Tag, an dem jedes wöchentliche Fenster öffnet, in der ausgewählten Zeitzone.",
+        "dayOfMonth": "Tag des Monats",
+        "dayOfMonthHint": "Der Tag, an dem jedes monatliche Fenster öffnet, in der ausgewählten Zeitzone. Hat ein Monat diesen Tag nicht, öffnet das Fenster am letzten Tag des Monats."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent-Erfassung",

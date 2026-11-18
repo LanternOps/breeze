@@ -19,7 +19,7 @@ import (
 // allowlist is this test binary, so a connection from this process passes
 // the kernel-verified path and hash checks exactly as an installed helper
 // does.
-func startSelfHelperBroker(t *testing.T) (*Broker, string) {
+func startSelfHelperBroker(t *testing.T, configure ...func(*Broker)) (*Broker, string) {
 	t.Helper()
 	// Unix socket paths are short (104 bytes on macOS): keep the directory
 	// name short rather than using t.TempDir().
@@ -41,6 +41,11 @@ func startSelfHelperBroker(t *testing.T) (*Broker, string) {
 	b.helperPathsFn = func() []string { return []string{self} }
 	if _, err := b.RefreshAllowedHashes(); err != nil {
 		t.Fatalf("RefreshAllowedHashes: %v", err)
+	}
+	// Configuration runs before Listen, so the accept goroutines observe it
+	// without a data race.
+	for _, f := range configure {
+		f(b)
 	}
 	stop := make(chan struct{})
 	go func() { _ = b.Listen(stop) }()

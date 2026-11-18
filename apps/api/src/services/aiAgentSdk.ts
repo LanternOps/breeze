@@ -4036,6 +4036,60 @@ async function closeTopologyExecutingRow(session: ActiveSession, toolName: strin
   }
 }
 
+/**
+ * #12149: the topology early returns in createSessionPostToolUse still finish
+ * the intent this call's release CASed to `executing` (an approved inline
+ * `diagnose_connectivity`), with the same executing -> completed|failed CAS
+ * the main path uses. Left alone, the stale-execution reaper would later fail
+ * a run that succeeded as `execution_lost`, and /approvals would show it red.
+ *
+ * The result is the withheld marker, never the raw tool output (the topology
+ * paths keep that out of every ledger), plus the `{ runId, state }` that
+ * `approvedTopologyRun` validates, so the intent still names the run it
+ * started. A lost CAS means another writer terminalized it first: reported,
+ * never retried.
+ */
+async function completeTopologyReleasedIntent(
+  toolName: string,
+  releasedIntent: { intentId: string; orgId: string },
+  output: string,
+  isError: boolean,
+): Promise<void> {
+  const { intentId, orgId } = releasedIntent;
+  const run = approvedTopologyRun(toolName, output, isError);
+  const result: Record<string, unknown> = run ? { ...TOPOLOGY_WITHHELD_OUTPUT, ...run } : { ...TOPOLOGY_WITHHELD_OUTPUT };
+  const to = isError ? 'failed' : 'completed';
+  try {
+    const won = await transitionIntentAndPublish(
+      intentId,
+      to,
+      {
+        executedAt: new Date(),
+        // Classified from the parsed output (as the main path does); only the
+        // stable code is stored, never the output itself.
+        ...(isError
+          ? {
+              errorCode: isCallerRefusalResult(safeParseJson(output))
+                ? CALLER_VERIFICATION_REQUIRED_CODE
+                : INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE,
+              result,
+            }
+          : { result }),
+      },
+      orgId,
+      isError ? 'intent_failed' : 'intent_completed',
+    );
+    if (!won) {
+      reportLostTerminalCas({ intentId, orgId, toolName, intendedStatus: to, casLabel: 'ai_sdk_topology_inline_completion', executed: true });
+    }
+  } catch (err) {
+    // As on the main path: the CAS shares a transaction with its outbox
+    // insert, so a failure leaves the intent `executing` — report, don't just log.
+    console.error(`[AI-SDK] Failed to CAS topology action intent to ${to} for ${toolName}:`, intentId, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
 async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined, refusalLedgered: boolean, executingRow: { executionId: string } | undefined): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
   // No tool row is written here, but the call must stop being pending or the
@@ -4093,10 +4147,17 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // #12131: and its `executing` row closes now, output withheld, rather
       // than waiting for the stale-execution reaper.
       if (executingRow) await closeTopologyExecutingRow(session, toolName, executingRow.executionId, isError, durationMs);
+      // #12149: and so does the intent its release left `executing`.
+      if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
       return;
     }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
+      try {
+        await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
+      } finally {
+        // The tool ran: its intent terminalizes even if the bookkeeping above threw.
+        if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
+      }
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup

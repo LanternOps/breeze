@@ -101,6 +101,57 @@ describe('retestOperation', () => {
     });
   });
 
+  it('reports exact mode for an inventory observation', async () => {
+    const d = deps();
+    d.graphClient.probeTenant = vi.fn().mockResolvedValue({
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      observedGrants: [...getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!],
+    });
+    const result = await retestOperation({ correlationId: '11111111-1111-4111-8111-111111111111', tenantId: TENANT }, d);
+    expect(result).toMatchObject({ success: true, grantReconciliation: 'complete', grantReconciliationMode: 'exact' });
+  });
+
+  // #12085: inventory denied → the Graph token roles claim decides, and the
+  // result says only Graph was checked.
+  it('returns a schema-valid graph_token_only result from the token fallback, without the unavailable log', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const required = getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!;
+    const d = deps();
+    d.graphClient.probeTenant = vi.fn().mockResolvedValue({
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      observedGrants: null,
+      graphTokenRoles: [...required.map((grant) => grant.value), 'Directory.ReadWrite.All'],
+    });
+    try {
+      const result = await retestOperation({ correlationId: '11111111-1111-4111-8111-111111111111', tenantId: TENANT }, d);
+      expect(result).toMatchObject({
+        success: true,
+        grantReconciliation: 'complete',
+        grantReconciliationMode: 'graph_token_only',
+        missingGrants: [],
+        unexpectedGrants: [{
+          resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+          appRoleId: null,
+          value: 'Directory.ReadWrite.All',
+        }],
+      });
+      expect(result).not.toHaveProperty('graphTokenRoles');
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(
+        '[m365-graph-actions-executor] grant reconciliation used the Graph token roles claim',
+        { operation: 'retest', correlationId: '11111111-1111-4111-8111-111111111111' },
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
   it('preserves verified tenant proof when grant reconciliation is unavailable', async () => {
     const result = await retestOperation({
       correlationId: '11111111-1111-4111-8111-111111111111',

@@ -732,7 +732,7 @@ func (s *Session) switchMonitor(index int) {
 	cfg := s.captureConfig
 	s.mu.RUnlock()
 	cfg.DisplayIndex = index
-	newCap, capErr := openSessionCapturer(cfg)
+	newCap, capErr := s.openMonitorCapturer(cfg)
 	if capErr != nil {
 		slog.Warn("Failed to create capturer for monitor", "display", index, "error", capErr.Error())
 		// The epochs moved above. Tell the viewer it is still on its old
@@ -755,7 +755,7 @@ func (s *Session) switchMonitor(index int) {
 	s.captureConfig = cfg
 	s.mu.Unlock()
 	s.capturerSwapped.Store(true)
-	applyDisplayOffset(s.inputHandler, index, &s.cursorOffsetX, &s.cursorOffsetY)
+	s.applyInputOffset(newCap, index)
 	// Get bounds for viewer notification — encoder dimensions are updated
 	// by the capture loop when it detects capturerSwapped, avoiding a race
 	// with the encoding goroutine.

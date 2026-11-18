@@ -531,6 +531,8 @@ describe('partner desired-configuration material watermarks', () => {
     });
     expect(settings.maintenance).toEqual({
       recurrence: 'weekly', durationHours: 2, timezone: 'UTC', windowStart: null,
+      // #9574: column defaults = the pre-#9574 fixed days.
+      dayOfWeek: 'sun', dayOfMonth: 1,
       suppressAlerts: true, suppressPatching: false, suppressAutomations: false,
       suppressScripts: false, rebootIfPending: false, notifyBeforeMinutes: 15,
       notifyOnStart: true, notifyOnEnd: true,

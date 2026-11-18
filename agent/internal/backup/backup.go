@@ -1045,6 +1045,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		for i := range reparseSkipped.sample {
 			reparseSkipped.sample[i].path = livePathForVSS(reparseSkipped.sample[i].path, vssSession.ShadowPaths)
 		}
+		for i := range reparseSkipped.notLocalSample {
+			reparseSkipped.notLocalSample[i].path = livePathForVSS(reparseSkipped.notLocalSample[i].path, vssSession.ShadowPaths)
+		}
 		// Junctions captured as links (#7325) restore under the live path
 		// they mirror, exactly like files (originalPathsForVSS below).
 		for i := range reparseSkipped.junctions {
@@ -1930,10 +1933,17 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 // collectBackupFilesWithSkips is collectBackupFilesFromPaths plus a record of
 // every reparse point the walk skipped (#7051): junctions, volume mount points
 // and other reparse points Go reports as os.ModeIrregular. Those are neither
-// traversed nor captured, but no longer silently. The returned *reparseSkips
-// is never nil.
+// traversed nor captured, but no longer silently. WOF-compressed and local
+// cloud files are the exception: they are data files and are captured, and
+// unhydrated cloud placeholders are skipped without being read (#7326,
+// placeholder.go). The returned *reparseSkips is never nil.
 func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths []string, excl *excludeMatcher, journalDirs []string) ([]backupFile, *reparseSkips, error) {
 	skips := newReparseSkips()
+	// Placeholders must look like placeholders to this walk, or an
+	// unhydrated OneDrive file reads as a plain file and the upload
+	// downloads it (#7326). Scoped to this goroutine's locked OS thread.
+	releasePlaceholders := exposePlaceholdersForWalk()
+	defer releasePlaceholders()
 	if m.config.CaptureSecurityDescriptors {
 		// Scoped to this walk: SeBackupPrivilege/SeSecurityPrivilege are
 		// disabled again on return, never left enabled process-wide.
@@ -1961,8 +1971,19 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 
 		rootLabel := fmt.Sprintf("path_%d", idx)
 		if !info.IsDir() {
-			if !info.Mode().IsRegular() {
+			// Same placeholder policy as the walk below (#7326).
+			if sp, skip := notStoredLocally(cleanRoot, info); skip {
+				skips.addNotLocal(sp)
 				continue
+			}
+			if !info.Mode().IsRegular() {
+				sp, ok := skippedReparsePointFor(cleanRoot, info)
+				if !ok || !captureAsDataFile(&sp) {
+					if ok {
+						skips.add(sp)
+					}
+					continue
+				}
 			}
 			relPath := filepath.Base(cleanRoot)
 			if excl.matches(relPath) || isWithinAnyDir(cleanRoot, journalDirs) {
@@ -2073,6 +2094,15 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 					dirs = append(dirs, walkedDir{path: path, rel: slashRel, forced: true})
 					return fs.SkipDir
 				}
+				// A directory with no local representation (RECALL_ON_OPEN,
+				// #7326) is not descended: enumerating it would fetch it,
+				// and nothing under it is on this machine.
+				if dinfo, infoErr := entry.Info(); infoErr == nil {
+					if sp, skip := notStoredLocally(path, dinfo); skip {
+						skips.addNotLocal(sp)
+						return fs.SkipDir
+					}
+				}
 				dirs = append(dirs, walkedDir{path: path, rel: slashRel})
 				childCount[filepath.Dir(path)]++
 				return nil
@@ -2104,31 +2134,49 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 				})
 				return nil
 			}
-			if !info.Mode().IsRegular() {
-				// Neither a directory, a regular file nor a symlink: on
-				// Windows that includes junctions and volume mount points,
-				// which Go reports as ModeIrregular and WalkDir therefore
-				// never descends into. Not captured, but recorded so the
-				// run's Warning names it (#7051). Either way the entry is
-				// not in the backup, so it must not count as a child: a
-				// directory whose only child was skipped is empty and
-				// needs its own entry to be recreated on restore.
-				//
-				// A junction with a drive-path target is captured as a
-				// link instead (#7325, junction.go). It still does not
-				// count as a child: junctions sit in their own manifest
-				// array that older readers ignore, so its parent keeps
-				// the KindDir entry it had before and an older restore
-				// recreates exactly what it did before.
+			// A file whose data is not on this machine (an unhydrated cloud
+			// placeholder, #7326) is skipped and reported before anything
+			// opens it: reading it would download it. Like a skipped
+			// reparse point it does not count as its parent's child.
+			if sp, skip := notStoredLocally(path, info); skip {
 				childCount[filepath.Dir(path)]--
-				if sp, ok := skippedReparsePointFor(path, info); ok {
-					if j, captured := capturedJunction(&sp, info); captured {
-						skips.junctions = append(skips.junctions, j)
-					} else {
-						skips.add(sp)
-					}
-				}
+				skips.addNotLocal(sp)
 				return nil
+			}
+			if !info.Mode().IsRegular() {
+				// A WOF-compressed file, or a cloud file whose data is
+				// local, is a data file Go reports as ModeIrregular (#7326).
+				// Once it opens through its filter it is read like any other
+				// file, so it leaves this block and is captured below as a
+				// regular file.
+				sp, classified := skippedReparsePointFor(path, info)
+				if !classified || !captureAsDataFile(&sp) {
+					// Neither a directory, a regular file nor a symlink: on
+					// Windows that includes junctions and volume mount
+					// points, which Go reports as ModeIrregular and WalkDir
+					// therefore never descends into. Not captured, but
+					// recorded so the run's Warning names it (#7051). Either
+					// way the entry is not in the backup, so it must not
+					// count as a child: a directory whose only child was
+					// skipped is empty and needs its own entry to be
+					// recreated on restore.
+					//
+					// A junction with a drive-path target is captured as a
+					// link instead (#7325, junction.go). It still does not
+					// count as a child: junctions sit in their own manifest
+					// array that older readers ignore, so its parent keeps
+					// the KindDir entry it had before and an older restore
+					// recreates exactly what it did before.
+					childCount[filepath.Dir(path)]--
+					if classified {
+						if j, captured := capturedJunction(&sp, info); captured {
+							skips.junctions = append(skips.junctions, j)
+						} else {
+							skips.add(sp)
+						}
+					}
+					return nil
+				}
 			}
 			seen[snapshotPath] = struct{}{}
 			files = append(files, backupFile{

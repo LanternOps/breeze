@@ -400,6 +400,14 @@ describe('measured impact — exposure-time cohort formation', () => {
 
     const plan = await withDbAccessContext(dbContextFor(t), async () => {
       await db.execute(sql`SET LOCAL enable_seqscan = off`);
+      // The alerts table is empty here, so the planner's choice comes from
+      // whatever pg_statistic an earlier autovacuum ANALYZE left behind (TRUNCATE
+      // does not clear it). Stats describing a few small orgs make a merge join on
+      // alerts.id cheapest, fed in id order by a full scan of alerts_id_org_uq.
+      // That says nothing about whether the cohort predicate can use the cohort
+      // index, and it flipped this assertion red in CI. Without merge joins no
+      // join wants alerts in id order, so the scan is costed on its own predicate.
+      await db.execute(sql`SET LOCAL enable_mergejoin = off`);
       const rows = (await db.execute(
         sql`EXPLAIN ${alertCohortQuery([t.orgId], FROM, THROUGH, auth.orgCondition(alerts.orgId))}`,
       )) as unknown as Record<string, unknown>[];

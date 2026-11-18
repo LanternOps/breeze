@@ -172,6 +172,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     s1_threat_action: 3,
     // #11674: a public ticket reply's approval card names the ticket.
     manage_tickets: 2,
+    // #12149: the topology investigation's inline tier-3 diagnostic.
+    diagnose_connectivity: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
   // #11395: read by the preflight only under a constrained chat tool profile.
@@ -7233,6 +7235,126 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
     expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-1']));
     expect(JSON.stringify(ledgerUpdates)).not.toContain('RAW-OUTPUT');
     expect(ledgerIds).toEqual([execA]);
+  });
+
+  // #12149: the intent the call's release CASed to `executing` must reach its
+  // terminal status on the topology early returns too — not sit `executing`
+  // until the stale-execution reaper fails a run that succeeded as
+  // `execution_lost`. Its result never carries the raw tool output.
+  const TOPOLOGY_RUN = '90000000-0000-4000-8000-000000000001';
+  function topologySession() {
+    return makeActiveSession({
+      approvalMode: 'per_step',
+      pendingTurnToolExecutionCount: 0,
+      toolUseNames: new Map(),
+      topologyInvestigation: {
+        investigationId: 'session-1', allowedToolNames: new Set(['diagnose_connectivity']), append: vi.fn(), startBlock: vi.fn(), noteUsage: vi.fn(() => true),
+        beforeToolCall: vi.fn(async () => ({ allowed: true as const })), complete: vi.fn(), abort: vi.fn(),
+      },
+    });
+  }
+  function intentTerminalPatch(intentId: string) {
+    return mockTransitionIntent.mock.calls.find((c) => c[0] === intentId && c[1] === 'executing')?.[3] as Record<string, unknown> | undefined;
+  }
+
+  it('a sealed (timed-out) topology turn completes the call\'s released intent, raw output withheld (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    session.topologyTurnSealed = true;
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued', note: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date) });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('LATE-RAW-OUTPUT');
+  });
+
+  it('a topology investigation completes the released intent with the run id and state only (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued', siteId: 's', note: 'FOREIGN-SITE-SECRET' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date) });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('FOREIGN-SITE-SECRET');
+  });
+
+  it('a failed topology call fails its released intent with the stable error code and the withheld marker (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ error: 'RAW-ERROR-TEXT' }), true, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([{ intentId: 'intent-a', to: 'failed', result: WITHHELD }]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date), errorCode: 'tool_execution_failed' });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('RAW-ERROR-TEXT');
+  });
+
+  it('a successful topology call with a malformed result still completes its intent, marker only (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: 'not-a-uuid', state: 'queued' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([{ intentId: 'intent-a', to: 'completed', result: WITHHELD }]);
+  });
+
+  it('a topology call still finishes its intent when the investigation post hook throws (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    vi.mocked(session.eventBus.publish).mockImplementation(() => { throw new Error('bus down'); });
+    await expect(createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a')).rejects.toThrow('bus down');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+  });
+
+  it('a lost topology completion CAS is reported, not retried (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    mockWriteAuditEvent.mockClear();
+    mockTransitionIntent.mockResolvedValue(false);
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toHaveLength(1);
+    const marker = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'action_intent.executed');
+    expect(marker?.[1]).toMatchObject({
+      resourceId: 'intent-a',
+      result: 'failure',
+      details: expect.objectContaining({ errorCode: 'execution_cas_lost', intendedStatus: 'completed' }),
+    });
   });
 });
 

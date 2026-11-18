@@ -8,7 +8,6 @@ import {
   deviceCommands,
   deviceDisks,
   deviceFilesystemSnapshots,
-  automationPolicies,
   cisBaselines,
   cisBaselineResults,
   cisRemediationActions,
@@ -23,7 +22,6 @@ import {
   partners,
   deviceGroupMemberships,
   configPolicyAssignments,
-  configPolicyComplianceRules,
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
   configPolicyFeatureLinks,
@@ -93,7 +91,6 @@ import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
-import { isAllowedPolicyConfigProbe, isAllowedPolicyRegistryProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
@@ -112,9 +109,6 @@ import {
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
-  type PolicyRegistryProbeUpdate,
-  type PolicyConfigProbeUpdate,
-  type PolicyProbeConfigUpdate,
   commandResultSchema,
   securityStatusIngestSchema,
   securityCommandTypes,
@@ -373,220 +367,18 @@ export {
 // ============================================
 // Policy Probe Processing
 // ============================================
-
-/**
- * localeCompare, then code points: localeCompare can tie two distinct strings,
- * and the per-org cap keeps the head of this order, so a tie must not fall
- * back to the order the rows were read in (#11976).
- */
-function compareProbeText(left: string, right: string): number {
-  const byLocale = left.localeCompare(right);
-  if (byLocale !== 0) return byLocale;
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-export function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = compareProbeText(left.registry_path, right.registry_path);
-    if (pathCompare !== 0) return pathCompare;
-    return compareProbeText(left.value_name, right.value_name);
-  });
-}
-
-export function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = compareProbeText(left.file_path, right.file_path);
-    if (pathCompare !== 0) return pathCompare;
-    return compareProbeText(left.config_key, right.config_key);
-  });
-}
-
-export function derivePolicyStateProbesFromRules(rules: unknown): {
-  registry: PolicyRegistryProbeUpdate[];
-  config: PolicyConfigProbeUpdate[];
-} {
-  if (!Array.isArray(rules)) {
-    return { registry: [], config: [] };
-  }
-
-  const registryProbes = new Map<string, PolicyRegistryProbeUpdate>();
-  const configProbes = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const rawRule of rules) {
-    if (!isObject(rawRule)) {
-      continue;
-    }
-
-    const type = readTrimmedString(rawRule.type ?? rawRule.name)?.toLowerCase();
-    if (type === 'registry_check') {
-      const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
-      const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
-      if (!registryPath || !valueName || !isAllowedPolicyRegistryProbe(registryPath)) {
-        continue;
-      }
-
-      const dedupeKey = `${registryPath.toLowerCase()}::${valueName.toLowerCase()}`;
-      if (!registryProbes.has(dedupeKey)) {
-        registryProbes.set(dedupeKey, {
-          registry_path: registryPath,
-          value_name: valueName
-        });
-      }
-      continue;
-    }
-
-    if (type === 'config_check') {
-      const filePath = readTrimmedString(rawRule.configFilePath ?? rawRule.config_file_path);
-      const configKey = readTrimmedString(rawRule.configKey ?? rawRule.config_key);
-      if (!filePath || !configKey || !isAllowedPolicyConfigProbe(filePath, configKey)) {
-        continue;
-      }
-
-      const dedupeKey = `${filePath.toLowerCase()}::${configKey.toLowerCase()}`;
-      if (!configProbes.has(dedupeKey)) {
-        configProbes.set(dedupeKey, {
-          file_path: filePath,
-          config_key: configKey
-        });
-      }
-    }
-  }
-
-  return {
-    registry: sortPolicyRegistryProbes(Array.from(registryProbes.values())),
-    config: sortPolicyConfigProbes(Array.from(configProbes.values()))
-  };
-}
-
-export async function buildPolicyProbeConfigUpdate(
-  orgId: string | null | undefined,
-  // #8053 W1a-1: the heartbeat passes the org's partner from the hierarchy it
-  // loaded. `undefined` = read it here, as before; `null` = no partner.
-  opts?: { partnerId?: string | null },
-): Promise<PolicyProbeConfigUpdate | null> {
-  if (!orgId) {
-    return null;
-  }
-
-  // Dual-ownership (#2129): the device's probe list must also cover
-  // partner-wide compliance policies (org_id NULL) owned by this org's
-  // partner — the evaluation worker fans those out to this device, so the
-  // agent has to collect their registry/config state too.
-  const partnerId = opts?.partnerId !== undefined
-    ? opts.partnerId
-    : (await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1))[0]?.partnerId ?? null;
-
-  const ownershipCondition = partnerId
-    ? or(
-        eq(automationPolicies.orgId, orgId),
-        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, partnerId))
-      )
-    : eq(automationPolicies.orgId, orgId);
-
-  const policyRows = await db
-    .select({ rules: automationPolicies.rules })
-    .from(automationPolicies)
-    .where(
-      and(
-        ownershipCondition,
-        eq(automationPolicies.enabled, true)
-      )
-    );
-
-  // #11976: configuration-policy compliance rules are evaluated against the
-  // same collected state (evaluateDeviceComplianceFromConfigPolicy reads
-  // device_registry_state / device_config_state), so the agent has to collect
-  // their values too. Without this, a configuration-policy registry check
-  // reports "Registry value not found" for a value that exists, forever.
-  //
-  // The list is a per-org SUPERSET, like the automation-policy half above:
-  // every active policy the org can own (its own + its partner's partner-wide),
-  // with no assignment targeting. A probe on a device the rule does not target
-  // costs one read-only registry/file read; per-device targeting would break the
-  // per-org cache. The effective-links view carries links inherited from a
-  // parent policy, exactly as resolveComplianceAssignmentForDevice reads them.
-  const configPolicyOwnership = partnerId
-    ? or(
-        eq(configurationPolicies.orgId, orgId),
-        and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, partnerId))
-      )
-    : eq(configurationPolicies.orgId, orgId);
-
-  const complianceRows = await db
-    .select({ rules: configPolicyComplianceRules.rules })
-    .from(configPolicyComplianceRules)
-    .innerJoin(
-      configPolicyEffectiveFeatureLinks,
-      and(
-        eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id),
-        eq(configPolicyEffectiveFeatureLinks.featureType, 'compliance')
-      )
-    )
-    .innerJoin(
-      configurationPolicies,
-      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id)
-    )
-    .where(
-      and(
-        configPolicyOwnership,
-        eq(configurationPolicies.status, 'active')
-      )
-    );
-
-  const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
-  const configByKey = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const row of [...policyRows, ...complianceRows]) {
-    const probes = derivePolicyStateProbesFromRules(row.rules);
-    for (const probe of probes.registry) {
-      const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
-      if (!registryByKey.has(key)) {
-        registryByKey.set(key, probe);
-      }
-    }
-    for (const probe of probes.config) {
-      const key = `${probe.file_path.toLowerCase()}::${probe.config_key.toLowerCase()}`;
-      if (!configByKey.has(key)) {
-        configByKey.set(key, probe);
-      }
-    }
-  }
-
-  return {
-    policy_registry_state_probes: capPolicyStateProbes(
-      sortPolicyRegistryProbes(Array.from(registryByKey.values())), orgId, 'registry'),
-    policy_config_state_probes: capPolicyStateProbes(
-      sortPolicyConfigProbes(Array.from(configByKey.values())), orgId, 'config')
-  };
-}
-
-/**
- * #11976: the most registry probes, and separately the most config probes, the
- * heartbeat sends one org's agents. Every active policy the org can own feeds
- * the list, so it is bounded here rather than by the number of rules authored.
- */
-export const MAX_POLICY_STATE_PROBES_PER_ORG = 256;
-
-/**
- * Keeps the first MAX_POLICY_STATE_PROBES_PER_ORG probes of an already-sorted
- * list, so the kept set is the same on every beat whatever order the rows
- * were read in. Rules past the cap are not collected and evaluate as "not
- * found"; the warning names the org so the excess can be traced.
- */
-function capPolicyStateProbes<T>(sorted: T[], orgId: string, kind: 'registry' | 'config'): T[] {
-  if (sorted.length <= MAX_POLICY_STATE_PROBES_PER_ORG) return sorted;
-  console.warn('[agents/helpers] policy state probe list truncated', {
-    orgId,
-    kind,
-    total: sorted.length,
-    kept: MAX_POLICY_STATE_PROBES_PER_ORG,
-  });
-  return sorted.slice(0, MAX_POLICY_STATE_PROBES_PER_ORG);
-}
+//
+// Moved to services/policyStateProbes.ts (#12130) so compliance evaluation can
+// ask whether a rule's value is collected without importing this module.
+// Re-exported here: every existing import site (and the suites that mock
+// `./helpers`) keeps working.
+export {
+  sortPolicyRegistryProbes,
+  sortPolicyConfigProbes,
+  derivePolicyStateProbesFromRules,
+  buildPolicyProbeConfigUpdate,
+  MAX_POLICY_STATE_PROBES_PER_ORG,
+} from '../../services/policyStateProbes';
 
 // ============================================
 // Security Operations

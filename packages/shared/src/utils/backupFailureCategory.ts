@@ -70,7 +70,7 @@ const RULES: ReadonlyArray<{ category: BackupFailureCategory; pattern: RegExp }>
   {
     category: 'agent',
     pattern:
-      /\bbackup helper exited\b|\bipc recv error\b|\bipc: |\bdifferent snapshot than it was allowed\b|\bbackup component on this device\b|\breport its backup features\b|\bmalformed backup result payload\b/i,
+      /\bbackup helper exited\b|\bagent closed the backup helper session\b|\bbackup run never started\b|\bipc recv error\b|\bipc: |\bdifferent snapshot than it was allowed\b|\bbackup component on this device\b|\breport its backup features\b|\bmalformed backup result payload\b/i,
   },
   {
     category: 'configuration',
@@ -133,7 +133,15 @@ function storeRefusalCause(text: string): BackupFailureCause | null {
 const CAUSE_RULES: ReadonlyArray<{ cause: BackupFailureCause; pattern: RegExp }> = [
   { cause: 'storage_operation_failed', pattern: /\bfailed with status 5\d\d after \d+ attempts\b/i },
   { cause: 'storage_session_expired', pattern: /\brenew rejected with status 410\b|\bsession is no longer usable\b/i },
-  { cause: 'helper_stopped', pattern: /\bbackup helper exited unexpectedly\b/i },
+  // #12193: a run lost from the helper's queue before it started. Ahead of
+  // helper_stopped because its text can quote why re-sending it failed.
+  { cause: 'never_started', pattern: /\bbackup run never started\b/i },
+  // The second form (#11044) is the agent closing the helper's session itself,
+  // which the agent used to report as the first.
+  {
+    cause: 'helper_stopped',
+    pattern: /\bbackup helper exited unexpectedly\b|\bagent closed the backup helper session\b/i,
+  },
   { cause: 'run_cancelled_on_device', pattern: /^context canceled\b/i },
   { cause: 'never_started', pattern: /\bdispatch never completed\b/i },
   // "no progress reported for" is the pre-#11766 wording of the same reap.

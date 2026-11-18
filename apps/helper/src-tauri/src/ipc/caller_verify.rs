@@ -85,8 +85,8 @@ impl Request {
     fn countdown_ms(&self, now_ms: i64) -> Option<u64> {
         let mut ms = self.timeout_ms as i64;
         if let Some(d) = self.deadline_at.as_deref() {
-            let deadline = chrono::DateTime::parse_from_rfc3339(d).ok()?;
-            ms = ms.min(deadline.timestamp_millis() - now_ms + DEADLINE_SKEW_MS);
+            let deadline_ms = crate::timestamp::parse_rfc3339_millis(d)?;
+            ms = ms.min(deadline_ms - now_ms + DEADLINE_SKEW_MS);
         }
         (ms > 0).then_some(ms as u64)
     }
@@ -112,7 +112,7 @@ impl Request {
             || self
                 .deadline_at
                 .as_deref()
-                .is_some_and(|d| chrono::DateTime::parse_from_rfc3339(d).is_err())
+                .is_some_and(|d| crate::timestamp::parse_rfc3339_millis(d).is_none())
         {
             return Err("invalid caller request".into());
         }
@@ -462,7 +462,7 @@ mod tests {
     }
 
     fn iso(ms: i64) -> String {
-        chrono::DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339()
+        crate::timestamp::rfc3339_from_millis(ms)
     }
 
     fn now_ms() -> i64 {
@@ -488,10 +488,7 @@ mod tests {
         // Unparseable fails closed (validate refuses it before this anyway).
         assert_eq!(with(Some("tomorrow".into())), None);
         // Same instant in another offset.
-        let offset = chrono::DateTime::from_timestamp_millis(now + 20_000)
-            .unwrap()
-            .with_timezone(&chrono::FixedOffset::east_opt(7200).unwrap())
-            .to_rfc3339();
+        let offset = crate::timestamp::rfc3339_from_millis_at(now + 20_000, 7200);
         assert_eq!(with(Some(offset)), Some(25_000));
     }
 

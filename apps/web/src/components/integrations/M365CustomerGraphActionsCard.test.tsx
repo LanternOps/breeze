@@ -519,6 +519,65 @@ describe("M365CustomerGraphActionsCard", () => {
     expect(screen.queryByText("Verification needs attention. Retest the connection or start consent again.")).not.toBeInTheDocument();
   });
 
+  // #12085: without Application.Read.All the executor verifies only the
+  // Microsoft Graph roles in its token; the card says so plainly.
+  it("explains graph_token_only verification on an active connection", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "graph_token_only" }) })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByTestId("m365-actions-graph-token-only")).toHaveTextContent(
+      "Graph permissions verified. Permissions on other Microsoft resources were not checked; grant Application.Read.All for a full check.",
+    );
+  });
+
+  it("shows no partial-verification note in exact mode or when the API omits the mode", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "exact" }) })),
+    );
+    const { unmount } = render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-graph-token-only")).not.toBeInTheDocument();
+    unmount();
+
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-graph-token-only")).not.toBeInTheDocument();
+  });
+
+  it("fails closed on an unknown reconciliation mode", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "partial" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByRole("heading", { name: /Admin actions/ })).toBeInTheDocument();
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+  });
+
+  it("names an unresolved extra Graph role (null appRoleId) by its value in the unexpected list", async () => {
+    const extra = { resourceApplicationId: GRAPH_APP_ID, appRoleId: null, value: "Directory.ReadWrite.All" };
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({
+        connection: connection({
+          status: "degraded",
+          grantHealth: "unexpected",
+          grantReconciliationMode: "graph_token_only",
+          observedGrants: [...REQUIRED_GRANTS, extra],
+          unexpectedGrants: [extra],
+          lastErrorCode: "grant_unexpected",
+        }),
+      })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    const alert = await screen.findByRole("alert", { name: /./ });
+    expect(alert).toHaveTextContent("Directory.ReadWrite.All");
+  });
+
   it("warns and disconnects through runAction against the actions path", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchWithAuthMock

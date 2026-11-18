@@ -102,6 +102,21 @@ describe('search_documentation handler', () => {
       expect(titleCount).toBeGreaterThan(0);
     });
 
+    // #6734: the page cap is a declared `limit`, not a hidden constant.
+    it('declares limit with the "(default N, max M)" text and honours a smaller one', async () => {
+      const props = (toolMap.get('search_documentation')!.definition.input_schema as { properties: Record<string, { description: string }> }).properties;
+      expect(props.limit!.description).toBe('Max pages (default 5, max 5)');
+      const titles = (r: string) => (r.match(/^Title:/gm) || []).length;
+      expect(titles(await handler({ query: 'security' }, mockAuth))).toBe(5);
+      expect(titles(await handler({ query: 'security', limit: 2 }, mockAuth))).toBe(2);
+      expect(titles(await handler({ query: 'security', limit: 1 }, mockAuth))).toBe(1);
+      expect(titles(await handler({ query: 'security', limit: 3.9 }, mockAuth))).toBe(3);
+      // The registry handler clamps out-of-range values to [1, 5] (the Zod
+      // surfaces reject them before the handler runs).
+      expect(titles(await handler({ query: 'security', limit: 50 }, mockAuth))).toBe(5);
+      expect(titles(await handler({ query: 'security', limit: 0 }, mockAuth))).toBe(5);
+    });
+
     it('results are sorted by score descending, then alphabetically by title', async () => {
       // Use a term that hits several entries so sort order matters
       const result = await handler({ query: 'deploy production' }, mockAuth);
@@ -281,7 +296,8 @@ describe('search_documentation against the shipped index (#10398)', () => {
 
   it('answers how weekly maintenance windows pick their day', async () => {
     const out = await handler({ query: 'weekly maintenance window day' }, mockAuth);
-    expect(out).toContain('most recent Sunday');
+    // #9574: the day is configurable; the shipped docs name the field and its default.
+    expect(out).toContain('configured day of the week (`dayOfWeek`, default Sunday)');
   });
 
   it('answers why a pending reboot is not happening in the window', async () => {

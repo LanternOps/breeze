@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/shm"
@@ -30,6 +31,12 @@ type Conn struct {
 	shmID  int
 	shmBuf []byte
 	shmSeg shm.Seg
+	// wantShm is set by Open: a resize re-provisions the SHM segment only for
+	// a capture connection, never for an OpenBare one.
+	wantShm bool
+
+	// geometry paces the capture path's root-size re-reads (#11754).
+	geometry rootGeometryPoll
 
 	// ownerUID is the uid of the session/X-server owner (from DisplayTarget).
 	// The agent runs as root but the X server on xrdp/GDM runs as this
@@ -87,6 +94,7 @@ func Open(target DisplayTarget) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.wantShm = true
 	c.initShm()
 	return c, nil
 }
@@ -175,9 +183,59 @@ func (c *Conn) Root() xproto.Window { return c.root }
 
 // CaptureBGRX grabs a full-screen frame. With SHM the pixels land in the shared
 // segment (returned slice is owned by the Conn); the fallback allocates.
+//
+// It follows root-window resizes (#11754): the root size is re-read at most
+// once per rootGeometryCheckEvery, and at once after a failed grab, which is
+// how a shrink shows up (GetImage at the old, larger size fails). The returned
+// w x h is the size actually grabbed; the session resizes its encoder from it.
 func (c *Conn) CaptureBGRX() ([]byte, int, int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.refreshRootGeometryLocked(time.Now(), false)
+	pix, w, h, err := c.captureLocked()
+	if err != nil && c.refreshRootGeometryLocked(time.Now(), true) {
+		return c.captureLocked()
+	}
+	return pix, w, h, err
+}
+
+// refreshRootGeometryLocked re-reads the root window size when due and, if it
+// changed, adopts it and re-provisions the SHM segment for the new frame size
+// (the old one is too small for a larger root). It reports whether the size
+// changed. A failed GetGeometry keeps the current size. Caller holds c.mu.
+func (c *Conn) refreshRootGeometryLocked(now time.Time, force bool) bool {
+	if c.x == nil || !c.geometry.due(now, force) {
+		return false
+	}
+	geo, err := xproto.GetGeometry(c.x, xproto.Drawable(c.root)).Reply()
+	if err != nil {
+		return false
+	}
+	w, h := int(geo.Width), int(geo.Height)
+	if !rootSizeChanged(c.width, c.height, w, h) {
+		return false
+	}
+	c.releaseShmLocked()
+	c.width, c.height = w, h
+	if c.wantShm {
+		c.initShm()
+	}
+	return true
+}
+
+// releaseShmLocked detaches the SHM segment, if any. Caller holds c.mu.
+func (c *Conn) releaseShmLocked() {
+	if !c.useShm {
+		return
+	}
+	_ = shm.Detach(c.x, c.shmSeg)
+	_ = unix.SysvShmDetach(c.shmBuf)
+	c.useShm = false
+	c.shmBuf = nil
+}
+
+// captureLocked grabs the root at the current size. Caller holds c.mu.
+func (c *Conn) captureLocked() ([]byte, int, int, error) {
 	w, h := c.width, c.height
 	if c.useShm {
 		_, err := shm.GetImage(c.x, xproto.Drawable(c.root), 0, 0, uint16(w), uint16(h),
@@ -211,12 +269,8 @@ func (c *Conn) CaptureRegionBGRX(x, y, w, h int) ([]byte, error) {
 func (c *Conn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.useShm {
-		_ = shm.Detach(c.x, c.shmSeg)
-		_ = unix.SysvShmDetach(c.shmBuf)
-		c.useShm = false
-	}
 	if c.x != nil {
+		c.releaseShmLocked()
 		c.x.Close()
 		c.x = nil
 	}
