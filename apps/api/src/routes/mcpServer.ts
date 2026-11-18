@@ -2537,9 +2537,14 @@ async function handleToolsCall(
       // is confined to the API key's OWN site restriction — exactly one site —
       // and refused for an org-wide or multi-site key. Name-gated so every
       // other tool keeps the three-argument call.
+      // #12140: a device note runs here at Tier 2 with no approval card, so it
+      // takes the unattended-note bounds (deviceNoteBounds.ts). Name-gated the
+      // same way.
       const result = rewritePartnerWideRefusalForMcp(isTopologyAiToolName(toolName)
         ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
-        : await executeTool(toolName, toolInput, toolAuth), auth);
+        : toolName === 'set_device_context'
+          ? await executeTool(toolName, toolInput, toolAuth, { context: { unattendedNoteWrite: true } })
+          : await executeTool(toolName, toolInput, toolAuth), auth);
       const safeResult = compactToolResultForChat(toolName, result);
 
       // #6408: a pure returned `{error}` is a tool-execution error, not a

@@ -5,11 +5,17 @@
  * Enforces org-scoped data isolation.
  */
 
-import { db } from '../db';
+import { db, hasDbAccessContext } from '../db';
 import { brainDeviceContext, devices } from '../db/schema';
-import { eq, and, or, gt, isNull, desc, type SQL } from 'drizzle-orm';
+import { eq, and, or, gt, isNull, desc, count, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { deviceIdSiteDenied } from './aiToolsSiteScope';
+import {
+  UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE,
+  UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE,
+  UNATTENDED_NOTE_MAX_EXPIRY_DAYS,
+  UNATTENDED_NOTE_UNAVAILABLE_MESSAGE,
+} from './deviceNoteBounds';
 
 export type ContextType = 'issue' | 'quirk' | 'followup' | 'preference';
 
@@ -78,7 +84,8 @@ export async function createDeviceContext(
   summary: string,
   details: Record<string, unknown> | null,
   auth: AuthContext,
-  expiresAt?: Date
+  expiresAt?: Date,
+  opts?: { unattended?: boolean }
 ): Promise<ContextEntry | { error: string }> {
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
@@ -86,6 +93,29 @@ export async function createDeviceContext(
 
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
+
+  if (opts?.unattended) {
+    // A note no person approved (#12140, deviceNoteBounds.ts). Count the
+    // device's active notes under a per-device lock held until this
+    // transaction commits, so the next writer for the device waits and then
+    // sees this row; parallel calls cannot all pass a count taken before any
+    // of them wrote. The lock needs the transaction a DB context opens. The
+    // two refusals before it are wiring faults (the handler set the expiry,
+    // and the tool dispatch always holds a context), so they are logged.
+    if (!hasDbAccessContext()) {
+      console.error('[brainDeviceContext] unattended note reached the service outside a DB context; not written');
+      return { error: UNATTENDED_NOTE_UNAVAILABLE_MESSAGE };
+    }
+    if (!expiresAt || expiresAt.getTime() > Date.now() + UNATTENDED_NOTE_MAX_EXPIRY_DAYS * 86_400_000 + 60_000) {
+      console.error('[brainDeviceContext] unattended note reached the service with no expiry or one past the cap; not written');
+      return { error: UNATTENDED_NOTE_UNAVAILABLE_MESSAGE };
+    }
+    // Same key as any other bounded note path, so they serialise together.
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${deviceId}`}, 0))`);
+    const active = await countActiveDeviceNotes(device.orgId, deviceId);
+    // A count that is not a number fails closed (NaN < n is false).
+    if (!(active < UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE)) return { error: UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE };
+  }
 
   const [entry] = await db
     .insert(brainDeviceContext)
@@ -135,4 +165,21 @@ export async function resolveDeviceContext(
     .returning({ id: brainDeviceContext.id });
 
   return { updated: result.length > 0 };
+}
+
+/**
+ * A device's active (unresolved, unexpired) notes, under the ambient context
+ * (the caller's RLS). Used by the unattended-note bound in createDeviceContext.
+ */
+async function countActiveDeviceNotes(orgId: string, deviceId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(brainDeviceContext)
+    .where(and(
+      eq(brainDeviceContext.orgId, orgId),
+      eq(brainDeviceContext.deviceId, deviceId),
+      isNull(brainDeviceContext.resolvedAt),
+      or(isNull(brainDeviceContext.expiresAt), gt(brainDeviceContext.expiresAt, new Date()))!,
+    ));
+  return Number(row?.n ?? Number.NaN);
 }

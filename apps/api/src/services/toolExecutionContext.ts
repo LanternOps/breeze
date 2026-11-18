@@ -292,6 +292,13 @@ export type ToolExecutionContext = {
    * (`flow_tool_changed`).
    */
   runFlowGate?: { flowId: string; publicationSeq: number };
+  /**
+   * #12140: set ONLY by the MCP server's tool dispatch (routes/mcpServer.ts)
+   * for `set_device_context`, which runs there at Tier 2 with no approval
+   * card. The handler then applies the unattended-note bounds of
+   * deviceNoteBounds.ts. Never set from tool input.
+   */
+  unattendedNoteWrite?: true;
 };
 
 /** See `ToolExecutionContext.flowToolGate`. */
