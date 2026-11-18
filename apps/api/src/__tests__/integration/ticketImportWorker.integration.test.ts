@@ -572,6 +572,40 @@ describe('ticket import worker (fake module, real Postgres and Redis)', () => {
     expect(JSON.stringify((await runRow(run.id)).cursor)).not.toContain('sv');
   }, CASE_TIMEOUT);
 
+  // #8313 W2: a throughput limit or a closed window inside the links phase
+  // defers or stops the run as it does for a ticket; the link stays queued and
+  // is counted once, when its item's links have all answered.
+  runDb('a rate-limited link defers the run and is written on the retry, counted once', async () => {
+    const fx = await seedImport();
+    const at = minutes(40);
+    fx.source.tickets = [
+      ...fakeTickets(['m1'], { links: [{ targetKey: 'sv', linkType: 'duplicate_of', at }, { targetKey: 'sv2', linkType: 'related', at }] }),
+      ...fakeTickets(['sv', 'sv2']),
+    ];
+    const calls: string[] = [];
+    let limited = false;
+    const linkWriter = {
+      async writeLink(_windowId: string, link: { sourceKey: string; targetKey: string }) {
+        calls.push(link.targetKey);
+        // The second link of the item hits the window's bucket once.
+        if (link.targetKey === 'sv2' && !limited) {
+          limited = true;
+          throw new MigrationWindowError('MIGRATION_WINDOW_RATE_LIMITED', 'busy', 429, { retryAfterSeconds: 1 });
+        }
+        return calls.filter((k) => k === link.targetKey).length > 1 ? { outcome: 'already' as const } : { outcome: 'written' as const };
+      },
+    };
+    const window = await openWindow(fx);
+    const run = await startImportRun(fx, 'import', window.id);
+    const steps = await drive(fx, run.id, { deps: { ...oneTicketPerSlice, sliceDeps: { ...oneTicketPerSlice.sliceDeps, linkWriter } } });
+    expect(steps.map((s) => s.outcome)).toContain('delayed');
+    expect(await runRow(run.id)).toMatchObject({ state: 'completed' });
+    // sv twice (written, then already on the retry), sv2 twice (limited, then written).
+    expect(calls).toEqual(['sv', 'sv2', 'sv', 'sv2']);
+    expect(normalizeCounters((await runRow(run.id)).counters)).toMatchObject({ linksWritten: 2, linksAsNotes: 0 });
+    expect((await ledger(fx.sourceId)).get('m1')).toMatchObject({ importedVersion: 'v1', pendingLinks: null });
+  }, CASE_TIMEOUT);
+
   runDb('merged_in_breeze and removed_in_breeze are final across passes', async () => {
     const fx = await seedImport();
     fx.source.tickets = fakeTickets(['m', 'r', 's']);

@@ -7,12 +7,38 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { isValidEmail } from '@/lib/email';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { PortalAccessRequestsList } from './portalAccess/PortalAccessRequestsList';
+import {
+  AccountDisabledBy,
+  DisabledIdentityBadge,
+  RemoveIdentityDialog,
+  RestoreIdentityDialog,
+  type IdentityTarget,
+  type RestoreChoice,
+} from './portalAccess/PortalUserIdentityControls';
+import type { PortalAccountDisabledBy, PortalUserIdentityState } from './portalAccess/types';
 
 type PortalUser = {
   id: string; email: string; name: string | null; status: string;
   effectiveStatus: 'active' | 'disabled' | 'pending_setup';
   receiveNotifications?: boolean;
   lastLoginAt: string | null; invitedAt: string | null;
+  browserAccess?: 'granted' | 'none';
+  identityProviders?: Array<'entra' | 'google'>;
+  // W8 (#11385): who disabled the account, and each sign-in method's directory state.
+  disabledBy?: PortalAccountDisabledBy | null;
+  identities?: PortalUserIdentityState[];
+};
+
+/** Providers with a usable sign-in method; a disabled one gets its own badge instead. */
+function enabledProviders(u: PortalUser): Array<'entra' | 'google'> {
+  if (!u.identities) return u.identityProviders ?? [];
+  return u.identities.filter((i) => i.disabledAt === null).map((i) => i.provider);
+}
+
+const PROVIDER_BADGE_KEYS: Record<'entra' | 'google', string> = {
+  entra: 'orgPortalUsersEditor.badges.microsoft',
+  google: 'orgPortalUsersEditor.badges.google',
 };
 
 const STATUS_BADGE_CLASS: Record<PortalUser['effectiveStatus'], string> = {
@@ -39,14 +65,22 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<PortalUser | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<IdentityTarget | null>(null);
+  const [removeIdentityTarget, setRemoveIdentityTarget] = useState<IdentityTarget | null>(null);
 
   // Client-side email-format guard for the invite form (server still validates).
   const emailValid = isValidEmail(email);
   const showEmailError = email.trim() !== '' && !emailValid;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
+  // `silent` reloads (after an access-request approval) keep the section mounted
+  // so the request list does not unmount mid-action. A failed silent reload
+  // keeps the users already shown and says so in a toast, instead of swapping
+  // the section (and the request queue with its selection) for the error panel.
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setLoadError(false);
+    }
     try {
       const res = await fetchWithAuth(base(orgId));
       if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -54,11 +88,12 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
       setUsers((await res.json()).data ?? []);
     } catch (err) {
       console.warn('[OrgPortalUsersEditor] load failed', err);
-      setLoadError(true);
+      if (silent) showToast({ type: 'error', message: t('orgPortalUsersEditor.errors.load') });
+      else setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [orgId]);
+  }, [orgId, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -122,6 +157,26 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
 
   const pendingCount = users.filter((u) => u.effectiveStatus === 'pending_setup').length;
 
+  const restoreIdentity = (target: IdentityTarget, choice: RestoreChoice) => {
+    void mutate(
+      target.user.id,
+      `/${target.user.id}/identities/${target.identity.id}/restore`,
+      'POST',
+      choice,
+      t('portalDirectory.toasts.restored'),
+    ).finally(() => setRestoreTarget(null));
+  };
+
+  const removeIdentity = (target: IdentityTarget) => {
+    void mutate(
+      target.user.id,
+      `/${target.user.id}/identities/${target.identity.id}`,
+      'DELETE',
+      undefined,
+      t('portalDirectory.toasts.removed'),
+    ).finally(() => setRemoveIdentityTarget(null));
+  };
+
   if (loading) {
     return <p className="text-sm text-muted-foreground">{t('orgPortalUsersEditor.loading')}</p>;
   }
@@ -166,6 +221,8 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         </div>
       </div>
 
+      <PortalAccessRequestsList orgId={orgId} onChanged={() => void load(true)} />
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -189,10 +246,52 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
                   >
                     {t(/* i18n-dynamic */ STATUS_LABEL_KEYS[u.effectiveStatus])}
                   </span>
+                  {u.effectiveStatus === 'disabled' && u.disabledBy && (
+                    <AccountDisabledBy userId={u.id} disabledBy={u.disabledBy} />
+                  )}
+                  {enabledProviders(u).map((provider) => (
+                    <span
+                      key={provider}
+                      data-testid={`portal-user-badge-${provider}-${u.id}`}
+                      className="ml-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                    >
+                      {t(/* i18n-dynamic */ PROVIDER_BADGE_KEYS[provider])}
+                    </span>
+                  ))}
+                  {(u.identities ?? []).filter((i) => i.disabledAt !== null).map((identity) => (
+                    <DisabledIdentityBadge
+                      key={identity.id}
+                      identity={identity}
+                      busy={busyId === u.id}
+                      onRestore={() => setRestoreTarget({ user: u, identity })}
+                      onRemove={() => setRemoveIdentityTarget({ user: u, identity })}
+                    />
+                  ))}
+                  {u.browserAccess === 'none' && (
+                    <span
+                      data-testid={`portal-user-badge-no-browser-${u.id}`}
+                      className="ml-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                    >
+                      {t('orgPortalUsersEditor.badges.noBrowserAccess')}
+                    </span>
+                  )}
                 </td>
                 <td className="py-2">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : '—'}</td>
                 <td className="py-2">
                   <div className="flex justify-end gap-2">
+                    {/* W4 (#11381): an add-in account gets browser access without
+                        losing its add-in session (the API does not bump its epoch). */}
+                    {u.browserAccess === 'none' && u.effectiveStatus === 'active' && (
+                      <button
+                        type="button"
+                        data-testid={`portal-user-grant-browser-${u.id}`}
+                        disabled={busyId === u.id}
+                        onClick={() => void mutate(u.id, `/${u.id}/browser-access`, 'POST', undefined, t('orgPortalUsersEditor.toasts.browserAccessGranted'))}
+                        className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50 disabled:opacity-50"
+                      >
+                        {t('orgPortalUsersEditor.actions.grantBrowserAccess')}
+                      </button>
+                    )}
                     {u.effectiveStatus === 'pending_setup' && (
                       <button
                         type="button"
@@ -330,6 +429,19 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         variant="destructive"
         isLoading={busyId === pendingRemove?.id}
         confirmTestId="portal-user-delete-confirm"
+      />
+
+      <RestoreIdentityDialog
+        target={restoreTarget}
+        busy={busyId !== null && busyId === restoreTarget?.user.id}
+        onCancel={() => setRestoreTarget(null)}
+        onConfirm={(choice) => { if (restoreTarget) restoreIdentity(restoreTarget, choice); }}
+      />
+      <RemoveIdentityDialog
+        target={removeIdentityTarget}
+        busy={busyId !== null && busyId === removeIdentityTarget?.user.id}
+        onCancel={() => setRemoveIdentityTarget(null)}
+        onConfirm={() => { if (removeIdentityTarget) removeIdentity(removeIdentityTarget); }}
       />
     </section>
   );

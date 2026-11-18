@@ -66,9 +66,65 @@ func TestContainmentStatusDoesNotExposeSecret(t *testing.T) {
 
 type containmentCommandFake struct {
 	startup, tick, release int
-	code                   string
+	tokenRelease           int
+	code, token            string
 	force                  bool
 	err                    error
+}
+
+func (f *containmentCommandFake) LocalReleaseToken(_ context.Context, token string) error {
+	f.tokenRelease++
+	f.token = token
+	return f.err
+}
+
+func TestContainmentReleaseTokenArguments(t *testing.T) {
+	const tok = "eyJ2IjoxfQ.c2ln"
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		valid bool
+	}{
+		{"token", []string{"release", "--token", tok}, true},
+		{"token with spaces", []string{"release", "--token", "  " + tok + " "}, true},
+		{"empty token", []string{"release", "--token", ""}, false},
+		{"blank token", []string{"release", "--token", "   "}, false},
+		{"token and code", []string{"release", "--token", tok, "--code", "ABCDEFGH"}, false},
+		{"token and force", []string{"release", "--token", tok, "--force"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &containmentCommandFake{}
+			cmd := newContainmentCommandWithFactory(func() containmentCommandManager { return fake })
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid = %v; err = %v", tc.valid, err)
+			}
+			if fake.release != 0 {
+				t.Fatal("a token reached LocalRelease")
+			}
+			if tc.valid && (fake.tokenRelease != 1 || fake.token != tok) {
+				t.Fatalf("LocalReleaseToken calls=%d token=%q", fake.tokenRelease, fake.token)
+			}
+			if !tc.valid && fake.tokenRelease != 0 {
+				t.Fatal("invalid arguments reached LocalReleaseToken")
+			}
+		})
+	}
+}
+
+func TestContainmentReleaseTokenPropagatesError(t *testing.T) {
+	want := errors.New("token refused")
+	fake := &containmentCommandFake{err: want}
+	cmd := newContainmentCommandWithFactory(func() containmentCommandManager { return fake })
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"release", "--token", "a.b"})
+	if !errors.Is(cmd.Execute(), want) {
+		t.Fatal("LocalReleaseToken error not returned")
+	}
 }
 
 func (f *containmentCommandFake) Report() *isolation.Report {

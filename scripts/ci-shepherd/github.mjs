@@ -27,7 +27,11 @@ const MUTATION = /^(?:\s|#[^\n]*\n)*mutation\b/;
 
 export const isMutationQuery = (query) => MUTATION.test(query);
 
-export function createGitHub({ token, fetchImpl = fetch, budget = 600, userAgent = 'breeze-ci-shepherd' }) {
+// Per-request timeout: a hung request must not hold the tick (and its lock)
+// past the 15-minute stale-lock window.
+export const REQUEST_TIMEOUT_MS = 60_000;
+
+export function createGitHub({ token, fetchImpl = fetch, budget = 600, userAgent = 'breeze-ci-shepherd', timeoutMs = REQUEST_TIMEOUT_MS }) {
   if (!token) throw new Error('createGitHub: a token is required');
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -42,7 +46,7 @@ export function createGitHub({ token, fetchImpl = fetch, budget = 600, userAgent
   async function send(method, path, { body, redirect = 'follow' } = {}) {
     if (gh.calls >= gh.budget) throw new BudgetExceeded(gh.budget);
     gh.calls++;
-    const init = { method, headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' }, redirect };
+    const init = { method, headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' }, redirect, signal: AbortSignal.timeout(timeoutMs) };
     if (body !== undefined) init.body = JSON.stringify(body);
     try {
       return await fetchImpl(url(path), init);
@@ -88,7 +92,7 @@ export function createGitHub({ token, fetchImpl = fetch, budget = 600, userAgent
     if (res.status >= 500) res = await send('GET', path, { redirect: 'manual' });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       try {
-        res = await fetchImpl(res.headers.get('location'), { method: 'GET', headers: { 'User-Agent': userAgent } });
+        res = await fetchImpl(res.headers.get('location'), { method: 'GET', headers: { 'User-Agent': userAgent }, signal: AbortSignal.timeout(timeoutMs) });
       } catch (e) {
         throw new GitHubError(0, `GET ${path} (redirect): ${e.message}`);
       }

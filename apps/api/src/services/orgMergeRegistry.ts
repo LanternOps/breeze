@@ -550,6 +550,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
   portal_access_policies: { kind: 'keep-survivor' }, // verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins
+  // W9 (#11386, plan D1): a SCIM bearer credential bound to the LOSER org and its
+  // proven tenant. Never re-pointed: the merge fences the loser (status 'merging'
+  // → shell), so its tokens stop authenticating, and the MSP creates a token on
+  // the survivor. The identities those tokens managed repoint with
+  // portal_user_identities and stay reserved by (issuer, subject).
+  portal_scim_tokens: { kind: 'leave-for-erasure', note: 'credential bound to the loser org and its proven tenant; the fenced loser stops authenticating it; the MSP mints a new token on the survivor' },
   portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }, // verified: portal_access_requests_pending_email_uq (org_id, email) WHERE status = 'pending'
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE
@@ -1212,7 +1218,6 @@ const REPOINT_TABLES: readonly string[] = [
   "partner_api_idempotency_keys",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
-  "patch_compliance_snapshots",
   "patch_jobs",
   "pax8_company_mappings",
   "pax8_contract_line_links",
@@ -1224,6 +1229,15 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // W8 (#11385, plan D12). Plain repoint, no dedupe: a run's only org-bearing
+  // unique key is (org_id, source, snapshot_key), and every snapshot_key starts
+  // with the org's own connection id, so the two orgs' runs cannot collide; an
+  // action's (run_id, identity_id) key has no org_id. The composite (x, org_id)
+  // FKs between actions, runs, identities and accounts are DEFERRABLE, covered by
+  // the merge's SET CONSTRAINTS ALL DEFERRED. chain_key keeps the absorbed org's
+  // id, so its held actions refuse at Apply (D8d) and observations reset (D5).
+  "portal_directory_actions",
+  "portal_directory_runs",
   // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
   // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
   // and the composite (portal_user_id, org_id) FK is deferred by the merge.

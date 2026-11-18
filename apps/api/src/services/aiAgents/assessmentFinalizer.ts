@@ -52,9 +52,12 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../actionIntents/intentService';
 import { checkGuardrails } from '../aiGuardrails';
 import { AGENT_COORDINATOR_CARRIER_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
+import { toolInputSchemas } from '../aiToolSchemas';
+import { findUnknownInputKeys } from '../aiToolUnknownKeys';
 import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
+import { ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE } from '../wisp/assessmentTypes';
 import {
   ConcernSubjectHeldError,
   getConcernForCeiling,
@@ -73,6 +76,7 @@ import {
 import { mobileDeepLink } from '../wisp/nudgeLinks';
 import { notifyUser } from '../wisp/notifyUser';
 import { renderReadinessSummary, type ReadinessCheck } from '../wisp/readiness';
+import { evaluateStandingInstructions, standingConflictDescription } from '../wisp/standingInstructionGate';
 import { isAssessmentProfile } from './assessmentProfile';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
 
@@ -290,6 +294,15 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         ap.skipped.push('propose_tool_blocked');
         return;
       }
+      // #11861: release refuses an argument the tool does not define, so a
+      // proposal carrying one would only fail after a human approved it.
+      // Refuse it here instead. Only the unknown-key class: the full schema
+      // check stays at release, as before.
+      const schema = Object.hasOwn(toolInputSchemas, proposal.toolName) ? toolInputSchemas[proposal.toolName] : undefined;
+      if (schema && findUnknownInputKeys(schema, proposal.input).length > 0) {
+        ap.skipped.push('propose_input_unknown_args');
+        return;
+      }
       // Tool-level ceiling term up front (never-delegable / outside the
       // grant's allowlist); org, site and permission terms are re-checked at
       // release by agentReleaseAuthority.
@@ -302,13 +315,36 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         }
         throw error;
       }
+      // #10428 W06: the grantor's standing instructions. A confirmed exact
+      // deny drops the proposal; any other match rides on the card's reason.
+      // A check that cannot run drops it too (fails closed).
+      let standingText: string | null = null;
+      try {
+        const standing = await evaluateStandingInstructions({
+          ceiling: ap.ceiling,
+          toolName: proposal.toolName,
+          input: proposal.input,
+          auth: ap.result.agentAuth,
+        });
+        if (standing.action === 'refuse') {
+          ap.skipped.push('propose_standing_instruction');
+          return;
+        }
+        if (standing.action === 'warn') standingText = standing.text;
+      } catch (error) {
+        console.error('[assessmentFinalizer] standing-instruction check failed; proposal dropped', { runId: run.id, toolName: proposal.toolName, error });
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        ap.skipped.push('propose_standing_instruction_unverified');
+        return;
+      }
       attempted += 1;
+      const reason = `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`;
       const intent = await createActionIntent(ap.result.agentAuth, {
         toolName: proposal.toolName,
         input: proposal.input,
         source: 'ai_agent',
         orgId: run.orgId,
-        reason: `Proposed by Wisp assessment ${run.id}: ${proposal.reason}`,
+        reason: standingText ? standingConflictDescription(standingText, reason) : reason,
       });
       if (intent.status === 'pending_approval') {
         ap.result.intentIds.push(intent.id);
@@ -430,8 +466,12 @@ async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId:
 /**
  * Returns `null` on a clean apply (skips are not failures — they are recorded
  * in `outcome.assessmentSkipped`), or `assessment_partially_applied` when at
- * least one step threw. Like every sibling, the caller applies it only on the
- * normal-finish path; an assessment is circuit-neutral either way.
+ * least one step threw. A clean apply whose metric anomaly read failed
+ * returns ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE instead of null (#11513), so
+ * the run does not anchor the no-changes gate; dropped work outranks it,
+ * because `assessment_partially_applied` already keeps the run out of both
+ * the watermark and the anchor. Like every sibling, the caller applies it
+ * only on the normal-finish path; an assessment is circuit-neutral either way.
  */
 export async function finalizeAssessment(ctx: RunContext, result: LoopResult): Promise<string | null> {
   if (!isAssessmentProfile(ctx.run)) return null;
@@ -532,5 +572,6 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
     outcome.assessmentSkipped = [...(outcome.assessmentSkipped ?? []), ...skipped];
     console.info('[aiAgentRunLoop] assessment outcome partially skipped', { runId: run.id, skipped });
   }
-  return failed ? 'assessment_partially_applied' : null;
+  if (failed) return 'assessment_partially_applied';
+  return a.anomaliesReadFailed ? ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE : null;
 }

@@ -284,7 +284,8 @@ describe('POST /client-ai/auth/exchange', () => {
 
     expect(typeof body.accessToken).toBe('string');
     expect(body.accessToken.length).toBeGreaterThanOrEqual(32);
-    expect(body.expiresInSeconds).toBe(86400);
+    // W4 (OD1): the absolute add-in cap (12 h) is shorter than the sliding 24 h TTL.
+    expect(body.expiresInSeconds).toBe(12 * 3600);
     expect(body.user).toEqual({
       id: PORTAL_USER_ID,
       email: 'finance.user@contoso.com',

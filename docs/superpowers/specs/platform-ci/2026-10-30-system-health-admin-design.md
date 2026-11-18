@@ -2,14 +2,14 @@
 title: System Health: native platform-admin health tab
 issue: LanternOps/breeze#10958
 discussion: LanternOps/breeze discussion #10764
-status: draft (for maintainer review; not approved for implementation)
+status: approved (maintainer review 2026-11-08; tracked in LanternOps/breeze#10958)
 ---
 
 # System Health: native platform-admin health tab (design)
 
-**Date:** 2026-10-30 · **Status:** draft for maintainer review (not approved for implementation) · **Origin:** [Discussion #10764](https://github.com/LanternOps/breeze/discussions/10764), [Todd's direction](https://github.com/LanternOps/breeze/discussions/10764#discussioncomment-19302403) · **Prior art:** [System page #6768](https://github.com/LanternOps/breeze/issues/6768), `docs/superpowers/specs/platform-ci/2026-09-23-system-connections-page-design.md`
+**Date:** 2026-10-30 · **Status:** approved for implementation (maintainer review 2026-11-08) · **Origin:** [Discussion #10764](https://github.com/LanternOps/breeze/discussions/10764), [Todd's direction](https://github.com/LanternOps/breeze/discussions/10764#discussioncomment-19302403) · **Prior art:** [System page #6768](https://github.com/LanternOps/breeze/issues/6768), `docs/superpowers/specs/platform-ci/2026-09-23-system-connections-page-design.md`
 
-> **Decision boundary.** Todd accepted the direction for a platform-admin Health tab, not this detailed spec. The design choices below are proposals for review. This document intentionally excludes the Customer Portal altogether, at the proposer's request; it neither specifies nor reserves a portal wave.
+> **Decision boundary.** Todd accepted the direction for a platform-admin Health tab and, on 2026-11-04 and 2026-11-08, the design choices recorded in §3 and §12. Implementation is tracked in LanternOps/breeze#10958. This document intentionally excludes the Customer Portal altogether, at the proposer's request; it neither specifies nor reserves a portal wave.
 
 ## 1. Why
 
@@ -47,7 +47,7 @@ The existing `/admin/system` **Connections** tab shows what is *configured* (not
 
 **Maintainer-confirmed, Discussion #10764:** locate the tab at `/admin/system`; follow `systemConnectionHealth.ts` authorization and partial-failure pattern; use existing API-visible signals without requiring a Prometheus client; MVP initially listed API readiness, PostgreSQL, Redis, queue depth, and job heartbeats and was narrowed in review to queue depth and job heartbeats; exclude host capacity. Todd deferred the portal direction; this document goes further by **explicitly removing the portal from this feature's scope**, as requested by the proposer. This exclusion is a project proposal, not a separate maintainer approval.
 
-## 3. Decisions proposed for approval
+## 3. Decisions (accepted in maintainer review, see §12)
 
 | ID | Decision |
 |---|---|

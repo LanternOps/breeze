@@ -107,18 +107,20 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import * as schema from '../../db/schema';
+import { coreRoutes } from './core';
 import {
-  coreRoutes,
   getDeviceCascadeDeleteTables,
   DEVICE_CASCADE_DELETE_PREDICATES,
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
   DEVICE_LINK_DEPENDENT_COLUMNS,
-} from './core';
+} from '../../services/deviceCascadeTables';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
+import { DbPoolAcquireTimeoutError } from '../../db/prologueDeadline';
 
 const deviceCascadeDeleteTables = getDeviceCascadeDeleteTables();
 
@@ -193,7 +195,7 @@ describe('device hard-delete table coverage contract', () => {
       `Every table with a device_id FK to devices.id must appear in EXACTLY ONE of ` +
         `getDeviceCascadeDeleteTables() (rows deleted; order matters — children before parents), ` +
         `DEVICE_DETACH_DEVICE_ID_TABLES (tenant business records — device_id SET NULL), or ` +
-        `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in core.ts. ` +
+        `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in services/deviceCascadeTables.ts. ` +
         `If the device_id column references a table other than devices, add it to NOT_DEVICES_FK ` +
         `in this test instead.\n\nProblems: ${problems.join('; ')}`
     ).toEqual([]);
@@ -267,7 +269,7 @@ describe('device hard-delete table coverage contract', () => {
 
     expect(
       missing,
-      `These tables have a linked_device_id FK but are missing from DEVICE_LINKED_DEVICE_ID_TABLES in core.ts. ` +
+      `These tables have a linked_device_id FK but are missing from DEVICE_LINKED_DEVICE_ID_TABLES in services/deviceCascadeTables.ts. ` +
         `Add them so linked_device_id gets SET NULL during cascade delete.\n\n` +
         `Missing: ${missing.join(', ')}`
     ).toEqual([]);
@@ -578,7 +580,7 @@ describe('linked_device_id detach clears every link-conditional column (#3952)',
         `linked_device_id, but the device hard-delete detach does not clear them. ` +
         `Nulling linked_device_id alone violates the constraint (23514) and rolls ` +
         `the whole cascade back as a 500 — this is issue #3952. Add each column to ` +
-        `DEVICE_LINK_DEPENDENT_COLUMNS in core.ts, or, if the constraint genuinely ` +
+        `DEVICE_LINK_DEPENDENT_COLUMNS in services/deviceCascadeTables.ts, or, if the constraint genuinely ` +
         `does not forbid the detached state, record it in ` +
         `LINK_CHECK_COLUMNS_NOT_CLEARED in this file WITH a reason.\n\n` +
         `Unregistered: ${problems.join(', ')}`
@@ -892,6 +894,65 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
       expect(res.status).toBe(409);
       expect(screenshotMocks.removeScreenshotFiles).not.toHaveBeenCalled();
+    });
+
+    it.each(['40P01', '40001'])('answers transient Postgres %s with a retryable 409, not a 500 (#11627)', async (code) => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw Object.assign(new Error('Failed query'), { cause: { code } });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/try again/i);
+      expect(captureException).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('answers an unclassified cascade failure with an actionable message and reports it (#11627)', async () => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw Object.assign(new Error('Failed query'), { cause: { code: '23502' } });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      // Still a 500 (a deterministic server defect must not advertise "retry"),
+      // but the body is something the UI can show instead of the global
+      // "Internal Server Error", and the failure reaches Sentry.
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.code).toBe('DEVICE_PURGE_FAILED');
+      expect(body.error).toMatch(/could not be permanently deleted/i);
+      expect(body.error).toContain('23502');
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('leaves pool saturation to the global 503 handler, not the purge-failed body (#11627)', async () => {
+      rigDeviceLookup(DEVICE);
+      vi.mocked(db.transaction).mockImplementation(async () => {
+        throw new DbPoolAcquireTimeoutError({ contextLabel: 'devices.permanentDelete', elapsedMs: 5000, timeoutMs: 5000 });
+      });
+
+      const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      // This harness has no app.onError, so the rethrown error surfaces as
+      // Hono's default 500 text — the point is it is NOT our JSON body and is
+      // not reported to Sentry from the route.
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('DEVICE_PURGE_FAILED');
+      expect(captureException).not.toHaveBeenCalled();
     });
 
     it('still reports success when some files cannot be removed', async () => {

@@ -15,7 +15,7 @@ import type {
   OrgReportGenerationAuthority,
   ReportGenerationAuthority,
 } from './siteScope';
-import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
+import type { EvidenceRunContext, ReportResult, ReportRunOptions } from './reportGenerationService';
 import {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -79,6 +79,7 @@ export interface ReportTypeDef {
     config: Record<string, unknown>,
     authority: ReportGenerationAuthority,
     evidence?: EvidenceRunContext,
+    options?: ReportRunOptions,
   ): Promise<ReportResult>;
 }
 
@@ -296,11 +297,11 @@ const generators = {
     type: 'vulnerability_management', label: 'Vulnerability management',
     configSchema: vulnerabilityManagementConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
-    generate: async (scope, config, authority, evidence) => {
+    generate: async (scope, config, authority, evidence, options) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'vulnerability_management');
       const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
-      return generateVulnerabilityManagementReport(orgId, config, orgAuthority, evidence);
+      return generateVulnerabilityManagementReport(orgId, config, orgAuthority, evidence, options);
     },
   },
   // The generator itself decides what a RESTRICTED authority gets (nothing —

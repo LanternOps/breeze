@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Testbenachrichtigung kann nicht gesendet werden.",
     "failedToLoadCommunicationSettings": "Die Kommunikationseinstellungen konnten nicht geladen werden",
     "slackSettingsSaved": "Slack-Einstellungen gespeichert.",
-    "slackTestNotificationQueued": "Slack-Testbenachrichtigung in der Warteschlange.",
     "teamsSettingsSaved": "Teams-Einstellungen gespeichert.",
-    "teamsTestNotificationQueued": "Teams-Testbenachrichtigung in der Warteschlange.",
     "discordSettingsSaved": "Discord-Einstellungen gespeichert.",
-    "discordTestNotificationQueued": "Discord-Testbenachrichtigung in der Warteschlange.",
+    "discordTestNotificationSent": "Discord-Testbenachrichtigung gesendet.",
     "loadingCommunicationIntegrations": "Kommunikationsintegrationen werden geladen...",
     "communicationIntegrations": "Kommunikationsintegrationen",
     "connectChatToolsRouteAlertsBySeverityAnd": "Verbinden Sie Chat-Tools, leiten Sie Warnungen nach Schweregrad weiter und passen Sie Nachrichtenvorlagen an.",
@@ -374,6 +372,9 @@
       "delivery_failed": "Zustellungen schlagen fehl",
       "sync_stale": "Synchronisierung steht still",
       "verification_failed": "Überprüfung fehlgeschlagen",
+      "destination_access_denied": "Sicherungsziel verweigert den Zugriff",
+      "destination_not_found": "Sicherungsziel nicht gefunden",
+      "destination_failing": "Sicherungsziel schlägt fehl",
       "unknown": "Erfordert Aufmerksamkeit"
     }
   },
@@ -1074,7 +1075,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Standort-Zuordnungen konnten nicht gespeichert werden.",
     "siteMappingsSaved": "Standort-Zuordnungen gespeichert",
-    "pickTheSiteThisControllerServesACollector": "Den Standort auswählen, den dieser Controller verwaltet, einen Collector-Agenten festlegen und Controller-URL sowie lokalen API-Schlüssel eingeben.",
+    "pickTheSiteThisControllerServesACollector": "Wählen Sie den Standort des Collector-Agents und einen Collector-Agent aus und geben Sie Controller-URL und lokalen API-Schlüssel ein.",
     "failedToRegisterTheController": "Der Controller konnte nicht registriert werden.",
     "controllerRegistered": "Controller registriert",
     "pickABreezeSiteACollectorAgentAnd": "Breeze-Standort und Collector-Agenten auswählen sowie Controller-URL und lokalen API-Schlüssel eingeben.",

@@ -54,6 +54,18 @@ describe('fitLimit', () => {
     expect(fitLimit(200_000, 8_000)).toBe(160_000);
     expect(fitLimit(200_000, null)).toBe(136_000);
   });
+
+  it('#11396: a small known window (gateway) keeps room for the transcript: headroom and output scale to a quarter of it', () => {
+    // Before: 32,768 − 32,000 − 32,000 → 0, so a continuation summarised nothing.
+    expect(fitLimit(32_768, null)).toBe(32_768 - 8_192 - 8_192);
+    expect(fitLimit(8_192, null)).toBe(8_192 - 2_048 - 2_048);
+    expect(fitLimit(65_536, 2_048)).toBe(65_536 - 16_384 - 2_048);
+  });
+
+  it('windows of 128k and more are unchanged (the fixed 32k floors still apply)', () => {
+    expect(fitLimit(128_000, null)).toBe(128_000 - 32_000 - 32_000);
+    expect(fitLimit(131_072, null)).toBe(131_072 - 32_000 - 32_000);
+  });
 });
 
 describe('checkTranscriptFit (W05 spike constraint 1)', () => {

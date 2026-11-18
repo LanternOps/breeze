@@ -15,8 +15,8 @@ import { positiveIntEnv } from '../config/env';
 export const MIGRATION_WINDOW_MIN_WRITES_PER_HOUR = 600;
 /** The table's CHECK; an env ceiling above it is clamped. */
 const MIGRATION_WINDOW_ABSOLUTE_MAX_WRITES_PER_HOUR = 100_000;
-/** The most organizations one window may name. */
-export const MIGRATION_WINDOW_MAX_ORGS = 500;
+/** The most organizations one window may name (shared with the step-up resource schema). */
+export { MIGRATION_WINDOW_MAX_ORGS } from '@breeze/shared';
 /** source_label is varchar(64). */
 export const MIGRATION_WINDOW_SOURCE_LABEL_MAX = 64;
 

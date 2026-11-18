@@ -275,9 +275,11 @@ const IDP_MFA_AMR_VALUES: readonly string[] = ['mfa', 'phr'];
 /**
  * True when the IdP's id_token attests strong authentication — `amr` contains
  * one of `IDP_MFA_AMR_VALUES`. This is only trusted when the provider opts in
- * via `trustsIdpMfa`; an org that does not opt in always gets `mfa:false`
- * (fail-safe). Never used to satisfy the L4 step-up, which independently
- * re-verifies a Breeze-held factor.
+ * via `trustsIdpMfa`; an org that does not opt in never gets MFA credit from
+ * the assertion (fail-safe). A session can still be policy-admitted when the
+ * user holds no factor and policy does not require one (#11889), which does
+ * not depend on this. Never used to satisfy the L4 step-up, which
+ * independently re-verifies a Breeze-held factor.
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
   return Array.isArray(claims.amr) && claims.amr.some((v) => IDP_MFA_AMR_VALUES.includes(v));

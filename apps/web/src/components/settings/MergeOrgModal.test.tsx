@@ -227,6 +227,8 @@ describe('MergeOrgModal — localized blockerCodes (PAM ownership epoch)', () =>
     ['pam_evidence', /not enabled on this deployment/i],
     ['payment_in_flight', /payment .* still in flight/i],
     ['lineage_depth', /merged too many times/i],
+    // W4 (#11381) D8: the loser's proven Microsoft tenant vs any survivor tenant mapping.
+    ['entra_tenant_conflict', /proven Microsoft tenant/i],
   ];
 
   for (const [code, copy] of COPY) {

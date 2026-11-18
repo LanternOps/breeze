@@ -10,7 +10,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
@@ -18,7 +17,7 @@ import (
 // serving it plus the stored manifest bytes.
 func integrityWiringSnapshot(t *testing.T) (*backup.BackupManager, string, []byte) {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "snap-wiring-1"
 	src := filepath.Join(t.TempDir(), "a.txt")
 	if err := os.WriteFile(src, []byte("alpha"), 0o600); err != nil {

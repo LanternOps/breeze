@@ -51,7 +51,7 @@ import { userNotifications } from '../../db/schema/notifications';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { wispThreadSessions } from '../../db/schema/wispThreads';
 import { inSystemContext, type GrantCeiling } from './grantAuthority';
-import { couldntLookDedupeKey } from './threadPosts';
+import { couldntLookDedupeKey, isSpecialistReportPost } from './threadPosts';
 
 export type TimelineSource = WispTimelineItem['source'];
 export type TimelineCursor = { at: Date; source: TimelineSource; id: string };
@@ -241,6 +241,7 @@ async function postRows({ ceiling, threadId, cursor, take }: SourceArgs): Promis
       id: r.id,
       kind: r.kind,
       ...(r.dedupeKey === couldntLookKey ? { variant: 'couldnt_look' as const } : {}),
+      ...(isSpecialistReportPost(r.kind, r.dedupeKey) ? { bodyFormat: 'markdown' as const } : {}),
       title: r.title,
       body: r.body ?? null,
       link: r.link ?? null,

@@ -22,6 +22,19 @@ vi.mock('../permissions', () => ({
   getUserPermissions: shared.getUserPermissions,
 }));
 
+// #11702: role grants come from the role-inheritance resolver. By default the
+// mock delegates to the queued `db.select` rows ({roleId, resource, action}),
+// so the existing cases keep feeding role permissions through the same queue;
+// the inheritance cases override it per call.
+vi.mock('../roleInheritance', () => ({
+  getRolesPermissionGrants: vi.fn(async (roleIds: string[]) => {
+    const rows = (await (shared.selectMock as any)()) as Array<{ roleId: string; resource: string; action: string }>;
+    const byRole = new Map<string, Array<{ resource: string; action: string }>>(roleIds.map((id) => [id, []]));
+    for (const r of rows) byRole.get(r.roleId)?.push({ resource: r.resource, action: r.action });
+    return byRole;
+  }),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   computeAccessibleOrgIds: shared.computeAccessibleOrgIds,
 }));
@@ -39,6 +52,8 @@ import {
   assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingAdmitsTool,
+  ceilingHoldsPermission,
+  ceilingSiteIdsForOrg,
   ceilingSnapshotHash,
   ceilingToolTermOf,
   computeLiveHumanTerm,
@@ -52,11 +67,39 @@ import {
 } from './grantAuthority';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
+import { getRolesPermissionGrants } from '../roleInheritance';
 
 const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
   grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true, status: 'active',
   orgIds: new Set(['org-a']), siteIds: null, permissionKeys: new Set(['devices:read', 'tickets:write']),
   toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), orgTerms: new Map(), ...o,
+});
+
+describe('ceilingSiteIdsForOrg / ceilingHoldsPermission (W02 analysis frame)', () => {
+  it('null when neither the ceiling nor the org term restricts sites', () => {
+    expect(ceilingSiteIdsForOrg(ceiling(), 'org-a')).toBeNull();
+  });
+  it('intersects the ceiling-wide sites with the org membership sites', () => {
+    const c = ceiling({ siteIds: new Set(['s1', 's2']), orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s2', 's3']) }]]) });
+    expect(ceilingSiteIdsForOrg(c, 'org-a')).toEqual(['s2']);
+    expect(ceilingSiteIdsForOrg(c, 'org-without-term')).toEqual(['s1', 's2']);
+  });
+  it('an org membership restriction alone narrows, sorted', () => {
+    const c = ceiling({ orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s9', 's3']) }]]) });
+    expect(ceilingSiteIdsForOrg(c, 'org-a')).toEqual(['s3', 's9']);
+  });
+  it('holds a permission the org term grants; not one it lacks; never for an inactive ceiling', () => {
+    const c = ceiling({ permissionKeys: new Set(['devices:*']), orgTerms: new Map([['org-a', { permissionKeys: new Set(['devices:read']), siteIds: null }]]) });
+    expect(ceilingHoldsPermission(c, 'org-a', 'devices', 'read')).toBe(true);
+    expect(ceilingHoldsPermission(c, 'org-a', 'devices', 'execute')).toBe(false);
+    expect(ceilingHoldsPermission({ ...c, status: 'paused' }, 'org-a', 'devices', 'read')).toBe(false);
+  });
+  it('never for an org outside the ceiling', () => {
+    expect(ceilingHoldsPermission(ceiling(), 'org-b', 'devices', 'read')).toBe(false);
+  });
+  it('fails closed for a site-restricted ceiling (coordinator gate 4 refuses those for every specialist)', () => {
+    expect(ceilingHoldsPermission(ceiling({ siteIds: new Set(['s1']) }), 'org-a', 'devices', 'read')).toBe(false);
+  });
 });
 
 describe('assertWithinCeiling', () => {
@@ -705,6 +748,27 @@ describe('computeLiveHumanTerm / resolveGrantCeiling — org memberships', () =>
     expect(() => assertWithinCeiling(c, { orgId: 'o1', permission: 'scripts:execute' })).toThrow(expect.objectContaining({ code: 'permission' }));
     expect(c.orgTerms.get('o1')!.siteIds).toBeNull();
     expect(c.partnerWide).toBe(true);
+  });
+
+  it('#11702: a membership role holding its grants only through inheritance counts (role keys come from the resolver)', async () => {
+    queueResolve([{ orgId: 'o1', roleId: 'child', siteIds: null }], []);
+    vi.mocked(getRolesPermissionGrants).mockResolvedValueOnce(new Map([[
+      'child', [{ resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' }],
+    ]]));
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect(getRolesPermissionGrants).toHaveBeenCalledWith(['child']);
+    expect([...c.orgIds].sort()).toEqual(['o1', 'o2', 'o3']);
+    expect([...c.orgTerms.get('o1')!.permissionKeys]).toEqual(['devices:read']);
+  });
+
+  it('#11702: a membership role whose resolved grants lack ai_sessions:use still drops the org', async () => {
+    queueResolve([{ orgId: 'o1', roleId: 'child', siteIds: null }], []);
+    vi.mocked(getRolesPermissionGrants).mockResolvedValueOnce(new Map([[
+      'child', [{ resource: 'devices', action: 'read' }],
+    ]]));
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgIds].sort()).toEqual(['o2', 'o3']);
+    expect(c.orgTerms.has('o1')).toBe(false);
   });
 
   it('two membership rows for one org intersect (fail closed, never the wider row)', async () => {

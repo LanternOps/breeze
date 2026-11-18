@@ -51,8 +51,9 @@ func TestNewShipperCustomHTTPClient(t *testing.T) {
 		AgentID:    "a",
 		HTTPClient: client,
 	})
-	if s.httpClient != client {
-		t.Fatal("should use provided HTTP client")
+	// The client is copied to add the redirect policy; its settings are kept.
+	if s.httpClient.Timeout != client.Timeout || s.httpClient.Transport != client.Transport {
+		t.Fatal("should use provided HTTP client settings")
 	}
 }
 

@@ -73,6 +73,24 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BACKUP_LOCAL_ROOT', () => {
+    it('refuses to start a hosted deployment with API-side local backup storage configured', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).toThrow(/BACKUP_LOCAL_ROOT is not supported on a hosted deployment/);
+      });
+    });
+    it('accepts it on a self-hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('treats an empty value as unset on a hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732)', () => {
     const blob = { ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's', S3_BUCKET: 'b' };
     it('is off/valid when unset', () => {
@@ -348,6 +366,72 @@ describe('validateConfig', () => {
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
+    });
+  });
+
+  describe('Portal Entra app (portal registration W4)', () => {
+    const portalEntra = {
+      PORTAL_ENTRA_CLIENT_ID: '44444444-4444-4444-8444-444444444444',
+      PORTAL_ENTRA_CLIENT_SECRET: 'portal-entra-secret',
+    };
+
+    it('refuses boot when the app is configured with a malformed callback base', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_ENTRA_CALLBACK_BASE_URL/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the app is not configured', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_ENTRA_CLIENT_ID: '', PORTAL_ENTRA_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('Portal Google client (portal registration W7)', () => {
+    const portalGoogle = {
+      PORTAL_GOOGLE_CLIENT_ID: '123456789012-abcdefghijklmnop.apps.googleusercontent.com',
+      PORTAL_GOOGLE_CLIENT_SECRET: 'portal-google-secret',
+    };
+
+    it('refuses boot when the client is configured with a malformed callback base or client id', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CALLBACK_BASE_URL/);
+      });
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CLIENT_ID: 'not-a-google-client' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CLIENT_ID/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the client is not configured', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_GOOGLE_CLIENT_ID: '', PORTAL_GOOGLE_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('PORTAL_SELF_REGISTRATION_ENABLED (portal registration W6)', () => {
+    it('boots when unset, empty, true, 1, false or 0', () => {
+      // Unset is the base validEnv case every other test boots with.
+      for (const value of ['', 'true', '1', 'false', '0', 'TRUE', ' false ']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      }
+    });
+
+    it('refuses boot on any other value', () => {
+      for (const value of ['yes', 'off', '2']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).toThrow(/PORTAL_SELF_REGISTRATION_ENABLED/);
+        });
+      }
     });
   });
 
@@ -1329,6 +1413,30 @@ describe('validateConfig', () => {
     },
   );
 
+  // Portal registration W8 (#11385, plan D7): an unrecognised value reports only; say so at boot.
+  it.each(['yes', 'on', 'enforce', '2'])(
+    'warns at boot, naming the variable, when PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j is not true/1/false/0',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('report-only');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['true', '1', 'false', '0', '', ' TRUE '])('does not warn about PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
@@ -1343,6 +1451,8 @@ describe('validateConfig', () => {
     ['TICKET_IMPORT_SLICE_MS', '5min'],
     ['TICKET_IMPORT_LEASE_MS', '-1'],
     ['TICKET_IMPORT_MAX_TICKET_BYTES', '256MiB'],
+    ['TICKET_IMPORT_MAX_TICKET_ARTICLES', '10k'],
+    ['TICKET_IMPORT_MAX_TICKET_READ_BYTES', '256MiB'],
   ])('warns at boot when %s=%j is not a plain positive integer', (key, value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, [key]: value }, () => {

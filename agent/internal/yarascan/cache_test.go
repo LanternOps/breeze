@@ -50,7 +50,7 @@ func TestCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	matches, err := w.ScanFile("testdata/files/fixture-a.bin")
+	matches, err := scanPath(w, "testdata/files/fixture-a.bin")
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("cached rules did not scan: %+v %v", matches, err)
 	}

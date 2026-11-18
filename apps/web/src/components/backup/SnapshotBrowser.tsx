@@ -1074,7 +1074,9 @@ export default function SnapshotBrowser() {
 
             {visibleFiles.length === 0 && visibleFolders.length === 0 && !dirs[selectedFolder]?.loading && browseTimeoutDir === null && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                {!rootEmpty && rootLoaded
+                {snapshots.length === 0
+                  ? t('snapshotBrowser.noSnapshotsYetFilesAppearHere')
+                  : !rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'
                   : indexNoticeKind(indexView)
                     ? <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />

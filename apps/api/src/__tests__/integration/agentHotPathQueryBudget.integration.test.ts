@@ -119,6 +119,19 @@ vi.mock('../../services/devicePolicySet', async (importOriginal) => {
   };
 });
 
+const reinstallDetections = new Set<Promise<unknown>>();
+vi.mock('../../services/reinstallCandidates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reinstallCandidates')>();
+  return {
+    ...actual,
+    detectReinstallCandidates: (...args: Parameters<typeof actual.detectReinstallCandidates>) => {
+      const run = actual.detectReinstallCandidates(...args);
+      reinstallDetections.add(run);
+      return run;
+    },
+  };
+});
+
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
@@ -187,8 +200,12 @@ const COLD_TX = 7;
 // #7268: each heartbeat claim adds exactly one revalidation prepare read (bucket
 // revalidationPrepare), no savepoint while no prepared-type row is pending:
 // cold 52 -> 53, caches-miss 22 -> 23, configured 23 -> 24.
-const COLD_STATEMENTS = 53;
-const CACHES_MISS_STATEMENTS = 23;
+// #11976: the per-org policy-probe fill also reads configuration-policy
+// compliance rules (bucket compliancePolicyProbe), one statement inside the
+// probe's existing savepoint, on a probe cache miss only: cold 53 -> 54,
+// caches-miss 23 -> 24; warm, steady and configured unchanged.
+const COLD_STATEMENTS = 54;
+const CACHES_MISS_STATEMENTS = 24;
 const CONFIGURED_STEADY_STATEMENTS = 24;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
@@ -211,6 +228,9 @@ const BUCKET_MATCHERS = {
   orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
   pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
   automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  // #11976: the probe fill's config-policy compliance read (same savepoint and
+  // cache as automationPolicies; zero on a probe cache hit).
+  compliancePolicyProbe: (s: string) => s.includes('from "config_policy_compliance_rules"'),
   // #8190: the workload-inventory resolver's single policy read. It rides the
   // passed hierarchy (no device/org/group reads of its own) and runs only on a
   // workload settings-cache miss. Not yet folded into the #8142 policy set, so
@@ -373,6 +393,16 @@ async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
   throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (10s)`);
 }
 
+/**
+ * #8318 wave 2-1: `/agents/enroll` also runs its reinstall-candidate detection
+ * fire-and-forget, on the same instrumented pool, for the same reason as the
+ * audit row above: it must finish before `measure()` arms the recorder.
+ */
+async function waitForReinstallDetections(): Promise<void> {
+  await Promise.allSettled(reinstallDetections);
+  reinstallDetections.clear();
+}
+
 async function enrollDevice(org: SeededOrg, hostname: string) {
   const app = new Hono();
   app.route('/agents', enrollmentRoutes);
@@ -391,6 +421,7 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
   expect(response.status).toBe(201);
   const body = await response.json() as { deviceId: string; agentId: string; authToken: string };
   await waitForEnrollAuditCommitted(body.deviceId);
+  await waitForReinstallDetections();
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,
@@ -874,6 +905,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // The sibling's beat warmed the org's probe, helper-legacy and PAM caches,
     // so this beat reads none of them.
     expect(steady.buckets.automationPolicies).toBe(0);
+    expect(steady.buckets.compliancePolicyProbe).toBe(0);
     expect(steady.buckets.orgHelperSettings).toBe(0);
     expect(steady.buckets.pamOrgConfig).toBe(0);
     expect(steady.buckets.agentVersions).toBe(1);
@@ -910,6 +942,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.status).toBe(200);
     expect(missed.transactions).toBe(2);
     expect(missed.buckets.automationPolicies).toBe(1);
+    expect(missed.buckets.compliancePolicyProbe).toBe(1);
     expect(missed.buckets.orgHelperSettings).toBe(1);
     expect(missed.buckets.pamOrgConfig).toBe(1);
     expect(missed.buckets.policySetLoad).toBe(1);
@@ -1275,6 +1308,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     { featureType: 'hardware_monitoring', pollIntervalMinutes: 15 },
     { featureType: 'patch', exclusiveWindowsUpdate: true },
     { featureType: 'time_sync', ntpServers: ['time.budget.example'] },
+    { featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'always' } },
     { featureType: 'monitors', serviceName: 'BudgetService', checkIntervalSeconds: 90 },
     { featureType: 'onedrive_helper', orgId, filesOnDemand: true, libraryName: 'Budget Docs' },
   ];
@@ -1305,6 +1339,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(body.configUpdate.monitoring_settings).toMatchObject({ check_interval_seconds: 90, watches: [expect.objectContaining({ name: 'BudgetService' })] });
     expect(body.configUpdate.onedrive_helper_settings.libraries).toHaveLength(1);
+    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [] });
 
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);

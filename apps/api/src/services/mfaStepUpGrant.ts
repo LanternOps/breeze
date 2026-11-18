@@ -8,11 +8,14 @@ import { getRedis } from './redis';
  *
  * Minted by FOUR sources: (1) `POST /auth/mfa/step-up`, after the caller
  * proves an existing factor (TOTP/SMS/passkey); (2)
- * `POST /authenticator/register-grant`, the password-proof fallback for
- * accounts with no stronger factor; (3) `mintLoginRegisterGrant`
+ * `POST /authenticator/register-grant`, the fallback for accounts with no
+ * stronger factor, on a password proof or (#9007) on a single-use exchange of
+ * an SSO re-auth grant from (4); (3) `mintLoginRegisterGrant`
  * (`routes/auth/helpers.ts`), a best-effort login-time mint for mobile
  * clients only; (4) the SSO re-auth callback (`GET /sso/callback`, reauth
- * mode), the passwordless equivalent of (2) — see #4018.
+ * mode), the passwordless equivalent of the password proof — see #4018. Its
+ * `enroll_first_factor` / `sso_reauth_manage_factor` grant is spent either on
+ * factor enrollment/management or on that one exchange at (2), never both.
  *
  * Grants from (1) are presented back to a factor-addition endpoint
  * (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`) or
@@ -157,7 +160,20 @@ export type StepUpOperation =
   // server-computed ceiling hash the user was shown (GET /wisp/grants/preview),
   // so a grant can never be spent on a different scope or a wider ceiling.
   // TTL 600 s (OPERATION_TTL_SECONDS below).
-  | 'wisp_grant';
+  | 'wisp_grant'
+  // Reinstall reattach (#8318 spec §8): reattaching a reinstalled machine to
+  // an existing device record retires the source row and hands the target's
+  // identity, history and configuration to the new install. Bound by
+  // resourceDigest to { sourceDeviceId, targetDeviceId, targetVersion,
+  // evidenceLevel, restoreDecommissioned }: the exact pair and, through the
+  // opaque targetVersion (an HMAC over the target's agent_id and install
+  // incarnation, services/deviceReattach/targetVersion.ts), the exact install
+  // of the target the technician was shown, so a grant
+  // can never be spent on another pair, on a target that re-enrolled since, or
+  // to restore a removed record nobody agreed to restore. Consumed inside the
+  // intent's creating transaction, after every refusal
+  // (services/deviceReattach/requestIntent.ts), so a refusal never burns it.
+  | 'device_reattach';
 
 export interface StepUpGrant {
   id: string;
@@ -302,6 +318,34 @@ export function maintenanceResourceDigest(input: {
  */
 export function forceRebootResourceDigest(input: { deviceId: string }): `sha256:${string}` {
   const canonical = JSON.stringify({ deviceId: canonicalId(input.deviceId) });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+export interface DeviceReattachResource {
+  sourceDeviceId: string;
+  targetDeviceId: string;
+  /** The opaque version of the target's install (services/deviceReattach/targetVersion.ts); hashed as given. */
+  targetVersion: string;
+  evidenceLevel: 'hint' | 'tpm_continuity';
+  restoreDecommissioned: boolean;
+}
+
+/**
+ * Canonical digest for a `device_reattach` grant (#8318 spec §8). The two
+ * device ids are uuid-typed at their source and folded (#10119); the target
+ * version is an opaque MAC and hashed exactly as given. Keys in fixed order,
+ * the boolean normalised, so the mint and the route
+ * hash byte-identical input for the same intent.
+ */
+export function deviceReattachResourceDigest(input: DeviceReattachResource): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'device_reattach',
+    sourceDeviceId: canonicalId(input.sourceDeviceId),
+    targetDeviceId: canonicalId(input.targetDeviceId),
+    targetVersion: input.targetVersion,
+    evidenceLevel: input.evidenceLevel,
+    restoreDecommissioned: input.restoreDecommissioned === true,
+  });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

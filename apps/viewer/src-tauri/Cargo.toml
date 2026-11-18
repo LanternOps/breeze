@@ -25,3 +25,8 @@ url = "2"
 
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+# Only for the `enable-webrtc` / `enable-media-stream` settings wry leaves off
+# (src/linux_webrtc.rs). Same crate and feature level wry already builds.
+[target."cfg(target_os = \"linux\")".dependencies]
+webkit2gtk = { version = "2", features = ["v2_38"] }

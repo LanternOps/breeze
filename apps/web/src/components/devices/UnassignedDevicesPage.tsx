@@ -236,6 +236,7 @@ function UnassignedDevicesContent() {
           devices={[activeDevice]}
           onClose={closeSingle}
           onCompleted={completed}
+          offerReattach
         />
       )}
       {bulkOpen && selectedDevices.length > 1 && (

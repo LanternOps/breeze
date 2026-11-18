@@ -51,11 +51,11 @@ describe('wake attempts', () => {
     mocks.returning.mockRejectedValueOnce(error);
     await expect(openOrJoinWakeAttempt(input)).rejects.toBe(error);
   });
-  it.each(['NO_RELAY', 'NO_MACS', 'NO_SUBNET', 'IPV6_ONLY', 'RELAY_OVERRIDE_INVALID'] as const)('records %s with null relay and deadline', async code => {
+  it.each(['NO_RELAY', 'NO_MACS', 'NO_SUBNET', 'IPV6_ONLY', 'RELAY_OVERRIDE_INVALID', 'WAKE_NOT_READY'] as const)('records %s with null relay and deadline', async code => {
     await recordWakeRefusal({ ...input, code });
     expect(mocks.values).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'refused', refusalCode: code, relayDeviceId: null, deadlineAt: null, resolvedAt: expect.any(Date) }));
   });
-  it.each(['TARGET_NOT_FOUND', 'TARGET_ONLINE', 'DEVICE_PENDING_ASSIGNMENT'] as const)('does not record %s', async code => {
+  it.each(['TARGET_NOT_FOUND', 'TARGET_ONLINE', 'DEVICE_PENDING_ASSIGNMENT', 'WAKE_LOOKUP_FAILED'] as const)('does not record %s', async code => {
     await recordWakeRefusal({ ...input, code });
     expect(mocks.insert).not.toHaveBeenCalled();
   });

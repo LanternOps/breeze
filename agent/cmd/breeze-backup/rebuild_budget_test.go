@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,12 +14,60 @@ import (
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
-// withRebuildBudget swaps the package budget for one test.
+// engineClock is the watchdog's progress clock for the tests that run on a
+// real budget. It stands still until the scripted engine starts, then runs in
+// real time from there.
+//
+// The watchdog starts before the bootstrap (authenticate, dry run, progress
+// posts), so on a real clock that bootstrap is idle time against the stall
+// window. fastBudget's window is 500ms; under -race on a loaded CI host the
+// bootstrap alone can outlast it, and the run ends "context canceled" from
+// the bootstrap instead of "stalled" from the engine (#9062; same family as
+// #8489). Production windows are minutes, so this is a test-scale problem
+// only and the watchdog itself is unchanged.
+type engineClock struct {
+	mu      sync.Mutex
+	start   time.Time
+	armedAt time.Time
+}
+
+func (c *engineClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.armedAt.IsZero() {
+		return c.start
+	}
+	return c.start.Add(time.Since(c.armedAt))
+}
+
+// arm starts the clock; scriptedRebuild calls it when the real run begins.
+func (c *engineClock) arm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.armedAt.IsZero() {
+		c.armedAt = time.Now()
+	}
+}
+
+// currentEngineClock is the clock withRebuildBudget installed for this test.
+// Tests are not parallel (rebuildWatchdogNow is process-global).
+var currentEngineClock *engineClock
+
+// withRebuildBudget swaps the package budget for one test and gives the
+// watchdog an engineClock, so the bootstrap does not count against the stall
+// window. A test that needs another clock overrides it afterwards (see
+// withFrozenWatchdogClock).
 func withRebuildBudget(t *testing.T, b rebuildBudget) {
 	t.Helper()
 	prev := bareMetalRebuildBudget
 	bareMetalRebuildBudget = b
-	t.Cleanup(func() { bareMetalRebuildBudget = prev })
+	prevNow, prevClock := rebuildWatchdogNow, currentEngineClock
+	clock := &engineClock{start: time.Now()}
+	rebuildWatchdogNow, currentEngineClock = clock.now, clock
+	t.Cleanup(func() {
+		bareMetalRebuildBudget = prev
+		rebuildWatchdogNow, currentEngineClock = prevNow, prevClock
+	})
 }
 
 // scriptedRebuild answers the dry run with a plan and hands the real run to
@@ -28,6 +77,9 @@ func scriptedRebuild(real func(ctx context.Context, opts rebuild.Options) (*rebu
 	return func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
 		if opts.DryRun {
 			return &rebuild.Result{Status: "completed", Plan: &rebuild.Plan{}}, nil
+		}
+		if currentEngineClock != nil {
+			currentEngineClock.arm()
 		}
 		return real(ctx, opts)
 	}
@@ -184,6 +236,32 @@ func TestExecBareMetalRebuild_DownloadBytesCountAsProgress(t *testing.T) {
 	}
 }
 
+// The bootstrap before the engine starts (authenticate, dry run) must not
+// count as idle time. The dry run here takes three stall windows; on a real
+// clock the watchdog stops the run in the startup phase before the engine
+// reports anything (#9062).
+func TestExecBareMetalRebuild_SlowBootstrapIsNotAStall(t *testing.T) {
+	b := fastBudget()
+	withRebuildBudget(t, b)
+	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+	fn := func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+		if opts.DryRun {
+			time.Sleep(3 * b.StallWindow)
+			return &rebuild.Result{Status: "completed", Plan: &rebuild.Plan{}}, nil
+		}
+		currentEngineClock.arm()
+		if ctx.Err() != nil { // the engine's own ctx checks: a cut run fails
+			return engineFailure(rebuild.PhaseRestore, ctx.Err())
+		}
+		opts.Progress(rebuild.PhaseRestore, "restored: f", 1, 2)
+		return &rebuild.Result{Status: "completed"}, nil
+	}
+	res := runExecWithGuard(t, context.Background(), server.URL, fn, 10*time.Second)
+	if !res.Success {
+		t.Fatalf("a slow bootstrap must not be a stall: %+v", res)
+	}
+}
+
 // Phases with no progress stream (convert, boot, ...) get the longer
 // opaque window, not the streaming one.
 func TestExecBareMetalRebuild_OpaquePhaseGetsTheLongerWindow(t *testing.T) {
@@ -221,7 +299,9 @@ func TestExecBareMetalRebuild_HungOpaquePhaseIsStopped(t *testing.T) {
 
 func TestExecBareMetalRebuild_CeilingIsADistinctReason(t *testing.T) {
 	b := fastBudget()
-	b.Ceiling = time.Second
+	// The ceiling is a real-time timer, so the bootstrap counts against it;
+	// 2s leaves room for a slow one.
+	b.Ceiling = 2 * time.Second
 	withRebuildBudget(t, b)
 	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
 	fn := scriptedRebuild(func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {

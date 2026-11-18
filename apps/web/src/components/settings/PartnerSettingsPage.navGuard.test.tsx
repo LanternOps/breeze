@@ -9,6 +9,7 @@ import { PARTNERS_ME_FIXTURE } from './partnerSettings/partnersMeFixture';
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
 import { ALL_TABS } from './partnerSettings/tabRegistry';
 import { SNAPSHOT } from './aiModels/testFixtures';
+import { makePolicyView } from './portalAccess/viewFixture';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -59,6 +60,7 @@ beforeEach(() => {
     if (url === '/orgs/partners/me') return json(PARTNERS_ME_FIXTURE);
     if (url === '/ai/models') return json(SNAPSHOT);
     if (url === '/partner/ai/data-policy') return json({ policy: null, canManage: true, defaults: { deviceFileReadLevel: 'off', toolOutputRetentionDays: 30 } });
+    if (url === '/orgs/partners/me/portal-access-policy') return json({ data: makePolicyView({ kind: 'partner' }) });
     void init;
     return json({ data: [] });
   });

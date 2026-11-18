@@ -25,6 +25,13 @@ const {
   assertActiveTenantContextMock,
   TenantInactiveErrorClass,
   getEffectiveMfaPolicyMock,
+  reserveAccountAttemptMock,
+  releaseAccountAttemptMock,
+  notifyAccountLockedMock,
+  assertPasswordAuthAllowedBySsoMock,
+  SsoPasswordAuthRequiredErrorClass,
+  enforceIpAllowlistMock,
+  authResponseFloorPromiseMock,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
@@ -57,6 +64,13 @@ const {
     assertActiveTenantContextMock: vi.fn(() => Promise.resolve()),
     TenantInactiveErrorClass,
     getEffectiveMfaPolicyMock: vi.fn(),
+    reserveAccountAttemptMock: vi.fn(),
+    releaseAccountAttemptMock: vi.fn(async () => undefined),
+    notifyAccountLockedMock: vi.fn(async () => undefined),
+    assertPasswordAuthAllowedBySsoMock: vi.fn(async () => undefined),
+    SsoPasswordAuthRequiredErrorClass: class SsoPasswordAuthRequiredError extends Error {},
+    enforceIpAllowlistMock: vi.fn(),
+    authResponseFloorPromiseMock: vi.fn(() => Promise.resolve()),
   };
 });
 
@@ -111,6 +125,7 @@ vi.mock('../../services/mfaPolicy', () => ({
 
 vi.mock('../auth/helpers', () => ({
   decryptMfaSecretForMigration: decryptMfaSecretForMigrationMock,
+  authResponseFloorPromise: authResponseFloorPromiseMock,
 }));
 
 vi.mock('../auth/schemas', () => ({
@@ -128,7 +143,22 @@ vi.mock('../../services/clientAiExchange', () => ({
 }));
 
 vi.mock('../../services/redis', () => ({ getRedis: getRedisMock }));
-vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
+vi.mock('../../services/rate-limit', () => ({
+  mfaLimiter: { limit: 5, windowSeconds: 300 },
+  rateLimiter: rateLimiterMock,
+  reserveAccountAttempt: reserveAccountAttemptMock,
+  releaseAccountAttempt: releaseAccountAttemptMock,
+}));
+vi.mock('../auth/login', () => ({ notifyAccountLocked: notifyAccountLockedMock }));
+vi.mock('../auth/ssoPolicy', () => ({
+  assertPasswordAuthAllowedBySso: assertPasswordAuthAllowedBySsoMock,
+  SsoPasswordAuthRequiredError: SsoPasswordAuthRequiredErrorClass,
+}));
+vi.mock('../../services/ipAllowlist', () => ({
+  enforceIpAllowlist: enforceIpAllowlistMock,
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+  IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
+}));
 vi.mock('../../services/clientIp', async (importOriginal) => ({
   rateLimitIpKey: (await importOriginal<typeof import('../../services/clientIp')>()).rateLimitIpKey,
   getTrustedClientIp: vi.fn(() => '203.0.113.7'),
@@ -218,6 +248,7 @@ const BIND_USER = {
   status: 'active',
   partnerId: PARTNER_ID,
   passwordHash: 'argon2-hash',
+  isPlatformAdmin: false,
   mfaEnabled: true,
   mfaMethod: 'totp',
   mfaSecret: 'encrypted-secret',
@@ -276,6 +307,10 @@ beforeEach(() => {
   createBindingMock.mockResolvedValue({ id: BINDING_ID });
   hashPasswordMock.mockResolvedValue('dummy-hash');
   assertActiveTenantContextMock.mockResolvedValue(undefined);
+  reserveAccountAttemptMock.mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
+  assertPasswordAuthAllowedBySsoMock.mockResolvedValue(undefined);
+  enforceIpAllowlistMock.mockResolvedValue({ decision: 'allow' });
+  authResponseFloorPromiseMock.mockImplementation(() => Promise.resolve());
   getEffectiveMfaPolicyMock.mockResolvedValue({
     required: true,
     allowedMethods: { totp: true, sms: true, passkey: true },
@@ -608,11 +643,15 @@ describe('POST /office-addin/auth/bind', () => {
     expect(createBindingMock).toHaveBeenCalledTimes(1);
   });
 
-  it('suspended/churned partner → 403 tenant_inactive, no binding created', async () => {
+  it('suspended/churned partner → the same 401 invalid_credentials as a wrong password, no binding created', async () => {
     assertActiveTenantContextMock.mockRejectedValue(new TenantInactiveErrorClass('nope'));
     const res = await postBind(buildApp());
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'tenant_inactive' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'denied', details: expect.objectContaining({ reason: 'tenant_inactive' }) }),
+    );
     expect(assertActiveTenantContextMock).toHaveBeenCalledWith({
       scope: 'partner',
       partnerId: PARTNER_ID,
@@ -621,12 +660,180 @@ describe('POST /office-addin/auth/bind', () => {
     expect(createBindingMock).not.toHaveBeenCalled();
   });
 
-  it('user with partner_id null (org-only user) → 403 not_a_technician', async () => {
+  it('user with partner_id null (org-only user) → the same 401 invalid_credentials as a wrong password', async () => {
     findUserForBindMock.mockResolvedValue({ ...BIND_USER, partnerId: null });
     const res = await postBind(buildApp());
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'not_a_technician' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'denied', details: expect.objectContaining({ reason: 'not_a_technician' }) }),
+    );
     expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  describe('per-account sign-in lockout (shared with /auth/login)', () => {
+    it('reserves the attempt on the account before checking the password', async () => {
+      const order: string[] = [];
+      reserveAccountAttemptMock.mockImplementationOnce(async () => {
+        order.push('reserve');
+        return { allowed: true, count: 1, reachesLimit: false };
+      });
+      verifyPasswordMock.mockImplementationOnce(async () => {
+        order.push('verify');
+        return false;
+      });
+
+      const res = await postBind(buildApp(), { email: 'Tech@MSP.example.com' });
+
+      expect(res.status).toBe(401);
+      expect(order).toEqual(['reserve', 'verify']);
+      expect(reserveAccountAttemptMock).toHaveBeenCalledWith(expect.anything(), 'tech@msp.example.com');
+      expect(releaseAccountAttemptMock).not.toHaveBeenCalled();
+      expect(notifyAccountLockedMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a locked account with the same 401, after the same password check, even with the right password', async () => {
+      reserveAccountAttemptMock.mockResolvedValueOnce({ allowed: false, count: 6, reachesLimit: false });
+
+      const res = await postBind(buildApp());
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+      expect(verifyPasswordMock).toHaveBeenCalledWith('argon2-hash', 'correct-horse-battery-staple');
+      expect(releaseAccountAttemptMock).not.toHaveBeenCalled();
+      expect(consumeMFATokenMock).not.toHaveBeenCalled();
+      expect(createBindingMock).not.toHaveBeenCalled();
+    });
+
+    it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
+      reserveAccountAttemptMock.mockResolvedValueOnce({ allowed: true, count: 5, reachesLimit: true });
+      verifyPasswordMock.mockResolvedValueOnce(false);
+
+      await postBind(buildApp());
+
+      expect(notifyAccountLockedMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: USER_ID, email: 'tech@msp.example.com' }),
+        5,
+      );
+      expect(releaseAccountAttemptMock).not.toHaveBeenCalled();
+    });
+
+    it('gives the attempt back after a correct password', async () => {
+      await postBind(buildApp());
+
+      expect(releaseAccountAttemptMock).toHaveBeenCalledWith(expect.anything(), 'tech@msp.example.com');
+    });
+
+    it('does not count attempts for an unknown, inactive or passwordless (SSO-only) account', async () => {
+      findUserForBindMock.mockResolvedValueOnce(null);
+      const unknown = await postBind(buildApp());
+      findUserForBindMock.mockResolvedValueOnce({ ...BIND_USER, status: 'disabled' });
+      const inactive = await postBind(buildApp());
+      findUserForBindMock.mockResolvedValueOnce({ ...BIND_USER, passwordHash: null });
+      const passwordless = await postBind(buildApp());
+
+      for (const res of [unknown, inactive, passwordless]) {
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+      }
+      expect(reserveAccountAttemptMock).not.toHaveBeenCalled();
+      // Equal work: a dummy password check runs instead.
+      expect(verifyPasswordMock).toHaveBeenCalledTimes(3);
+      expect(verifyPasswordMock).toHaveBeenLastCalledWith('dummy-hash', 'correct-horse-battery-staple');
+    });
+
+    it('limits verification codes per account the way sign-in does, before checking the code', async () => {
+      // The mock is declared without parameters; this one routes by key.
+      const byKey = async (_redis: unknown, key: string) =>
+        key.startsWith('mfa:')
+          ? { allowed: false, remaining: 0, resetAt: new Date() }
+          : { allowed: true, remaining: 19, resetAt: new Date() };
+      rateLimiterMock.mockImplementation(byKey as unknown as () => ReturnType<typeof byKey>);
+
+      const res = await postBind(buildApp());
+
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual({ error: 'rate_limited' });
+      expect(rateLimiterMock).toHaveBeenCalledWith(expect.anything(), `mfa:${USER_ID}`, 5, 300);
+      expect(consumeMFATokenMock).not.toHaveBeenCalled();
+      expect(createBindingMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('minimum response time (as /auth/login)', () => {
+    it.each([
+      ['an unknown account', () => findUserForBindMock.mockResolvedValueOnce(null)],
+      ['a suspended partner', () => assertActiveTenantContextMock.mockRejectedValueOnce(new TenantInactiveErrorClass('nope'))],
+      ['a partner that requires SSO', () => assertPasswordAuthAllowedBySsoMock.mockRejectedValueOnce(new SsoPasswordAuthRequiredErrorClass())],
+      ['a successful link', () => undefined],
+    ])('holds the answer for %s until the shared floor elapses', async (_label, arrange) => {
+      arrange();
+      let releaseFloor!: () => void;
+      authResponseFloorPromiseMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseFloor = resolve; }));
+      let settled = false;
+
+      const pending = Promise.resolve(postBind(buildApp())).then((res: Response) => { settled = true; return res; });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(authResponseFloorPromiseMock).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      releaseFloor();
+      expect((await pending).status).toBeGreaterThanOrEqual(200);
+      expect(settled).toBe(true);
+    });
+  });
+
+  describe('account state is revealed only after the checks /auth/login makes', () => {
+    it('a partner that requires SSO gets the same 401 invalid_credentials, no binding', async () => {
+      assertPasswordAuthAllowedBySsoMock.mockRejectedValueOnce(new SsoPasswordAuthRequiredErrorClass());
+
+      const res = await postBind(buildApp());
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+      expect(assertPasswordAuthAllowedBySsoMock).toHaveBeenCalledWith({ scope: 'partner', partnerId: PARTNER_ID, orgId: null });
+      expect(consumeMFATokenMock).not.toHaveBeenCalled();
+      expect(createBindingMock).not.toHaveBeenCalled();
+    });
+
+    it('a request from outside the partner IP allowlist gets 403 ip_not_allowed before any MFA state', async () => {
+      enforceIpAllowlistMock.mockResolvedValueOnce({ decision: 'deny', reason: 'not_in_list' });
+      findUserForBindMock.mockResolvedValueOnce({ ...BIND_USER, mfaEnabled: false, mfaSecret: null });
+
+      const res = await postBind(buildApp());
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'ip_not_allowed' });
+      expect(enforceIpAllowlistMock).toHaveBeenCalledWith(expect.anything(), {
+        partnerId: PARTNER_ID,
+        isPlatformAdmin: false,
+        actorId: USER_ID,
+        actorEmail: 'tech@msp.example.com',
+      });
+      expect(createBindingMock).not.toHaveBeenCalled();
+    });
+
+    it('an allowlist lookup failure gets the same 401 invalid_credentials, as at sign-in', async () => {
+      enforceIpAllowlistMock.mockRejectedValueOnce(new Error('settings read failed'));
+
+      const res = await postBind(buildApp());
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+      expect(createBindingMock).not.toHaveBeenCalled();
+    });
+
+    it('a wrong password never reaches the account, tenant, policy or network checks', async () => {
+      verifyPasswordMock.mockResolvedValueOnce(false);
+
+      await postBind(buildApp());
+
+      expect(assertActiveTenantContextMock).not.toHaveBeenCalled();
+      expect(assertPasswordAuthAllowedBySsoMock).not.toHaveBeenCalled();
+      expect(enforceIpAllowlistMock).not.toHaveBeenCalled();
+    });
   });
 
   it('missing scp access_as_user → 401 invalid_token (checked before any credential work)', async () => {

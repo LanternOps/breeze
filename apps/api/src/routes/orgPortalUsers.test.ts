@@ -4,14 +4,23 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
 
 const { valuesSpy, setSpy, executeSpy, updateWhereSpy, selectWhereSpy, issueTokenMock } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn(), executeSpy: vi.fn(), updateWhereSpy: vi.fn(), selectWhereSpy: vi.fn(), issueTokenMock: vi.fn(async () => 'raw-token') }));
-const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, auditMock } = vi.hoisted(() => ({
+const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, dropPortalRoleMock, auditMock } = vi.hoisted(() => ({
   createContactMock: vi.fn(),
   updateContactMock: vi.fn(),
+  dropPortalRoleMock: vi.fn(),
   auditMock: vi.fn(),
   authRef: { current: { scope: 'partner' as string, user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1' as string | null, canAccessOrg: (_id: string) => true } },
   selectResult: vi.fn(),
   insertReturning: vi.fn(),
   sendInvite: vi.fn()
+}));
+// The order of the DB calls a route makes ('select', 'for:<mode>', 'update',
+// 'tx:begin'/'tx:end' around a withDbTransaction, 'purge'), for the tests that
+// pin a read-under-lock shape. `txState.impl` null = withDbTransaction throws,
+// as it did before it was mocked (the invite branding read then falls back).
+const { events, txState } = vi.hoisted(() => ({
+  events: [] as string[],
+  txState: { impl: null as null | ((fn: () => Promise<unknown>) => Promise<unknown>) },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -21,11 +30,16 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: () => async (_c: any, next: any) => next()
 }));
 vi.mock('../db', () => ({
+  withDbTransaction: vi.fn((fn: () => Promise<unknown>) => {
+    if (!txState.impl) throw new Error('withDbTransaction is not wired in this test');
+    return txState.impl(fn);
+  }),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn((w: unknown) => {
           selectWhereSpy(w);
+          events.push('select');
           // `.for('key share')` pins the matched contact in the same read (the
           // caller writes an FK to it next), so the chain has to return itself.
           const leaf: any = {
@@ -36,14 +50,14 @@ vi.mock('../db', () => ({
           // `await ...where(x)` also resolves via selectResult().
           then: (resolve: any, reject: any) => selectResult().then(resolve, reject)
           };
-          leaf.for = vi.fn(() => leaf);
+          leaf.for = vi.fn((mode: string) => { events.push(`for:${mode}`); return leaf; });
           return leaf;
         })
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { valuesSpy(v); return { returning: vi.fn(() => insertReturning()) }; }) })),
     update: vi.fn(() => ({
-      set: vi.fn((v: unknown) => { setSpy(v); return ({
+      set: vi.fn((v: unknown) => { setSpy(v); events.push('update'); return ({
         where: vi.fn((w: unknown) => { updateWhereSpy(w); return ({
           returning: vi.fn(() => insertReturning()),
           // bulk-invite's per-user update has no `.returning()` leaf —
@@ -73,12 +87,23 @@ vi.mock('../services/contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
   return { ...actual, createContact: createContactMock, updateContact: updateContactMock };
 });
+vi.mock('../services/contacts/portalInvite', async () => {
+  const actual = await vi.importActual<typeof import('../services/contacts/portalInvite')>('../services/contacts/portalInvite');
+  return { ...actual, dropPortalRoleForRemovedLogin: dropPortalRoleMock };
+});
 vi.mock('../routes/portal/capabilityTokens', () => ({ issuePortalCapabilityToken: issueTokenMock }));
 vi.mock('../routes/portal/helpers', () => ({
   buildPortalUrl: (p: string) => `https://x/portal${p}`,
-  purgePortalSessionsForUsers: vi.fn(async () => 0),
+  purgePortalSessionsForUsers: vi.fn(async () => { events.push('purge'); return 0; }),
 }));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
+// W4 (#11381) spec §5.5: which methods the invite email offers comes from the
+// org's effective policy (resolved in a savepoint; its SQL is the integration suites').
+const { resolveMethods } = vi.hoisted(() => ({ resolveMethods: vi.fn() }));
+vi.mock('../services/portalSsoOnly', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/portalSsoOnly')>()),
+  resolveInviteSignInMethods: (...args: unknown[]) => resolveMethods(...args),
+}));
 
 import { QueryBuilder } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -90,7 +115,7 @@ import { purgePortalSessionsForUsers } from './portal/helpers';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const makeApp = () => { const app = new Hono(); app.use('*', authMiddleware as any); registerOrgPortalUsersRoutes(app); return app; };
-beforeEach(() => { vi.clearAllMocks(); selectResult.mockReset(); selectResult.mockResolvedValue([]); insertReturning.mockReset(); insertReturning.mockResolvedValue([]); issueTokenMock.mockResolvedValue('raw-token'); authRef.current = { scope: 'partner', user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1', canAccessOrg: () => true }; });
+beforeEach(() => { vi.clearAllMocks(); events.length = 0; txState.impl = null; resolveMethods.mockReset().mockResolvedValue({ microsoft: false, password: true }); selectResult.mockReset(); selectResult.mockResolvedValue([]); insertReturning.mockReset(); insertReturning.mockResolvedValue([]); issueTokenMock.mockResolvedValue('raw-token'); authRef.current = { scope: 'partner', user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1', canAccessOrg: () => true }; });
 
 describe('GET /organizations/:id/portal-users', () => {
   it('lists users with an effective status', async () => {
@@ -105,6 +130,45 @@ describe('GET /organizations/:id/portal-users', () => {
     const body = await res.json();
     expect(body.data.map((u: any) => u.effectiveStatus)).toEqual(['active', 'pending_setup']);
     expect(JSON.stringify(body)).not.toContain('passwordHash');
+  });
+
+  it('the users list carries disabledBy and each identity\'s disabled state', async () => {
+    const disabledAt = new Date('2027-02-01T10:00:00.000Z');
+    const rearmSince = new Date('2027-02-02T10:00:00.000Z');
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence
+      .mockResolvedValueOnce([
+        { id: 'pu-1', email: 'a@acme.example', name: 'A', passwordHash: null, status: 'disabled', disabledBy: 'directory', receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'entra' },
+        { id: 'pu-2', email: 'b@acme.example', name: 'B', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+        { id: 'pu-3', email: 'c@acme.example', name: 'C', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+      ])
+      // ONE identity read for every listed user (no N+1).
+      .mockResolvedValueOnce([
+        { portalUserId: 'pu-1', id: 'idn-1', provider: 'entra', disabledAt, disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', directoryRearmSince: null },
+        { portalUserId: 'pu-2', id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: rearmSince },
+        { portalUserId: 'pu-2', id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: null },
+      ]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data[0]).toMatchObject({
+      id: 'pu-1',
+      disabledBy: 'directory',
+      identityProviders: ['entra'],
+      identities: [{ id: 'idn-1', provider: 'entra', disabledAt: disabledAt.toISOString(), disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', rearmSince: null }],
+    });
+    expect(data[1]).toMatchObject({
+      id: 'pu-2',
+      disabledBy: null,
+      identityProviders: ['entra', 'google'],
+      identities: [
+        { id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: null },
+        { id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: rearmSince.toISOString() },
+      ],
+    });
+    expect(data[2]).toMatchObject({ id: 'pu-3', disabledBy: null, identityProviders: [], identities: [] });
+    // Three reads: org, users, identities — never one identity read per user.
+    expect(selectWhereSpy).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -126,6 +190,21 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     // request input. A partner-scoped caller must hand a real id over, or
     // portal invites silently stay on the platform sender forever.
     expect((sendInvite.mock.calls.at(-1)![0] as { partnerId?: string | null }).partnerId).toBe('p-1');
+  });
+
+  it('matches the existing login case-insensitively (#11529: same comparison as the contact-invite path)', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-new' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', email: 'ada@acme.example', status: 'invited' }]);
+    const res = await invite({ email: 'Ada@Acme.Example' });
+    expect(res.status).toBe(200);
+    const loginLookup = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[1]![0] as never);
+    expect(loginLookup.sql).toContain('lower(');
+    expect(loginLookup.params).toContain('ada@acme.example');
   });
 
   // ---- #3258 W03: an invited LOGIN is linked to the org's CONTACT ----
@@ -365,6 +444,65 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
     expect(res.status).toBe(200);
     expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
   });
+
+  // W8 (#11385, plan D2/D3): disabled_by follows status (CHECK
+  // portal_users_disabled_by_status_chk), and reactivation needs a USABLE credential.
+  const disabledRow = (over: Record<string, unknown> = {}) => ({
+    id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password',
+    status: 'disabled', disabledBy: 'msp', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false, hasUsableExternalIdentity: false, ...over,
+  });
+
+  it('msp_disable writes disabled_by msp; reactivate clears it (W8 D2)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    expect((await patch('pu-1', { status: 'disabled' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'disabled', disabledBy: 'msp' }));
+
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ disabledBy: 'directory' })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'active', disabledBy: null }));
+  });
+
+  it('a profile-only PATCH writes neither status nor disabled_by', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { name: 'New' })).status).toBe(200);
+    const set = setSpy.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(set).not.toHaveProperty('status');
+    expect(set).not.toHaveProperty('disabledBy');
+  });
+
+  it('reactivating an account whose only identity is disabled → 409 PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST, no update (review fix)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({
+      authMethod: 'entra', passwordHash: null, browserAccess: 'none', disabledBy: 'directory',
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    })]);
+    const setCalls = setSpy.mock.calls.length;
+    const res = await patch('pu-1', { status: 'active' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST');
+    expect(body.error).toMatch(/restore .*sign-in method first/i);
+    expect(setSpy.mock.calls.length).toBe(setCalls);
+  });
+
+  it('reactivating an account with a hash while password sign-in is off (sso_only) and no usable identity lands on invited', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, google: false, password: false });
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow()]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'invited' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(resolveMethods).toHaveBeenCalledWith(ORG_ID);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'invited', disabledBy: null }));
+  });
+
+  it('the target read selects both identity facts: any (identity-managed) and usable (a credential)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    await patch('pu-1', { status: 'disabled' });
+    const columns = vi.mocked(db.select).mock.calls.map((call) => Object.keys(((call as unknown[])[0] ?? {}) as Record<string, unknown>));
+    expect(columns[1]).toEqual(expect.arrayContaining(['hasExternalIdentity', 'hasUsableExternalIdentity', 'disabledBy']));
+  });
 });
 
 describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {
@@ -482,8 +620,28 @@ describe('DELETE /organizations/:id/portal-users/:userId', () => {
       .mockResolvedValueOnce([]) // comments ref
       .mockResolvedValueOnce([]); // checkouts ref
     // delete().where() resolves (mock deleteChain below)
+    txState.impl = async (fn) => fn();
     const res = await del('pu-1');
     expect(res.status).toBe(200);
+    expect(dropPortalRoleMock).not.toHaveBeenCalled(); // no contact bound
+  });
+  it('drops the contact portal role in the same transaction as the login delete (#11599)', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: ORG_ID, contactId: 'ct-1' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    txState.impl = async (fn) => {
+      events.push('tx:begin');
+      try { return await fn(); } finally { events.push('tx:end'); }
+    };
+    dropPortalRoleMock.mockImplementation(async () => { events.push('drop-role'); });
+    const res = await del('pu-1');
+    expect(res.status).toBe(200);
+    expect(dropPortalRoleMock).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID, contactId: 'ct-1', actor: { userId: 'u-1' } });
+    expect(events.indexOf('tx:begin')).toBeLessThan(events.indexOf('drop-role'));
+    expect(events.indexOf('drop-role')).toBeLessThan(events.indexOf('tx:end'));
   });
 });
 
@@ -767,5 +925,361 @@ describe('identities release B on the MSP portal-user routes (W3)', () => {
     const candidateWhere = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[1]![0] as never);
     expect(candidateWhere.sql).toMatch(/not exists \(select 1 from "portal_user_identities"/);
     expect(renderIdentityColumn(1)).toMatch(/= "portal_users"\."id"\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W4 (#11381) Task 9: the invite email follows the org's
+// sign-in methods (spec §5.5), the bulk SSO invite for stranded accounts, and
+// the MSP "give browser access" grant.
+// ---------------------------------------------------------------------------
+
+describe('invite email sign-in methods (W4, spec §5.5)', () => {
+  const invite = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const newInvite = () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])          // org existence
+      .mockResolvedValueOnce([])                        // no existing portal user
+      .mockResolvedValueOnce([{ id: 'ct-1' }])          // the contact on the address
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);    // org name
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', authEpoch: 1 }]);
+    return invite({ email: 'new@acme.example' });
+  };
+
+  it('invite email offers Microsoft first and hides the password option under sso_only', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    const res = await newInvite();
+    expect(res.status).toBe(200);
+    expect(resolveMethods).toHaveBeenCalledWith(ORG_ID);
+    const sent = sendInvite.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent.inviteUrl).toBe('https://x/portal/accept-invite?token=raw-token');
+    expect(sent.microsoftUrl).toBe('https://x/portal/accept-invite?token=raw-token&method=microsoft');
+    expect(sent.passwordAllowed).toBe(false);
+  });
+
+  it('Microsoft and password both allowed: the email carries both', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: true });
+    await newInvite();
+    expect(sendInvite.mock.calls[0]![0]).toMatchObject({
+      microsoftUrl: 'https://x/portal/accept-invite?token=raw-token&method=microsoft', passwordAllowed: true,
+    });
+  });
+
+  it('invite email is unchanged when Microsoft is off', async () => {
+    await newInvite();
+    const sent = sendInvite.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent.passwordAllowed).toBe(true);
+    expect(sent.microsoftUrl).toBeUndefined();
+  });
+
+  it('a policy read that fails sends no invite and issues no token (emailSent false)', async () => {
+    resolveMethods.mockRejectedValue(new Error('db down'));
+    const res = await newInvite();
+    expect(res.status).toBe(200);
+    expect((await res.json()).emailSent).toBe(false);
+    expect(issueTokenMock).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /organizations/:id/portal-users/sso-invite (W4)', () => {
+  const PU = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+  const row = (id: string, over: Record<string, unknown> = {}) => ({
+    id, orgId: ORG_ID, email: `${id.slice(-1)}@acme.example`, name: null, passwordHash: null, authMethod: 'password',
+    status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false, ...over,
+  });
+  const ssoInvite = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/sso-invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('Microsoft not effective for the org → 409 PORTAL_SSO_INVITE_UNAVAILABLE, nothing written or sent', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    const res = await ssoInvite({ portalUserIds: [PU(1)] });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: expect.any(String), code: 'PORTAL_SSO_INVITE_UNAVAILABLE' });
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+
+  /** withDbTransaction as a savepoint that runs its callback, bracketed in `events`. */
+  const savepoints = () => {
+    txState.impl = async (fn) => {
+      events.push('tx:begin');
+      try { return await fn(); } finally { events.push('tx:end'); }
+    };
+  };
+  /** Each account is read twice: its row lock, then its facts re-read under that lock. */
+  const locked = (r: ReturnType<typeof row>) => [[{ id: r.id }], [r]] as const;
+  const queue = (...results: ReadonlyArray<readonly unknown[]>) => { for (const r of results) selectResult.mockResolvedValueOnce(r); };
+  const NO_BRANDING: unknown[] = []; // issueAndSendInvite's partner-branding read (its own savepoint)
+
+  it('sso-invite re-invites only stranded accounts and reports not_stranded for the rest', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],                                                                    // org existence
+      [{ name: 'Acme Co' }],                                                               // org name
+      ...locked(row(PU(1))), NO_BRANDING,                                                  // stranded, invited
+      ...locked(row(PU(2), { status: 'active', passwordHash: 'h', hasExternalIdentity: true })), // has an identity
+      [],                                                                                  // not in this org (no row to lock)
+      ...locked(row(PU(4), { status: 'active', passwordHash: 'h' })), NO_BRANDING,         // stranded, active with a password
+      ...locked(row(PU(5), { status: 'active' })),                                         // stranded legacy row …
+      ...locked(row(PU(6), { status: 'disabled' })),                                       // disabled: not stranded
+    );
+    insertReturning
+      .mockResolvedValueOnce([{ authEpoch: 6 }])  // PU(1) moved
+      .mockResolvedValueOnce([{ authEpoch: 6 }])  // PU(4) moved (active with a password → invited)
+      .mockResolvedValueOnce([]);                 // … PU(5) changed under us (epoch guard)
+
+    const res = await ssoInvite({ portalUserIds: [PU(1), PU(2), PU(3), PU(4), PU(5), PU(6), PU(1)] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([
+      { portalUserId: PU(1), result: 'invited', emailSent: true },
+      { portalUserId: PU(2), result: 'not_stranded' },
+      { portalUserId: PU(3), result: 'not_stranded' },
+      { portalUserId: PU(4), result: 'invited', emailSent: true },
+      { portalUserId: PU(5), result: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' },
+      { portalUserId: PU(6), result: 'not_stranded' },
+    ]);
+    // The msp_sso_invite writer: invited + granted, epoch bumped, guarded by the epoch read.
+    expect(setSpy).toHaveBeenCalledTimes(3);
+    expect(setSpy.mock.calls[0]![0]).toMatchObject({ status: 'invited', browserAccess: 'granted', invitedBy: 'u-1' });
+    expect(setSpy.mock.calls[0]![0]).toHaveProperty('authEpoch');
+    expect(new PgDialect().sqlToQuery(updateWhereSpy.mock.calls[0]![0] as never).params).toEqual(expect.arrayContaining([PU(1), ORG_ID, 5]));
+    expect(purgePortalSessionsForUsers).toHaveBeenCalledWith([PU(1)]);
+    expect(purgePortalSessionsForUsers).toHaveBeenCalledWith([PU(4)]);
+    // Microsoft invites, each bound to the NEW epoch.
+    expect(issueTokenMock).toHaveBeenCalledTimes(2);
+    expect(issueTokenMock).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'invite', portalUserId: PU(1), authEpoch: 6 }));
+    expect(issueTokenMock).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'invite', portalUserId: PU(4), authEpoch: 6 }));
+    expect(sendInvite).toHaveBeenCalledTimes(2);
+    expect(sendInvite.mock.calls[0]![0]).toMatchObject({ to: '1@acme.example', microsoftUrl: expect.stringContaining('&method=microsoft'), passwordAllowed: false });
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID,
+      action: 'organization.portal_user.sso_invite',
+      details: { requested: 6, invited: 2, notStranded: 3, refused: 1 },
+    }));
+    // PU(1): row lock, re-read and write in ONE savepoint; the purge and the
+    // invite (its branding read in a savepoint of its own) only after it.
+    expect(events.slice(0, 13)).toEqual([
+      'select', 'select',                                                      // org existence, org name
+      'tx:begin', 'select', 'for:update', 'select', 'update', 'tx:end',       // PU(1) under its lock
+      'purge',
+      'tx:begin', 'select', 'tx:end',                                          // branding
+      'tx:begin',                                                              // PU(2) …
+    ]);
+  });
+
+  it('a purge failure after the write is logged and the invite is still sent (result invited)', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    savepoints();
+    queue([{ id: ORG_ID }], [{ name: 'Acme Co' }], ...locked(row(PU(1))), NO_BRANDING);
+    insertReturning.mockResolvedValueOnce([{ authEpoch: 6 }]);
+    vi.mocked(purgePortalSessionsForUsers).mockRejectedValueOnce(new Error('redis down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await ssoInvite({ portalUserIds: [PU(1)] });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ portalUserId: PU(1), result: 'invited', emailSent: true }]);
+      expect(sendInvite).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('reads eligibility under the row lock: a link that committed while the lock waited → not_stranded, nothing written', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],
+      [{ name: 'Acme Co' }],
+      [row(PU(1))],                                   // the lock (the snapshot from before the link committed)
+      [row(PU(1), { hasExternalIdentity: true })],    // the re-read AFTER the lock: the self-link is visible
+    );
+    insertReturning.mockResolvedValue([{ authEpoch: 6 }]);
+    const res = await ssoInvite({ portalUserIds: [PU(1)] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ portalUserId: PU(1), result: 'not_stranded' }]);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+    expect(events).toEqual(['select', 'select', 'tx:begin', 'select', 'for:update', 'select', 'tx:end']);
+    // The decision comes from the re-read: it carries the identity fact, the lock only the id.
+    const columns = vi.mocked(db.select).mock.calls.map((call) => Object.keys(((call as unknown[])[0] ?? {}) as Record<string, unknown>));
+    expect(columns[2]).toEqual(['id']);
+    expect(columns[3]).toContain('hasExternalIdentity');
+  });
+
+  it('while password sign-in is still allowed, an active account with a password is not stranded (nothing written)', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: true });
+    savepoints();
+    queue(
+      [{ id: ORG_ID }],
+      [{ name: 'Acme Co' }],
+      ...locked(row(PU(4), { status: 'active', passwordHash: 'h' })),
+    );
+    const res = await ssoInvite({ portalUserIds: [PU(4)] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([{ portalUserId: PU(4), result: 'not_stranded' }]);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(sendInvite).not.toHaveBeenCalled();
+  });
+
+  it('validates the batch: 1..100 uuids', async () => {
+    expect((await ssoInvite({ portalUserIds: [] })).status).toBe(400);
+    expect((await ssoInvite({ portalUserIds: ['nope'] })).status).toBe(400);
+    expect((await ssoInvite({ portalUserIds: Array.from({ length: 101 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`) })).status).toBe(400);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /organizations/:id/portal-users/:userId/browser-access (W4)', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'pu-1', orgId: ORG_ID, email: 'addin@acme.example', name: null, passwordHash: null, authMethod: 'entra',
+    status: 'active', authEpoch: 4, browserAccess: 'none', hasExternalIdentity: true, ...over,
+  });
+  const grant = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/pu-1/browser-access`, { method: 'POST' });
+
+  it('browser-access grant on an add-in account keeps its epoch; on a disabled account → 409', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([row()]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
+    const res = await grant();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { browserAccess: 'granted' } });
+    const set = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(set).toMatchObject({ status: 'active', browserAccess: 'granted' });
+    // No epoch bump: the person's live add-in sessions keep working.
+    expect(set).not.toHaveProperty('authEpoch');
+    expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
+    // Still guarded by the epoch it read.
+    expect(new PgDialect().sqlToQuery(updateWhereSpy.mock.calls[0]![0] as never).params).toEqual(expect.arrayContaining(['pu-1', ORG_ID, 4]));
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_ID,
+      action: 'organization.portal_user.browser_access.grant',
+      resourceType: 'portal_user',
+      resourceId: 'pu-1',
+      details: { email: 'addin@acme.example' },
+    });
+
+    vi.clearAllMocks();
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([row({ status: 'disabled' })]);
+    const disabled = await grant();
+    expect(disabled.status).toBe(409);
+    expect(await disabled.json()).toEqual({ error: 'This user is disabled. Reactivate them first.', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' });
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('an invited account → 409 with the writer message; a missing one → 404', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([row({ status: 'invited', authMethod: 'password', hasExternalIdentity: false })]);
+    const invited = await grant();
+    expect(invited.status).toBe(409);
+    expect(await invited.json()).toEqual({ error: 'This user has a pending invite.', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' });
+
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([]);
+    expect((await grant()).status).toBe(404);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('already granted: 200 with no write and no audit; a concurrent change → 409', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([row({ browserAccess: 'granted' })]);
+    const same = await grant();
+    expect(same.status).toBe(200);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([row()]);
+    insertReturning.mockResolvedValueOnce([]);
+    const raced = await grant();
+    expect(raced.status).toBe(409);
+    expect((await raced.json()).code).toBe('PORTAL_ACCOUNT_TRANSITION_REFUSED');
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W7 (#11384) D12: Google in the invite email and the
+// bulk SSO invite. The W4 cases above pin the Microsoft and password paths.
+// ---------------------------------------------------------------------------
+
+describe('W7: Google in invites and sso-invite (D12)', () => {
+  const INVITE_URL = 'https://x/portal/accept-invite?token=raw-token';
+  const newInvite = () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])          // org existence
+      .mockResolvedValueOnce([])                        // no existing portal user
+      .mockResolvedValueOnce([{ id: 'ct-1' }])          // the contact on the address
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);    // org name
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', authEpoch: 1 }]);
+    return makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'new@acme.example' }),
+    });
+  };
+  const sent = () => sendInvite.mock.calls[0]![0] as Record<string, unknown>;
+
+  it('invite email offers Google when only Google is effective, and both buttons when both are', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+
+    sendInvite.mockClear();
+    resolveMethods.mockResolvedValue({ microsoft: true, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({
+      microsoftUrl: `${INVITE_URL}&method=microsoft`, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true,
+    });
+  });
+
+  it('invite email hides the password option under sso_only with only Google', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: false });
+    expect(sent().microsoftUrl).toBeUndefined();
+  });
+
+  it('invite email is unchanged when no SSO method is effective', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+    expect(sent().googleUrl).toBeUndefined();
+  });
+
+  describe('sso-invite', () => {
+    const PU1 = '00000000-0000-4000-8000-000000000001';
+    const stranded = {
+      id: PU1, orgId: ORG_ID, email: '1@acme.example', name: null, passwordHash: null, authMethod: 'password',
+      status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false,
+    };
+    const ssoInvite = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/sso-invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portalUserIds: [PU1] }),
+    });
+
+    it('sso-invite works for a Google-only org and refuses 409 when neither SSO method is effective', async () => {
+      resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+      txState.impl = (fn) => fn();
+      selectResult
+        .mockResolvedValueOnce([{ id: ORG_ID }])      // org existence
+        .mockResolvedValueOnce([{ name: 'Acme Co' }]) // org name
+        .mockResolvedValueOnce([{ id: PU1 }])         // row lock
+        .mockResolvedValueOnce([stranded])            // facts under the lock
+        .mockResolvedValueOnce([]);                   // invite branding
+      insertReturning.mockResolvedValueOnce([{ authEpoch: 6 }]);
+      const ok = await ssoInvite();
+      expect(ok.status).toBe(200);
+      expect((await ok.json()).data).toEqual([{ portalUserId: PU1, result: 'invited', emailSent: true }]);
+      expect(sent()).toMatchObject({ to: '1@acme.example', googleUrl: expect.stringContaining('&method=google'), passwordAllowed: false });
+      expect(sent().microsoftUrl).toBeUndefined();
+
+      vi.clearAllMocks();
+      selectResult.mockReset().mockResolvedValue([]);
+      resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+      selectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      const refused = await ssoInvite();
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: expect.any(String), code: 'PORTAL_SSO_INVITE_UNAVAILABLE' });
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(sendInvite).not.toHaveBeenCalled();
+    });
   });
 });

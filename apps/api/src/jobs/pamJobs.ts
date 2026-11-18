@@ -15,11 +15,11 @@
  * server-side state change, audited and event-emitted.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { db } from '../db';
-import { elevationAudit, elevationRequests } from '../db/schema';
+import { aiToolExecutions, elevationAudit, elevationRequests } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
@@ -54,6 +54,8 @@ interface TransitionedRow extends Record<string, unknown> {
   device_id: string;
   flow_type: string;
   prior_status: string;
+  /** Set on the stale expirer's rows: the linked AI tool execution, if any. */
+  execution_id?: string | null;
 }
 
 function extractRows(result: unknown): TransitionedRow[] {
@@ -224,9 +226,37 @@ export async function expireStaleRequests(): Promise<number> {
       e.org_id,
       e.device_id,
       e.flow_type,
+      e.execution_id,
       'pending'::text AS prior_status;
     `);
     const expired = extractRows(transitioned);
+    // #12084 review: a Breeze Helper AI tool action's execution row is closed
+    // by its approval wait, but when every close-out write failed it stays
+    // pending, and nothing else reaps it. Expire it with its request, in this
+    // transaction (request first, then execution: the PAM decide's order), so
+    // the row does not stay pending forever. Guarded on 'pending': a closed
+    // or decided row is left as it is. In a savepoint, caught outside it (the
+    // enqueuePamRequestNotify pattern): a failure here leaves those rows as
+    // they were and must not undo, or keep re-blocking, the expiry of every
+    // request in this batch.
+    const executionIds = expired
+      .filter((row) => row.flow_type === 'ai_tool_action' && typeof row.execution_id === 'string')
+      .map((row) => row.execution_id as string);
+    if (executionIds.length > 0) {
+      try {
+        await tx.transaction(async (sp) => {
+          await sp
+            .update(aiToolExecutions)
+            // AI_APPROVAL_REQUEST_EXPIRED_MESSAGE (services/aiAgent.ts): read as
+            // "expired" by the chat card and a late click's 409.
+            .set({ status: 'rejected', errorMessage: 'Approval request expired', completedAt: new Date() })
+            .where(and(inArray(aiToolExecutions.id, executionIds), eq(aiToolExecutions.status, 'pending')));
+        });
+      } catch (err) {
+        console.error('[PamJobs] Failed to expire linked AI tool executions:', executionIds, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
     if (expired.length > 0) {
       await tx.insert(elevationAudit).values(expired.map((row) => ({
         orgId: row.org_id,

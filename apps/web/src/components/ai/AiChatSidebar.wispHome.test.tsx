@@ -1,7 +1,8 @@
 /**
  * W08 (#9921) Task 10: in Wisp mode the docked panel defers to the Wisp home —
- * an "Open in Wisp" link to /wisp, and no in-panel concern list (the home's
- * "needs your attention" owns it). Plain chat is untouched.
+ * a way to /wisp ("Open Wisp home" in the header's overflow menu since
+ * #critique), and no in-panel concern list (the home's "needs your attention"
+ * owns it). Plain chat is untouched.
  *
  * W05 of #10131 (#10136, spec §7): the panel's voice is decided by the grant,
  * not a toggle. Opened with an active grant it speaks as Wisp; a paused or
@@ -66,8 +67,17 @@ vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
 vi.mock('./AiModelPicker', () => ({ default: () => null }));
 vi.mock('./AiContinuationPrompt', () => ({ default: () => null }));
-vi.mock('./WispThreadHeader', () => ({ default: () => <div data-testid="wisp-thread-header-mock" /> }));
+// The compact header is the pane's whole header in Wisp mode: it renders the
+// pane's History / New / Close it is handed (its own title and menu are
+// WispThreadHeader.test's).
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { paneActions?: React.ReactNode; closeAction?: React.ReactNode }) => (
+    <div data-testid="wisp-thread-header-mock">{p.paneActions}{p.closeAction}</div>
+  ),
+}));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
+// #9429's bell (its behaviour is AiNotifyToggle.test's): a stub shows where it renders.
+vi.mock('./AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => <div data-testid="wisp-concerns-mock" /> }));
 
 import AiChatSidebar from './AiChatSidebar';
@@ -100,7 +110,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0)).then(() => new Promise
 const BASE = {
   isOpen: true, showHistory: false, sessionId: null, hydratedSessionId: null, messages: [],
   isStreaming: false, isLoading: false, error: null, errorCode: null, composerDraft: '',
-  topologySiteId: null, joinedMidResponse: false, wisp: null,
+  topologySiteId: null, joinedMidResponse: false, wisp: null, wispPageThreadId: null,
 };
 
 describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
@@ -109,14 +119,27 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
     useAiStore.setState(BASE);
   });
 
-  it('Wisp mode: "Open in Wisp" links to /wisp and the concern list is gone (the header stays)', () => {
+  it('Wisp mode: the compact header (whose menu opens the Wisp home) stays and the concern list is gone', () => {
     useAiStore.setState({ wisp: wisp() });
     render(<AiChatSidebar />);
     expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument();
-    const link = screen.getByTestId('wisp-sidebar-open-home');
-    expect(link).toHaveAttribute('href', '/wisp');
-    expect(link).toHaveTextContent('Open in Wisp');
+    // "Open Wisp home" is an item in the header's overflow menu now (WispThreadHeader.test).
     expect(screen.queryByTestId('wisp-concerns-mock')).toBeNull();
+  });
+
+  // #9429 × #critique: collapsing the Wisp header must not drop the notification bell.
+  it('the notification bell sits beside Close in the compact Wisp header and in the handed-off header', () => {
+    useAiStore.setState({ wisp: wisp() });
+    const view = render(<AiChatSidebar />);
+    const header = screen.getByTestId('wisp-thread-header-mock');
+    expect(header).toContainElement(screen.getByTestId('ai-notify-toggle'));
+    expect(screen.getByTestId('ai-notify-toggle').nextElementSibling).toBe(screen.getByTestId('ai-chat-close'));
+    view.unmount();
+    useAiStore.setState({ wisp: wisp(), sessionId: 's-w', hydratedSessionId: 's-w', wispPageThreadId: 'thread-1' });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-handed-off')).toBeInTheDocument();
+    expect(screen.getAllByTestId('ai-notify-toggle')).toHaveLength(1);
+    expect(screen.getByTestId('ai-notify-toggle').nextElementSibling).toBe(screen.getByTestId('ai-chat-close'));
   });
 
   it('plain chat: no Wisp link', () => {
@@ -138,7 +161,7 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
 });
 
 describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
-  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); });
+  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); return true; });
   const closeSession = vi.fn(async () => { useAiStore.setState({ sessionId: null }); });
   const createSession = vi.fn(async () => {});
 
@@ -162,11 +185,22 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
     render(<AiChatSidebar />);
     await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
     expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-pw', threadId: 'thread-of-grant-pw', status: 'active' });
-    await waitFor(() => expect(screen.getByText('Wisp')).toBeInTheDocument());
+    // The panel speaks as Wisp: the compact Wisp header (titled "Wisp") replaces the Breeze AI one.
+    await waitFor(() => expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument());
+    expect(screen.queryByText('Breeze AI')).toBeNull();
     expect(screen.queryByTestId('wisp-sidebar-meet')).toBeNull();
     // No toggle anywhere: the grant decides (spec §11 decision 4).
     expect(screen.queryByTestId('wisp-toggle')).toBeNull();
     expect(screen.queryByText('Turn on Wisp')).toBeNull();
+  });
+
+  it('#11672: opening the pane hands enterWispMode the thread\'s last session, so it continues the conversation', async () => {
+    const body = threadBody('grant-pw', 'active');
+    h.threads['/wisp/thread'] = { data: { ...body.data, thread: { ...body.data.thread, lastSessionId: 'sess-from-wisp-page' } } };
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
+    expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-pw', lastSessionId: 'sess-from-wisp-page' });
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it('finds a grant scoped to the selected organization when there is no partner-wide one', async () => {
@@ -390,7 +424,7 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
 });
 
 describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', () => {
-  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); });
+  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); return true; });
 
   beforeEach(() => {
     fetchMock.mockClear();
@@ -494,5 +528,86 @@ describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', (
     act(() => useAiStore.setState({ wisp: null }));
     await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
     expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-org' });
+  });
+});
+
+/**
+ * On a page whose own composer shows the Wisp thread (the Wisp home, a thread
+ * page) that composer is the conversation: the AI shortcut focuses it instead
+ * of opening the pane, and a pane open on the same thread hands off to it
+ * rather than repeating the header and the transcript. A different
+ * conversation keeps working in the pane.
+ */
+describe('AiChatSidebar hands off to the page composer on /wisp', () => {
+  const shortcut = () => act(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', metaKey: true, shiftKey: true, cancelable: true }));
+  });
+
+  beforeEach(() => {
+    h.serverOn = false;
+    kitProps.input = null;
+    useAiStore.setState({ ...BASE, isOpen: false, wispPageThreadId: null, wispPageComposerFocusRequest: 0 });
+  });
+
+  it('Cmd+Shift+A on the Wisp home focuses the page composer and leaves the pane closed', () => {
+    useAiStore.setState({ wisp: wisp(), sessionId: 's-w', hydratedSessionId: 's-w', wispPageThreadId: 'thread-1' });
+    render(<AiChatSidebar />);
+    shortcut();
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(1);
+    shortcut();
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(2);
+  });
+
+  it('off the Wisp home (or with another conversation in the store) Cmd+Shift+A toggles the pane as before', () => {
+    useAiStore.setState({ wisp: wisp(), sessionId: 's-w', hydratedSessionId: 's-w' });
+    const view = render(<AiChatSidebar />);
+    shortcut();
+    expect(useAiStore.getState().isOpen).toBe(true);
+    shortcut();
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(0);
+    view.unmount();
+    // The page shows thread-1, the store holds another thread: the pane is that conversation.
+    useAiStore.setState({ wisp: { ...wisp(), grantId: 'grant-2', threadId: 'thread-2' }, wispPageThreadId: 'thread-1' });
+    render(<AiChatSidebar />);
+    shortcut();
+    expect(useAiStore.getState().isOpen).toBe(true);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(0);
+  });
+
+  it('a pane open on the page’s thread renders one calm line and no compact header or transcript', () => {
+    useAiStore.setState({ isOpen: true, wisp: wisp(), sessionId: 's-w', hydratedSessionId: 's-w', wispPageThreadId: 'thread-1' });
+    render(<AiChatSidebar />);
+    const handedOff = screen.getByTestId('ai-chat-handed-off');
+    expect(handedOff).toHaveTextContent('This conversation is open on the page.');
+    expect(screen.queryByTestId('wisp-thread-header-mock')).toBeNull();
+    expect(kitProps.input).toBeNull();
+    // The pane can still be closed from its own header.
+    expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ai-chat-handed-off-focus'));
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(1);
+  });
+
+  it('a pane holding a different session keeps working as today', () => {
+    useAiStore.setState({
+      isOpen: true, wisp: { ...wisp(), grantId: 'grant-2', threadId: 'thread-2' }, sessionId: 's-2', hydratedSessionId: 's-2',
+      wispPageThreadId: 'thread-1',
+    });
+    const view = render(<AiChatSidebar />);
+    expect(screen.queryByTestId('ai-chat-handed-off')).toBeNull();
+    expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument();
+    expect(kitProps.input).not.toBeNull();
+    view.unmount();
+    // A plain chat (no Wisp at all) beside the page: the ordinary Breeze AI pane.
+    kitProps.input = null;
+    useAiStore.setState({ wisp: null, sessionId: 's-plain', hydratedSessionId: 's-plain' });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('ai-chat-handed-off')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+    expect(kitProps.input).not.toBeNull();
   });
 });

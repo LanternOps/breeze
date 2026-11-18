@@ -65,6 +65,7 @@ import {
 } from '../../jobs/backupCatchUp';
 import { __testOnly } from '../../jobs/backupWorker';
 import { reapStaleBackupJobs } from '../../jobs/staleCommandReaper';
+import { resetSignalRecordingWindowForTests } from '../../jobs/backupSignalRecording';
 import { createManualBackupJobIfIdle } from '../../services/backupJobCreation';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -422,6 +423,12 @@ describe('missed-schedule backup catch-up', () => {
 
   describe('the stale reaper', () => {
     const old = () => fromNow(-10 * HOUR);
+
+    // #11766: a fresh process discounts silence before its first reaper cycle;
+    // these cases are about the pending clocks, so recording is open throughout.
+    beforeEach(() => {
+      resetSignalRecordingWindowForTests(0);
+    });
 
     it('spares a job before catch_up_until, and settles it with the exact Missed text after', async () => {
       const t = await seedDevice();

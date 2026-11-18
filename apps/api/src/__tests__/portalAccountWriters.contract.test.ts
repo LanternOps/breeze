@@ -21,6 +21,13 @@ import { describe, expect, it } from 'vitest';
  * A new writer fails here until it is classified. A writer that stops writing
  * fails as stale. Generic SQL that never names the table (org merge repoint,
  * tenant cascade) is not a state writer and is not matched.
+ *
+ * W8 (#11385, plan D2): `portal_users.disabled_by` is set exactly when
+ * `status = 'disabled'` (CHECK portal_users_disabled_by_status_chk). Only the
+ * writers in DISABLED_BOUNDARY_WRITERS can move a row into or out of
+ * `disabled` (portalAccountState.test.ts proves it over the whole table), so a
+ * state-module file that plans one of them must write a `disabledBy` key, and
+ * a no-state file may not write `disabledBy` at all.
  */
 type Classification =
   | { kind: 'state-module' }
@@ -38,6 +45,37 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // login (planPortalAccountTransition, epoch-guarded).
   'apps/api/src/services/portalAccessRequests.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/profile.ts': { kind: 'no-state', reason: 'name / receiveNotifications / passwordHash only' },
+  // Portal registration W4 (#11381, plan D7): a tenant proof that displaces
+  // another org's mapping bumps auth_epoch (+ updated_at) on that org's
+  // accounts with an Entra identity in the tenant. Never status / browserAccess.
+  'apps/api/src/services/portalEntraTenantProof.ts': { kind: 'no-state', reason: 'authEpoch / updatedAt bump on displacement only' },
+  // Portal registration W4 (#11381) Microsoft sign-in: the identity-only
+  // account writer shared by W3 approval and instant mode
+  // (initialPortalAccountState), and OIDC account resolution (invite
+  // activation, instant browser grant — planPortalAccountTransition,
+  // epoch-guarded).
+  'apps/api/src/services/portalIdentityAccounts.ts': { kind: 'state-module' },
+  'apps/api/src/services/portalOidc/accountResolution.ts': { kind: 'state-module' },
+  // W4 linkPortalUserIdentity: the W3 D4 writer fence (entra_tenant_id /
+  // entra_oid) and the D12 password_hash clear when linking under sso_only.
+  'apps/api/src/services/portalUserIdentities.ts': { kind: 'no-state', reason: 'entraTenantId / entraOid / passwordHash / updatedAt on identity link only' },
+  // W4 (#11381) plan D12: an acknowledged sso_only save clears the hash and
+  // bumps the epoch of the flipped orgs' accounts that have an identity.
+  'apps/api/src/services/portalSsoOnly.ts': { kind: 'no-state', reason: 'passwordHash / authEpoch / updatedAt on an sso_only save only' },
+  // Portal registration W6 (#11383) plan D10: an instant-mode self-registration
+  // creates an invited + browser-granted account
+  // (initialPortalAccountState('self_registration_instant')).
+  'apps/api/src/services/portalSelfRegistration/complete.ts': { kind: 'state-module' },
+  // Portal registration W8 (#11385) plan D2/D9: disablePortalIdentity's
+  // account rule (directory_deprovision) and Restore's msp_reactivate, both
+  // planned by the state module under the account row lock, each writing
+  // disabledBy; plus OD3's remove (the W3 D4 entra_* fence, no state).
+  'apps/api/src/services/portalDirectory/identityDisable.ts': { kind: 'state-module' },
+  // Portal registration W9 (#11386) plan D4/D5: SCIM adoption grants browser
+  // access (scim_grant_browser_access) and a SCIM userName change updates an
+  // identity-only account's name/email. Deactivate / reactivate go through
+  // identityDisable.ts; new SCIM accounts through portalIdentityAccounts.ts.
+  'apps/api/src/services/portalScim/users.ts': { kind: 'state-module' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -72,9 +110,32 @@ function writeBlocks(code: string): string[] {
   return blocks;
 }
 
-/** A `status` / `browserAccess` key in a write block — literal, variable or shorthand. */
+/** A `status` / `browserAccess` / `disabledBy` key in a write block — literal, variable or shorthand. */
 export function writesStateKey(code: string): boolean {
-  return writeBlocks(code).some((block) => /(?:^|[{,\s])(status|browserAccess)\s*[:,}]/.test(block));
+  return writeBlocks(code).some((block) => /(?:^|[{,\s])(status|browserAccess|disabledBy)\s*[:,}]/.test(block));
+}
+
+/**
+ * W8: the file writes `disabledBy` — a key in a write block (literal, variable,
+ * shorthand), or a planned target's own value carried by a column helper that
+ * the write spreads (orgPortalUsers.ts `stateSet`: `disabledBy: target.disabledBy`).
+ */
+export function writesDisabledByKey(code: string): boolean {
+  return writeBlocks(code).some((block) => /(?:^|[{,\s])disabledBy\s*[:,}]/.test(block))
+    || /\bdisabledBy\s*:\s*\w+\.disabledBy\b/.test(code);
+}
+
+/** The writers whose plan can cross the `disabled` boundary (W8 D2). */
+// W9 (#11386, plan D4/D6): the SCIM deactivate / reactivate and the
+// inactive SCIM create also move a row across the boundary.
+const DISABLED_BOUNDARY_WRITERS = [
+  'msp_disable', 'msp_reactivate', 'directory_deprovision',
+  'scim_deprovision', 'scim_reactivate', 'scim_provision_inactive',
+] as const;
+
+/** A file that plans a boundary writer names it as a quoted string literal. */
+function plansBoundaryWriter(code: string): boolean {
+  return DISABLED_BOUNDARY_WRITERS.some((w) => code.includes(`'${w}'`) || code.includes(`"${w}"`));
 }
 
 function walk(dir: string, out: string[]): void {
@@ -144,6 +205,27 @@ describe('portal_users writers are classified against the account state machine 
     expect(writesStateKey(`db.insert(portalUsers).values({ orgId, browserAccess: grant })`)).toBe(true);
     expect(writesStateKey(`db.update(portalUsers).set({ passwordHash, authEpoch: sql\`x + 1\` })`)).toBe(false);
     expect(writesStateKey(`return c.json({ status: 'ok' })`)).toBe(false);
+  });
+
+  it('every state writer that can cross the disabled boundary writes disabled_by (W8 D2)', () => {
+    const boundary = Object.entries(PORTAL_USER_WRITERS)
+      .filter(([file, c]) => c.kind === 'state-module' && writers.has(file) && plansBoundaryWriter(writers.get(file)!))
+      .map(([file]) => file);
+    // Not vacuous: the MSP disable / reactivate route is one.
+    expect(boundary).toContain('apps/api/src/routes/orgPortalUsers.ts');
+    const missing = boundary.filter((file) => !writesDisabledByKey(writers.get(file)!));
+    expect(missing, 'these plan a disabled-boundary writer (msp_disable, msp_reactivate, directory_deprovision, scim_*) but never write disabledBy').toEqual([]);
+  });
+
+  it('the disabled_by detector catches literal, variable and shorthand writes (not vacuous)', () => {
+    expect(writesDisabledByKey(`db.update(portalUsers).set({ status: t.status, disabledBy: t.disabledBy })`)).toBe(true);
+    expect(writesDisabledByKey(`tx.update(portalUsers).set({ ...x, disabledBy })`)).toBe(true);
+    expect(writesDisabledByKey(`db.update(portalUsers).set({ status: t.status })`)).toBe(false);
+    expect(writesDisabledByKey(`function stateSet(target) { return { status: target.status, disabledBy: target.disabledBy }; }`)).toBe(true);
+    expect(writesDisabledByKey(`function stateSet(target) { return { status: target.status }; }`)).toBe(false);
+    expect(plansBoundaryWriter(`planPortalAccountTransition(facts, 'directory_deprovision')`)).toBe(true);
+    expect(plansBoundaryWriter(`planPortalAccountTransition(facts, 'msp_invite')`)).toBe(false);
+    expect(writesStateKey(`db.update(portalUsers).set({ disabledBy: 'msp' })`)).toBe(true);
   });
 
   it('the classification map has no stale entries', () => {

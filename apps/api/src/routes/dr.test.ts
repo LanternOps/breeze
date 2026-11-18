@@ -19,7 +19,7 @@ const classifyDrExecutionAuthorizationErrorMock = vi.fn(() => null as unknown);
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'orderBy', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'orderBy', 'limit', 'for', 'returning', 'values', 'set']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -49,6 +49,7 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => any) => fn()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -83,6 +84,9 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/drExecutionService', () => ({
+  DrPlanDefinitionError: class DrPlanDefinitionError extends Error {
+    constructor(readonly code: string) { super(code); }
+  },
   createDrExecutionAndEnqueue: (...args: unknown[]) => createDrExecutionAndEnqueueMock(...(args as [])),
   classifyDrExecutionAuthorizationError: (...args: unknown[]) =>
     classifyDrExecutionAuthorizationErrorMock(...(args as [])),
@@ -103,11 +107,27 @@ vi.mock('../middleware/auth', () => ({
 
 import { authMiddleware } from '../middleware/auth';
 
+/** drPlanWrites' reads: the plan row lock, then no pending or running execution. */
+function queuePlanWriteReads() {
+  selectMock
+    .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID }]))
+    .mockReturnValueOnce(chainMock([]));
+}
+
+/** drPlanWrites moves the plan revision after a group write. */
+function queueRevisionMove() {
+  updateMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID }]));
+}
+
 describe('dr routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    for (const mock of [selectMock, insertMock, updateMock, deleteMock]) {
+      mock.mockReset();
+      mock.mockImplementation(() => chainMock([]));
+    }
     permissionsState = null;
     classifyDrExecutionAuthorizationErrorMock.mockReturnValue(null);
     authState = {
@@ -177,6 +197,8 @@ describe('dr routes', () => {
     }]));
     // device-ownership check returns the assigned device as owned by this org
     selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID }]));
+    queuePlanWriteReads();
+    queueRevisionMove();
     insertMock.mockReturnValueOnce(chainMock([{
       id: GROUP_ID,
       planId: PLAN_ID,
@@ -238,6 +260,7 @@ describe('dr routes', () => {
       executionType: 'rehearsal',
       initiatedBy: 'user-123',
       auth: authState,
+      validateDefinition: expect.any(Function),
     });
   });
 
@@ -285,6 +308,7 @@ describe('dr routes', () => {
       name: 'Primary Site Failover',
       status: 'draft',
     }]));
+    queuePlanWriteReads();
     // Update returns the updated plan
     updateMock.mockReturnValueOnce(chainMock([{
       id: PLAN_ID,
@@ -319,6 +343,7 @@ describe('dr routes', () => {
       name: 'Primary Site Failover',
       status: 'active',
     }]));
+    queuePlanWriteReads();
     // Update sets status to archived
     updateMock.mockReturnValueOnce(chainMock([{
       id: PLAN_ID,
@@ -347,6 +372,7 @@ describe('dr routes', () => {
       name: 'Tier 1 Apps',
       sequence: 1,
     }]));
+    queuePlanWriteReads();
     // Update returns updated group
     updateMock.mockReturnValueOnce(chainMock([{
       id: GROUP_ID,
@@ -356,6 +382,7 @@ describe('dr routes', () => {
       sequence: 2,
       devices: [DEVICE_ID],
     }]));
+    queueRevisionMove();
 
     const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
       method: 'PATCH',
@@ -376,8 +403,9 @@ describe('dr routes', () => {
       planId: PLAN_ID,
       orgId: ORG_ID,
     }]));
-    // delete mock
-    deleteMock.mockReturnValueOnce(chainMock([]));
+    queuePlanWriteReads();
+    deleteMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID }]));
+    queueRevisionMove();
 
     const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
       method: 'DELETE',
@@ -540,6 +568,7 @@ describe('dr routes', () => {
       name: 'Tier 1 Apps',
       sequence: 1,
     }]));
+    queuePlanWriteReads();
     updateMock.mockReturnValueOnce(chainMock([{
       id: GROUP_ID,
       planId: PLAN_ID,
@@ -547,6 +576,7 @@ describe('dr routes', () => {
       name: 'Renamed',
       sequence: 1,
     }]));
+    queueRevisionMove();
 
     const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
       method: 'PATCH',
@@ -557,8 +587,9 @@ describe('dr routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.name).toBe('Renamed');
-    // only the group-existence select runs; no device-ownership select
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    // the group-existence select plus the plan write path's lock and
+    // execution check; no device-ownership select
+    expect(selectMock).toHaveBeenCalledTimes(3);
   });
 
   it('should reject aborting a completed execution', async () => {
@@ -619,6 +650,8 @@ describe('dr routes', () => {
       restrictToSiteA();
       selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
       selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
+      queuePlanWriteReads();
+      queueRevisionMove();
       insertMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID }]));
 
       const res = await app.request(`/dr/plans/${PLAN_ID}/groups`, {
@@ -801,7 +834,9 @@ describe('dr routes', () => {
         devices: [DEVICE_ID, deletedDeviceId],
       }]));
       selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]));
-      deleteMock.mockReturnValueOnce(chainMock([]));
+      queuePlanWriteReads();
+      queueRevisionMove();
+      deleteMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID }]));
 
       const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
         method: 'DELETE',
@@ -835,7 +870,9 @@ describe('dr routes', () => {
     // change behaviour: no extra lookup beyond the group existence check.
     it('costs an unrestricted caller no additional device lookup', async () => {
       selectMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID, devices: [OUT_OF_SITE_DEVICE_ID] }]));
-      deleteMock.mockReturnValueOnce(chainMock([]));
+      queuePlanWriteReads();
+      queueRevisionMove();
+      deleteMock.mockReturnValueOnce(chainMock([{ id: GROUP_ID }]));
 
       const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
         method: 'DELETE',
@@ -843,7 +880,9 @@ describe('dr routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(selectMock).toHaveBeenCalledTimes(1);
+      // the group existence check plus the plan write path's lock, execution
+      // check and dependent-group check; no device lookup
+      expect(selectMock).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -873,7 +912,10 @@ describe('dr routes', () => {
       selectMock
         .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]))
         .mockReturnValueOnce(chainMock([bmrGroup]));
-      createDrExecutionAndEnqueueMock.mockResolvedValueOnce({ id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', status: 'pending' });
+      createDrExecutionAndEnqueueMock.mockImplementationOnce(async (input: any) => {
+        await input.validateDefinition([bmrGroup]);
+        return { id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', status: 'pending' };
+      });
 
       const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
         method: 'POST',
@@ -882,6 +924,29 @@ describe('dr routes', () => {
       });
 
       expect(res.status).toBe(201);
+    });
+
+    it('checks backup:write against the definition the execution captured', async () => {
+      permissionsState = { allowedSiteIds: null, permissions: [{ resource: 'devices', action: 'execute' }] } as any;
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]))
+        .mockReturnValueOnce(chainMock([{ ...bmrGroup, restoreConfig: { commandType: 'vm_restore_from_backup' } }]));
+      let captured: unknown;
+      createDrExecutionAndEnqueueMock.mockImplementationOnce(async (input: any) => {
+        captured = await Promise.resolve(input.validateDefinition([bmrGroup])).then(() => 'allowed', (e: unknown) => e);
+        throw captured;
+      });
+      classifyDrExecutionAuthorizationErrorMock.mockImplementation(((error: any) =>
+        error?.code === 'backup_write_required' ? { status: 403, code: 'backup_write_required' } : null) as any);
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'failover' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('backup_write_required');
     });
 
     it('does not require backup:write for a plan without the step', async () => {
@@ -898,6 +963,157 @@ describe('dr routes', () => {
       });
 
       expect(res.status).toBe(201);
+    });
+  });
+
+  // Every plan and group write goes through drPlanWrites: the plan row is
+  // locked (execution creation takes the same lock), the write is refused
+  // while an execution is pending or running, and the plan revision moves.
+  describe('plan and group writes under an active execution', () => {
+    const planRow = { id: PLAN_ID, orgId: ORG_ID, name: 'Primary Site Failover', status: 'active' };
+    const groupRow = { id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID, name: 'Tier 1 Apps', sequence: 1, devices: [] };
+    // [method, path, body, the route's own reads before the write path]
+    const WRITES = [
+      ['POST', `/dr/plans/${PLAN_ID}/groups`, { name: 'Tier 2' }, [[planRow]]],
+      ['PATCH', `/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, { devices: [DEVICE_ID] }, [[groupRow], [{ id: DEVICE_ID, siteId: null }]]],
+      ['DELETE', `/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, undefined, [[groupRow]]],
+      ['PATCH', `/dr/plans/${PLAN_ID}`, { name: 'Renamed' }, [[planRow]]],
+      ['DELETE', `/dr/plans/${PLAN_ID}`, undefined, [[planRow]]],
+    ] as const;
+
+    function send(method: string, path: string, body: unknown) {
+      return app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+
+    function queueReads(routeReads: readonly (readonly unknown[])[], lockChain: unknown, active: unknown[]) {
+      selectMock.mockReset();
+      for (const rows of routeReads) selectMock.mockReturnValueOnce(chainMock([...rows]));
+      selectMock
+        .mockReturnValueOnce(lockChain as any)
+        .mockReturnValueOnce(chainMock(active))
+        .mockImplementation(() => chainMock([]));
+    }
+
+    it.each(WRITES)('%s %s is refused while an execution is pending or running', async (method, path, body, routeReads) => {
+      const lockChain = chainMock([{ id: PLAN_ID, orgId: ORG_ID }]);
+      queueReads(routeReads, lockChain, [{ id: EXECUTION_ID }]);
+
+      const res = await send(method, path, body);
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('dr_plan_execution_in_progress');
+      expect(lockChain.for).toHaveBeenCalledWith('update');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
+    it.each(WRITES)('%s %s moves the plan revision with the write', async (method, path, body, routeReads) => {
+      const lockChain = chainMock([{ id: PLAN_ID, orgId: ORG_ID }]);
+      queueReads(routeReads, lockChain, []);
+      insertMock.mockReturnValueOnce(chainMock([groupRow]));
+      deleteMock.mockReturnValueOnce(chainMock([groupRow]));
+      const planSets: Array<Record<string, unknown>> = [];
+      updateMock.mockImplementation(((table: { id?: string }) => {
+        const isPlan = table?.id === 'dr_plans.id';
+        const chain = chainMock([isPlan ? planRow : groupRow]);
+        const set = chain.set;
+        chain.set = vi.fn((values: Record<string, unknown>) => {
+          if (isPlan) planSets.push(values);
+          return set(values);
+        });
+        return chain;
+      }) as any);
+
+      const res = await send(method, path, body);
+
+      expect(res.status).toBeLessThan(300);
+      expect(lockChain.for).toHaveBeenCalledWith('update');
+      expect(planSets.some((values) => values.updatedAt instanceof Date)).toBe(true);
+    });
+  });
+
+  // A group's predecessor must be another group of the same plan, checked by
+  // drPlanWrites under the plan lock; a group others depend on is not deleted.
+  describe('recovery group dependencies', () => {
+    const OTHER_GROUP_ID = '99999999-9999-4999-8999-999999999999';
+    const planRow = { id: PLAN_ID, orgId: ORG_ID, name: 'Primary Site Failover', status: 'active' };
+    const groupRow = { id: GROUP_ID, planId: PLAN_ID, orgId: ORG_ID, name: 'Tier 1 Apps', sequence: 1, devices: [] };
+
+    it.each([
+      ['POST', `/dr/plans/${PLAN_ID}/groups`, { name: 'Tier 2', dependsOnGroupId: OTHER_GROUP_ID }, planRow],
+      ['PATCH', `/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, { dependsOnGroupId: OTHER_GROUP_ID }, groupRow],
+    ] as const)('%s %s refuses a predecessor that is not a group of the same plan', async (method, path, body, first) => {
+      selectMock.mockReturnValueOnce(chainMock([first]));
+      queuePlanWriteReads();
+      selectMock.mockReturnValueOnce(chainMock([])); // predecessor lookup in this plan and org finds nothing
+
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('invalid_group_dependency');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to delete a group another group depends on', async () => {
+      selectMock.mockReturnValueOnce(chainMock([groupRow]));
+      queuePlanWriteReads();
+      selectMock.mockReturnValueOnce(chainMock([{ id: OTHER_GROUP_ID }])); // a dependent group
+
+      const res = await app.request(`/dr/plans/${PLAN_ID}/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('dr_plan_group_has_dependents');
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('execution responses', () => {
+    const stored = {
+      id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', status: 'running',
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      results: { dispatchStatus: 'running', groupResults: [], definition: { version: 1, groups: [{ devices: [DEVICE_ID] }] } },
+    };
+
+    it('keep the stored execution definition out of the list, detail, start and abort bodies', async () => {
+      selectMock.mockReturnValueOnce(chainMock([stored]));
+      const list = await (await app.request('/dr/executions', { headers: { Authorization: 'Bearer token' } })).json();
+      expect(list.data[0].results).toEqual({ dispatchStatus: 'running', groupResults: [] });
+
+      selectMock
+        .mockReturnValueOnce(chainMock([stored]))
+        .mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID }]))
+        .mockReturnValueOnce(chainMock([]));
+      const detail = await (await app.request(`/dr/executions/${EXECUTION_ID}`, { headers: { Authorization: 'Bearer token' } })).json();
+      expect(detail.data.results).toEqual({ dispatchStatus: 'running', groupResults: [] });
+
+      selectMock.mockReturnValueOnce(chainMock([{ id: PLAN_ID, orgId: ORG_ID, status: 'active' }]));
+      createDrExecutionAndEnqueueMock.mockResolvedValueOnce(stored);
+      const started = await (await app.request(`/dr/plans/${PLAN_ID}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ executionType: 'rehearsal' }),
+      })).json();
+      expect(started.data.results).toEqual({ dispatchStatus: 'running', groupResults: [] });
+
+      selectMock.mockReturnValueOnce(chainMock([stored]));
+      updateMock.mockReturnValueOnce(chainMock([{ ...stored, status: 'aborted' }]));
+      const aborted = await (await app.request(`/dr/executions/${EXECUTION_ID}/abort`, {
+        method: 'POST', headers: { Authorization: 'Bearer token' },
+      })).json();
+      expect(aborted.data.results).toEqual({ dispatchStatus: 'running', groupResults: [] });
     });
   });
 

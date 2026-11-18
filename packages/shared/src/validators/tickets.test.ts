@@ -128,6 +128,10 @@ describe('ticket validators', () => {
       expect(r.data.sort).toBe('triage');
     }
     expect(listTicketsQuerySchema.safeParse({ statusGroup: 'weird' }).success).toBe(false);
+    // #8313: the imported filter is a strict boolean string.
+    expect(listTicketsQuerySchema.parse({ imported: 'true' }).imported).toBe(true);
+    expect(listTicketsQuerySchema.parse({ imported: 'false' }).imported).toBe(false);
+    expect(listTicketsQuerySchema.safeParse({ imported: '1' }).success).toBe(false);
   });
 
   it('list query accepts an optional deviceId uuid filter', () => {
@@ -322,6 +326,12 @@ describe('listTicketsQuerySchema showMerged (#8972)', () => {
     expect(listTicketsQuerySchema.parse({ showMerged: 'false' }).showMerged).toBe(false);
     expect(listTicketsQuerySchema.parse({}).showMerged).toBeUndefined();
     expect(listTicketsQuerySchema.safeParse({ showMerged: 'maybe' }).success).toBe(false);
+  });
+});
+
+describe('listTicketsQuerySchema sort updated (#12064)', () => {
+  it('accepts sort=updated', () => {
+    expect(listTicketsQuerySchema.parse({ sort: 'updated' }).sort).toBe('updated');
   });
 });
 

@@ -55,7 +55,11 @@ vi.mock('./readiness', () => ({ readinessInventory: vi.fn() }));
 vi.mock('./memoryBroker', () => ({ recallForGrant: vi.fn() }));
 vi.mock('./grants', () => ({ pauseGrant: vi.fn() }));
 vi.mock('../aiAgents/runService', () => ({ createAndEnqueueAgentRun: vi.fn() }));
-vi.mock('../aiAgents/assessmentProfile', () => ({ ASSESSMENT_BUDGET_CENTS_PER_RUN: 25 }));
+vi.mock('../aiAgents/assessmentProfile', async (importOriginal) => ({
+  ASSESSMENT_BUDGET_CENTS_PER_RUN: 25,
+  // #11978: the real trigger-subject parser (parseReason uses it).
+  parseCheckInSubject: (await importOriginal<typeof import('../aiAgents/assessmentProfile')>()).parseCheckInSubject,
+}));
 
 import { PARTNER_WIDE_PICTURE_ORG_ID, renderPartnerPicture, rollupPartnerPicture } from './assessment';
 

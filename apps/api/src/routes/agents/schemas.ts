@@ -5,6 +5,8 @@ import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 import { PG_UUID_REGEX } from '../../utils/uuid';
+import { normalizeSystemUuid } from '../../services/reinstallCandidates/systemUuid';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../../db/schema/backupConstants';
 
 // ============================================
 // Enrollment
@@ -44,6 +46,19 @@ const productSkuField = z.string().transform((value) => {
   return trimmed && trimmed.length <= 100 ? trimmed : undefined;
 }).optional();
 
+/**
+ * `systemUuid` on enroll and on the hardware report (#8318 §7.2). Tolerant: a
+ * value of any shape never fails the request. Absent stays `undefined` (the
+ * stored value is left alone); present is normalized with the agent's rules,
+ * and a rejected value (malformed, a placeholder, not a string) becomes
+ * `null`, which is stored as NULL.
+ */
+export const systemUuidField = z
+  .unknown()
+  .optional()
+  .transform((value): string | null | undefined =>
+    value === undefined ? undefined : normalizeSystemUuid(typeof value === 'string' ? value : null));
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -69,7 +84,8 @@ export const enrollSchema = z.object({
     motherboardProduct: z.string().optional(),
     motherboardVersion: z.string().optional(),
     biosVersion: z.string().optional(),
-    gpuModel: z.string().optional()
+    gpuModel: z.string().optional(),
+    systemUuid: systemUuidField,
   }).optional(),
   networkInfo: z.array(z.object({
     name: z.string(),
@@ -202,6 +218,11 @@ export const heartbeatSchema = z.object({
   // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
   // separately (a bad value is `invalid`: no state change, never coerced).
   watchdogInstall: z.unknown().optional(),
+  // #8868 — control-plane block episode. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/controlPlaneBlockHealth.parseControlPlaneBlock strict-parses it
+  // separately (a bad value is `invalid`: no change, never clears).
+  controlPlaneBlock: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),
@@ -436,6 +457,7 @@ export const heartbeatSchema = z.object({
     networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
     networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
     networkIsolationReady: z.boolean().optional().catch(undefined),
+    networkIsolationDeadMan: z.boolean().optional().catch(undefined),
 
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
@@ -692,9 +714,11 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
 }
 
 /**
- * The ten statuses an agent can report for a System Restore checkpoint
- * attempt (#4609, W06 #4757). Mirrors `Status` in
- * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * The eleven statuses an agent can report for a System Restore checkpoint
+ * attempt (#4609, W06 #4757; 'interrupted' #9163). Mirrors `Status` in
+ * agent/internal/systemrestore/types.go, except 'interrupted': the API accepts
+ * it ahead of the agent half of #9163, which adds `StatusInterrupted` (the
+ * API must be deployed first). 'requested' is deliberately absent:
  * it is server-only, written at command-creation time, and an agent claiming
  * it is malformed. Pinned against the shared union and the ledger statuses in
  * restorePointResultSchema.test.ts.
@@ -710,6 +734,7 @@ export const RESTORE_POINT_OUTCOME_STATUSES = [
   'insufficient_privileges',
   'verification_failed',
   'failed',
+  'interrupted',
 ] as const satisfies ReadonlyArray<RestorePointOutcome['status']>;
 
 const RESTORE_POINT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -794,6 +819,15 @@ export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | nu
   const classified = classifyRestorePointOutcome(raw);
   return classified.ok ? classified.outcome : null;
 }
+
+/**
+ * Longest command id an agent may send back. Ids the API issues are a short
+ * prefix plus a UUID; the longest agent-made id is `vault-auto-sync-` plus a
+ * snapshot id of up to BACKUP_SNAPSHOT_ID_MAX_LENGTH characters. The id becomes
+ * part of log lines, database lookups and cache keys, so a frame carrying a
+ * longer one is refused at the schema (and on the HTTP result route's path).
+ */
+export const MAX_AGENT_COMMAND_ID_LENGTH = Math.max(256, 'vault-auto-sync-'.length + BACKUP_SNAPSHOT_ID_MAX_LENGTH);
 
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
@@ -1059,6 +1093,7 @@ export const updateHardwareSchema = z.object({
   motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
+  systemUuid: systemUuidField,
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.
@@ -1124,7 +1159,8 @@ export const updateDisksSchema = z.object({
     usedGb: z.number(),
     freeGb: z.number(),
     usedPercent: z.number(),
-    health: z.string().optional()
+    health: z.string().optional(),
+    isOsVolume: z.boolean().optional()
   })).max(100)
 });
 

@@ -38,6 +38,13 @@ import { emitSystemMlFeedbackEvent } from './mlFeedback';
 import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * How far back the risk score reads auth `sessions` (by `created_at`). The
+ * history retention job's auth-session window floors at this value
+ * (`jobs/historyRetention/accessHistory.ts`), so it never deletes rows this
+ * read still counts.
+ */
+export const USER_RISK_SESSION_LOOKBACK_DAYS = 30;
 const HIGH_EVENT_TYPE = 'user.risk_score_high';
 const SPIKE_EVENT_TYPE = 'user.risk_score_spike';
 const TRAINING_ASSIGNED_EVENT_TYPE = 'user.training_assigned';
@@ -618,6 +625,7 @@ async function computeOrgUserRiskRows(
 ): Promise<ComputedUserRisk[]> {
   const now = new Date();
   const since30d = new Date(now.getTime() - 30 * DAY_MS);
+  const sinceSessionLookback = new Date(now.getTime() - USER_RISK_SESSION_LOOKBACK_DAYS * DAY_MS);
   const since14d = new Date(now.getTime() - 14 * DAY_MS);
 
   const memberships = await fetchOrgUsers(orgId, targetUserIds);
@@ -659,7 +667,7 @@ async function computeOrgUserRiskRows(
       .where(
         and(
           inArray(sessions.userId, userIds),
-          gte(sessions.createdAt, since30d)
+          gte(sessions.createdAt, sinceSessionLookback)
         )
       ),
     db

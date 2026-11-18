@@ -218,7 +218,7 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
     expect(worker.get('eventDispatch')).toBe(true);
     expect(worker.get('eventDispatchMaintenance')).toBe(false); // optional marker, even with the flag on
     expect(worker.has('agentCommandRelay')).toBe(false);
-    expect(worker.has('orgMerge')).toBe(false); // a socket-owner entry
+    expect(worker.has('aiTranscriptSweeper')).toBe(false); // a socket-owner entry
   });
 
   it('api ∪ worker == all, with no name declared in both', () => {
@@ -230,7 +230,7 @@ describe('role-scoped, rule-resolved declarations (spec section 5, D3/D3a)', () 
 
   it.each([
     ['event_dispatch_enabled', 'eventDispatch', 'worker', { ...ALL_ON, eventDispatchEnabled: false }],
-    ['ai_agents_enabled', 'aiAgentRunner', 'api', { ...ALL_ON, aiAgentsEnabled: false }],
+    ['ai_agents_enabled', 'aiAgentRunner', 'worker', { ...ALL_ON, aiAgentsEnabled: false }],
     ['abuse_or_partner_trust_enabled', 'abuseSignalsWorker', 'worker', { ...ALL_ON, abuseSignalsEnabled: false, partnerTrustEnabled: false }],
     ['audit_chain_verify_enabled', 'auditChainVerify', 'worker', { ...ALL_ON, auditChainVerifyEnabled: false }],
     ['sending_domains_configured', 'sendingDomainsWorker', 'worker', { ...ALL_ON, sendingDomainsConfigured: false }],

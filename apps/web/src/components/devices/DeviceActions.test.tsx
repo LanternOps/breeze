@@ -672,3 +672,45 @@ vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
   hasPermission: () => true,
 }));
+
+// #10838 W02 — the server decides whether Wake shows (`wakeAvailability`);
+// the client only honours an explicit `show: false`.
+describe('DeviceActions — wake availability gating (#10838)', () => {
+  const hidden = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false } as const;
+  const noPolicy = { show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false } as const;
+  const wakeButtons = () => screen.queryAllByRole('button', { name: /^wake$/i })
+    .concat(screen.queryAllByRole('menuitem', { name: /^wake$/i }));
+
+  it('shows Wake for an offline device with no policy (mode none, show true)', () => {
+    render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: noPolicy }} />);
+    expect(wakeButtons().length).toBeGreaterThan(0);
+  });
+
+  it('shows Wake when the API predates wakeAvailability (field absent)', () => {
+    render(<DeviceActions device={offlineDevice} />);
+    expect(wakeButtons().length).toBeGreaterThan(0);
+  });
+
+  it('hides Wake from the action bar when show is false', () => {
+    render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: hidden }} />);
+    expect(wakeButtons()).toHaveLength(0);
+  });
+
+  it('hides Wake from the overflow menu when show is false', async () => {
+    render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: hidden }} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(wakeButtons()).toHaveLength(0);
+  });
+
+  it('hides Wake from the compact menu when show is false', () => {
+    render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: hidden }} compact />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByRole('menuitem', { name: /^reboot$/i })).toBeInTheDocument(); // the menu is open
+    expect(wakeButtons()).toHaveLength(0);
+  });
+
+  it('shows no WOL prompt or warning text on the device header', () => {
+    const { container } = render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: hidden }} />);
+    expect(container.textContent ?? '').not.toMatch(/wake-on-lan|wake on lan|wol/i);
+  });
+});

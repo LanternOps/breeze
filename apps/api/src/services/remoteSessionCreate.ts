@@ -80,6 +80,33 @@ export class RemoteSessionLeaseBaselineError extends HTTPException {
   }
 }
 
+/**
+ * The partner-trust gate on minting a Quick Support code: the `remote_control`
+ * capability for the minting partner. Creating a session runs it (below), and
+ * so does every other path that hands a technician a fresh live code for an
+ * existing session ("New code", #11836) — a fresh code is a fresh credential,
+ * so a partner the trust policy refuses must not get one either way.
+ * Throws RemoteSessionDeniedError on deny; a no-op when trust mode is off.
+ */
+export async function assertSupportCodeMintAllowed(
+  partnerId: string,
+  userId: string,
+  detail: Record<string, unknown> = {},
+): Promise<void> {
+  if (partnerTrustMode() === 'off') return;
+  if (partnerId) {
+    const decision = await evaluateCapability('remote_control', {
+      partnerId,
+      userId,
+      detail: { kind: 'support', ...detail },
+    });
+    if (!decision.allow) throw new RemoteSessionDeniedError(decision.code, decision.reason);
+    return;
+  }
+  const unresolved = await unresolvedPartnerDecision('remote_control');
+  if (!unresolved.allow) throw new RemoteSessionDeniedError(unresolved.code, unresolved.reason);
+}
+
 export async function createRemoteSession(
   kind: 'remote',
   input: RemoteSessionInput,
@@ -96,18 +123,18 @@ export async function createRemoteSession(
   kind: SessionKind,
   input: RemoteSessionInput | (SupportSessionInsert & { partnerId: string }) | TunnelSessionInsert,
 ): Promise<{ id: string; status: string } | SupportSessionRow | TunnelSessionRow> {
-  if (partnerTrustMode() !== 'off') {
-    const partnerId = kind === 'support'
-      ? (input as SupportSessionInsert & { partnerId: string }).partnerId
-      : await partnerIdForDevice((input as RemoteSessionInput | TunnelSessionInsert).deviceId);
+  if (kind === 'support') {
+    const support = input as SupportSessionInsert & { partnerId: string };
+    await assertSupportCodeMintAllowed(support.partnerId, support.createdByUserId);
+  } else if (partnerTrustMode() !== 'off') {
+    const device = input as RemoteSessionInput | TunnelSessionInsert;
+    const partnerId = await partnerIdForDevice(device.deviceId);
 
     if (partnerId) {
       const decision = await evaluateCapability('remote_control', {
         partnerId,
-        deviceId: kind === 'support' ? undefined : (input as RemoteSessionInput | TunnelSessionInsert).deviceId,
-        userId: kind === 'support'
-          ? (input as SupportSessionInsert & { partnerId: string }).createdByUserId
-          : (input as RemoteSessionInput | TunnelSessionInsert).userId,
+        deviceId: device.deviceId,
+        userId: device.userId,
         detail: { kind },
       });
       if (!decision.allow) {

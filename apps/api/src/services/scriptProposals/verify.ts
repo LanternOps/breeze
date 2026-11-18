@@ -90,8 +90,8 @@ export async function evaluateVerificationClaim(
     case 'output_matches': {
       // Defence in depth against a row authored before pattern-complexity
       // validation existed at the schema layer (or a schema regression):
-      // this worker runs the pattern synchronously on the shared,
-      // socket-owner-placed process, so it must not trust that "compiled at
+      // this worker runs the pattern synchronously on a shared worker
+      // process, so it must not trust that "compiled at
       // authoring time" also means "bounded". Unsafe here is unknown, not a
       // crash — same non-punitive posture as an invalid regex below.
       if (!validateRegexSafety(c.regex).ok) {

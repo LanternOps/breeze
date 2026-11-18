@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Não foi possível enviar notificação de teste.",
     "failedToLoadCommunicationSettings": "Falha ao carregar as configurações de comunicação",
     "slackSettingsSaved": "Configurações do Slack salvas.",
-    "slackTestNotificationQueued": "Notificação de teste do Slack na fila.",
     "teamsSettingsSaved": "Configurações de equipes salvas.",
-    "teamsTestNotificationQueued": "Notificação de teste do Teams na fila.",
     "discordSettingsSaved": "Configurações do Discord salvas.",
-    "discordTestNotificationQueued": "Notificação de teste do Discord na fila.",
+    "discordTestNotificationSent": "Notificação de teste do Discord enviada.",
     "loadingCommunicationIntegrations": "Carregando integrações de comunicação...",
     "communicationIntegrations": "Integrações de comunicação",
     "connectChatToolsRouteAlertsBySeverityAnd": "Conecte ferramentas de chat, encaminhe alertas por gravidade e personalize modelos de mensagens. ",
@@ -374,6 +372,9 @@
       "delivery_failed": "Falha nas entregas",
       "sync_stale": "Sincronização parada",
       "verification_failed": "Falha na verificação",
+      "destination_access_denied": "O destino recusou o acesso",
+      "destination_not_found": "Destino não encontrado",
+      "destination_failing": "O destino está falhando",
       "unknown": "Requer atenção"
     }
   },
@@ -1074,7 +1075,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",
     "siteMappingsSaved": "Mapeamentos de sites salvos",
-    "pickTheSiteThisControllerServesACollector": "Escolha o site que este controlador atende, um agente coletor e insira a URL do controlador e a chave de API local.",
+    "pickTheSiteThisControllerServesACollector": "Escolha o local do agente coletor e um agente coletor e insira a URL do controlador e a chave de API local.",
     "failedToRegisterTheController": "Falha ao registrar o controlador.",
     "controllerRegistered": "Controlador registrado",
     "pickABreezeSiteACollectorAgentAnd": "Escolha um site Breeze, um agente coletor e insira o URL do controlador e a chave de API local.",

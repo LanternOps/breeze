@@ -29,7 +29,10 @@
  *   - `audit_logs` is in the cascade list (it has an `org_id` column).
  *   - `breeze_app` cannot DELETE from `audit_logs` (Task 29 trigger);
  *     the cascade runs `SET LOCAL ROLE breeze_audit_admin` +
- *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table.
+ *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table
+ *     (and the other AUDIT_ADMIN_REQUIRED_TABLES), or, when
+ *     AUDIT_ADMIN_DATABASE_URL is set, runs those steps on the dedicated
+ *     breeze_audit_admin connection instead (#11929).
  *   - The `tenant.erasure` audit event itself is written with
  *     `org_id = NULL` BEFORE the cascade so it survives the cascade.
  *
@@ -39,6 +42,7 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
+import { hasDedicatedAuditAdminPool, withAuditAdminTransaction } from '../db/auditAdminPool';
 import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
 import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from './networkIsolation/lifecycle';
@@ -891,7 +895,6 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // every org_id-columned public table be enumerated for auditability).
   'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
-  'patch_compliance_snapshots',
   'patch_jobs',
   'pax8_company_mappings',
   'pax8_contract_line_links',
@@ -917,6 +920,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'portal_access_policies',
   'portal_access_requests',
   'portal_branding',
+  // portal_directory_actions / portal_directory_runs (W8 #11385): shape 1.
+  // Actions carry composite (x, org_id) FKs to runs, portal_user_identities and
+  // portal_users (all ON DELETE CASCADE), so they go before every parent; runs
+  // go before nothing they reference. localeCompare: 'portal_branding' <
+  // 'portal_directory_actions' < 'portal_directory_runs' < 'portal_user_identities'.
+  'portal_directory_actions',
+  'portal_directory_runs',
+  // portal_scim_tokens (W9 #11386): shape 1, a cascade leaf (references only
+  // organizations and users). localeCompare: 'portal_directory_runs' <
+  // 'portal_scim_tokens' < 'portal_user_identities'.
+  'portal_scim_tokens',
   // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
   'portal_user_identities',
   'portal_users',
@@ -2527,6 +2541,15 @@ async function cascadeDeleteOrgInternal(
         ? await deleteAiScreenshotsCascadeStep(orgId)
         : table === 'patch_compliance_reports'
         ? await deletePatchComplianceReportsCascadeStep(orgId)
+        : AUDIT_ADMIN_REQUIRED_TABLES.has(table) && hasDedicatedAuditAdminPool()
+        // AUDIT_ADMIN_DATABASE_URL set: run this table's step on the dedicated
+        // breeze_audit_admin login, which keeps working after breeze_app's
+        // membership is revoked (#915, #11929). Same one-transaction-per-table
+        // shape and the same erasure marker as the branch below.
+        ? await withAuditAdminTransaction(async (adminTx) => {
+            await adminTx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${orgId}, true)`);
+            return extractRowCount(await adminTx.execute(orgRowsDeleteSql(table, orgId)));
+          })
         : await dbModule.withSystemDbAccessContext(async () => {
             // Every walk transaction is marked as this org's erasure, so the
             // on-delete fence trigger records any backup source row deleted in
@@ -2717,18 +2740,20 @@ async function writeErasureFailedAudit(
   }
 }
 
+function orgRowsDeleteSql(table: string, orgId: string) {
+  // `organizations` is id-keyed (its own primary key IS the org id);
+  // every other table in the list has an `org_id` column.
+  if (table === 'organizations') {
+    return sql`DELETE FROM organizations WHERE id = ${orgId}`;
+  }
+  return sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`;
+}
+
 function deleteOrgRows(
   table: string,
   orgId: string,
 ): ReturnType<typeof dbModule.db.execute> {
-  // `organizations` is id-keyed (its own primary key IS the org id);
-  // every other table in the list has an `org_id` column.
-  if (table === 'organizations') {
-    return dbModule.db.execute(sql`DELETE FROM organizations WHERE id = ${orgId}`);
-  }
-  return dbModule.db.execute(
-    sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`,
-  );
+  return dbModule.db.execute(orgRowsDeleteSql(table, orgId));
 }
 
 function isUndefinedTable(err: unknown): boolean {

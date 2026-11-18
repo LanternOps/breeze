@@ -32,6 +32,7 @@ import {
   siteScopeFingerprint,
   type UserReportExecutionAuthority,
 } from '../siteScope';
+import { imageBytesFromDataUrl, withPngDecodeSlot } from '../pngDecodeLimits';
 
 const PORTAL_DEFINITIONS = [
   {
@@ -824,21 +825,23 @@ export async function renderRunPdf(
   if (!result) throw new Error('Report result is unavailable');
 
   const branding = await getReportBranding(orgId);
-  const generatedAt = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(row.completedAt ?? new Date());
+  // The instant, not a string: the renderer prints it in the partner's date
+  // format with its timezone, like every other report path (#12048).
+  const generatedAt = row.completedAt ?? new Date();
 
-  const document = buildReportPdf(result.rows ?? [], {
-    reportType: row.type,
-    generatedAt,
-    timezone,
-    summary: result.summary as BuildOpts['summary'],
-    previous: result.previous,
-    branding,
+  // The logo is decoded while the PDF is built and written; a large one holds
+  // the process-wide large-decode slot (pngDecodeLimits.ts).
+  return withPngDecodeSlot(imageBytesFromDataUrl(branding?.logoDataUrl), () => {
+    const document = buildReportPdf(result.rows ?? [], {
+      reportType: row.type,
+      generatedAt,
+      timezone,
+      summary: result.summary as BuildOpts['summary'],
+      previous: result.previous,
+      branding,
+    });
+    return Buffer.from(document.output('arraybuffer'));
   });
-  return Buffer.from(document.output('arraybuffer'));
 }
 
 export async function renderRunCsv(

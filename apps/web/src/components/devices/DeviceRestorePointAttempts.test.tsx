@@ -113,10 +113,19 @@ describe('DeviceRestorePointAttempts', () => {
     expect(badge.textContent).not.toMatch(/confirmed/i);
   });
 
+  it('renders an interrupted row with its own copy, not the unknown-status fallback (#9163)', async () => {
+    fetchMock.mockResolvedValue(respond({ attempts: [attempt({ status: 'interrupted', trigger: 'script' })] }));
+    render(<DeviceRestorePointAttempts deviceId="dev-1" />);
+    const badge = await screen.findByTestId('restore-point-badge');
+    expect(badge.textContent).toBe('Unknown — the agent stopped before it could report this restore point');
+    expect(badge.textContent).not.toMatch(/not recognised/i);
+    expect(badge.getAttribute('data-tone')).toBe('warning');
+  });
+
   it('never renders a recoverability promise anywhere on the list', async () => {
     const statuses = [
       'requested', 'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation',
-      'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed',
+      'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed', 'interrupted',
     ];
     fetchMock.mockResolvedValue(
       respond({

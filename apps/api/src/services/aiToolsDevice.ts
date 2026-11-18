@@ -36,6 +36,7 @@ import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { sqlTextArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
@@ -47,7 +48,7 @@ import { getDeviceWorkloadsView } from './workloads/view';
 import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
-import { projectPublicDevice } from '../routes/devices/helpers';
+import { projectPublicDeviceForCaller } from '../routes/devices/helpers';
 import { readPlacement } from './assetPlacement';
 import {
   sanitizeUntrustedText,
@@ -340,7 +341,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
-          ...projectPublicDevice(device),
+          ...(await projectPublicDeviceForCaller(device, auth)),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
@@ -775,6 +776,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_tags', action, auth);
+      if (mfaError) return mfaError;
 
       if (action === 'list') {
         const conditions: SQL[] = [];

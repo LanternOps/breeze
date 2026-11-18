@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Membership writers take the org export lock first; it is a database call
+// this file's mocked db cannot run. Each writer's lock order is checked on
+// real Postgres by its own race in groupMembershipWriteOrder.integration.test.ts.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
+}));
+
 import { Hono } from 'hono';
 import { groupRoutes } from './groups';
 
@@ -44,7 +53,7 @@ vi.mock('../db', () => ({
       }))
     })),
     insert: vi.fn(() => ({
-      values: vi.fn(() => Promise.resolve())
+      values: vi.fn((rows: Array<{ deviceId: string }>) => ({ onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) }))
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({

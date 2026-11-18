@@ -102,6 +102,15 @@ describe('fetchWispTimeline', () => {
     expect(page.items[1]).not.toHaveProperty('variant');
   });
 
+  it("#11673: keeps a run report's markdown bodyFormat, and drops one it does not know", async () => {
+    const report = post('p-sr', '2026-10-26T09:00:00.000Z', { kind: 'specialist_result', bodyFormat: 'markdown' });
+    const unknown = post('p-sx', '2026-10-26T08:00:00.000Z', { kind: 'specialist_result', bodyFormat: 'html' as never });
+    fetchMock.mockResolvedValue(ok({ data: { items: [report, unknown], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items[0]).toEqual(report);
+    expect(page.items[1]).not.toHaveProperty('bodyFormat');
+  });
+
   it('logs which kinds of rows were dropped, never their content', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValue(ok({

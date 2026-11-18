@@ -76,6 +76,8 @@ Breeze satisfies the prompt the same way a person would -- by typing real creden
 3. The actuator pins its OS thread, opens the active input desktop, attaches the thread to it, waits for `consent.exe`, and types the username, Tab, password, and Enter via Unicode `SendInput`. The credential string lives only in process memory for the duration of the keystrokes and is cleared after use.
 4. The actuator waits for `consent.exe` to close, then reports a stable result code (`ok`, `no_consent_window`, `consent_did_not_close`, and so on) back to the control plane.
 
+What the user sees around this step is described in [What End Users See](/features/end-user-experience/#elevation-requests). On a default Windows configuration the first question ("Send a request to IT?") is drawn by Breeze's system helper next to the UAC prompt, because Breeze Assist cannot be seen on the secure desktop; after the user sends it, Breeze closes the Windows prompt and the rest of the request is an Assist card. No Breeze window ever has a password field: the only password box is Windows' own.
+
 This choice keeps the native Windows audit trail intact -- the standard logon event and `consent.exe` process record are preserved -- and avoids shipping a kernel driver, which would carry a far heavier signing and attack-surface burden.
 
 <Aside type="note">
@@ -191,6 +193,7 @@ Every elevation produces an immutable chain of events on a dedicated ledger, sep
 - Auto-decisions add an `approved` / `denied` event attributed to the deciding software policy or PAM rule.
 - Human decisions add `approved`, `denied`, or `revoked` events attributed to the approver **by user**, with the supplied reason.
 - Actuation, session start/stop, and command execution land as their own event types.
+- A `withdrawn` event records the end user's own answer on the device. The detail names the cause (`user_denied`, `user_timeout`, `dialog_error`, or `user_cancelled` when the person used **Cancel request** on the waiting card) and, from the on-device request card, the renderer that showed it (`assist` or `native`), so "I never saw it" is answerable.
 - A `device_unable` event records an agent's report that it cannot act on the request, with the reason category; when that closes a pending request, an `expired` event with cause `device_unable` follows it.
 
 The ledger denormalizes the organization id and ties each audit row to its parent request with a **composite foreign key** `(elevation_request_id, org_id) -> elevation_requests(id, org_id)`. This is a structural guarantee that an audit row's tenant can never drift from its parent request's tenant, even under a logic bug. Because it inherits the platform's forced row-level security, an audit entry is only ever visible within its own tenant.

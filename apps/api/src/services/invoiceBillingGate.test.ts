@@ -5,7 +5,12 @@ vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'leftJoin']) chain[m] = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows.value);
-  return { db: chain };
+  return {
+    db: chain,
+    getCurrentDbAccessContext: vi.fn(() => undefined),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  };
 });
 
 import { assertInvoiceBillingEnabled, assertInvoiceBillingEnabledById } from './invoiceBillingGate';

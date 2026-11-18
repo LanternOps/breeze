@@ -871,4 +871,10 @@ node scripts/security/check-override-floors.mjs ||
 node --test scripts/security/check-override-floors.test.mjs >/dev/null ||
   fail "pnpm.overrides floor guard has failing unit tests (run: pnpm test:override-floors)"
 
+# e2e-tests installs must use the committed package-lock.json (#11197).
+bash scripts/security/check-e2e-install-pinned.sh >/dev/null ||
+  fail "e2e-tests install steps must use 'npm ci' (detail: bash scripts/security/check-e2e-install-pinned.sh)"
+node --test scripts/security/check-e2e-install-pinned.test.mjs >/dev/null ||
+  fail "e2e install guard has failing unit tests (run: node --test scripts/security/check-e2e-install-pinned.test.mjs)"
+
 echo "Supply-chain hardening checks passed."

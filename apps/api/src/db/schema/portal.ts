@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, uniqueIndex, numeric, char, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, smallint, timestamp, boolean, jsonb, pgEnum, index, uniqueIndex, numeric, char, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
@@ -123,6 +123,12 @@ export type PortalBrowserAccess = 'granted' | 'none';
 /** How an external identity was linked to its portal account (`portal_user_identities.linked_via`). */
 export type PortalIdentityLinkedVia = 'jit' | 'invite' | 'self_link' | 'scim' | 'migrated' | 'msp';
 export type PortalIdentityProvider = 'entra' | 'google';
+// Portal registration W8 (#11385, plan D1/D2). SQL CHECKs in
+// 2027-01-24-200000-portal-directory-deprovisioning.sql.
+export type PortalIdentityBlocker = 'entra_directory' | 'google_directory' | 'scim' | 'msp';
+export type PortalIdentityDisabledReason =
+  | 'account_disabled' | 'absent' | 'suspended' | 'archived' | 'scim_deactivated' | 'msp';
+export type PortalAccountDisabledBy = 'msp' | 'directory' | 'scim';
 
 export const portalUsers = pgTable('portal_users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -183,6 +189,11 @@ export const portalUsers = pgTable('portal_users', {
   // Drizzle insert types (Drizzle emits DEFAULT, the trigger fills it).
   // Production writers pass it explicitly via services/portalAccountState.ts.
   browserAccess: text('browser_access').$type<PortalBrowserAccess>().notNull().default('none'),
+  // Who disabled the account (portal registration W8, plan D2): set iff
+  // status = 'disabled' (SQL CHECK portal_users_disabled_by_status_chk, plus
+  // portal_users_disabled_by_chk for the values). Every status writer goes
+  // through services/portalAccountState.ts, which keeps the two consistent.
+  disabledBy: text('disabled_by').$type<PortalAccountDisabledBy>(),
   invitedBy: uuid('invited_by').references(() => users.id),
   invitedAt: timestamp('invited_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -223,10 +234,42 @@ export const portalUserIdentities = pgTable('portal_user_identities', {
   linkedVia: text('linked_via').$type<PortalIdentityLinkedVia>().notNull(),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  // W8 (#11385, plan D1): disabled, never deleted, so (issuer, subject) stays
+  // reserved. Disabled iff at least one blocker; each source adds its own and
+  // only an MSP Restore clears them all. SQL CHECKs
+  // portal_user_identities_{disabled,blockers,disabled_reason}_chk.
+  disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  disabledReason: text('disabled_reason').$type<PortalIdentityDisabledReason>(),
+  disabledBlockers: text('disabled_blockers').array().$type<PortalIdentityBlocker[]>().notNull().default(sql`'{}'::text[]`),
+  // W8 directory observation (plan D5): the chain incarnation that last listed
+  // this identity, and its absence counter (portal_user_identities_absent_runs_chk).
+  directoryChain: text('directory_chain'),
+  directorySeenAt: timestamp('directory_seen_at', { withTimezone: true }),
+  directoryAbsentRuns: smallint('directory_absent_runs').notNull().default(0),
+  directoryAbsentSince: timestamp('directory_absent_since', { withTimezone: true }),
+  directoryLastRunId: uuid('directory_last_run_id'),
+  directoryRearmSince: timestamp('directory_rearm_since', { withTimezone: true }),
+  // W9 (#11386, plan D3, D5): SCIM state of an Entra identity. A SCIM User IS
+  // this identity: its SCIM id is `id`, its externalId is `subject`. Non-null
+  // scim_provisioned_at = SCIM-managed; scim_deleted_at = a SCIM DELETE was
+  // received (404 until a new POST adopts it). Name parts kept as SCIM sent
+  // them. SQL CHECK portal_user_identities_scim_chk; lookup index
+  // portal_user_identities_scim_user_name_idx (deliberately non-unique).
+  scimUserName: text('scim_user_name'),
+  scimDisplayName: text('scim_display_name'),
+  scimGivenName: text('scim_given_name'),
+  scimFamilyName: text('scim_family_name'),
+  scimProvisionedAt: timestamp('scim_provisioned_at', { withTimezone: true }),
+  scimDeletedAt: timestamp('scim_deleted_at', { withTimezone: true }),
 }, (table) => ({
   issuerSubjectUq: uniqueIndex('portal_user_identities_issuer_subject_uq').on(table.issuer, table.subject),
   userProviderUq: uniqueIndex('portal_user_identities_user_provider_uq').on(table.portalUserId, table.provider),
   orgIdx: index('portal_user_identities_org_id_idx').on(table.orgId),
+  // Composite-FK target for portal_directory_actions (W8).
+  idOrgUq: uniqueIndex('portal_user_identities_id_org_uq').on(table.id, table.orgId),
+  scimUserNameIdx: index('portal_user_identities_scim_user_name_idx')
+    .on(table.orgId, table.issuer, sql`lower(${table.scimUserName})`)
+    .where(sql`${table.scimProvisionedAt} IS NOT NULL AND ${table.scimDeletedAt} IS NULL`),
 }));
 
 // P2-4 (#4191): tickets also gains a composite-FK target unique index,

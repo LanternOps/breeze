@@ -23,10 +23,13 @@ import (
 var reclaimConfigFiles = map[string]string{
 	"agent.yaml":   windowsConfigFileSDDL,
 	"secrets.yaml": windowsSecretFileSDDL,
+	// #8318: the staged reattach set holds credentials (possibly the only
+	// copy of the ones the server now accepts): the secrets file's rules.
+	rebindStagedFileName: windowsSecretFileSDDL,
 }
 
 // reclaimConfigFileNames is reclaimConfigFiles' keys in a fixed order.
-var reclaimConfigFileNames = []string{"agent.yaml", "secrets.yaml"}
+var reclaimConfigFileNames = []string{"agent.yaml", "secrets.yaml", rebindStagedFileName}
 
 // Seams for tests.
 var (

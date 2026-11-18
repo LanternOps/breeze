@@ -157,7 +157,8 @@ describe('GET /orgs/organizations/:id/summary', () => {
       // OUT 'disabled', so only the enabled row should be counted.
       await db.insert(portalUsers).values([
         { orgId: organization.id, email: `enabled-${suffix}@example.com`, status: 'active' },
-        { orgId: organization.id, email: `disabled-${suffix}@example.com`, status: 'disabled' },
+        // W8: disabled_by is set exactly when status = 'disabled' (CHECK).
+        { orgId: organization.id, email: `disabled-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp' },
       ]);
 
       // Audit rows: two distinct timestamps so lastActivityAt is a real MAX,

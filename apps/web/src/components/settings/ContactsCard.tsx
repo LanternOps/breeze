@@ -37,6 +37,7 @@ const PORTAL_STATUS_LABEL_KEYS: Record<ContactPortalStatus, string> = {
   invited: 'contactsCard.portal.status.invited',
   active: 'contactsCard.portal.status.active',
   disabled: 'contactsCard.portal.status.disabled',
+  requested: 'contactsCard.portal.status.requested',
 };
 
 type Contact = {
@@ -392,16 +393,18 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
     }
   }
 
-  async function givePortalAccess(c: Contact) {
+  async function givePortalAccess(c: Contact, resend = false) {
     if (portalBusyId || !c.email) return;
     setPortalBusyId(c.id);
     try {
-      await giveContactPortalAccess(orgId, { id: c.id, email: c.email, name: c.name }, t);
+      await giveContactPortalAccess(orgId, { id: c.id, email: c.email, name: c.name }, t, { resend });
     } catch (err) {
       handleActionError(err, t('contactsCard.portal.errors.invite'));
     } finally {
       setPortalBusyId(null);
-      await portal.reload();
+      // The API stamps the `portal` role on the contact, so the Roles cell needs
+      // the contacts list too, not just the portal status (#11599).
+      await Promise.all([portal.reload(), loadContacts()]);
     }
   }
 
@@ -415,7 +418,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       handleActionError(err, t('contactsCard.portal.errors.bulkInvite'));
     } finally {
       setBulkBusy(false);
-      await portal.reload();
+      await Promise.all([portal.reload(), loadContacts()]);
     }
   }
 
@@ -823,7 +826,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
                         <button
                           type="button"
                           data-testid={`org-contacts-portal-${portalState.status === 'none' ? 'give' : 'resend'}-${c.id}`}
-                          onClick={() => void givePortalAccess(c)}
+                          onClick={() => void givePortalAccess(c, portalState.status === 'invited')}
                           disabled={portalBusyId !== null}
                           className="rounded-md px-2 py-1 text-xs underline hover:bg-muted disabled:opacity-50"
                         >

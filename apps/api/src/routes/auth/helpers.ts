@@ -307,7 +307,8 @@ export async function requireCurrentPasswordStepUp(
    * #4470: MFA factor-management routes pass 400 so a mistyped password is not
    * mistaken for bearer expiry by the web client's generic 401 handler.
    * Defaults to 401 for every pre-existing caller whose client contract keys
-   * on it (approvals/PAM step-up, users email-change, authenticator).
+   * on it (approvals/PAM step-up, users email-change). The authenticator
+   * register-grant route moved to 400 with #9007.
    */
   opts: {
     rejectionStatus?: ProofRejectionStatus;
@@ -573,10 +574,11 @@ export async function enforceExistingFactorStepUp(
  * the purpose it mints, and the one SR2-20 uses — so the three can never
  * drift apart:
  *   - no factor yet: only `enroll_first_factor`. That grant installs a FIRST
- *     factor and nothing else; an account that already holds one can never
- *     spend it (bindsMatch compares the operation, and the factor write bumped
- *     `mfa_epoch` anyway), so it cannot be used to side-step
- *     {@link enforceExistingFactorStepUp} (SR2-20).
+ *     factor or (#9007) is exchanged once at `POST /authenticator/register-grant`
+ *     for a `register_approver_device` grant, and nothing else; an account
+ *     that already holds a factor can never spend it (bindsMatch compares the
+ *     operation, and the factor write bumped `mfa_epoch` anyway), so it cannot
+ *     be used to side-step {@link enforceExistingFactorStepUp} (SR2-20).
  *   - already protected: only `sso_reauth_manage_factor` (#4045), and ONLY as
  *     the stand-in for the PASSWORD leg — exactly the role the password plays
  *     for a password account adding a second factor. The existing-factor leg
@@ -586,6 +588,19 @@ export async function enforceExistingFactorStepUp(
  *     Before #7369 this road refused a protected passwordless account outright,
  *     and with no password to take the other road it could never add a second
  *     factor at all — SR2-20 was never reached.
+ *
+ * #9007: `POST /authenticator/register-grant` is the one caller that is not a
+ * factor write. It spends whichever SSO grant this road accepts (one GETDEL,
+ * so still one spend in total) on a single exchange for a
+ * `register_approver_device` grant, standing in for the password proof that
+ * route takes from password accounts. That route runs its stronger-factor gate
+ * ({@link userHasStrongerReauthFactor}) first, so a protected account reaches
+ * this road from there only when that gate reports no TOTP/passkey: SMS-only,
+ * `ENABLE_2FA=false`, or a factor shape the gate does not count (it checks
+ * `mfaMethod === 'totp'` and live passkeys only). The
+ * approver-registration routes themselves still accept ONLY a
+ * `register_approver_device` grant; an SSO grant presented to them directly
+ * fails bindsMatch on the operation.
  *
  * Every rejection is the same opaque `Invalid credentials` response the
  * password path already returns — SAME status, same body, whichever road was

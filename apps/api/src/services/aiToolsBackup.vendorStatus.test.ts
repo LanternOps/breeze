@@ -80,6 +80,7 @@ const vendorSummary = {
   providerOnly: 1,
   m365Accounts: 0,
   byStatus: { completed: 2, failed: 1 },
+  byStatusBucket: { completed: 1, overdue: 1, unsuccessful: 1 },
   byHealth: { healthy: 2, warning: 0, critical: 1, unknown: 0 },
   byRecency: { under_24h: 2, under_48h: 0, over_48h: 1, never: 0 },
 };
@@ -115,6 +116,8 @@ describe('get_backup_status — vendor backups (#10404)', () => {
       m365Accounts: 0,
       byHealth: vendorSummary.byHealth,
       byStatus: vendorSummary.byStatus,
+      // #12025: overdue `completed` devices are visible to the model too.
+      byStatusBucket: vendorSummary.byStatusBucket,
       byRecency: vendorSummary.byRecency,
       needsAttention: [{
         orgName: 'Acme', name: 'FRONTDESK', status: 'failed', lastSuccessAt: '2026-10-20T00:00:00.000Z', errorsCount: 3,

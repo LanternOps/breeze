@@ -29,14 +29,24 @@ on:
   # `ci-success` is the only reporter.
   pull_request:
     branches: [main]
+  # The thin merge queue's backstop (W05, #10749): the full suite on main once a
+  # day. A scheduled run has no diff, so `changes` takes the full-suite path, and
+  # it reads no queue selection, so nothing is thinned whatever CI_THIN_QUEUE
+  # says. A red nightly opens the `ci-red` issue through main-red-alert. GitHub
+  # can delay or drop a scheduled run, so "a completed scheduled run on main in
+  # the last 30 h" is checked separately (docs/agents/testing.md).
+  schedule:
+    - cron: '17 6 * * *'
 
+# The nightly gets its own group, so it and a manual dispatch on main never
+# cancel each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: true
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.10'
+  GO_VERSION: '1.26.11'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -278,7 +288,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -362,7 +372,7 @@ jobs:
         run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -391,75 +401,95 @@ jobs:
         run: |
           node --test scripts/check-tauri-versions.test.mjs
           node scripts/check-tauri-versions.mjs
+        timeout-minutes: 10
 
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
+        timeout-minutes: 10
 
       - name: Test mobile lockfile closure gate
         run: node --test .github/scripts/mobile-lockfile-closure.test.mjs
+        timeout-minutes: 10
 
       - name: Test docs-only CI contract
         run: node --test .github/scripts/classify-pr-paths.test.mjs
+        timeout-minutes: 10
 
       - name: Test CI build reuse contract
         run: node --test .github/scripts/ci-build-reuse.test.mjs
+        timeout-minutes: 10
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+        timeout-minutes: 10
 
       - name: Test reader-test runner
         run: node --test .github/scripts/run-reader-tests.test.mjs
+        timeout-minutes: 10
 
       - name: Test PR selection contract (W3)
         run: node --test .github/scripts/ci-pr-selection.test.mjs
+        timeout-minutes: 10
 
       - name: Test queue selection contract (W4)
         run: node --test .github/scripts/queue-selection.test.mjs
+        timeout-minutes: 10
 
       - name: Test CI policy manifest (W02)
         run: node --test .github/scripts/ci-policy.test.mjs
+        timeout-minutes: 10
 
       - name: Test CI gate verdict core (W02)
         run: node --test .github/scripts/ci-gate.test.mjs
+        timeout-minutes: 10
 
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
+        timeout-minutes: 10
 
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
+        timeout-minutes: 10
 
       # Timing-based integration sharding: the refresh script (W07a, #10751).
       # The partition suite runs after `pnpm install` (it drives vitest).
       - name: Test integration timing refresh
         run: node --test .github/scripts/test-timings.test.mjs
+        timeout-minutes: 10
 
       # Named integration suite map and its import evidence (W07b1, #10751).
       - name: Test integration suite map
         run: node --test .github/scripts/integration-suites.test.mjs
+        timeout-minutes: 10
 
       # postgres-versions.json ↔ ci.yml's Postgres 18 smoke ↔ the scheduled
       # postgres-compat.yml (parity with integration-test) (#11417).
       - name: Test Postgres compatibility contract
         run: node --test .github/scripts/postgres-compat.test.mjs
+        timeout-minutes: 10
 
       # Also validates the committed .github/flaky-tests.json (W1, #10744).
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
+        timeout-minutes: 10
 
       # The merge-queue shepherd (W06, #10750). One glob: a suite under
       # scripts/ci-shepherd/ runs only through this step.
       - name: Test CI shepherd
         run: node --test scripts/ci-shepherd/*.test.mjs
+        timeout-minutes: 10
 
       # security-audit's base/head advisory comparison (W1, #10744).
       - name: Test dependency audit comparison
         run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
+        timeout-minutes: 10
 
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
       # release.yml only runs for releases, so this is the PR-time check.
       - name: Test viewer Windows updater packaging
         run: node --test scripts/release/package-viewer-windows-updater.test.mjs
+        timeout-minutes: 10
 
       # The classifier fast-tracks changes to OTHER workflow files (app=false), and
       # security.yml — which also runs this suite — does not report `CI Success`, so
@@ -470,9 +500,11 @@ jobs:
 
       - name: Verify temporary CI apt source isolation
         run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
+        timeout-minutes: 10
 
       - name: Test Tauri apt closure script
         run: node --test .github/scripts/tauri-apt.test.mjs
+        timeout-minutes: 10
 
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
@@ -485,6 +517,7 @@ jobs:
       # through apps/api's vitest, offline.
       - name: Test integration shard partition
         run: node --test .github/scripts/shard-partition.test.mjs
+        timeout-minutes: 10
 
       - name: Run ESLint
         run: pnpm lint
@@ -517,7 +550,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -599,7 +632,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -746,7 +779,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -776,7 +809,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -820,7 +853,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -900,7 +933,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1057,7 +1090,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1137,7 +1170,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1184,7 +1217,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1235,8 +1268,17 @@ jobs:
       # default branch: `base` is ignored outright for `pull_request`, and a
       # `workflow_dispatch` on main has no base sha and still falls through to
       # `mobile: true` via the job output.
+      #
+      # The nightly `schedule` (W05, #10749) compiles iOS too, but not through the
+      # job output: the pinned CI Gate parses that line byte-for-byte
+      # (ci-gate.mjs MOBILE_OUTPUT), and any other text would make a gate pinned
+      # before the change require the iOS build for every queue entry. A schedule
+      # has no diff (and paths-filter throws without a base), so these two steps
+      # are skipped and the closure step below, with no base sha, reports
+      # `changed=true`. Pinned by mobile-native-ci.test.mjs.
       - name: Resolve the diff base
         id: base
+        if: github.event_name != 'schedule'
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -1257,6 +1299,7 @@ jobs:
 
       - name: Detect mobile build inputs
         id: changes
+        if: github.event_name != 'schedule'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: ${{ steps.base.outputs.ref }}
@@ -1285,10 +1328,11 @@ jobs:
       # simulator build (30 queue entries on 2026-09-18, the critical path of
       # each). Now they only count when the `apps/mobile` importer's resolved
       # dependency closure actually differs between base and head. The script
-      # fails CLOSED (missing base, parse error → changed=true).
+      # fails CLOSED (missing base, parse error → changed=true). The nightly
+      # schedule always runs it, with no base, so the nightly compiles iOS.
       - name: Compare the mobile dependency closure
         id: lockfile
-        if: steps.changes.outputs.lockfile == 'true'
+        if: steps.changes.outputs.lockfile == 'true' || github.event_name == 'schedule'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
@@ -1322,7 +1366,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1400,7 +1444,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1437,7 +1481,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1476,7 +1520,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1506,7 +1550,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1542,7 +1586,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1575,7 +1619,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1605,7 +1649,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1638,7 +1682,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1680,7 +1724,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1778,7 +1822,7 @@ jobs:
           echo "::warning title=Audit comparison disabled::Could not fetch base ${CI_BASE_SHA}; every blocking advisory blocks this run."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1936,7 +1980,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -1984,7 +2028,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2020,7 +2064,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2058,7 +2102,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2096,7 +2140,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2141,7 +2185,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -2450,6 +2494,33 @@ jobs:
             exit 1
           fi
 
+      # The offline system-state apply enables units with the host's
+      # `systemctl --root=<tree>`. These tests run the real systemctl against
+      # synthetic trees: one whose unit directory or unit file is a link (nothing
+      # outside the tree changes), one whose SysV helper programs leave a marker
+      # when run (no program from the tree runs). They need systemctl (present
+      # on the Ubuntu runner) and opt in with BREEZE_TEST_SYSTEMCTL=1; a skip
+      # must not read as a pass.
+      - name: Offline service enable boundary test (real systemctl)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          command -v systemctl
+          cd agent
+          # Build as the runner user; only the test binary runs as root.
+          go test -c -o /tmp/bmr-offline.test ./internal/backup/bmr/
+          cd internal/backup/bmr
+          sudo env BREEZE_TEST_SYSTEMCTL=1 /tmp/bmr-offline.test -test.count=1 -test.run '^(TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree)$' -test.v 2>&1 | tee /tmp/offline-systemctl.log
+          if grep -q -- '--- SKIP' /tmp/offline-systemctl.log; then
+            echo "::error::The offline systemctl test was SKIPPED, not proven - see the skip reason logged above."
+            exit 1
+          fi
+          passes=$(grep -cE -- '^--- PASS: (TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree) ' /tmp/offline-systemctl.log || true)
+          if [ "$passes" -ne 2 ]; then
+            echo "::error::expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this step"
+            exit 1
+          fi
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
@@ -2671,6 +2742,28 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # The local backup store resolves every key through one root handle and
+      # requires a private root. Its Windows behaviour (protected DACLs on the
+      # root and on directories it creates, refusal of junctions inside the
+      # store and of a junction as the root, and of symbolic links, which need a
+      # runner allowed to create them) is exercised only here. Assert that no
+      # test or subtest skipped and that the junction tests passed, rather than
+      # trusting the exit code.
+      - name: Run Windows local backup store tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/providers -run '^TestLocalStore' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: TestLocalStore').Count
+          if ($skips -ne 0) { throw "$skips local store tests or subtests SKIPPED - the link and junction cases have no Windows coverage" }
+          $junction = @($out | Select-String -Pattern '^--- PASS: TestLocalStoreRefusesJunction(InsideStore|Root) ').Count
+          if ($junction -ne 2) { throw "expected 2 passing junction tests, got $junction" }
+
       # #9253: the YARA-X engine never started under a Windows service because
       # yaraxwasm hands os.Stderr (an invalid handle without a console) to the
       # wasm guest. yarac.EnsureEngine swaps an unusable stderr for NUL. These
@@ -2840,7 +2933,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the reclaim tests SKIPPED - the runner token is not elevated" }
-          if ($passes -ne 19) { throw "expected exactly 19 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
+          if ($passes -ne 20) { throw "expected exactly 20 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
 
       # The helper-scoped token must never sit in a file a standard Windows user
       # can read: it reaches the console-session Breeze Assist over IPC only,
@@ -2886,6 +2979,29 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Bare-metal rebuild phases after the restore work inside the restored
+      # volume. These plant a junction (securefs.InstallJunction) in the
+      # restored tree and check that the hive path check, the hive fallback,
+      # the identity phase and the post-restore actions writer refuse it and
+      # leave the junction's target unchanged; one more holds a loaded hive's
+      # files without sharing and checks the next hive's path check still
+      # passes. Junction creation fails the test rather than skipping it;
+      # assert PASS counts and zero skips.
+      - name: Run Windows rebuild junction boundary tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/bmr ./internal/backup/rebuild -run '^Test(TreeHivePathRefusesJunctionsOnWindows|TreeHivePathWithHeldSiblingOnWindows|SelectOfflineHivesRefusesJunctionOnWindows|WinIdentityRefusesJunctionOnWindows|WinEncryptionRefusesJunctionOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the rebuild junction boundary tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Grant-mode diagnostic reads (diag_file_list / diag_file_read) refuse any
       # path whose final, handle-resolved location differs from the requested
@@ -3948,7 +4064,7 @@ jobs:
           echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4743,7 +4859,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4830,7 +4946,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4888,7 +5004,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -4943,7 +5059,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -5045,20 +5161,19 @@ jobs:
           EOF
 
       # e2e-tests is deliberately OUTSIDE the pnpm workspace
-      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only), so it
-      # installs standalone. It ships no pnpm-lock.yaml — only the
-      # package-lock.json the auth-browser-transition job's `npm ci` uses — and
-      # pnpm's CI frozen-lockfile default is a no-op when no pnpm lockfile
-      # exists, so this resolves fresh rather than failing.
+      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only) and ships
+      # no pnpm lockfile, only package-lock.json. `npm ci` installs exactly that
+      # lockfile (and fails on drift) so a half-published upstream release
+      # cannot reach this job (#11197). Guarded by
+      # scripts/security/check-e2e-install-pinned.sh.
       - name: Install e2e-tests dependencies
         working-directory: e2e-tests
-        run: pnpm install --ignore-workspace
+        run: npm ci
 
       # apt 403 guard lives in the composite action (see its description).
       - name: Install Chromium
         uses: ./.github/actions/install-chromium
         with:
-          run-prefix: pnpm exec
           working-directory: e2e-tests
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
@@ -5576,9 +5691,10 @@ jobs:
     name: Main Red Alert
     runs-on: ubuntu-latest
     needs: [ci-success]
-    # Fires on the emergency lane only (manual dispatch on main after an admin
-    # bypass merge). Queue landings were evaluated before they merged.
-    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # Fires on the emergency lane (manual dispatch on main after an admin bypass
+    # merge) and on the nightly full run, the thin queue's backstop (W05,
+    # #10749). Queue landings were evaluated before they merged.
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
     permissions:
       issues: write
     steps:
@@ -5677,7 +5793,7 @@ jobs:
                     } >> "$GITHUB_STEP_SUMMARY"
                   }
               else
-                body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
+                body=$(printf "CI failed on main (%s run) at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$GITHUB_EVENT_NAME" "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
                   --body "$body" \

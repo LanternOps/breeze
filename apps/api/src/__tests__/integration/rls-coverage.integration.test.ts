@@ -13,6 +13,9 @@ import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches, scriptTags, scriptToTags, scriptVersions } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
+import { portalUsers, portalUserIdentities } from '../../db/schema/portal';
+import { portalDirectoryActions, portalDirectoryRuns } from '../../db/schema/portalDirectory';
+import { portalScimTokens } from '../../db/schema/portalScim';
 import {
   coveredCommands,
   predicateCoversOrgAxis,
@@ -5220,6 +5223,255 @@ describe('fleet evidence RLS — direct-org auto-discovery (Shape 1)', () => {
       expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
     },
   );
+});
+
+/**
+ * Portal registration W8 (#11385, plan D12): portal_directory_runs and
+ * portal_directory_actions are shape 1 (direct org_id). Auto-discovery already
+ * covers them; this block pins forced RLS + four-command coverage by name and
+ * proves cross-org invisibility as breeze_app, so a dropped policy or a table
+ * moved into an allowlist reds here by name.
+ */
+describe('portal directory deprovisioning RLS (shape 1, W8)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let orgAId = '';
+  let orgBId = '';
+  let runAId = '';
+  let actionAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (orgAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Portal Directory Partner ${runSuffix}`, slug: `rls-portal-dir-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active',
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for portal directory RLS');
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal Directory Org A', slug: `rls-pdir-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal Directory Org B', slug: `rls-pdir-b-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for portal directory RLS');
+      orgAId = orgA.id; orgBId = orgB.id;
+
+      const [account] = await db.insert(portalUsers).values({
+        orgId: orgAId, email: `pdir-${runSuffix}@rls.example.com`, authMethod: 'google', status: 'active', browserAccess: 'granted',
+      }).returning({ id: portalUsers.id });
+      const [identity] = await db.insert(portalUserIdentities).values({
+        orgId: orgAId, portalUserId: account!.id, provider: 'google', issuer: 'https://accounts.google.com',
+        subject: `pdir-sub-${runSuffix}`, linkedVia: 'jit',
+      }).returning({ id: portalUserIdentities.id });
+      const [run] = await db.insert(portalDirectoryRuns).values({
+        orgId: orgAId, source: 'google', chainKey: `${orgAId}:conn`, snapshotKey: `conn-${runSuffix}:2027-01-24`,
+        snapshotAt: new Date(), outcome: 'evaluated', mode: 'report', disposition: 'reported',
+      }).returning({ id: portalDirectoryRuns.id });
+      const [action] = await db.insert(portalDirectoryActions).values({
+        orgId: orgAId, runId: run!.id, identityId: identity!.id, portalUserId: account!.id,
+        provider: 'google', reason: 'suspended', effect: 'identity', status: 'reported',
+      }).returning({ id: portalDirectoryActions.id });
+      runAId = run!.id;
+      actionAId = action!.id;
+    });
+  }
+
+  it.each(['portal_directory_runs', 'portal_directory_actions'])(
+    '%s is direct-org and has forced four-command policy coverage',
+    async (tableName) => {
+      expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+      expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+      expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+      expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+      const rows = (await db.execute(sql`
+        SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+               ARRAY(
+                 SELECT DISTINCT p.cmd
+                 FROM pg_policies p
+                 WHERE p.schemaname = 'public'
+                   AND p.tablename = ${tableName}
+                   AND (
+                     COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                     OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                   )
+                 ORDER BY 1
+               ) AS covered_cmds
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ${tableName}
+      `)) as unknown as Array<{ rls_on: boolean; rls_forced: boolean; covered_cmds: string[] }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rls_on).toBe(true);
+      expect(rows[0]?.rls_forced).toBe(true);
+      expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)("both tables are invisible across orgs as breeze_app (org B cannot see org A's run or action)", async () => {
+    await ensureFixtures();
+    const asB = await withDbAccessContext(orgContext(orgBId), async () => ({
+      runs: await db.select({ id: portalDirectoryRuns.id }).from(portalDirectoryRuns).where(eq(portalDirectoryRuns.id, runAId)),
+      actions: await db.select({ id: portalDirectoryActions.id }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    }));
+    expect(asB.runs).toHaveLength(0);
+    expect(asB.actions).toHaveLength(0);
+    const asA = await withDbAccessContext(orgContext(orgAId), async () => ({
+      runs: await db.select({ id: portalDirectoryRuns.id }).from(portalDirectoryRuns).where(eq(portalDirectoryRuns.id, runAId)),
+      actions: await db.select({ id: portalDirectoryActions.id }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    }));
+    expect(asA.runs).toHaveLength(1);
+    expect(asA.actions).toHaveLength(1);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B INSERT of a run carrying org A's org_id is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(portalDirectoryRuns).values({
+          orgId: orgAId, source: 'entra', snapshotKey: `forged-${runSuffix}`, snapshotAt: new Date(),
+          outcome: 'skipped', reason: 'tenant_not_proven', mode: 'report', disposition: 'none',
+        }),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "portal_directory_runs"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B UPDATE/DELETE on org A's action affect 0 rows", async () => {
+    await ensureFixtures();
+    const result = await withDbAccessContext(orgContext(orgBId), async () => ({
+      updated: await db.update(portalDirectoryActions).set({ skipReason: 'forged' })
+        .where(eq(portalDirectoryActions.id, actionAId)).returning({ id: portalDirectoryActions.id }),
+      deleted: await db.delete(portalDirectoryActions)
+        .where(eq(portalDirectoryActions.id, actionAId)).returning({ id: portalDirectoryActions.id }),
+    }));
+    expect(result.updated).toHaveLength(0);
+    expect(result.deleted).toHaveLength(0);
+    const [row] = await withSystemDbAccessContext(async () =>
+      db.select({ skipReason: portalDirectoryActions.skipReason }).from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionAId)),
+    );
+    expect(row).toEqual({ skipReason: null });
+  });
+});
+
+/**
+ * Portal registration W9 (#11386, plan D1): portal_scim_tokens is shape 1
+ * (direct org_id). Auto-discovery covers it; this block pins forced RLS +
+ * four-command coverage by name and proves cross-org invisibility as
+ * breeze_app — a SCIM credential of org A must never be readable, forgeable or
+ * revocable from org B's context.
+ */
+describe('portal SCIM tokens RLS (shape 1, W9)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  const TENANT = '11111111-2222-4333-8444-555555555555';
+  let orgAId = '';
+  let orgBId = '';
+  let tokenAId = '';
+
+  function orgContext(orgId: string) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (orgAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db.insert(partners).values({
+        name: `RLS Portal SCIM Partner ${runSuffix}`, slug: `rls-portal-scim-${runSuffix}`,
+        type: 'msp', plan: 'pro', status: 'active',
+      }).returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for portal SCIM RLS');
+      const [orgA, orgB] = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal SCIM Org A', slug: `rls-pscim-a-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partner.id, name: 'RLS Portal SCIM Org B', slug: `rls-pscim-b-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      if (!orgA || !orgB) throw new Error('failed to seed orgs for portal SCIM RLS');
+      orgAId = orgA.id; orgBId = orgB.id;
+      const [token] = await db.insert(portalScimTokens).values({
+        orgId: orgAId, entraTenantId: TENANT, label: 'Entra', secretHash: 'a'.repeat(64), secretHint: 'abcd',
+      }).returning({ id: portalScimTokens.id });
+      tokenAId = token!.id;
+    });
+  }
+
+  it('portal_scim_tokens is direct-org and has forced four-command policy coverage', async () => {
+    const tableName = 'portal_scim_tokens';
+    expect(ORG_ID_KEYED_TENANT_TABLES.has(tableName)).toBe(false);
+    expect(PARTNER_TENANT_TABLES.has(tableName)).toBe(false);
+    expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has(tableName)).toBe(false);
+    expect(EXEMPT_TABLES.has(tableName)).toBe(false);
+    expect(INTENTIONAL_UNSCOPED.has(tableName)).toBe(false);
+
+    const rows = (await db.execute(sql`
+      SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS rls_forced,
+             ARRAY(
+               SELECT DISTINCT p.cmd
+               FROM pg_policies p
+               WHERE p.schemaname = 'public'
+                 AND p.tablename = ${tableName}
+                 AND (
+                   COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+                   OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+                 )
+               ORDER BY 1
+             ) AS covered_cmds
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ${tableName}
+    `)) as unknown as Array<{ rls_on: boolean; rls_forced: boolean; covered_cmds: string[] }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rls_on).toBe(true);
+    expect(rows[0]?.rls_forced).toBe(true);
+    expect(rows[0]?.covered_cmds).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B cannot see org A's token; org A can", async () => {
+    await ensureFixtures();
+    const asB = await withDbAccessContext(orgContext(orgBId), async () =>
+      db.select({ id: portalScimTokens.id }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)));
+    expect(asB).toHaveLength(0);
+    const asA = await withDbAccessContext(orgContext(orgAId), async () =>
+      db.select({ id: portalScimTokens.id }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)));
+    expect(asA).toHaveLength(1);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B INSERT of a token carrying org A's org_id is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(orgContext(orgBId), async () =>
+        db.insert(portalScimTokens).values({
+          orgId: orgAId, entraTenantId: TENANT, label: 'forged', secretHash: 'b'.repeat(64), secretHint: 'efgh',
+        }),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message).toMatch(/new row violates row-level security policy for table "portal_scim_tokens"/);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("org B UPDATE (revoke) / DELETE of org A's token affect 0 rows", async () => {
+    await ensureFixtures();
+    const result = await withDbAccessContext(orgContext(orgBId), async () => ({
+      updated: await db.update(portalScimTokens).set({ revokedAt: new Date() })
+        .where(eq(portalScimTokens.id, tokenAId)).returning({ id: portalScimTokens.id }),
+      deleted: await db.delete(portalScimTokens)
+        .where(eq(portalScimTokens.id, tokenAId)).returning({ id: portalScimTokens.id }),
+    }));
+    expect(result.updated).toHaveLength(0);
+    expect(result.deleted).toHaveLength(0);
+    const [row] = await withSystemDbAccessContext(async () =>
+      db.select({ revokedAt: portalScimTokens.revokedAt }).from(portalScimTokens).where(eq(portalScimTokens.id, tokenAId)),
+    );
+    expect(row).toEqual({ revokedAt: null });
+  });
 });
 
 /**

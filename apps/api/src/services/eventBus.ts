@@ -24,6 +24,7 @@ export type EventType =
   | 'device.isolation_failed'
   | 'device.isolation_self_released'
   | 'device.isolation_expiring'
+  | 'device.reinstall_suspected' // #8318 §7.3: a new device looks like a reinstall of this (silent) record
   // Alert events
   | 'alert.triggered'
   // `acknowledgedByPrincipalId` (uuid) is present only when a Partner API
@@ -694,6 +695,8 @@ export const EVENT_TYPES = {
   DEVICE_ISOLATION_FAILED: 'device.isolation_failed' as const,
   DEVICE_ISOLATION_SELF_RELEASED: 'device.isolation_self_released' as const,
   DEVICE_ISOLATION_EXPIRING: 'device.isolation_expiring' as const,
+  // #8318 §7.3: hardware or hostname hints flagged a newer device as a probable reinstall of this one
+  DEVICE_REINSTALL_SUSPECTED: 'device.reinstall_suspected' as const,
   // Alert
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,

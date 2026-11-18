@@ -12,6 +12,7 @@ import {
 } from './remoteWsSharedLease';
 import { ensureDesktopStreamStopped } from './desktopSessionStop';
 import { commitDesktopTerminalIntent } from './remoteDesktopTerminalIntent';
+import type { RemoteSessionEndReason } from '@breeze/shared';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { markRequestAuditWritten } from './auditRequestTracking';
 
@@ -21,6 +22,27 @@ const connectionIdentitySchema = z.object({
   instanceId: z.string().uuid(),
   leaseToken: z.string().uuid(),
 }).strict();
+
+type DesktopFinalizationReason = z.infer<typeof desktopSessionFinalizationInputSchema>['reason'];
+
+/**
+ * #11839: the operator-facing end reason for a WebSocket-fallback close. The
+ * finalization reason stays the transport's own token (it is also the failed
+ * row's errorMessage); this is what the session history shows.
+ */
+const FINALIZATION_END_REASON: Record<DesktopFinalizationReason, RemoteSessionEndReason> = {
+  client_close: 'viewer_closed',
+  socket_error: 'connection_lost',
+  pong_timeout: 'connection_lost',
+  revoked: 'access_revoked',
+  setup_failed: 'start_failed',
+  // The API instance holding the socket went away before it could finalize.
+  orphan_recovery: 'connection_lost',
+};
+
+export function desktopFinalizationEndReason(reason: DesktopFinalizationReason): RemoteSessionEndReason {
+  return FINALIZATION_END_REASON[reason];
+}
 
 export const desktopSessionFinalizationInputSchema = z.object({
   version: z.literal(1),
@@ -192,6 +214,7 @@ export async function finalizeDesktopSessionOnce(
         durationSeconds,
         bytesTransferred: BigInt(frameBytes),
         errorMessage: input.terminalStatus === 'failed' ? input.reason : null,
+        endReason: desktopFinalizationEndReason(input.reason),
       },
       phase: 'confirmed',
     });

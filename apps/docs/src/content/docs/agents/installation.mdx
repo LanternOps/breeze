@@ -125,6 +125,13 @@ for the script-based fleet install.
     ```
   </TabItem>
   <TabItem label="Windows">
+    1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
+    2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
+
+    The copied command downloads the PowerShell installer from the API URL returned during onboarding. It checks for HTTP 200, disables redirects, and verifies that the first line defines `Install-BreezeAgent` before running the script. HTTPS relies on a certificate trusted by the target machine. Plain HTTP is supported for self-hosted LAN deployments, where the network must be trusted. The installer pins the download to one release version, verifies its SHA-256 checksum, checks Authenticode when available, and enforces the operating system requirement.
+
+    To enroll manually instead:
+
     ```powershell
     # Check the minimum supported OS before downloading anything
     $osv = [System.Environment]::OSVersion.Version
@@ -380,4 +387,8 @@ auth_token: "brz_..."
 
 <Aside type="danger">
   The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0644` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
+</Aside>
+
+<Aside type="note" title="Redirects and the server URL">
+  The agent, the watchdog and the helper processes send their token only to the `server_url` host and the configured backup server. A redirect on those requests is followed only to another path on the same host and port, or from `http://` to `https://` on the same host. A redirect to a different host (subdomains included), to another port on the same host, or from `https://` to `http://` is not followed; the request fails instead. If you move the API to a new hostname, update `server_url` or re-enroll the agents rather than redirecting the old hostname. Agent update files hosted on another origin, such as GitHub releases, are downloaded without the token.
 </Aside>

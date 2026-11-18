@@ -478,7 +478,7 @@ export function DeviceDetailScreen({ route }: Props) {
           border={theme.border}
           brand={theme.brand}
         />
-        {device.status !== 'online' && (
+        {device.status !== 'online' && device.wakeAvailability?.show !== false && (
           <ActionButton
             label="Wake"
             onPress={() => handleAction('wake')}

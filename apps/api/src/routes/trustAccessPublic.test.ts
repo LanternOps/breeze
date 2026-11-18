@@ -44,6 +44,8 @@ const DOC = '0b9a4f4e-3b8e-4f2a-9c51-7d1f2c0e9a11';
 const PAYLOAD = {
   schemaVersion: 2, snapshotId: '2a9a4f4e-3b8e-4f2a-9c51-7d1f2c0e9a33',
   documents: [{ id: DOC, title: 'SOC 2', visibility: 'gated' }], access: { ndaText: null },
+  // Every v2 payload carries these (the schema requires them); the read-time CIS gate inspects them.
+  frameworks: [], controls: [], declaredControls: [], footer: { poweredByBreeze: true, frameworkAttributions: [] },
 };
 const GRANT = { requestId: 'r1', orgId: 'o', pageId: 'pg', requesterEmail: 'jane@example.test', documentId: DOC };
 const RESOLVED = { pageId: 'pg', orgId: 'o', partnerId: 'p', publishedAt: new Date(), searchIndexable: false, lastEvaluatedAt: new Date(), snapshotId: 's1', payload: PAYLOAD };
@@ -99,6 +101,17 @@ describe('POST /requests', () => {
     expect(svc.createAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'jane@example.test' }), RESOLVED, expect.objectContaining({ schemaVersion: 2, snapshotId: PAYLOAD.snapshotId }), expect.any(Date),
     );
+  });
+  it('#9087: the access flow reads the same CIS-gated payload the public page serves', async () => {
+    const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false';
+    try {
+      resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, payload: { ...PAYLOAD, frameworks: ['cis_v8', 'nist_csf_2'] } });
+      expect((await post('/requests', validRequest())).status).toBe(202);
+      expect(svc.createAccessRequest).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ frameworks: ['nist_csf_2'] }), expect.any(Date));
+    } finally {
+      if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev;
+    }
   });
   it('rate limits run before any DB context', async () => {
     await post('/requests', validRequest());

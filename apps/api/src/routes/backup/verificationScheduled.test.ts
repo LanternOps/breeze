@@ -95,6 +95,12 @@ vi.mock('./verificationService', () => ({
 
 import { ensurePostBackupIntegrityChecks, processBackupVerificationResult, recalculateReadinessScores, runWeeklyTestRestore, timeoutStaleVerifications } from './verificationScheduled';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
+import {
+  LEGACY_VERIFICATION_TIMEOUT_REASON,
+  VERIFICATION_TIMEOUT_REASON_CODE,
+  verificationTimeoutMs,
+  verificationTimeoutReason,
+} from './verificationTimeout';
 
 describe('verification timeout handling', () => {
   beforeEach(() => {
@@ -375,7 +381,8 @@ describe('verification timeout handling', () => {
     const orgId = 'org-timeout-db';
     const deviceId = 'dev-timeout-db';
     const verificationId = 'verify-timeout-db';
-    const startedAt = new Date(Date.now() - 31 * 60 * 1000);
+    // #11813: past the derived budget (command timeout + grace), not 30 min.
+    const startedAt = new Date(Date.now() - verificationTimeoutMs('integrity') - 60 * 1000);
 
     const timedOutRow = {
       id: verificationId,
@@ -406,7 +413,8 @@ describe('verification timeout handling', () => {
         status: 'failed',
         completedAt: expect.any(String),
         details: expect.objectContaining({
-          reason: 'Verification timed out after 30 minutes',
+          reason: verificationTimeoutReason('integrity'),
+          reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
         }),
       }));
       expect(safePublishMock).toHaveBeenCalledWith(
@@ -424,6 +432,238 @@ describe('verification timeout handling', () => {
       expect(recomputeRecoveryReadinessForDeviceMock).toHaveBeenCalledWith(orgId, deviceId);
       expect(verificationOrgById.get(verificationId)).toBe(orgId);
     } finally {
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  // #11813: a large snapshot still verifying at 31 minutes is healthy — the
+  // command's own budget is two hours, so the timeout job must leave it alone.
+  it('does not time out a verification that is past 30 minutes but inside the command budget', async () => {
+    const verificationId = 'verify-inside-budget';
+    const startedAt = new Date(Date.now() - 31 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId: 'org-inside-budget',
+      deviceId: 'dev-inside-budget',
+      backupJobId: 'job-inside-budget',
+      snapshotId: 'snap-inside-budget',
+      verificationType: 'integrity',
+      status: 'running',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId: '66666666-6666-4666-8666-666666666666' },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, 'org-inside-budget');
+
+    try {
+      const count = await timeoutStaleVerifications();
+
+      expect(count).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+      expect(backupVerifications.find((row) => row.id === verificationId)?.status).toBe('running');
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  // #11813: rows the timeout job failed before the reason code existed carry
+  // only the old literal text. A late agent result must still find them, or
+  // its counts are dropped as "No pending verification found".
+  it.each([
+    ['legacy text only', { reason: LEGACY_VERIFICATION_TIMEOUT_REASON }],
+    ['reason code', { reason: 'Verification timed out after 125 minutes', reasonCode: VERIFICATION_TIMEOUT_REASON_CODE }],
+  ])('applies a late agent result to a timed-out row identified by %s', async (_label, timeoutDetails) => {
+    const orgId = 'org-late-result';
+    const verificationId = 'verify-late-result';
+    const commandId = '77777777-7777-4777-8777-777777777777';
+    const startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-late-result',
+      backupJobId: 'job-late-result',
+      snapshotId: 'snap-late-result',
+      verificationType: 'integrity',
+      status: 'failed',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, ...timeoutDetails },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+    // Force the in-memory fallback so the match logic itself is exercised.
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({ snapshotId: 'snap-late-result', status: 'passed', filesVerified: 9, filesFailed: 0 }),
+      });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; status: string; filesVerified: number; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.status).toBe('passed');
+      expect(persisted?.filesVerified).toBe(9);
+      // The authoritative result clears the timeout marker along with its text.
+      expect(persisted?.details.reason).toBeUndefined();
+      expect(persisted?.details.reasonCode).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      selectMock.mockReset();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('writes the reason code on the no-orgId path too, and fails the command with the derived reason', async () => {
+    const verificationId = 'verify-no-org';
+    const commandId = '99999999-9999-4999-8999-999999999999';
+    const startedAt = new Date(Date.now() - verificationTimeoutMs('test_restore') - 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId: '',
+      deviceId: 'dev-no-org',
+      backupJobId: 'job-no-org',
+      snapshotId: 'snap-no-org',
+      verificationType: 'test_restore',
+      status: 'running',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId },
+      createdAt: startedAt.toISOString(),
+    });
+    const setMock = vi.fn(() => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: commandId }]) })),
+    }));
+    updateMock.mockReturnValue({ set: setMock });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        result: expect.objectContaining({
+          status: 'timeout',
+          error: verificationTimeoutReason('test_restore'),
+          timedOutBy: 'verification-timeout-check',
+        }),
+      }));
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        id: verificationId,
+        status: 'failed',
+        details: expect.objectContaining({
+          reason: verificationTimeoutReason('test_restore'),
+          reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
+        }),
+      }));
+    } finally {
+      warnSpy.mockRestore();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+    }
+  });
+
+  it('clears the timeout code when a late agent result reports failure', async () => {
+    const orgId = 'org-late-failure';
+    const verificationId = 'verify-late-failure';
+    const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-late-failure',
+      backupJobId: 'job-late-failure',
+      snapshotId: 'snap-late-failure',
+      verificationType: 'integrity',
+      status: 'failed',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: verificationTimeoutReason('integrity'), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await processBackupVerificationResult(commandId, { status: 'failed', error: 'helper crashed' });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.details.reason).toBe('helper crashed');
+      expect(persisted?.details.reasonCode).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      selectMock.mockReset();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('does not treat a row failed for another reason as a timed-out one', async () => {
+    const verificationId = 'verify-other-failure';
+    const commandId = '88888888-8888-4888-8888-888888888888';
+    const startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId: 'org-other-failure',
+      deviceId: 'dev-other-failure',
+      backupJobId: 'job-other-failure',
+      snapshotId: 'snap-other-failure',
+      verificationType: 'integrity',
+      status: 'failed',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: 'Agent unreachable' },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, 'org-other-failure');
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({ snapshotId: 'snap-other-failure', status: 'passed', filesVerified: 1, filesFailed: 0 }),
+      });
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      selectMock.mockReset();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
       verificationOrgById.delete(verificationId);
     }
   });

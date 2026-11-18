@@ -66,6 +66,14 @@ func TestSplitUninstallCommandLine(t *testing.T) {
 		{name: "trailing space component", in: `"C:\Program Files\AppData \u.exe" /S`, wantErr: "dot or space"},
 		{name: "parent traversal", in: `"C:\Program Files\..\Users\Public\u.exe" /S`, wantErr: "traversal"},
 		{name: "user profile location", in: `"C:\Users\bob\AppData\Local\Foo\u.exe" /S`, wantErr: "user-writable"},
+		{name: "user profile, repeated separators", in: `C:\\Users\\bob\\Documents\\u.exe /S`, wantErr: "user-writable"},
+		{name: "user profile root, repeated separators", in: `"C:\\Users\\bob\\u.exe" /S`, wantErr: "user-writable"},
+		{
+			name:     "repeated separators are collapsed",
+			in:       `"C:\Program Files (x86)\\Vendor\\\unins000.exe" /VERYSILENT`,
+			wantExe:  `C:\Program Files (x86)\Vendor\unins000.exe`,
+			wantRest: `/VERYSILENT`,
+		},
 		{name: "appdata on another drive", in: `"D:\Profiles\bob\AppData\Roaming\Foo\u.exe" /S`, wantErr: "user-writable"},
 		{name: "temp dir", in: `"C:\Windows\Temp\u.exe" /S`, wantErr: "user-writable"},
 		{name: "shell host cmd", in: `C:\Windows\System32\cmd.exe /c del /q C:\x`, wantErr: "script host"},
@@ -789,5 +797,13 @@ func TestUninstallSoftwareWindows_VersionedWingetThenNameOnly(t *testing.T) {
 	}
 	if strings.Contains(second, "--version") || !strings.Contains(second, "--name Foo") {
 		t.Fatalf("second attempt should be name-only, got %q", second)
+	}
+}
+
+func TestValidateUninstallerPathRefusesEmptyComponents(t *testing.T) {
+	for _, path := range []string{`C:\\Users\\bob\\u.exe`, `C:\Program Files\\Vendor\u.exe`} {
+		if err := validateUninstallerPath(path); err == nil || !strings.Contains(err.Error(), "empty path component") {
+			t.Errorf("validateUninstallerPath(%q) = %v, want an empty-component error", path, err)
+		}
 	}
 }

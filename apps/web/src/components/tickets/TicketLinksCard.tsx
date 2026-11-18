@@ -46,6 +46,10 @@ interface SearchHit {
 }
 
 interface Props {
+  /** Inside a titled Details section: no own card, border or heading. */
+  embedded?: boolean;
+  /** Reports the link count for the section summary once loaded. */
+  onCountChange?: (count: number) => void;
   ticketId: string;
   /** The ticket's org: link targets are same-org only, so the search is scoped to it. */
   orgId: string;
@@ -86,12 +90,17 @@ const ERROR_KEYS: Record<string, string> = {
 const SEARCH_DEBOUNCE_MS = 300;
 const SEARCH_RESULT_LIMIT = 10;
 
-export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite }: Props) {
+export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite, embedded = false, onCountChange }: Props) {
   const { t } = useTranslation('tickets');
   const [links, setLinks] = useState<TicketLinkRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const loadSeq = useRef(0);
+  const onCountRef = useRef(onCountChange);
+  onCountRef.current = onCountChange;
+  useEffect(() => {
+    if (!loading && !loadFailed) onCountRef.current?.(links.length);
+  }, [loading, loadFailed, links.length]);
 
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<TicketLinkType>('related');
@@ -268,10 +277,10 @@ export default function TicketLinksCard({ ticketId, orgId, ticketType, canWrite 
   const inputClass = 'w-full rounded-md border bg-background px-2 py-1.5 text-sm';
 
   return (
-    <section className="rounded-lg border p-3" data-testid="ticket-links-card" aria-label={t('ticketLinks.title')}>
+    <section className={embedded ? undefined : 'rounded-lg border p-3'} data-testid="ticket-links-card" aria-label={t('ticketLinks.title')}>
       <div className="flex items-center gap-2">
-        <Link2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-        <h3 className="text-sm font-semibold">{t('ticketLinks.title')}</h3>
+        {!embedded && <Link2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+        {!embedded && <h3 className="text-sm font-semibold">{t('ticketLinks.title')}</h3>}
         {ticketType === 'problem' && !loadFailed && (
           <span className="text-xs text-muted-foreground" data-testid="ticket-links-incident-count">
             {t('ticketLinks.linkedIncidents', { count: incidentCount })}

@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Impossibile inviare la notifica di test.",
     "failedToLoadCommunicationSettings": "Impossibile caricare le impostazioni di comunicazione",
     "slackSettingsSaved": "Impostazioni Slack salvate.",
-    "slackTestNotificationQueued": "Notifica di test Slack accodata.",
     "teamsSettingsSaved": "Impostazioni Teams salvate.",
-    "teamsTestNotificationQueued": "Notifica di test Teams accodata.",
     "discordSettingsSaved": "Impostazioni Discord salvate.",
-    "discordTestNotificationQueued": "Notifica di test Discord accodata.",
+    "discordTestNotificationSent": "Notifica di test Discord inviata.",
     "loadingCommunicationIntegrations": "Caricamento integrazioni di comunicazione...",
     "communicationIntegrations": "Integrazioni di comunicazione",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connetti strumenti di chat, instrada gli avvisi per severità e personalizza i template dei messaggi. ",
@@ -374,6 +372,9 @@
       "delivery_failed": "Consegne non riuscite",
       "sync_stale": "Sincronizzazione bloccata",
       "verification_failed": "Verifica non riuscita",
+      "destination_access_denied": "La destinazione ha rifiutato l’accesso",
+      "destination_not_found": "Destinazione non trovata",
+      "destination_failing": "La destinazione non funziona",
       "unknown": "Richiede attenzione"
     }
   },
@@ -1074,7 +1075,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossibile salvare le mappature siti.",
     "siteMappingsSaved": "Mappature siti salvate",
-    "pickTheSiteThisControllerServesACollector": "Scegli il sito servito da questo controller e un agente di raccolta, quindi inserisci l'URL del controller e la chiave API locale.",
+    "pickTheSiteThisControllerServesACollector": "Scegli la posizione dell'agente di raccolta e un agente di raccolta, quindi inserisci l'URL del controller e la chiave API locale.",
     "failedToRegisterTheController": "Impossibile registrare il controller.",
     "controllerRegistered": "Controller registrato",
     "pickABreezeSiteACollectorAgentAnd": "Scegli un sito Breeze e un agente di raccolta, quindi inserisci l'URL del controller e la chiave API locale.",

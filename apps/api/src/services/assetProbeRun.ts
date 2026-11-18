@@ -63,7 +63,7 @@ export async function runAssetProbe(
   }
 
   // 4. Site-strict executor. No org-wide fallback for asset-bound work.
-  const pick = await selectNetworkExecutor({ orgId: asset.orgId, siteId });
+  const pick = await selectNetworkExecutor({ orgId: asset.orgId, siteId, targetIp: asset.ipAddress });
   if ('error' in pick) {
     return { status: 409, body: { error: 'No online agent in this asset’s site', code: 'NO_AGENT_IN_SITE' } };
   }

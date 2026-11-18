@@ -74,6 +74,20 @@ const specialistRequestsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+const dispatchUnverifiedTotal = new Counter({
+  name: 'wisp_dispatch_unverified_total',
+  help: 'Wisp dispatch-class tool results that came back without a job, command or intent id (#10427), by tool',
+  labelNames: ['tool'] as const,
+  registers: [metricsRegistry],
+});
+
+const promiseCorrectionsTotal = new Counter({
+  name: 'wisp_promise_corrections_total',
+  help: 'Wisp replies corrected at turn end for a promise no tool result backed (#10427), by promise class',
+  labelNames: ['class'] as const,
+  registers: [metricsRegistry],
+});
+
 const grantsActive = new Gauge({
   name: 'wisp_grants_active',
   help: 'Active Wisp grants seen by the most recent wake-scheduler tick',
@@ -111,6 +125,16 @@ export function incSpecialistRequest(
   outcome: 'admitted' | 'needs_approval' | 'refused',
 ): void {
   specialistRequestsTotal.inc({ kind, outcome });
+}
+
+/** `tool` is always a DISPATCH_EVIDENCE key (wisp/dispatchEvidence.ts), so the label set is closed. */
+export function incWispDispatchUnverified(tool: string): void {
+  dispatchUnverifiedTotal.inc({ tool });
+}
+
+/** Copy of `PromiseClass` (wisp/promiseLinter.ts) — keep in sync. */
+export function incWispPromiseCorrection(promiseClass: 'follow_up' | 'dispatched' | 'concern'): void {
+  promiseCorrectionsTotal.inc({ class: promiseClass });
 }
 
 export function setWispGrantsActive(count: number): void {

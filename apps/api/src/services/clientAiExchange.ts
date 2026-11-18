@@ -16,6 +16,7 @@ import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
   CLIENT_AI_SESSION_TTL_SECONDS,
+  CLIENT_AI_SESSION_MAX_AGE_SECONDS,
 } from '../routes/clientAi/schemas';
 
 export { purgeClientAiSessionsForUsers } from './clientAiSessionStore';
@@ -86,7 +87,7 @@ export type ExchangeBranding = { displayName: string | null; logoUrl: string | n
 
 type Denied = {
   denied: {
-    status: 403 | 404;
+    status: 401 | 403 | 404;
     error: string;
     orgId: string | null;
     details: Record<string, unknown>;
@@ -102,7 +103,7 @@ type Resolved = {
 export type ClientExchangeOutcome =
   | {
       kind: 'denied';
-      status: 403 | 404;
+      status: 401 | 403 | 404;
       body: { error: string; reason?: string };
       audit: {
         orgId: string | null;
@@ -161,14 +162,46 @@ const USER_COLUMNS = {
  * found: the JIT insert below then hits the login's own unique index and the
  * exchange fails closed as `provisioning_failed` (never a second login).
  */
-async function selectLoginByEntraIdentity(claims: ClientAiEntraClaims) {
+async function selectLoginByEntraIdentity(
+  claims: ClientAiEntraClaims,
+): Promise<{ user: ExchangeUser; identityDisabled: boolean } | undefined> {
   const [row] = await db
-    .select(USER_COLUMNS)
+    .select({ ...USER_COLUMNS, identityDisabledAt: portalUserIdentities.disabledAt })
     .from(portalUsers)
     .innerJoin(portalUserIdentities, eq(portalUserIdentities.portalUserId, portalUsers.id))
     .where(entraIdentityMatch({ tid: claims.tid, oid: claims.oid }))
     .limit(1);
-  return row;
+  if (!row) return undefined;
+  const { identityDisabledAt, ...user } = row;
+  return { user, identityDisabled: Boolean(identityDisabledAt) };
+}
+
+/**
+ * W8 (#11385, plan D3, Review Focus 5): the identity this token resolves to is
+ * disabled (a directory, SCIM or MSP blocker). Answered exactly like an invalid
+ * token (401 `invalid_token`), so the caller learns nothing about the account;
+ * the audit row names the reason. Never a session, never a JIT login (the
+ * disabled row keeps the `(issuer, subject)` reserved).
+ *
+ * Why the lookup's own read is authoritative here: {@link selectLoginByEntraIdentity}
+ * reads the identity's `disabled_at` and the login's `auth_epoch` in ONE
+ * statement, so they come from one snapshot. `disablePortalIdentity` writes
+ * both in one transaction, so the exchange either sees the disable (refused)
+ * or the epoch from before it (the minted session dies on its next request).
+ * A row lock on that join would be WORSE: READ COMMITTED re-fetches only the
+ * locked row after a wait, pairing a new epoch with the old identity state.
+ * The later `ensureEntraIdentity` re-check (under the account row lock taken
+ * by the `last_login_at` update) refuses a disable that landed in between.
+ */
+function identityDisabledDenial(orgId: string, userId: string, claims: ClientAiEntraClaims): Denied {
+  return {
+    denied: {
+      status: 401,
+      error: 'invalid_token',
+      orgId,
+      details: { reason: 'identity_disabled', tid: claims.tid, oid: claims.oid, portalUserId: userId, ...NOT_ATTEMPTED },
+    },
+  };
 }
 
 /**
@@ -346,11 +379,14 @@ export async function resolveAndMintClientSession(
 
     const now = new Date();
     let provisioned = false;
-    let user = await selectLoginByEntraIdentity(claims);
+    const found = await selectLoginByEntraIdentity(claims);
+    let user = found?.user;
 
     // Before ANY write: the backfill below would otherwise land in a stale org.
     const mismatched = orgMismatchDenial(user, mapping.orgId, claims);
     if (mismatched) return mismatched;
+    // W8: a disabled identity, before any write (no last_login_at, no touch).
+    if (found?.identityDisabled) return identityDisabledDenial(mapping.orgId, found.user.id, claims);
 
     if (!user) {
       // portal_users.email is NOT NULL; some Entra token shapes carry no usable
@@ -410,7 +446,8 @@ export async function resolveAndMintClientSession(
         // identity.
         if (!isPgUniqueViolation(err)) throw err;
         const constraintName = pgErrorConstraint(err);
-        user = await selectLoginByEntraIdentity(claims);
+        const winner = await selectLoginByEntraIdentity(claims);
+        user = winner?.user;
         if (!user) {
           // Not a race (a race leaves the winner findable): drift. Either the
           // login's own unique index refused a second login for a (tid, oid)
@@ -427,6 +464,9 @@ export async function resolveAndMintClientSession(
         // The winner's row is found by (tenant, oid) alone, so re-assert the org.
         const stale = orgMismatchDenial(user, mapping.orgId, claims);
         if (stale) return stale;
+        // W8: the collision was with a DISABLED identity (it keeps the
+        // (issuer, subject) reserved): refused, never minted.
+        if (winner?.identityDisabled) return identityDisabledDenial(mapping.orgId, winner.user.id, claims);
       }
     }
 
@@ -460,7 +500,7 @@ export async function resolveAndMintClientSession(
       // of this bookkeeping write must not cost the user their sign-in: it
       // runs in a savepoint (withDbTransaction) with the catch outside, so it
       // cannot poison the exchange transaction.
-      let identity: 'inserted' | 'present' | 'conflict' | 'failed';
+      let identity: 'inserted' | 'present' | 'conflict' | 'disabled' | 'failed';
       try {
         identity = await withDbTransaction(() => ensureEntraIdentity(db, {
           orgId: user!.orgId,
@@ -478,6 +518,9 @@ export async function resolveAndMintClientSession(
         });
         captureException(err, { eventCode: 'client_ai_identity_write_failed' } as never);
       }
+      // W8: disabled since the lookup (read under the account row lock this
+      // exchange took with the last_login_at update). Refused, never minted.
+      if (identity === 'disabled') return identityDisabledDenial(mapping.orgId, user.id, claims);
       if (identity === 'conflict') {
         console.error('[client-ai] portal identity drift: Entra subject does not resolve to this login', {
           portalUserId: user.id,
@@ -565,7 +608,8 @@ export async function resolveAndMintClientSession(
     kind: 'resolved',
     body: {
       accessToken: token,
-      expiresInSeconds: CLIENT_AI_SESSION_TTL_SECONDS,
+      // The absolute cap (W4 OD1, middleware/clientAiAuth.ts) ends the session first.
+      expiresInSeconds: Math.min(CLIENT_AI_SESSION_TTL_SECONDS, CLIENT_AI_SESSION_MAX_AGE_SECONDS),
       user: { id: user.id, email: user.email, name: user.name },
       org: { id: user.orgId },
       branding,

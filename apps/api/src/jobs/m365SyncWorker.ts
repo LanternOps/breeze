@@ -26,8 +26,8 @@ export const M365_SYNC_WORKER_NAME = 'm365SyncWorker';
  * Thrown so BullMQ applies the 30 s / 2 min / 8 min backoff. Every condition
  * that raises it is EXPECTED and self-healing, which is why the classifier
  * below holds the report until the attempts are exhausted — and, because the
- * final attempt records `throttled` and RETURNS instead of throwing, a pure
- * throttle never reaches Sentry at all.
+ * final attempt records its outcome and RETURNS instead of throwing, a pure
+ * throttle or Graph timeout (#9394) never reaches Sentry at all.
  */
 export class M365SyncRetryableError extends Error {
   constructor(message: string) {
@@ -124,7 +124,7 @@ export async function processSyncDomain(job: Job<M365SyncQueueJobData>): Promise
   if (outcome === 'throttled' && !isFinalAttempt) {
     // runSyncDomain wrote no terminal state; ask BullMQ for the backoff.
     throw new M365SyncRetryableError(
-      `[M365Sync] throttled or at executor capacity for org=${parsed.data.orgId} domain=${parsed.data.domain}`,
+      `[M365Sync] throttled, at executor capacity, or Graph timed out for org=${parsed.data.orgId} domain=${parsed.data.domain}`,
     );
   }
   if (outcome === 'error' || outcome === 'needs_consent') {

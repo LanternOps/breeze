@@ -213,7 +213,7 @@ describe('topology AI failure fallback, release accounting and injection (M4 Tas
       expect(text).not.toContain('PARTIAL-RAW-PROSE');
       expect(text).not.toContain('SECRET-PROVIDER-DETAIL');
       expect(events.some((e) => e.type === 'content_delta')).toBe(false);
-      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: FIXED_FAILURE }]);
+      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: FIXED_FAILURE, code: 'topology_failed' }]);
       expect(events.some((e) => e.type === 'topology_explanation')).toBe(false);
       expect(await assistantRows(sessionId)).toHaveLength(0);
       expect(await leaseCount()).toBe(0);
@@ -238,7 +238,7 @@ describe('topology AI failure fallback, release accounting and injection (M4 Tas
       });
       const { text, events } = await ask(sessionId);
       expect(text).not.toContain('SECRET-PROVIDER-DETAIL');
-      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: FIXED_FAILURE }]);
+      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: FIXED_FAILURE, code: 'topology_failed' }]);
       expect(await assistantRows(sessionId)).toHaveLength(0);
       expect(await leaseCount()).toBe(0);
     });

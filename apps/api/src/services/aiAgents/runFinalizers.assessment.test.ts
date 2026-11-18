@@ -68,6 +68,13 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
+const evaluateStandingInstructions = vi.hoisted(() => vi.fn());
+vi.mock('../wisp/standingInstructionGate', () => ({
+  evaluateStandingInstructions,
+  standingConflictDescription: (text: string, description: string) => `Conflicts with a remembered instruction: '${text}'. ${description}`,
+  STANDING_CHECK_UNAVAILABLE_MESSAGE: "Couldn't check remembered instructions; try again.",
+}));
+
 import { finalizeAssessment } from './runFinalizers';
 import { GrantInactiveError, type GrantCeiling } from '../wisp/grantAuthority';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
@@ -115,6 +122,7 @@ function assessmentCtx(overrides: Partial<AssessmentRunContext> = {}): Assessmen
     threadSummary: '', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
     watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
+    anomaliesReadFailed: false,
     ...overrides,
   };
 }
@@ -154,6 +162,7 @@ beforeEach(() => {
   deliverInApp.mockResolvedValue({ created: true });
   notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
+  evaluateStandingInstructions.mockResolvedValue({ action: 'none' });
   rollupPartnerPicture.mockResolvedValue('picture');
   renderReadinessSummary.mockReturnValue("I can watch tickets here. I can't watch backups (no backup integration configured).");
 });
@@ -402,6 +411,17 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { evidence: { ticketNumber: 'T-1', approvalIntentId: 'intent-1' } });
     });
 
+    it('an argument the tool does not define → propose_input_unknown_args at filing, no intent (#11861)', async () => {
+      // Release would refuse it after a human approved the card.
+      const result = makeResult(calls({
+        proposedActions: [{ toolName: 'run_script', input: { scriptId: 's-1', inventedKey: true }, reason: 'clear the spooler', concernId: C1 }],
+      }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(evaluateStandingInstructions).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_input_unknown_args']);
+    });
+
     it('Tier 1 → refused with propose_tier1_refused, no intent', async () => {
       const result = makeResult(calls({ proposedActions: [{ toolName: 'query_devices', input: {}, reason: 'look around' }] }));
       await finalizeAssessment(makeCtx(), result);
@@ -465,6 +485,47 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     });
   });
 
+  describe('propose_action standing instructions (#10428)', () => {
+    const proposal = { toolName: 'run_script', input: { scriptId: 's-1' }, reason: 'clear the spooler' };
+
+    it('refuse → propose_standing_instruction, no intent, gate called with the ceiling', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'refuse', error: 'nope', match: {} });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(evaluateStandingInstructions).toHaveBeenCalledWith(expect.objectContaining({
+        ceiling: expect.objectContaining({ grantId: GRANT_ID }), toolName: 'run_script', input: { scriptId: 's-1' },
+        auth: result.agentAuth,
+      }));
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction']);
+    });
+
+    it('lookup throws → propose_standing_instruction_unverified, no intent (fails closed)', async () => {
+      evaluateStandingInstructions.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_standing_instruction_unverified']);
+    });
+
+    it('warn → intent reason is prefixed with the conflict description', async () => {
+      evaluateStandingInstructions.mockResolvedValue({ action: 'warn', text: 'no reboots on Fridays', matches: [] });
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({
+        reason: `Conflicts with a remembered instruction: 'no reboots on Fridays'. Proposed by Wisp assessment ${RUN_ID}: clear the spooler`,
+      });
+    });
+
+    it('none → unchanged reason (control)', async () => {
+      const result = makeResult(calls({ proposedActions: [proposal] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent.mock.calls[0]![1]).toMatchObject({ reason: `Proposed by Wisp assessment ${RUN_ID}: clear the spooler` });
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
+    });
+  });
+
   it('request_specialist entries are left in the outcome untouched', async () => {
     const req = { kind: 'sweep' as const, params: { a: 1 }, reason: 'needs a backup specialist' };
     const result = makeResult(calls({ specialistRequests: [req] }));
@@ -479,6 +540,29 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
     expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  // #11513: a failed anomaly read finished the run without seeing the
+  // anomalies, so the run must not move the no-changes gate's anchor.
+  describe('a failed metric anomaly read (#11513)', () => {
+    it('a clean apply returns assessment_anomalies_unread and still applies the model calls', async () => {
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_anomalies_unread');
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
+      expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+    });
+
+    it('dropped work still wins: assessment_partially_applied (excluded from the watermark too)', async () => {
+      concerns.upsertConcern.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_partially_applied');
+    });
+
+    it('anomalies that were read (or not permitted) leave a clean apply null', async () => {
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: false })), makeResult(calls()))).toBeNull();
+    });
   });
 
   describe('the grant must still be usable for ANY write (model calls, readiness, touch)', () => {

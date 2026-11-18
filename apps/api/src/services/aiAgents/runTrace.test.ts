@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
-import { buildRunTrace, mapWorkspaceSteps, type RunTraceRunInput } from './runTrace';
+import { AI_AGENT_RUN_GOAL_MAX_CHARS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
+import {
+  buildRunTrace,
+  capRunGoal,
+  mapWorkspaceSteps,
+  projectAnalysisScope,
+  projectRunChain,
+  type RunTraceChainRowInput,
+  type RunTraceRunInput,
+} from './runTrace';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const AGENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -1105,5 +1113,150 @@ describe('mapWorkspaceSteps (execution-plane spec §5.8)', () => {
   it('returns an empty list for a null or non-array column', () => {
     expect(mapWorkspaceSteps(null)).toEqual([]);
     expect(mapWorkspaceSteps({ steps: [] })).toEqual([]);
+  });
+});
+
+describe('analysis chain and scope (W06)', () => {
+  const row = (o: Partial<RunTraceChainRowInput>): RunTraceChainRowInput => ({
+    id: 'r0',
+    continuedFromRunId: null,
+    chainDepth: 0,
+    status: 'completed',
+    costCents: 40,
+    computeCents: 9,
+    goal: 'g',
+    queuedAt: new Date('2026-11-13T10:00:00Z'),
+    ...o,
+  });
+
+  it('projectRunChain is null for an unchained run (fewer than two rows)', () => {
+    expect(projectRunChain([])).toBeNull();
+    expect(projectRunChain([row({})])).toBeNull();
+  });
+
+  it('projectRunChain orders by depth, then queued time, then id, and numbers steps from depth', () => {
+    const steps = projectRunChain([
+      row({ id: 'b2', chainDepth: 1, continuedFromRunId: 'r0', queuedAt: new Date('2026-11-13T10:05:00Z') }),
+      row({ id: 'r0' }),
+      row({ id: 'a2', chainDepth: 1, continuedFromRunId: 'r0', queuedAt: new Date('2026-11-13T10:05:00Z') }),
+      row({ id: 'c3', chainDepth: 2, continuedFromRunId: 'a2', costCents: 70, computeCents: null }),
+    ])!;
+    expect(steps.map((s) => [s.id, s.step])).toEqual([['r0', 1], ['a2', 2], ['b2', 2], ['c3', 3]]);
+    expect(steps[0]!.costCents).toBe(49); // cost + compute
+    expect(steps[3]!.costCents).toBe(70); // null compute reads 0
+    expect(steps[3]!.queuedAt).toBe('2026-11-13T10:00:00.000Z');
+    expect(steps[1]!.continuedFromRunId).toBe('r0');
+  });
+
+  it('projectRunChain caps each step goal like the run goal', () => {
+    const steps = projectRunChain([row({ goal: 'x'.repeat(500) }), row({ id: 'r1', chainDepth: 1, goal: '  ' })])!;
+    expect(steps[0]!.goal).toHaveLength(AI_AGENT_RUN_GOAL_MAX_CHARS);
+    expect(steps[1]!.goal).toBeNull();
+  });
+
+  it('capRunGoal trims, nulls blank and non-string goals, and caps at 300 chars with an ellipsis', () => {
+    expect(capRunGoal('  x  ')).toBe('x');
+    expect(capRunGoal('   ')).toBeNull();
+    expect(capRunGoal(42)).toBeNull();
+    expect(capRunGoal(undefined)).toBeNull();
+    const capped = capRunGoal('a'.repeat(400))!;
+    expect(capped).toHaveLength(AI_AGENT_RUN_GOAL_MAX_CHARS);
+    expect(capped.endsWith('…')).toBe(true);
+    expect(capRunGoal('a'.repeat(AI_AGENT_RUN_GOAL_MAX_CHARS))).toBe('a'.repeat(AI_AGENT_RUN_GOAL_MAX_CHARS));
+  });
+
+  it('projectAnalysisScope uses the frozen scope, names the site, and falls back for a pre-W02 run', () => {
+    expect(
+      projectAnalysisScope(
+        { handles: [], deviceIds: ['d1', 'd2'], region: 'us', scope: { kind: 'org', siteId: null, deviceCount: 412 } },
+        null,
+      ),
+    ).toEqual({ kind: 'org', siteId: null, siteName: null, deviceCount: 412 });
+    expect(
+      projectAnalysisScope(
+        { handles: [], deviceIds: ['d1'], region: 'us', scope: { kind: 'site', siteId: 's1', deviceCount: 1 } },
+        'Main office',
+      ),
+    ).toEqual({ kind: 'site', siteId: 's1', siteName: 'Main office', deviceCount: 1 });
+    // pre-W02: no scope key, explicit device list
+    expect(projectAnalysisScope({ handles: [], deviceIds: ['d1', 'd2', 'd3'], region: 'eu' }, null)).toEqual({
+      kind: 'devices',
+      siteId: null,
+      siteName: null,
+      deviceCount: 3,
+    });
+    expect(projectAnalysisScope({ handles: [], deviceIds: [], region: 'eu' }, null)).toBeNull();
+    expect(projectAnalysisScope(null, null)).toBeNull();
+    expect(projectAnalysisScope(undefined, null)).toBeNull();
+  });
+
+  it('projectAnalysisScope shows no scope for a corrupt jsonb scope rather than misreporting it as a device list', () => {
+    // A site or org run also freezes its expanded device list, so falling back
+    // to "N selected devices" would misstate what the run could see.
+    expect(
+      projectAnalysisScope(
+        { handles: [], deviceIds: ['d1'], region: 'us', scope: { kind: 'galaxy' } } as never,
+        null,
+      ),
+    ).toBeNull();
+    expect(
+      projectAnalysisScope(
+        { handles: [], deviceIds: ['d1', 'd2'], region: 'us', scope: { kind: 'org', siteId: null } } as never,
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  it('buildRunTrace carries lineage, goal, scope and chain for an analysis run', () => {
+    const dto = buildRunTrace(
+      baseRun({
+        profile: 'analysis',
+        continuedFromRunId: 'r0',
+        chainRootRunId: 'r0',
+        chainDepth: 1,
+        triggerRef: { source: 'chat_analysis', goal: 'correlate BSODs' },
+        stagedInputs: {
+          handles: [],
+          deviceIds: ['d1'],
+          region: 'us',
+          scope: { kind: 'org', siteId: null, deviceCount: 412 },
+        },
+      }),
+      null, null, [], [], new Map(), null, [], null, null, [], null,
+      { chainRows: [row({ id: 'r0' }), row({ id: RUN_ID, chainDepth: 1, continuedFromRunId: 'r0' })], siteName: null },
+    );
+    expect(dto).toMatchObject({
+      continuedFromRunId: 'r0',
+      chainRootRunId: 'r0',
+      chainDepth: 1,
+      analysisGoal: 'correlate BSODs',
+      analysisScope: { kind: 'org', deviceCount: 412 },
+    });
+    expect(dto.chain).toHaveLength(2);
+  });
+
+  it('buildRunTrace defaults every new field for a non-analysis or pre-W03 run', () => {
+    const dto = buildRunTrace(baseRun({ triggerRef: { goal: 'not analysis' } }), null, null, [], []);
+    expect(dto).toMatchObject({
+      continuedFromRunId: null,
+      chainRootRunId: null,
+      chainDepth: 0,
+      analysisGoal: null,
+      analysisScope: null,
+      chain: null,
+    });
+  });
+
+  it('buildRunTrace leaves goal, scope and chain null on a non-analysis run even when inputs are passed', () => {
+    const dto = buildRunTrace(
+      baseRun({
+        profile: 'full',
+        triggerRef: { goal: 'x' },
+        stagedInputs: { handles: [], deviceIds: ['d1'], region: 'us' },
+      }),
+      null, null, [], [], new Map(), null, [], null, null, [], null,
+      { chainRows: [row({}), row({ id: 'r1', chainDepth: 1 })], siteName: null },
+    );
+    expect(dto).toMatchObject({ analysisGoal: null, analysisScope: null, chain: null });
   });
 });

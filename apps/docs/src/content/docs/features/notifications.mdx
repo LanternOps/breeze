@@ -354,19 +354,33 @@ their own once the connection works again.
 
 Most integrations record their own failures (a failed sync, a revoked
 authorization): Huntress, SentinelOne, Pax8, UniFi, backup providers, EDR,
-accounting, DNS filtering, Microsoft 365 connections and tenant sync, and ticket
-mailboxes all report into the same panel, alongside the outbound webhook and
-Google Workspace checks below. Breeze also watches for connections that fail
-without saying so:
+accounting, DNS filtering, Microsoft 365 connections and tenant sync, ticket
+mailboxes and the TD SYNNEX price file all report into the same panel,
+alongside the outbound webhook and Google Workspace checks below. The other TD
+SYNNEX connections (EC Express and Digital Bridge) are not watched: they have
+no scheduled sync, so there is nothing to go stale. Breeze also watches for
+connections that fail without saying so:
 
 - **Outbound webhooks.** A webhook opens an incident when a delivery uses up all
   its retries and no later delivery has succeeded. Deliveries that were dropped
   because the webhook was edited or disabled do not count. The incident clears
   after the next successful delivery, or when the webhook is disabled.
-- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi and backup provider
-  connections open a **Sync stalled** incident when there has been no
+- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi, backup provider, EDR
+  and DNS filtering connections, ticket mailboxes, and Microsoft 365 tenant sync
+  when it is enabled, open a **Sync stalled** incident when there has been no
   successful sync for three sync intervals (at least an hour). This catches a
-  sync that is stuck or no longer scheduled.
+  sync that is stuck or no longer scheduled. For EDR, either the inventory or
+  the detections sync can stall the connection. For a ticket mailbox, it means
+  no completed mail check in an hour; a quiet inbox does not count as stalled.
+  QuickBooks and Xero stall when Breeze has not completed a payment
+  reconciliation for an hour, as long as pulling or pushing payments is turned
+  on for the connection. Xero is allowed three days, because Breeze
+  deliberately pauses background reconciliation while a tenant's daily Xero
+  call allowance is nearly used up.
+- **TD SYNNEX price file.** The price file runs nightly. It opens a **Sync
+  stalled** incident when no nightly run has finished for three days and the
+  connection has not been saved, tested or started a sync in that time. A run
+  that fails opens **Sync failed** instead.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide
@@ -376,10 +390,31 @@ without saying so:
 - **OAuth apps that keep retrying.** When an MCP or OAuth app's grant was
   revoked and the app keeps presenting its old token, the incident says how many
   failed refreshes it made today.
+- **Backup destinations.** A backup destination opens one incident for its
+  organization when the devices that back up to it fail for a reason Breeze can
+  tie to the destination: it refused access, the bucket or its data is missing,
+  it rejected the request time, or storage operations kept failing. Two failing
+  devices open it. When only one device has a recent success or destination
+  failure (the others are offline or failing for other reasons), one refusal or
+  missing bucket opens it, or two failed runs in a row. When most failing
+  devices agree the destination refused access or is missing, the incident is
+  **Destination refused access** or **Destination not found** and opens at
+  once; otherwise it is **Destination failing** and opens when the next check
+  still sees it. The notice says how many devices are failing, since when, and
+  what to check, and its **Fix** link opens the backup profiles where you can
+  run **Test connection**. It goes to the users who can manage backups (backup
+  write permission) for that organization: the MSP's staff, and the
+  organization's own admins when customer admin notices are on (below). The
+  incident clears after two checks in a row find no device still failing and
+  successful backups from two devices (or the only device with recent results)
+  since the last failure, or at once when the destination is disabled or
+  deleted. A device that is offline or failing for another reason neither opens
+  nor clears it. See
+  [Backup troubleshooting](/backup/troubleshooting/#one-destination-failing-for-several-devices).
 
-Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, and OAuth
-grant revocations, are checked within about a minute rather than at the next
-15-minute check.
+Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, backup
+job results, and OAuth grant revocations, are checked within about a minute
+rather than at the next 15-minute check.
 
 Platform administrators can see whether the checks themselves are running under
 **Admin → System → Connections**: the last run of the incident reconciler, the

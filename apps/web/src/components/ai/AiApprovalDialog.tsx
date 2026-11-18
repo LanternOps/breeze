@@ -15,7 +15,8 @@ import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
 import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
-import type { AiApprovalOutcome, AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
+import ApprovalContentPreview from "./ApprovalContentPreview";
+import type { AiApprovalOutcome, AiApprovalScope, AiApprovalTicketContext, AiScriptRunContext, AiStandingInstructionConflict } from "@breeze/shared";
 import { useStableT } from '@/lib/i18n/useStableT';
 
 // Fallback only: the product default (also `AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES`
@@ -47,6 +48,12 @@ interface AiApprovalDialogProps {
   description: string;
   input: Record<string, unknown>;
   deviceContext?: DeviceContext;
+  /**
+   * #11674: the ticket a manage_tickets call acts on, resolved server-side.
+   * With the call's own input it lets the card show the ticket number and
+   * subject, who a public reply emails, and the reply itself.
+   */
+  ticketContext?: AiApprovalTicketContext;
   onApprove: () => void;
   onReject: () => void;
   /**
@@ -110,6 +117,8 @@ interface AiApprovalDialogProps {
    * choice and a machine-level run. Absent for every non-script tool.
    */
   scriptRunContext?: AiScriptRunContext | null;
+  /** W06: the call conflicts with a remembered standing instruction; shown as a red banner above the description. */
+  standingInstructionConflict?: AiStandingInstructionConflict;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
   /**
@@ -278,6 +287,7 @@ export default function AiApprovalDialog({
   description,
   input,
   deviceContext,
+  ticketContext,
   onApprove,
   onReject,
   intentBacked,
@@ -287,6 +297,7 @@ export default function AiApprovalDialog({
   approvalWindowMs,
   approvalExpiresAt,
   scriptRunContext,
+  standingInstructionConflict,
   onIntentDecided,
   resolution,
   testIdPrefix = "ai-approval",
@@ -586,6 +597,16 @@ export default function AiApprovalDialog({
         </div>
       )}
 
+      {standingInstructionConflict && (
+        <div
+          role="alert"
+          data-testid="approval-standing-instruction-banner"
+          className="mt-2 rounded-md border border-destructive/50 bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive"
+        >
+          {t("wisp.instruction.conflictBanner", { text: standingInstructionConflict.text })}
+        </div>
+      )}
+
       <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
         {description}
       </p>
@@ -596,8 +617,10 @@ export default function AiApprovalDialog({
         </p>
       )}
 
-      {/* #9431: the wait ended — decided here or anywhere else, timed out, or
-          settled. Said in words; the buttons below are disabled or hidden. */}
+      {/* #9431: the wait ended — decided here or anywhere else, expired
+          (#12079), or settled. Said in words; the buttons below are disabled
+          or hidden. Only "approved" gets the check: any other value, including
+          one this build does not know, reads as not approved. */}
       {resolution && (
         <p
           role="status"
@@ -613,13 +636,20 @@ export default function AiApprovalDialog({
             ? t("aiApprovalDialog.resolvedApproved")
             : resolution === "not_approved"
               ? t("aiApprovalDialog.resolvedNotApproved")
-              : t("aiApprovalDialog.resolvedEnded")}
+              : resolution === "expired"
+                ? t("aiApprovalDialog.expired")
+                : t("aiApprovalDialog.resolvedEnded")}
         </p>
       )}
 
       {scriptRunContext && <RunContextRow ctx={scriptRunContext} />}
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
+
+      {/* #11674: what is being approved — a ticket reply's text and recipient,
+          or the memory Wisp will store — always visible, never only in the
+          collapsed parameters below. */}
+      <ApprovalContentPreview toolName={toolName} input={input} ticketContext={ticketContext} />
 
       {proposalId ? (
         <ScriptProposalApprovalCard

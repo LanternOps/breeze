@@ -50,14 +50,17 @@ func collectLinuxProductSKU() string {
 }
 
 func collectPlatformHardware(hw *HardwareInfo) {
-	hw.SerialNumber = readDMI("product_serial")
+	hw.SerialNumber = cleanHardwareIdentityValue(readDMI("product_serial"))
 	hw.ProductSKU = collectLinuxProductSKU()
-	hw.Manufacturer = readDMI("sys_vendor")
+	hw.Manufacturer = cleanHardwareIdentityValue(readDMI("sys_vendor"))
 	hw.Model = readDMI("product_name")
 	hw.MotherboardManufacturer = cleanHardwareIdentityValue(readDMI("board_vendor"))
 	hw.MotherboardProduct = cleanHardwareIdentityValue(readDMI("board_name"))
 	hw.MotherboardVersion = cleanHardwareIdentityValue(readDMI("board_version"))
 	hw.BIOSVersion = readDMI("bios_version")
+	// product_uuid is root-readable only (0400); a non-root agent gets "" and a
+	// warn-once from readDMI, which leaves the hint empty.
+	hw.SystemUUID = normalizeSystemUUID(readDMI("product_uuid"))
 
 	hw.GPUModel = collectLinuxGPUModel()
 }

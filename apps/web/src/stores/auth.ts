@@ -18,6 +18,7 @@ import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
+import { clearTicketComposerDrafts } from '@/lib/ticketComposerDrafts';
 import { totpEnrolledAfterPrimaryChange } from '@/lib/mfaFactorState';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
@@ -249,6 +250,9 @@ export const useAuthStore = create<AuthState>()(
         // #10923: the Add Device modal's remembered tokens and links are live
         // enrollment credentials, and sign-out does not unload this tab.
         clearRememberedEnrollmentArtifacts();
+        // Unsent ticket replies and internal notes belong to this user; the
+        // next sign-in on this tab must not find them in the composer.
+        clearTicketComposerDrafts();
         // An evicted session must never come back via a stray throttle-recovery
         // reload — the redirect to /login owns navigation from here.
         cancelThrottleReload();
@@ -2272,7 +2276,7 @@ export async function apiResetPassword(token: string, password: string): Promise
   }
 }
 
-export async function apiVerifyEmail(token: string): Promise<{
+export async function apiVerifyEmail(token: string, password?: string): Promise<{
   success: boolean;
   error?: 'invalid' | 'expired' | 'consumed' | string;
   partnerId?: string;
@@ -2286,7 +2290,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   // holder to sign in.
   user?: User;
   tokens?: Tokens;
-  status?: 'sign_in';
+  status?: 'sign_in' | 'password_required';
   signupIntent?: SignupIntent;
   redirectUrl?: string;
 }> {
@@ -2295,12 +2299,12 @@ export async function apiVerifyEmail(token: string): Promise<{
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ token })
+      body: JSON.stringify({ token, password })
     });
 
     const data = await response.json();
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: data.error, ...(data.status === 'password_required' ? { status: 'password_required' as const } : {}) };
     }
 
     // Registration-completion path bounced to sign-in (address already taken).

@@ -58,7 +58,7 @@ The card also shows the last sync time, customer and device counts, how many dev
 <Steps>
 1. Go to **Integrations**, open the **Backup** tab, click **Add connection** and choose **NinjaOne SaaS Backup (Dropsuite)** as the **Provider**.
 2. Enter a **Connection name** (for example, *Main NinjaOne SaaS Backup account*).
-3. Enter the **Reseller token**, the **Authentication token** and the **API URL** (for example, `https://dropsuite.us/api/`). All three are required.
+3. Enter the **Reseller token**, the **Authentication token** and the **API URL**. All three are required. The API URL is regional: copy it from the **API Settings** page in the vendor's console (for example, `https://dropsuite.us/api/` or `https://dropsuite-au.com/api/`).
 4. Optionally turn on **Show the provider name in the client portal**, as for Cove.
 5. Save. As with Cove, Breeze checks the credentials before anything is created.
 </Steps>
@@ -126,7 +126,9 @@ Decommissioned devices are never matched, and Microsoft 365 backup accounts are 
 
 Cove and Axcient connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
 
-Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
+Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. A day is green only if a successful backup ran that day. A day Breeze checked with no new backup shows as **No backups** (orange), even when the device's last backup succeeded. A grey day means Breeze did not check the device that day. Today stays grey until a backup lands, because the day's backup may not have run yet. History older than 60 days is pruned.
+
+In the backup health view, any device (Breeze or provider) whose last backup completed but has no successful backup in the last 48 hours shows **No recent backup** in the Status column, with the date of its last success. The *Status* summary counts it under **No recent backup** instead of **Completed**.
 
 Linked endpoints raise **device alerts**. Microsoft 365 and Google Workspace backup workloads, including Cove Microsoft 365 accounts, raise **organization-level alerts** with no device, titled with the workload and customer name (or organization name). Both use the same conditions and severities:
 

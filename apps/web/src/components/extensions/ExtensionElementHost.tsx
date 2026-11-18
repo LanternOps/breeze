@@ -9,10 +9,14 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Sentry from '@sentry/astro';
 import {
+  EXTENSION_HOST_API_PROPERTY,
   EXTENSION_HOST_EVENT_NAME,
+  createExtensionHostApiV1,
   parseExtensionHostEventV1,
+  type ExtensionHostApiV1,
 } from '@breeze/extension-web-sdk';
 import { loadExtensionModule } from '@/lib/extensions/registry';
+import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '@/components/shared/Toast';
 
@@ -111,6 +115,27 @@ function toastTypeForTone(tone: 'success' | 'info' | 'warning' | 'error'): 'succ
   return 'success';
 }
 
+/**
+ * The host API handed to one extension's element (#11922). The API accepts a
+ * Bearer token only and that token lives in this app's memory, so an element
+ * calling the global `fetch` is always 401. The SDK's `createExtensionHostApiV1`
+ * confines requests to `/api/v1/ext/<extensionName>/...` and strips caller
+ * auth headers; `fetchWithAuth` then attaches the token, refreshes it on 401,
+ * replays session-binding rotation and injects the active org, exactly as for
+ * the app's own requests. The token itself never reaches extension code.
+ */
+function buildHostApi(extensionName: string): ExtensionHostApiV1 {
+  return createExtensionHostApiV1({
+    extensionName,
+    transport: (path, init) => fetchWithAuth(path, {
+      method: init.method,
+      headers: init.headers,
+      body: init.body,
+      signal: init.signal,
+    }),
+  });
+}
+
 function ExtensionElementHostInner({
   extensionName,
   moduleUrl,
@@ -140,7 +165,12 @@ function ExtensionElementHostInner({
           throw new Error('extension element did not register the declared tag name');
         }
 
-        const el = document.createElement(elementName) as HTMLElement & { context?: unknown };
+        const el = document.createElement(elementName) as HTMLElement & {
+          context?: unknown;
+          [EXTENSION_HOST_API_PROPERTY]?: unknown;
+        };
+        // Host API first: elements start fetching from their `context` setter.
+        el[EXTENSION_HOST_API_PROPERTY] = buildHostApi(extensionName);
         el.context = Object.freeze(context);
 
         if (cancelled) return;

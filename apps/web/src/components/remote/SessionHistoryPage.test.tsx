@@ -103,6 +103,21 @@ describe('SessionHistoryPage', () => {
     sessionState.session = { ...sessionState.session, endReason: null };
   });
 
+  // #11839 — the detail panel names the reason and the recorded error.
+  it('session detail shows the end reason and the error message', () => {
+    sessionState.session = {
+      ...sessionState.session,
+      endReason: 'never_connected',
+      errorMessage: 'Session timed out: connection was never established',
+    };
+    render(<SessionHistoryPage />);
+    fireEvent.click(screen.getByText('Open details'));
+
+    expect(screen.getByText('Never connected')).toBeInTheDocument();
+    expect(screen.getByText('Session timed out: connection was never established')).toBeInTheDocument();
+    sessionState.session = { ...sessionState.session, endReason: null, errorMessage: null };
+  });
+
   it('session detail omits Ended by the user when endReason is null', () => {
     sessionState.session = { ...sessionState.session, endReason: null };
     render(<SessionHistoryPage />);

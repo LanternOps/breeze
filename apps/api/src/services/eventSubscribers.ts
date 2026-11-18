@@ -269,6 +269,31 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'wisp-check-in-trigger',
+    // Wisp event check-ins W04 (#11493, #10410). The event fast path of a
+    // check-in waiting on its subject: the scheduled rows on the event's
+    // device / script execution / run each re-read the subject's state and
+    // fire if it holds (wisp/checkIns.ts handleCheckInTriggerEvent). Kept
+    // apart from the assessment wake below, which must never see
+    // device.online. The types are CHECK_IN_TRIGGER_EVENT_SUBJECTS' keys
+    // (eventSubscribers.wispCheckInTrigger.test.ts pins them). Dark while
+    // wispEnabled() is off; lazy for the worker-closure reason above.
+    eventTypes: [
+      'device.online',
+      'script.completed',
+      'script.failed',
+      'ai.agent.run.completed',
+      'ai.agent.run.failed',
+      'ai.agent.run.skipped',
+    ],
+    handler: async (event: BreezeEvent) => {
+      const { handleCheckInTriggerEvent } = await import('./wisp/checkIns');
+      return handleCheckInTriggerEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
     id: 'wisp-wake',
     // Wisp W05b Task 9 (#9917). Each event asks for ONE debounced (60 s)
     // assessment per active grant covering the event's org; the grant events

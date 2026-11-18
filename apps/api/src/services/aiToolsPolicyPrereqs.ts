@@ -7,7 +7,7 @@
  */
 
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
 import { peripheralPolicies } from '../db/schema/peripheralControl';
@@ -15,6 +15,7 @@ import { backupConfigs, backupProfiles } from '../db/schema/backup';
 import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { bumpApprovalGeneration } from './approvalGeneration';
@@ -44,6 +45,7 @@ import {
   s3EndpointOriginChanged,
 } from './backupProviderConfigSecrets';
 import { findCiphertextShapedValue } from './backupProviderConfigSealing';
+import { localDestinationTargetError } from './localStoreTargets';
 import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
@@ -221,7 +223,7 @@ function safeHandler(toolName: string, fn: Handler): Handler {
       // Log BEFORE the pg-code early returns — those branches return without
       // reaching sanitizeThrownToolError, so without this they log nothing.
       console.error(`[policy-prereq:${toolName}]`, input.action, code ?? '', err);
-      if (code === '23503') return JSON.stringify({ error: 'Referenced record not found.' });
+      if (isPgForeignKeyViolationCode(code)) return JSON.stringify({ error: 'Referenced record not found.' });
       if (code === '23505') return JSON.stringify({ error: 'Duplicate entry — a record with this name already exists.' });
       if (code === '22P02') return JSON.stringify({ error: 'Invalid ID format — expected a valid UUID.' });
       // Fail closed: anything else may embed the query/column list (#2603).
@@ -824,6 +826,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_profiles', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_backup_profiles', action, auth);
+      if (mfaError) return mfaError;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
@@ -1020,6 +1024,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_configs', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_backup_configs', action, auth);
+      if (mfaError) return mfaError;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
@@ -1085,6 +1091,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!input.providerConfig) return JSON.stringify({ error: 'providerConfig is required (provider-specific settings)' });
 
         let providerConfig = input.providerConfig as Record<string, unknown>;
+        const createTargetError = localDestinationTargetError(input.provider, providerConfig);
+        if (createTargetError) return JSON.stringify({ error: createTargetError });
         if (input.provider === 's3') {
           const resolved = resolveS3ProviderConfig(providerConfig);
           if ('error' in resolved) return JSON.stringify({ error: resolved.error });
@@ -1199,6 +1207,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         const destinationChanged = updates.provider !== undefined || updates.providerConfig !== undefined;
+        if (destinationChanged) {
+          const updateTargetError = localDestinationTargetError(
+            (updates.provider as string | undefined) ?? existing.provider,
+            updates.providerConfig ?? existing.providerConfig,
+          );
+          if (updateTargetError) return JSON.stringify({ error: updateTargetError });
+        }
         const { recordCredentialChange } = destinationChanged
           ? await import('./backupStorageCredentialHistory')
           : { recordCredentialChange: null };

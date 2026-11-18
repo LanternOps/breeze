@@ -38,6 +38,8 @@ export * from './integrations';
 export * from './unifi';
 export * from './portal';
 export * from './portalAccess';
+export * from './portalDirectory';
+export * from './portalScim';
 export * from './portalSessionRevocations';
 export * from './emailInbound';
 export * from './analytics';

@@ -91,9 +91,11 @@ export type NudgePayload = {
   /**
    * Set iff kind === 'check_in' (#10991): the fired `wisp_check_ins` row. Its
    * id is the dedupe key and the link fragment; its org (the thread's) is the
-   * notification's and the post's org.
+   * notification's and the post's org. `link` (W07 #11496) replaces the
+   * post's check-in link: a run check-in's result links to its run page
+   * (relative, same origin).
    */
-  checkIn?: { id: string; orgId: string | null };
+  checkIn?: { id: string; orgId: string | null; link?: string };
   /**
    * Set iff kind === 'specialist_result' (#11085): a device-troubleshooting
    * run's report (or one of its approved steps). `orgId` is the run's org: it
@@ -247,6 +249,7 @@ function assertPayloadShape(p: NudgePayload): void {
   if (p.kind === 'brief' && !p.briefLocalDate) throw new Error('notifyUser: a brief needs briefLocalDate');
   if (p.kind === 'check_in' && !p.checkIn?.id) throw new Error('notifyUser: a check_in nudge needs checkIn');
   if (p.kind !== 'check_in' && p.checkIn !== undefined) throw new Error(`notifyUser: a ${p.kind} nudge carries no checkIn`);
+  if (p.checkIn?.link !== undefined && !RELATIVE_LINK_RE.test(p.checkIn.link)) throw new Error('notifyUser: a check_in link must be a relative path');
   if (p.kind === 'specialist_result') {
     if (!p.specialist?.orgId || !p.specialist.grantRevisionId) throw new Error('notifyUser: a specialist_result needs specialist');
     if (!SPECIALIST_DEDUPE_KEY_RE.test(p.specialist.dedupeKey)) {
@@ -389,7 +392,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   const orgId = p.specialist ? p.specialist.orgId : p.checkIn ? p.checkIn.orgId : concern?.orgId ?? null;
   const link = p.specialist
     ? p.specialist.link
-    : p.checkIn ? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
+    : p.checkIn ? p.checkIn.link ?? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
   const dedupeKey = p.specialist ? p.specialist.dedupeKey : nudgeDedupeKey({
     kind: p.kind,
     concernId: p.concernId,

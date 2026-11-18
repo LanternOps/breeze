@@ -518,17 +518,23 @@ supportPublicRoutes.post('/redeem', zValidator('json', redeemSupportSessionSchem
     }
 
     // Atomic claim: the WHERE status='pending' guard is what makes a
-    // simultaneous second redemption lose rather than mint a second key.
+    // simultaneous second redemption lose rather than mint a second key. The
+    // code_hash guard makes a technician's "New code" that commits between
+    // the lookup above and this claim win: the old code then claims nothing
+    // (#11836). The sealed copy of the code is cleared in this same statement
+    // — once claimed, the code opens nothing and is never shown again.
     const [claimed] = await db
       .update(supportSessions)
       .set({
         status: 'claimed',
         claimedAt: now,
         claimedFromIp: ip === 'unknown' ? null : ip,
+        codeEncrypted: null,
       })
       .where(and(
         eq(supportSessions.id, row.id),
         eq(supportSessions.status, 'pending'),
+        eq(supportSessions.codeHash, row.codeHash),
       ))
       .returning();
     if (!claimed) return null;

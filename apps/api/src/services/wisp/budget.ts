@@ -72,6 +72,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** The `ai_invocations.source_ref` prefix of a model-written session summary; the grant id follows it. */
 export const SUMMARY_REFINE_SOURCE_REF_PREFIX = 'wisp_thread_summary:';
 
+/** The `ai_invocations.source_ref` prefix of a turn-end standing-instruction extraction (#10428); the grant id follows it. */
+export const INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX = 'wisp_instruction_extract:';
+
 /** The ledger ref that charges a model-written session summary to its grant's daily budget. */
 export function summaryRefineSourceRef(grantId: string): string {
   return `${SUMMARY_REFINE_SOURCE_REF_PREFIX}${grantId}`;
@@ -83,7 +86,11 @@ export function summaryRefineSourceRef(grantId: string): string {
  * follows the prefix). A sessionless model call this feature adds registers
  * its prefix here; anything not listed is not grant spend.
  */
-export const GRANT_OVERHEAD_SOURCE_REF_PREFIXES: readonly string[] = [SUMMARY_REFINE_SOURCE_REF_PREFIX];
+export const GRANT_OVERHEAD_SOURCE_REF_PREFIXES: readonly string[] = [
+  SUMMARY_REFINE_SOURCE_REF_PREFIX,
+  // #10428 (W05): the turn-end standing-instruction extractor (instructionExtractor.ts).
+  INSTRUCTION_EXTRACT_SOURCE_REF_PREFIX,
+];
 
 /** Every overhead ledger ref for one grant, one per registered prefix. */
 export function grantOverheadSourceRefs(grantId: string): string[] {
@@ -168,7 +175,8 @@ async function loadGrantBudget(grantId: string): Promise<GrantBudgetRow> {
 
 /**
  * What the grant spent in the UTC day `now` falls in, by line:
- *  - background: its runs QUEUED that day (excluding skipped ones), plus its
+ *  - background: its runs QUEUED that day (excluding skipped ones; a run counts
+ *    its model `cost_cents` plus its settled sandbox `compute_cents`), plus its
  *    grant-keyed overhead rows (`GRANT_OVERHEAD_SOURCE_REF_PREFIXES`) settled
  *    that day;
  *  - chat: invocations on its Wisp sessions that are not a run's own call,
@@ -179,7 +187,7 @@ export async function spendBreakdownUnderGrant(grantId: string, now: Date = new 
   const { start, end } = utcDayWindow(now);
   const { runs, overhead, chat } = await inSystemContext(async () => {
     const runRows = await db
-      .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents}), 0)::bigint` })
+      .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents} + coalesce(${aiAgentRuns.computeCents}, 0)), 0)::bigint` })
       .from(aiAgentRuns)
       .where(and(
         eq(aiAgentRuns.grantId, grantId),

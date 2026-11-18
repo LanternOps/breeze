@@ -478,7 +478,7 @@ test('provenance-record runs only after PR CI Success with exact permissions and
 });
 test('lint registers queue-selection next to W3', () => {
   assert.match(job('lint'), /^        run: node --test \.github\/scripts\/queue-selection\.test\.mjs$/mu);
-  assert.match(job('lint'), /Test PR selection contract \(W3\)\n        run: node --test \.github\/scripts\/ci-pr-selection\.test\.mjs\n\n      - name: Test queue selection contract \(W4\)/);
+  assert.match(job('lint'), /Test PR selection contract \(W3\)\n        run: node --test \.github\/scripts\/ci-pr-selection\.test\.mjs\n        timeout-minutes: 10\n\n      - name: Test queue selection contract \(W4\)/);
 });
 test('record drops advisory outputs from the 15-key classifier selection', () => {
   const io = recordIO(), input = recordInput();

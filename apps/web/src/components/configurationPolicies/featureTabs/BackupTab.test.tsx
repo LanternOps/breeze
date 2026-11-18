@@ -270,6 +270,42 @@ describe('BackupTab', () => {
     expect(providerOption.disabled).toBe(false);
   });
 
+  it('shows a local destination that this server does not test as not tested, not failed', async () => {
+    const unsupportedMessage = 'Local destinations are not tested from this server: BACKUP_LOCAL_ROOT is not set.';
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (String(input) === '/backup/configs/config-1/test' && method === 'POST') {
+        return makeJsonResponse({
+          id: 'config-1',
+          provider: 'local',
+          status: 'unsupported',
+          checkedAt: '2026-03-31T01:00:00Z',
+          error: unsupportedMessage,
+          providerCapabilities: {
+            objectLock: { supported: false, checkedAt: '2026-03-31T01:00:00Z', error: 'Object lock is only supported for S3 providers' },
+          },
+        });
+      }
+      return fallback(input, init);
+    });
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Primary S3/i);
+    fireEvent.click(screen.getByRole('button', { name: /^Test$/i }));
+
+    await screen.findByText(unsupportedMessage);
+    expect(screen.getByRole('button', { name: /Not tested here/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Failed$/i })).not.toBeInTheDocument();
+  });
+
   it('blocks raw save for invalid provider mode and allows downgrade save', async () => {
     render(
       <BackupTab
@@ -333,6 +369,37 @@ describe('BackupTab', () => {
 
     expect(await screen.findByText(/Add at least one backup path/i)).toBeTruthy();
     expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('moves focus to the path field and explains next to Save when paths are missing (#11554)', async () => {
+    Element.prototype.scrollIntoView = vi.fn() as unknown as typeof Element.prototype.scrollIntoView;
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            targets: { paths: [], excludes: [] },
+            paths: [],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    const err = await screen.findByText(/Add at least one backup path/i);
+    expect(err.hasAttribute('data-field-error')).toBe(true);
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('INPUT'));
+    // The focused input is the one belonging to the path list (right above the message).
+    expect(
+      document.activeElement!.compareDocumentPosition(err) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId('save-blocked-hint')).toBeTruthy();
   });
 
   it('flushes a typed-but-not-added backup path on save', async () => {

@@ -10,7 +10,7 @@
  * auth; `/__bz/ping`; reserved `/__bz/*` → 404; gates; budgets; dispatch.
  */
 import { Hono, type Context } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import type { ContentfulStatusCode, UnofficialStatusCode } from 'hono/utils/http-status';
 import { getCookie, generateCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
@@ -168,6 +168,8 @@ function isServableStatus(status: unknown): status is number {
   return typeof status === 'number' && Number.isInteger(status) && status >= 200 && status <= 599;
 }
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+/** Logged status for a request whose client left before it was served (nginx's convention). */
+const CLIENT_CLOSED_REQUEST = 499 as UnofficialStatusCode;
 
 tunnelHostRoutes.all('*', async (c) => {
   const config = getTunnelOriginConfig();
@@ -215,11 +217,28 @@ tunnelHostRoutes.all('*', async (c) => {
     c.header('retry-after', String(rate.retryAfterSeconds));
     return c.text('Too many requests', 429);
   }
-  const slot = acquireTunnelHttpSlot(budgetKeys);
+  // A full tunnel queues briefly for a slot (bounded wait and depth, see
+  // TUNNEL_HTTP_QUEUE_LIMITS); a full user or agent ceiling refuses at once.
+  // The request signal aborts when the client disconnects, which gives up the
+  // queue place.
+  const signal = c.req.raw.signal;
+  const slot = await acquireTunnelHttpSlot(budgetKeys, { signal });
   if (!slot.ok) {
-    recordTunnelHttpOutcome('host', 'rate_limited');
+    if (slot.reason === 'aborted') {
+      // Nobody is reading this response; not a budget refusal.
+      recordTunnelHttpOutcome('host', 'client_aborted');
+      return c.body(null, CLIENT_CLOSED_REQUEST);
+    }
+    recordTunnelHttpOutcome('host',
+      slot.reason === 'queue_full' ? 'queue_full' : slot.reason === 'timeout' ? 'queue_timeout' : 'rate_limited');
     c.header('retry-after', '1');
     return c.text('Too many concurrent requests', 429);
+  }
+  if (signal.aborted) {
+    // Granted a slot just as the client left: hand it straight on.
+    slot.release();
+    recordTunnelHttpOutcome('host', 'client_aborted');
+    return c.body(null, CLIENT_CLOSED_REQUEST);
   }
   let outcome: TunnelDispatchOutcome;
   try {

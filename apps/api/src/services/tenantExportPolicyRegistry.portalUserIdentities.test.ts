@@ -16,7 +16,7 @@ describe('portal_user_identities export policy', () => {
     const reg = getTenantExportPolicyRegistry()['portal_user_identities'];
     expect(reg, 'portal_user_identities has no export policy entry').toBeDefined();
     const columns = Object.values(getTableColumns(portalUserIdentities) as Record<string, { name: string }>).map((c) => c.name);
-    expect(columns.length).toBe(10);
+    expect(columns.length).toBe(25); // 10 (W2) + 9 directory-deprovisioning columns (W8) + 6 SCIM columns (W9)
     for (const col of columns) {
       expect(reg?.columns[col]?.decision, col).toBe('include');
     }

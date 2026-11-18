@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/spf13/viper"
@@ -181,6 +182,136 @@ func TestExecVaultSyncRejectsVaultPathMismatch(t *testing.T) {
 	result = execVaultSync(same, vaultState)
 	if strings.Contains(result.Stderr, "is configured for vault path") {
 		t.Fatalf("trailing separator treated as a different vault: %q", result.Stderr)
+	}
+}
+
+// writeStoreSnapshot lays out a minimal snapshot (manifest + one data file)
+// under a LocalProvider store root, the shape SyncSnapshot reads.
+func writeStoreSnapshot(t *testing.T, storeRoot, snapshotID string) {
+	t.Helper()
+	// LocalProvider refuses a store root other accounts can read.
+	if err := os.Chmod(storeRoot, 0o700); err != nil {
+		t.Fatalf("chmod store root: %v", err)
+	}
+	store := providers.NewLocalProvider(storeRoot)
+	src := filepath.Join(t.TempDir(), "object")
+	for key, body := range map[string]string{
+		"snapshots/" + snapshotID + "/files/a.gz":    "data for " + snapshotID,
+		"snapshots/" + snapshotID + "/manifest.json": `{"id":"` + snapshotID + `"}`,
+	} {
+		if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", key, err)
+		}
+		if err := store.Upload(src, key); err != nil {
+			t.Fatalf("upload %s: %v", key, err)
+		}
+	}
+}
+
+func vaultHasSnapshot(vaultPath, snapshotID string) bool {
+	_, err := os.Stat(filepath.Join(vaultPath, "snapshots", snapshotID, "manifest.json"))
+	return err == nil
+}
+
+func defaultStorePath(t *testing.T) string {
+	t.Helper()
+	cfg, err := config.Reload()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.BackupLocalPath == "" {
+		t.Fatal("configuredVault did not set backup_local_path")
+	}
+	return cfg.BackupLocalPath
+}
+
+// #11858: Sync now names the snapshot's own destination. A device whose
+// policy-linked local destination is not the helper's default store is synced
+// from that destination, not from the default one.
+func TestExecVaultSyncReadsThePayloadDestination(t *testing.T) {
+	vaultPath, vaultState := configuredVault(t)
+	destination := t.TempDir()
+	writeStoreSnapshot(t, destination, "snap-dest")
+
+	payload, _ := json.Marshal(map[string]any{
+		"vaultId": "v1", "vaultPath": vaultPath, "snapshotId": "snap-dest",
+		"provider": "local", "providerConfig": map[string]any{"path": destination},
+	})
+	result := execVaultSync(payload, vaultState)
+	if !result.Success {
+		t.Fatalf("expected sync from the payload destination to succeed, got %q", result.Stderr)
+	}
+	if !vaultHasSnapshot(vaultPath, "snap-dest") {
+		t.Fatal("snapshot was not copied into the vault")
+	}
+}
+
+// A payload that names no destination (a snapshot written before destinations
+// were recorded) still reads the helper's own store.
+func TestExecVaultSyncWithoutDestinationReadsTheDefaultStore(t *testing.T) {
+	vaultPath, vaultState := configuredVault(t)
+	writeStoreSnapshot(t, defaultStorePath(t), "snap-default")
+
+	payload, _ := json.Marshal(map[string]any{"vaultId": "v1", "vaultPath": vaultPath, "snapshotId": "snap-default"})
+	result := execVaultSync(payload, vaultState)
+	if !result.Success {
+		t.Fatalf("expected sync from the default store to succeed, got %q", result.Stderr)
+	}
+	if !vaultHasSnapshot(vaultPath, "snap-default") {
+		t.Fatal("snapshot was not copied into the vault")
+	}
+}
+
+// A destination the helper cannot build is refused, never replaced by the
+// default store.
+func TestExecVaultSyncRefusesAnUnusableDestination(t *testing.T) {
+	vaultPath, vaultState := configuredVault(t)
+	writeStoreSnapshot(t, defaultStorePath(t), "snap-x")
+
+	payload, _ := json.Marshal(map[string]any{
+		"vaultId": "v1", "vaultPath": vaultPath, "snapshotId": "snap-x",
+		"provider": "ftp", "providerConfig": map[string]any{"path": "/nowhere"},
+	})
+	result := execVaultSync(payload, vaultState)
+	if result.Success {
+		t.Fatal("expected an unsupported destination to be refused")
+	}
+	if !strings.Contains(result.Stderr, "unsupported backup provider") {
+		t.Fatalf("unexpected stderr: %q", result.Stderr)
+	}
+	if vaultHasSnapshot(vaultPath, "snap-x") {
+		t.Fatal("an unusable destination fell back to the default store")
+	}
+}
+
+// A payload that names a provider but not a usable destination is refused: it
+// must never be read as "no destination" and synced from the default store.
+func TestExecVaultSyncRefusesAProviderWithoutADestination(t *testing.T) {
+	for name, extra := range map[string]map[string]any{
+		"no providerConfig": {"provider": "local"},
+		"empty local path":  {"provider": "local", "providerConfig": map[string]any{"path": ""}},
+		"no path field":     {"provider": "local", "providerConfig": map[string]any{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			vaultPath, vaultState := configuredVault(t)
+			writeStoreSnapshot(t, defaultStorePath(t), "snap-y")
+
+			body := map[string]any{"vaultId": "v1", "vaultPath": vaultPath, "snapshotId": "snap-y"}
+			for k, v := range extra {
+				body[k] = v
+			}
+			payload, _ := json.Marshal(body)
+			result := execVaultSync(payload, vaultState)
+			if result.Success {
+				t.Fatal("expected a provider without a destination to be refused")
+			}
+			if !strings.Contains(result.Stderr, "but no usable destination") {
+				t.Fatalf("unexpected stderr: %q", result.Stderr)
+			}
+			if vaultHasSnapshot(vaultPath, "snap-y") {
+				t.Fatal("a provider without a destination fell back to the default store")
+			}
+		})
 	}
 }
 

@@ -29,7 +29,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatUptime } from "../../lib/utils";
 import { runAction, ActionError } from "../../lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { isAgentUpdateStuck } from "@breeze/shared";
+import { DOCS_BASE_URL, isAgentUpdateStuck } from "@breeze/shared";
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -95,6 +95,27 @@ type DeviceInfo = {
     state: string;
     errorClass: string;
     since: string | null;
+  } | null;
+  /**
+   * Control-plane block notice (#8868): a network filter, captive portal or
+   * untrusted TLS interceptor answered in place of the server. Derived by the
+   * API; null when there is nothing to show. `locationHost` / `certIssuer`
+   * come from the device's network: render as plain text only.
+   */
+  controlPlaneBlock?: {
+    /** last_known: active when last reported; the device has not reported since. */
+    state: "active" | "last_known" | "cleared";
+    kind: string;
+    host: string;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    clearedAt?: string;
+    httpStatus?: number;
+    locationHost?: string;
+    certIssuer?: string;
+    reachableViaEch: boolean;
+    /** Server time of the last report; only on last_known. */
+    lastReportedAt?: string;
   } | null;
   /** Derived read view from the API (#8608); absent until an agent reports. */
   logShipping?: {
@@ -295,6 +316,91 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between py-2">
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium text-right">{value || "—"}</dd>
+    </div>
+  );
+}
+
+const CONTROL_PLANE_BLOCK_DOCS_URL = `${DOCS_BASE_URL}/agents/advanced-install/#blocked-by-a-network-filter`;
+
+/**
+ * Control-plane block notice (#8868). `locationHost` and `certIssuer` come
+ * from whatever answered on the device's network, so an attacker on the path
+ * controls them: they are only ever interpolated as plain text (React escapes
+ * it; never a link, never `Trans`). An unknown kind renders nothing.
+ */
+function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlock"] }) {
+  const { t } = useTranslation("devices");
+  if (!block) return null;
+  if (block.state !== "active" && block.state !== "last_known" && block.state !== "cleared") return null;
+
+  const noDetail = t("deviceInfoTab.controlPlaneBlock.noDetail");
+  let title: string;
+  let message: string;
+  switch (block.kind) {
+    case "web_filter":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.webFilter", { locationHost: block.locationHost || noDetail });
+      break;
+    case "captive_portal":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.captivePortal");
+      break;
+    case "plaintext_unknown":
+      title = t("deviceInfoTab.controlPlaneBlock.title");
+      message = t("deviceInfoTab.controlPlaneBlock.plaintextUnknown");
+      break;
+    case "untrusted_certificate":
+      title = t("deviceInfoTab.controlPlaneBlock.titleUntrustedCertificate");
+      message = t("deviceInfoTab.controlPlaneBlock.untrustedCertificate", { certIssuer: block.certIssuer || noDetail });
+      break;
+    default:
+      return null;
+  }
+
+  const cleared = block.state === "cleared";
+  const lastKnown = block.state === "last_known";
+  return (
+    <div
+      data-testid="control-plane-block-notice"
+      data-state={block.state}
+      role="status"
+      className={
+        cleared || lastKnown
+          ? "rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+          : "rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+      }
+    >
+      <p className="font-medium">{title}</p>
+      {cleared ? (
+        <p>
+          {t("deviceInfoTab.controlPlaneBlock.cleared", {
+            from: formatDate(block.firstSeenAt),
+            to: formatDate(block.clearedAt ?? block.lastSeenAt),
+          })}
+        </p>
+      ) : lastKnown ? (
+        <>
+          <p>{message}</p>
+          <p>
+            {t("deviceInfoTab.controlPlaneBlock.lastKnown", {
+              time: formatDate(block.lastReportedAt ?? block.lastSeenAt),
+            })}
+          </p>
+        </>
+      ) : (
+        <>
+          <p>{message}</p>
+          {block.reachableViaEch ? <p>{t("deviceInfoTab.controlPlaneBlock.viaEch")}</p> : null}
+        </>
+      )}
+      <a
+        href={CONTROL_PLANE_BLOCK_DOCS_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary underline"
+      >
+        {t("deviceInfoTab.controlPlaneBlock.howToFix")}
+      </a>
     </div>
   );
 }
@@ -1396,6 +1502,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           </div>
         ) : null}
         <WatchdogInstallNotice watchdogInstall={info?.watchdogInstall} />
+        <ControlPlaneBlockNotice block={info?.controlPlaneBlock} />
         <LogShippingRow logShipping={info?.logShipping} />
         {info?.logsNotArriving ? (
           <div className="flex justify-between py-2">

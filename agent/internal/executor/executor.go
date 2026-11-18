@@ -561,13 +561,11 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 		return result, err
 	}
 
-	var args []string
+	launch := procoutput.ScriptCommand{Name: shellCmd, Args: append(shellArgs, scriptPath)}
 	if runtime.GOOS == "windows" {
-		shellCmd, args = procoutput.WindowsScriptCommand(shellCmd, shellArgs, scriptPath)
-	} else {
-		args = append(shellArgs, scriptPath)
+		launch = procoutput.WindowsScriptCommand(shellCmd, shellArgs, scriptPath)
 	}
-	cmd := procspawn.CommandContext(ctx, shellCmd, args...)
+	cmd := procspawn.CommandContext(ctx, launch.Name, launch.Args...)
 
 	// Set working directory
 	cmd.Dir = e.workDir
@@ -578,7 +576,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	cmd.Stderr = &limitedWriter{buf: &stderr, limit: MaxOutputSize}
 
 	// Configure environment
-	cmd.Env = procoutput.ApplyEnv(e.buildEnvironment(script))
+	cmd.Env = append(procoutput.ApplyEnv(e.buildEnvironment(script)), launch.Env...)
 
 	// Set process group so children are killed on timeout
 	setProcessGroup(cmd)
@@ -588,6 +586,7 @@ func (e *Executor) Execute(script ScriptExecution) (*ScriptResult, error) {
 	// powershell.exe would otherwise pop a visible "black box" on the
 	// interactive user desktop every script run.
 	hideWindow(cmd)
+	procoutput.SetCmdLine(cmd, launch.CmdLine)
 
 	// When the context is cancelled (timeout OR an explicit cancel), terminate
 	// the entire process tree rather than only the shell leader. Otherwise

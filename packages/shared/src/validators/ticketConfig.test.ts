@@ -182,7 +182,10 @@ describe('orgTicketSettingsSchema', () => {
   });
 });
 
-import { createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema } from './ticketConfig';
+import {
+  createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema,
+  createOrgCustomerDomainSchema, verifyCustomerDomainSchema,
+} from './ticketConfig';
 
 describe('createCustomerEmailDomainSchema', () => {
   const orgId = '11111111-1111-4111-8111-111111111111';
@@ -220,5 +223,34 @@ describe('updateCustomerEmailDomainSchema', () => {
 
   it('accepts a partial update', () => {
     expect(updateCustomerEmailDomainSchema.safeParse({ isActive: false }).success).toBe(true);
+  });
+});
+
+describe('createOrgCustomerDomainSchema', () => {
+  it('takes domain + autoCreateContact only; orgId in the body is rejected (path owns it)', () => {
+    const ok = createOrgCustomerDomainSchema.parse({ domain: 'ACME.com' });
+    expect(ok).toEqual({ domain: 'acme.com', autoCreateContact: true });
+    expect(createOrgCustomerDomainSchema.safeParse({ domain: 'acme.com', orgId: '11111111-1111-4111-8111-111111111111' }).success).toBe(false);
+  });
+  it('rejects free-provider domains', () => {
+    expect(createOrgCustomerDomainSchema.safeParse({ domain: 'gmail.com' }).success).toBe(false);
+  });
+});
+
+describe('verifyCustomerDomainSchema', () => {
+  it.each(['dns_txt', 'entra_tenant', 'google_directory'])('accepts %s', (method) => {
+    expect(verifyCustomerDomainSchema.parse({ method })).toEqual({ method });
+  });
+  it('rejects unknown methods and extra keys', () => {
+    expect(verifyCustomerDomainSchema.safeParse({ method: 'carrier_pigeon' }).success).toBe(false);
+    expect(verifyCustomerDomainSchema.safeParse({ method: 'dns_txt', domain: 'x.com' }).success).toBe(false);
+    expect(verifyCustomerDomainSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('updateCustomerEmailDomainSchema verification columns', () => {
+  it('is not strict: verification keys are stripped, never passed through', () => {
+    const r = updateCustomerEmailDomainSchema.parse({ isActive: false, verifiedAt: '2027-01-01T00:00:00Z', verifiedMethod: 'dns_txt', verificationToken: 'x' });
+    expect(r).toEqual({ isActive: false });
   });
 });

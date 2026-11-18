@@ -289,6 +289,7 @@ export default function TrustStatusCard({ orgId, orgFetch, state, canWrite, onPa
         orgFetch={orgFetch}
         page={page}
         searchIndexable={state.effective.values.searchIndexable}
+        templateRevision={state.template?.revision ?? null}
         onPublished={onPageChange}
         onStale={onReload}
       />

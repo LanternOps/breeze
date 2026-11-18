@@ -20,12 +20,15 @@ Design docs:
   scheduled jobs) and exposes a slim health + metrics surface (`/health`,
   `/health/ready`, `/metrics`) on the same `API_PORT` (default 3001) inside
   its own container.
-- Socket-owner workers (anything whose import closure or runtime reaches
-  agent-socket dispatch — see the plan's Task 5 classification) **stay on the
-  `api` container** in the 3.5d-b rollout. `BREEZE_ROLE=all` (the default, both
-  containers' fallback) is unaffected: `api` alone still runs every worker,
-  byte-for-byte as before. Which entries are socket-owner changes over time;
-  see "Which workers run where" below.
+- Socket-owner workers **stay on the `api` container**. After the dispatch
+  facade pass (#4142) that is only the few registry entries with a recorded
+  process-local reason (files on the `api` container's own disk); every other
+  worker reaches agents through the relay and runs in `worker`. The relay
+  consumer itself is not a registry entry: it starts only in the `api`/`all`
+  roles, never in `worker`.
+  `BREEZE_ROLE=all` (the default, both containers' fallback) is unaffected:
+  `api` alone still runs every worker, byte-for-byte as before. See "Which
+  workers run where" below.
 - `docker-compose.yml` and `deploy/docker-compose.prod.yml` both share the
   api service's full environment block via a `x-api-env` YAML anchor, so the
   `worker` service always sees the same env the `api` container does (Redis,
@@ -57,9 +60,41 @@ so on a worker-split deployment they now run in the `worker` container:
 `sensitiveDataWorker`, `softwareComplianceWorker`,
 `softwareDeploymentScheduler`, `softwareRemediationWorker`,
 `staleCommandReaper`, `timeSyncRetention` and `topologyDiagnosticWorker`.
-22 entries stay on `api`: 21 still reach agent sockets (later waves of the same
-plan), and `aiTranscriptSweeper` stays by design (#9050: it sweeps transcript
-files on the `api` container's disk).
+
+The second wave moves agent socket teardown off the socket-local map (see
+"Agent socket eviction" below) and makes 16 more entries `global`:
+`aiAgentRunner`, `aiOperatorTaskWorker`, `alertVerdictScheduler`,
+`automationWorker`, `eventLogRetention`, `flowRunReconciler`, `flowRunner`,
+`flowScheduleTick`, `intentReleaseWorker`, `monitorConversionPreviewWorker`,
+`offboardingDrainReaper`, `orgMerge`, `pamActuationWorker`,
+`policyEvaluationWorker`, `scriptVerifyWorker` and `securityScanWorker`.
+The third wave moves the device cascade registration lists out of
+`routes/devices/core.ts` into `services/deviceCascadeTables.ts`, so device
+deletion no longer imports a route, and moves parked-device expiry onto the
+eviction above. It makes 3 more entries `global`: `parkedDeviceExpiry`,
+`parkedDevicePurge` and `quickSupportReaper`.
+
+End state: no entry is pinned to `api` by its import closure. 3 entries stay
+`socket-owner` for a process-local reason, each recorded in `KEEP_SOCKET_OWNER`:
+
+- `aiTranscriptSweeper` (#9050): it sweeps transcript files on the `api`
+  container's disk.
+- `deviceBulkPurge` and `removedDevicePurge`: they unlink each purged device's
+  screenshot files under `SCREENSHOT_DIR`. It defaults to
+  `/tmp/breeze-screenshots`, and the `api` and `worker` containers each mount
+  their own `/tmp` tmpfs, so an unlink from the `worker` container would miss
+  the file the `api` container wrote. They can move once screenshots live on
+  shared storage. Known gap: `helperScreenshotRetentionWorker` (the expiry and
+  orphan sweep over the same directory) is `global`, so on a split deployment
+  it sweeps the `worker` container's `/tmp`, not the `api` one's.
+
+The relay consumer (`agentCommandRelayWorker`) is not a registry entry. It
+starts only in the `api`/`all` roles, because its job is the local send.
+
+On a worker-split deployment, `scriptVerifyWorker` no longer reaches the
+live-chat stream of a session open on `api`: its outcome still lands as a
+durable chat message and a notification, which the client shows on its next
+fetch (the stream nudge was already best-effort across replicas).
 
 A command one of these workers sends to an agent whose socket lives on an `api`
 container travels through that instance's relay queue
@@ -68,6 +103,44 @@ running. A send the relay cannot confirm is treated as uncertain: the delivery
 claim is kept, nothing is retried, and the agent's result or the stale-command
 reaper settles the row. Inside a held DB transaction the relay refuses outright;
 a caller holding a delivery claim releases it for the agent's next heartbeat.
+
+### Agent socket eviction (#4142)
+
+Closing an agent's WebSocket (tenant suspend, offboarding drain, org archive
+and merge, Quick Support end, parked-device expiry) now reaches the socket on
+whichever instance holds it, through the same relay queues (`relay-evict` jobs,
+`services/agentCommandRelayEvict.ts`). The process asking closes its own
+sockets first; every other agent is routed by its presence lease to the owning
+instance, which closes the socket only if it is still the exact connection the
+lease named (a reconnect in between is left alone). Evictions run after the
+transaction that made the change commits, so the reconnect they force meets
+the committed cutoff, and a rollback evicts nothing. Parked-device expiry is
+the exception: its decommission commits in its own transaction first, so the
+eviction waits only for the caller's context to end and runs even if that
+context rolls back. A tenant sever does not
+wait for answers; Quick Support end does, and records `unconfirmed` when no
+answer confirms the close. During a rolling deploy, an `api` container still
+running a build from before this change does not understand an eviction: it
+closes nothing and answers `offline`, which the sender records as unconfirmed.
+Agents on that container keep their socket until it is replaced (a suspended
+tenant's agents also fail their next credential check).
+
+Local terminal and tunnel browser-socket closes go through
+`services/remoteSessionSocketLocal.ts`, which a `worker` answers with "nothing
+closed here"; the teardown then signals the agent through the relay.
+
+**Lab check before relying on it** (`--profile worker-split`,
+`BREEZE_API_ROLE=api`):
+
+1. End a Quick Support session whose client is connected to the `api`
+   container. The client's socket closes within seconds and the audit row
+   records `agentDisconnect: closed`.
+2. Suspend a test organization with an online agent. Its socket closes within
+   seconds and the agent fails to re-authenticate.
+3. Remove a user's access while they hold a terminal session. The session row
+   goes `disconnected` and the agent's PTY stops. Every teardown caller runs on
+   `api` today; the worker-side path (no local socket, `terminal_stop` through
+   the relay) is covered by unit tests.
 
 ## Observability (#4143)
 

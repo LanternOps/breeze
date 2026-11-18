@@ -40,7 +40,8 @@ describe('toRegistryWriteError', () => {
   });
 
   it('maps FK and CHECK violations to 422 invalid', () => {
-    for (const code of ['23503', '23514']) {
+    // 23001: Postgres 18's code for a RESTRICT foreign-key refusal (#11624).
+    for (const code of ['23503', '23001', '23514']) {
       const e = capture(() => toRegistryWriteError(drizzleError(code, 'c', ['v']), 'Could not save.')) as RegistryWriteError;
       expect(e.status).toBe(422);
       expect(e.code).toBe('invalid');

@@ -113,6 +113,7 @@ export async function recentRemovals(gh, { repo, since, until = null, maxPages =
 const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
+      id
       number
       state
       headRefOid
@@ -129,7 +130,7 @@ const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   }
 }`;
 
-// PrSnapshot = { pr, state: 'OPEN'|'CLOSED'|'MERGED', headSha, headRef, isFork,
+// PrSnapshot = { pr, id (node id), state: 'OPEN'|'CLOSED'|'MERGED', headSha, headRef, isFork,
 // autoMerge, queue: {state, position}|null, labels, files, events }.
 // `files` includes both sides of a rename; `events` are oldest first.
 export async function prSnapshot(gh, { repo, pr, withFiles = true }) {
@@ -149,6 +150,7 @@ export async function prSnapshot(gh, { repo, pr, withFiles = true }) {
   }
   return {
     pr,
+    id: p.id,
     state: p.state,
     headSha: p.headRefOid,
     headRef: p.headRefName,
@@ -444,7 +446,7 @@ async function flakeReport(gh, repo, artifacts, label, ctx) {
 
 // ── Run facts ────────────────────────────────────────────────────────────
 
-const QUEUE_BRANCH_PR = /^gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]+$/;
+const QUEUE_BRANCH_PR = /^gh-readonly-queue\/(.+)\/pr-(\d+)-([0-9a-f]+)$/;
 const failedStep = (steps = []) =>
   (steps.find((s) => s.conclusion === 'failure') ?? steps.find((s) => s.conclusion === 'cancelled') ?? steps.find((s) => s.status === 'in_progress'))?.name ?? null;
 
@@ -477,8 +479,12 @@ async function annotationsOf(gh, repo, jobId) {
 }
 
 const GATE_LINE = /^ci-gate: verdict=(\S+) reason=(\S+)/m;
+// W05 (#10749): the queue selection the same job published before it judged.
+// `reason=` is empty for a thin selection. Absent from gates older than W05a.
+const SELECTION_LINE = /^ci-gate-selection: mode=(\S+) reason=(\S*)/m;
 
 // The newest `CI Gate` run's verdict for this head, or null when none ran.
+// `selection` is { mode, reason } from its ci-gate-selection line, or null.
 async function gateFor(gh, repo, headSha) {
   const res = await gh.rest('GET', `repos/${repo}/actions/workflows/ci-gate.yml/runs?head_sha=${headSha}&per_page=5`);
   if (res.status === 404) return null;
@@ -488,10 +494,69 @@ async function gateFor(gh, repo, headSha) {
   const { jobs } = await listJobs(gh, repo, run.id);
   for (const job of jobs) {
     const log = await gh.raw(`repos/${repo}/actions/jobs/${job.id}/logs`);
-    const m = log.text && GATE_LINE.exec(cleanLog(log.text).join('\n'));
-    if (m) return { verdict: m[1], reason: m[2], run: run.id };
+    const text = log.text ? cleanLog(log.text).join('\n') : '';
+    const m = GATE_LINE.exec(text);
+    if (!m) continue;
+    const s = SELECTION_LINE.exec(text);
+    return { verdict: m[1], reason: m[2], run: run.id, selection: s ? { mode: s[1], reason: s[2] } : null };
   }
-  return { verdict: null, reason: 'gate_line_missing', run: run.id };
+  return { verdict: null, reason: 'gate_line_missing', run: run.id, selection: null };
+}
+
+// What the change a run tested touched: { files, queueBase }. `files` is a
+// Set of repo paths, or null when that cannot be told (the caller then treats
+// every failure as touched):
+//   pull_request: the PR's base...head;
+//   merge_group: <queue base branch>...head, i.e. from the merge base with
+//     main to the group commit: every entry of the group not yet on main,
+//     this one included. The queue branch name's sha is NOT the base: it is
+//     the commit the entry was stacked on, which for every entry but the
+//     first is the previous entry's group commit, so a compare from it covers
+//     this entry's own PR only. `queueBase` is that merge base. When the head
+//     is already on main (the group merged: `identical`/`behind`), the base
+//     the group was built on can no longer be read this way, so files is null;
+//   a run on main with no PR (push, schedule): the head commit's own files;
+//   anything else, a failed read, or a list the API may have cut (300 files
+//   per response): null.
+// An entry ahead that merged before the read is part of main by then (it
+// passed its own run), so its files are no longer counted against this one.
+export const CHANGED_FILES_LIMIT = 300;
+const SHA = /^[0-9a-f]{7,64}$/;
+const REF = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+function fileSet(body) {
+  if (!Array.isArray(body?.files) || body.files.length >= CHANGED_FILES_LIMIT) return null;
+  const files = new Set();
+  for (const f of body.files) {
+    if (typeof f?.filename !== 'string') return null;
+    files.add(f.filename);
+    if (typeof f.previous_filename === 'string') files.add(f.previous_filename);
+  }
+  return files;
+}
+
+export async function runChange(gh, { repo, run }) {
+  const none = { files: null, queueBase: null };
+  if (!SHA.test(run.headSha ?? '')) return none;
+  if (run.event === 'merge_group') {
+    if (!REF.test(run.queueBaseRef ?? '') || run.queueBaseRef.split('/').includes('..')) return none;
+    const res = await gh.rest('GET', `repos/${repo}/compare/${run.queueBaseRef}...${run.headSha}`);
+    const base = res.body?.merge_base_commit?.sha;
+    if (res.status !== 200 || !['ahead', 'diverged'].includes(res.body?.status) || !SHA.test(base ?? '')) return none;
+    const files = fileSet(res.body);
+    return files ? { files, queueBase: base } : none;
+  }
+  let path;
+  if (run.event === 'pull_request') {
+    if (!SHA.test(run.baseSha ?? '')) return none;
+    path = `repos/${repo}/compare/${run.baseSha}...${run.headSha}`;
+  } else if (run.pr === null && run.headBranch === 'main') {
+    path = `repos/${repo}/commits/${run.headSha}`;
+  } else {
+    return none;
+  }
+  const res = await gh.rest('GET', path);
+  return { files: res.status === 200 ? fileSet(res.body) : null, queueBase: null };
 }
 
 // RunFacts = { run, jobs: JobFact[], jobsComplete, ciSuccess: 'present'|'missing', gate }.
@@ -499,7 +564,9 @@ async function gateFor(gh, repo, headSha) {
 // annotations and log fetched; any retry-shard job's flake report is read when
 // the job failed or uploaded one. A fetch that fails is recorded on the fact
 // (`errors`, `logStatus`, `reportError`), never dropped.
-export async function runFacts(gh, { repo, runId, ciYml }) {
+// `labelledOnly` (sightings ingest): annotations and logs are read only for
+// retry-shard jobs, the only ones a sighting can come from.
+export async function runFacts(gh, { repo, runId, ciYml, withGate = true, labelledOnly = false }) {
   const r = await getJson(gh, `repos/${repo}/actions/runs/${runId}`);
   const queuePr = QUEUE_BRANCH_PR.exec(r.head_branch ?? '');
   const run = {
@@ -513,7 +580,15 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
     conclusion: r.conclusion,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    pr: queuePr ? Number(queuePr[1]) : (r.pull_requests?.[0]?.number ?? null),
+    pr: queuePr ? Number(queuePr[2]) : (r.pull_requests?.[0]?.number ?? null),
+    // A PR run's base commit. Null for a queue run: its base is read from
+    // the queue's base branch (runChange), not from its branch name.
+    baseSha: queuePr ? null : (r.pull_requests?.[0]?.base?.sha ?? null),
+    // A queue run: the branch the queue merges into, and the commit this
+    // entry was stacked on (the previous entry's group commit, or main's tip
+    // for the first entry), both from `gh-readonly-queue/<base>/pr-N-<sha>`.
+    queueBaseRef: queuePr ? queuePr[1] : null,
+    queueParent: queuePr ? queuePr[3] : null,
   };
   const { jobs: apiJobs, complete: jobsComplete } = await listJobs(gh, repo, runId);
   let artifacts = null;
@@ -541,7 +616,7 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
       errors: [],
     };
     const failed = isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS;
-    if (failed) {
+    if (failed && (!labelledOnly || ident.label)) {
       const ann = await annotationsOf(gh, repo, j.id);
       fact.annotations = ann.annotations;
       if (ann.error) fact.errors.push(ann.error);
@@ -565,6 +640,52 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
     jobs,
     jobsComplete,
     ciSuccess: apiJobs.some((j) => j.name === CI_SUCCESS) ? 'present' : 'missing',
-    gate: await gateFor(gh, repo, run.headSha),
+    gate: withGate ? await gateFor(gh, repo, run.headSha) : null,
   };
+}
+
+// ── Head and queue state (W06b) ──────────────────────────────────────────
+
+// When the PR's current head was pushed, as the creation time of its first
+// non-merge_group workflow run (a same-repo push starts CI within seconds).
+// Null when no run exists. A removal's `beforeCommit` is the group commit,
+// so this is how the shepherd tells which head a removal belonged to.
+export async function headPushedAt(gh, { repo, headSha }) {
+  const body = await getJson(gh, `repos/${repo}/actions/runs?head_sha=${headSha}&per_page=100`);
+  const times = (body.workflow_runs ?? []).filter((r) => r.head_sha === headSha && r.event !== 'merge_group').map((r) => ms(r.created_at));
+  return times.length ? toIso(Math.min(...times)) : null;
+}
+
+const QUEUE_QUERY = `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    mergeQueue(branch: "main") {
+      entries(first: 100) {
+        nodes { position state enqueuedAt headCommit { oid } pullRequest { number } }
+      }
+    }
+  }
+}`;
+
+// QueueEntry = { pr, position, state, enqueuedAt, groupSha }. `groupSha` is
+// the entry's head commit: the merge-group commit its CI run tests.
+export async function mergeQueueEntries(gh, { repo }) {
+  const [owner, name] = repo.split('/');
+  const q = (await gh.graphql(QUEUE_QUERY, { owner, name })).repository.mergeQueue;
+  return (q?.entries?.nodes ?? [])
+    .filter((e) => e.pullRequest)
+    .map((e) => ({ pr: e.pullRequest.number, position: e.position, state: e.state, enqueuedAt: e.enqueuedAt, groupSha: e.headCommit?.oid ?? null }));
+}
+
+// The newest merge_group CI run of a group commit, or null.
+export async function groupRunBySha(gh, { repo, groupSha }) {
+  const q = new URLSearchParams({ event: 'merge_group', head_sha: groupSha, per_page: '20' });
+  const body = await getJson(gh, `repos/${repo}/actions/workflows/ci.yml/runs?${q}`);
+  const run = newest((body.workflow_runs ?? []).filter((r) => r.head_sha === groupSha && r.path === CI_WORKFLOW));
+  return run ? { ...runRef(run), status: run.status, updatedAt: run.updated_at } : null;
+}
+
+// Names of a run's latest jobs, and whether the listing is complete.
+export async function jobNames(gh, { repo, runId }) {
+  const { jobs, complete } = await listJobs(gh, repo, runId);
+  return { names: jobs.map((j) => j.name), complete };
 }

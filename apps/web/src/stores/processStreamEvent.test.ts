@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { useWispInstructionCaptureStore } from './wispInstructionCaptureStore';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AiStreamEvent } from '@breeze/shared';
-import { processStreamEvent, type StreamableState, type ActivePlan } from './processStreamEvent';
+import { alreadyDecidedOutcome, processStreamEvent, type StreamableState, type ActivePlan } from './processStreamEvent';
 
 function makeState(): StreamableState {
   return {
@@ -52,6 +53,19 @@ describe('W05 events', () => {
     expect(h.state.error).toBe(message);
     expect(h.state.isStreaming).toBe(false);
   });
+  it('#9428: an error records its code and detail and finalizes the half-streamed reply', () => {
+    const h = harness();
+    h.set(() => ({ messages: [{ id: 'a1', role: 'assistant', content: 'partial', createdAt: new Date(), isStreaming: true }] }));
+    processStreamEvent({ type: 'error', message: 'm', code: 'timeout', detail: 'd' }, h.set, h.get, 'a1');
+    expect(h.state).toMatchObject({ error: 'm', errorCode: 'timeout', errorDetail: 'd', isStreaming: false });
+    expect(h.state.messages[0]!.isStreaming).toBe(false);
+  });
+  it('#9428: an error from an older server (no code) records null code and detail', () => {
+    const h = harness();
+    h.set(() => ({ errorDetail: 'stale' }));
+    processStreamEvent({ type: 'error', message: 'm' }, h.set, h.get, null);
+    expect(h.state).toMatchObject({ error: 'm', errorCode: null, errorDetail: null });
+  });
   it('message_start clears stale refusal suggestions', () => {
     const h = harness();
     h.set(() => ({ refusalAlternatives: ['x'] }));
@@ -95,7 +109,7 @@ describe('approval_resolved (#9431)', () => {
     input: { action: 'delete' }, description: 'Delete a file',
   };
 
-  it.each(['approved', 'not_approved', 'ended'] as const)(
+  it.each(['approved', 'not_approved', 'expired', 'ended'] as const)(
     'marks the matching card %s, decided wherever it was decided',
     (outcome) => {
       const h = harness();
@@ -126,6 +140,18 @@ describe('approval_resolved (#9431)', () => {
     const h = harness();
     processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'approved' }, h.set, h.get, null);
     expect(h.state.pendingApproval).toBeNull();
+  });
+});
+
+describe('alreadyDecidedOutcome (#9431, #12079)', () => {
+  it.each(['approved', 'not_approved', 'expired', 'ended'] as const)('reads a 409 with outcome %s', (outcome) => {
+    expect(alreadyDecidedOutcome(409, { code: 'approval_already_decided', outcome })).toBe(outcome);
+  });
+
+  it('ignores an outcome this build does not know, and any other response', () => {
+    expect(alreadyDecidedOutcome(409, { code: 'approval_already_decided', outcome: 'something_new' })).toBeNull();
+    expect(alreadyDecidedOutcome(404, { code: 'approval_already_decided', outcome: 'expired' })).toBeNull();
+    expect(alreadyDecidedOutcome(409, { code: 'other', outcome: 'expired' })).toBeNull();
   });
 });
 
@@ -167,6 +193,26 @@ describe('approval_required — scriptRunContext passthrough (#4888)', () => {
       null,
     );
     expect(patch.pendingApproval?.scriptRunContext).toBeNull();
+  });
+});
+
+describe('approval_required — ticketContext passthrough (#11674)', () => {
+  it('carries the resolved ticket into pendingApproval so the card can name it', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', requesterName: 'Dana' };
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'manage_tickets',
+        input: { action: 'comment', isPublic: true, content: 'Hi' },
+        description: 'Post PUBLIC comment on ticket T-2026-0001',
+        ticketContext,
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval?.ticketContext).toEqual(ticketContext);
   });
 });
 
@@ -233,6 +279,24 @@ describe('approval_required — pushedToPhone / waitingOn passthrough (#10416)',
       null,
     );
     expect(patch.pendingApproval).toMatchObject({ pushedToPhone: true, waitingOn: 'other_approvers' });
+  });
+});
+
+describe('approval_required — standingInstructionConflict passthrough (W06)', () => {
+  it('carries standingInstructionConflict into pendingApproval', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'execute_command',
+        input: {}, description: 'Reboot PC-01',
+        standingInstructionConflict: { text: "don't reboot PC-01" },
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toMatchObject({ standingInstructionConflict: { text: "don't reboot PC-01" } });
   });
 });
 
@@ -833,5 +897,76 @@ describe('turn_model staleness', () => {
     const set = (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; };
     processStreamEvent({ type: 'message_start', messageId: 'm2' } as AiStreamEvent, set, () => h.state, null);
     expect(h.state.turnModel).toBeNull();
+  });
+});
+
+describe('wisp instruction capture (done)', () => {
+  function harness() {
+    const h = { state: { ...makeState() } as StreamableState };
+    return {
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  it('tracks the capture on done when the event carries one', async () => {
+    const spy = vi.spyOn(useWispInstructionCaptureStore.getState(), 'trackCapture').mockImplementation(() => {});
+    const h = harness();
+    processStreamEvent({ type: 'done', wispInstructionCapture: { captureId: 'c-9' } }, h.set, h.get, null);
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith('s1', 'c-9'));
+    spy.mockRestore();
+  });
+  it('does not track on a plain done', async () => {
+    const spy = vi.spyOn(useWispInstructionCaptureStore.getState(), 'trackCapture').mockImplementation(() => {});
+    const h = harness();
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
+describe('#11676: a turn the technician stopped', () => {
+  function harness(messages: StreamableState['messages']) {
+    const h = { state: { ...makeState(), messages } as StreamableState };
+    return {
+      get state() { return h.state; },
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  const at = new Date('2026-11-14T10:00:00Z');
+
+  it('done with stopped keeps the partial reply, marks it stopped, and sets no error', () => {
+    const h = harness([
+      { id: 'a0', role: 'assistant', content: 'Earlier answer', createdAt: at },
+      { id: 'u1', role: 'user', content: 'Write me a checklist', createdAt: at },
+      { id: 'a1', role: 'assistant', content: 'Step 1: confirm', isStreaming: true, createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done', stopped: true }, h.set, h.get, 'a1');
+    expect(h.state.error).toBeNull();
+    expect(h.state.isStreaming).toBe(false);
+    const a1 = h.state.messages.find((m) => m.id === 'a1');
+    expect(a1).toMatchObject({ content: 'Step 1: confirm', stopped: true, isStreaming: false });
+    // Only this turn's reply is marked, never an earlier one.
+    expect(h.state.messages.find((m) => m.id === 'a0')?.stopped).toBeUndefined();
+  });
+
+  it('a stop before any reply text marks nothing from an earlier turn', () => {
+    const h = harness([
+      { id: 'a0', role: 'assistant', content: 'Earlier answer', createdAt: at },
+      { id: 'u1', role: 'user', content: 'Write me a checklist', createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done', stopped: true }, h.set, h.get, null);
+    expect(h.state.messages.some((m) => m.stopped)).toBe(false);
+    expect(h.state.error).toBeNull();
+  });
+
+  it('a done without stopped marks nothing', () => {
+    const h = harness([
+      { id: 'u1', role: 'user', content: 'hi', createdAt: at },
+      { id: 'a1', role: 'assistant', content: 'Hello', isStreaming: true, createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done' }, h.set, h.get, 'a1');
+    expect(h.state.messages.find((m) => m.id === 'a1')?.stopped).toBeUndefined();
   });
 });

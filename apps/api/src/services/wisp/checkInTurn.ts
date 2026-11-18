@@ -1,5 +1,5 @@
 /**
- * Wisp check-in timers W04 (#10995, feature #10991; spec §4) — next-turn
+ * Wisp check-in timers, consumption wave (#10995, feature #10991; spec §4) — next-turn
  * consumption. `POST /ai/sessions/:id/messages` (routes/ai.ts) reads the
  * grant's `fired` check-ins before it reserves budget, prefixes them to the
  * turn it pushes to the model, and marks them `consumed` only once that turn
@@ -14,6 +14,15 @@
  * an `Instruction:` / `Subject:` line or the footer), every delimiter
  * look-alike of the blocks that share this turn is stripped, and it is capped.
  *
+ * An event check-in (W04 #11493) also gets a `Trigger met: …` or `Did not
+ * happen by …` line under its header (`triggerLine`), built only from shared
+ * constants, a known trigger kind and a UUID.
+ *
+ * A run check-in (W07 #11496) reaches a turn only when it could not check on
+ * its own (the grant changed, the budget was spent, its run did not finish):
+ * a run that finished posted its answer and is `consumed`, never `fired`. It
+ * gets one fixed line saying so, so "yes, run it" has something to refer to.
+ *
  * A leaf module (db, the table, the sanitizer, shared constants) so the chat
  * route does not load the Wisp graph. Both DB functions run on the AMBIENT
  * db: the route calls them in the requesting user's own context, so RLS binds
@@ -24,8 +33,14 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
   WISP_CHECK_IN_CONSUME_LIMIT,
   WISP_CHECK_IN_INSTRUCTION_MAX,
+  WISP_CHECK_IN_PENDING_STATE_LINES,
+  WISP_CHECK_IN_TRIGGER_EVENTS,
   WISP_ENTITY_KINDS,
   type WispCheckInContext,
+  type WispCheckInFireReason,
+  type WispCheckInMode,
+  type WispCheckInTriggerEvent,
+  type WispCheckInTriggerKind,
 } from '@breeze/shared';
 import { db } from '../../db';
 import { wispCheckIns } from '../../db/schema/wispCheckIns';
@@ -37,6 +52,14 @@ export type FiredCheckIn = {
   createdAt: Date;
   firedAt: Date;
   context: WispCheckInContext | null;
+  /** W04 (#11493): the trigger and why it fired; absent / `time` for a time check-in. */
+  triggerKind?: WispCheckInTriggerKind;
+  triggerSubjectId?: string | null;
+  fireReason?: WispCheckInFireReason | null;
+  /** For an event check-in, the deadline. */
+  dueAt?: Date;
+  /** W07: absent / `notify` for a notify check-in. */
+  mode?: WispCheckInMode;
 };
 
 export const CHECK_IN_BLOCK_OPEN = '<wisp_check_ins>';
@@ -128,14 +151,36 @@ function subjectLine(context: WispCheckInContext | null): string | null {
   return `Subject: ${subject.kind} ${subject.id.toLowerCase()}`;
 }
 
+const TRIGGER_EVENTS: ReadonlySet<string> = new Set(WISP_CHECK_IN_TRIGGER_EVENTS);
+/** W07: a fired run check-in's fixed line (only our own constant is rendered). */
+export const CHECK_IN_RUN_NOT_DONE_LINE = 'You could not check on your own (mode run); Breeze asked the user whether to run it now.';
+
+/**
+ * An event check-in's trigger line: what was met, or (a deadline fire) what
+ * did not happen by the due time. Built from our own constants, a known kind
+ * and a UUID only; anything else stored there renders no line.
+ */
+function triggerLine(row: FiredCheckIn): string | null {
+  const kind = row.triggerKind;
+  const id = row.triggerSubjectId;
+  if (typeof kind !== 'string' || !TRIGGER_EVENTS.has(kind) || typeof id !== 'string' || !UUID.test(id)) return null;
+  const event = kind as WispCheckInTriggerEvent;
+  if (row.fireReason === 'event') return `Trigger met: ${event} ${id.toLowerCase()}`;
+  if (row.fireReason === 'deadline' && row.dueAt instanceof Date) {
+    return `Did not happen by ${utcStamp(row.dueAt)}: ${WISP_CHECK_IN_PENDING_STATE_LINES[event]} (trigger ${event} ${id.toLowerCase()})`;
+  }
+  return null;
+}
+
 /** The delimited background block for this turn, or null when nothing fired. */
 export function renderCheckInBlock(rows: FiredCheckIn[]): string | null {
   if (rows.length === 0) return null;
   const entries = rows.map((row) => {
-    const lines = [
-      `[Wisp check-in fired ${utcStamp(row.firedAt)}, scheduled ${utcStamp(row.createdAt)} by you]`,
-      `Instruction: ${sanitizeCheckInInstruction(row.instruction)}`,
-    ];
+    const lines = [`[Wisp check-in fired ${utcStamp(row.firedAt)}, scheduled ${utcStamp(row.createdAt)} by you]`];
+    const trigger = triggerLine(row);
+    if (trigger) lines.push(trigger);
+    if (row.mode === 'run') lines.push(CHECK_IN_RUN_NOT_DONE_LINE);
+    lines.push(`Instruction: ${sanitizeCheckInInstruction(row.instruction)}`);
     const subject = subjectLine(row.context);
     if (subject) lines.push(subject);
     return lines.join('\n');
@@ -157,6 +202,11 @@ export async function loadFiredCheckIns(grantId: string, userId: string): Promis
       createdAt: wispCheckIns.createdAt,
       firedAt: wispCheckIns.firedAt,
       context: wispCheckIns.context,
+      triggerKind: wispCheckIns.triggerKind,
+      triggerSubjectId: wispCheckIns.triggerSubjectId,
+      fireReason: wispCheckIns.fireReason,
+      dueAt: wispCheckIns.dueAt,
+      mode: wispCheckIns.mode,
     })
     .from(wispCheckIns)
     .where(and(
@@ -167,7 +217,7 @@ export async function loadFiredCheckIns(grantId: string, userId: string): Promis
     .orderBy(asc(wispCheckIns.firedAt), asc(wispCheckIns.id))
     .limit(WISP_CHECK_IN_CONSUME_LIMIT);
   // `fired` implies fired_at (wisp_check_ins_status_shape_chk); the filter only narrows the type.
-  return rows.filter((row): row is FiredCheckIn => row.firedAt !== null);
+  return rows.filter((row): row is typeof row & { firedAt: Date } => row.firedAt !== null);
 }
 
 /**

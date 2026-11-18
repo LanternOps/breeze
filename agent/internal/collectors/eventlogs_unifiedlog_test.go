@@ -223,3 +223,37 @@ func TestDefaultEventLogIntervalIsFifteenMinutes(t *testing.T) {
 		t.Errorf("default intervalMinutes = %d, want 15", got)
 	}
 }
+
+// The IOKit CFPlugIn loader logs routine plug-in load failures at error
+// level. Stamped "hardware", they tripped hardware event-log alert rules
+// (Disk Error Cluster) on healthy Macs.
+func TestUnifiedLogEventsDropsIOKitCFPluginFromHardware(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(hardwareUnifiedLogPredicate, `subsystem != "com.apple.iokit.cfplugin"`) {
+		t.Errorf("hardware predicate must exclude the CFPlugIn loader at the source: %q", hardwareUnifiedLogPredicate)
+	}
+
+	entries := []unifiedLogEntry{
+		{Timestamp: "2026-11-13 13:51:00.000000-0600", Subsystem: "com.apple.iokit.cfplugin", EventMessage: "plugin failed to load", MessageType: "Error", ProcessID: 89},
+		{Timestamp: "2026-11-13 13:51:01.000000-0600", Subsystem: "com.apple.iokit.CFPlugIn", EventMessage: "thermal plugin failed", MessageType: "Fault", ProcessID: 89},
+		{Timestamp: "2026-11-13 13:51:02.000000-0600", Subsystem: "com.apple.iokit.IOStorageFamily", EventMessage: "disk0s2: I/O error", MessageType: "Error", ProcessID: 0},
+	}
+
+	for _, cfg := range []struct{ security, hardware bool }{{true, true}, {false, true}} {
+		events := unifiedLogEvents(entries, cfg.security, cfg.hardware)
+		if len(events) != 1 {
+			t.Fatalf("security=%v hardware=%v: want only the IOStorageFamily entry, got %d: %+v", cfg.security, cfg.hardware, len(events), events)
+		}
+		if events[0].Source != "com.apple.iokit.IOStorageFamily" || events[0].Category != "hardware" {
+			t.Errorf("security=%v hardware=%v: unexpected surviving event %+v", cfg.security, cfg.hardware, events[0])
+		}
+	}
+
+	// A security-only collector stamps every entry security; the guard is
+	// hardware-only and must not drop it.
+	secOnly := unifiedLogEvents(entries[:1], true, false)
+	if len(secOnly) != 1 || secOnly[0].Category != "security" {
+		t.Errorf("security-only collection must keep the entry as security, got %+v", secOnly)
+	}
+}

@@ -64,5 +64,14 @@ export async function resolveLoginCandidate<T extends LoginCandidate>(
       winner = candidate;
     }
   }
+  if (matches > 1) {
+    // Correct credentials, refused because several accounts share them (one
+    // address in several orgs, or case-only duplicates in one org, #11541).
+    // The caller sees the generic 401; this is the operator's only signal.
+    // Internal ids only, never the address or password material.
+    console.warn('[portal] password login refused: the password verifies for several accounts', {
+      portalUserIds: hashed.map((c) => c.id),
+    });
+  }
   return matches === 1 ? winner : null;
 }

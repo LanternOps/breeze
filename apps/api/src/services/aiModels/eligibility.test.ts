@@ -72,6 +72,11 @@ describe('checkEligibility — one row per spec §9 step 2 rule', () => {
     ['openai_compatible disconnected', byokFacts({ connection: { kind: 'openai_compatible', status: 'disconnected', keyUsable: false } }), {}, 'connection_unavailable'],
     ['openai_compatible unverified on a tool surface', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false }), { surface: 'chat' }, 'tools_unsupported'],
     ['openai_compatible unverified on a non-tool surface', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false }), { surface: 'catalog_enrichment' }, null],
+    ['#11397: failed its chat surface turn, asked for chat', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, failedToolSurfaces: ['chat'] }), { surface: 'chat' }, 'tools_unverified_surface'],
+    ['#11397: failed its chat surface turn, asked for the helper', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, failedToolSurfaces: ['chat'] }), { surface: 'helper' }, null],
+    ['#11397: failed its chat surface turn, asked for the script builder', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, failedToolSurfaces: ['chat'] }), { surface: 'script_builder' }, null],
+    ['#11397: no readiness entries (every record on merge)', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, failedToolSurfaces: [] }), { surface: 'chat' }, null],
+    ['#11397: tools_unsupported still wins over a failed surface', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false, failedToolSurfaces: ['chat'] }), { surface: 'chat' }, 'tools_unsupported'],
     ['openai_compatible under required residency', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, inferenceGeo: null }), { residencyRequired: true }, 'residency_unavailable'],
     ['catalog model not mapped+verified in the current revision',
       byokFacts({ connection: { kind: 'catalog', status: 'active', keyUsable: true }, catalog: { usable: false } }), {}, 'model_unavailable'],
@@ -166,6 +171,10 @@ describe('checkEnableEligibility (W04 enable gate; one rule table)', () => {
 
   it('does not gate on tools, user permission or residency (decided at assignment / dispatch)', () => {
     expect(checkEnableEligibility(facts({ supportsTools: false, requiredPermission: 'ai_models:premium' }), ctx)).toBeNull();
+  });
+
+  it('#11397: a failed surface turn never blocks enabling (it is decided per surface at dispatch)', () => {
+    expect(checkEnableEligibility(facts({ failedToolSurfaces: ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] }), ctx)).toBeNull();
   });
 
   it('ignores min_plan when not hosted (self-host has no plans)', () => {

@@ -11,12 +11,18 @@ describe('classifySendRefusal', () => {
     [409, 'continuation_required', 'continuation'],
     [409, 'model_unavailable', 'choose_model'],
     [409, 'tools_unsupported', 'choose_model'],
+    // #11396: another model fixes a tool-exposure refusal.
+    [409, 'context_window_too_small', 'choose_model'],
+    [409, 'tool_profile_underpowered', 'choose_model'],
+    // #11397: the model failed its verify round trip on this surface; another model fixes it.
+    [409, 'tools_unverified_surface', 'choose_model'],
     [409, 'topology_model_changed', 'choose_model'],
     [409, 'turn_limit_reached', 'turn_limit'],
     [409, 'something_else', 'error'],
     [402, 'insufficient_credits', 'credits'],
     [402, null, 'error'],
     [410, 'session_expired', 'expired'], // #11430: the session was retired before this turn ran
+    [410, 'session_closed', 'closed'], // #11609: closed elsewhere; nothing ran
     [410, null, 'error'], // an uncoded 410 is not known to be a retired session
 
     [500, null, 'error'],

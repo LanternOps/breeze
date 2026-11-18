@@ -33,7 +33,7 @@ type restoreEntry struct {
 // exactly the given order (setupRestoreTestSnapshot ranges over a map).
 func writeRestoreSnapshot(t *testing.T, entries []restoreEntry) (*providers.LocalProvider, string) {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "test-snap-content"
 	prefix := path.Join("snapshots", snapshotID)
 	uploaded := map[string]bool{}

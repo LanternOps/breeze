@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
@@ -66,7 +68,9 @@ type ScanOutcome struct {
 	EngineError string
 	// FilesFailed counts files the YARA walk could not read (locked,
 	// vanished, engine timeout). Always 0 for the legacy engine, whose
-	// per-file errors keep W01 semantics (they fail the scan).
+	// per-file errors keep W01 semantics (they fail the scan), except a file
+	// the system will not let it open (access denied, an antivirus block, a
+	// sharing or lock violation), which is skipped and logged.
 	FilesFailed int
 }
 
@@ -96,6 +100,24 @@ func (o ScanOutcome) toScanResult() ScanResult {
 	}
 }
 
+// CheckCustomScanRoots checks the roots of a custom scan before any work
+// starts: each must be an absolute path in a form the agent accepts and must
+// not be a protected location (the agent's configuration folder, the system
+// credential stores, a credential file), judged at the spelling the
+// filesystem stores. A root that cannot be inspected (missing, unreadable)
+// is left to the scan, which skips or reports it as before.
+func CheckCustomScanRoots(paths []string) error {
+	scope := tools.NewScanScope()
+	for _, path := range paths {
+		_, err := scope.CheckRoot(path)
+		var pathErr *fs.PathError
+		if err != nil && !errors.As(err, &pathErr) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ScanWithContext runs a scan honouring the scanner's Exclusions, MaxFileSize
 // and Timeout. A deadline is reported as an outcome (TimedOut/Partial with
 // the threats found so far), never as an error — see DECISION 4 in the W01
@@ -112,6 +134,9 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 		if len(paths) == 0 {
 			return ScanOutcome{}, fmt.Errorf("custom scan requires one or more paths")
 		}
+		if err := CheckCustomScanRoots(paths); err != nil {
+			return ScanOutcome{}, err
+		}
 		targets = filterExistingPaths(paths)
 	default:
 		return ScanOutcome{}, fmt.Errorf("unsupported scanType: %s", scanType)
@@ -124,12 +149,11 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	if s.MaxReadBytes > 0 {
 		options.MaxReadBytes = s.MaxReadBytes
 	}
-	if dir := s.quarantineDir(); dir != "" {
-		options.ExcludePaths = append(options.ExcludePaths, dir)
-	}
+	options.ExcludePaths = append(options.ExcludePaths, s.agentOwnedExcludePaths()...)
 	// Caller exclusions are ADDITIVE to the agent's built-ins: a policy may
-	// widen the skip set, never narrow it. /proc, /sys and the Defender
-	// quarantine stay excluded whatever the policy says.
+	// widen the skip set, never narrow it. The per-OS built-ins (e.g. /proc
+	// and /sys on Linux, the Defender quarantine on Windows) and the agent's
+	// own quarantine and rule cache stay excluded whatever the policy says.
 	options.ExcludePaths = append(options.ExcludePaths, s.Exclusions...)
 
 	scanCtx, cancel := s.scanContext(ctx)
@@ -220,6 +244,12 @@ func (s *SecurityScanner) autoQuarantine(threats []Threat) {
 		if th.RuleSetID != "" && !th.autoQuarantine {
 			continue
 		}
+		if err := tools.EnforcePathContainment("quarantine", th.Path); err != nil {
+			// A protected file is never moved, whatever matched it. It is
+			// reported as not quarantined (not attempted), not as a failure.
+			log.Warn("auto-quarantine not attempted: the file is in a protected location", "path", th.Path, "name", th.Name, "error", err.Error())
+			continue
+		}
 		if dest, seen := done[th.Path]; seen {
 			th.QuarantinedTo, th.QuarantineFailed = dest, dest == ""
 			continue
@@ -258,6 +288,24 @@ func (s *SecurityScanner) RuleCacheDirOrDefault() string {
 		return s.RuleCacheDir
 	}
 	return filepath.Join(config.GetDataDir(), "yara", "cache")
+}
+
+// agentOwnedExcludePaths are directories the agent writes itself and never
+// scans, whatever the policy says:
+//   - the quarantine, whose .bqz payloads are known-bad files;
+//   - the compiled YARA rule cache (#11728). A compiled rule file carries the
+//     strings its rules look for, and the cache's single-byte XOR is no cover
+//     against a rule using YARA's `xor` string modifier, so the scanner can
+//     match its own rules. For the installed Windows agent the cache sits
+//     under %ProgramData%, which both quick and full scans walk.
+func (s *SecurityScanner) agentOwnedExcludePaths() []string {
+	var dirs []string
+	for _, dir := range []string{s.quarantineDir(), s.RuleCacheDirOrDefault()} {
+		if dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 func (s *SecurityScanner) quarantineDir() string {

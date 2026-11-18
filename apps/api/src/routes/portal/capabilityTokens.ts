@@ -28,6 +28,11 @@
  * TODO(W3): remove the legacy-invite branch once every pre-W2 invite has
  * expired (7-day TTL after this deploys).
  *
+ * W4 (Sign in with Microsoft, plan Task 7): an invite can also be accepted
+ * through Microsoft. The OIDC start PEEKS the invite (no consume), its state
+ * carries only the token's sha256, and the callback consumes by that hash and
+ * validates with `{ requirePasswordMethod: false }`.
+ *
  * The backend is Redis when `PORTAL_USE_REDIS`, otherwise the in-memory maps
  * in ./helpers — the same mutually exclusive switch as sessions.
  */
@@ -48,10 +53,21 @@ import {
   PORTAL_REDIS_KEYS,
   PORTAL_RESET_TOKEN_CAP,
   PORTAL_USE_REDIS,
+  PORTAL_SELF_REGISTER_TOKEN_CAP,
   RESET_TTL_MS,
   RESET_TTL_SECONDS,
+  SELF_REGISTER_TTL_MS,
+  SELF_REGISTER_TTL_SECONDS,
 } from './schemas';
-import { capMapByOldest, normalizeEmail, portalInviteTokens, portalResetTokens, type PortalTokenEntry } from './helpers';
+import {
+  capMapByOldest,
+  luaGetDel,
+  normalizeEmail,
+  portalInviteTokens,
+  portalResetTokens,
+  portalSelfRegisterTokens,
+  type PortalTokenEntry,
+} from './helpers';
 import { isPasswordSignInAllowedForOrg } from './browserSession';
 
 export type PortalCapabilityPurpose = 'invite' | 'reset';
@@ -93,12 +109,21 @@ export type CapabilityCheck =
   | { ok: true; user: CapabilityUserRow }
   | { ok: false; reason: 'invalid' | 'org_unavailable' };
 
-/** GET then DEL in one server-side step: exactly one concurrent consumer sees the value. */
-const CONSUME_LUA = "local v=redis.call('GET',KEYS[1]) if v then redis.call('DEL',KEYS[1]) end return v";
-
 function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
+
+/**
+ * The sha256 (hex) a capability token is stored under. The OIDC invite flow
+ * (W4) carries only this through its state and consumes by it
+ * ({@link consumePortalCapabilityTokenByHash}), so the raw token never leaves
+ * the browser's start request.
+ */
+export function hashPortalCapabilityToken(rawToken: string): string {
+  return hashToken(rawToken);
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 function storage(purpose: PortalCapabilityPurpose) {
   return purpose === 'invite'
@@ -106,9 +131,9 @@ function storage(purpose: PortalCapabilityPurpose) {
     : { key: PORTAL_REDIS_KEYS.resetToken, ttlSeconds: RESET_TTL_SECONDS, ttlMs: RESET_TTL_MS, map: portalResetTokens, cap: PORTAL_RESET_TOKEN_CAP };
 }
 
+/** The shared Lua GET+DEL (./helpers `luaGetDel`): exactly one concurrent consumer sees the value. */
 async function consumeFromRedis(redis: Redis, key: string): Promise<string | null> {
-  const value = await redis.eval(CONSUME_LUA, 1, key);
-  return typeof value === 'string' ? value : null;
+  return luaGetDel(redis, key);
 }
 
 function consumeFromMemory(map: Map<string, PortalTokenEntry>, tokenHash: string): string | null {
@@ -195,8 +220,21 @@ export async function consumePortalCapabilityToken(
   purpose: PortalCapabilityPurpose,
   rawToken: string,
 ): Promise<ConsumedCapability | null> {
+  return consumePortalCapabilityTokenByHash(purpose, hashToken(rawToken));
+}
+
+/**
+ * {@link consumePortalCapabilityToken} by the stored sha256 instead of the raw
+ * token (W4: the OIDC invite callback holds only the hash its state carries).
+ * The same atomic GET+DEL; a value that is not a lowercase sha256 hex digest
+ * names no token and touches nothing.
+ */
+export async function consumePortalCapabilityTokenByHash(
+  purpose: PortalCapabilityPurpose,
+  tokenHash: string,
+): Promise<ConsumedCapability | null> {
+  if (!SHA256_HEX.test(tokenHash)) return null;
   const s = storage(purpose);
-  const tokenHash = hashToken(rawToken);
   let raw: string | null;
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
@@ -209,6 +247,57 @@ export async function consumePortalCapabilityToken(
 }
 
 /**
+ * Read the token for `purpose` WITHOUT consuming it (W4): the Microsoft invite
+ * start and the invite-methods lookup must leave the token for the callback
+ * (or the password accept) that later consumes it. Null for an unknown,
+ * expired or malformed token, and when Redis is required but unavailable.
+ * A peek is never authority on its own: whatever it allows is re-checked at
+ * consume.
+ */
+export async function peekPortalCapabilityToken(
+  purpose: PortalCapabilityPurpose,
+  rawToken: string,
+): Promise<ConsumedCapability | null> {
+  return peekPortalCapabilityTokenByHash(purpose, hashToken(rawToken));
+}
+
+/**
+ * {@link peekPortalCapabilityToken} by the stored sha256 instead of the raw
+ * token (W7: the Google invite callback holds only the hash its state carries
+ * and must learn the invited account BEFORE it consumes the token). A value
+ * that is not a lowercase sha256 hex digest names no token.
+ */
+export async function peekPortalCapabilityTokenByHash(
+  purpose: PortalCapabilityPurpose,
+  tokenHash: string,
+): Promise<ConsumedCapability | null> {
+  if (!SHA256_HEX.test(tokenHash)) return null;
+  const s = storage(purpose);
+  let raw: string | null;
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (!redis) return null;
+    raw = await redis.get(s.key(tokenHash));
+  } else {
+    const entry = s.map.get(tokenHash);
+    raw = entry && entry.expiresAt.getTime() > Date.now() ? entry.payload : null;
+  }
+  return parseCapability(purpose, raw);
+}
+
+export interface ValidatePortalCapabilityOptions {
+  /**
+   * Default true: the token is redeemed with a password (accept-invite, reset),
+   * so the row must be password-eligible and the org's effective policy must
+   * allow password sign-in. False (W4, an invite accepted through Microsoft):
+   * neither is required — the credential is the identity the callback links,
+   * and the resolver checks that Microsoft is allowed. Every other check
+   * stands, and a legacy (pre-W2) invite or a reset is refused outright.
+   */
+  requirePasswordMethod?: boolean;
+}
+
+/**
  * Re-check a consumed token against the row it names. Runs its own system
  * context: the public portal auth routes hold no DB context. Only a token
  * that is valid in every other respect learns that its org is unavailable.
@@ -216,10 +305,17 @@ export async function consumePortalCapabilityToken(
 export async function validatePortalCapability(
   purpose: PortalCapabilityPurpose,
   consumed: ConsumedCapability,
+  opts: ValidatePortalCapabilityOptions = {},
 ): Promise<CapabilityCheck> {
+  const requirePasswordMethod = opts.requirePasswordMethod ?? true;
   const invalid: CapabilityCheck = { ok: false, reason: 'invalid' };
   if (consumed.format === 'legacy' && purpose === 'reset') return invalid;
   if (consumed.format === 'v2' && consumed.payload.purpose !== purpose) return invalid;
+  if (!requirePasswordMethod) {
+    // A reset sets a password. A legacy invite carries no issue-time epoch, so
+    // an SSO activation could not be pinned to the generation it was issued at.
+    if (purpose !== 'invite' || consumed.format !== 'v2') return invalid;
+  }
 
   const portalUserId = consumed.format === 'v2' ? consumed.payload.portalUserId : consumed.portalUserId;
   const [user] = await withSystemDbAccessContext(() =>
@@ -252,7 +348,7 @@ export async function validatePortalCapability(
     const p = consumed.payload;
     if (user.orgId !== p.orgId || normalizeEmail(user.email) !== p.email || user.authEpoch !== p.authEpoch) return invalid;
   }
-  if (!isPasswordEligible(user)) return invalid;
+  if (requirePasswordMethod && !isPasswordEligible(user)) return invalid;
   if (purpose === 'invite') {
     if (user.status !== 'invited' || user.browserAccess !== 'granted') return invalid;
   } else if (user.status !== 'active' && user.status !== 'invited') {
@@ -263,7 +359,9 @@ export async function validatePortalCapability(
   // effective policy switched password sign-in off is refused with the generic
   // invalid, before the org gate, so it learns nothing about the org either.
   // No DB context is held (public routes), so the resolver opens its own.
-  if (!(await isPasswordSignInAllowedForOrg(user.orgId))) return invalid;
+  // (A Microsoft acceptance is not a password sign-in: the OIDC resolver
+  // applies the policy's Microsoft gate instead.)
+  if (requirePasswordMethod && !(await isPasswordSignInAllowedForOrg(user.orgId))) return invalid;
 
   if (!(await getActiveOrgTenant(user.orgId))) return { ok: false, reason: 'org_unavailable' };
 
@@ -271,6 +369,131 @@ export async function validatePortalCapability(
     console.warn('[portal] legacy invite token accepted', { portalUserId: user.id });
   }
   return { ok: true, user };
+}
+
+// ============================================
+// Self-registration links (portal registration W6, plan D8)
+// ============================================
+
+/**
+ * The mailbox-proof link of a self-registration (spec §5.9 step 4, inv. 7).
+ * No account exists yet, so it carries no `portalUserId` / `authEpoch`; it is
+ * bound instead to the org the worker matched, the address, the requester's
+ * name, the verified domain, and the org's access-policy fingerprint at issue
+ * (the spec's "issued policy version"). Its own key family and parser keep it
+ * from ever being accepted as an invite or a reset, and vice versa.
+ *
+ * Re-validation at consume (active org, domain still verified for that org,
+ * fingerprint unchanged, mode not off) lives in
+ * services/portalSelfRegistration/complete.ts, not here.
+ */
+export interface PortalSelfRegistrationPayload {
+  v: 2;
+  purpose: 'self_register';
+  orgId: string;
+  /** Normalized (trimmed, lower-cased) at issue. */
+  email: string;
+  name: string;
+  /** Lower-cased exact domain of `email`, verified for `orgId` at issue. */
+  domain: string;
+  /** `resolvePortalAccessPolicy(orgId).fingerprint` at issue. */
+  policyFingerprint: string;
+}
+
+/**
+ * Mint and store a self-registration link token. Returns the raw token (only
+ * its sha256 is stored), or null when Redis is required but unavailable, so
+ * the worker never emails a link that cannot be redeemed.
+ */
+export async function issuePortalSelfRegistrationToken(
+  p: Omit<PortalSelfRegistrationPayload, 'v' | 'purpose'>,
+): Promise<string | null> {
+  const rawToken = nanoid(48);
+  const tokenHash = hashToken(rawToken);
+  const payload: PortalSelfRegistrationPayload = {
+    v: 2,
+    purpose: 'self_register',
+    orgId: p.orgId,
+    email: normalizeEmail(p.email),
+    name: p.name,
+    domain: p.domain.trim().toLowerCase(),
+    policyFingerprint: p.policyFingerprint,
+  };
+  const serialized = JSON.stringify(payload);
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (!redis) return null;
+    await redis.setex(PORTAL_REDIS_KEYS.selfRegisterToken(tokenHash), SELF_REGISTER_TTL_SECONDS, serialized);
+  } else {
+    portalSelfRegisterTokens.set(tokenHash, {
+      payload: serialized,
+      expiresAt: new Date(Date.now() + SELF_REGISTER_TTL_MS),
+      createdAt: new Date(),
+    });
+    capMapByOldest(portalSelfRegisterTokens, PORTAL_SELF_REGISTER_TOKEN_CAP, (t) => t.createdAt.getTime());
+  }
+  return rawToken;
+}
+
+function rejectSelfRegistration(reason: 'parse' | 'version' | 'purpose' | 'shape'): null {
+  console.warn('[portal] capability token payload rejected', { purpose: 'self_register', reason });
+  return null;
+}
+
+const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+function parseSelfRegistration(raw: string | null): PortalSelfRegistrationPayload | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return rejectSelfRegistration('parse');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return rejectSelfRegistration('shape');
+  const p = parsed as Record<string, unknown>;
+  if (p.v !== 2) return rejectSelfRegistration('version');
+  if (p.purpose !== 'self_register') return rejectSelfRegistration('purpose');
+  if (
+    !nonEmptyString(p.orgId)
+    || !nonEmptyString(p.email)
+    || !nonEmptyString(p.name)
+    || !nonEmptyString(p.domain)
+    || !nonEmptyString(p.policyFingerprint)
+  ) {
+    return rejectSelfRegistration('shape');
+  }
+  return {
+    v: 2,
+    purpose: 'self_register',
+    orgId: p.orgId,
+    email: p.email,
+    name: p.name,
+    domain: p.domain,
+    policyFingerprint: p.policyFingerprint,
+  };
+}
+
+/**
+ * Consume (burn) a self-registration link token atomically: of any number of
+ * concurrent callers exactly one gets the payload (Lua GET+DEL on Redis; a
+ * get + delete in one synchronous tick in memory). Null for an unknown,
+ * expired, already-used or malformed token (a malformed stored payload is
+ * still burned), and when Redis is required but unavailable (nothing is
+ * consumed; the route answers 503 first).
+ */
+export async function consumePortalSelfRegistrationToken(rawToken: string): Promise<PortalSelfRegistrationPayload | null> {
+  if (!rawToken) return null;
+  const tokenHash = hashToken(rawToken);
+  let raw: string | null;
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (!redis) return null;
+    raw = await consumeFromRedis(redis, PORTAL_REDIS_KEYS.selfRegisterToken(tokenHash));
+  } else {
+    raw = consumeFromMemory(portalSelfRegisterTokens, tokenHash);
+  }
+  return parseSelfRegistration(raw);
 }
 
 export const __testOnly = { consumeFromRedis };

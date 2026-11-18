@@ -109,6 +109,7 @@ vi.mock('@breeze/shared/validators/ai', () => ({
 vi.mock('../services/scriptBuilderTools', () => ({
   createScriptBuilderMcpServer: vi.fn(),
   SCRIPT_BUILDER_MCP_TOOL_NAMES: [],
+  SCRIPT_BUILDER_MCP_SERVER_NAME: 'script_builder',
 }));
 
 // W03 Task 9: session create resolves through the registry (not exercised here).
@@ -125,7 +126,9 @@ import {
   getScriptBuilderSession,
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
-import { reserveAiBudget } from '../services/aiBudgetReservations';
+import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../services/aiBudgetReservations';
+import { ContextWindowTooSmallError, ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
+import { createScriptBuilderMcpServer } from '../services/scriptBuilderTools';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
@@ -379,6 +382,13 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       const text = await res.text();
       expect(text).toContain('script builder turn failed fast');
       expect(bus.unsubscribe).toHaveBeenCalled();
+
+      // #11395: the factory hands the live session to the server, so it can
+      // advertise only the session's tool exposure.
+      const factory = vi.mocked(streamingSessionManager.getOrCreate).mock.calls.at(-1)![8] as (...a: unknown[]) => unknown;
+      const getSession = () => activeSession;
+      factory('getAuth', 'pre', 'post', getSession);
+      expect(vi.mocked(createScriptBuilderMcpServer)).toHaveBeenLastCalledWith('getAuth', 'pre', 'post', getSession);
     });
 
     it('#7783: drops the pre-push subscription when the dispatch context fails', async () => {
@@ -464,6 +474,61 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
         expect.anything(), expect.any(String), expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
       );
+    });
+
+    it('a tool profile that drops a builder floor tool is a 409 tool_profile_underpowered and releases the reservation (#11394)', async () => {
+      const model = makeResolvedModel('anthropic_byok', { surface: 'script_builder' });
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'claude-sonnet-5-5', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt',
+        },
+        sanitizedContent: 'Hello', systemPrompt: 'System prompt', maxBudgetUsd: 1, model,
+      } as any);
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(
+        new ToolProfileUnderpoweredError('script_builder', ['execute_script_on_device']),
+      );
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "This model's tool profile does not include what the script builder needs. Assign a larger model to this surface, or widen the profile.",
+        code: 'tool_profile_underpowered',
+      });
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalled();
+      expect(streamingSessionManager.tryTransitionToProcessing).not.toHaveBeenCalled();
+    });
+
+    it('a window too small for any tool profile is a 409 context_window_too_small naming the window (#11396)', async () => {
+      const model = makeResolvedModel('openai_compatible', { surface: 'script_builder' });
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'qwen', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt',
+        },
+        sanitizedContent: 'Hello', systemPrompt: 'System prompt', maxBudgetUsd: 1, model,
+      } as any);
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new ContextWindowTooSmallError('script_builder', 4_096));
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This model\'s 4,096-token window is too small for Breeze script builder tools.',
+        code: 'context_window_too_small',
+      });
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalled();
     });
 
     it('an ineligible stored model is a recoverable 409 with its code and takes no reservation', async () => {

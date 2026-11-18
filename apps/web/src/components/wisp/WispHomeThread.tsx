@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { Flag, Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
 import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
-import { AI_SESSION_IDLE_TIMEOUT_MS, AI_SESSION_MAX_AGE_MS, WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
+import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
-import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
 import AiThinkingIndicator, { approvalWaitFromPending } from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
+import { useWispInstructionCaptureStore } from '@/stores/wispInstructionCaptureStore';
 import WispCheckInChip from './WispCheckInChip';
+import WispInstructionChip from './WispInstructionChip';
 import WispEntityPicker from './WispEntityPicker';
 import WispPost from './WispPost';
 import WispWelcome from './WispWelcome';
@@ -31,59 +32,17 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
- * Past the server's chat-session lifetime (the shared AI_SESSION_* limits; a
- * send past either is refused with 410) by the session's own timestamps. An
- * unreadable timestamp is left to the status.
- */
-function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
-  const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
-  return ageOf(session.createdAt) > AI_SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > AI_SESSION_IDLE_TIMEOUT_MS;
-}
-
-/**
- * `thread.lastSessionId` is the last session stamped on the thread, not the
- * last live one: an idled-out (`expired`) or closed session would load its
- * transcript and then refuse the first send. Resume only an active session
- * that still runs under this grant and is within the server's lifetime: the
- * read reports a stale session as expired (#11430), and this check covers an
- * older API or a read that raced the expiry. A failed read is "not resumable".
- */
-async function resumable(sessionId: string, grantId: string): Promise<boolean> {
-  try {
-    const res = await fetchWithAuth(`/ai/sessions/${encodeURIComponent(sessionId)}`);
-    if (!res.ok) {
-      console.warn('[WispHomeThread] checking the last Wisp session failed; starting a new one', res.status);
-      return false;
-    }
-    const body = (await res.json().catch((err: unknown) => {
-      console.warn('[WispHomeThread] the last Wisp session read was not JSON; starting a new one', err);
-      return null;
-    })) as { session?: { status?: unknown; wispGrantId?: unknown; createdAt?: unknown; lastActivityAt?: unknown } } | null;
-    return body?.session?.status === 'active' && body.session.wispGrantId === grantId && !pastSessionLifetime(body.session);
-  } catch (err) {
-    console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
-    return false;
-  }
-}
-
-/**
  * Bind the global chat (aiStore) to this thread's Wisp session without
- * minting a session per visit: reuse the live one, else resume the thread's
- * last session when it is still active (the store keeps Wisp mode when the
- * session runs under the same grant), else start a new one. Only for an
- * active grant — a paused or ended one cannot run a turn, so nothing is
- * created for it.
+ * minting a session per visit: reuse the live one, else `enterWispMode`
+ * resumes the thread's last session when it is still active under the grant
+ * (the same path the side panel takes, #11672), else starts a new one. Only
+ * for an active grant — a paused or ended one cannot run a turn, so nothing
+ * is created for it.
  */
 async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promise<boolean> {
   const store = useAiStore.getState();
   if (store.wisp?.threadId === wisp.threadId && store.sessionId) return true;
-  if (lastSessionId && (await resumable(lastSessionId, wisp.grantId))) {
-    useAiStore.setState({ wisp });
-    await store.switchSession(lastSessionId);
-    const after = useAiStore.getState();
-    if (after.sessionId === lastSessionId && after.wisp?.grantId === wisp.grantId) return true;
-  }
-  await useAiStore.getState().enterWispMode(wisp);
+  await store.enterWispMode({ ...wisp, lastSessionId });
   return boundTo(wisp);
 }
 
@@ -177,7 +136,8 @@ export default function WispHomeThread({
     pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
     sendMessage, approveExecution, clearPendingApproval, approvePlan, abortPlan, pauseAi,
     interruptResponse, isInterrupting, composerDraft, setComposerDraft, clearError,
-    wisp: storeWisp, sessionId: storeSessionId,
+    wisp: storeWisp, sessionId: storeSessionId, wispPageComposerFocusRequest, setWispPageThreadId,
+    isFlagged, flagSession, unflagSession,
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
   const [checkIns, setCheckIns] = useState<WispCheckIn[]>([]);
@@ -216,6 +176,18 @@ export default function WispHomeThread({
     if (readOnly) return { threadId: wisp.threadId, excludeSessionId: null };
     return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
   }, [readOnly, wisp.threadId, live, storeSessionId]);
+  // While the composer is on screen this column is the conversation: the AI
+  // shortcut and header button focus it instead of opening the docked pane,
+  // and an open pane hands off to it (AiChatSidebar). Release only our own
+  // claim: a newer mount (another thread page) may have taken it since.
+  useEffect(() => {
+    if (!live) return;
+    setWispPageThreadId(wisp.threadId);
+    return () => {
+      if (useAiStore.getState().wispPageThreadId === wisp.threadId) setWispPageThreadId(null);
+    };
+  }, [live, wisp.threadId, setWispPageThreadId]);
+
   const timeline = useWispThreadTimeline(target, refreshKey);
   const threadMessages = useMemo(
     () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
@@ -276,8 +248,14 @@ export default function WispHomeThread({
     [checkIns],
   );
   const runNowMessage = t('wisp.checkIn.runNowMessage');
+  // Standing instructions Wisp remembered from this session's turns (chip under the reply).
+  const loadSessionCaptures = useWispInstructionCaptureStore((s) => s.loadSessionCaptures);
+  const sessionInstructions = useWispInstructionCaptureStore((s) => (storeSessionId ? s.bySession[storeSessionId] : undefined));
+  useEffect(() => {
+    if (live && storeSessionId) void loadSessionCaptures(storeSessionId);
+  }, [live, storeSessionId, loadSessionCaptures]);
   const extras = useMemo(
-    () => timeline.posts.map((post) => {
+    () => [...timeline.posts.map((post) => {
       const checkInId = post.kind === 'check_in' && live ? checkInIdFromLink(post.link) : null;
       const runnable = checkInId !== null && firedIds.has(checkInId);
       return {
@@ -292,7 +270,12 @@ export default function WispHomeThread({
         ),
       };
     }),
-    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading],
+    ...(storeSessionId ? (sessionInstructions ?? []) : []).map((instruction) => ({
+      id: `wisp-instruction-${instruction.instructionId}`,
+      at: new Date(instruction.capturedAt),
+      render: () => <WispInstructionChip sessionId={storeSessionId as string} instruction={instruction} />,
+    }))],
+    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading, storeSessionId, sessionInstructions],
   );
 
   // The bell's deep link (`#checkin=<id>`): bring its post into view once, the
@@ -384,6 +367,8 @@ export default function WispHomeThread({
     </>
   );
 
+  const flagLabel = isFlagged ? t('aiChatSidebar.unflagConversation') : t('aiChatSidebar.flagConversation');
+
   return (
     <section id="thread" className="flex min-h-0 flex-1 flex-col" data-testid="wisp-home-thread" aria-label={t('wisp.title')}>
       {!active ? (
@@ -469,24 +454,45 @@ export default function WispHomeThread({
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
+              focusRequest={wispPageComposerFocusRequest}
               onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
               placeholder={t('wisp.composer.placeholder')}
-              leftSlot={links === null ? undefined : (
-                <button
-                  type="button"
-                  data-testid="wisp-composer-link"
-                  aria-label={t('wisp.composer.link')}
-                  title={t('wisp.composer.link')}
-                  onClick={() => setPickerOpen(true)}
-                  disabled={links.filter(isPinnedLink).length >= WISP_THREAD_LINK_LIMIT}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-                >
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                </button>
+              leftSlot={(
+                <>
+                  {links !== null && (
+                    <button
+                      type="button"
+                      data-testid="wisp-composer-link"
+                      aria-label={t('wisp.composer.link')}
+                      title={t('wisp.composer.link')}
+                      onClick={() => setPickerOpen(true)}
+                      disabled={links.filter(isPinnedLink).length >= WISP_THREAD_LINK_LIMIT}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      <Plus className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
+                  {/* Flag this session for review: the docked panel's control, on the page that is the conversation. */}
+                  {storeSessionId && (
+                    <button
+                      type="button"
+                      data-testid="wisp-home-thread-flag"
+                      aria-label={flagLabel}
+                      aria-pressed={isFlagged}
+                      title={flagLabel}
+                      onClick={() => void (isFlagged ? unflagSession() : flagSession())}
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-muted ${
+                        isFlagged ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      <Flag className="h-4 w-4" fill={isFlagged ? 'currentColor' : 'none'} aria-hidden="true" />
+                    </button>
+                  )}
+                </>
               )}
             />
           </div>

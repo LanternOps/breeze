@@ -470,6 +470,17 @@ describe('SnapshotBrowser', () => {
     });
   });
 
+  it('says there are no snapshots yet (not "still processing") when no snapshot exists', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') return makeJsonResponse({ data: [] });
+      return base(input, init);
+    });
+    render(<SnapshotBrowser />);
+    expect(await screen.findByText(/no snapshots yet/i)).toBeTruthy();
+    expect(screen.queryByText(/may still be processing/i)).toBeNull();
+  });
+
   describe('#11026 file search', () => {
     const searchUrls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/search'));
     const withSearch = (search: (url: string) => unknown | Promise<unknown>, browse?: (url: string) => unknown) => {

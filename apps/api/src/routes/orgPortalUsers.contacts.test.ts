@@ -85,6 +85,12 @@ vi.mock('./portal/helpers', () => ({
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: h.sendInvite }) }));
 vi.mock('../services/redis', () => ({ getRedis: () => ({ fake: true }) }));
 vi.mock('../services/clientAiSessionStore', () => ({ purgeClientAiSessionsForUsers: h.purgeAi }));
+// W4 (#11381): issueAndSendInvite reads the org's sign-in methods for the email
+// (orgPortalUsers.test.ts covers that); here a password-only org.
+vi.mock('../services/portalSsoOnly', () => ({
+  isSsoOnlyStranded: () => false,
+  resolveInviteSignInMethods: async () => ({ microsoft: false, password: true }),
+}));
 
 import { authMiddleware } from '../middleware/auth';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';

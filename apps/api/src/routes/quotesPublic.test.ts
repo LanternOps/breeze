@@ -11,7 +11,7 @@ const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'update', 'set', 'returning', 'for']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'update', 'set', 'returning', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -581,7 +581,7 @@ describe('quotesPublic GET /:token/line-image/:lineId', () => {
 
   it('serves the per-line uploaded image for a valid token', async () => {
     dbResults.push([{ id: QUOTE_ID }]); // quote (token-resolved) lookup
-    dbResults.push([{ imageId: 'img-1', catalogItemId: null, customerVisible: true }]); // line
+    dbResults.push([{ imageId: 'img-1', ownCatalogItemId: null, customerVisible: true }]); // line
     dbResults.push([{ data: Buffer.from('PNGDATA'), mime: 'image/png', byteSize: 7 }]); // readQuoteImage
     const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
     expect(res.status).toBe(200);
@@ -590,7 +590,7 @@ describe('quotesPublic GET /:token/line-image/:lineId', () => {
 
   it('falls back to the catalog item image', async () => {
     dbResults.push([{ id: QUOTE_ID }]);
-    dbResults.push([{ imageId: null, catalogItemId: CATALOG_ID, customerVisible: true }]);
+    dbResults.push([{ imageId: null, ownCatalogItemId: CATALOG_ID, customerVisible: true }]);
     dbResults.push([{ data: Buffer.from('JPEG'), mime: 'image/jpeg', byteSize: 4 }]);
     const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
     expect(res.status).toBe(200);

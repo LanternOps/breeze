@@ -465,6 +465,7 @@ import {
   createAgentWsRoutes,
   validateAgentToken,
   disconnectAgent,
+  disconnectAgentConnection,
   isAgentConnected,
   sendCommandToAgent,
   handleTrustChanged,
@@ -495,6 +496,8 @@ import {
 } from '../services/softwareDeploymentResult';
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { orphanedResultExpectationKey } from '../services/orphanedResultExpectations';
+import { MAX_AGENT_COMMAND_ID_LENGTH } from './agents/schemas';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../db/schema/backupConstants';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -1894,6 +1897,28 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
       and(OWN_ROW('device-123', 'agent-test'), TERMINAL_GUARD)
     );
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"heartbeat_ack"'));
+  });
+
+  it('refuses a heartbeat whose ipHistoryUpdate.deviceId is longer than a device id, without logging it', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    rigStatusUpdateCapture();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    const logged: string[] = [];
+    const capture = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(capture);
+    const error = vi.spyOn(console, 'error').mockImplementation(capture);
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify({ type: 'heartbeat', timestamp: 123, ipHistoryUpdate: { deviceId: 'd'.repeat(1_000_000) } }),
+      } as any, ws as any);
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+      expect(Math.max(0, ...logged.map((line) => line.length))).toBeLessThan(10_000);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('excludes decommissioned/quarantined rows when update_status flips a device to updating', async () => {
@@ -3713,15 +3738,45 @@ describe('agent websocket command results', () => {
     });
   });
 
+  function queueWsCredential(token: string) {
+    vi.mocked(getAgentTenantState).mockResolvedValue("active");
+    vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ innerJoin: () => ({ where: () => ({ limit: async () => [{
+      id: 'ws-budget-device', orgId: 'ws-budget-org', partnerId: 'ws-budget-partner', status: 'online',
+      agentTokenHash: createHash('sha256').update(token).digest('hex'), previousTokenHash: null,
+      previousTokenExpiresAt: null, watchdogTokenHash: null, previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null, agentTokenSuspendedAt: null,
+    }] }) }) }) } as any);
+  }
+
+  it('leaves device connection budget untouched for a credential-free request', async () => {
+    vi.mocked(rateLimiter).mockClear();
+    const app = createAgentWsRoutes((() => async () => new Response('ok')) as any);
+    expect((await app.request('/budget-unauthenticated/ws')).status).toBe(401);
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('leaves the device connection budget untouched for a missing or wrong credential while the budget store is up', async () => {
+    const { getRedis } = await import('../services/redis');
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockClear();
+    const app = createAgentWsRoutes((() => async () => new Response('ok')) as any);
+    expect((await app.request('/budget-unauthenticated/ws')).status).toBe(401);
+    queueWsCredential('brz_budget_token_right');
+    const wrong = await app.request('/budget-unauthenticated/ws', { headers: { Authorization: 'Bearer brz_budget_token_wrong' } });
+    expect(wrong.status).toBe(401);
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
   // M-D2: rate limiter calls the Redis helper with the expected key/limit
   it('M-D2 rate limiter delegates to Redis sliding-window helper', async () => {
     const { getRedis } = await import('../services/redis');
     // Pretend Redis is available so the helper is consulted (not in-memory fallback).
     const fakeRedis = {} as any;
-    vi.mocked(getRedis).mockReturnValueOnce(fakeRedis);
+    vi.mocked(getRedis).mockReturnValue(fakeRedis);
+    queueWsCredential("brz_budget_token_one");
 
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
-    await app.request('/agent-xyz/ws');
+    await app.request('/agent-xyz/ws', { headers: { Authorization: 'Bearer brz_budget_token_one' } });
 
     expect(rateLimiter).toHaveBeenCalledWith(
       fakeRedis,
@@ -3733,12 +3788,14 @@ describe('agent websocket command results', () => {
 
   it('M-D2 rejects with 429 when Redis rate-limit helper returns not allowed', async () => {
     const { getRedis } = await import('../services/redis');
-    vi.mocked(getRedis).mockReturnValueOnce({} as any);
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    queueWsCredential("brz_budget_token_two");
     vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
 
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
-    const res = await app.request('/agent-overlimit/ws');
+    const res = await app.request('/agent-overlimit/ws', { headers: { Authorization: 'Bearer brz_budget_token_two' } });
     expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("60");
   });
 });
 
@@ -4475,6 +4532,51 @@ describe('presence lifecycle (wave 3.5b #4084)', () => {
     handlers.onError({}, ws as any);
 
     expect(clearAgentPresence).toHaveBeenCalledWith('agent-p7', token);
+  });
+  // #4142 W2: the relay-evict consumer closes a socket only when it is the
+  // exact connection the producer's presence lease named.
+  describe('disconnectAgentConnection (fenced close)', () => {
+    it('closes only when the token matches the live connection', async () => {
+      const handlers = createAgentWsHandlers('agent-f1', { agentId: 'agent-f1', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f1', orgId: 'org-f1', partnerId: 'partner-f1' });
+      const ws = wsMock();
+      await handlers.onOpen({}, ws as any);
+      const token = connectionTokenFromSetCall();
+
+      expect(disconnectAgentConnection('agent-f1', token, 4041, 'quick support session ended')).toBe('closed');
+      expect(ws.close).toHaveBeenCalledWith(4041, 'quick support session ended');
+    });
+
+    it('returns token_mismatch and leaves a replacement socket open', async () => {
+      const handlers = createAgentWsHandlers('agent-f2', { agentId: 'agent-f2', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f2', orgId: 'org-f2', partnerId: 'partner-f2' });
+      const first = wsMock();
+      const replacement = wsMock();
+      await handlers.onOpen({}, first as any);
+      const staleToken = connectionTokenFromSetCall(0);
+      // A second handler set is a new connection with its own token.
+      const replacementHandlers = createAgentWsHandlers('agent-f2', { agentId: 'agent-f2', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f2', orgId: 'org-f2', partnerId: 'partner-f2' });
+      await replacementHandlers.onOpen({}, replacement as any);
+      expect(connectionTokenFromSetCall(1)).not.toBe(staleToken);
+
+      expect(disconnectAgentConnection('agent-f2', staleToken, 4001, 'Tenant suspended')).toBe('token_mismatch');
+      expect(replacement.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-f2')).toBe(true);
+    });
+
+    it('returns not-connected when no socket is held', () => {
+      expect(disconnectAgentConnection('agent-never-connected', 'any-token', 4001, 'Tenant suspended')).toBe('not-connected');
+    });
+
+    it('returns close-failed when close() throws on the matching connection', async () => {
+      const handlers = createAgentWsHandlers('agent-f3', { agentId: 'agent-f3', siteId: 'site-test', installIncarnation: 1, deviceId: 'device-f3', orgId: 'org-f3', partnerId: 'partner-f3' });
+      const ws = wsMock();
+      ws.close.mockImplementation(() => { throw new Error('socket gone'); });
+      await handlers.onOpen({}, ws as any);
+      const token = connectionTokenFromSetCall();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(disconnectAgentConnection('agent-f3', token, 4040, 'orgId changed')).toBe('close-failed');
+      error.mockRestore();
+    });
   });
 });
 
@@ -7451,7 +7553,8 @@ describe('agent websocket revocation_lease_renew', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     renewRevocationLeaseMock.mockResolvedValue({
-      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+      status: 'renewed', expiresAt: 111, expiresInMs: 60_000, hardDeadline: 222, hardDeadlineInMs: 3_600_000,
+      renewEverySec: 25, graceSec: 90,
     });
   });
 
@@ -7475,6 +7578,10 @@ describe('agent websocket revocation_lease_renew', () => {
       sessionId: SESSION_ID,
       expiresAt: 111,
       hardDeadline: 222,
+      // #11840: the agent measures these from receipt, so its clock skew
+      // cannot shorten or stretch the lease.
+      expiresInMs: 60_000,
+      hardDeadlineInMs: 3_600_000,
       renewEverySec: 25,
       graceSec: 90,
     });
@@ -7593,6 +7700,40 @@ describe('agent websocket revocation_lease_renew', () => {
       expect(answer.syncNonce).toBe('nonce-1');
     }
   });
+
+  // #11840: the agent measures a renewed lease from when it ASKED, using the
+  // anchor it sent. Only the renewed answer carries deadlines, so only it
+  // needs the echo.
+  it('echoes the renew anchor verbatim on a renewed answer', async () => {
+    const ws = await sendRenew({
+      type: 'revocation_lease_renew',
+      sessionId: SESSION_ID,
+      renewAnchor: 123_456,
+    });
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer.type).toBe('revocation_lease');
+    expect(answer.renewAnchor).toBe(123_456);
+  });
+
+  it('sends no renew anchor to an agent that sent none (older agent)', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer).not.toHaveProperty('renewAnchor');
+  });
+
+  // A bad anchor must not cost the agent its renewal (it would then ride the
+  // grace window to a stop): it is dropped, and the agent measures from
+  // receipt instead.
+  it.each([[-1], [1.5], ['123'], [Number.MAX_SAFE_INTEGER + 2]])(
+    'still renews, without an echo, when the renew anchor is %s',
+    async (renewAnchor) => {
+      const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID, renewAnchor });
+      expect(renewRevocationLeaseMock).toHaveBeenCalled();
+      const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+      expect(answer.type).toBe('revocation_lease');
+      expect(answer).not.toHaveProperty('renewAnchor');
+    },
+  );
 
   it('drops a renew whose sync nonce is not a short opaque string', async () => {
     const ws = await sendRenew({
@@ -7764,6 +7905,43 @@ describe('orphaned result expectations are shared across replicas (#4135)', () =
       expect(set).toHaveBeenCalledTimes(1);
     } finally {
       warning.mockRestore();
+    }
+  });
+
+  it('accepts a command id as long as a vault auto-sync result for the longest snapshot id', async () => {
+    expect(MAX_AGENT_COMMAND_ID_LENGTH).toBeGreaterThanOrEqual('vault-auto-sync-'.length + BACKUP_SNAPSHOT_ID_MAX_LENGTH);
+    const { handlers, ws } = await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify(failedPoll(`vault-auto-sync-${'s'.repeat(BACKUP_SNAPSHOT_ID_MAX_LENGTH)}`)),
+      } as any, ws as any);
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('refuses a command_result whose command id is longer than the agent command-id limit, without a Redis read', async () => {
+    const redis = sharedRedis();
+    const { handlers, ws } = await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify(failedPoll(`snmp-${'x'.repeat(MAX_AGENT_COMMAND_ID_LENGTH)}`)),
+      } as any, ws as any);
+
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.getdel).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    } finally {
+      warning.mockRestore();
+      error.mockRestore();
     }
   });
 
@@ -8453,6 +8631,29 @@ describe('WebSocket desktop fallback start results', () => {
   beforeEach(() => {
     vi.mocked(settleDesktopStreamStart).mockClear();
     vi.mocked(closeDesktopRelayForStop).mockClear();
+  });
+
+  it('refuses a desk- result whose command id is over the agent command-id limit before reading it', async () => {
+    const { handlers, ws } = await connectedAgent(AGENT, DEVICE);
+    vi.mocked(db.update).mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId: `${COMMAND}${'x'.repeat(MAX_AGENT_COMMAND_ID_LENGTH)}`,
+          status: 'completed',
+          result: { unexpected: true },
+        }),
+      } as any, ws as any);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(settleDesktopStreamStart).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('accepts the screen-size result shape, activates the exact connecting start and settles the relay as accepted', async () => {

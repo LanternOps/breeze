@@ -169,3 +169,20 @@ Run on 2026-10-14 for dependabot PR #8701, on `@anthropic-ai/claude-agent-sdk` *
 - **D4** (per-key usage deltas) still bills correctly: the compaction appears as a delta on model A's key, at model A's rates, attributed to turn B.
 
 **Verdict unchanged: SAFE.** The pin moves to 0.3.296.
+
+## 2026-11-12: re-run on Agent SDK 0.3.323
+
+Run on 2026-11-12 for a manual bump, on `@anthropic-ai/claude-agent-sdk` **0.3.323**, all scenarios (`--sonnet claude-sonnet-5-5 --opus claude-opus-5-5 --haiku claude-haiku-4-5`), same harness env as the 0.3.296 run. Every `/v1/messages` request returned 200; none carried the `thinking-display-updates` beta. Estimated spend **≈ USD 1.30**.
+
+| # | 0.3.323 result | Same as 0.3.296 |
+|---|---|---|
+| Q1 | All five pairs: every check ✓ (`SECOND=bravo-7 CODE=CODE-4417 GAMMA=GAMMA-9031`, `gamma` called once, no re-lookups). | yes |
+| Q2 | Thinking blocks on B: cross-model none; same-model sent (signed, `len=0`); round trip none on Opus, sent again back on Sonnet. | yes |
+| Q3 | No 400s. The CLI compacts on the previous model (one Sonnet 5.5 request, 344,054 cache-read tokens, 740 output tokens); Haiku then answers `STILL-HERE` from 1,629 input tokens. The compaction lands on model A's `modelUsage` key in turn B's result. | yes |
+| Q4 | Effort changes fine. **Changed:** fast on resume returned **200** on both requests with `speed: "fast"` on the wire; no 429 and no retry without `speed`. The proxy does not record the served speed, so whether the turn was actually served fast is **not checked**. Unknown whether this is the SDK or the account's fast-mode access. | **no** |
+| Q5 | `modelUsage` is per key and cumulative across `resume`; `result.usage` is per turn. `modelUsage` now also carries `cacheCreationEphemeral5mInputTokens` / `cacheCreationEphemeral1hInputTokens` (0.3.311); every cache write in the run was 5-minute (1h = 0 on every key). | yes |
+| Q6 | Interrupted turn A ends `error_during_execution`; B on Opus re-ran the interrupted `bravo-7` call and completed. Interrupted/aborted-turn usage under-count was not re-measured. | yes (not re-measured) |
+
+**Effect on the constraints:** none. Constraint 1 (fit check before switching) and D4 (per-key usage deltas) stand as written. The Q4 change only removes a silent downgrade; `fastDowngraded` handling stays, since a 429 is still possible.
+
+**Verdict unchanged: SAFE.** The pin moves to 0.3.323.

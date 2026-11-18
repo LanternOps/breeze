@@ -160,9 +160,9 @@ vi.mock('../services', () => {
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
   mfaLimiter: { limit: 5, windowSeconds: 300 },
-  recordAccountFailure: vi.fn().mockResolvedValue({ count: 1, locked: false, newlyLocked: false }),
+  reserveAccountAttempt: vi.fn().mockResolvedValue({ allowed: true, count: 1, reachesLimit: false }),
+  releaseAccountAttempt: vi.fn().mockResolvedValue(undefined),
   clearAccountFailures: vi.fn().mockResolvedValue(undefined),
-  isAccountLocked: vi.fn().mockResolvedValue(false),
   ACCOUNT_LOCKOUT_MAX: 5,
   ACCOUNT_LOCKOUT_WINDOW_SECONDS: 15 * 60,
   getAccountLockoutMax: vi.fn(() => 5),
@@ -479,6 +479,7 @@ const user = {
   id: 'user-123',
   email: 'test@example.com',
   name: 'Test User',
+  avatarUrl: '/api/v1/users/user-123/avatar',
   passwordHash: '$argon2id$hash',
   status: 'active',
   mfaEnabled: true,
@@ -1364,7 +1365,7 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
       tokens: { accessToken: 'access-token', expiresInSeconds: 900 },
-      user: { id: 'user-123', mfaEnabled: true },
+      user: { id: 'user-123', mfaEnabled: true, avatarUrl: user.avatarUrl },
     });
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -1845,6 +1846,7 @@ describe('passkey MFA auth routes', () => {
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
       tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+      user: { id: 'user-123', avatarUrl: user.avatarUrl },
       redirectPath: '/dashboard',
     });
     expect(finalizeSsoPendingLink).toHaveBeenCalledWith(

@@ -14,7 +14,9 @@ import { createSigninEventsLimiter } from '../signinEventsLimiter';
 export const ACCESS_TOKEN = 'opaque-test-access-token' as OpaqueAccessToken;
 export const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 
-export type Call = { path: string; query?: Record<string, string>; startUrl?: string };
+export type Call = {
+  path: string; query?: Record<string, string>; startUrl?: string; keepPagesOnTransientFailure?: boolean;
+};
 
 export function stubClient(responses: Record<string, GraphSyncPageSet | GraphClientError>): {
   client: MicrosoftGraphClient; calls: Call[];
@@ -25,7 +27,10 @@ export function stubClient(responses: Record<string, GraphSyncPageSet | GraphCli
     async readResource() { throw new Error('unused'); },
     async readCollection() { throw new Error('sync actions use readSyncCollection'); },
     async readSyncCollection(input: Parameters<MicrosoftGraphClient['readSyncCollection']>[0]) {
-      calls.push({ path: input.path, query: input.query, startUrl: input.startUrl });
+      calls.push({
+        path: input.path, query: input.query, startUrl: input.startUrl,
+        keepPagesOnTransientFailure: input.keepPagesOnTransientFailure,
+      });
       const response = responses[input.path];
       if (response === undefined) throw new Error(`no fixture for ${input.path}`);
       if (response instanceof GraphClientError) throw response;
@@ -46,7 +51,7 @@ export function context(client: MicrosoftGraphClient): GraphSyncActionContext {
     limits: {
       syncMaxInFlight: 4, maxInFlight: 32, signinActivityRpm: 4, signinPagesPerCall: 5,
       maxItemsUsers: 25_000, maxItemsDevices: 25_000, maxItemsCaPolicies: 500,
-      maxItemsSkus: 200, maxItemsSigninEvents: 25_000, signinEventsRpm: 6,
+      maxItemsSkus: 200, maxItemsSigninEvents: 25_000, signinEventsRpm: 6, signinEventsPageSize: 100,
       continuationKey: Buffer.alloc(32, 1),
     },
     continuations: createSyncContinuationCodec({ key: Buffer.alloc(32, 1) }),

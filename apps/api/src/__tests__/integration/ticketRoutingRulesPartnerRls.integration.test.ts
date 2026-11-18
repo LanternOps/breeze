@@ -31,7 +31,7 @@ import {
   tickets,
   users,
 } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES, pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -311,7 +311,7 @@ describe(`ticket routing rules partner RLS (#8883 W5 Task 5.1, ${MIGRATION})`, (
       expect(await constraintName(() => sys(() => db.update(ticketRoutingRules).set({ orgId: orgB1.id }).where(eq(ticketRoutingRules.id, rule.id))))).toBe('ticket_routing_rules_ref_partner_chk');
     });
 
-    runDb('deleting a referenced category or status is refused (23503, RESTRICT); deleting a referenced user nulls the action', async () => {
+    runDb('deleting a referenced category or status is refused (RESTRICT: 23503, or 23001 on Postgres 18); deleting a referenced user nulls the action', async () => {
       const { partnerA } = await fixture();
       const cat = await seedCategory(partnerA.id);
       const cat2 = await seedCategory(partnerA.id);
@@ -322,9 +322,10 @@ describe(`ticket routing rules partner RLS (#8883 W5 Task 5.1, ${MIGRATION})`, (
       await seedRule(wide, { setCategoryId: cat2.id, setStatusId: status.id });
       const rule = await seedRule(wide, { setAssigneeUserId: user.id });
 
-      expect(await sqlState(() => sys(() => db.delete(ticketCategories).where(eq(ticketCategories.id, cat.id))))).toBe('23503');
-      expect(await sqlState(() => sys(() => db.delete(ticketCategories).where(eq(ticketCategories.id, cat2.id))))).toBe('23503');
-      expect(await sqlState(() => sys(() => db.delete(ticketStatuses).where(eq(ticketStatuses.id, status.id))))).toBe('23503');
+      // RESTRICT: 23503, or 23001 restrict_violation on Postgres 18.
+      expect(FOREIGN_KEY_VIOLATION_SQLSTATES).toContain(await sqlState(() => sys(() => db.delete(ticketCategories).where(eq(ticketCategories.id, cat.id)))));
+      expect(FOREIGN_KEY_VIOLATION_SQLSTATES).toContain(await sqlState(() => sys(() => db.delete(ticketCategories).where(eq(ticketCategories.id, cat2.id)))));
+      expect(FOREIGN_KEY_VIOLATION_SQLSTATES).toContain(await sqlState(() => sys(() => db.delete(ticketStatuses).where(eq(ticketStatuses.id, status.id)))));
       await sys(() => db.delete(users).where(eq(users.id, user.id)));
       const [after] = await sys(() => db.select().from(ticketRoutingRules).where(eq(ticketRoutingRules.id, rule.id)));
       expect(after?.setAssigneeUserId).toBeNull();

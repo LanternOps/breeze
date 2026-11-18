@@ -28,6 +28,22 @@ describe('resolveLoginCandidate', () => {
     expect(await resolveLoginCandidate([cand('a', 'ok:pw'), cand('b', 'ok:pw')], 'pw', verify, dummyHash)).toBeNull();
   });
 
+  // #11541: the refusal is invisible to the caller (generic 401), so the
+  // operator gets a warn naming the accounts by id, never the password.
+  it('warns with the candidate ids when several candidates verify, and only then', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await resolveLoginCandidate([cand('a', 'ok:pw'), cand('b', 'ok:other')], 'pw', makeVerify(), dummyHash);
+      expect(warn).not.toHaveBeenCalled();
+      await resolveLoginCandidate([cand('a', 'ok:pw'), cand('b', 'ok:pw')], 'pw', makeVerify(), dummyHash);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![1]).toEqual({ portalUserIds: ['a', 'b'] });
+      expect(JSON.stringify(warn.mock.calls[0])).not.toContain('ok:pw');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('verifies every hashed candidate even after a match (no short-circuit)', async () => {
     const verify = makeVerify();
     await resolveLoginCandidate([cand('a', 'ok:pw'), cand('b', 'ok:x'), cand('c', 'ok:y')], 'pw', verify, dummyHash);

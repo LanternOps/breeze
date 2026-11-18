@@ -170,6 +170,37 @@ describe('compactToolResultForChat', () => {
     expect((parsed._chat as Record<string, unknown>).outputCompacted).toBe(true);
   });
 
+  // ─── #11673: a run's report is read whole ────────────────────────────
+
+  it("keeps get_ai_agent_run's full run summary (up to the run's 2,000-char cap), next step included", () => {
+    const summary = `${'- **Evidence:** spooler crashed under memory pressure again.\n'.repeat(30)}\n**Next step:** collect a dump.`;
+    expect(summary.length).toBeGreaterThan(1_500);
+    expect(summary.length).toBeLessThanOrEqual(2_000);
+    const raw = JSON.stringify({ trace: { id: 'r1', status: 'completed', summary, findings: [] } });
+    const parsed = JSON.parse(compactToolResultForChat('get_ai_agent_run', raw)) as { trace: { summary: string } };
+    expect(parsed.trace.summary).toBe(summary);
+  });
+
+  it("keeps get_ai_agent_run's full summary when a large trace forces the tighter tiers", () => {
+    const nextStep = '**Next step:** collect a dump.';
+    const summary = `${'- **Evidence:** spooler crashed under memory pressure again.\n'.repeat(31)}\n${nextStep}`;
+    expect(summary.length).toBeLessThanOrEqual(2_000);
+    const entries = Array.from({ length: 80 }, (_, i) => ({ kind: 'tool_call', tool: `tool_${i}`, detail: 'd'.repeat(400) }));
+    const raw = JSON.stringify({ trace: { id: 'r1', status: 'completed', summary, entries } });
+    expect(raw.length).toBeGreaterThan(MAX_TOOL_RESULT_CHARS * 3);
+    const out = compactToolResultForChat('get_ai_agent_run', raw);
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_CHARS);
+    const parsed = JSON.parse(out) as { trace: { summary: string } };
+    expect(parsed.trace.summary).toBe(summary);
+  });
+
+  it('a summary field of any other tool keeps the generic string budget', () => {
+    const summary = 'x'.repeat(2_000);
+    const raw = JSON.stringify({ data: { summary } });
+    const parsed = JSON.parse(compactToolResultForChat('list_ai_agent_runs', raw)) as { data: { summary: string } };
+    expect(parsed.data.summary).toContain('[truncated 500 chars]');
+  });
+
   // ─── #3093: structured stdout survives compaction ───────────────────
 
   it('keeps plain-text stdout up to 6K chars without truncation', () => {

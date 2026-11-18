@@ -27,7 +27,7 @@ func identity(ctx context.Context, r *run) error {
 			r.warn("no recovery marker given; the server will not auto-complete this recovery")
 			return nil
 		}
-		return writeRecoveryMarker(r, filepath.Join(r.staging, "var", "lib", "breeze"))
+		return writeRecoveryMarker(r, r.staging, filepath.Join("var", "lib", "breeze"))
 	case IdentityNew:
 		return applyNewIdentity(r.staging)
 	default:
@@ -40,8 +40,13 @@ func identity(ctx context.Context, r *run) error {
 // (heartbeat.LoadRecoveryMarker(config.GetDataDir())): /var/lib/breeze on
 // Linux, <root volume>\ProgramData\Breeze\data on Windows. Used by both
 // engines.
-func writeRecoveryMarker(r *run, dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+func writeRecoveryMarker(r *run, root, dir string) error {
+	tree, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tree.Close() }()
+	if err := tree.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(map[string]string{
@@ -51,25 +56,38 @@ func writeRecoveryMarker(r *run, dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "recovery-marker.json"), data, 0o600)
+	return tree.WriteFile(filepath.Join(dir, "recovery-marker.json"), data, 0o600)
 }
 
 // applyNewIdentity makes the tree boot as a fresh machine: empty machine-id
 // (systemd regenerates it on first boot), "-restored" hostname, no
 // enrollment credentials or secrets.
 func applyNewIdentity(root string) error {
-	_ = os.WriteFile(filepath.Join(root, "etc", "machine-id"), []byte{}, 0o644)
-	_ = os.Remove(filepath.Join(root, "var", "lib", "dbus", "machine-id"))
-	if hn, err := os.ReadFile(filepath.Join(root, "etc", "hostname")); err == nil {
-		name := strings.TrimSpace(string(hn))
-		if name != "" && !strings.HasSuffix(name, "-restored") {
-			_ = os.WriteFile(filepath.Join(root, "etc", "hostname"), []byte(name+"-restored\n"), 0o644)
-		}
-	}
-	if err := removeSecretsAndTemps(filepath.Join(root, "etc", "breeze")); err != nil {
+	tree, err := os.OpenRoot(root)
+	if err != nil {
 		return err
 	}
-	return stripEnrollment(filepath.Join(root, "etc", "breeze", "agent.yaml"))
+	defer func() { _ = tree.Close() }()
+	if err := tree.WriteFile(filepath.Join("etc", "machine-id"), []byte{}, 0o644); err != nil {
+		return err
+	}
+	if err := tree.Remove(filepath.Join("var", "lib", "dbus", "machine-id")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if hn, err := tree.ReadFile(filepath.Join("etc", "hostname")); err == nil {
+		name := strings.TrimSpace(string(hn))
+		if name != "" && !strings.HasSuffix(name, "-restored") {
+			if err := tree.WriteFile(filepath.Join("etc", "hostname"), []byte(name+"-restored\n"), 0o644); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := removeSecretsAndTempsAt(tree, filepath.Join("etc", "breeze")); err != nil {
+		return err
+	}
+	return stripEnrollmentAt(tree, filepath.Join("etc", "breeze", "agent.yaml"))
 }
 
 // secretsAndTempFiles are every file an "identity: new" pass deletes from
@@ -90,9 +108,9 @@ func secretsAndTempFiles(dir string) []string {
 // removeSecretsAndTemps deletes secretsAndTempFiles(dir), warn-free but
 // error-propagating: a missing file is fine, anything else is not (18b
 // row 4; shared by both engines' "identity: new").
-func removeSecretsAndTemps(dir string) error {
+func removeSecretsAndTempsAt(tree *os.Root, dir string) error {
 	for _, f := range secretsAndTempFiles(dir) {
-		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := tree.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("delete %s: %w", filepath.Base(f), err)
 		}
 	}
@@ -103,8 +121,8 @@ func removeSecretsAndTemps(dir string) error {
 // leaving every other setting (server_url, log_level, org_id, site_id, ...)
 // untouched. A missing file is not an error — a rebuilt tree with no agent
 // config yet is fine as-is.
-func stripEnrollment(agentYAML string) error {
-	data, err := os.ReadFile(agentYAML)
+func stripEnrollmentAt(tree *os.Root, agentYAML string) error {
+	data, err := tree.ReadFile(agentYAML)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -122,7 +140,7 @@ func stripEnrollment(agentYAML string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(agentYAML, out, 0o644)
+	return tree.WriteFile(agentYAML, out, 0o644)
 }
 
 // encryption is a recorded no-op on the Linux engine: LUKS sources are

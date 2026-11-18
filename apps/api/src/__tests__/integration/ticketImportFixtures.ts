@@ -26,7 +26,18 @@ export const uniq = (p: string) => `${p}-${Date.now()}-${seq++}`;
 export const T0 = new Date('2022-05-01T08:00:00.000Z');
 export const minutes = (n: number) => new Date(T0.getTime() + n * 60_000);
 
-export async function seedImport() {
+/**
+ * A partner with three orgs, a partner-wide admin who owns a keyless import
+ * principal, and a source on `module` (W5: the Zammad module uses it with its
+ * own URL, credentials and options).
+ */
+export async function seedImportBase(input: {
+  module: string;
+  label: string;
+  baseUrl: string;
+  credentials: Record<string, string>;
+  options?: Record<string, unknown>;
+}) {
   if (!process.env.APP_ENCRYPTION_KEY) process.env.APP_ENCRYPTION_KEY = 'ticket-import-integration-key-material';
   const partner = await createPartner();
   const orgA = await createOrganization({ partnerId: partner.id });
@@ -58,37 +69,53 @@ export async function seedImport() {
     userId,
   });
   const sourceId = randomUUID();
-  const baseUrl = `https://${uniq('helpdesk')}.example.test`;
+  const { baseUrl } = input;
   await withDbAccessContext(ownerContext(), () => insertSource({
     id: sourceId,
     partnerId: partner.id,
-    module: FAKE_MODULE_ID,
-    label: 'Fake helpdesk',
+    module: input.module,
+    label: input.label,
     baseUrl,
-    credentialsEncrypted: sealSourceCredentials(sourceId, { token: 'fake-token' }),
+    credentialsEncrypted: sealSourceCredentials(sourceId, input.credentials),
     principalId: principal!.id,
     createdBy: owner.id,
-    options: {},
+    options: input.options ?? {},
   }));
-  const fx = { partner, orgA, orgB, orgOutside, owner, agent, principal: principal!, ownerContext, sourceId, baseUrl };
+  return { partner, orgA, orgB, orgOutside, owner, agent, principal: principal!, ownerContext, sourceId, baseUrl };
+}
+
+export type ImportBase = Awaited<ReturnType<typeof seedImportBase>>;
+
+export async function seedImport() {
+  const fx = await seedImportBase({
+    module: FAKE_MODULE_ID,
+    label: 'Fake helpdesk',
+    baseUrl: `https://${uniq('helpdesk')}.example.test`,
+    credentials: { token: 'fake-token' },
+  });
   await setMappings(fx, {
     orgs: [
-      { sourceOrgKey: 'acme', sourceOrgName: 'Acme', orgId: orgA.id },
-      { sourceOrgKey: 'beta', sourceOrgName: 'Beta', orgId: orgB.id },
+      { sourceOrgKey: 'acme', sourceOrgName: 'Acme', orgId: fx.orgA.id },
+      { sourceOrgKey: 'beta', sourceOrgName: 'Beta', orgId: fx.orgB.id },
     ],
     categories: [],
   });
-  const source = fakeSource(baseUrl);
+  const source = fakeSource(fx.baseUrl);
   return { ...fx, source };
 }
 
 export type ImportFx = Awaited<ReturnType<typeof seedImport>>;
 
-export async function setMappings(fx: { partner: { id: string }; sourceId: string; ownerContext: () => DbAccessContext }, mappings: TicketImportMappings) {
-  await withDbAccessContext(fx.ownerContext(), () => replaceMappings({ partnerId: fx.partner.id, sourceId: fx.sourceId, mappings, options: {} }));
+/** Replaces the maps and the module options (`{}` unless given, as the route would store them). */
+export async function setMappings(
+  fx: { partner: { id: string }; sourceId: string; ownerContext: () => DbAccessContext },
+  mappings: TicketImportMappings,
+  options: Record<string, unknown> = {},
+) {
+  await withDbAccessContext(fx.ownerContext(), () => replaceMappings({ partnerId: fx.partner.id, sourceId: fx.sourceId, mappings, options }));
 }
 
-export async function openWindow(fx: ImportFx, orgIds: string[] = [fx.orgA.id, fx.orgB.id]) {
+export async function openWindow(fx: ImportBase, orgIds: string[] = [fx.orgA.id, fx.orgB.id]) {
   const [epochs] = await getTestDb().select({ authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch }).from(users).where(eq(users.id, fx.owner.id));
   return withDbAccessContext(fx.ownerContext(), () => openMigrationWindow({
     partnerId: fx.partner.id,
@@ -101,13 +128,13 @@ export async function openWindow(fx: ImportFx, orgIds: string[] = [fx.orgA.id, f
   }));
 }
 
-export async function closeWindow(fx: ImportFx, windowId: string) {
+export async function closeWindow(fx: ImportBase, windowId: string) {
   await withSystemDbAccessContext(() => db.transaction((tx) => closeMigrationWindow(tx, {
     windowId, partnerId: fx.partner.id, reason: 'closed_by_admin', closedBy: fx.owner.id,
   })));
 }
 
-export async function startImportRun(fx: ImportFx, kind: 'dry_run' | 'import', windowId?: string) {
+export async function startImportRun(fx: ImportBase, kind: 'dry_run' | 'import', windowId?: string) {
   return withDbAccessContext(fx.ownerContext(), () => startRun({
     partnerId: fx.partner.id,
     sourceId: fx.sourceId,

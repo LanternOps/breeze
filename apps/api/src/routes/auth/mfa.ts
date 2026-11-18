@@ -37,10 +37,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource, deviceReattachStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { consumeStepUpGrant, forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
+import { consumeStepUpGrant, forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest, deviceReattachResourceDigest } from '../../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -672,9 +672,14 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   // I3: the `await authMiddleware(c, async () => {})` idiom tears the RLS
   // context down when its empty `next` returns, so nothing below may use the
   // bare pool; confirmTotpEnrollment reads under system context and writes only
-  // through the session-replacement primitives.
-  await authMiddleware(c, async () => {});
+  // through the session-replacement primitives. Some admission checks in the
+  // middleware end the request by returning a response instead of throwing
+  // (the partner IP allowlist, a blocked mobile device, the MFA-enrollment
+  // gate); that response is returned as is.
+  const admission = await authMiddleware(c, async () => {});
+  if (admission instanceof Response) return admission;
   const auth = c.get('auth');
+  if (!auth?.user) return c.json({ error: 'Not authenticated' }, 401);
   const body = c.req.valid('json');
   // `passwordAlreadyProven`: this branch never had a password gate of its own —
   // /mfa/setup holds it. The SSO road (#4018) still validates and burns its
@@ -1013,6 +1018,7 @@ const RESOURCE_BOUND_OPERATIONS = {
   migration_window_open: migrationWindowOpenStepUpResource,
   caller_verification_administrative_disable: callerVerificationAdministrativeStepUpResource,
   wisp_grant: wispGrantStepUpResource,
+  device_reattach: deviceReattachStepUpResource,
 } as const;
 
 /**
@@ -1049,7 +1055,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
   const auth = c.get('auth');
   const body = c.req.valid('json');
   const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
-  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | z.infer<typeof wispGrantStepUpResource> | undefined;
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | z.infer<typeof wispGrantStepUpResource> | z.infer<typeof deviceReattachStepUpResource> | undefined;
   if (resourceSchema) {
     const parsedResource = resourceSchema.safeParse(body.resource);
     if (!parsedResource.success) {
@@ -1234,6 +1240,8 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
               : body.operation === 'wisp_grant'
                 // The grantor is always the caller, never a body field.
                 ? wispGrantResourceDigest({ grantorUserId: auth.user.id, ...(boundResource as z.infer<typeof wispGrantStepUpResource>) })
+              : body.operation === 'device_reattach'
+                ? deviceReattachResourceDigest(boundResource as z.infer<typeof deviceReattachStepUpResource>)
               : body.operation === 'delete_passkey'
                 ? passkeyRemovalResourceDigest(body.passkeyId!)
                 : '',

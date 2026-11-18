@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Impossible d’envoyer la notification de test.",
     "failedToLoadCommunicationSettings": "Impossible de charger les paramètres de communication",
     "slackSettingsSaved": "Slack réglages enregistrés.",
-    "slackTestNotificationQueued": "Slack notification de test en file d’attente.",
     "teamsSettingsSaved": "Teams réglages enregistrés.",
-    "teamsTestNotificationQueued": "Teams notification de test en file d’attente.",
     "discordSettingsSaved": "Paramètres Discord enregistrés.",
-    "discordTestNotificationQueued": "Notification de test Discord en file d’attente.",
+    "discordTestNotificationSent": "Notification de test Discord envoyée.",
     "loadingCommunicationIntegrations": "Chargement des intégrations de communication...",
     "communicationIntegrations": "Intégrations de communication",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connectez des outils de chat, redirigez les alertes par gravité et personnalisez les modèles de messagerie. ",
@@ -374,6 +372,9 @@
       "delivery_failed": "Échec des livraisons",
       "sync_stale": "Synchronisation bloquée",
       "verification_failed": "Échec de la vérification",
+      "destination_access_denied": "La destination refuse l’accès",
+      "destination_not_found": "Destination introuvable",
+      "destination_failing": "La destination échoue",
       "unknown": "Nécessite une intervention"
     }
   },
@@ -1074,7 +1075,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Impossible d’enregistrer les associations de sites.",
     "siteMappingsSaved": "Cartographies du site enregistrées",
-    "pickTheSiteThisControllerServesACollector": "Choisissez le site desservi par ce contrôleur et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",
+    "pickTheSiteThisControllerServesACollector": "Choisissez l'emplacement de l'agent collecteur et un agent collecteur, puis saisissez l'URL du contrôleur et la clé API locale.",
     "failedToRegisterTheController": "Impossible d’enregistrer le contrôleur.",
     "controllerRegistered": "Contrôleur enregistré",
     "pickABreezeSiteACollectorAgentAnd": "Choisissez un site Breeze et un agent collecteur, puis saisissez l’URL du contrôleur et la clé API locale.",

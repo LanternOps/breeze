@@ -220,6 +220,16 @@ launchctl kickstart -k gui/$(id -u)/com.breeze.desktop-helper-user
 
 Remote desktop needs **both** Screen Recording and Accessibility for the desktop helper -- with either one missing, the device reports remote desktop as unavailable.
 
+## Local Network prompt (Breeze Assist)
+
+If the Breeze server is on the same local network as the Mac -- typical for a self-hosted server on a LAN -- macOS may show **"Allow breeze-agent to find devices on local networks?"** The prompt is triggered by Breeze Assist connecting to the server. macOS names `breeze-agent` because the agent starts Assist.
+
+Choose **Allow**. If you choose **Don't Allow**, Assist cannot reach the server. You can change the choice later under **System Settings > Privacy & Security > Local Network**.
+
+With an internet-hosted server the prompt is not expected.
+
+Breeze does not scan the network for this. Network discovery is a separate, daemon-side feature and does not trigger the prompt.
+
 ## After an agent relocation
 
 This applies only to a Mac where `/usr/local/bin` was unsafe for a root daemon and the agent moved to `/Library/Breeze/bin` (see [Agent Path](#agent-path-usrlocalbin-or-librarybreezebin)). Most Macs never hit this.

@@ -85,4 +85,62 @@ describe('TrustFaqSection', () => {
     fireEvent.click(screen.getByTestId('trust-faq-save'));
     await waitFor(() => expect(api.putTrustFaq).toHaveBeenCalledWith(orgFetch, 'o1', 4, expect.any(Array)));
   });
+
+  it('a failed load shows a retry that reloads', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.getTrustFaq.mockRejectedValueOnce(new Error('boom'));
+    mount();
+    await screen.findByTestId('trust-faq-load-error');
+    expect(api.getTrustFaq).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('trust-faq-retry'));
+    expect(await screen.findByTestId('trust-faq-question-0')).toHaveValue('Where is data stored?');
+    expect(api.getTrustFaq).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('trust-faq-load-error')).toBeNull();
+    expect(screen.queryByTestId('trust-faq-retry')).toBeNull();
+    expect(screen.getByTestId('trust-faq-save')).not.toBeDisabled();
+    err.mockRestore();
+  });
+
+  it('a failed reload offers retry until the user edits: a retry never replaces unsaved rows', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const view = (rev: number) => <TrustFaqSection orgId="o1" orgFetch={orgFetch} state={{ page: { publicationRevision: rev } } as never} canWrite onReload={vi.fn(async () => {})} />;
+    const { rerender } = render(view(4));
+    await screen.findByTestId('trust-faq-question-0');
+    api.getTrustFaq.mockRejectedValueOnce(new Error('boom'));
+    rerender(view(5));
+    expect(await screen.findByTestId('trust-faq-retry')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('trust-faq-question-0'), { target: { value: 'Edited locally' } });
+    expect(screen.queryByTestId('trust-faq-retry')).toBeNull();
+    expect(screen.getByTestId('trust-faq-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-faq-question-0')).toHaveValue('Edited locally');
+    err.mockRestore();
+  });
+
+  it('a retry that fails again keeps the alert and the retry', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.getTrustFaq.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce(new Error('boom again'));
+    mount();
+    fireEvent.click(await screen.findByTestId('trust-faq-retry'));
+    await waitFor(() => expect(api.getTrustFaq).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('trust-faq-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-faq-retry')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-faq-save')).toBeDisabled();
+    err.mockRestore();
+  });
+
+  it('an older load resolving after a newer one applies nothing (rows and Save revision stay the newer ones)', async () => {
+    const settle: Array<(v: unknown) => void> = [];
+    api.getTrustFaq.mockImplementation(() => new Promise((r) => { settle.push(r); }));
+    const view = (rev: number) => <TrustFaqSection orgId="o1" orgFetch={orgFetch} state={{ page: { publicationRevision: rev } } as never} canWrite onReload={vi.fn(async () => {})} />;
+    const { rerender } = render(view(4));
+    rerender(view(5));
+    await waitFor(() => expect(settle).toHaveLength(2));
+    settle[1]!({ items: [{ question: 'Newer question', answerHtml: '<p>n</p>' }], publicationRevision: 5 });
+    expect(await screen.findByTestId('trust-faq-question-0')).toHaveValue('Newer question');
+    settle[0]!({ items: [{ question: 'Older question', answerHtml: '<p>o</p>' }], publicationRevision: 4 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId('trust-faq-question-0')).toHaveValue('Newer question');
+    fireEvent.click(screen.getByTestId('trust-faq-save'));
+    await waitFor(() => expect(api.putTrustFaq).toHaveBeenCalledWith(orgFetch, 'o1', 5, expect.any(Array)));
+  });
 });

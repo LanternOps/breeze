@@ -22,6 +22,7 @@ apps/api/src/services/eventBus.types.test.ts apps/docs/src/content/docs/features
 apps/api/src/services/installerSigningDocs.test.ts docs/signing/WINDOWS_INSTALLER_SIGNING.md
 apps/api/src/services/installerSigningDocs.test.ts apps/docs/src/content/docs/deploy/verify-installer.mdx
 apps/api/src/services/mcpGuidancePromptTools.test.ts apps/docs/src/content/docs/features/ai-tools.mdx
+apps/api/src/services/aiToolsExport.registration.test.ts apps/docs/src/content/docs/features/ai-tools.mdx
 apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/src/content/docs/features/hardware-monitoring.mdx
 apps/web/src/components/devices/hardware/hardwareMonitoringDocs.test.ts apps/docs/astro.config.mjs
 apps/web/src/components/devices/time/timeSyncEvidenceDocs.test.ts apps/docs/src/content/docs/features/time-sync.mdx
@@ -29,3 +30,4 @@ apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/src/content/docs/*
 apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/astro.config.mjs
 scripts/release/check-server-only-eligibility.test.mjs selfhost-signing-template/README.md
 scripts/release/release-path-policy.test.mjs selfhost-signing-template/README.md
+scripts/release/release-image-consumers.test.mjs apps/docs/src/content/docs/deploy/binaries.mdx

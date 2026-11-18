@@ -191,3 +191,20 @@ describe('Device Details v1 fields (#5140)', () => {
     expect(device!.openTicketCount).toBeUndefined();
   });
 });
+
+// #10838: the Wake button on Device Details is gated on the server's decision,
+// which only reaches the screen if mapDevice() carries it through.
+describe('getDevice wakeAvailability', () => {
+  it('carries the server wake decision through to the device', async () => {
+    const wakeAvailability = { show: false, mode: 'verified', state: 'unproven', testWakeAllowed: true, flaggedTimeouts: false };
+    fetchWithTimeout.mockImplementationOnce(() => jsonResponse({ id: 'device-1', hostname: 'pc-1', status: 'offline', wakeAvailability }));
+    const device = await getDevice('device-1');
+    expect(device.wakeAvailability).toEqual(wakeAvailability);
+  });
+
+  it('leaves it undefined for an API that does not send it', async () => {
+    fetchWithTimeout.mockImplementationOnce(() => jsonResponse({ id: 'device-1', hostname: 'pc-1', status: 'offline' }));
+    const device = await getDevice('device-1');
+    expect(device.wakeAvailability).toBeUndefined();
+  });
+});

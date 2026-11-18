@@ -14,6 +14,7 @@ import {
   resetOrphanedResultExpectationsForTests,
   type OrphanedResultExpectation,
 } from './orphanedResultExpectations';
+import { MAX_AGENT_COMMAND_ID_LENGTH } from '../routes/agents/schemas';
 
 type Store = Map<string, { value: string; expiresAt: number }>;
 
@@ -107,6 +108,24 @@ describe('orphanedResultExpectations (#4135)', () => {
 
       await expect(consumeOrphanedResultExpectation('agent-b', 'cmd-2')).resolves.toBeNull();
       await expect(consumeOrphanedResultExpectation('agent-a', 'cmd-2')).resolves.toMatchObject({ agentId: 'agent-a' });
+    });
+
+    it('keeps command ids longer than the agent command-id limit out of Redis', async () => {
+      const redis = fakeRedis();
+      getRedisMock.mockReturnValue(redis);
+      const atLimit = 'c'.repeat(MAX_AGENT_COMMAND_ID_LENGTH);
+      const overLimit = 'c'.repeat(MAX_AGENT_COMMAND_ID_LENGTH + 1);
+      const huge = 'c'.repeat(4 * 1024 * 1024);
+
+      await recordOrphanedResultExpectation(overLimit, snmp('agent-a'));
+      expect(redis.set).not.toHaveBeenCalled();
+      await expect(peekOrphanedResultExpectation('agent-a', huge)).resolves.toBeNull();
+      await expect(consumeOrphanedResultExpectation('agent-a', huge)).resolves.toBeNull();
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.getdel).not.toHaveBeenCalled();
+
+      await recordOrphanedResultExpectation(atLimit, snmp('agent-a'));
+      await expect(consumeOrphanedResultExpectation('agent-a', atLimit)).resolves.toMatchObject({ kind: 'snmp' });
     });
 
     it('uses a lazy client that has not connected yet (its first command connects it)', async () => {

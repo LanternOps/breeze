@@ -5,7 +5,7 @@ import {
   BREEZE_AI_GUARDRAILS_CORE,
   UNTRUSTED_TOOL_OUTPUT_RULE,
 } from './aiAgentSystemPrompt';
-import { composeStaticSystemPrompt } from './aiToolIndex';
+import { composeConstrainedSystemPrompt, composeStaticSystemPrompt } from './aiToolIndex';
 import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
 import { buildAgentRunSystemPrompt, type AgentRunPromptContext } from './aiAgents/runnerPrompt';
@@ -68,6 +68,10 @@ describe('UNTRUSTED_TOOL_OUTPUT_RULE parity across prompt builders', () => {
   it('chat: the static system prompt carries it', () => {
     expect(AI_SYSTEM_PROMPT_BASE).toContain(UNTRUSTED_TOOL_OUTPUT_RULE);
     expect(composeStaticSystemPrompt(listChatSurfaceToolNames())).toContain(UNTRUSTED_TOOL_OUTPUT_RULE);
+  });
+
+  it('chat under a constrained tool profile (#11395): the compact prompt carries it', () => {
+    expect(composeConstrainedSystemPrompt(['query_devices', 'search_logs'])).toContain(GOLDEN_RULE);
   });
 
   it('MCP server instructions carry it', () => {

@@ -11,11 +11,20 @@ import {
   claimRelaySend,
   markRelaySendComplete,
   openRelayCommand,
+  RELAY_SEND_JOB_NAME,
   releaseRelaySendClaim,
   writeRelayAck,
   type DispatchOutcome,
   type RelayJobData,
+  type RelayQueueJobData,
 } from '../services/agentCommandRelay';
+import {
+  isValidEvictRequest,
+  parseRelayEvictJob,
+  RELAY_EVICT_JOB_NAME,
+  writeRelayEvictAck,
+  type EvictOutcome,
+} from '../services/agentCommandRelayEvict';
 import {
   RELAY_SHARD_REFRESH_INTERVAL_MS,
   RELAY_SHARD_SWEEP_INTERVAL_MS,
@@ -25,7 +34,12 @@ import {
   releaseRelayShard,
   sweepDeadRelayShards,
 } from '../services/agentCommandRelayShard';
-import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
+import {
+  disconnectAgentConnection,
+  isAgentConnected,
+  sendCommandToAgent,
+  type AgentWsDisconnectResult,
+} from '../routes/agentWs';
 
 const READINESS_NAME = 'agentCommandRelay';
 
@@ -35,13 +49,35 @@ const READINESS_NAME = 'agentCommandRelay';
  * Runs ONLY on a process that may own sockets — registration in index.ts is
  * gated on `breezeRole() !== 'worker'`. It consumes only this instance's own
  * shard, `agent-command-relay-<INSTANCE_ID>` (#4134), so every job it sees was
- * routed here by a presence lease naming this instance. Presence merely
- * ADMITTED this job onto the queue; this process's in-memory socket map
- * (agentWs.isAgentConnected) is the actual authority for whether the send can
- * happen at all, and the lease/target-instance checks below re-verify the
- * routing decision wasn't made against a since-superseded lease. Those checks
- * are the fallback for a lease that moved after the job was built: the job
- * acks `owner_mismatch` and nothing is sent.
+ * routed here by a presence lease naming this instance.
+ *
+ * Dispatches on the BullMQ job name: `relay-send` runs
+ * {@link processRelaySendJob}, `relay-evict` (#4142) runs
+ * {@link processRelayEvictJob}, and any other name (a newer producer's) acks
+ * `infrastructure_error` and does nothing.
+ */
+export async function processAgentCommandRelayJob(job: Job<RelayQueueJobData>): Promise<void> {
+  if (job.name === RELAY_EVICT_JOB_NAME) return processRelayEvictJob(job.data);
+  if (job.name !== RELAY_SEND_JOB_NAME) {
+    const relayId = (job.data as { relayId?: unknown } | undefined)?.relayId;
+    console.warn(`[AgentCommandRelayWorker] relay job name ${JSON.stringify(job.name)} is unknown to this build; nothing was sent`);
+    if (typeof relayId !== 'string' || relayId.length === 0) return;
+    return writeRelayAck(relayId, {
+      status: 'infrastructure_error',
+      message: `unknown relay job name ${job.name}: nothing was sent`,
+    });
+  }
+  return processRelaySendJob(job.data as RelayJobData);
+}
+
+/**
+ * A `relay-send` job. Presence merely ADMITTED it onto the queue; this
+ * process's in-memory socket map (agentWs.isAgentConnected) is the actual
+ * authority for whether the send can happen at all, and the
+ * lease/target-instance checks below re-verify the routing decision wasn't
+ * made against a since-superseded lease. Those checks are the fallback for a
+ * lease that moved after the job was built: the job acks `owner_mismatch` and
+ * nothing is sent.
  *
  * The local send path also records the orphaned-result expectation (the
  * dispatch record that authorizes the eventual `command_result`), which is why
@@ -49,8 +85,7 @@ const READINESS_NAME = 'agentCommandRelay';
  * socket write itself. That record lives in Redis (#4135), so the result is
  * honored on whichever replica the agent is connected to when it replies.
  */
-export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promise<void> {
-  const d = job.data;
+async function processRelaySendJob(d: RelayJobData): Promise<void> {
   const ack = (outcome: DispatchOutcome) => writeRelayAck(d.relayId, outcome);
 
   if (Date.now() > d.expiresAt) return ack({ status: 'expired' });
@@ -116,6 +151,90 @@ export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promi
 }
 
 /**
+ * A `relay-evict` job (#4142): close each listed socket, but only the exact
+ * connection the producer's lease named (`disconnectAgentConnection` compares
+ * the job's `connectionToken` with the live connection record and closes in
+ * the same synchronous step). A job addressed to another instance closes
+ * nothing. The job shape is checked first (`parseRelayEvictJob`); each entry
+ * is then validated on its own (close-code allowlist, reason length, token),
+ * and expiry is re-checked right before each close.
+ *
+ * One outcome per entry is acked. A queued eviction (`awaitAck: false`) is
+ * acked to nobody, so what it could not close is logged here instead: this
+ * line is the only evidence of it. A `close()` that threw is reported to
+ * Sentry once per job, with the count, not once per socket.
+ */
+async function processRelayEvictJob(raw: unknown): Promise<void> {
+  const d = parseRelayEvictJob(raw);
+  if (!d) {
+    const relayId = (raw as { relayId?: unknown } | undefined)?.relayId;
+    console.warn('[AgentCommandRelayWorker] relay-evict job rejected: malformed job data; nothing was closed');
+    if (typeof relayId !== 'string' || relayId.length === 0) return;
+    return writeRelayAck(relayId, { status: 'infrastructure_error', message: 'relay-evict job rejected: invalid job data' });
+  }
+  // Keys are agent ids from the wire: no prototype for one to land on.
+  const outcomes: Record<string, EvictOutcome> = Object.create(null);
+  const elsewhere = d.targetInstanceId !== INSTANCE_ID;
+  for (const entry of d.entries) {
+    const agentId = typeof entry?.agentId === 'string' ? entry.agentId : null;
+    if (!agentId) continue;
+    if (elsewhere) {
+      outcomes[agentId] = { status: 'owner_mismatch' };
+      continue;
+    }
+    if (!isValidEvictRequest(entry) || typeof entry.connectionToken !== 'string' || entry.connectionToken.length === 0) {
+      outcomes[agentId] = { status: 'unavailable', reason: 'invalid_request' };
+      continue;
+    }
+    if (Date.now() > d.expiresAt) {
+      outcomes[agentId] = { status: 'expired' };
+      continue;
+    }
+    outcomes[agentId] = fencedCloseOutcome(
+      disconnectAgentConnection(agentId, entry.connectionToken, entry.code, entry.reason),
+    );
+  }
+
+  const notClosed = new Map<string, number>();
+  for (const outcome of Object.values(outcomes)) {
+    if (outcome.status === 'closed' || outcome.status === 'not_connected') continue;
+    const key = outcome.status === 'unavailable' ? `unavailable:${outcome.reason}` : outcome.status;
+    notClosed.set(key, (notClosed.get(key) ?? 0) + 1);
+  }
+  const total = Object.keys(outcomes).length;
+  const closeFailed = notClosed.get('close_failed') ?? 0;
+  if (closeFailed > 0) {
+    captureException(new Error(
+      `[AgentCommandRelayWorker] relay-evict ${d.relayId}: close() threw for ${closeFailed} of ${total} socket(s)`,
+    ));
+  }
+  if (!d.awaitAck) {
+    if (notClosed.size > 0) {
+      const tally = [...notClosed].map(([key, n]) => `${key}=${n}`).join(', ');
+      console.warn(`[AgentCommandRelayWorker] queued relay-evict ${d.relayId}: ${tally} (of ${total})`);
+    }
+    return;
+  }
+  await writeRelayEvictAck(d.relayId, outcomes);
+}
+
+function fencedCloseOutcome(result: AgentWsDisconnectResult | 'token_mismatch'): EvictOutcome {
+  switch (result) {
+    case 'closed':
+      return { status: 'closed', via: 'relay' };
+    case 'close-failed':
+      return { status: 'close_failed', via: 'relay' };
+    case 'token_mismatch':
+      return { status: 'owner_mismatch' };
+    case 'not-connected':
+      return { status: 'not_connected' };
+    default:
+      result satisfies never;
+      return { status: 'unavailable', reason: 'unexpected_error' };
+  }
+}
+
+/**
  * Thrown by initializeAgentCommandRelayWorker when the shard's owner key is
  * held by another consumer, or a consumer already runs (or lost its shard) in
  * this process. Also the error reported, not thrown, when the refresh finds
@@ -129,8 +248,8 @@ export class RelayShardConflictError extends Error {
 }
 
 /** Builds a Worker on THIS instance's shard. The ownership guard lives in initialize. */
-export function createAgentCommandRelayWorker(): Worker<RelayJobData> {
-  return new Worker<RelayJobData>(agentCommandRelayQueueName(INSTANCE_ID), processAgentCommandRelayJob, {
+export function createAgentCommandRelayWorker(): Worker<RelayQueueJobData> {
+  return new Worker<RelayQueueJobData>(agentCommandRelayQueueName(INSTANCE_ID), processAgentCommandRelayJob, {
     connection: getBullMQConnection(),
     // ws.send is fast; 25 is deliberately conservative — tune from queue-age
     // measurements after 3.5d rolls out, mirroring eventDispatchWorker's note.
@@ -139,7 +258,7 @@ export function createAgentCommandRelayWorker(): Worker<RelayJobData> {
 }
 
 interface RelayConsumer {
-  worker: Worker<RelayJobData>;
+  worker: Worker<RelayQueueJobData>;
   sweepTimer: ReturnType<typeof setInterval>;
   sweeping: Promise<void> | null;
   /** Ownerless queues from the last sweep: removed if still ownerless on the next. */
@@ -310,7 +429,7 @@ export async function initializeAgentCommandRelayWorker(): Promise<void> {
   }
   starting = true;
   let state: RelayShardState | null = null;
-  let worker: Worker<RelayJobData> | null = null;
+  let worker: Worker<RelayQueueJobData> | null = null;
   try {
     state = await claimShard();
     worker = createAgentCommandRelayWorker();

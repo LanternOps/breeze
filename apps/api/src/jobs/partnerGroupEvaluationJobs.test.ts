@@ -222,7 +222,7 @@ describe('partner group evaluation jobs', () => {
     expect(await runPartnerGroupSweep({ enqueue, random: () => 0.5, now: clock })).toEqual({ partnerGroups: 2, orgGroups: 2 });
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue).toHaveBeenNthCalledWith(1, expect.objectContaining({ groupId: 'g1', revision: null }), expect.objectContaining({ delayMs: 450000 }));
-    expect(mocks.orgEvaluate.mock.calls).toEqual([['o1', { exportLockBeforeWrites: true }], ['o2', { exportLockBeforeWrites: true }]]);
+    expect(mocks.orgEvaluate.mock.calls).toEqual([['o1'], ['o2']]);
     const dialect = new PgDialect();
     expect(dialect.sqlToQuery(partnerWhere.mock.calls[0]?.[0]).sql).toMatch(/partner_id.*is not null/i);
     const orgSQL = dialect.sqlToQuery(orgWhere.mock.calls[0]?.[0]);

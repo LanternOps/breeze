@@ -1,7 +1,7 @@
 import type { gmail_v1 } from '@googleapis/gmail';
 import type { InboundEmailAttachment, NormalizedInboundEmail } from '../inboundEmail/types';
 import { htmlToText } from '../inboundEmail/htmlToText';
-import { buildSenderAuth } from '../inboundEmail/authenticationResults';
+import { buildSenderAuth, leadingAuthservId, stampsUnreadableReason } from '../inboundEmail/authenticationResults';
 import { parseMailboxes } from '../inboundEmail/addressParse';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 
@@ -136,8 +136,7 @@ function trustedAuthResults(headers: GHeader[] | undefined): string {
     if ((h.name ?? '').toLowerCase() !== 'authentication-results') continue;
     // First (topmost) Authentication-Results header only — this is Google's stamp.
     const value = h.value ?? '';
-    const authservId = (value.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase();
-    return authservId === GOOGLE_AUTHSERV_ID ? value : '';
+    return leadingAuthservId(value) === GOOGLE_AUTHSERV_ID ? value : '';
   }
   return '';
 }
@@ -246,6 +245,13 @@ export function normalizeGmailMessage(
 ): NormalizedInboundEmail {
   const headers = msg.payload?.headers ?? undefined;
   const from = parseEmail(header(headers, 'From'));
+  const fromHeaders = (headers ?? []).filter((h) => (h.name ?? '').toLowerCase() === 'from').map((h) => h.value ?? '');
+  // Gmail adds Return-Path at delivery, so a missing one is unreadable.
+  const unreadable = stampsUnreadableReason({
+    envelope: header(headers, 'Return-Path'),
+    envelopeRequired: true,
+    dkimSignatures: (headers ?? []).filter((h) => (h.name ?? '').toLowerCase() === 'dkim-signature').map((h) => h.value),
+  });
   const references = header(headers, 'References')?.trim().split(/\s+/).filter(Boolean);
 
   const acc: WalkResult = { text: '', html: undefined, attachments: [] };
@@ -295,7 +301,12 @@ export function normalizeGmailMessage(
     returnPath: header(headers, 'Return-Path'),
     xLoop: header(headers, 'X-Loop'),
     outboundMarker: header(headers, BREEZE_OUTBOUND_HEADER),
-    senderAuth: buildSenderAuth(trustedAuthResults(headers)),
+    // Bound to the single From mailbox of a single From header. No stamp is read
+    // when the Return-Path holds characters that change how an echo of it reads.
+    senderAuth: unreadable === null
+      ? buildSenderAuth(trustedAuthResults(headers), from.single && fromHeaders.length === 1 ? from.address : null, fromHeaders)
+      : buildSenderAuth(undefined),
+    ...(unreadable === null ? {} : { senderAuthConsulted: unreadable }),
     attachments: acc.attachments,
     raw: {
       gmailMessageId: gmailId,

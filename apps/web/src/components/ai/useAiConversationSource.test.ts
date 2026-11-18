@@ -49,7 +49,7 @@ function tab(over: Partial<TabState>): TabState {
     messages: [], chatRuns: {}, isStreaming: false, isLoading: false, error: null, pendingApproval: null,
     pendingPlan: null, activePlan: null, approvalMode: 'per_step', isPaused: false, isInterrupting: false,
     isFlagged: false, unreadCount: 0, hasApprovalPending: false, orgId: null, deviceId: null, deviceLabel: null,
-    m365ConnectionId: null, composerDraft: '', joinedMidResponse: false, errorAction: null,
+    m365ConnectionId: null, composerDraft: '', joinedMidResponse: false, errorAction: null, errorCode: null, errorDetail: null, retryTarget: null,
     ...over,
   };
 }
@@ -86,6 +86,14 @@ describe('list', () => {
       status: 'active', createdAt: '2026-10-20T09:00:00.000Z', lastActivityAt: '2026-10-20T10:00:00.000Z', openIn: null,
     });
     expect(result.current.error).toBeNull();
+  });
+
+  it('carries transcriptPurgedAt through when retention emptied the session (#4342 W4)', async () => {
+    listRows = [row(A, { title: null, transcriptPurgedAt: '2027-02-01T03:15:00.000Z' }), row(B, { transcriptPurgedAt: null })];
+    const { result } = renderHook(() => useAiConversationSource({ surface: 'panel' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.items[0]).toMatchObject({ id: A, title: null, transcriptPurgedAt: '2027-02-01T03:15:00.000Z' });
+    expect(result.current.items[1]).not.toHaveProperty('transcriptPurgedAt');
   });
 
   it('panel surface keeps topology rows; workspace surface drops them (D4)', async () => {

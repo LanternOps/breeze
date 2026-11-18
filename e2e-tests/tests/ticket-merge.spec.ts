@@ -56,11 +56,13 @@ test.describe('ticket merge', () => {
 
     const aId = await createTicketWithComment(cleanPage, tickets, `E2E merge A ${stamp}`, `Comment on A ${stamp}`);
     const aNumber = (await tickets.workbenchNumber().textContent())?.trim();
+    // A is open in focus, which hides the board and its Create button.
+    await tickets.backToBoard();
     const bId = await createTicketWithComment(cleanPage, tickets, `E2E merge B ${stamp}`, `Comment on B ${stamp}`);
     expect(aNumber).toMatch(/^T-/);
 
-    // On B (the newer ticket): Merge into… → pick A → preview → confirm.
-    await tickets.mergeOpen().click();
+    // On B (the newer ticket): More → Merge into… → pick A → preview → confirm.
+    await tickets.openMerge();
     await tickets.mergePicker().waitFor();
     await tickets.mergeOption(aId).click();
     await expect(tickets.mergePreview()).toBeVisible();
@@ -79,7 +81,11 @@ test.describe('ticket merge', () => {
     await expect(tickets.mergedBanner()).toBeVisible();
     await expect(tickets.mergedBanner()).toContainText(aNumber!);
     await expect(tickets.composerInput()).toHaveCount(0);
-    await expect(tickets.mergeOpen()).toHaveCount(0);
+    // Every More action (move, merge, delete) is a write a tombstone refuses,
+    // so the menu is not rendered at all. (The merge item itself lives inside
+    // the closed menu, so asserting on it alone would pass vacuously.)
+    await expect(tickets.workbenchNumber()).toBeVisible();
+    await expect(tickets.moreMenu()).toHaveCount(0);
 
     // The closed tab hides the tombstone until "Show merged" is on.
     await tickets.goto();

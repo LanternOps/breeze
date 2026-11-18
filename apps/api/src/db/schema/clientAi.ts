@@ -13,6 +13,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { portalUsers } from './portal';
+import { users } from './users';
 
 /**
  * Breeze AI for Office — client-AI control-plane tables.
@@ -25,12 +26,31 @@ import { portalUsers } from './portal';
  *    have org_id NULL. See the custom_field_definitions lesson (2026-06-11-i).
  */
 
-/** Entra tenant GUID → Breeze org. The tenant-isolation linchpin (spec §3). */
+/** How an org's Entra tenant was proven (portal registration W4, plan D1; SQL CHECK client_ai_tenant_mappings_proven_via_chk). */
+export type PortalEntraProofVia = 'm365_connection' | 'proof_run';
+/** What the proof rested on. Never MSP input (spec §5.4 inv. 2). */
+export type PortalEntraProofEvidence =
+  | { via: 'proof_run'; adminOid: string; runId: string }
+  | { via: 'm365_connection'; connectionId: string; profile: string };
+
+/**
+ * Entra tenant GUID → Breeze org. The tenant-isolation linchpin (spec §3).
+ *
+ * Portal registration W4 (#11381) adds the tenant PROOF (spec §5.4): the four
+ * `proven_*` columns are all set or all NULL (client_ai_tenant_mappings_proof_shape_chk),
+ * and a BEFORE UPDATE trigger clears them whenever `entra_tenant_id` changes without
+ * the same update recording a new proof (inv. 3). Only a proven row ever resolves a
+ * sign-in to an org (services/portalEntraTenantProof.ts).
+ */
 export const clientAiTenantMappings = pgTable('client_ai_tenant_mappings', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   // GUID-shape CHECK lives in SQL (client_ai_tenant_mappings_tenant_guid_check).
   entraTenantId: text('entra_tenant_id').notNull(),
+  provenAt: timestamp('proven_at', { withTimezone: true }),
+  provenVia: text('proven_via').$type<PortalEntraProofVia>(),
+  provenByUserId: uuid('proven_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  provenEvidence: jsonb('proven_evidence').$type<PortalEntraProofEvidence>(),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
