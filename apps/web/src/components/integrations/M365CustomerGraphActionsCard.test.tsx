@@ -481,6 +481,25 @@ describe("M365CustomerGraphActionsCard", () => {
     });
   });
 
+  it("warns when the retest keeps an active row on an older manifest", async () => {
+    const stale = connection({ manifestVersion: 2, grantHealth: "manifest-stale", lastErrorCode: "manifest_stale" });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: stale })))
+      .mockResolvedValueOnce(makeResponse({ connection: stale }))
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: stale })));
+
+    render(<M365CustomerGraphActionsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retest" }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    expect(state.successMessages).toEqual([]);
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: "warning",
+      message: "Retest finished, but the connection still needs attention.",
+      detail: "The granted permissions use an older manifest. Grant consent again.",
+    });
+  });
+
   it("explains grant_reconciliation_unavailable instead of the generic attention copy", async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({

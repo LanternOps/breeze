@@ -340,6 +340,14 @@ function errorCopyKey(code: string, retestable: boolean): string {
   return code === "executor_unavailable" && !retestable ? "executor_unavailablePending" : code;
 }
 
+/**
+ * A retest passed only if the connection is active with nothing outstanding:
+ * an active row kept on an older manifest still records `manifest_stale`.
+ */
+function retestPassed(connection: Connection | null): boolean {
+  return connection?.status === "active" && connection.lastErrorCode === null;
+}
+
 /** The retest route answers `{ connection }`; anything else is not a verified result. */
 function parseRetestedConnection(value: unknown): Connection | null {
   return isRecord(value) ? parseConnection(value.connection) ?? null : null;
@@ -581,13 +589,13 @@ export default function M365CustomerGraphActionsCard({
           ),
           errorFallback: t("m365CustomerGraphActions.actions.retestFailed"),
           parseSuccess: parseRetestedConnection,
-          successMessage: (result) => isCurrent(target) && result?.status === "active"
+          successMessage: (result) => isCurrent(target) && retestPassed(result)
             ? t("m365CustomerGraphActions.actions.retestSucceeded")
             : "",
         });
         // The request completing is not the connection passing (#12085): a
-        // retest that leaves it degraded says so, with the stored reason.
-        if (isCurrent(target) && retested?.status !== "active") {
+        // retest that leaves it needing attention says so, with the stored reason.
+        if (isCurrent(target) && !retestPassed(retested)) {
           const reason = retested?.lastErrorCode
             ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorCopyKey(retested.lastErrorCode, isRetestable(retested.status))}`)
             : undefined;
