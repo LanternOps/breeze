@@ -306,6 +306,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// The size the stream starts at; a frame of another size later is a
 	// resolution change (#11754).
 	session.captureW, session.captureH = AlignEven(w, h)
+	session.captureCap = capturer
 	slog.Info("StartSession: probe capture done", "session", sessionID, "elapsed", time.Since(probeStart))
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.

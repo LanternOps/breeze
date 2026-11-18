@@ -84,9 +84,11 @@ func (c *resizedSwitchCapturer) ConsumeDesktopSwitch() bool {
 
 func (c *resizedSwitchCapturer) OnSecureDesktop() bool { return false }
 
-// #11754: a desktop switch that lands on a new display mode is one geometry
-// transition, not two. The switch moves the epoch and announces the monitor;
-// the capture path then only resizes the encoder.
+// #11754: a desktop switch that lands on a new display mode (how a DXGI
+// re-init after a mode change arrives) is one geometry transition, not two.
+// The switch moves the epoch and announces the monitor as a resolution change
+// (so the viewer holds pointer input); the capture path only resizes the
+// encoder.
 func TestDesktopSwitchWithNewModeIsOneTransition(t *testing.T) {
 	announced := recordAnnouncements(t)
 	s, _, stub, si := newGeometryTestSession(t, 1920, 1080, "mft")
@@ -102,10 +104,34 @@ func TestDesktopSwitchWithNewModeIsOneTransition(t *testing.T) {
 	if _, geo := si.Epochs(); geo != geoBefore+1 {
 		t.Fatalf("geometry epoch %d -> %d, want exactly one transition", geoBefore, geo)
 	}
-	if got := announced(); len(got) != 0 {
-		t.Fatalf("the capture path announced a second transition: %v", got)
+	got := announced()
+	if len(got) != 1 {
+		t.Fatalf("announcements = %v, want exactly one (the desktop switch's)", got)
+	}
+	if got[0]["reason"] != "resolution_change" || got[0]["width"] != 2560 || got[0]["height"] != 1600 {
+		t.Fatalf("desktop-switch announcement = %v, want a resolution_change at 2560x1600", got[0])
 	}
 	if w, h, _, encodes, _ := stub.snapshot(); w != 2560 || h != 1600 || encodes != 1 {
 		t.Fatalf("encoder %dx%d encodes %d after the switch; want 2560x1600 and the frame encoded", w, h, encodes)
+	}
+}
+
+// A desktop switch at an unchanged size is announced as before: no reason, so
+// the viewer does not hold input.
+func TestDesktopSwitchAtSameSizeIsNotAResolutionChange(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, _, _, _ := newGeometryTestSession(t, 1920, 1080, "mft")
+	cap := &resizedSwitchCapturer{resizingCapturer: resizingCapturer{w: 1920, h: 1080}}
+	s.capturer = cap
+	s.captureW, s.captureH = 1920, 1080
+
+	s.handleDesktopSwitch()
+
+	got := announced()
+	if len(got) != 1 {
+		t.Fatalf("announcements = %v, want one", got)
+	}
+	if _, has := got[0]["reason"]; has {
+		t.Fatalf("a same-size desktop switch carried a reason: %v", got[0])
 	}
 }

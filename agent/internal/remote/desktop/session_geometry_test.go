@@ -17,6 +17,12 @@ type resizingCapturer struct {
 	mu   sync.Mutex
 	w, h int
 	n    byte
+	// static repeats the same pixels (a static screen), so the differ skips
+	// a frame it has already seen.
+	static bool
+	// boundsW/boundsH, when set, are what GetScreenBounds reports instead of
+	// the frame size (macOS Retina: NSScreen x scale can differ from SCK).
+	boundsW, boundsH int
 }
 
 func (c *resizingCapturer) setSize(w, h int) {
@@ -28,7 +34,9 @@ func (c *resizingCapturer) setSize(w, h int) {
 func (c *resizingCapturer) Capture() (*image.RGBA, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.n++
+	if !c.static {
+		c.n++
+	}
 	img := image.NewRGBA(image.Rect(0, 0, c.w, c.h))
 	for i := range img.Pix {
 		img.Pix[i] = c.n
@@ -41,6 +49,9 @@ func (c *resizingCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error
 func (c *resizingCapturer) GetScreenBounds() (int, int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.boundsW > 0 {
+		return c.boundsW, c.boundsH, nil
+	}
 	return c.w, c.h, nil
 }
 func (c *resizingCapturer) Close() error { return nil }
@@ -387,3 +398,99 @@ func TestSafeInputRefreshScreenGeometryRunsOnTheWorker(t *testing.T) {
 }
 
 var errFakeResize = errors.New("fake: encoder cannot run at this size")
+
+// Review fix: on a static screen the frame dropped while the resize failed is
+// offered again once the resize can be retried (the differ must not keep it).
+func TestResolutionChangeRetryOnStaticScreen(t *testing.T) {
+	recordAnnouncements(t)
+	s, cap, stub, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	stub.mu.Lock()
+	stub.dimErr = errFakeResize
+	stub.mu.Unlock()
+	cap.mu.Lock()
+	cap.static = true
+	cap.mu.Unlock()
+
+	cap.setSize(2560, 1440)
+	s.captureAndSendFrame(16 * time.Millisecond) // resize fails, frame dropped
+
+	stub.mu.Lock()
+	stub.dimErr = nil
+	stub.mu.Unlock()
+	s.encoderResizeRetryAt = time.Now().Add(-time.Millisecond)
+	s.captureAndSendFrame(16 * time.Millisecond) // identical pixels
+
+	if w, h, _, encodes, _ := stub.snapshot(); w != 2560 || h != 1440 || encodes != 1 {
+		t.Fatalf("static screen after the retry: encoder %dx%d, encodes %d; want 2560x1440 and the frame encoded", w, h, encodes)
+	}
+}
+
+// Review fix: the first frame from a capturer a monitor switch installed is
+// that capturer's starting size. The switch already ran the transition, so the
+// capture path only resizes the encoder (the ticker loop, macOS/Linux/GDI,
+// never sees capturerSwapped).
+func TestFirstFrameAfterMonitorSwitchIsNotASecondTransition(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, cap, stub, si := newGeometryTestSession(t, 1920, 1080, "openh264")
+	s.adoptCaptureSize(cap, 1920, 1080)
+	_, geoBefore := si.Epochs()
+
+	next := &resizingCapturer{w: 1280, h: 1024}
+	s.mu.Lock()
+	s.capturer = next
+	s.mu.Unlock()
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	if n := len(announced()); n != 0 {
+		t.Fatalf("the new monitor's first frame was announced as a resolution change (%d)", n)
+	}
+	if _, geo := si.Epochs(); geo != geoBefore {
+		t.Fatalf("geometry epoch moved on the new monitor's first frame (%d -> %d)", geoBefore, geo)
+	}
+	if w, h, _, encodes, _ := stub.snapshot(); w != 1280 || h != 1024 || encodes != 1 {
+		t.Fatalf("encoder %dx%d encodes %d; want 1280x1024 and the frame encoded", w, h, encodes)
+	}
+
+	// A real mode change on the new monitor afterwards is still a transition.
+	next.setSize(1600, 1200)
+	s.captureAndSendFrame(16 * time.Millisecond)
+	if got := announced(); len(got) != 1 || got[0]["reason"] != "resolution_change" {
+		t.Fatalf("a mode change on the new monitor was not announced: %v", got)
+	}
+}
+
+// Review fix + coverage: a hardware encoder that cannot run at the new size is
+// replaced by software. When the software encoder is sized from bounds that
+// differ from the real frame size, the next frame corrects it at once; the
+// hardware encoder's retry backoff must not freeze the stream.
+func TestHardwareResizeFailureSwapsToSoftwareWithoutBackoff(t *testing.T) {
+	recordAnnouncements(t)
+	sw := &sizedStubEncoder{name: "openh264"}
+	prev := newSoftwareSwapCandidate
+	newSoftwareSwapCandidate = func(cfg EncoderConfig) (*VideoEncoder, error) {
+		return &VideoEncoder{cfg: cfg, backend: sw}, nil
+	}
+	t.Cleanup(func() { newSoftwareSwapCandidate = prev })
+
+	s, cap, hw, _ := newGeometryTestSession(t, 1920, 1080, "mft")
+	hw.mu.Lock()
+	hw.hardware = true
+	hw.dimErr = errFakeResize
+	hw.mu.Unlock()
+	hwEnc := s.encoder.Load()
+
+	cap.mu.Lock()
+	cap.w, cap.h = 2880, 1800            // real frames
+	cap.boundsW, cap.boundsH = 1440, 900 // what GetScreenBounds claims
+	cap.mu.Unlock()
+
+	s.captureAndSendFrame(16 * time.Millisecond) // hardware resize fails -> swap
+	if s.encoder.Load() == hwEnc {
+		t.Fatalf("the hardware encoder that cannot run at the new size was not replaced")
+	}
+	s.captureAndSendFrame(16 * time.Millisecond) // software corrected and used
+
+	if w, h, _, encodes, _ := sw.snapshot(); w != 2880 || h != 1800 || encodes != 1 {
+		t.Fatalf("software encoder %dx%d encodes %d on the next frame; want 2880x1800 and the frame encoded", w, h, encodes)
+	}
+}

@@ -59,6 +59,10 @@ type Session struct {
 	// StartSession before it starts).
 	captureW, captureH   int
 	encoderResizeRetryAt time.Time
+	// captureCap is the capturer captureW/captureH belong to. A frame from
+	// another one is the first after a monitor switch, whose own transition
+	// already ran (nil: unknown, sizes alone decide).
+	captureCap ScreenCapturer
 
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.

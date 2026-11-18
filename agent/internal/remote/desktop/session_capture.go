@@ -424,7 +424,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 			// Update encoder dimensions for the new monitor
 			if enc := s.encoder.Load(); enc != nil {
 				if w, h, err := newCap.GetScreenBounds(); err == nil {
-					s.captureW, s.captureH = AlignEven(w, h)
+					aw, ah := AlignEven(w, h)
+					s.adoptCaptureSize(newCap, aw, ah)
 					if dimErr := enc.SetDimensions(w, h); dimErr != nil {
 						slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
 					}
@@ -950,6 +951,9 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if !s.followFrameGeometry(cap, enc, img.Rect.Dx(), img.Rect.Dy()) {
 		captureImagePool.Put(img)
 		s.metrics.RecordDrop()
+		// The differ recorded this frame as sent. Forget it, or a static
+		// screen never offers the frame again once the resize can be retried.
+		s.differ.Reset()
 		return
 	}
 
@@ -1194,7 +1198,7 @@ func (s *Session) handleDesktopSwitch() {
 	// resolution change arrives here too (#11754). Record the size so the
 	// capture path does not run a second transition for it; the encoder is
 	// resized on the next frame.
-	s.adoptCaptureBounds(cap)
+	resized := s.adoptCaptureBounds(cap)
 
 	if dsn.OnSecureDesktop() {
 		// Secure desktop is always at origin — reset offsets
@@ -1202,7 +1206,11 @@ func (s *Session) handleDesktopSwitch() {
 		s.inputHandler.SetDisplayOffset(0, 0)
 		s.cursorOffsetX.Store(0)
 		s.cursorOffsetY.Store(0)
-		s.announceCurrentMonitor()
+		if resized {
+			s.announceMonitor(geometryReasonResolutionChange)
+		} else {
+			s.announceCurrentMonitor()
+		}
 		// Prime secure desktop rendering: some credential/UAC surfaces do not
 		// fully paint until they observe input + invalidation.
 		for i := 0; i < 3; i++ {
@@ -1216,7 +1224,11 @@ func (s *Session) handleDesktopSwitch() {
 		// Returning to normal desktop — restore monitor offsets
 		slog.Info("Desktop switch: returning to default desktop, restoring offsets", "session", s.id)
 		applyDisplayOffset(s.inputHandler, s.currentDisplayIndex(), &s.cursorOffsetX, &s.cursorOffsetY)
-		s.announceCurrentMonitor()
+		if resized {
+			s.announceMonitor(geometryReasonResolutionChange)
+		} else {
+			s.announceCurrentMonitor()
+		}
 		// Force repaint so DXGI gets dirty rects for the first frame after
 		// reinitializing Desktop Duplication on the Default desktop.
 		forceDesktopRepaint()

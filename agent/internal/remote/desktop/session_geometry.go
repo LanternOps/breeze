@@ -57,11 +57,22 @@ func (s *Session) followFrameGeometry(cap ScreenCapturer, enc *VideoEncoder, fra
 	switch {
 	case s.captureW == 0 && s.captureH == 0:
 		// The start size was never recorded: adopt the first frame's.
-		s.captureW, s.captureH = w, h
+		s.adoptCaptureSize(cap, w, h)
+	case s.captureCap != nil && cap != s.captureCap:
+		// First frame from the capturer a monitor switch installed. The switch
+		// already ran the geometry transition and announced the monitor; its
+		// size is this capturer's starting size, not a resolution change.
+		s.adoptCaptureSize(cap, w, h)
 	case w != s.captureW || h != s.captureH:
 		s.applyCaptureGeometry(cap, w, h, geometryReasonResolutionChange)
 	}
 	return s.ensureEncoderDimensions(enc, w, h)
+}
+
+// adoptCaptureSize records w x h as cap's streamed size without a transition.
+func (s *Session) adoptCaptureSize(cap ScreenCapturer, w, h int) {
+	s.captureW, s.captureH = w, h
+	s.captureCap = cap
 }
 
 // followBoundsGeometry is followFrameGeometry for the GPU texture path, where
@@ -70,6 +81,10 @@ func (s *Session) followFrameGeometry(cap ScreenCapturer, enc *VideoEncoder, fra
 func (s *Session) followBoundsGeometry(cap ScreenCapturer, enc *VideoEncoder) bool {
 	w, h, err := cap.GetScreenBounds()
 	if err != nil {
+		// DXGI's GetScreenBounds only fails off the DXGI path (no cached mode
+		// and GetSystemMetrics returned zero). The texture path then behaves as
+		// it did before #11754; a size change still reaches the session through
+		// the desktop-switch flag a DXGI re-init sets.
 		return true
 	}
 	return s.followFrameGeometry(cap, enc, w, h)
@@ -101,7 +116,7 @@ func (s *Session) applyCaptureGeometry(cap ScreenCapturer, w, h int, reason stri
 	// Coordinates in flight were mapped against the old size: release held
 	// input and move the geometry epoch before anything else changes.
 	s.resetInputGeometry(reason)
-	s.captureW, s.captureH = w, h
+	s.adoptCaptureSize(cap, w, h)
 	s.refreshInputGeometry(index)
 
 	body := s.monitorSwitchedMessage(index, w, h)
@@ -116,26 +131,33 @@ func (s *Session) applyCaptureGeometry(cap ScreenCapturer, w, h int, reason stri
 // adoptCaptureBounds records the capturer's current bounds as the streamed
 // size and refreshes the input handler's screen metrics, inside a geometry
 // transition that already moved the epochs and announces the monitor itself
-// (a desktop switch). The encoder follows on the next frame.
-func (s *Session) adoptCaptureBounds(cap ScreenCapturer) {
+// (a desktop switch). The encoder follows on the next frame. It reports
+// whether the size changed: a DXGI re-init after a display mode change
+// arrives as a desktop switch, and the caller then announces the monitor as a
+// resolution change so the viewer holds pointer input for the new size.
+func (s *Session) adoptCaptureBounds(cap ScreenCapturer) (resized bool) {
 	w, h, err := cap.GetScreenBounds()
 	if err != nil {
-		return
+		slog.Warn("Desktop switch: capture bounds unavailable; the capture path will follow the first frame",
+			"session", s.id, "error", err.Error())
+		return false
 	}
 	w, h = AlignEven(w, h)
 	if w == 0 || h == 0 {
-		return
+		return false
 	}
-	if w != s.captureW || h != s.captureH {
-		slog.Info("Capture size changed across a desktop switch",
+	resized = s.captureW != 0 && (w != s.captureW || h != s.captureH)
+	if resized {
+		slog.Info("Display resolution changed across a desktop switch",
 			"session", s.id,
 			"from", fmt.Sprintf("%dx%d", s.captureW, s.captureH),
 			"to", fmt.Sprintf("%dx%d", w, h))
 	}
-	s.captureW, s.captureH = w, h
+	s.adoptCaptureSize(cap, w, h)
 	if r, ok := s.inputHandler.(ScreenGeometryRefresher); ok {
 		r.RefreshScreenGeometry()
 	}
+	return resized
 }
 
 // refreshInputGeometry makes the input handler re-read the screen metrics it
@@ -173,8 +195,12 @@ func (s *Session) ensureEncoderDimensions(enc *VideoEncoder, w, h int) bool {
 		if enc.BackendIsHardware() {
 			// The hardware encoder cannot run at this size. The software
 			// encoder replacing it is sized from the capturer's bounds and
-			// corrected here on the next frame if those differ.
+			// corrected here on the next frame if those differ, so the
+			// backoff (which was for the hardware encoder) must not delay it.
 			s.swapToSoftwareEncoder()
+			if s.encoder.Load() != enc {
+				s.encoderResizeRetryAt = time.Time{}
+			}
 		}
 		return false
 	}
@@ -182,7 +208,9 @@ func (s *Session) ensureEncoderDimensions(enc *VideoEncoder, w, h int) bool {
 	// The cached frame is at the old size; the idle resend must not replay it.
 	s.clearCachedEncodedFrame()
 	if err := enc.ForceKeyframe(); err != nil {
-		slog.Debug("Failed to force keyframe after encoder resize", "session", s.id, "error", err.Error())
+		// Without the IDR the viewer has no SPS/PPS for the new size until the
+		// next natural keyframe.
+		slog.Warn("Failed to force keyframe after encoder resize", "session", s.id, "error", err.Error())
 	}
 	slog.Info("Encoder resized to the capture size",
 		"session", s.id, "backend", enc.BackendName(),

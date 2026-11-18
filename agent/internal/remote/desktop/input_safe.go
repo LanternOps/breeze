@@ -615,7 +615,11 @@ func (s *SafeInput) RefreshScreenGeometry() {
 	if !ok {
 		return
 	}
-	_ = s.submit(true, s.closeTimeout, func() error { r.RefreshScreenGeometry(); return nil })
+	if err := s.submit(true, s.closeTimeout, func() error { r.RefreshScreenGeometry(); return nil }); err != nil {
+		// Injection keeps the old metrics until the next refresh (Windows:
+		// the next mouse-down), so clicks may land off target until then.
+		slog.Warn("Input screen-geometry refresh did not run", "session", s.label, "error", err.Error())
+	}
 }
 
 func (s *SafeInput) SendMouseMove(x, y int) error {
