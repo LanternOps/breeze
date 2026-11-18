@@ -14,7 +14,13 @@ import { captureException } from './sentry';
  * read side for a page of devices. The server decides: no client re-derives it.
  */
 
-/** First agent release carrying the wake readiness collector. */
+/**
+ * First agent release carrying the wake readiness collector. The collector
+ * merged in #11996 after v0.129.0 was tagged, so it first ships in 0.130.0
+ * (checked in #12138). A wrong value hides the button on capable agents or
+ * shows it on incapable ones: the release skill's "Agent-version gates" step
+ * re-checks it against the tag being cut.
+ */
 export const MIN_WAKE_STATUS_AGENT_VERSION = '0.130.0';
 /** How long a "came online" after a wake attempt keeps an `unproven` device proven. */
 export const WAKE_PROOF_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;

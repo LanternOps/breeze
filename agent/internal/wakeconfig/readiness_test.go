@@ -321,3 +321,64 @@ func TestComputeUnreadableNICIsUnprovenNotNoWired(t *testing.T) {
 		t.Fatalf("got %s", s.ReadinessState)
 	}
 }
+
+// #12138: a host without the NetAdapter cmdlets cannot be assessed. The script
+// reports it as netAdapter:false; it must not read as "no wired adapter".
+func TestParseNetAdapterCmdletsAvailability(t *testing.T) {
+	cases := map[string]bool{
+		`{"hiberboot":0,"netAdapter":false,"adapters":[]}`: true,
+		`{"hiberboot":0,"netAdapter":true,"adapters":[]}`:  false,
+		`{"hiberboot":0,"adapters":[]}`:                    false,
+	}
+	for raw, want := range cases {
+		r, err := ParseWindowsReadings([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.NetAdapterCmdletsUnavailable != want {
+			t.Fatalf("%s: NetAdapterCmdletsUnavailable=%v want %v", raw, r.NetAdapterCmdletsUnavailable, want)
+		}
+	}
+}
+
+func TestComputeMissingNetAdapterCmdletsIsNotAssessable(t *testing.T) {
+	in := winInputs("disabled")
+	in.Windows.NetAdapterCmdletsUnavailable = true
+	s := Compute(in)
+	if s.ReadinessState != "unproven" || !reflect.DeepEqual(s.ReasonCodes, []string{"nic_cmdlets_unavailable"}) {
+		t.Fatalf("got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+
+	// Remembered adapter readings are not current: they must not decide the state.
+	in.Memory = AdapterMemory{"aa:bb:cc:dd:ee:01": {LastSeenAt: t0.Add(-time.Hour), MagicPacket: "disabled", EEE: "enabled"}}
+	if s = Compute(in); s.ReadinessState != "unproven" || !reflect.DeepEqual(s.ReasonCodes, []string{"nic_cmdlets_unavailable"}) {
+		t.Fatalf("with memory got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+	in.Memory = nil
+
+	// Distinct from the unreadable-adapter case, so moving between them uploads.
+	unreadable := winInputs("disabled")
+	unreadable.Windows.SkippedAdapters = 1
+	if Compute(in).Fingerprint == Compute(unreadable).Fingerprint {
+		t.Fatal("cmdlets-unavailable and nic_unreadable snapshots share a fingerprint")
+	}
+
+	in.Virtual = true
+	if s = Compute(in); s.ReadinessState != "unsupported_vm" {
+		t.Fatalf("virtual must still win, got %s", s.ReadinessState)
+	}
+}
+
+// The fingerprint is the server's wake-proof key: the cmdlets signal must not
+// change it for hosts that have the cmdlets, or every proof would be lost on upgrade.
+func TestFingerprintUnchangedWhenCmdletsAvailable(t *testing.T) {
+	cases := map[string]Inputs{
+		"f3ac8e4c9e7b520d2074eb5832621b4d70c9f88cfcdbe2d2732168eccf5e3dc6": winInputs("disabled", goodNIC("aa:bb:cc:dd:ee:01")),
+		"56051e31efe9c42087284b443499928d87592accca445cab0a58bccfd77ab3c9": winInputs("enabled"),
+	}
+	for want, in := range cases {
+		if got := Compute(in).Fingerprint; got != want {
+			t.Errorf("fingerprint changed: got %s want %s", got, want)
+		}
+	}
+}

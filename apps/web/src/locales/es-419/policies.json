@@ -1209,6 +1209,7 @@
           "verified": "Solo cuando se verifica que está listo",
           "verifiedHelp": "Mostrar Activar solo en dispositivos que informan estar listos o que se comprobaron con una activación anterior que terminó en línea. A los demás se les puede enviar una activación de prueba."
         },
+        "verifiedWarning": "En este modo, Activar permanece oculto en un dispositivo hasta que se compruebe allí una activación (una activación anterior que terminó en línea) o el dispositivo informe estar listo. Al principio estará oculto en la mayoría de los dispositivos.",
         "aboutTitle": "Acerca de esta configuración",
         "aboutBody": "Esta política solo decide cuándo se muestra el botón Activar. Breeze lee la preparación para Wake-on-LAN de cada dispositivo, pero no cambia la configuración del BIOS, del adaptador de red ni de Windows.",
         "panel": {
@@ -1258,6 +1259,8 @@
             "fast_startup_unknown": "Estado de Inicio rápido desconocido",
             "nic_magic_packet_disabled": "La activación por magic packet del adaptador está desactivada",
             "nic_magic_packet_unknown": "Estado de la activación por magic packet desconocido",
+            "nic_unreadable": "Hay un adaptador cableado, pero no se pudo leer",
+            "nic_cmdlets_unavailable": "No se pueden leer los ajustes del adaptador de red en este dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet activado",
             "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware"
           },

@@ -1209,6 +1209,7 @@
           "verified": "Solo quando verificato pronto",
           "verifiedHelp": "Mostra Riattiva solo per i dispositivi che si dichiarano pronti o dimostrati da una riattivazione precedente andata online. Agli altri si può inviare una riattivazione di prova."
         },
+        "verifiedWarning": "In questa modalità Riattiva resta nascosto su un dispositivo finché non vi è dimostrata una riattivazione (una riattivazione precedente andata online) o il dispositivo non si dichiara pronto. All'inizio il pulsante sarà nascosto sulla maggior parte dei dispositivi.",
         "aboutTitle": "Informazioni su questa impostazione",
         "aboutBody": "Questa policy decide solo quando compare il pulsante Riattiva. Breeze legge la prontezza Wake-on-LAN di ogni dispositivo ma non modifica BIOS, scheda di rete o impostazioni di Windows.",
         "panel": {
@@ -1258,6 +1259,8 @@
             "fast_startup_unknown": "Stato di Avvio rapido sconosciuto",
             "nic_magic_packet_disabled": "Riattivazione magic packet della scheda disattivata",
             "nic_magic_packet_unknown": "Stato della riattivazione magic packet sconosciuto",
+            "nic_unreadable": "È presente un adattatore cablato, ma non è stato possibile leggerlo",
+            "nic_cmdlets_unavailable": "Le impostazioni della scheda di rete non possono essere lette su questo dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet attivo",
             "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili"
           },
