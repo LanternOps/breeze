@@ -170,6 +170,50 @@ outbox 003.json "{\"action\":$(json_str "marker-action-$FAKE_AKIA"),\"body\":\"c
 publish_outbox >/dev/null 2>&1
 check "gate: rejected issue/pr/action values stay out of the runner log" "! grep -q 'IOSFODNN7EXAMPLE' '$T/runner.log'"
 
+# === Strix r6: the [QA] title namespace belongs to the runner =================
+# The runner files "[QA] Dev stack fails to boot on main" / "[QA] Environment
+# change ..." itself, dedupes them by exact title, and the release checklist
+# reads them as ship/block gates. The agent may only mint "[UI] " titles.
+new_run reserved
+QA_COMMENTABLE=" "; IN_SCOPE=" "
+outbox 001.json '{"action":"create","title":"[QA] Dev stack fails to boot on main","body":"spoofed blocker"}'
+outbox 002.json '{"action":"create","title":"[QA] Environment change on main needs upgrade notes","body":"spoofed"}'
+outbox 003.json '{"action":"create","title":"[QA] marker-qa-other finding","body":"any QA title"}'
+outbox 004.json '{"action":"create","title":"[qa] marker-qa-lower finding","body":"case variant"}'
+outbox 005.json '{"action":"create","title":"  [QA] marker-qa-space finding","body":"leading space"}'
+outbox 006.json '{"action":"create","title":"［QA］ marker-qa-wide finding","body":"fullwidth brackets"}'
+outbox 007.json '{"action":"create","title":"QA sweep ledger","body":"ledger squat"}'
+outbox 008.json '{"action":"create","title":"[UI] marker-ui-ok Devices page 500s","body":"real finding"}'
+publish_outbox >/dev/null 2>&1
+check "reserved: no agent entry creates a [QA]-prefixed issue" "! grep -qi 'issue create --title [^A-Za-z]*qa' '$GH_LOG'"
+check "reserved: case/space/fullwidth variants are not published" "! grep -q 'marker-qa-' '$GH_LOG'"
+check "reserved: the runner's ledger title cannot be squatted" "! grep -q 'issue create --title QA sweep ledger' '$GH_LOG'"
+check "reserved: a [UI] finding still publishes" "grep -q 'issue create --title \[UI\] marker-ui-ok' '$GH_LOG'"
+check "reserved: each refused title is logged by file name" "[ \"\$(grep -c 'REJECT 00[1-7]\.json' '$T/runner.log')\" = 7 ]"
+
+# === Strix r6: an agent-written .pr never reaches runner bookkeeping ===========
+# A malformed .pr used to land in .pr-keep before validation (shadowing the real
+# verdict for that PR) and was then spliced unquoted into a jq argv.
+new_run prkeep
+QA_COMMENTABLE=" "; IN_SCOPE=" 101 102 "
+outbox 001-real.json '{"action":"pr_result","pr":101,"result":"PASS","body":"checked the page"}'
+outbox 002-evil.json '{"action":"pr_result","pr":"101 --from-file","result":"FAIL","body":"shadow"}'
+outbox 003-dash.json '{"action":"pr_result","pr":"-101","result":"FAIL","body":"shadow"}'
+outbox 004-lead0.json '{"action":"pr_result","pr":"0101","result":"FAIL","body":"shadow"}'
+outbox 005-real.json '{"action":"pr_result","pr":102,"result":"PASS","body":"checked the page"}'
+outbox 006-secret.json "{\"action\":\"pr_result\",\"pr\":102,\"result\":\"FAIL\",\"body\":$(json_str "see $FAKE_AKIA")}"
+touch -t 202611170100 "$RUN_DIR/outbox/001-real.json"
+touch -t 202611170200 "$RUN_DIR/outbox/002-evil.json" "$RUN_DIR/outbox/003-dash.json" "$RUN_DIR/outbox/004-lead0.json"
+touch -t 202611170100 "$RUN_DIR/outbox/005-real.json"
+touch -t 202611170200 "$RUN_DIR/outbox/006-secret.json"
+publish_outbox >/dev/null 2>&1
+check "pr-keep: a malformed newer .pr does not supersede the real verdict" "grep -q '^-R LanternOps/breeze pr comment 101 ' '$GH_LOG' && ! grep -q 'SKIP 001-real.json' '$T/runner.log'"
+check "pr-keep: malformed .pr values are rejected as bad pr" "[ \"\$(grep -c 'REJECT 00[234]-.*bad pr' '$T/runner.log')\" = 3 ]"
+check "pr-keep: the keep file holds only runner paths" "! grep -q -- '--from-file\|^-' '$PUBLISH_DIR/.pr-keep'"
+check "pr-keep: the published verdict is what the runner reports" "[ \"\$(hosted_verdict 101)\" = PASS ]"
+check "pr-keep: a verdict whose body was refused is not conclusive" "[ -z \"\$(hosted_verdict 102)\" ]"
+check "pr-keep: a PR with no verdict reports none" "[ -z \"\$(hosted_verdict 103)\" ]"
+
 # === F2/F3: kernel-enforced sandbox for the agent's whole process tree ========
 if [ -x /usr/bin/sandbox-exec ] && type qa_sandbox_profile >/dev/null 2>&1; then
   new_run sb

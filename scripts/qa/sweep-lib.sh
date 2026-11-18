@@ -488,6 +488,13 @@ snapshot_outbox() {
   done
 }
 
+# hosted_verdict <pr>: the result publish_outbox validated and published for
+# <pr> this run, or nothing. Reads runner memory only.
+hosted_verdict() {
+  local v
+  for v in ${PR_VERDICTS:-}; do [ "${v%%=*}" = "$1" ] && printf '%s\n' "${v#*=}"; done | tail -1
+}
+
 publish_outbox() {
   snapshot_outbox || { log "outbox: could not create the publish directory; nothing published"; return 1; }
   gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
@@ -497,19 +504,31 @@ publish_outbox() {
   # field may be the very secret the gate caught.
   local created=0 comments=0 prs=0 f action title full_title clean_title issue labels bodyf pr result
   local max_comments="${QA_MAX_COMMENTS:-20}"
+  # PR_VERDICTS (" <pr>=<result> ..."): verdicts this run validated AND
+  # published, built only from values that passed the gates below. The hosted
+  # carry-over reads it through hosted_verdict; nothing re-reads agent files.
+  PR_VERDICTS=""
   # One verdict per PR: if both phases wrote a pr_result for the same PR (e.g. a
   # BLOCKED from the self-hosted phase, then the hosted check), the newest wins.
+  # Only a bare PR number may key the keep file: an entry with a malformed .pr
+  # must not shadow the real verdict for that PR (it is rejected below).
   local keep="$PUBLISH_DIR/.pr-keep"
   # shellcheck disable=SC2045  # mtime order needs ls; snapshot_outbox allows [A-Za-z0-9._-] names only
   for f in $(ls -1tr "$PUBLISH_DIR"/*.json 2>/dev/null); do
-    [ "$(jq -r '.action // empty' "$f" 2>/dev/null)" = pr_result ] && printf '%s %s\n' "$(jq -r '.pr' "$f")" "$f"
+    [ "$(jq -r '.action // empty' "$f" 2>/dev/null)" = pr_result ] || continue
+    pr="$(jq -r '.pr // empty' "$f" 2>/dev/null)"
+    [[ "$pr" =~ ^[1-9][0-9]{0,6}$ ]] && printf '%s %s\n' "$pr" "$f"
   done | awk '{last[$1]=$2} END {for (k in last) print last[k]}' > "$keep"
   for f in "$PUBLISH_DIR"/*.json; do
     [ -f "$f" ] || continue
-    if [ "$(jq -r '.action // empty' "$f" 2>/dev/null)" = pr_result ] && ! grep -qxF "$f" "$keep"; then
-      log "outbox SKIP $(basename "$f"): superseded by a newer verdict for the same PR"; continue
-    fi
     action="$(jq -r '.action // empty' "$f" 2>/dev/null)"
+    if [ "$action" = pr_result ]; then
+      pr="$(jq -r '.pr // empty' "$f" 2>/dev/null)"
+      [[ "$pr" =~ ^[1-9][0-9]{0,6}$ ]] || { log "outbox REJECT $(basename "$f"): bad pr"; continue; }
+      if ! grep -qxF "$f" "$keep"; then
+        log "outbox SKIP $(basename "$f"): superseded by a newer verdict for the same PR"; continue
+      fi
+    fi
     bodyf="$f.body.md"; jq -r '.body // empty' "$f" > "$bodyf" 2>/dev/null
     if ! body_ok "$bodyf"; then
       log "outbox REJECT $(basename "$f"): empty/oversized/secret-like body"; continue
@@ -529,7 +548,11 @@ publish_outbox() {
           log "outbox REJECT $(basename "$f"): secret-like title"; continue
         fi
         title="$(printf '%s' "$clean_title" | cut -c1-200)"
-        if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | grep -Eq '^\[(UI|QA)\] .{5,}'; then
+        # Agent titles must start with the exact ASCII "[UI] ". The "[QA] "
+        # namespace (and "QA sweep ledger") belongs to the runner: runner_issue
+        # dedupes its issues by exact title and the release checklist reads
+        # them as ship/block gates, so an agent title can never equal one.
+        if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | LC_ALL=C grep -Eq '^\[UI\] .{5,}'; then
           log "outbox REJECT $(basename "$f"): cap reached or bad title"; continue
         fi
         gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
@@ -544,21 +567,23 @@ publish_outbox() {
         case ",$labels," in *,qa-sweep,*) gh -R "$QA_REPO" issue comment "$issue" --body-file "$bodyf" && comments=$((comments+1)) ;;
           *) log "outbox REJECT $(basename "$f"): #$issue is not an open qa-sweep issue" ;; esac ;;
       pr_result)
-        pr="$(jq -r '.pr // empty' "$f")"; result="$(jq -r '.result // empty' "$f")"
-        [[ "$pr" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad pr"; continue; }
+        # $pr was validated (bare number, newest for its PR) above.
+        result="$(jq -r '.result // empty' "$f")"
         # IN_SCOPE is shell memory captured before the agent ran; commits.tsv is never re-read.
         case "$IN_SCOPE" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR #$pr not in this run's commit range"; continue ;; esac
         if [ "$result" = NO_UI ]; then
-          gh -R "$QA_REPO" pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)); continue
+          gh -R "$QA_REPO" pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)) && PR_VERDICTS="$PR_VERDICTS $pr=NO_UI"
+          continue
         fi
         case "$result" in PASS|PARTIAL|FAIL|BLOCKED) ;; *) log "outbox REJECT $(basename "$f"): bad result"; continue ;; esac
         # One QA comment per PR per main SHA (a re-run of the same range doesn't double-post).
         if gh -R "$QA_REPO" pr view "$pr" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "<!-- breeze-qa-sweep main=${NEW_SHA:0:9} -->"; then
-          log "outbox SKIP pr #$pr: already annotated for this sweep"; continue
+          log "outbox SKIP pr #$pr: already annotated for this sweep"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
         fi
         { printf '<!-- breeze-qa-sweep main=%s -->\n### Scheduled UI QA: %s\n_Checked on main@%s (%s)._\n\n' \
             "${NEW_SHA:0:9}" "$result" "${NEW_SHA:0:9}" "$RUN_ID"; cat "$bodyf"; } > "$bodyf.pr"
-        gh -R "$QA_REPO" pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh -R "$QA_REPO" pr edit "$pr" --add-label qa-swept >/dev/null && prs=$((prs+1)) ;;
+        gh -R "$QA_REPO" pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh -R "$QA_REPO" pr edit "$pr" --add-label qa-swept >/dev/null \
+          && prs=$((prs+1)) && PR_VERDICTS="$PR_VERDICTS $pr=$result" ;;
       *) log "outbox REJECT $(basename "$f"): unknown action" ;;
     esac
   done

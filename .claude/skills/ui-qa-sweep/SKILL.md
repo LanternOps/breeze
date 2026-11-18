@@ -220,7 +220,7 @@ rules below **override** the interactive workflow:
 - **Environment is done.** Skip Phase 1. The stack is up at `BASE_URL` (creds
   in `.breeze-stack.json`); the browser can reach only that origin. If the app
   won't load or login fails, that is the finding: report it, queue one
-  `[QA] stack/login broken on main` issue (deduped), stop.
+  `[UI] stack/login broken on main` issue (deduped), stop.
 - **Browser.** An isolated headless instance for this run only, with an
   explicit tool list: navigate/navigate_back/tabs/close/resize,
   snapshot/find/take_screenshot/wait_for, click/hover/drag/type/press_key/
@@ -284,7 +284,8 @@ rules below **override** the interactive workflow:
   `RUN_DIR/outbox/` (e.g. `001-create.json`); the runner validates and
   publishes them after you exit:
   - `{"action":"create","title":"[UI] …","body":"…markdown…"}` — title must
-    start `[UI] ` or `[QA] `; the runner adds label `qa-sweep`; max 10/run.
+    start `[UI] ` (`[QA] ` titles are the runner's own and are refused); the
+    runner adds label `qa-sweep`; max 10/run.
     Body follows "Filing issues" below, plus `Found on main@<sha9>` and the PR
     number when a finding traces to one.
   - `{"action":"comment","issue":1234,"body":"…"}` — `issue` is a bare

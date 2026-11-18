@@ -591,10 +591,9 @@ publish_outbox
 PENDING_HOSTED=""
 for pr in $HOSTED_PRS; do
   verdict=""
-  if [ "$HOSTED_OK" = 1 ] && [ -s "${PUBLISH_DIR:-/nonexistent}/.pr-keep" ]; then
-    # shellcheck disable=SC2046  # .pr-keep holds runner-validated [A-Za-z0-9._-] paths
-    verdict="$(jq -r --arg pr "$pr" 'select((.pr|tostring)==$pr) | .result' $(cat "$PUBLISH_DIR/.pr-keep") 2>/dev/null | tail -1)"
-  fi
+  # The verdict publish_outbox validated and published (runner memory, never
+  # agent files re-read here).
+  [ "$HOSTED_OK" = 1 ] && verdict="$(hosted_verdict "$pr")"
   case "$verdict" in PASS|PARTIAL|FAIL|NO_UI) ;; *) PENDING_HOSTED="$PENDING_HOSTED $pr" ;; esac
 done
 [ -n "${PENDING_HOSTED// /}" ] && log "hosted PRs carried to next run:$PENDING_HOSTED"
