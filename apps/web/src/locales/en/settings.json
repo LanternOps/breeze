@@ -525,7 +525,8 @@
         "unverified": "Not verified",
         "failed": "Verification failed",
         "failedWithSummary": "Verification failed: {{summary}}",
-        "stale": "Re-verify: endpoint changed"
+        "stale": "Re-verify: endpoint changed",
+        "invalid": "Verification record unreadable: verify again"
       },
       "setPriceToEnable": "Set a price to enable",
       "manual": {

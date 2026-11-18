@@ -149,7 +149,8 @@ export interface AiOfferingContextWindowDto {
   observed: { value: number; at: string; applies: boolean } | null;
 }
 
-export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+/** #12177: `invalid` = a verification record is stored but fails the schema (verify again); grants nothing, like `unverified`. */
+export type OfferingVerificationState = 'unverified' | 'invalid' | 'verified' | 'failed' | 'stale';
 
 /** #11397: a surface that needs tools (and so can carry a verify `surface_turn` verdict). */
 export type AiToolSurface = (typeof TOOL_REQUIRING_SURFACES)[number];

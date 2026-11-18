@@ -525,7 +525,8 @@
         "unverified": "Não verificado",
         "failed": "Falha na verificação",
         "failedWithSummary": "Falha na verificação: {{summary}}",
-        "stale": "Verificar novamente: endpoint alterado"
+        "stale": "Verificar novamente: endpoint alterado",
+        "invalid": "Registro de verificação ilegível: verifique novamente"
       },
       "setPriceToEnable": "Defina um preço para ativar",
       "manual": {

@@ -139,6 +139,7 @@ describe('ModelsCard', () => {
       ['unverified', null, /Not verified/],
       ['failed', 'Tool call returned no arguments', /Verification failed: Tool call returned no arguments/],
       ['stale', null, /Re-verify: endpoint changed/],
+      ['invalid', null, /Verification record unreadable: verify again/],
     ] as const)('shows the %s verification badge', (state, summary, expected) => {
       render(<ModelsCard snapshot={gwSnap([gw({ verification: { state, at: null, harnessVersion: null, summary, surfaces: NO_SURFACE_TURNS } })])} onChanged={vi.fn()} />);
       expect(screen.getByTestId(`ai-model-verification-${OFF}`).textContent).toMatch(expected);
