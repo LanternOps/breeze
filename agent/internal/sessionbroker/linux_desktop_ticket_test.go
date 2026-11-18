@@ -164,7 +164,7 @@ func TestLinuxDesktopTicket_RevokeSession(t *testing.T) {
 
 func TestLinuxDesktopTicket_Cap(t *testing.T) {
 	tk, _ := newTestTickets()
-	for i := 0; i < maxLinuxDesktopTickets; i++ {
+	for i := range maxLinuxDesktopTickets {
 		mustIssue(t, tk, testBinding(string(rune('a'+i)), 1))
 	}
 	if _, err := tk.issue(testBinding("z", 1)); !errors.Is(err, errTicketStoreFull) {
@@ -175,7 +175,7 @@ func TestLinuxDesktopTicket_Cap(t *testing.T) {
 // Expired tickets do not count against the cap.
 func TestLinuxDesktopTicket_CapIgnoresExpired(t *testing.T) {
 	tk, clk := newTestTickets()
-	for i := 0; i < maxLinuxDesktopTickets; i++ {
+	for i := range maxLinuxDesktopTickets {
 		mustIssue(t, tk, testBinding(string(rune('a'+i)), 1))
 	}
 	clk.Advance(linuxDesktopTicketTTL + time.Second)

@@ -257,7 +257,7 @@ func TestLinuxDesktopInbound_PendingIDWithWrongTypeStrikes(t *testing.T) {
 func TestLinuxDesktopInbound_ControlTrafficRateLimited(t *testing.T) {
 	st, clk := newInboundState(t)
 	env, size := inboundEnv(t, ipc.TypePing, nil)
-	for i := 0; i < linuxDesktopControlBurst; i++ {
+	for i := range linuxDesktopControlBurst {
 		if err := checkLinuxDesktopInbound(env, size, "", st); err != nil {
 			t.Fatalf("ping %d rejected: %v", i+1, err)
 		}
@@ -276,7 +276,7 @@ func TestLinuxDesktopInbound_ControlTrafficRateLimited(t *testing.T) {
 func TestLinuxDesktopInbound_LateRepliesAreQuietUntilBudgetSpent(t *testing.T) {
 	st, _ := newInboundState(t)
 	env, size := inboundEnv(t, ipc.TypeDesktopStart, ipc.DesktopStartResponse{SessionID: inboundTestSession})
-	for i := 0; i < linuxDesktopInboundQuietDropLimit; i++ {
+	for range linuxDesktopInboundQuietDropLimit {
 		requireDrop(t, checkLinuxDesktopInbound(env, size, "", st), false)
 	}
 	requireDrop(t, checkLinuxDesktopInbound(env, size, "", st), true)
@@ -297,7 +297,7 @@ func TestLinuxDesktopInbound_MalformedPayloadStrikes(t *testing.T) {
 func TestLinuxDesktopInbound_StrikeOutAfterLimit(t *testing.T) {
 	st, _ := newInboundState(t)
 	env, size := inboundEnv(t, ipc.TypeDesktopFrame, map[string]int{"x": 1})
-	for i := 0; i < linuxDesktopInboundStrikeLimit-1; i++ {
+	for i := range linuxDesktopInboundStrikeLimit - 1 {
 		_ = checkLinuxDesktopInbound(env, size, "", st)
 		if st.struckOut() {
 			t.Fatalf("struck out after %d strikes", i+1)
@@ -336,7 +336,7 @@ func TestLinuxDesktopInbound_StrikeLimitDisconnects(t *testing.T) {
 		t.Fatal("allowed message never reached the dispatcher")
 	}
 
-	for i := 0; i < linuxDesktopInboundStrikeLimit; i++ {
+	for i := range linuxDesktopInboundStrikeLimit {
 		if err := client.SendTyped("bad", ipc.TypeDesktopFrame, map[string]int{"i": i}); err != nil {
 			t.Fatalf("send frame %d: %v", i, err)
 		}

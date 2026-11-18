@@ -244,10 +244,10 @@ func TestLinuxDesktopHelper_FilterAndClampAreWired(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && caps == nil; time.Sleep(10 * time.Millisecond) {
 		caps = s.GetCapabilities()
 	}
-	if caps == nil {
+	switch {
+	case caps == nil:
 		t.Fatal("capabilities never recorded")
-	}
-	if caps.CanCapture || caps.CanNotify || caps.CanClipboard || caps.CanTray {
+	case caps.CanCapture || caps.CanNotify || caps.CanClipboard || caps.CanTray:
 		t.Fatalf("helper granted itself capabilities: %+v", caps)
 	}
 
