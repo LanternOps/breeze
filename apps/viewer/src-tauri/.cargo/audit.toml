@@ -51,4 +51,10 @@ ignore = [
   "RUSTSEC-2026-0370", # zvariant
   "RUSTSEC-2026-0371", # zbus_names
   "RUSTSEC-2026-0372", # zvariant_derive
+  # TIME-LIMITED — EXPIRES 2027-02-16. RUSTSEC-2026-0543: chrono is unmaintained.
+  # Informational notice, not a vulnerability. Reached only transitively
+  # (tauri-utils → serde_with → chrono); not fixable from this crate. Remove
+  # this entry when chrono is replaced or upgraded upstream; review/remove by
+  # the expiry date. Tracked in #12126.
+  "RUSTSEC-2026-0543", # chrono
 ]
