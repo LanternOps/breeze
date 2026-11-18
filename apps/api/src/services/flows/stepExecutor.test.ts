@@ -656,6 +656,33 @@ describe('executeFlowStep — tier 1/2 and tenant', () => {
     expect(dbContexts).toEqual([]);
   });
 
+  // #12161: a flow's Tier-2 step runs with no person approving it (only Tier 3
+  // parks), so a note it writes is held to the unattended-note bounds
+  // (deviceNoteBounds.ts) through the same server-set flag MCP sets.
+  it('a set_device_context step is dispatched as an unattended note write', async () => {
+    vi.mocked(executeTool).mockResolvedValue('Context recorded successfully (ID: x).');
+    const notePin: FlowStepPin = { stepId: 'note', tool: 'set_device_context', source: 'core', tier: 2, approvalScope: null };
+    const out = await executeFlowStep(input({
+      step: step('note', 'set_device_context', { deviceId: '{{trigger.device.id}}', contextType: 'issue', summary: 'disk full' }),
+      pin: notePin,
+    }));
+    expect(out).toMatchObject({ kind: 'completed' });
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTool).mock.calls[0]).toEqual([
+      'set_device_context',
+      { deviceId: DEVICE, contextType: 'issue', summary: 'disk full' },
+      expect.anything(),
+      { context: { unattendedNoteWrite: true } },
+    ]);
+  });
+
+  it('any other core tool step keeps the three-argument dispatch', async () => {
+    await executeFlowStep(input({
+      step: step('look', 'get_device_details', { deviceId: DEVICE }), pin: LOOKUP_PIN,
+    }));
+    expect(vi.mocked(executeTool).mock.calls[0]).toHaveLength(3);
+  });
+
   it('a non-JSON result is stored as { text }', async () => {
     vi.mocked(executeTool).mockResolvedValue('plain words');
     const out = await executeFlowStep(input({
