@@ -20,8 +20,14 @@ It forwards the model API and nothing else:
     user-agent, x-app, x-stainless-*, x-claude-*); Authorization, x-api-key,
     cookies, proxy and hop-by-hop headers from the client are dropped and the
     forwarder's own Authorization is set;
-  - the request body is bounded and must be read in full before anything is
-    sent upstream.
+  - the request body is bounded, read in full before anything is sent
+    upstream, and must be a JSON object that cannot make the API itself reach
+    out: no `mcp_servers` (MCP connector), no `container`, and every tool a
+    plain client tool (no `type`, or `custom`) -- server tools such as
+    web_fetch, web_search and code execution are refused, so the model API is
+    not an egress route around the sandbox;
+  - the Host header must name this listener (127.0.0.1 or localhost and its
+    port), so a web page reaching loopback by DNS rebinding is refused.
 
 Each decision is logged one per line to a file the agent cannot read or write.
 
@@ -31,6 +37,7 @@ Python 3.9 stdlib only (the QA Mac's /usr/bin/python3).
 """
 import argparse
 import http.client
+import json
 import http.server
 import os
 import re
@@ -81,6 +88,38 @@ def upstream_headers(items, token):
     return out
 
 
+def body_refusal(body):
+    """None for a request body the forwarder may send, else why it may not."""
+    try:
+        req = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return "body is not JSON"
+    if not isinstance(req, dict):
+        return "body is not a JSON object"
+    for key in ("mcp_servers", "container"):
+        if key in req:
+            return "body names %s" % key
+    tools = req.get("tools", [])
+    if not isinstance(tools, list):
+        return "tools is not a list"
+    for t in tools:
+        if not isinstance(t, dict):
+            return "a tool is not an object"
+        kind = t.get("type", "custom")
+        if kind != "custom":
+            return "server tool %s" % str(kind)[:60]
+    return None
+
+
+def body_ok(body):
+    return body_refusal(body) is None
+
+
+def host_ok(host, port):
+    """True only when the Host header names this loopback listener."""
+    return host in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+
 def read_token(stream):
     """The agent token from stdin: one setup-token line, else ValueError."""
     data = stream.read(1024)
@@ -127,6 +166,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not route_ok(self.command, self.path):
             return self.refuse(403, "not a model API route")
+        if not host_ok(self.headers.get("Host", ""), self.server.server_address[1]):
+            return self.refuse(403, "foreign Host")
         if self.headers.get("Transfer-Encoding"):
             return self.refuse(411, "chunked body")
         try:
@@ -138,6 +179,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(n)
         if len(body) != n:
             return self.refuse(400, "short body")
+        why = body_refusal(body)
+        if why:
+            return self.refuse(403, why)
         hdrs = upstream_headers(self.headers.items(), self.server.token)
         try:
             conn = http.client.HTTPSConnection("127.0.0.1", self.server.egress_port, timeout=600,

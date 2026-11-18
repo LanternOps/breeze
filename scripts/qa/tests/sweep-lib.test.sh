@@ -278,21 +278,26 @@ split_rejected "AWS key across blockquote and table punctuation" "> AKIA
 > | IOSFODNN7 | EXAMPLE |"
 split_rejected "AWS key interleaved with emphasis markers" "key **AKIA**~~IOSFODNN7~~*EXAMPLE*"
 split_rejected "fullwidth (NFKC) claude token prefix" "token: ｓｋ－ａｎｔ－oat01-${TOKQ}"
-split_rejected "generic token in short lines (no prefix)" "${FAKE_TOKEN:0:10}
-${FAKE_TOKEN:10:10}
-${FAKE_TOKEN:20:10}
-${FAKE_TOKEN:30:10}
-${FAKE_TOKEN:40}"
+split_rejected "generic token in 14-char lines (no prefix)" "${FAKE_TOKEN:0:14}
+${FAKE_TOKEN:14:14}
+${FAKE_TOKEN:28}"
 split_rejected "generic token in short fenced, quoted lines" "\`\`\`
-> ${FAKE_TOKEN:0:12}
-> ${FAKE_TOKEN:12:12}
+> ${FAKE_TOKEN:0:14}
+> ${FAKE_TOKEN:14:14}
 \`\`\`
-\`${FAKE_TOKEN:24}\`"
+\`${FAKE_TOKEN:28}\`"
 split_rejected "literal .env value broken over lines" "value literal-env-
 value-123 here"
 split_rejected "literal .env value interleaved with spaces and zero-width" "value l i t e r a l - e n v - ${ZW}value-1 2 3"
-split_rejected "credentials in a URL broken over lines" "open https://admin:
-hunter2pass@stack.example/x"
+# Review r10: text after a fence marker is content, and Unicode fillers that
+# render blank (Hangul fillers, braille blank) are separators too.
+split_rejected "claude token prefix split by a fence line that carries text" "sk-an
+\`\`\`t-oat01-${TOKQ}"
+split_rejected "literal .env value split by a tilde-fence line that carries text" "literal-env-
+~~~ value-123"
+HF=$'\xe3\x85\xa4'; BR=$'\xe2\xa0\x80'; HC=$'\xe1\x85\x9f'
+split_rejected "claude token interleaved with Hangul fillers" "token: s${HF}k${HF}-${HF}a${HF}n${HF}t${HF}-oat01-${TOKQ}"
+split_rejected "claude token interleaved with braille blanks and choseong fillers" "token: s${BR}k${HC}-ant-oat01-${TOKQ}"
 split_rejected "private key header broken over lines" "-----BEGIN RSA
 PRIVATE KEY-----"
 # Controls: ordinary report text must still pass after normalisation.
@@ -325,6 +330,30 @@ Stack: http://localhost:4321
 Login: admin@example.com
 MD
 check "split gate: control: a realistic multi-line report passes" "body_ok '$T/report-clean.md'"
+# Review r10: shapes ordinary reports have that the joined copies must not trip.
+cat > "$T/report-shapes.md" <<'MD'
+Open the stack at
+http://localhost:3000
+admin@example.com
+@breeze/web build failed
+
+```
+/settings/Organizations
+/devices/Details
+/api/v1/Users
+/settings/Users2
+```
+
+**Severity**
+P2
+**Route**
+/devices
+**Browser**
+Chromium131
+**Viewport**
+1440x900
+MD
+check "split gate: control: URL then email lines, route lists and key/value lines pass" "body_ok '$T/report-shapes.md'"
 check "split gate: control: the log-sized clean body still passes" "body_ok '$T/logsized-clean.md'"
 check "split gate: a normaliser that crashes rejects the body" "! ( _norm_scan() { return 137; }; body_ok '$T/report-clean.md' )"
 check "split gate: a normaliser that exits 0 without a verdict rejects the body" "! ( _norm_scan() { :; }; body_ok '$T/report-clean.md' )"
@@ -790,6 +819,25 @@ elif case == "headers":
     assert h["anthropic-version"] == "2023-06-01" and h["content-type"] == "application/json"
     h = dict(fw.upstream_headers([], "sk-ant-oat01-REAL"))
     assert h["anthropic-beta"] == "oauth-2025-04-20", h
+elif case == "tls":
+    import ssl
+    ctx = fw.tls_context()
+    assert ctx.check_hostname and ctx.verify_mode == ssl.CERT_REQUIRED
+elif case == "body":
+    ok = (b'{"model":"m","messages":[]}',
+          b'{"model":"m","messages":[],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}',
+          b'{"model":"m","messages":[],"tools":[{"type":"custom","name":"x","input_schema":{}}]}')
+    for b in ok:
+        assert fw.body_ok(b), b
+    bad = (b'{"model":"m","messages":[],"mcp_servers":[{"type":"url","url":"https://x.example/"}]}',
+           b'{"model":"m","messages":[],"container":"c1"}',
+           b'{"model":"m","messages":[],"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]}',
+           b'{"model":"m","messages":[],"tools":[{"type":"web_search_20250305","name":"web_search"}]}',
+           b'{"model":"m","messages":[],"tools":[{"type":"code_execution_20250825","name":"c"}]}',
+           b'{"model":"m","messages":[],"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}]}',
+           b'{"model":"m","messages":[],"tools":"x"}', b'[]', b'not json', b'')
+    for b in bad:
+        assert not fw.body_ok(b), b
 elif case == "token":
     good = "sk-ant-oat01-" + "A" * 40
     assert fw.read_token(io.StringIO(good + "\n")) == good
@@ -803,6 +851,8 @@ PY
 check "forwarder: only POST to the model API (messages, count_tokens; ?beta=true) is forwarded" "fw_py routes"
 check "forwarder: client credentials and unlisted headers are dropped; its own bearer + oauth beta are set" "fw_py headers"
 check "forwarder: the token on stdin must be one setup-token line" "fw_py token"
+check "forwarder: upstream TLS verifies the certificate and the host name" "fw_py tls"
+check "forwarder: a body that would make the API reach out (MCP servers, containers, server tools) is refused" "fw_py body"
 # Live, against a fake egress proxy that records CONNECTs (no network needed).
 new_run forwarder
 FAKEPX_LOG="$T/fakepx.log"; : > "$FAKEPX_LOG"
@@ -833,10 +883,12 @@ check "forwarder: the runner drops its copy of the token once the forwarder hold
 fwcode() { curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -m 10 "$@"; }
 check "forwarder: a non-model route is refused" "[ \"\$(fwcode http://127.0.0.1:\$MODEL_PORT/api/oauth/profile)\" = 403 ]"
 check "forwarder: a POST to an OAuth endpoint is refused" "[ \"\$(fwcode -X POST -d '{}' http://127.0.0.1:\$MODEL_PORT/api/oauth/claude_cli/create_api_key)\" = 403 ]"
+check "forwarder: a model call naming an MCP server is refused" "[ \"\$(fwcode -X POST -H 'content-type: application/json' -d '{\"model\":\"m\",\"messages\":[],\"mcp_servers\":[{\"type\":\"url\",\"url\":\"https://x.example/\"}]}' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: a request for another Host (DNS rebinding) is refused" "[ \"\$(fwcode -X POST -H 'Host: rebind.example:'\$MODEL_PORT -H 'content-type: application/json' -d '{}' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
 check "forwarder: a refused route never leaves the machine" "[ ! -s '$FAKEPX_LOG' ]"
-fwcode -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:$MODEL_PORT/v1/messages?beta=true" >/dev/null
+fwcode -X POST -H 'content-type: application/json' -d '{"model":"m","messages":[]}' "http://127.0.0.1:$MODEL_PORT/v1/messages?beta=true" >/dev/null
 check "forwarder: a model call goes out through the egress proxy, to api.anthropic.com only" "[ \"\$(cat '$FAKEPX_LOG')\" = 'CONNECT api.anthropic.com:443 HTTP/1.0' ]"
-check "forwarder: its argv and environment do not hold the token" "! ps -E -ww -o command= -p \"\$MODEL_PID\" | grep -qF \"\$FWTOK\" && ps -E -ww -o command= -p \"\$MODEL_PID\" | grep -q model-forwarder"
+check "forwarder: its argv does not hold the token" "! ps -ww -o command= -p \"\$MODEL_PID\" | grep -qF \"\$FWTOK\" && ps -ww -o command= -p \"\$MODEL_PID\" | grep -q model-forwarder"
 check "forwarder: decisions go to the protected audit log, without the token" "[ \"\$(model_log_path)\" = '$QA_HOME/.audit/model-$RUN_ID.log' ] && grep -q 'DENY GET /api/oauth/profile' \"\$(model_log_path)\" && ! grep -qF \"\$FWTOK\" \"\$(model_log_path)\""
 stop_model_forwarder; kill "$FAKEPX_PID" 2>/dev/null
 check "forwarder: stop_model_forwarder stops it" "[ -z \"\$MODEL_PORT\" ]"

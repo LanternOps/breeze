@@ -52,13 +52,23 @@ print("clean")
 #   joined -- lines joined, a line with no space in it with no separator, two
 #             lines of words with one space. SECRET_RE, credentials in a URL
 #             and each .env value must not occur.
-#   chains -- consecutive lines that are nothing but token characters, joined,
-#             must not hold _body_scan's long token-like run. The heuristic is
-#             not run on the flat or joined copy: with spaces or line breaks
-#             gone, ordinary prose and a SHA next to a word form 40-char
+#   spaced -- lines joined with one space: no credentials in a URL. (Joined
+#             without one, a URL line and an email line read as user:pass@.)
+#   chains -- consecutive lines that are nothing but 12+ token characters
+#             ([A-Za-z0-9_-]), joined, must not hold _body_scan's long
+#             token-like run. The heuristic is not run on the flat or joined
+#             copy: with spaces or line breaks gone, ordinary prose, route
+#             lists, key/value lines and a SHA next to a word form 40-char
 #             mixed-case runs, so nearly every report would be refused. A
-#             prefix-less token interleaved with words therefore stays out of
-#             a heuristic's reach; known values and prefixed tokens do not.
+#             prefix-less token cut into short pieces or interleaved with
+#             words therefore stays out of a heuristic's reach; known values
+#             and prefixed tokens do not.
+# Every check runs twice: with fence lines dropped, and with only their fence
+# markers stripped (text after a marker is content GitHub shows). Code points
+# that render blank without being format characters (Hangul fillers, the
+# braille blank, Khmer inherent vowels) are dropped as well. Look-alike letters
+# (Cyrillic s) and visible separators (s.k.-) are an accepted limit: a
+# blocklist cannot close them.
 _norm_scan() {
   /usr/bin/python3 -I -c '
 import re, sys, unicodedata
@@ -71,10 +81,11 @@ BREAKS = re.compile("[\n\r\v\f\x1c\x1d\x1e\x85  ]")
 FENCE = re.compile(r"\A[\s>]*(`{3,}|~{3,})")   # a fence line, info string and all
 MD = set("`*~>|\\#")
 DROP = {"Cc", "Cf", "Cs", "Co", "Cn", "Mn", "Me", "Zl", "Zp"}
+BLANK = {"\u115f", "\u1160", "\u17b4", "\u17b5", "\u180e", "\u2800", "\u3164", "\uffa0"}
 def norm_line(line, keep_spaces):
     out = []
     for ch in line:
-        if ch in MD:
+        if ch in MD or ch in BLANK:
             continue
         if ch.isspace():
             if keep_spaces and out and out[-1] != " ":
@@ -84,10 +95,12 @@ def norm_line(line, keep_spaces):
             continue
         out.append(ch)
     return "".join(out).strip()
-TOKEN_LINE = re.compile(r"\A[A-Za-z0-9+/=_-]+\Z")
-def lines_of(b):
+TOKEN_LINE = re.compile(r"\A[A-Za-z0-9_-]{12,}\Z")
+def lines_of(b, drop_fences=True):
     t = unicodedata.normalize("NFKC", b.decode("utf-8", "replace"))
-    return [ln for ln in BREAKS.split(t) if not FENCE.match(ln)]
+    if drop_fences:
+        return [ln for ln in BREAKS.split(t) if not FENCE.match(ln)]
+    return [FENCE.sub("", ln) for ln in BREAKS.split(t)]
 def flat_of(lines):
     return "".join(norm_line(ln, False) for ln in lines)
 def joined_of(lines):
@@ -125,18 +138,22 @@ def tokenlike(s):
         if re.search("[A-Z]", t) and re.search("[a-z]", t) and re.search("[0-9]", t):
             return True
     return False
-lines = lines_of(data)
-flat, joined = flat_of(lines), joined_of(lines)
-if re.search(secret.replace(" ", " ?"), flat) or re.search(secret, joined):
-    sys.exit(3)
-if re.search(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", joined):
-    sys.exit(3)
-if any(tokenlike(c) for c in token_chains(lines)):
-    sys.exit(3)
 with open(envvals, "rb") as f:
+    values = []
     for v in f.read().splitlines():
         vl = lines_of(v)
-        vf, vj = flat_of(vl), joined_of(vl)
+        values.append((flat_of(vl), joined_of(vl)))
+for drop in (True, False):
+    lines = lines_of(data, drop)
+    flat, joined = flat_of(lines), joined_of(lines)
+    spaced = " ".join(norm_line(ln, True) for ln in lines)
+    if re.search(secret.replace(" ", " ?"), flat) or re.search(secret, joined):
+        sys.exit(3)
+    if re.search(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", spaced):
+        sys.exit(3)
+    if any(tokenlike(c) for c in token_chains(lines)):
+        sys.exit(3)
+    for vf, vj in values:
         if (len(vf) >= 8 and vf in flat) or (len(vj) >= 8 and vj in joined):
             sys.exit(3)
 print("clean")
@@ -557,9 +574,9 @@ stop_egress_proxy() {
 # holding its credential. Runs as the runner, outside the sandbox, on loopback;
 # forwards POST /v1/messages (+ count_tokens) and nothing else, through the
 # egress proxy, adding the token. Started after start_egress_proxy, before the
-# profile is written. The token goes over a pipe on stdin (not argv or the
-# environment, which `ps -E` shows other processes of this user), and the
-# runner drops its own copy once the forwarder holds it.
+# profile is written. The token goes over a pipe on stdin (not argv, which any
+# local process can list, nor the environment), and the runner drops its own
+# copy once the forwarder holds it.
 MODEL_PID=""; MODEL_PORT=""; MODEL_LOG=""
 model_log_path() { printf '%s' "$QA_HOME/.audit/model-$RUN_ID.log"; }
 start_model_forwarder() {
@@ -682,9 +699,9 @@ sandbox_selfcheck() {
      || ! printf '%s\n' "$agent_env" | grep -qxF "CLAUDE_CODE_OAUTH_TOKEN=$AGENT_TOKEN_PLACEHOLDER"; then
     fails="$fails agent-env-credential"
   fi
-  # ... nor does the forwarder's argv or environment, which the agent can list.
-  if [ -n "${MODEL_PID:-}" ] && /bin/ps -E -ww -o command= -p "$MODEL_PID" 2>/dev/null | grep -q model-forwarder; then
-    sbx /bin/ps -E -ww -o command= -p "$MODEL_PID" 2>/dev/null | LC_ALL=C grep -q 'sk-ant-' && fails="$fails forwarder-env-credential"
+  # ... nor does the forwarder's argv, which the agent can list (its token came on stdin).
+  if [ -n "${MODEL_PID:-}" ] && /bin/ps -ww -o command= -p "$MODEL_PID" 2>/dev/null | grep -q model-forwarder; then
+    sbx /bin/ps -ww -o command= -p "$MODEL_PID" 2>/dev/null | LC_ALL=C grep -q 'sk-ant-' && fails="$fails forwarder-argv-credential"
   else fails="$fails forwarder-probe-inconclusive"; fi
   [ -e "$(agent_token_path)" ] && sbx /bin/cat "$(agent_token_path)" >/dev/null 2>&1 && fails="$fails token-file-readable"
   # loopback: the stack port connects; any other listener on this Mac does not.
@@ -791,7 +808,7 @@ EOF
   [ -n "$kr" ] && { fails="$fails keychain-readable"; log "sandbox: keychain readable from inside:$kr"; }
   [ "$kw" = 1 ] && { fails="$fails keychain-writable"; log "sandbox: keychain writable from inside"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/forwarder/broker only (egress proxy unreachable), agent env + forwarder argv/env hold no credential, forwarder refuses non-model routes and the API accepts its token, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/forwarder/broker only (egress proxy unreachable), agent env + forwarder argv hold no credential, forwarder refuses non-model routes and the API accepts its token, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
 }
 
 # ---------------------------------------------------------------------------
