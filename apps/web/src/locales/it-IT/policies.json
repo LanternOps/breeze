@@ -1259,7 +1259,7 @@
             "fast_startup_unknown": "Stato di Avvio rapido sconosciuto",
             "nic_magic_packet_disabled": "Riattivazione magic packet della scheda disattivata",
             "nic_magic_packet_unknown": "Stato della riattivazione magic packet sconosciuto",
-            "nic_unreadable": "È presente un adattatore cablato, ma non è stato possibile leggerlo",
+            "nic_unreadable": "È presente una scheda cablata, ma non è stato possibile leggerla",
             "nic_cmdlets_unavailable": "Le impostazioni della scheda di rete non possono essere lette su questo dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet attivo",
             "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili"

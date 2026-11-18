@@ -328,6 +328,7 @@ func TestParseNetAdapterCmdletsAvailability(t *testing.T) {
 	cases := map[string]bool{
 		`{"hiberboot":0,"netAdapter":false,"adapters":[]}`: true,
 		`{"hiberboot":0,"netAdapter":true,"adapters":[]}`:  false,
+		`{"hiberboot":0,"netAdapter":null,"adapters":[]}`:  false,
 		`{"hiberboot":0,"adapters":[]}`:                    false,
 	}
 	for raw, want := range cases {
