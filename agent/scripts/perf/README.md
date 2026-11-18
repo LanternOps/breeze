@@ -51,6 +51,7 @@ Each run writes `run-<n>/` under `--out`:
    - It stops the running `*breeze*` services, watchdog first.
    - It hashes `C:\ProgramData\Breeze` and mirrors it to `C:\ProgramData\Breeze.perf-backup`.
    - The test agent's `--config` only moves `agent.yaml`. Secrets, state, data and logs still land in `C:\ProgramData\Breeze`, so the backup is needed.
+   - `PERF_LAB_DATA_DIR` replaces that path. It is test-only, for exercising the backup on a scratch tree.
 4. It serves the agent and sampler on the libvirt bridge address, port 53317, and the VM downloads them to `C:\breeze-perf`. The harness then checks the SHA256.
 5. It relays the same port to the stack with `socat`, enrolls the agent with a single-use key, and starts it detached.
 6. It samples the test binary by path, queues the workload's commands, and pulls the CSV and the newest `agentRuntime`.
@@ -76,7 +77,8 @@ These rules are copied from the spec.
 ### Lab VMs
 
 - Measure one VM at a time, with the other two shut off.
-- Revert each VM to the same libvirt snapshot before every run.
+- With `--snapshot`, revert each VM to the same libvirt snapshot before every run.
+- Without it (the default), each run backs up `C:\ProgramData\Breeze` and restores it afterwards, and fails if the hashes differ.
 - Run at least 5 runs per arm, alternating before and after builds.
 - Report the median and spread of each metric.
 

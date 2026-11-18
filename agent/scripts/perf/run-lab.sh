@@ -31,6 +31,7 @@ dir='C:\breeze-perf'
 data=${PERF_LAB_DATA_DIR:-'C:\ProgramData\Breeze'} # test-only override, to exercise the backup on a scratch tree
 backup="$data.perf-backup"
 bridge=$("${V[@]}" net-dumpxml default | sed -n "s/.*<ip address='\([^']*\)'.*/\1/p" | head -1)
+[ -n "$bridge" ] || { echo "no libvirt bridge address: is the default network defined?" >&2; exit 1; }
 stack_port=$(sed -E 's#^[a-z]+://[^:/]+:([0-9]+).*#\1#' <<<"$BREEZE_STACK_URL")
 others=$("${V[@]}" list --name --state-running | grep -vx -e "$vm" -e '' || true)
 [ -z "$others" ] || { echo "shut these VMs off first, one VM at a time: $others" >&2; exit 1; }
