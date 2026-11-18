@@ -24,8 +24,10 @@ It forwards the model API and nothing else:
     upstream, and must be a JSON object that cannot make the API itself reach
     out: no `mcp_servers` (MCP connector), no `container`, and every tool a
     plain client tool (no `type`, or `custom`) -- server tools such as
-    web_fetch, web_search and code execution are refused, so the model API is
-    not an egress route around the sandbox;
+    web_fetch, web_search and code execution are refused -- and every content
+    `source` object anywhere in it is inline (base64, text or content): a
+    `url` source would have the API fetch that URL, a `file` source reads the
+    Files API. So the model API is not an egress route around the sandbox;
   - the Host header must name this listener (127.0.0.1 or localhost and its
     port), so a web page reaching loopback by DNS rebinding is refused.
 
@@ -52,6 +54,7 @@ ALLOWED_PATHS = ("/v1/messages", "/v1/messages/count_tokens")
 ALLOWED_QUERIES = ("", "beta=true")
 MAX_BODY = 64 * 1024 * 1024
 OAUTH_BETA = "oauth-2025-04-20"
+INLINE_SOURCES = ("base64", "text", "content")
 TOKEN_RE = re.compile(r"\Ask-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,500}\Z")
 # Client headers worth forwarding. Anything else -- Authorization, x-api-key,
 # Cookie, Proxy-*, Host, hop-by-hop, Content-Length -- is dropped.
@@ -108,6 +111,18 @@ def body_refusal(body):
         kind = t.get("type", "custom")
         if kind != "custom":
             return "server tool %s" % str(kind)[:60]
+    # Content blocks nest (tool_result -> document, system -> image ...): walk
+    # the whole body, iteratively, and refuse any source that is not inline.
+    stack = [req]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            src = node.get("source")
+            if isinstance(src, dict) and src.get("type") not in INLINE_SOURCES:
+                return "%s source" % str(src.get("type"))[:40]
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
     return None
 
 

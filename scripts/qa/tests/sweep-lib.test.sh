@@ -826,7 +826,9 @@ elif case == "tls":
 elif case == "body":
     ok = (b'{"model":"m","messages":[]}',
           b'{"model":"m","messages":[],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}',
-          b'{"model":"m","messages":[],"tools":[{"type":"custom","name":"x","input_schema":{}}]}')
+          b'{"model":"m","messages":[],"tools":[{"type":"custom","name":"x","input_schema":{}}]}',
+          b'{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}]}',
+          b'{"model":"m","messages":[{"role":"user","content":[{"type":"search_result","source":"https://x.example/","title":"t","content":[]}]}]}')
     for b in ok:
         assert fw.body_ok(b), b
     bad = (b'{"model":"m","messages":[],"mcp_servers":[{"type":"url","url":"https://x.example/"}]}',
@@ -835,7 +837,10 @@ elif case == "body":
            b'{"model":"m","messages":[],"tools":[{"type":"web_search_20250305","name":"web_search"}]}',
            b'{"model":"m","messages":[],"tools":[{"type":"code_execution_20250825","name":"c"}]}',
            b'{"model":"m","messages":[],"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}]}',
-           b'{"model":"m","messages":[],"tools":"x"}', b'[]', b'not json', b'')
+           b'{"model":"m","messages":[],"tools":"x"}', b'[]', b'not json', b'',
+           b'{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://x.example/?d=1"}}]}]}',
+           b'{"model":"m","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"document","source":{"type":"url","url":"https://x.example/a.pdf"}}]}]}]}',
+           b'{"model":"m","system":[{"type":"text","text":"x"},{"type":"image","source":{"type":"file","file_id":"f"}}],"messages":[]}')
     for b in bad:
         assert not fw.body_ok(b), b
 elif case == "token":
