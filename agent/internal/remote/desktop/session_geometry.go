@@ -163,16 +163,26 @@ func (s *Session) adoptCaptureBounds(cap ScreenCapturer) (resized bool) {
 // refreshInputGeometry makes the input handler re-read the screen metrics it
 // caches (Windows virtual-screen size, macOS backing scale) and re-applies the
 // display offset: a mode change on one monitor moves the origin of the others.
-//
-// On a secure desktop (UAC, Winlogon) the offset stays at the origin, as
-// handleDesktopSwitch set it on entry: that desktop is captured from the
-// primary display's origin, so a monitor origin would displace every click.
 func (s *Session) refreshInputGeometry(cap ScreenCapturer, index int) {
 	if s.inputHandler == nil {
 		return
 	}
 	if r, ok := s.inputHandler.(ScreenGeometryRefresher); ok {
 		r.RefreshScreenGeometry()
+	}
+	s.applyInputOffset(cap, index)
+}
+
+// applyInputOffset sets the input handler's display offset for the monitor at
+// index, or holds it at the origin while cap is on a secure desktop (UAC,
+// Winlogon): that desktop is captured from the primary display's origin, so a
+// monitor origin would displace every click. Every path that sets the offset
+// uses it — session start, monitor switch, desktop switch, geometry refresh —
+// because a session that starts on a secure desktop gets no desktop switch to
+// correct the offset afterwards.
+func (s *Session) applyInputOffset(cap ScreenCapturer, index int) {
+	if s.inputHandler == nil {
+		return
 	}
 	if dsn, ok := cap.(DesktopSwitchNotifier); ok && dsn.OnSecureDesktop() {
 		s.inputHandler.SetDisplayOffset(0, 0)

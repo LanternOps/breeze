@@ -3,6 +3,10 @@ package desktop
 import (
 	"errors"
 	"image"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -176,7 +180,7 @@ func TestCaptureAndSendFrameFollowsResolutionChange(t *testing.T) {
 func TestCaptureAndSendFrameSteadySizeIsNotATransition(t *testing.T) {
 	s, _, stub, si := newGeometryTestSession(t, 1920, 1080, "mft")
 	_, geoBefore := si.Epochs()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		s.captureAndSendFrame(16 * time.Millisecond)
 	}
 	_, _, _, encodes, setDims := stub.snapshot()
@@ -224,12 +228,7 @@ func recordAnnouncements(t *testing.T) func() []map[string]any {
 }
 
 func hasCall(calls []string, want string) bool {
-	for _, c := range calls {
-		if c == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(calls, want)
 }
 
 // The viewer is told the new size and the epochs to use with it, held input
@@ -284,7 +283,7 @@ func TestOddCaptureSizeIsNotAResolutionChange(t *testing.T) {
 	announced := recordAnnouncements(t)
 	s, cap, stub, _ := newGeometryTestSession(t, 1512, 948, "mft")
 	cap.setSize(1512, 949) // one extra row: what an unaligned capturer yields
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		s.captureAndSendFrame(16 * time.Millisecond)
 	}
 	if n := len(announced()); n != 0 {
@@ -549,5 +548,94 @@ func TestResolutionChangeOnSecureDesktopKeepsOriginOffset(t *testing.T) {
 	s2.captureAndSendFrame(16 * time.Millisecond)
 	if applied != 1 {
 		t.Fatalf("the monitor origin was not re-applied on the default desktop (applied=%d)", applied)
+	}
+}
+
+// Strix review (#12194): a session that STARTS on a secure desktop gets no
+// desktop switch to correct a monitor origin, so the one place that sets the
+// input offset holds it at the origin there, with a non-primary display
+// selected. Off the secure desktop it applies the monitor's origin.
+func TestApplyInputOffsetHoldsOriginOnSecureDesktop(t *testing.T) {
+	applied := 0
+	prev := applySessionDisplayOffset
+	applySessionDisplayOffset = func(h InputHandler, idx int, x, y *atomic.Int32) {
+		applied++
+		h.SetDisplayOffset(1920, 0) // a secondary monitor's origin
+		x.Store(1920)
+	}
+	t.Cleanup(func() { applySessionDisplayOffset = prev })
+
+	rec := &workerRecorder{}
+	s := &Session{id: "secure-start", inputHandler: rec}
+	s.cursorOffsetX.Store(1920) // a stale monitor origin
+	s.cursorOffsetY.Store(40)
+	s.applyInputOffset(&secureResizingCapturer{resizingCapturer: resizingCapturer{w: 1920, h: 1080}}, 1)
+
+	if applied != 0 {
+		t.Fatalf("the monitor origin was applied on a secure desktop (%d times)", applied)
+	}
+	if x, y := s.cursorOffsetX.Load(), s.cursorOffsetY.Load(); x != 0 || y != 0 {
+		t.Fatalf("cursor offset = %d,%d on a secure desktop, want 0,0", x, y)
+	}
+	if calls := rec.snapshot(); !hasCall(calls, "offset:0,0") || hasCall(calls, "offset:1920,0") {
+		t.Fatalf("input offset not held at the origin on a secure desktop: %v", calls)
+	}
+
+	rec2 := &workerRecorder{}
+	s2 := &Session{id: "default-start", inputHandler: rec2}
+	s2.applyInputOffset(&resizingCapturer{w: 1920, h: 1080}, 1)
+	if applied != 1 || s2.cursorOffsetX.Load() != 1920 {
+		t.Fatalf("the monitor origin was not applied on the default desktop (applied=%d, x=%d)",
+			applied, s2.cursorOffsetX.Load())
+	}
+
+	// A session with no input handler (view-only) is a no-op, not a panic.
+	(&Session{id: "no-input"}).applyInputOffset(&secureResizingCapturer{}, 1)
+}
+
+// Every path that sets the input offset goes through applyInputOffset, so no
+// path can miss the secure-desktop rule again: session start, monitor switch,
+// desktop switch and the mid-session geometry refresh. The only reference to
+// applyDisplayOffset is the applySessionDisplayOffset seam it calls.
+func TestEveryInputOffsetPathHoldsTheSecureDesktopRule(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "//") {
+				continue
+			}
+			if strings.Contains(code, "applyDisplayOffset(") && !strings.HasPrefix(code, "func applyDisplayOffset(") {
+				t.Errorf("%s:%d sets the input offset without the secure-desktop rule; call applyInputOffset: %s", f, i+1, code)
+			}
+		}
+	}
+
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	webrtc := read("session_webrtc.go")
+	start := webrtc[strings.Index(webrtc, "func (m *SessionManager) StartSession("):]
+	if !strings.Contains(start, "session.applyInputOffset(capturer, ") {
+		t.Error("StartSession must set the input offset through applyInputOffset with the session's capturer")
+	}
+	ctl := read("session_control.go")
+	if !strings.Contains(ctl[strings.Index(ctl, "func (s *Session) switchMonitor("):], "s.applyInputOffset(newCap, index)") {
+		t.Error("switchMonitor must set the input offset through applyInputOffset with the new capturer")
 	}
 }

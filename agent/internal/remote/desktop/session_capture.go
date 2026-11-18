@@ -1223,7 +1223,7 @@ func (s *Session) handleDesktopSwitch() {
 	} else {
 		// Returning to normal desktop — restore monitor offsets
 		slog.Info("Desktop switch: returning to default desktop, restoring offsets", "session", s.id)
-		applyDisplayOffset(s.inputHandler, s.currentDisplayIndex(), &s.cursorOffsetX, &s.cursorOffsetY)
+		s.applyInputOffset(cap, s.currentDisplayIndex())
 		if resized {
 			s.announceMonitor(geometryReasonResolutionChange)
 		} else {

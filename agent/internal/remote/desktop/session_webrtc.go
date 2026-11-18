@@ -251,9 +251,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session.gpuVendor = m.gpuVendor
 
 	// Set display offset so input handler translates viewer-relative coords
-	// to virtual screen coords (required for multi-monitor setups).
-	displayIdx := displayIndex
-	applyDisplayOffset(session.inputHandler, displayIdx, &session.cursorOffsetX, &session.cursorOffsetY)
+	// to virtual screen coords (required for multi-monitor setups). A session
+	// that starts on a secure desktop keeps the origin: no desktop switch
+	// follows to correct a monitor origin (#12194).
+	session.applyInputOffset(capturer, displayIndex)
 
 	// Get screen bounds first — needed for bitrate scaling and encoder init.
 	// On macOS Retina, GetScreenBounds (NSScreen × scaleFactor) may report
