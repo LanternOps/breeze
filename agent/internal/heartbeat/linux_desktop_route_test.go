@@ -2,11 +2,13 @@ package heartbeat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -382,6 +384,97 @@ func TestStartDesktopViaLinuxHelper_FailedStartReleasesLiveMark(t *testing.T) {
 	}
 	if _, ok := r.h.linuxHostedDesktops.Load("desk-fail"); ok {
 		t.Fatal("a failed start left its hosted-desktop record behind")
+	}
+}
+
+// A routed Wayland desktop session ends for good when root stops its helper
+// for any reason — a crash, a logout, a fast user switch — and releases its
+// live mark on the helper exactly once.
+func TestLinuxRoutedDesktop_HelperStopEndsSessionAndReleasesLiveMark(t *testing.T) {
+	for _, reason := range []string{"helper_exited", "logout", "session_inactive", "ambiguous_session"} {
+		t.Run(reason, func(t *testing.T) {
+			r := newLinuxRouteHarness(t, true, seatSession("4", "wayland"), true)
+			serverConn, clientConn := createTestSocketPair(t)
+			client := ipc.NewConn(clientConn)
+			s := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "wayland-0", "linux-helper-4", []string{"desktop"})
+			s.LinuxDesktop = &sessionbroker.LinuxDesktopBinding{UID: 1000, Username: "alice", LogindSessionID: "4", Generation: 1}
+			s.SetCapabilities(&ipc.Capabilities{CanCapture: true})
+			t.Cleanup(func() { _ = s.Close(); _ = client.Close() })
+			go s.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+			go func() {
+				client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				env, err := client.Recv()
+				if err != nil {
+					return
+				}
+				payload, _ := json.Marshal(ipc.DesktopStartResponse{SessionID: "desk-live", Answer: "answer"})
+				_ = client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeDesktopStart, Payload: payload})
+			}()
+			r.h.sessionBroker = newTestBrokerWithSessions(t, s)
+			r.h.helperFinder = func(string) *sessionbroker.Session { return s }
+
+			result := r.h.startDesktopViaLinuxHelper("desk-live", "4", ipc.DesktopStartRequest{SessionID: "desk-live"})
+			if result.Status != "completed" {
+				t.Fatalf("routed start failed: %s", result.Error)
+			}
+			if r.h.desktopOwnerSession("desk-live") != s {
+				t.Fatal("the helper does not own the started desktop session")
+			}
+			if started, ended := r.helpers.counts("4"); started != 1 || ended != 0 {
+				t.Fatalf("live session not marked live: started=%d ended=%d", started, ended)
+			}
+
+			// What the manager's hook runs when root stops or loses the helper.
+			r.h.linuxDesktopHelperStopped(s, reason)
+
+			if r.h.desktopOwnerSession("desk-live") != nil {
+				t.Fatal("a stopped helper still owns the desktop session")
+			}
+			if !r.h.desktopStartFence.isTerminal("desk-live") {
+				t.Fatal("the desktop session was not fenced terminal")
+			}
+			if started, ended := r.helpers.counts("4"); started != 1 || ended != 1 {
+				t.Fatalf("live mark not released once: started=%d ended=%d", started, ended)
+			}
+			// A late teardown report for the same session changes nothing.
+			r.h.forgetDesktopOwner("desk-live")
+			if _, ended := r.helpers.counts("4"); ended != 1 {
+				t.Fatalf("live mark released %d times, want 1", ended)
+			}
+		})
+	}
+}
+
+// A fast user switch between two starts: each start goes to the helper of
+// the session then active on the seat, never to the previous user's.
+func TestStartDesktop_LinuxRouteFollowsActiveSeat(t *testing.T) {
+	r := newLinuxRouteHarness(t, true, nil, true)
+	var mu sync.Mutex
+	active := seatSession("3", "wayland")
+	r.h.linuxActiveSeatSession = func(context.Context) (*sessionbroker.DetectedSession, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return active, nil
+	}
+
+	handleStartDesktop(r.h, startDesktopCmd("sess-before-switch", nil))
+	mu.Lock()
+	active = seatSession("8", "wayland")
+	mu.Unlock()
+	handleStartDesktop(r.h, startDesktopCmd("sess-after-switch", nil))
+	mu.Lock()
+	active = seatSession("9", "x11")
+	mu.Unlock()
+	handleStartDesktop(r.h, startDesktopCmd("sess-x11-user", nil))
+
+	r.mu.Lock()
+	tgts := append([]string(nil), r.helperTgts...)
+	r.mu.Unlock()
+	if len(tgts) != 2 || tgts[0] != "3" || tgts[1] != "8" {
+		t.Fatalf("helper targets = %v, want [3 8]", tgts)
+	}
+	if got := r.directCalls.Load(); got != 1 {
+		t.Fatalf("the X11 user's start must take the direct path once, direct calls = %d", got)
 	}
 }
 
