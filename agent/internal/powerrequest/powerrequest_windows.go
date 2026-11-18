@@ -68,6 +68,10 @@ func holdSystemAwake(reason string) (func(), error) {
 			// the release explicit and visible in `powercfg /requests` at once.
 			_, _, _ = procPowerClearRequest.Call(uintptr(handle), powerRequestSystemRequired)
 			_ = windows.CloseHandle(handle)
+			// The documentation does not say whether PowerCreateRequest copies
+			// the reason string, so keep the buffer alive while the request
+			// is held.
+			runtime.KeepAlive(text)
 		})
 	}, nil
 }
