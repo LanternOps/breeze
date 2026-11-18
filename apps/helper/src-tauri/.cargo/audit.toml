@@ -38,4 +38,10 @@ ignore = [
   # this crate's perspective.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  # TIME-LIMITED — EXPIRES 2027-02-16. RUSTSEC-2026-0543: chrono is unmaintained.
+  # Informational notice, not a vulnerability. chrono is a direct dependency
+  # (timestamps / RFC 3339 parsing in lib.rs and ipc/*). Remove this entry when
+  # chrono is replaced or upgraded; review/remove by the expiry date.
+  # Tracked in #12126.
+  "RUSTSEC-2026-0543", # chrono
 ]
