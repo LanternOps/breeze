@@ -424,6 +424,7 @@ func (s *Session) captureLoopDXGI() captureMode {
 			// Update encoder dimensions for the new monitor
 			if enc := s.encoder.Load(); enc != nil {
 				if w, h, err := newCap.GetScreenBounds(); err == nil {
+					s.captureW, s.captureH = AlignEven(w, h)
 					if dimErr := enc.SetDimensions(w, h); dimErr != nil {
 						slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
 					}
@@ -546,6 +547,15 @@ func (s *Session) captureLoopDXGI() captureMode {
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
 		frameSent := false
 		encForGPU := s.encoder.Load()
+		if hasTP && !gpuDisabled && encForGPU != nil && encForGPU.SupportsGPUInput() &&
+			!s.followBoundsGeometry(currentCap, encForGPU) {
+			// The encoder could not be resized to the new mode yet (#11754):
+			// skip this iteration rather than encode a texture of another size.
+			if elapsed := time.Since(loopStart); elapsed < frameDuration {
+				time.Sleep(frameDuration - elapsed)
+			}
+			continue
+		}
 		if hasTP && !gpuDisabled && encForGPU != nil && encForGPU.SupportsGPUInput() {
 			handled, disable, sent := s.captureAndSendFrameGPU(tp, frameDuration)
 			if disable {
@@ -934,6 +944,15 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		}
 	}
 
+	// A frame of another size than the stream is a resolution change (#11754):
+	// resize the encoder (and run the geometry transition) before encoding,
+	// never hand the encoder a frame it is not configured for.
+	if !s.followFrameGeometry(cap, enc, img.Rect.Dx(), img.Rect.Dy()) {
+		captureImagePool.Put(img)
+		s.metrics.RecordDrop()
+		return
+	}
+
 	// 3. Cursor compositing — skip for DXGI since the viewer renders its own cursor.
 	// This saves a full-frame read+write pass at high resolutions.
 	if !dxgiActive && desiredPF == PixelFormatRGBA {
@@ -1171,6 +1190,11 @@ func (s *Session) handleDesktopSwitch() {
 	// Key-ups for anything held would land on the other desktop, and the
 	// input offset is about to change: a geometry transition. (W2b)
 	s.resetInputGeometry("desktop_switch")
+	// DXGI re-read the display mode when it reinitialised for this switch; a
+	// resolution change arrives here too (#11754). Record the size so the
+	// capture path does not run a second transition for it; the encoder is
+	// resized on the next frame.
+	s.adoptCaptureBounds(cap)
 
 	if dsn.OnSecureDesktop() {
 		// Secure desktop is always at origin — reset offsets

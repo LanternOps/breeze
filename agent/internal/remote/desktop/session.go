@@ -53,6 +53,13 @@ type Session struct {
 	// then, after it found no usable software encoder (#11392).
 	softwareSwapRetryAt atomic.Int64
 
+	// captureW/captureH are the even-aligned size the session is streaming,
+	// and encoderResizeRetryAt the end of the backoff after a failed encoder
+	// resize (#11754, session_geometry.go). Capture goroutine only (set in
+	// StartSession before it starts).
+	captureW, captureH   int
+	encoderResizeRetryAt time.Time
+
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.
 	displayWake *displayWakeHold

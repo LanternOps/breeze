@@ -607,6 +607,17 @@ func (s *SafeInput) SetAtLoginWindow(atLoginWindow bool) {
 
 func (s *SafeInput) InputAvailable() bool { return s.inner.InputAvailable() }
 
+// RefreshScreenGeometry runs the inner handler's ScreenGeometryRefresher on
+// the input worker, so it is ordered with injection and never races the
+// metrics an in-flight event is using. A no-op for handlers without one.
+func (s *SafeInput) RefreshScreenGeometry() {
+	r, ok := s.inner.(ScreenGeometryRefresher)
+	if !ok {
+		return
+	}
+	_ = s.submit(true, s.closeTimeout, func() error { r.RefreshScreenGeometry(); return nil })
+}
+
 func (s *SafeInput) SendMouseMove(x, y int) error {
 	return s.HandleEvent(InputEvent{Type: "mouse_move", X: x, Y: y})
 }
