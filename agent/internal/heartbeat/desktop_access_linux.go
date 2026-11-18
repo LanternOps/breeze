@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/remote/desktop/wayland"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 )
 
@@ -18,6 +19,19 @@ import (
 // (~once/60s from the heartbeat), which is cheap enough to run uncached.
 func (h *Heartbeat) computeDesktopAccess(_ *collectors.SystemInfo) *DesktopAccessState {
 	now := time.Now().UTC()
+	// Wayland is capturable through the portal once the user is logged in
+	// and the host can actually run this path. Do not call Start here:
+	// that is what shows the share dialog. A Wayland login without a
+	// RemoteDesktop portal, pipewiresrc, or a new enough systemd-run stays
+	// wayland_unsupported so Connect is not offered for a path that cannot
+	// work. Falling through to the X11 probe on a capturable Wayland session
+	// would do the same, because XWayland sockets exist.
+	if wayland.IsGraphical() {
+		if wayland.CaptureSupported() {
+			return &DesktopAccessState{Mode: "user_session", CheckedAt: now}
+		}
+		return &DesktopAccessState{Mode: "unavailable", Reason: "wayland_unsupported", CheckedAt: now}
+	}
 	err := x11.ProbeCapture()
 	if err == nil {
 		return &DesktopAccessState{Mode: "user_session", CheckedAt: now}

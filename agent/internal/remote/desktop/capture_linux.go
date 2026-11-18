@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/breeze-rmm/agent/internal/remote/desktop/wayland"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 )
 
@@ -29,6 +30,11 @@ type linuxCapturer struct {
 // display target itself so standalone tool/probe paths (which never call
 // through a session that has already resolved a target) work unmodified.
 func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
+	// An active Wayland session's XWayland root is a static stub. Capturing
+	// it produces one unchanging frame, so the portal path owns that case.
+	if wayland.IsGraphical() {
+		return wayland.Open()
+	}
 	target, err := x11.SelectX11Target()
 	if err != nil {
 		return nil, mapResolveErr(err)

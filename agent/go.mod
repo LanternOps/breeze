@@ -17,6 +17,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-ole/go-ole v1.3.0
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

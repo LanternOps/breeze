@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/breeze-rmm/agent/internal/remote/desktop/wayland"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 )
 
@@ -23,21 +24,32 @@ type LinuxInputHandler struct {
 	offX  int
 	offY  int
 
+	// portal is chosen once, when the handler is created. Input must not
+	// re-probe the session on every event: that PATH lookup and loginctl
+	// call is what made an X11 desktop pay for the Wayland check.
+	portal bool
+
 	// W2c lock-key sync (sequenced sessions only; see lockSyncFor).
 	capsSync lockKeySync
 	numSync  lockKeySync
 }
 
+// waylandGraphical is the one session probe NewInputHandler runs.
+var waylandGraphical = wayland.IsGraphical
+
 var _ InputHandler = (*LinuxInputHandler)(nil)
 
 // NewInputHandler creates a Linux input handler backed by XTEST.
 func NewInputHandler(_ string) InputHandler {
-	return &LinuxInputHandler{}
+	return &LinuxInputHandler{portal: waylandGraphical()}
 }
 
 // injector returns the lazily-opened injector, or nil if opening has already
 // been attempted and failed (e.g. no display present).
 func (h *LinuxInputHandler) injector() *x11.Injector {
+	if h.portal {
+		return nil
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.inj != nil {
@@ -55,7 +67,11 @@ func (h *LinuxInputHandler) injector() *x11.Injector {
 
 // InputAvailable reports whether the injector opened and XTEST is live.
 func (h *LinuxInputHandler) InputAvailable() bool {
-	return h.injector().Available()
+	if h.portal {
+		return true
+	}
+	inj := h.injector()
+	return inj != nil && inj.Available()
 }
 
 // SetAtLoginWindow is a no-op on Linux — XTEST works identically in both contexts.
@@ -90,16 +106,36 @@ func (h *LinuxInputHandler) displayOffset() (int, int) {
 	return h.offX, h.offY
 }
 
+// pointer is the coordinate handed to the backend. Portal positions are
+// already in the shared stream, so the X11 monitor offset must not be added
+// on that path or a second monitor's clicks land in the wrong place.
+func (h *LinuxInputHandler) pointer(x, y int) (int, int) {
+	if h.portal {
+		return x, y
+	}
+	offX, offY := h.displayOffset()
+	return x + offX, y + offY
+}
+
 func (h *LinuxInputHandler) SendMouseMove(x, y int) error {
+	x, y = h.pointer(x, y)
+	if h.portal {
+		return wayland.Move(x, y)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
 	}
-	offX, offY := h.displayOffset()
-	return inj.MoveMouse(x+offX, y+offY)
+	return inj.MoveMouse(x, y)
 }
 
 func (h *LinuxInputHandler) SendMouseDown(x, y int, button string) error {
+	if h.portal {
+		if err := h.SendMouseMove(x, y); err != nil {
+			return err
+		}
+		return wayland.Pointer(button, true)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -111,6 +147,12 @@ func (h *LinuxInputHandler) SendMouseDown(x, y int, button string) error {
 }
 
 func (h *LinuxInputHandler) SendMouseUp(x, y int, button string) error {
+	if h.portal {
+		if err := h.SendMouseMove(x, y); err != nil {
+			return err
+		}
+		return wayland.Pointer(button, false)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -139,6 +181,12 @@ func (h *LinuxInputHandler) SendMouseScroll(x, y int, delta int) error {
 // sendMouseScroll clicks the XTEST scroll buttons x11ScrollClicksFor picks:
 // 4/5 vertical as before W2c, 6/7 for a W2c deltaX.
 func (h *LinuxInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
+	if h.portal {
+		if err := h.SendMouseMove(x, y); err != nil {
+			return err
+		}
+		return wayland.Scroll(delta, deltaX)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -160,6 +208,13 @@ func (h *LinuxInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
 }
 
 func (h *LinuxInputHandler) SendKeyPress(key string, modifiers []string) error {
+	if h.portal {
+		mods := make([]string, len(modifiers))
+		for i, m := range modifiers {
+			mods[i] = canonicalModifierName(m)
+		}
+		return wayland.KeyPress(canonicalModifierName(key), mods)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -175,6 +230,9 @@ func (h *LinuxInputHandler) SendKeyPress(key string, modifiers []string) error {
 }
 
 func (h *LinuxInputHandler) SendKeyDown(key string) error {
+	if h.portal {
+		return wayland.Key(canonicalModifierName(key), true)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
@@ -183,6 +241,9 @@ func (h *LinuxInputHandler) SendKeyDown(key string) error {
 }
 
 func (h *LinuxInputHandler) SendKeyUp(key string) error {
+	if h.portal {
+		return wayland.Key(canonicalModifierName(key), false)
+	}
 	inj := h.injector()
 	if inj == nil {
 		return ErrNoActiveSession
