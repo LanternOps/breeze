@@ -631,6 +631,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_vulnerability_report: z.object({
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
     severity: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_vulnerabilities: z.object({
@@ -966,6 +967,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
     category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
     includeSuperseded: z.boolean().optional(),
+    includeDetails: z.boolean().optional(),
+    ...pageZodShape(15, 100),
   }),
 
   manage_org_documents: z.object({
@@ -1237,7 +1240,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   // Deliverable template sets W05 (#5573 spec 4.6/10).
-  list_deliverable_templates: z.object({ orgId: uuid.optional() }),
+  list_deliverable_templates: z.object({ orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) }),
 
   manage_deliverables: z.object({
     action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
@@ -1772,6 +1775,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_user_risk_detail: z.object({
     userId: uuid,
     orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional().describe('Max recent events (default 10, max 100)'),
+    includeDetails: z.boolean().optional(),
   }),
 
   assign_security_training: z.object({
@@ -2532,6 +2537,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   search_documentation: z.object({
     query: z.string().min(1).max(500),
     section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+    limit: z.number().int().min(1).max(5).optional().describe('Max pages (default 5, max 5)'),
   }),
 
   query_webhooks: z.object({
@@ -2580,6 +2586,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   query_custom_fields: z.object({
     action: z.enum(['list_definitions', 'get_device_values']),
     deviceId: uuid.optional(),
+    ...pageZodShape(15, 100),
   }).refine(
     (d) => d.action !== 'get_device_values' || !!d.deviceId,
     { message: 'deviceId is required for get_device_values' },
