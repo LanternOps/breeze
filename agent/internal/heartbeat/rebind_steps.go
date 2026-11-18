@@ -94,8 +94,8 @@ func (h *Heartbeat) acceptRebindStage(s *config.RebindStagedSet, ans rebindAnswe
 	}
 	t := resp.Target
 	switch {
-	case resp.IntentID != s.IntentID || !rebindAgentIDPattern.MatchString(resp.StagedAgentID) || t == nil ||
-		!identityUUIDPattern.MatchString(t.DeviceID) || !identityUUIDPattern.MatchString(t.OrgID) || !identityUUIDPattern.MatchString(t.SiteID):
+	case resp.IntentID != s.IntentID || !rebindAgentIDPattern().MatchString(resp.StagedAgentID) || t == nil ||
+		!identityUUIDPattern().MatchString(t.DeviceID) || !identityUUIDPattern().MatchString(t.OrgID) || !identityUUIDPattern().MatchString(t.SiteID):
 		h.rebindWait(now, "reattach phase 1 answered 200 with an incomplete body; resending", rebindAnswer{status: ans.status})
 		return nil
 	case !s.DirectiveTarget.Equal(*t):
@@ -201,9 +201,9 @@ func (h *Heartbeat) rebindConfirm(s *config.RebindStagedSet) *config.RebindStage
 	switch {
 	case ans.status == http.StatusOK:
 		var id config.RebindConfirmedIdentity
-		if err := json.Unmarshal(ans.body, &id); err != nil || !rebindAgentIDPattern.MatchString(id.AgentID) ||
-			!identityUUIDPattern.MatchString(id.DeviceID) || !identityUUIDPattern.MatchString(id.OrgID) ||
-			!identityUUIDPattern.MatchString(id.SiteID) {
+		if err := json.Unmarshal(ans.body, &id); err != nil || !rebindAgentIDPattern().MatchString(id.AgentID) ||
+			!identityUUIDPattern().MatchString(id.DeviceID) || !identityUUIDPattern().MatchString(id.OrgID) ||
+			!identityUUIDPattern().MatchString(id.SiteID) {
 			// Replays answer 200 at any later time: ask again.
 			h.rebindWait(now, "reattach confirm answered 200 with an unreadable identity; replaying", rebindAnswer{status: ans.status})
 			return nil

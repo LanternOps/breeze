@@ -27,7 +27,9 @@ type ContainmentReport struct {
 
 type ContainmentDesired = isolation.DesiredBlock
 
-var containmentUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var containmentUUID = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+})
 var errContainmentSpec = errors.New("invalid network isolation specification")
 
 // containmentExpirySlack tolerates agent/server clock skew on the 720 h upper
@@ -66,7 +68,7 @@ func validateContainmentPayload(payload map[string]any, server string, now time.
 }
 
 func validContainmentIdentity(s isolation.Spec, now time.Time) bool {
-	return containmentUUID.MatchString(s.IsolationID) && s.Generation >= 1 && now.Before(s.ExpiresAt) && !s.ExpiresAt.After(now.Add(isolation.MaxTTL+containmentExpirySlack))
+	return containmentUUID().MatchString(s.IsolationID) && s.Generation >= 1 && now.Before(s.ExpiresAt) && !s.ExpiresAt.After(now.Add(isolation.MaxTTL+containmentExpirySlack))
 }
 
 // validateContainmentAllow binds the permit to this agent's configured control

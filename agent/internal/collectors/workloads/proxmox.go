@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,7 +32,7 @@ const (
 // validNodeName is the charset a Proxmox node name may have (a hostname label).
 // The name comes from the host, and it is checked before it becomes part of an
 // argv element or a file path.
-var validNodeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
+var validNodeName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`) })
 
 // proxmoxDriver inventories the local node's QEMU VMs and LXC containers with
 // `pvesh get` (local, in-process API calls as root: no ticket, no network
@@ -102,7 +103,7 @@ func (d *proxmoxDriver) localNode() (string, error) {
 		return "", errPmxcfsUnreadable
 	}
 	name, ok := strings.CutPrefix(target, "nodes/")
-	if !ok || !validNodeName.MatchString(name) {
+	if !ok || !validNodeName().MatchString(name) {
 		return "", errors.New("workloads: invalid node name")
 	}
 	return name, nil
