@@ -180,13 +180,15 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
 
   useEffect(() => {
     // A live TERMINAL result normally ends polling, but `polled` may still hold
-    // an in-progress response (partial cost). So unless a settled poll has
+    // an in-progress response (partial cost). So unless a terminal poll has
     // already landed, take ONE more poll to land the settled state (cost,
     // files), retried at most SETTLING_POLL_RETRIES times if it fails. A live `awaiting_approval` is different: it carries a
     // count but not the steps, so the poll keeps running to load them and
     // stops itself below once nothing is left for this viewer to decide.
+    // "Landed" means a TERMINAL poll: an approval-parked one predates the live
+    // result and carries a partial cost.
     const current = polledRef.current;
-    if (deliveredLive && isSettled(current?.status)) return;
+    if (deliveredLive && isTerminal(current?.status ?? '')) return;
     const oneShot = deliveredLive;
     // Per-effect flags: a shared ref would be reset by the NEXT effect run while
     // this run's in-flight tick was still pending, letting it re-arm a timer.
@@ -209,20 +211,24 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
           if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
-            // The settling poll is done once it reads the run as settled; a read
-            // that still says in progress falls through to the bounded retry.
-            if (oneShot && isSettled(body.data.status)) { settled = true; return; }
-            // Keep polling a settled run only while a pending step is THIS
-            // viewer's to decide (it leaves the list once decided). A step
-            // only someone else can decide never ends this tab's polling.
-            const hasActionable = (body.data.intents ?? []).some(
-              (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
-            );
-            if (isSettled(body.data.status) && !hasActionable) {
-              // A finished (or approval-parked) run never changes on its own; keep polling and every open
-              // chat with an old run card becomes a background request forever.
-              settled = true;
-              return;
+            // The settling poll is done once it reads the run as terminal, like
+            // the live result; a read that still says running or
+            // awaiting_approval is stale and falls through to the bounded retry.
+            if (oneShot) {
+              if (isTerminal(body.data.status)) { settled = true; return; }
+            } else {
+              // Keep polling a settled run only while a pending step is THIS
+              // viewer's to decide (it leaves the list once decided). A step
+              // only someone else can decide never ends this tab's polling.
+              const hasActionable = (body.data.intents ?? []).some(
+                (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
+              );
+              if (isSettled(body.data.status) && !hasActionable) {
+                // A finished (or approval-parked) run never changes on its own; keep polling and every open
+                // chat with an old run card becomes a background request forever.
+                settled = true;
+                return;
+              }
             }
           }
         }

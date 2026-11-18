@@ -830,6 +830,60 @@ describe('analysis chain surface (W06)', () => {
       }
     });
 
+    it('retries 2 s apart, not on the 5 s polling cadence', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+        render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries when the settling poll still reads awaiting_approval after a live terminal result', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'awaiting_approval', intents: [] }));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes a settling poll when a live terminal result lands after an awaiting_approval poll', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'awaiting_approval', intents: [] }));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId, rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+        // Nothing is the viewer's to decide, so the approval-parked poll stopped.
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        rerender(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('gives up after two retries rather than polling forever', async () => {
       vi.useFakeTimers();
       try {

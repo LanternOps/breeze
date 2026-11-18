@@ -217,6 +217,17 @@ describe('run detail chain honours the tenant and site boundaries (real PostgreS
     expect(await readChain(readerA, rootA)).toEqual([rootA, leafA]);
     expect(await readChain(readerB, leafB)).toEqual([rootB, leafB]);
 
+    // A chain cannot span orgs: the composite (chain_root_run_id, org_id) FK
+    // rejects a member in another org, so the chain read's org pin is backed
+    // by the schema, not only by the predicate and RLS.
+    const crossOrg = await seedChainRun({
+      agentId: agentB, orgId: orgB, label: 'b-into-a', queuedAt: at(4),
+      continuedFromRunId: rootB, chainRootRunId: rootA, chainDepth: 1,
+    }).then(() => null, (err: unknown) => err as { code?: string; cause?: { code?: string } });
+    // 23503 = foreign_key_violation (drizzle may wrap the driver error in `cause`).
+    expect(crossOrg?.cause?.code ?? crossOrg?.code).toBe('23503');
+    expect(await readChain(readerA, rootA)).toEqual([rootA, leafA]);
+
     // Across the org boundary every step is opaque, root and member alike.
     for (const runId of [rootA, leafA]) {
       expect((await readerB.get(`/ai-agents/runs/${runId}`)).status, runId).toBe(404);
