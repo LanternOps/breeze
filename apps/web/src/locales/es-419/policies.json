@@ -796,8 +796,10 @@
         "notifyOnEnd": "Notificar al final",
         "sendNotificationWhenWindowCloses": "Enviar notificación cuando se cierre la ventana.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Las ventanas semanales se abren cada domingo a la hora de inicio, en la zona horaria seleccionada.",
-        "monthlyOpensOnTheFirst": "Las ventanas mensuales se abren el día 1 de cada mes a la hora de inicio, en la zona horaria seleccionada."
+        "dayOfWeek": "Día de la semana",
+        "dayOfWeekHint": "El día en que se abre cada ventana semanal, en la zona horaria seleccionada.",
+        "dayOfMonth": "Día del mes",
+        "dayOfMonthHint": "El día en que se abre cada ventana mensual, en la zona horaria seleccionada. En un mes que no tiene ese día, la ventana se abre el último día del mes."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Recolección del agente",

@@ -27,6 +27,10 @@ const response = {
         suppressAlerts: true,
         windowStart: '18:00',
         durationHours: 3,
+        // #9574: the day rides on the recurrence line, so a Saturday and a
+        // Sunday window no longer summarize identically.
+        dayOfWeek: 'sat',
+        dayOfMonth: 1,
       },
       sourceLevel: 'organization',
       sourceTargetId: 'org-1',
@@ -85,9 +89,10 @@ describe('DeviceEffectiveConfigTab per-feature summary (#9565)', () => {
     expect(lines).toHaveLength(4);
     expect(lines[0]).toMatch(/window start: 18:00/);
     expect(lines[1]).toMatch(/duration hours: 3/);
-    expect(lines[2]).toMatch(/recurrence: weekly/);
+    expect(lines[2]).toMatch(/recurrence: weekly on sat$/);
     expect(lines[3]).toMatch(/timezone: america\/denver/);
     expect(lines.join('|')).not.toMatch(/notify on end/);
+    expect(lines.join('|')).not.toMatch(/day of (week|month)/);
   });
 
   it('falls back to key order for a feature without a curated summary', async () => {

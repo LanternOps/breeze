@@ -72,6 +72,10 @@ export interface PolicyMaintenanceWindow {
   inheritedFromPolicyId: string | null;
   recurrence: string;
   windowStart: string | null;
+  /** #9574: weekday a `weekly` window opens on ('sun'..'sat'). */
+  dayOfWeek: string;
+  /** #9574: day a `monthly` window opens on (1-31; a shorter month uses its last day). */
+  dayOfMonth: number;
   durationHours: number;
   timezone: string;
   suppressAlerts: boolean;
@@ -206,6 +210,8 @@ export async function listPolicyMaintenanceWindows(
       inheritedFromPolicyId: row.inherited ? row.sourcePolicyId : null,
       recurrence: s.recurrence,
       windowStart: s.windowStart,
+      dayOfWeek: s.dayOfWeek,
+      dayOfMonth: s.dayOfMonth,
       durationHours: s.durationHours,
       timezone: s.timezone,
       suppressAlerts: s.suppressAlerts,

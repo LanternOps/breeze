@@ -796,8 +796,10 @@
         "notifyOnEnd": "Notifica alla fine",
         "sendNotificationWhenWindowCloses": "Invia una notifica alla chiusura della finestra.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Le finestre settimanali si aprono ogni domenica all’orario di inizio, nel fuso orario selezionato.",
-        "monthlyOpensOnTheFirst": "Le finestre mensili si aprono il giorno 1 di ogni mese all’orario di inizio, nel fuso orario selezionato."
+        "dayOfWeek": "Giorno della settimana",
+        "dayOfWeekHint": "Il giorno in cui si apre ogni finestra settimanale, nel fuso orario selezionato.",
+        "dayOfMonth": "Giorno del mese",
+        "dayOfMonthHint": "Il giorno in cui si apre ogni finestra mensile, nel fuso orario selezionato. Nei mesi senza quel giorno, la finestra si apre l’ultimo giorno del mese."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Raccolta dell'agente",

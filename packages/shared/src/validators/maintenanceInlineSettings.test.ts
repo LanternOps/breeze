@@ -101,6 +101,28 @@ describe('maintenanceInlineSettingsSchema', () => {
     ).toBe(false);
   });
 
+  // #9574: the day a weekly / monthly window opens is configurable. The
+  // defaults are the day the evaluator pinned before the fields existed, so a
+  // payload that omits them keeps opening on Sunday / the 1st.
+  it('defaults dayOfWeek to sun and dayOfMonth to 1 (the pre-#9574 fixed days)', () => {
+    const parsed = maintenanceInlineSettingsSchema.parse({});
+    expect(parsed.dayOfWeek).toBe('sun');
+    expect(parsed.dayOfMonth).toBe(1);
+  });
+
+  it('accepts a chosen weekday and any day of the month up to the 31st', () => {
+    expect(maintenanceInlineSettingsSchema.parse({ recurrence: 'weekly', dayOfWeek: 'wed' }).dayOfWeek).toBe('wed');
+    expect(maintenanceInlineSettingsSchema.parse({ recurrence: 'monthly', dayOfMonth: 31 }).dayOfMonth).toBe(31);
+  });
+
+  it.each(['funday', 'Wednesday', 3, '', null])('rejects dayOfWeek %s', (dayOfWeek) => {
+    expect(maintenanceInlineSettingsSchema.safeParse({ recurrence: 'weekly', dayOfWeek }).success).toBe(false);
+  });
+
+  it.each([0, 32, 1.5, '15', null])('rejects dayOfMonth %s', (dayOfMonth) => {
+    expect(maintenanceInlineSettingsSchema.safeParse({ recurrence: 'monthly', dayOfMonth }).success).toBe(false);
+  });
+
   it('rejects an out-of-range notifyBeforeMinutes', () => {
     expect(maintenanceInlineSettingsSchema.safeParse({ notifyBeforeMinutes: -1 }).success).toBe(false);
     expect(maintenanceInlineSettingsSchema.safeParse({ notifyBeforeMinutes: 1441 }).success).toBe(false);

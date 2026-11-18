@@ -51,6 +51,8 @@ function settings(overrides: Record<string, unknown> = {}) {
     durationHours: 4,
     timezone: 'UTC',
     windowStart: '02:00',
+    dayOfWeek: 'sun',
+    dayOfMonth: 1,
     suppressAlerts: true,
     suppressPatching: true,
     suppressAutomations: false,
@@ -121,6 +123,9 @@ describe('listPolicyMaintenanceWindows (#10409)', () => {
         inheritedFromPolicyId: null,
         recurrence: 'weekly',
         windowStart: '02:00',
+        // #9574: the list says which day the window opens on.
+        dayOfWeek: 'sun',
+        dayOfMonth: 1,
         durationHours: 4,
         timezone: 'UTC',
         suppressAlerts: true,
