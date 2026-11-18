@@ -58,6 +58,11 @@ type Client struct {
 	role           ipc.HelperRole // "system" or "user"
 	binaryKind     string
 	context        string
+	// logindSessionID and spawnTicket are set only on the Linux desktop
+	// helper (NewLinuxDesktopClient). The ticket is single-use: authenticate
+	// clears it after its one attempt, and it is never logged.
+	logindSessionID string
+	spawnTicket     string
 	// connMu guards conn against the Stop-from-another-goroutine race the
 	// reconnect supervisor creates; see connect and currentConn.
 	connMu     sync.Mutex
@@ -315,6 +320,9 @@ func (c *Client) currentConn() *ipc.Conn {
 // dialIPC is implemented in client_windows.go and client_unix.go.
 
 func (c *Client) authenticate() error {
+	// The spawn ticket is good for one attempt whatever its outcome.
+	defer func() { c.spawnTicket = "" }()
+
 	var (
 		uid      uint64
 		sid      string
@@ -387,6 +395,12 @@ func (c *Client) authenticate() error {
 		RendererVersion:       helperRendererVersion(),
 		// The session's UI language (#10190 W03); the agent negotiates it.
 		UILocale: helperUILocale(),
+	}
+	// Only the Linux desktop helper carries these; the broker refuses them
+	// on any other role or binary kind.
+	if c.spawnTicket != "" {
+		authReq.SpawnTicket = c.spawnTicket
+		authReq.LogindSessionID = c.logindSessionID
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -1719,8 +1733,18 @@ func detectDisplayEnv() string {
 	return ""
 }
 
+// linuxSessionBackendRegistered reports whether a capture backend for the
+// Linux desktop helper's session is compiled in and registered. Task 3.3 of
+// #12117 points it at the desktop session backend registry.
+var linuxSessionBackendRegistered = func() bool { return false }
+
 func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
-	display := detectDisplayEnv()
+	return detectCapabilitiesForOS(runtime.GOOS, binaryKind, desktopContext, detectDisplayEnv())
+}
+
+// detectCapabilitiesForOS is detectCapabilities with the platform and the
+// display server passed in, so every platform's decision is testable.
+func detectCapabilitiesForOS(goos, binaryKind, desktopContext, display string) ipc.Capabilities {
 	hasDisplay := display != ""
 
 	caps := ipc.Capabilities{
@@ -1735,7 +1759,12 @@ func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 		caps.CanNotify = false
 		caps.CanTray = false
 		caps.CanClipboard = false
-		if runtime.GOOS == "darwin" {
+		if goos == "linux" && !linuxSessionBackendRegistered() {
+			// The Linux desktop helper captures only through a registered
+			// session backend; without one it must not offer capture.
+			caps.CanCapture = false
+		}
+		if goos == "darwin" {
 			// A permission check: it never captures (#8390) and never calls
 			// ScreenCaptureKit (#8058). A session may try unless access is
 			// known to be denied; its own capture is the precise check, and
