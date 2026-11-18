@@ -96,6 +96,13 @@ describe('describeMaintenanceSchedule (#10397)', () => {
     expect(out.nextWindow!.startsAt).toBe('2026-11-15T01:00:00.000Z');
   });
 
+  it('adds the short-month note from day 29, not before', () => {
+    expect(describeMaintenanceSchedule(settings({ recurrence: 'monthly', dayOfMonth: 28 }), NOW)!.opensOn)
+      .toBe('day 28 of each month');
+    expect(describeMaintenanceSchedule(settings({ recurrence: 'monthly', dayOfMonth: 29 }), NOW)!.opensOn)
+      .toBe('day 29 of each month (the last day in shorter months)');
+  });
+
   it('daily opens every day', () => {
     const out = describeMaintenanceSchedule(settings({ recurrence: 'daily', windowStart: '13:00' }), NOW)!;
     expect(out.opensOn).toBe('every day');

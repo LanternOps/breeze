@@ -191,6 +191,25 @@ describe('projectNextConfigPolicyWindow (pure)', () => {
       .toEqual(new Date('2027-04-30T00:00:00Z'));
   });
 
+  it('steps a monthly window from December into January of the next year', () => {
+    const s = settings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '12:00', durationHours: 24 });
+    expect(projectNextConfigPolicyWindow(s, new Date('2027-01-01T13:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-01-31T12:00:00Z'));
+    const thirtieth = settings({ recurrence: 'monthly', dayOfMonth: 30, windowStart: '12:00' });
+    expect(projectNextConfigPolicyWindow(thirtieth, new Date('2026-12-30T15:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-01-30T12:00:00Z'));
+  });
+
+  it('steps a day-30 window through February (28th, or 29th in a leap year) and back to the 30th', () => {
+    const s = settings({ recurrence: 'monthly', dayOfMonth: 30, windowStart: '00:00' });
+    expect(projectNextConfigPolicyWindow(s, new Date('2027-01-30T03:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-02-28T00:00:00Z'));
+    expect(projectNextConfigPolicyWindow(s, new Date('2028-01-30T03:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2028-02-29T00:00:00Z'));
+    expect(projectNextConfigPolicyWindow(s, new Date('2028-02-29T03:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2028-03-30T00:00:00Z'));
+  });
+
   it('agrees with isInMaintenanceWindow at the boundary — the one assertion that stops two implementations drifting', () => {
     const cases = [
       settings(),
@@ -200,7 +219,13 @@ describe('projectNextConfigPolicyWindow (pure)', () => {
       settings({ recurrence: 'weekly', dayOfWeek: 'thu', windowStart: '01:30', timezone: 'Europe/London' }),
       settings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '04:00', timezone: 'America/New_York' }),
     ];
-    const froms = [new Date('2026-09-15T01:00:00Z'), new Date('2026-03-08T00:00:00Z'), new Date('2026-10-31T20:00:00Z'), new Date('2027-02-10T00:00:00Z')];
+    // The last two sit just after a configured-day window (Thu 01:30 London;
+    // 31 Jan 04:00 New York) so the projector must step to the next one — for
+    // the day-31 window, onto the clamped 28 February.
+    const froms = [
+      new Date('2026-09-15T01:00:00Z'), new Date('2026-03-08T00:00:00Z'), new Date('2026-10-31T20:00:00Z'),
+      new Date('2027-02-10T00:00:00Z'), new Date('2026-10-29T04:00:00Z'), new Date('2027-01-31T11:00:00Z'),
+    ];
     for (const s of cases) {
       for (const from of froms) {
         const w = projectNextConfigPolicyWindow(s, from);

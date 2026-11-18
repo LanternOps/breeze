@@ -163,6 +163,29 @@ describe('isInMaintenanceWindow', () => {
       expect(isInMaintenanceWindow(settings, new Date('2026-11-25T04:45:00Z')).active).toBe(false);
     });
 
+    it('keeps a window open across midnight when the weekday is later in the week than today', () => {
+      // Friday 2026-11-20 20:00 + 12h closes Saturday 08:00; now is Saturday 01:00.
+      const settings = makeSettings({ recurrence: 'weekly', dayOfWeek: 'fri', windowStart: '20:00', durationHours: 12 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-11-21T01:00:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2026-11-21T08:00:00Z')).active).toBe(false);
+    });
+
+    it("uses last week's occurrence when today is the configured weekday but the start is still ahead", () => {
+      // Wednesday 2026-11-18 01:00, a Wednesday 02:00 window lasting 48h: last
+      // week's (11-11 02:00 → 11-13 02:00) is long closed and today's has not begun.
+      const settings = makeSettings({ recurrence: 'weekly', dayOfWeek: 'wed', windowStart: '02:00', durationHours: 48 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-11-18T01:00:00Z')).active).toBe(false);
+      expect(isInMaintenanceWindow(settings, new Date('2026-11-13T01:59:00Z')).active).toBe(true);
+    });
+
+    it('warns and opens on Sunday for an unknown stored weekday rather than never opening', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({ recurrence: 'weekly', dayOfWeek: 'funday', windowStart: '02:00', durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2026-11-22T02:30:00Z')).active).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('funday'));
+      warn.mockRestore();
+    });
+
     it('treats a row with no dayOfWeek as Sunday (pre-#9574 rows)', () => {
       const settings = makeSettings({ recurrence: 'weekly', windowStart: '02:00', durationHours: 2 });
       expect(isInMaintenanceWindow(settings, new Date('2026-11-22T02:30:00Z')).active).toBe(true);
@@ -213,6 +236,27 @@ describe('isInMaintenanceWindow', () => {
       });
       expect(isInMaintenanceWindow(settings, new Date('2027-03-14T06:59:59Z')).active).toBe(false);
       expect(isInMaintenanceWindow(settings, new Date('2027-03-14T07:00:00Z')).active).toBe(true);
+    });
+
+    it("looks back across the year boundary to December's occurrence", () => {
+      // At 06:00 on 1 January the governing occurrence is 31 December 12:00.
+      const settings = makeSettings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '12:00', durationHours: 24 });
+      expect(isInMaintenanceWindow(settings, new Date('2027-01-01T06:00:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2027-01-01T12:00:00Z')).active).toBe(false);
+    });
+
+    it('opens on the 28th for a day-30 window in February', () => {
+      const settings = makeSettings({ recurrence: 'monthly', dayOfMonth: 30, durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2027-02-28T00:30:00Z')).active).toBe(true);
+      expect(isInMaintenanceWindow(settings, new Date('2028-02-29T00:30:00Z')).active).toBe(true);
+    });
+
+    it.each([0, 32, 1.5])('warns and opens on the 1st for an out-of-range stored dayOfMonth %s', (dayOfMonth) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({ recurrence: 'monthly', dayOfMonth, durationHours: 2 });
+      expect(isInMaintenanceWindow(settings, new Date('2027-03-01T00:30:00Z')).active).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(String(dayOfMonth)));
+      warn.mockRestore();
     });
 
     it('treats a row with no dayOfMonth as the 1st (pre-#9574 rows)', () => {
