@@ -194,7 +194,7 @@ func foreignOwnerFor(t *testing.T, b *Broker, path string) {
 
 // requireReclaimedDesktopDir asserts the endpoint directory is a fresh real
 // directory with the exact mode, not the entry that was there before, that
-// the endpoint socket is inside it, and that nothing was left beside it.
+// the endpoint socket is inside it, and where the replaced entry went.
 func requireReclaimedDesktopDir(t *testing.T, b *Broker, before fs.FileInfo, endpoint string) {
 	t.Helper()
 	dir := b.linuxDesktopSocketDir
@@ -211,14 +211,33 @@ func requireReclaimedDesktopDir(t *testing.T, b *Broker, before fs.FileInfo, end
 	if before != nil && os.SameFile(before, fi) {
 		t.Fatal("the squatted directory was kept instead of replaced")
 	}
+	// The replaced entry sits in a fresh root-only quarantine directory, so
+	// its former owner can no longer reach it by path, and root never walks
+	// a tree that owner can still grow (no cleanup while holding the lock).
 	entries, err := os.ReadDir(filepath.Dir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
+	quarantines := 0
 	for _, e := range entries {
-		if e.Name() != filepath.Base(dir) {
-			t.Fatalf("reclaimed entry %q left in the parent", e.Name())
+		if e.Name() == filepath.Base(dir) {
+			continue
 		}
+		if !strings.HasPrefix(e.Name(), "."+filepath.Base(dir)+".reclaimed-") {
+			t.Fatalf("unexpected entry %q left in the parent", e.Name())
+		}
+		quarantines++
+		q := filepath.Join(filepath.Dir(dir), e.Name())
+		qi, err := os.Lstat(q)
+		if err != nil || !qi.IsDir() || qi.Mode().Perm() != 0o700 {
+			t.Fatalf("quarantine %q mode %v %v; want a 0700 directory", q, qi.Mode(), err)
+		}
+		if _, err := os.Lstat(filepath.Join(q, filepath.Base(dir))); err != nil {
+			t.Fatalf("replaced entry not in quarantine: %v", err)
+		}
+	}
+	if quarantines != 1 {
+		t.Fatalf("%d quarantine directories; want exactly 1", quarantines)
 	}
 	if fi, err := os.Lstat(endpoint); err != nil || fi.Mode()&os.ModeSocket == 0 {
 		t.Fatalf("endpoint socket missing after reclaim: %v", err)

@@ -388,28 +388,36 @@ func (b *Broker) ensureLinuxDesktopParent(parent string) error {
 	return nil
 }
 
-// reclaimLinuxDesktopDir moves whatever is at dir aside within its
-// daemon-only parent, recreates dir, and then removes the moved entry. The
-// removal is best effort: os.RemoveAll does not follow symlinks, and an entry
-// it cannot remove no longer occupies the endpoint path. Caller holds
-// linuxDesktopMu and has proven the parent daemon-only-writable.
+// reclaimLinuxDesktopDir moves whatever is at dir into a fresh 0700
+// quarantine directory inside its daemon-only parent and recreates dir.
+//
+// The moved entry is deliberately not deleted. Its former owner may still
+// be adding to it through a descriptor opened earlier, so walking it could
+// take as long as that owner likes, and the caller holds linuxDesktopMu. In
+// a 0700 directory it is out of reach by path, and /run is tmpfs, so a
+// reboot clears it. A reclaim only happens once per bad entry, because the
+// parent no longer lets anyone else create one. Caller holds linuxDesktopMu
+// and has proven the parent daemon-only-writable.
 func (b *Broker) reclaimLinuxDesktopDir(dir, why string) error {
-	aside := filepath.Join(filepath.Dir(dir),
-		fmt.Sprintf(".%s.reclaimed-%d-%d", filepath.Base(dir), os.Getpid(), time.Now().UnixNano()))
-	log.Warn("Linux desktop endpoint directory is not the one root creates; replacing it",
-		"dir", dir, "reason", why)
-	if err := os.Rename(dir, aside); err != nil {
+	quarantine, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".reclaimed-")
+	if err != nil {
+		return fmt.Errorf("%w: cannot create quarantine for %s: %v", errLinuxDesktopEndpointUnsafe, dir, err)
+	}
+	if err := os.Chmod(quarantine, 0o700); err != nil {
+		_ = os.Remove(quarantine)
+		return fmt.Errorf("chmod %s: %w", quarantine, err)
+	}
+	if err := os.Rename(dir, filepath.Join(quarantine, filepath.Base(dir))); err != nil {
+		_ = os.Remove(quarantine)
 		return fmt.Errorf("%w: cannot move %s aside: %v", errLinuxDesktopEndpointUnsafe, dir, err)
 	}
+	log.Warn("Linux desktop endpoint directory was not the one root creates; quarantined it and created a new one",
+		"dir", dir, "reason", why, "quarantine", quarantine)
 	if err := os.Mkdir(dir, linuxDesktopEndpointDirMode); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	if err := os.Chmod(dir, linuxDesktopEndpointDirMode); err != nil {
 		return fmt.Errorf("chmod %s: %w", dir, err)
-	}
-	if err := os.RemoveAll(aside); err != nil {
-		log.Warn("could not remove the replaced Linux desktop endpoint directory",
-			"path", aside, "error", err.Error())
 	}
 	return nil
 }
