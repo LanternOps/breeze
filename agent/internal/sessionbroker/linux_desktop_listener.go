@@ -14,8 +14,10 @@ package sessionbroker
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -157,9 +159,10 @@ func (b *Broker) linuxDesktopDir() string {
 
 // EnsureLinuxDesktopListener returns uid's endpoint, creating it when it
 // does not exist or its socket file is no longer the one root created.
-// Creation fails closed: an existing directory or path that is not exactly
-// what root expects is refused, never followed, and only ever removed when
-// it is a socket.
+// Creation fails closed and never follows a symlink: a parent directory
+// that is not the daemon's is refused, an endpoint directory that is not
+// exactly what root creates is moved aside and replaced (ensureLinuxDesktopDir),
+// and an entry at the socket path is only ever removed when it is a socket.
 func (b *Broker) EnsureLinuxDesktopListener(uid uint32) (string, error) {
 	if uid == 0 {
 		return "", fmt.Errorf("%w: uid 0", errLinuxDesktopEndpointUnsafe)
@@ -268,9 +271,31 @@ func (b *Broker) openLinuxDesktopListener(uid uint32) (*linuxDesktopListener, er
 	}, nil
 }
 
-// ensureLinuxDesktopDir creates dir 0755 owned by the daemon, or accepts an
-// existing one only when it is exactly that. Never follows a symlink.
+func (b *Broker) linuxDesktopOwner(fi fs.FileInfo) (uint32, bool) {
+	if b.linuxDesktopOwnerOf != nil {
+		return b.linuxDesktopOwnerOf(fi)
+	}
+	_, _, uid, ok := fileIdentity(fi)
+	return uid, ok
+}
+
+// ensureLinuxDesktopDir leaves dir a real directory, mode 0755, owned by the
+// daemon, inside a parent only the daemon can write. Never follows a
+// symlink.
+//
+// The parent (/run/breeze) is created 0770 root:breeze at boot by tmpfiles
+// and RuntimeDirectory, and the agent narrows it only when it starts, so an
+// unprivileged member of the IPC group can pre-create dir first. Refusing
+// such an entry would disable the helper for every user on the host until a
+// reboot. So the parent is proven (or narrowed) daemon-only-writable first,
+// after which nobody else can create, rename or replace an entry in it, and
+// anything at dir that is not exactly what root makes is moved aside and
+// replaced. Renaming moves a symlink itself, never its target.
 func (b *Broker) ensureLinuxDesktopDir(dir string) error {
+	parent := filepath.Dir(dir)
+	if err := b.ensureLinuxDesktopParent(parent); err != nil {
+		return err
+	}
 	if err := os.Mkdir(dir, linuxDesktopEndpointDirMode); err == nil {
 		// Mkdir is subject to the umask; set the exact mode.
 		if err := os.Chmod(dir, linuxDesktopEndpointDirMode); err != nil {
@@ -283,15 +308,108 @@ func (b *Broker) ensureLinuxDesktopDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", dir, err)
 	}
-	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %s is not a directory", errLinuxDesktopEndpointUnsafe, dir)
+	why := b.linuxDesktopDirProblem(fi)
+	if why == "" {
+		return nil
+	}
+	if err := b.reclaimLinuxDesktopDir(dir, why); err != nil {
+		return err
+	}
+	fi, err = os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if why := b.linuxDesktopDirProblem(fi); why != "" {
+		return fmt.Errorf("%w: %s %s after it was recreated", errLinuxDesktopEndpointUnsafe, dir, why)
+	}
+	return nil
+}
+
+// linuxDesktopDirProblem is "" when fi is exactly the endpoint directory
+// root creates, else why it is not.
+func (b *Broker) linuxDesktopDirProblem(fi fs.FileInfo) string {
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return "is a symlink"
+	}
+	if !fi.IsDir() {
+		return "is not a directory"
 	}
 	if fi.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != linuxDesktopEndpointDirMode {
-		return fmt.Errorf("%w: %s has mode %v", errLinuxDesktopEndpointUnsafe, dir, fi.Mode())
+		return fmt.Sprintf("has mode %v", fi.Mode())
 	}
-	_, _, owner, ok := fileIdentity(fi)
+	owner, ok := b.linuxDesktopOwner(fi)
+	if !ok {
+		return "has no identifiable owner"
+	}
+	if owner != b.linuxDesktopDirOwner {
+		return fmt.Sprintf("is owned by uid %d", owner)
+	}
+	return ""
+}
+
+// ensureLinuxDesktopParent creates parent 0755 when missing and otherwise
+// requires a real directory owned by the daemon, clearing any group or other
+// write bit so no one else can add, rename or replace entries in it. This is
+// the same narrowing setupSocket applies to /run/breeze at start, and the
+// same no-group/other-write rule the client's directory-chain check holds
+// every ancestor of a socket to (ipc.CheckUnixServerIdentity).
+func (b *Broker) ensureLinuxDesktopParent(parent string) error {
+	if err := os.Mkdir(parent, 0o755); err == nil {
+		if err := os.Chmod(parent, 0o755); err != nil {
+			return fmt.Errorf("chmod %s: %w", parent, err)
+		}
+	} else if !os.IsExist(err) {
+		return fmt.Errorf("mkdir %s: %w", parent, err)
+	}
+	fi, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", parent, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%w: parent %s is not a directory", errLinuxDesktopEndpointUnsafe, parent)
+	}
+	owner, ok := b.linuxDesktopOwner(fi)
 	if !ok || owner != b.linuxDesktopDirOwner {
-		return fmt.Errorf("%w: %s is not owned by uid %d", errLinuxDesktopEndpointUnsafe, dir, b.linuxDesktopDirOwner)
+		return fmt.Errorf("%w: parent %s is not owned by uid %d", errLinuxDesktopEndpointUnsafe, parent, b.linuxDesktopDirOwner)
+	}
+	if fi.Mode().Perm()&0o022 == 0 {
+		return nil
+	}
+	if err := os.Chmod(parent, fi.Mode().Perm()&^0o022); err != nil {
+		return fmt.Errorf("chmod %s: %w", parent, err)
+	}
+	after, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", parent, err)
+	}
+	if !os.SameFile(fi, after) || after.Mode()&os.ModeSymlink != 0 || after.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%w: parent %s changed while it was narrowed", errLinuxDesktopEndpointUnsafe, parent)
+	}
+	return nil
+}
+
+// reclaimLinuxDesktopDir moves whatever is at dir aside within its
+// daemon-only parent, recreates dir, and then removes the moved entry. The
+// removal is best effort: os.RemoveAll does not follow symlinks, and an entry
+// it cannot remove no longer occupies the endpoint path. Caller holds
+// linuxDesktopMu and has proven the parent daemon-only-writable.
+func (b *Broker) reclaimLinuxDesktopDir(dir, why string) error {
+	aside := filepath.Join(filepath.Dir(dir),
+		fmt.Sprintf(".%s.reclaimed-%d-%d", filepath.Base(dir), os.Getpid(), time.Now().UnixNano()))
+	log.Warn("Linux desktop endpoint directory is not the one root creates; replacing it",
+		"dir", dir, "reason", why)
+	if err := os.Rename(dir, aside); err != nil {
+		return fmt.Errorf("%w: cannot move %s aside: %v", errLinuxDesktopEndpointUnsafe, dir, err)
+	}
+	if err := os.Mkdir(dir, linuxDesktopEndpointDirMode); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, linuxDesktopEndpointDirMode); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	if err := os.RemoveAll(aside); err != nil {
+		log.Warn("could not remove the replaced Linux desktop endpoint directory",
+			"path", aside, "error", err.Error())
 	}
 	return nil
 }

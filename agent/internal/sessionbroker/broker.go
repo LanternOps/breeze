@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -385,6 +386,9 @@ type Broker struct {
 	linuxDesktopSocketDir string
 	linuxDesktopDirOwner  uint32
 	linuxDesktopChown     func(path string, uid uint32) error
+	// linuxDesktopOwnerOf reports the owner uid of an endpoint path entry;
+	// nil means fileIdentity. Tests use it to simulate a non-root owner.
+	linuxDesktopOwnerOf func(fs.FileInfo) (uint32, bool)
 }
 
 // keepaliveTiming is the ping interval and pong timeout for this broker.

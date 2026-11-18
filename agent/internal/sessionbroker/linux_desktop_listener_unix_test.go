@@ -5,6 +5,7 @@ package sessionbroker
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -168,7 +169,92 @@ func TestLinuxDesktopListener_RefusesRootUID(t *testing.T) {
 	}
 }
 
-func TestLinuxDesktopListener_RefusesForeignOwnedDir(t *testing.T) {
+// foreignOwnerFor makes the broker see the entry currently at path as owned
+// by a non-root uid, the way a pre-created /run/breeze/desktop looks to root.
+// The fake follows the inode, so a directory root recreates there reads as
+// root's own.
+func foreignOwnerFor(t *testing.T, b *Broker, path string) {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	squatDev, squatIno, _, ok := fileIdentity(fi)
+	if !ok {
+		t.Fatal("cannot identify squatted entry")
+	}
+	b.linuxDesktopOwnerOf = func(fi fs.FileInfo) (uint32, bool) {
+		dev, ino, uid, ok := fileIdentity(fi)
+		if ok && dev == squatDev && ino == squatIno {
+			return b.linuxDesktopDirOwner + 1000, true
+		}
+		return uid, ok
+	}
+}
+
+// requireReclaimedDesktopDir asserts the endpoint directory is a fresh real
+// directory with the exact mode, not the entry that was there before, that
+// the endpoint socket is inside it, and that nothing was left beside it.
+func requireReclaimedDesktopDir(t *testing.T, b *Broker, before fs.FileInfo, endpoint string) {
+	t.Helper()
+	dir := b.linuxDesktopSocketDir
+	if filepath.Dir(endpoint) != dir {
+		t.Fatalf("endpoint %q is not inside %q", endpoint, dir)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("endpoint dir mode %v; want a real 0755 directory", fi.Mode())
+	}
+	if before != nil && os.SameFile(before, fi) {
+		t.Fatal("the squatted directory was kept instead of replaced")
+	}
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(dir) {
+			t.Fatalf("reclaimed entry %q left in the parent", e.Name())
+		}
+	}
+	if fi, err := os.Lstat(endpoint); err != nil || fi.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("endpoint socket missing after reclaim: %v", err)
+	}
+}
+
+// A local user who pre-creates the endpoint directory while /run/breeze is
+// still 0770 root:breeze at boot must not disable the helper for the host:
+// root moves the squatted entry aside and recreates its own (Strix, #12189).
+func TestLinuxDesktopListener_ReclaimsSquattedDir(t *testing.T) {
+	t.Run("foreign-owned directory", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		t.Cleanup(b.Close)
+		if err := os.Mkdir(b.linuxDesktopSocketDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(b.linuxDesktopSocketDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// A planted non-socket at the uid's path would otherwise be refused.
+		planted := filepath.Join(b.linuxDesktopSocketDir, "4242.sock")
+		if err := os.WriteFile(planted, []byte("squat"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Lstat(b.linuxDesktopSocketDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreignOwnerFor(t, b, b.linuxDesktopSocketDir)
+		path, err := b.EnsureLinuxDesktopListener(4242)
+		if err != nil {
+			t.Fatalf("Ensure after squat: %v", err)
+		}
+		requireReclaimedDesktopDir(t, b, before, path)
+	})
 	t.Run("wrong mode", func(t *testing.T) {
 		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
 		linuxDesktopTestDir(t)(b)
@@ -176,27 +262,18 @@ func TestLinuxDesktopListener_RefusesForeignOwnedDir(t *testing.T) {
 		if err := os.Mkdir(b.linuxDesktopSocketDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(b.linuxDesktopSocketDir, 0o775); err != nil {
+		if err := os.Chmod(b.linuxDesktopSocketDir, 0o777); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
-			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
-		}
-		if fi, err := os.Lstat(b.linuxDesktopSocketDir); err != nil || fi.Mode().Perm() != 0o775 {
-			t.Fatalf("refused dir was modified: %v %v", fi.Mode(), err)
-		}
-	})
-	t.Run("wrong owner", func(t *testing.T) {
-		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
-		linuxDesktopTestDir(t)(b)
-		b.linuxDesktopDirOwner = uint32(os.Geteuid()) + 1
-		t.Cleanup(b.Close)
-		if err := os.Mkdir(b.linuxDesktopSocketDir, 0o755); err != nil {
+		before, err := os.Lstat(b.linuxDesktopSocketDir)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
-			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
+		path, err := b.EnsureLinuxDesktopListener(4242)
+		if err != nil {
+			t.Fatalf("Ensure: %v", err)
 		}
+		requireReclaimedDesktopDir(t, b, before, path)
 	})
 	t.Run("not a directory", func(t *testing.T) {
 		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
@@ -205,16 +282,12 @@ func TestLinuxDesktopListener_RefusesForeignOwnedDir(t *testing.T) {
 		if err := os.WriteFile(b.linuxDesktopSocketDir, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
-			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
+		path, err := b.EnsureLinuxDesktopListener(4242)
+		if err != nil {
+			t.Fatalf("Ensure: %v", err)
 		}
-		if _, err := os.Lstat(b.linuxDesktopSocketDir); err != nil {
-			t.Fatalf("refused file was removed: %v", err)
-		}
+		requireReclaimedDesktopDir(t, b, nil, path)
 	})
-}
-
-func TestLinuxDesktopListener_SymlinkedPathRefused(t *testing.T) {
 	t.Run("symlinked dir", func(t *testing.T) {
 		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
 		linuxDesktopTestDir(t)(b)
@@ -223,16 +296,118 @@ func TestLinuxDesktopListener_SymlinkedPathRefused(t *testing.T) {
 		if err := os.Chmod(target, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		keep := filepath.Join(target, "keep")
+		if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Symlink(target, b.linuxDesktopSocketDir); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
-			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
+		path, err := b.EnsureLinuxDesktopListener(4242)
+		if err != nil {
+			t.Fatalf("Ensure: %v", err)
 		}
+		requireReclaimedDesktopDir(t, b, nil, path)
 		if _, err := os.Lstat(filepath.Join(target, "4242.sock")); !os.IsNotExist(err) {
 			t.Fatal("a socket was created through the symlink")
 		}
+		if data, err := os.ReadFile(keep); err != nil || string(data) != "keep" {
+			t.Fatalf("symlink target contents were touched: %q %v", data, err)
+		}
 	})
+	t.Run("valid dir with live sockets kept", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		t.Cleanup(b.Close)
+		first, err := b.EnsureLinuxDesktopListener(4242)
+		if err != nil {
+			t.Fatalf("Ensure 4242: %v", err)
+		}
+		before, err := os.Lstat(b.linuxDesktopSocketDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.EnsureLinuxDesktopListener(4243); err != nil {
+			t.Fatalf("Ensure 4243: %v", err)
+		}
+		after, err := os.Lstat(b.linuxDesktopSocketDir)
+		if err != nil || !os.SameFile(before, after) {
+			t.Fatalf("root's own directory was replaced: %v", err)
+		}
+		if again, err := b.EnsureLinuxDesktopListener(4242); err != nil || again != first {
+			t.Fatalf("first endpoint lost: %q %v", again, err)
+		}
+	})
+}
+
+// The endpoint directory is only as safe as its parent: root creates the
+// parent when missing, narrows a group/other-writable one it owns, and
+// refuses one it does not own or that is a symlink.
+func TestLinuxDesktopListener_ParentDir(t *testing.T) {
+	t.Run("missing parent created 0755", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		t.Cleanup(b.Close)
+		b.linuxDesktopSocketDir = filepath.Join(filepath.Dir(b.linuxDesktopSocketDir), "breeze", "desktop")
+		if _, err := b.EnsureLinuxDesktopListener(4242); err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+		fi, err := os.Lstat(filepath.Dir(b.linuxDesktopSocketDir))
+		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o755 {
+			t.Fatalf("parent %v %v; want 0755 directory", fi, err)
+		}
+	})
+	t.Run("group-writable parent narrowed", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		t.Cleanup(b.Close)
+		parent := filepath.Dir(b.linuxDesktopSocketDir)
+		if err := os.Chmod(parent, 0o770); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.EnsureLinuxDesktopListener(4242); err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+		fi, err := os.Lstat(parent)
+		if err != nil || fi.Mode().Perm()&0o022 != 0 {
+			t.Fatalf("parent mode %v %v; want no group/other write", fi.Mode(), err)
+		}
+	})
+	t.Run("foreign-owned parent refused", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		b.linuxDesktopDirOwner = uint32(os.Geteuid()) + 1
+		t.Cleanup(b.Close)
+		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
+			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
+		}
+		if _, err := os.Lstat(b.linuxDesktopSocketDir); !os.IsNotExist(err) {
+			t.Fatalf("endpoint dir created under a foreign-owned parent: %v", err)
+		}
+	})
+	t.Run("symlinked parent refused", func(t *testing.T) {
+		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
+		linuxDesktopTestDir(t)(b)
+		t.Cleanup(b.Close)
+		real := t.TempDir()
+		if err := os.Chmod(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(filepath.Dir(b.linuxDesktopSocketDir), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		b.linuxDesktopSocketDir = filepath.Join(link, "desktop")
+		if _, err := b.EnsureLinuxDesktopListener(4242); !errors.Is(err, errLinuxDesktopEndpointUnsafe) {
+			t.Fatalf("err = %v, want errLinuxDesktopEndpointUnsafe", err)
+		}
+		if _, err := os.Lstat(filepath.Join(real, "desktop")); !os.IsNotExist(err) {
+			t.Fatal("endpoint dir created through a symlinked parent")
+		}
+	})
+}
+
+func TestLinuxDesktopListener_SymlinkedPathRefused(t *testing.T) {
 	t.Run("symlinked socket path", func(t *testing.T) {
 		b := New(filepath.Join(t.TempDir(), "a.sock"), nil)
 		linuxDesktopTestDir(t)(b)
