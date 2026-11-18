@@ -163,14 +163,44 @@ describe('projectNextConfigPolicyWindow (pure)', () => {
     expect(fall?.startsAt).toEqual(new Date('2026-11-01T05:30:00Z'));
   });
 
+  // #9574: the configured weekday / day of month.
+  it('projects the next occurrence on the configured weekday', () => {
+    // 2026-11-18 is a Wednesday; the next Friday is 2026-11-20.
+    const w = projectNextConfigPolicyWindow(
+      settings({ recurrence: 'weekly', dayOfWeek: 'fri', windowStart: '22:00' }), new Date('2026-11-18T12:00:00Z'),
+    );
+    expect(w?.startsAt).toEqual(new Date('2026-11-20T22:00:00Z'));
+  });
+
+  it('keeps a weekly window on its wall-clock time across the DST fall-back', () => {
+    // Tuesday 02:00 Los Angeles: 09:00Z under PDT (2026-10-27), 10:00Z under PST (2026-11-03).
+    const s = settings({ recurrence: 'weekly', dayOfWeek: 'tue', windowStart: '02:00', timezone: 'America/Los_Angeles' });
+    expect(projectNextConfigPolicyWindow(s, new Date('2026-10-26T12:00:00Z'))?.startsAt).toEqual(new Date('2026-10-27T09:00:00Z'));
+    expect(projectNextConfigPolicyWindow(s, new Date('2026-10-28T12:00:00Z'))?.startsAt).toEqual(new Date('2026-11-03T10:00:00Z'));
+  });
+
+  it('projects a day-31 monthly window onto the last day of a short month, then back to the 31st', () => {
+    const s = settings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '00:00' });
+    expect(projectNextConfigPolicyWindow(s, new Date('2027-02-01T12:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-02-28T00:00:00Z'));
+    // After the February window closes the next one is 31 March, not 28 March.
+    expect(projectNextConfigPolicyWindow(s, new Date('2027-02-28T03:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-03-31T00:00:00Z'));
+    // ... and from 31 March, 30 April.
+    expect(projectNextConfigPolicyWindow(s, new Date('2027-03-31T03:00:00Z'), 60)?.startsAt)
+      .toEqual(new Date('2027-04-30T00:00:00Z'));
+  });
+
   it('agrees with isInMaintenanceWindow at the boundary — the one assertion that stops two implementations drifting', () => {
     const cases = [
       settings(),
       settings({ recurrence: 'weekly', windowStart: '23:00', timezone: 'Europe/Berlin' }),
       settings({ recurrence: 'monthly', windowStart: '00:15', timezone: 'Australia/Sydney' }),
       settings({ timezone: 'America/New_York', windowStart: '02:30' }),
+      settings({ recurrence: 'weekly', dayOfWeek: 'thu', windowStart: '01:30', timezone: 'Europe/London' }),
+      settings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '04:00', timezone: 'America/New_York' }),
     ];
-    const froms = [new Date('2026-09-15T01:00:00Z'), new Date('2026-03-08T00:00:00Z'), new Date('2026-10-31T20:00:00Z')];
+    const froms = [new Date('2026-09-15T01:00:00Z'), new Date('2026-03-08T00:00:00Z'), new Date('2026-10-31T20:00:00Z'), new Date('2027-02-10T00:00:00Z')];
     for (const s of cases) {
       for (const from of froms) {
         const w = projectNextConfigPolicyWindow(s, from);

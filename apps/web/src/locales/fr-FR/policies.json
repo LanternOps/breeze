@@ -796,8 +796,10 @@
         "notifyOnEnd": "Prévenez en fin de vie",
         "sendNotificationWhenWindowCloses": "Envoyez une notification lorsque la fenêtre se ferme.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Les fenêtres hebdomadaires s’ouvrent chaque dimanche à l’heure de début, dans le fuseau horaire sélectionné.",
-        "monthlyOpensOnTheFirst": "Les fenêtres mensuelles s’ouvrent le 1er de chaque mois à l’heure de début, dans le fuseau horaire sélectionné."
+        "dayOfWeek": "Jour de la semaine",
+        "dayOfWeekHint": "Le jour où s’ouvre chaque fenêtre hebdomadaire, dans le fuseau horaire sélectionné.",
+        "dayOfMonth": "Jour du mois",
+        "dayOfMonthHint": "Le jour où s’ouvre chaque fenêtre mensuelle, dans le fuseau horaire sélectionné. Si un mois n’a pas ce jour, la fenêtre s’ouvre le dernier jour du mois."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Collecte par l'agent",

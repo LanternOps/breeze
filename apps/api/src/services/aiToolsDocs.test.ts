@@ -281,7 +281,8 @@ describe('search_documentation against the shipped index (#10398)', () => {
 
   it('answers how weekly maintenance windows pick their day', async () => {
     const out = await handler({ query: 'weekly maintenance window day' }, mockAuth);
-    expect(out).toContain('most recent Sunday');
+    // #9574: the day is configurable; the shipped docs name the field and its default.
+    expect(out).toContain('configured day of the week (`dayOfWeek`, default Sunday)');
   });
 
   it('answers why a pending reboot is not happening in the window', async () => {
