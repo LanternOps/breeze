@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"runtime/pprof"
 	"sync/atomic"
@@ -19,24 +20,24 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
-// maxProfileBytes caps a single captured profile's raw size. Heap and
-// goroutine profiles are sampled/compact — typically well under 1 MB even for
-// large processes — and the server-side command result caps stdout at 5 MB,
-// so 1 MiB raw per profile (~1.37 MiB base64) keeps the combined result
-// comfortably inside that. Var (not const) so tests can exercise the cap
-// without allocating a gigantic heap.
+// maxProfileBytes caps a single captured profile's raw size. Profiles are
+// sampled/compact — typically well under 1 MB even for large processes. The
+// worst case is "all": three 1 MiB profiles are ~4.19 MB base64, inside the
+// wire.CommandResultBudget for stdout (TestHandleCapturePprofAllFitsResultBudget
+// guards it). Var (not const) so tests can exercise the cap without allocating
+// a gigantic heap.
 var maxProfileBytes = 1 << 20
 
 // capturePprofMinIntervalNs rate-limits captures. capture_pprof is a
 // server-queued command (up to 10 concurrent, 100 queued) and every heap/all
 // capture forces a stop-the-world runtime.GC(), so without a floor a burst of
 // queued captures degenerates into back-to-back GC pauses (#2422). Same
-// pattern as the heartbeat watchdog dump throttle (#2392). Atomic so tests
-// can shrink it.
+// pattern as the heartbeat watchdog dump throttle (#2392). The interval runs
+// from when the last capture finished. Atomic so tests can shrink it.
 var capturePprofMinIntervalNs atomic.Int64
 
 // capturePprofLastNs is the unix-nano timestamp of the last admitted capture
-// (0 = never).
+// (0 = never), or math.MaxInt64 while one is running.
 var capturePprofLastNs atomic.Int64
 
 // capturePprofCPUDurationNs is how long a cpu capture samples. Atomic so
@@ -129,6 +130,11 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 				interval),
 		}
 	}
+	// Hold the slot while the capture runs, then restart the interval when it
+	// finishes, so a request cannot slip in while a cpu capture is still
+	// stopping and fail with "CPU profile already running".
+	capturePprofLastNs.Store(math.MaxInt64)
+	defer func() { capturePprofLastNs.Store(time.Now().UnixNano()) }()
 
 	result := map[string]any{
 		"capturedAt": now.UTC().Format(time.RFC3339),

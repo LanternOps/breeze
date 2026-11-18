@@ -120,7 +120,9 @@ files=$(mktemp -d)
 cp "$agent" "$files/breeze-agent.exe"
 cp "$(dirname "$0")/sample-process.ps1" "$files/"
 secret_arg=''
-if [ -n "${BREEZE_ENROLLMENT_SECRET:-}" ]; then secret_arg="--enrollment-secret '$BREEZE_ENROLLMENT_SECRET'"; fi
+# PowerShell single-quoted string: a literal ' is written ''.
+q="'"
+if [ -n "${BREEZE_ENROLLMENT_SECRET:-}" ]; then secret_arg="--enrollment-secret '${BREEZE_ENROLLMENT_SECRET//$q/$q$q}'"; fi
 agent_sha=$(sha256sum "$agent" | cut -d' ' -f1)
 
 for run in $(seq "$runs"); do

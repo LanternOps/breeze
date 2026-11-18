@@ -432,7 +432,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'capture_agent_pprof',
       description:
-        "Capture agent heap/goroutine/goroutineleak/cpu pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles remain in the command result for download. Requires approval.",
+        "Capture agent heap/goroutine/goroutineleak/cpu pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles stay in the command result. On Windows, cpu samples are mostly syscall wait, not CPU use. Requires approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
