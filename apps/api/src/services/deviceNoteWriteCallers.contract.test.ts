@@ -100,7 +100,9 @@ function discoverCallers(): Map<string, string> {
     const k = key(file);
     if (k === 'services/aiTools.ts') continue; // the definition
     const code = stripComments(readFileSync(file, 'utf8'));
-    if (/\bexecuteTool\b/.test(code)) found.set(k, code);
+    // executeTool is the one door to a tool handler; a direct registry
+    // `aiTools.get(name).handler(` call would go round it, so it counts too.
+    if (/\bexecuteTool\b/.test(code) || /aiTools\.get\([^)]*\)[!?]?\.?\.handler\(/.test(code)) found.set(k, code);
   }
   return found;
 }
@@ -126,7 +128,10 @@ describe('device-note write callers', () => {
   it.each(Object.entries(CALLERS).filter(([, c]) => c.kind === 'bounded').map(([k]) => k))(
     '%s passes the unattended-note context to executeTool',
     (k) => {
-      expect(callers.get(k)).toMatch(/unattendedNoteWriteContext\(/);
+      const code = callers.get(k)!;
+      // The helper is computed AND handed to executeTool as the context.
+      expect(code).toMatch(/const noteContext = unattendedNoteWriteContext\(/);
+      expect(code).toMatch(/executeTool\([^;]*\{ context: noteContext \}/);
     },
   );
 
