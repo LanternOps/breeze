@@ -44,13 +44,13 @@ async function runMigration(): Promise<string[]> {
 
 interface Fixture { partnerId: string; orgId: string; userId: string }
 
-async function seedFixture(opts: { theme?: string; pageSize?: string; partnerTaxRate?: string | null } = {}): Promise<Fixture> {
+async function seedFixture(opts: { theme?: string; pageSize?: string; partnerTaxRate?: string | null; billingCountry?: string | null } = {}): Promise<Fixture> {
   const suffix = Math.random().toString(36).slice(2, 10);
   return withSystemDbAccessContext(async () => {
     const [p] = await db.insert(partners).values({
       name: `Pres ${suffix}`, slug: `pres-${suffix}`, type: 'msp', plan: 'pro', status: 'active',
       documentTheme: opts.theme ?? 'condensed', documentPageSize: opts.pageSize ?? 'letter',
-      defaultTaxRate: opts.partnerTaxRate ?? null,
+      defaultTaxRate: opts.partnerTaxRate ?? null, billingAddressCountry: opts.billingCountry ?? null,
     }).returning({ id: partners.id });
     const [o] = await db.insert(organizations).values({
       partnerId: p!.id, name: `Pres Org ${suffix}`, slug: `pres-org-${suffix}`, currencyCode: 'USD',
@@ -104,11 +104,19 @@ describe.runIf(RUN)('invoice presentation snapshot (#6227)', () => {
     expect(await branding(f, id)).toMatchObject({ theme: 'condensed', pageSize: 'letter' });
   });
 
+  // #12097: an unrecognised stored page size is treated as "never chose", so it
+  // stamps the partner's region default (billing country pinned here so the
+  // result does not depend on the runner's BREEZE_REGION deployment fallback).
   it('issue normalizes an unknown partner value before stamping (column CHECK holds)', async () => {
-    const f = await seedFixture({ theme: 'weird', pageSize: 'legal' });
-    const id = await draftWithLine(f);
-    await as(f, () => invoiceSvc.issueInvoice(id, invActor(f)));
-    expect(await invoiceRow(id)).toMatchObject({ documentTheme: 'classic', documentPageSize: 'a4' });
+    const us = await seedFixture({ theme: 'weird', pageSize: 'legal', billingCountry: 'US' });
+    const usId = await draftWithLine(us);
+    await as(us, () => invoiceSvc.issueInvoice(usId, invActor(us)));
+    expect(await invoiceRow(usId)).toMatchObject({ documentTheme: 'classic', documentPageSize: 'letter' });
+
+    const de = await seedFixture({ theme: 'weird', pageSize: 'legal', billingCountry: 'DE' });
+    const deId = await draftWithLine(de);
+    await as(de, () => invoiceSvc.issueInvoice(deId, invActor(de)));
+    expect(await invoiceRow(deId)).toMatchObject({ documentTheme: 'classic', documentPageSize: 'a4' });
   });
 
   it('the columns reject values outside classic|condensed and letter|a4', async () => {
