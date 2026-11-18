@@ -317,6 +317,8 @@ dependencies = [
 name = "breeze-viewer"
 version = "0.10.0"
 dependencies = [
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",
