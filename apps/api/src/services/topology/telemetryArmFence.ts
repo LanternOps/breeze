@@ -74,7 +74,9 @@ export async function currentArmInterfaces(reader: Reader, scope: TopologyScope,
 // row must still be active at the same epochs, and the arm/credential/interface
 // state must be exactly what was armed. The permission SET is re-derived at
 // enqueue, where no lock is held; delivery and acceptance additionally require
-// the version it was verified at to be current (`armPermissionsStillWitnessed`).
+// the version it was verified at to be current (`permissionVersionStillWitnessed`:
+// delivery against versions resolved before the claim locks, #7268; acceptance
+// via `armPermissionsStillWitnessed`).
 // ---------------------------------------------------------------------------
 async function actorStillCurrent(reader: Reader, record: unknown): Promise<boolean> {
   const parsed = topologyArmAuthorityRecordSchema.safeParse(record);
@@ -125,13 +127,46 @@ export function topologyArmActorId(arm: Pick<ArmRow, 'authorityActor'>): string 
   return parsed.success ? parsed.data.actor.user.id : null;
 }
 
+/** The one comparison both boundaries make: the CURRENT version must be the one the arm was stamped at. */
+function permissionVersionStillWitnessed(arm: Pick<ArmRow, 'authorityPermissionVersion'>, current: string | null): 'permission_changed' | 'authority_unavailable' | null {
+  if (current === null) return 'authority_unavailable';
+  return current === arm.authorityPermissionVersion ? null : 'permission_changed';
+}
+
 /** Null while the permissions verified at the last enqueue still hold; otherwise the fence reason. */
 export async function armPermissionsStillWitnessed(arm: Pick<ArmRow, 'authorityActor' | 'authorityPermissionVersion'>): Promise<'permission_changed' | 'authority_unavailable' | null> {
   const userId = topologyArmActorId(arm);
   if (!userId) return 'authority_unavailable';
-  const current = await currentPermissionVersion(userId);
-  if (current === null) return 'authority_unavailable';
-  return current === arm.authorityPermissionVersion ? null : 'permission_changed';
+  return permissionVersionStillWitnessed(arm, await currentPermissionVersion(userId));
+}
+
+/**
+ * Delivery's lock-free half (#7268): the current permission version of every
+ * actor whose arm minted one of these polls, read BEFORE the claim locks any
+ * `device_commands` row (registered as the poll revalidation's prepare half).
+ * The in-lock half then compares against this map and never waits on Redis.
+ * Same read the in-lock check used to make, moved earlier: Redis is not
+ * transactional with Postgres, so a bump landing just after it was never
+ * fenced by this claim either way. A `null` value (Redis unavailable) is kept,
+ * and the in-lock half cancels on it (`scope_changed`), exactly as it did when
+ * it read live. Reads arms by id only; the in-lock fence re-reads each arm with
+ * its full scope, and an actor resolved here for an arm it then refuses is unused.
+ */
+export async function resolveTopologyPollPermissionVersions(reader: Reader, payloads: ReadonlyArray<unknown>): Promise<ReadonlyMap<string, string | null>> {
+  const armIds = new Set<string>();
+  for (const payload of payloads) {
+    const parsed = topologyInterfacePollCommandV1Schema.safeParse(payload);
+    if (parsed.success) armIds.add(parsed.data.binding.armId);
+  }
+  if (armIds.size === 0) return new Map();
+  const arms = await reader.select({ authorityActor: topologyTelemetryArms.authorityActor })
+    .from(topologyTelemetryArms).where(inArray(topologyTelemetryArms.id, [...armIds]));
+  const actorIds = new Set<string>();
+  for (const arm of arms) {
+    const actorId = topologyArmActorId(arm);
+    if (actorId) actorIds.add(actorId);
+  }
+  return new Map(await Promise.all([...actorIds].map(async (actorId) => [actorId, await getPermissionAuthorityVersion(actorId)] as const)));
 }
 
 export type TelemetryArmFence = { ok: true; arm: ArmRow; interfaces: TopologyTelemetryArmInterface[] } | { ok: false; reason: string };
@@ -210,8 +245,20 @@ export function ensureTopologyTelemetryArmAuthority(): void {
  * poll's producer credentials must equal what the CURRENT arm generation and
  * collector root derive (a re-arm or root rotation strands older polls), and
  * the poll must still be inside its own interval.
+ *
+ * Runs while the claim holds `device_commands` row locks, so the actor's
+ * permission version comes from `permissionVersions`
+ * ({@link resolveTopologyPollPermissionVersions}, resolved before the lock) and
+ * Redis is never read here (#7268). An actor missing from the map answers
+ * `unprepared`: the row arrived (or its arm changed hands) after that read, and
+ * the caller holds it for the next claim instead of cancelling it.
  */
-export async function validateTopologyInterfacePollDelivery(reader: Reader, row: { id: string; deviceId: string; payload: unknown }, now = new Date()): Promise<'scope_changed' | 'expired' | null> {
+export async function validateTopologyInterfacePollDelivery(
+  reader: Reader,
+  row: { id: string; deviceId: string; payload: unknown },
+  permissionVersions: ReadonlyMap<string, string | null>,
+  now = new Date(),
+): Promise<'scope_changed' | 'expired' | 'unprepared' | null> {
   const parsed = topologyInterfacePollCommandV1Schema.safeParse(row.payload);
   if (!parsed.success) return 'scope_changed';
   const poll = parsed.data;
@@ -223,7 +270,10 @@ export async function validateTopologyInterfacePollDelivery(reader: Reader, row:
     .limit(1);
   const fence = await fenceTopologyTelemetryArm(reader, arm, { deviceId: row.deviceId, now });
   if (!fence.ok) return 'scope_changed';
-  if (await armPermissionsStillWitnessed(fence.arm)) return 'scope_changed';
+  const actorId = topologyArmActorId(fence.arm);
+  if (!actorId) return 'scope_changed';
+  if (!permissionVersions.has(actorId)) return 'unprepared';
+  if (permissionVersionStillWitnessed(fence.arm, permissionVersions.get(actorId) ?? null)) return 'scope_changed';
   const root = await readCollectorRoot(reader, scope, row.deviceId);
   if (!root) return 'scope_changed';
   const expected = topologyArmProducerCredentials(root, fence.arm);

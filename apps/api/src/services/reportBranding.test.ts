@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const selectMock = vi.fn();
@@ -25,6 +26,8 @@ vi.mock('../db/schema', () => ({
     id: 'partners.id',
     name: 'partners.name',
     settings: 'partners.settings',
+    documentPageSize: 'partners.document_page_size',
+    billingAddressCountry: 'partners.billing_address_country',
   },
   portalBranding: {
     orgId: 'portal_branding.org_id',
@@ -35,6 +38,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { loadReportBrandingForOrg, loadReportBrandingForPartner, pngAspectFromDataUrl } from './reportBranding';
+import { asDataUrl, ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
@@ -56,15 +60,30 @@ function stage(orgRows: unknown[], partnerRows: unknown[] = [], brandRows: unkno
     .mockReturnValueOnce(selectChain(partnerRows));
 }
 
-/** Build a minimal-but-valid PNG data URL with the given intrinsic dimensions
- * (8-byte PNG signature + a 13-byte IHDR chunk carrying width/height). */
+/** A PNG data URL with the given intrinsic dimensions. Up to 4096 pixels a
+ * side it is a real image (rows and all, as the report renderer decodes it);
+ * past that, only the signature, IHDR and IEND, which is enough for the
+ * header checks that refuse it. */
 function png(w: number, h: number): string {
-  const b = Buffer.alloc(24);
-  b.write('\x89PNG\r\n\x1a\n', 0, 'binary');
-  b.writeUInt32BE(13, 8);
-  b.write('IHDR', 12);
-  b.writeUInt32BE(w, 16);
-  b.writeUInt32BE(h, 20);
+  if (w > 0 && h > 0 && w <= 4096 && h <= 4096) return asDataUrl(ordinaryPng({ width: w, height: h }));
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const b = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
   return 'data:image/png;base64,' + b.toString('base64');
 }
 
@@ -78,17 +97,35 @@ beforeEach(() => {
 });
 
 describe('pngAspectFromDataUrl', () => {
-  it('returns width/height for a valid PNG data URL', () => {
-    expect(pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
+  it('returns width/height for a valid PNG data URL', async () => {
+    expect(await pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
   });
 
-  it('returns null for non-PNG data URLs', () => {
-    expect(pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
-    expect(pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
+  it('returns null for non-PNG data URLs', async () => {
+    expect(await pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
+    expect(await pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
   });
 
-  it('returns null for malformed/truncated PNG data', () => {
-    expect(pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  it('returns null for malformed/truncated PNG data', async () => {
+    expect(await pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  });
+
+  it('returns null (no logo) for a PNG whose image data inflates past its declared size', async () => {
+    // A 10×10 header in front of 32 MB of image data: the report renderer
+    // would inflate all of it before comparing it with the declared rows.
+    const logo = asDataUrl(pngInflatingTo({ width: 10, height: 10 }, 32 * 1024 * 1024));
+    expect(logo.length).toBeLessThan(64 * 1024);
+    expect(await pngAspectFromDataUrl(logo)).toBeNull();
+  });
+
+  it('keeps an ordinary logo, interlaced or not', async () => {
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100 })))).toBe(3);
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100, interlaced: true })))).toBe(3);
+  });
+
+  it('returns null (no logo) for a PNG too large to embed', async () => {
+    expect(await pngAspectFromDataUrl(png(30_000, 30_000))).toBeNull();
+    expect(await pngAspectFromDataUrl(png(0, 10))).toBeNull();
   });
 });
 
@@ -105,7 +142,7 @@ describe('loadReportBrandingForOrg', () => {
       { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: png(1, 2) } } },
     ]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: 'letter', dateFormat: null, timeFormat: null });
   });
 
   it('external https logo URL: name resolves, logo degrades to null (server cannot format-verify it)', async () => {
@@ -113,7 +150,7 @@ describe('loadReportBrandingForOrg', () => {
       { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: 'https://cdn.example.com/logo.png' } } },
     ]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: 'letter', dateFormat: null, timeFormat: null });
   });
 
   it('contact name + email ride along from partner settings (the portal closing line, #6078)', async () => {
@@ -160,6 +197,48 @@ describe('loadReportBrandingForOrg', () => {
     expect(branding.primaryColor).toBe('#123456');
     expect(branding.accentColor).toBe('#0b1b2d');
     expect(branding.name).toBe('Olive MSP');
+  });
+
+  // #12048: the PDF prints on the page size the partner's quotes and invoices
+  // use, with the partner's date order and hour cycle.
+  it("carries the partner's page size, date format and time format", async () => {
+    stage([{ partnerId: PARTNER_ID }], [{
+      partnerName: 'Olive MSP',
+      documentPageSize: 'letter',
+      partnerSettings: { dateFormat: 'DD/MM/YYYY', timeFormat: '24h' },
+    }]);
+    const branding = await loadReportBrandingForOrg(ORG_ID);
+    expect(branding).toMatchObject({ pageSize: 'letter', dateFormat: 'DD/MM/YYYY', timeFormat: '24h' });
+    // The partner hop (the third select) must ask for the page size column.
+    expect(selectMock.mock.calls[2]?.[0]).toMatchObject({ documentPageSize: 'partners.document_page_size' });
+  });
+
+  // #12097: a partner that never chose a page size prints reports on its region default.
+  it('a partner with no page-size choice gets its region default (billing country, then company country)', async () => {
+    vi.stubEnv('BREEZE_REGION', 'us');
+    stage([{ partnerId: PARTNER_ID }], [{
+      partnerName: 'Olive MSP', documentPageSize: null, billingAddressCountry: 'DE', partnerSettings: {},
+    }]);
+    expect(await loadReportBrandingForOrg(ORG_ID)).toMatchObject({ pageSize: 'a4' });
+    expect(selectMock.mock.calls[2]?.[0]).toMatchObject({ billingAddressCountry: 'partners.billing_address_country' });
+
+    vi.stubEnv('BREEZE_REGION', 'eu');
+    selectMock.mockReturnValueOnce(selectChain([{
+      partnerName: 'Olive MSP', documentPageSize: null, billingAddressCountry: null, partnerSettings: { address: { country: 'CA' } },
+    }]));
+    expect(await loadReportBrandingForPartner(PARTNER_ID)).toMatchObject({ pageSize: 'letter' });
+    vi.unstubAllEnvs();
+  });
+
+  it('drops a page size or format the renderer does not know, rather than passing it on', async () => {
+    stage([{ partnerId: PARTNER_ID }], [{
+      partnerName: 'Olive MSP',
+      documentPageSize: 'legal',
+      billingAddressCountry: 'DE',
+      partnerSettings: { dateFormat: 'D.M.Y', timeFormat: 'military' },
+    }]);
+    // An unknown stored size is not a choice: the region default (DE → A4) applies (#12097).
+    expect(await loadReportBrandingForOrg(ORG_ID)).toMatchObject({ pageSize: 'a4', dateFormat: null, timeFormat: null });
   });
 
   it("an org secondary colour becomes the report accent", async () => {
@@ -212,11 +291,24 @@ describe('loadReportBrandingForPartner (#3198 W01)', () => {
       accentColor: null,
       contactEmail: 'dana@olive.example',
       contactName: 'Dana Ops',
+      // #12097: no choice and no country → the (US) deployment default.
+      pageSize: 'letter',
+      dateFormat: null,
+      timeFormat: null,
     });
     // No organizations hop: the partner id comes from the proven owner.
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(readWithPartnerAxisVisibilityMock).toHaveBeenCalledTimes(1);
     expect(partnerChain.where).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the partner's page size and formats on the partner path too (#12048)", async () => {
+    const partnerChain = selectChain([{
+      partnerName: 'Olive MSP', documentPageSize: 'a4', partnerSettings: { dateFormat: 'YYYY-MM-DD', timeFormat: '12h' },
+    }]);
+    selectMock.mockReturnValueOnce(partnerChain);
+    expect(await loadReportBrandingForPartner(PARTNER_ID)).toMatchObject({ pageSize: 'a4', dateFormat: 'YYYY-MM-DD', timeFormat: '12h' });
+    expect(selectMock.mock.calls[0]?.[0]).toMatchObject({ documentPageSize: 'partners.document_page_size' });
   });
 
   it('missing partner row: all-null branding', async () => {

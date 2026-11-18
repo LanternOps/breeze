@@ -388,7 +388,7 @@ describe('RemoteToolsPage Services tab surfaces failed commands (#5088)', () => 
 
 // Sweep 2026-09-08 (row 11, Group 1): fetchServices caught the fetch error
 // into console.error and never told ServicesManager, so an offline device's
-// 503 read as "0 of 0 services / No Services Available" — the exact #4935
+// 503 read as "0 of 0 services / No services available" — the exact #4935
 // symptom, just on a different tab. ServicesManager now takes a `loadError`
 // prop, mirroring ProcessManager.
 describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 2026-09-08 row 11)', () => {
@@ -409,14 +409,14 @@ describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 202
     );
   };
 
-  it('renders the offline reason instead of "No Services Available" when the API answers 503', async () => {
+  it('renders the offline reason instead of "No services available" when the API answers 503', async () => {
     window.location.hash = '#services';
     mockServiceListResponse(makeStatusResponse(OFFLINE_BODY, false, 503));
 
     renderPage();
 
     expect(await screen.findByText('The device is offline.')).toBeInTheDocument();
-    expect(screen.queryByText('No Services Available')).not.toBeInTheDocument();
+    expect(screen.queryByText('No services available')).not.toBeInTheDocument();
   });
 
   it('offers a retry that re-requests the service list', async () => {
@@ -437,13 +437,13 @@ describe('RemoteToolsPage Services tab surfaces an unavailable device (sweep 202
     });
   });
 
-  it('keeps the "No Services Available" empty state for a genuine 200 with zero rows', async () => {
+  it('keeps the "No services available" empty state for a genuine 200 with zero rows', async () => {
     window.location.hash = '#services';
     mockServiceListResponse(makeStatusResponse({ data: [] }, true, 200));
 
     renderPage();
 
-    expect(await screen.findByText('No Services Available')).toBeInTheDocument();
+    expect(await screen.findByText('No services available')).toBeInTheDocument();
     expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
   });
 });
@@ -564,7 +564,7 @@ describe('RemoteToolsPage mutations surface failures (#3531)', () => {
     renderPage();
     await screen.findByText('Nightly Backup');
 
-    await userEvent.click(screen.getByTitle('Run Now'));
+    await userEvent.click(screen.getByTitle('Run now'));
 
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(

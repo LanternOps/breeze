@@ -5,6 +5,7 @@ const redisMock = {
   get: vi.fn(),
   eval: vi.fn(),
   del: vi.fn(),
+  mget: vi.fn(),
 };
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redisMock) }));
 
@@ -14,7 +15,9 @@ import {
   clearAgentPresence,
   clearAgentPresenceUnfenced,
   probeAgentPresence,
+  PRESENCE_BATCH_READ_SIZE,
   readAgentPresence,
+  readAgentPresenceBatch,
   refreshAgentPresence,
   setAgentPresence,
 } from './agentPresence';
@@ -99,5 +102,57 @@ describe('agentPresence', () => {
     await expect(probeAgentPresence('a')).resolves.toEqual({ unavailable: true });
     vi.mocked(getRedis).mockImplementationOnce(() => { throw new Error('not initialised'); });
     await expect(probeAgentPresence('a')).resolves.toEqual({ unavailable: true });
+  });
+
+  // #4142 W2: the eviction producer routes many agents at once and must tell
+  // "no lease" apart from "Redis could not answer".
+  describe('readAgentPresenceBatch', () => {
+    it('reads leases with MGET, mapping absent and malformed values to null', async () => {
+      redisMock.mget.mockResolvedValueOnce([
+        JSON.stringify({ instanceId: 'i-1', connectionToken: 't-1' }),
+        null,
+        'not json',
+        JSON.stringify({ instanceId: 7 }),
+      ]);
+
+      const leases = await readAgentPresenceBatch(['a-1', 'a-2', 'a-3', 'a-4']);
+
+      expect(redisMock.mget).toHaveBeenCalledWith(
+        'agent-presence:a-1', 'agent-presence:a-2', 'agent-presence:a-3', 'agent-presence:a-4',
+      );
+      expect([...leases.entries()]).toEqual([
+        ['a-1', { instanceId: 'i-1', connectionToken: 't-1' }],
+        ['a-2', null],
+        ['a-3', null],
+        ['a-4', null],
+      ]);
+    });
+
+    it('reads in chunks of PRESENCE_BATCH_READ_SIZE and de-duplicates ids', async () => {
+      const ids = Array.from({ length: PRESENCE_BATCH_READ_SIZE + 3 }, (_, i) => `a-${i}`);
+      redisMock.mget.mockImplementation(async (...keys: string[]) => keys.map(() => null));
+
+      const leases = await readAgentPresenceBatch([...ids, 'a-0']);
+
+      expect(redisMock.mget).toHaveBeenCalledTimes(2);
+      expect(redisMock.mget.mock.calls[0]).toHaveLength(PRESENCE_BATCH_READ_SIZE);
+      expect(redisMock.mget.mock.calls[1]).toHaveLength(3);
+      expect(leases.size).toBe(ids.length);
+    });
+
+    it('throws when Redis fails: a failure is never collapsed into absence', async () => {
+      redisMock.mget.mockRejectedValueOnce(new Error('redis down'));
+      await expect(readAgentPresenceBatch(['a-1'])).rejects.toThrow('redis down');
+    });
+
+    it('throws when no Redis client is configured', async () => {
+      vi.mocked(getRedis).mockReturnValue(null as never);
+      await expect(readAgentPresenceBatch(['a-1'])).rejects.toThrow(/Redis/);
+    });
+
+    it('answers an empty map for no ids without touching Redis', async () => {
+      await expect(readAgentPresenceBatch([])).resolves.toEqual(new Map());
+      expect(redisMock.mget).not.toHaveBeenCalled();
+    });
   });
 });

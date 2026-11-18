@@ -10,6 +10,7 @@ import type { TunnelCookieContext } from '../config/tunnelOrigin';
 import { HOP_BY_HOP, collectForwardableHeaders } from './tunnelHttpCore';
 import { rewriteTunnelUrl } from './tunnelHttpRewrite';
 import { applyHostModeBaseHeaders, hostModeCsp } from '../services/tunnelHostBaseHeaders';
+import { isReservedTunnelPath } from './tunnelHostAdmission';
 
 /** Iframe context: `SameSite=None; Partitioned` (CHIPS, keyed to the app's top-level site). */
 export const TUNNEL_FRAME_COOKIE = '__Host-bzt';
@@ -60,11 +61,35 @@ export function stripProxyCookies(cookieHeader: string): string {
 }
 
 /**
+ * A `Referer` naming this tunnel's own origin, re-pointed at the device's
+ * origin with its path and query kept; null for anything else. Dropped: other
+ * origins (the app, a sibling tunnel), unparsable values, and any proxy-reserved
+ * `/__bz` page. The enter page's URL carries the one-time ticket, and the page
+ * it navigates to would otherwise name it in its Referer. Userinfo and the
+ * fragment never reach the device.
+ */
+export function rewriteHostModeReferer(referer: string | undefined, opts: { tunnelOrigin: string; targetOrigin: string }): string | null {
+  if (!referer) return null;
+  let url: URL;
+  try {
+    url = new URL(referer);
+  } catch {
+    return null;
+  }
+  if (url.origin !== opts.tunnelOrigin || isReservedTunnelPath(url.pathname)) return null;
+  return `${new URL(opts.targetOrigin).origin}${url.pathname}${url.search}`;
+}
+
+/**
  * Headers forwarded to the device. Starts from the shared allowlist (never
  * `cookie`, `authorization`, `referer`, `origin` or any forwarding header),
- * then adds the device's own cookies and — only when the request came from
- * this tunnel's own origin — `Origin` rewritten to the device's origin so
- * device-side CSRF checks pass. The app origin is never forwarded.
+ * then adds the device's own cookies and, only when the request's `Origin` /
+ * `Referer` name this tunnel's own origin, those headers rewritten to the
+ * device's origin, so device-side CSRF checks pass. The app origin is never
+ * forwarded. The proxy's response policy is `no-referrer`, so a `Referer`
+ * normally arrives only when the device page overrides it (a referrer meta
+ * tag or element `referrerpolicy`) or an operator relaxes it at the edge
+ * (#11458).
  */
 export function buildHostModeUpstreamHeaders(
   reqHeaders: Record<string, string>,
@@ -74,6 +99,8 @@ export function buildHostModeUpstreamHeaders(
   const cookies = stripProxyCookies(reqHeaders['cookie'] ?? '');
   if (cookies) headers['cookie'] = [cookies];
   if (reqHeaders['origin'] === opts.tunnelOrigin) headers['origin'] = [new URL(opts.targetOrigin).origin];
+  const referer = rewriteHostModeReferer(reqHeaders['referer'], opts);
+  if (referer) headers['referer'] = [referer];
   return headers;
 }
 

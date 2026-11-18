@@ -22,16 +22,18 @@
  * The same rule runs at request and again at phase 1 and confirm, where the
  * requester is RE-READ from the database (still active, still a member of the
  * intent's partner, still allowed): `loadReattachActor` reads the user row,
- * the partner membership, the reachable orgs and the role's grants directly,
+ * the partner membership, the reachable orgs and the role's grants (own plus inherited, via
+ * services/roleInheritance.ts, #11702) directly,
  * uncached, in the caller's transaction (system scope — `partner_users`,
- * `organizations` and `role_permissions` are RLS-scoped). The rule itself,
+ * `organizations` and the role tables are RLS-scoped). The rule itself,
  * `canActorReattach`, is pure.
  */
 import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import type { db } from '../../db';
-import { organizations, partnerUsers, permissions, rolePermissions, users } from '../../db/schema';
+import { organizations, partnerUsers, users } from '../../db/schema';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { permissionGrantMatches } from '../permissionMatching';
+import { getRolePermissionGrants } from '../roleInheritance';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 
 /** The org statuses a user can reach (middleware/auth.ts computeAccessibleOrgIds). */
@@ -148,11 +150,9 @@ export async function loadReattachActor(
 
   let membership: ReattachActorAccess['membership'] = null;
   if (member) {
-    const grants = await exec
-      .select({ resource: permissions.resource, action: permissions.action })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, member.roleId));
+    // The role's runtime grants INCLUDING inherited ones, read through the
+    // caller's executor (services/roleInheritance.ts, #11702).
+    const grants = await getRolePermissionGrants(member.roleId, exec);
 
     const selected = (Array.isArray(member.orgIds) ? member.orgIds : [])
       .filter((value): value is string => typeof value === 'string' && value.length > 0);

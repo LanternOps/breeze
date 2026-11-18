@@ -42,16 +42,38 @@ import type {
   WorkerReadinessRegistry,
 } from './workerReadinessRegistry';
 
+/**
+ * Why a snapshot is not ready, most fundamental cause first. `null` when ready.
+ * `db-read-only` (#11731): the database answers reads but rejects every write
+ * (SQLSTATE 25006), e.g. a provider set `default_transaction_read_only = on`
+ * on a full disk, or DATABASE_URL points at a standby.
+ */
+export type ReadinessFailureReason =
+  | 'shutting-down'
+  | 'db'
+  | 'db-read-only'
+  | 'redis'
+  | 'workers-pending';
+
 export interface ReadinessSnapshot {
   ready: boolean;
   db: boolean;
+  /** Reachable but read-only. Always false when `db` is false (not probed). */
+  dbReadOnly: boolean;
   redis: boolean;
   workers: boolean;
+  /**
+   * Agent binary registration is waiting for the database to accept writes
+   * (#11731). Informational: it does not close admission, because agents are
+   * still offered the versions already registered.
+   */
+  binarySyncPending: boolean;
+  reason: ReadinessFailureReason | null;
   checkedAt: string;
   consumers: Readonly<Record<string, ConsumerReadinessState>>;
 }
 
-export type ReadinessProbeName = 'db' | 'redis';
+export type ReadinessProbeName = 'db' | 'db-read-only' | 'redis';
 
 /**
  * How far boot-time worker initialisation got. Distinguishing "hasn't run yet"
@@ -63,6 +85,19 @@ export type WorkerInitPhase = 'pending' | 'started' | 'skipped-no-redis';
 export interface ReadinessEvaluatorOptions {
   /** Live database probe. */
   checkDb: () => Promise<boolean>;
+  /**
+   * Resolves true when the database is reachable but read-only. Runs only
+   * after `checkDb` succeeded. Optional: without it, `dbReadOnly` is false.
+   *
+   * Policy for a failed or timed-out probe: reported through `onProbeFailure`
+   * (log + Sentry) and treated as not read-only, so admission stays as it was
+   * before this probe existed. A second query hiccup must not drop a database
+   * that just answered `checkDb` out of admission; a database that really is
+   * read-only answers this probe as reliably as `select 1`.
+   */
+  checkDbReadOnly?: () => Promise<boolean>;
+  /** Whether binary registration is deferred (api role only). Default false. */
+  binarySyncPending?: () => boolean;
   /** Live Redis probe. */
   checkRedis: () => Promise<boolean>;
   /** Process-local view of every declared queue consumer. */
@@ -135,9 +170,16 @@ export function createReadinessEvaluator(
     }
   };
 
+  const checkDbReadOnly = options.checkDbReadOnly;
+  const probeDb = async (): Promise<{ db: boolean; dbReadOnly: boolean }> => {
+    const db = await probe('db', options.checkDb);
+    if (!db || !checkDbReadOnly) return { db, dbReadOnly: false };
+    return { db, dbReadOnly: await probe('db-read-only', checkDbReadOnly) };
+  };
+
   const evaluate = async (): Promise<ReadinessSnapshot> => {
-    const [db, redis] = await Promise.all([
-      probe('db', options.checkDb),
+    const [{ db, dbReadOnly }, redis] = await Promise.all([
+      probeDb(),
       probe('redis', options.checkRedis)
     ]);
 
@@ -146,14 +188,30 @@ export function createReadinessEvaluator(
       && options.workersInitialized()
       && options.workerRegistry.requiredConsumersRunnable();
     const redisReady = options.requireRedis ? redis : true;
+    // Belt-and-braces for a drain that begins mid-evaluation: `get()` already
+    // short-circuits, but this response is still in flight.
+    const shuttingDown = options.isShuttingDown();
+    const ready = !shuttingDown && db && !dbReadOnly && redisReady && workers;
+
+    let reason: ReadinessFailureReason | null = null;
+    if (!ready) {
+      if (shuttingDown) reason = 'shutting-down';
+      else if (!db) reason = 'db';
+      else if (dbReadOnly) reason = 'db-read-only';
+      // `redis`, not `redisReady`: with Redis optional, a Redis outage still
+      // stops every consumer, so it is the root cause of `workers: false`.
+      else if (!redis) reason = 'redis';
+      else reason = 'workers-pending';
+    }
 
     return {
-      // Belt-and-braces for a drain that begins mid-evaluation: `get()` already
-      // short-circuits, but this response is still in flight.
-      ready: !options.isShuttingDown() && db && redisReady && workers,
+      ready,
       db,
+      dbReadOnly,
       redis,
       workers,
+      binarySyncPending: options.binarySyncPending?.() ?? false,
+      reason,
       checkedAt: new Date(now()).toISOString(),
       consumers,
     };
@@ -169,8 +227,11 @@ export function createReadinessEvaluator(
         return {
           ready: false,
           db: false,
+          dbReadOnly: false,
           redis: false,
           workers: false,
+          binarySyncPending: false,
+          reason: 'shutting-down',
           checkedAt: new Date(now()).toISOString(),
           consumers: options.workerRegistry.snapshot(),
         };

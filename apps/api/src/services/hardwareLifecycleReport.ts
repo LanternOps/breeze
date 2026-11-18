@@ -56,7 +56,7 @@ import {
 } from './reportGenerationService';
 import type { OrgReportExecutionAuthority } from './siteScope';
 
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { managedDeviceConditions } from './managedDeviceScope';
 /** Roles that are computers with a replacement timeline. `unknown` is the
  *  enrollment default — an agent device with an OS is a computer until a
  *  technician says otherwise. */
@@ -169,8 +169,7 @@ export async function generateHardwareLifecycleReport(
 
   // --- agent devices ---------------------------------------------------------
   const deviceConditions = [
-    eq(devices.orgId, orgId),
-    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
+    ...managedDeviceConditions(orgId),
     eq(devices.isVirtual, false),
     isNull(devices.decommissionedAt),
   ];

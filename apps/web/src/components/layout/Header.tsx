@@ -108,7 +108,7 @@ export default function Header() {
   const { can } = usePermissions();
   const canUseAi = can('ai_sessions', 'use');
   const { isOpen: isHelpOpen, toggle: toggleHelp } = useHelpStore();
-  const { toggleMobileMenu } = useUiStore();
+  const { isMobileMenuOpen, toggleMobileMenu } = useUiStore();
 
   // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
@@ -389,12 +389,16 @@ export default function Header() {
       <div className={`flex min-w-0 flex-1 items-center gap-2 transition-opacity duration-150 sm:gap-4 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
         {/* Hamburger menu — visible only on mobile (< 768px) */}
         <button
+          type="button"
+          data-testid="mobile-menu-toggle"
           className="rounded-md p-2 hover:bg-muted transition-colors md:hidden"
           onClick={toggleMobileMenu}
           title={t('layout.header.menu')}
           aria-label={t('layout.header.openMenu')}
+          aria-expanded={Boolean(isMobileMenuOpen)}
+          aria-controls={isMobileMenuOpen ? 'mobile-nav-drawer' : undefined}
         >
-          <Menu className="h-5 w-5 text-muted-foreground" />
+          <Menu className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
         </button>
 
         {/* Organization Switcher — min-w-0 lets the org name truncate, not drop, on a phone (#9028) */}

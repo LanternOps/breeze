@@ -5,6 +5,7 @@ import {
   getCurrentDbAccessContext,
   runOutsideDbContext,
   withSystemDbAccessContext,
+  withDbTransactionIfHeld,
 } from '../db';
 import {
   automationActionResults,
@@ -345,11 +346,11 @@ async function recordMonitorEpisodeOutcomes(
 
   let monitorId: string | null | undefined;
   try {
-    const [automation] = await db
+    const [automation] = await withDbTransactionIfHeld(() => db
       .select({ monitorId: automations.managedByMonitorId })
       .from(automations)
       .where(eq(automations.id, automationId))
-      .limit(1);
+      .limit(1));
     monitorId = automation?.monitorId;
   } catch (error) {
     captureException(error, undefined, {
@@ -370,7 +371,7 @@ async function recordMonitorEpisodeOutcomes(
   // and the capture has to name the device to be actionable.
   for (const deviceId of deviceIds) {
     try {
-      await recordEpisodeResponse({ monitorId, deviceId, outcome });
+      await withDbTransactionIfHeld(() => recordEpisodeResponse({ monitorId, deviceId, outcome }));
     } catch (error) {
       captureException(error, undefined, {
         errorId: 'monitor-episode-response-outcome-failed',

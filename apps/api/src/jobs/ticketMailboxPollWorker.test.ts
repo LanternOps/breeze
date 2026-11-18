@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MAILBOX_VERIFICATION_FAILED, MailboxPlatformNotConfiguredError } from '../services/ticketMailbox/mailboxErrors';
 
 // Worker CAS helpers self-wrap so FORCE-RLS writes run under system scope. This is a unit test
 // with no database, so make the helpers pass-throughs that just invoke their
@@ -1071,6 +1072,19 @@ describe('runMailboxSweep', () => {
     await runMailboxSweep();
     expect(setConnectedMailboxStatus).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 'error', expect.any(String));
     expect(recordTransientPollFailure).not.toHaveBeenCalled();
+  });
+
+  it('records a sanitized, client-visible reason when the platform mailbox app is not configured', async () => {
+    vi.mocked(listConnectedMailboxes).mockResolvedValue([conn()] as any);
+    vi.mocked(getMailboxToken).mockImplementationOnce(async () => { throw new MailboxPlatformNotConfiguredError(); });
+
+    await runMailboxSweep();
+    const [, status, message] = vi.mocked(setConnectedMailboxStatus).mock.calls[0]!;
+    expect(status).toBe('error');
+    // listMailboxConnections only exposes lastError text with this prefix.
+    expect(message).toMatch(new RegExp(`^${MAILBOX_VERIFICATION_FAILED}: `));
+    expect(message).toContain('TICKET_MAILBOX_M365_CLIENT_ID');
+    expect(message).toContain('TICKET_MAILBOX_M365_CLIENT_SECRET');
   });
 
   it('drops a poll result when disable wins while Graph I/O is in flight', async () => {

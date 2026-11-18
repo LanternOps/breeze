@@ -3,7 +3,7 @@ import type { GraphMessage } from './graphMailClient';
 import type { NormalizedInboundEmail, SenderAuth } from '../inboundEmail/types';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import { htmlToText } from '../inboundEmail/htmlToText';
-import { buildSenderAuth, normalizeVerdict, parseAuthClauses, stripComments } from '../inboundEmail/authenticationResults';
+import { addressDomain, authservIdOf, buildSenderAuth, envelopeAllowsStamps, leadingAuthservId, normalizeVerdict, parseAuthClauses, parseAuthClausesOrNull, stampsUnreadableReason } from '../inboundEmail/authenticationResults';
 import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 import type { ArcEvaluation } from './arcSeal';
 
@@ -36,8 +36,7 @@ function trustedAuthResults(
   if (!mailboxDomain) return '';
   for (const h of headers ?? []) {
     if (h.name.toLowerCase() !== 'authentication-results') continue;
-    const authservId = (h.value.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase();
-    if (authservId === mailboxDomain) return h.value;
+    if (leadingAuthservId(h.value) === mailboxDomain) return h.value;
   }
   return '';
 }
@@ -95,8 +94,7 @@ function exchangeExternalAuthAs(
 const EXCHANGE_AUTHSERV_ID = /^(mx\.microsoft\.com|[a-z0-9-]+\.mail\.protection\.outlook\.com)$/;
 
 function authservId(value: string): string | null {
-  const first = stripComments(value).split(';')[0]?.trim().toLowerCase() ?? '';
-  return /^([a-z0-9.-]+)(?:\s+\d+)?$/.exec(first)?.[1] ?? null;
+  return authservIdOf(value);
 }
 
 function organizationalDomain(domain: string | null | undefined): string | null {
@@ -108,7 +106,7 @@ function domainOf(value: string | null | undefined): string | null {
   return value.slice(value.lastIndexOf('@') + 1) || null;
 }
 
-type SealedVerdict = 'pass' | 'fail' | 'not-from-domain' | 'inconclusive';
+type SealedVerdict = 'pass' | 'fail' | 'not-from-domain' | 'inconclusive' | 'unreadable';
 
 /**
  * Read a trusted sealer's results against this message's From domain. A seal does
@@ -117,7 +115,12 @@ type SealedVerdict = 'pass' | 'fail' | 'not-from-domain' | 'inconclusive';
  * clause), so an aligned pass of either counts, which is DMARC's own definition.
  */
 function readSealedVerdict(results: string, fromDomain: string | null): SealedVerdict {
-  const clauses = parseAuthClauses(results);
+  const clauses = parseAuthClausesOrNull(results);
+  // Sealed results that cannot be read unambiguously decide like a sealed fail:
+  // they may hold the sealer's own verdict, which then still decides.
+  if (!clauses) return 'unreadable';
+  // The sealer's own record of the envelope sender is checked like a Return-Path.
+  if (clauses.some((c) => c.props.has('smtp.mailfrom') && !envelopeAllowsStamps(c.props.get('smtp.mailfrom')))) return 'unreadable';
   if (clauses.some((c) => c.method === 'dmarc' && normalizeVerdict(c.result) === 'fail')) return 'fail';
 
   const passed = (method: string) => clauses.filter(
@@ -135,7 +138,9 @@ function readSealedVerdict(results: string, fromDomain: string | null): SealedVe
   const dkimPass = passed('dkim');
   const spfPass = passed('spf');
   if (
-    dkimPass.some((c) => aligned(c.props.get('header.d') ?? domainOf(c.props.get('header.i'))))
+    // The signing domain (header.d), as DMARC aligns DKIM. The AUID (header.i) is
+    // chosen by the signer and need not be under that domain, so it never aligns.
+    dkimPass.some((c) => aligned(c.props.get('header.d')))
     || spfPass.some((c) => aligned(domainOf(c.props.get('smtp.mailfrom'))))
   ) {
     return 'pass';
@@ -180,7 +185,9 @@ function exchangeStampAuth(
   const forThisDomain = fromDomain !== null && dmarc.length > 0 && dmarc.every(
     (c) => normalizeVerdict(c.result) === 'pass' && c.props.get('header.from') === fromDomain,
   );
-  if (forThisDomain) return { senderAuth: { ...auth, verified: true, source: 'exchange-online' } };
+  if (forThisDomain) {
+    return { senderAuth: { ...auth, verified: true, source: 'exchange-online', authenticatedDomain: fromDomain } };
+  }
   return {
     senderAuth: { ...auth, verified: false },
     consulted: auth.dmarc === 'pass'
@@ -216,27 +223,55 @@ function graphSenderAuth(
   arc: ArcEvaluation | undefined,
 ): GraphSenderAuth {
   const authAs = exchangeExternalAuthAs(headers);
+  // No Authentication-Results stamp (Exchange's, a sealer's or a mailbox-domain one)
+  // is read when the Return-Path holds characters that change how an echo of it reads.
+  // Graph may return no Return-Path (internetMessageHeaders is optional), so a
+  // missing one is unknown here rather than unreadable.
+  const unreadable = stampsUnreadableReason({
+    envelope: header(headers, 'Return-Path'),
+    envelopeRequired: false,
+    dkimSignatures: (headers ?? []).filter((h) => h.name.toLowerCase() === 'dkim-signature').map((h) => h.value),
+  });
+  const stampsReadable = unreadable === null;
   if (!authAs) {
-    const auth = buildSenderAuth(trustedAuthResults(headers, mailboxDomain));
+    // Like Gmail: the raw From header(s), when Graph returns them, must agree.
+    const fromHeaders = (headers ?? []).filter((h) => h.name.toLowerCase() === 'from').map((h) => h.value);
+    const auth = stampsReadable
+      ? buildSenderAuth(trustedAuthResults(headers, mailboxDomain), fromHeaders.length <= 1 ? fromAddress : null, fromHeaders)
+      : buildSenderAuth(undefined);
     if (auth.verified) return { senderAuth: auth };
     if (auth.dmarc !== 'fail' && isExchangeIntraTenant(headers)) {
-      return { senderAuth: { ...auth, verified: true, source: 'exchange-internal' } };
+      // The intra-tenant stamp is about where the message came from, not the From
+      // domain (see SenderAuth.source); it vouches for the From address as given.
+      const fromDomain = addressDomain(fromAddress);
+      return {
+        senderAuth: {
+          ...auth, verified: true, source: 'exchange-internal', authenticatedDomain: fromDomain,
+        },
+      };
     }
     return {
       senderAuth: auth,
-      consulted: auth.dmarc === 'fail' ? 'mailbox-domain stamp: dmarc=fail' : 'no Exchange tenant proof on this message',
+      consulted: !stampsReadable ? unreadable!
+        : auth.dmarc === 'fail' ? 'mailbox-domain stamp: dmarc=fail' : 'no Exchange tenant proof on this message',
     };
   }
 
+  if (!stampsReadable) return { senderAuth: buildSenderAuth(undefined), consulted: unreadable! };
   const at = fromAddress.indexOf('@');
   const fromDomain = at > 0 && at === fromAddress.lastIndexOf('@') ? fromAddress.slice(at + 1) : null;
   const notes: string[] = [];
   if (arc?.status === 'verified') {
     const auth = buildSenderAuth(arc.authResults);
     const verdict = readSealedVerdict(arc.authResults, fromDomain);
-    if (verdict === 'pass') return { senderAuth: { ...auth, verified: true, source: 'trusted-arc-sealer' } };
+    if (verdict === 'pass' && fromDomain) {
+      return { senderAuth: { ...auth, verified: true, source: 'trusted-arc-sealer', authenticatedDomain: fromDomain } };
+    }
     if (verdict === 'fail') {
       return { senderAuth: { ...auth, verified: false }, consulted: `trusted ARC sealer ${arc.sealer}: dmarc=fail` };
+    }
+    if (verdict === 'unreadable') {
+      return { senderAuth: { ...auth, verified: false }, consulted: `trusted ARC sealer ${arc.sealer}: results could not be read` };
     }
     notes.push(verdict === 'not-from-domain'
       ? `trusted ARC sealer ${arc.sealer}: verdict is not for the From domain`

@@ -670,3 +670,19 @@ describe('SDK action enum === registry action enum (#10161)', () => {
     expect([...KNOWN_SDK_ACTION_ENUM_DRIFT].sort()).toEqual(actionEnumDrift().filter((n) => KNOWN_SDK_ACTION_ENUM_DRIFT.has(n)));
   });
 });
+
+// #11432: the chat SDK validates against its DECLARED shape and drops every key
+// the shape lacks. manage_configuration_policy declared no ownerScope, so a
+// partner-owned create could not be made from chat at all.
+describe('owner fields survive the chat shape (#11432)', () => {
+  it.each(['manage_configuration_policy', 'manage_delivery'])('%s declares orgId and ownerScope, as its registry definition does', (name) => {
+    const decl = declaredToolsByName().get(name);
+    const registryProps = (aiTools.get(name)?.definition.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+    for (const key of ['orgId', 'ownerScope']) {
+      expect(Object.keys(registryProps)).toContain(key);
+      expect(Object.keys(decl!.inputSchema as Record<string, unknown>)).toContain(key);
+    }
+    const input = name === 'manage_delivery' ? { action: 'list_routing', ownerScope: 'partner' } : { action: 'create', name: 'x', ownerScope: 'partner' };
+    expect(validateToolInput(name, input).success).toBe(true);
+  });
+});

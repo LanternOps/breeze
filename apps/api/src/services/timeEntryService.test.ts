@@ -77,6 +77,8 @@ vi.mock('./workTypeService', () => ({
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   db: {
     select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn(() => {

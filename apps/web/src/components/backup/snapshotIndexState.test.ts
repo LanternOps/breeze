@@ -212,9 +212,22 @@ describe('useSnapshotIndexState', () => {
     expect(result.current.view).toEqual(view);
     expect(result.current.retrying).toBe(false);
     expect(showToast).toHaveBeenCalledTimes(1);
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/rebuilt recently|too many|\S{8,}/i) }));
-    // Whatever copy wins (the localized RATE_LIMITED string or the server text), it is not the generic fallback.
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Couldn't start rebuilding the file list" }));
+    // The server's reason, not the generic localized RATE_LIMITED headline (#11280).
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: "This snapshot's file list was rebuilt recently. Try again in a few minutes.",
+    }));
+  });
+
+  it('a cooldown 429 without a usable reason falls back to the localized rate-limit copy (#11280)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ code: 'RATE_LIMITED', error: '  ' }, 429));
+    const { result } = renderHook(() => useSnapshotIndexState({ snapshotId: 'snap-1', onReady: vi.fn() }));
+    act(() => result.current.reportView({ state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false }));
+
+    await act(async () => { await result.current.retry(); });
+
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Too many requests — try again shortly' }));
   });
 
   it('a retry the API refuses toasts through runAction and leaves the honest state in place', async () => {

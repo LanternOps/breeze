@@ -15,6 +15,7 @@ import type {
   ExternalBackupStatus,
 } from '../types/backupHealth';
 import {
+  isOverdueBackup,
   saasWorkloadLabel,
   verifiedBootableState,
   type BackupStatusBucketId,
@@ -27,7 +28,8 @@ const fill = (doc: jsPDF, c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
 const ink = (doc: jsPDF, c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
 const mix = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(a[i]! + (b[i]! - a[i]!) * t)) as RGB;
 
-// Six buckets — the shared W01 `BACKUP_STATUS_BUCKET_IDS` grouping (see
+// The shared W01 `BACKUP_STATUS_BUCKET_IDS` grouping, plus `overdue` (#12025),
+// which like `other` is present only when non-zero (see
 // apps/api/src/services/backupStatusReport.ts's `buildStatusBuckets`, which
 // this renderer's `data.statusBuckets` input already came from). `other` is
 // the catch-all for `not_started`/`unknown` and is simply absent from
@@ -37,6 +39,7 @@ const mix = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(
 const STATUS_BUCKET_LABEL: Record<BackupStatusBucketId, string> = {
   no_backups: 'No backups',
   completed: 'Completed',
+  overdue: 'No recent backup',
   completed_with_errors: 'Completed with errors',
   in_progress: 'In process',
   unsuccessful: 'Unsuccessful',
@@ -54,6 +57,7 @@ function statusBucketColor(C: PdfChrome['C'], key: BackupStatusBucketId): RGB {
   switch (key) {
     case 'no_backups': return C.faint;
     case 'completed': return C.success;
+    case 'overdue': return C.danger;
     case 'completed_with_errors': return C.warning;
     case 'in_progress': return C.primary;
     case 'unsuccessful': return C.danger;
@@ -232,6 +236,15 @@ function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   }
 }
 
+/** An overdue `completed` row says so, with the date of its last success,
+ *  rather than a bare "Completed" (#12025). */
+function statusText(row: BackupHealthRow, timezone: string | undefined): string {
+  if (!isOverdueBackup(row)) return STATUS_LABEL[row.status];
+  return row.lastSuccessAt
+    ? `No recent backup\nLast: ${formatSnapshotDate(row.lastSuccessAt, timezone)}`
+    : 'No recent backup';
+}
+
 /** A result carries its date: an old "Passed" must not read as a current one. */
 function verifiedBootableText(row: BackupHealthRow, timezone: string | undefined): string {
   const state = verifiedBootableState(row);
@@ -253,7 +266,7 @@ function cellText(row: BackupHealthRow, key: string, timezone: string | undefine
     case 'selected': return formatBytes(row.selectedBytes);
     case 'used': return formatBytes(row.usedBytes);
     case 'errors': return String(row.errorsCount);
-    case 'status': return STATUS_LABEL[row.status];
+    case 'status': return statusText(row, timezone);
     case 'verifiedBootable': return verifiedBootableText(row, timezone);
     // Drawn by hand in didDrawCell (a 28-cell colour strip); text stays empty
     // so autoTable never prints a stray label under the drawing.
@@ -324,7 +337,7 @@ export function renderBackupStatusReport(
     doc,
     'Backup Status Report',
     data.org?.name ?? '',
-    `Prepared ${opts.generatedAt} - ${populationSummary}`,
+    `Prepared ${opts.generatedAt}   ·   ${populationSummary}`,
     PAGE.bandH + 14,
   );
 
@@ -370,7 +383,7 @@ export function renderBackupStatusReport(
       const row = rows[cell.row.index];
       if (!row) return;
       if (cell.column.index === STATUS_COL) {
-        cell.cell.styles.textColor = statusColor(C, row.status);
+        cell.cell.styles.textColor = isOverdueBackup(row) ? C.danger : statusColor(C, row.status);
         cell.cell.styles.fontStyle = 'bold';
       }
     },

@@ -76,4 +76,15 @@ describe('scriptProposals api', () => {
       expect.objectContaining({ body: JSON.stringify({ name: 'Restart spooler', ownerScope: 'partner' }) }),
     );
   });
+
+  // #11287: the success toast said what the button said ("Save to library").
+  it.each([
+    ['promote', () => promoteScriptProposal('p1', { name: 'n', ownerScope: 'partner' })],
+    ['override-promote', () => overrideSaveScriptProposal('p1', { name: 'n', ownerScope: 'partner', acknowledgedPatterns: [] })],
+  ])('%s success toast reports the outcome, not the button label', async (_n, call) => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ scriptId: 's1', versionId: 'v1' }) });
+    await call();
+    const [[opts]] = runAction.mock.calls as unknown as [[{ successMessage: string }]];
+    expect(opts.successMessage).toBe('Saved to the script library');
+  });
 });

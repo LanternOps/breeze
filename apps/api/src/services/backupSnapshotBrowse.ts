@@ -1,11 +1,13 @@
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, gt, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { lockTimeoutWasChanged, tightenStatementTimeout } from '../db/lockTimeout';
 import { pgErrorCode } from '../utils/pgErrors';
-import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
+import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
+import { snapshotIndexEntries, type SnapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPathsResolution } from './backupSelectedPaths';
+import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
 
 /**
  * One-level, keyset-paged listing of a snapshot's file index (#8230).
@@ -28,6 +30,11 @@ export const SEARCH_QUERY_MAX_LENGTH = 256;
 // holding a pooled connection.
 export const BROWSE_STATEMENT_TIMEOUT_MS = 15_000;
 export const SEARCH_STATEMENT_TIMEOUT_MS = 10_000;
+// A selective restore resolves its selections by walking the index in pages
+// before anything is created. Each page statement has the browse timeout, and
+// the walk as a whole stops here: a request never holds its pooled connection
+// for longer than this however large the index is.
+export const SELECTION_WALK_DEADLINE_MS = 30_000;
 
 /** A browse or search statement that ran past its timeout. */
 export class IndexQueryTimeoutError extends Error {
@@ -73,7 +80,10 @@ export type BrowseEntry = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
-  /** Directories only: indexed files at any depth beneath it (#9628). */
+  /**
+   * Directories only: indexed files at any depth beneath it (#9628), symlinks
+   * included, directory entries not (#11235). Absent on a search result.
+   */
   fileCount?: number;
 };
 
@@ -158,37 +168,65 @@ function snapshotIndexIsReadable(snapshotDbId: string) {
  * statistics say: right after a bulk publish they still claim one row, and the
  * planner would otherwise read and sort the whole snapshot for the first page.
  */
-function afterSourcePath(after: string | null) {
-  return gt(backupSnapshotFiles.sourcePath, after ?? '');
+function afterSourcePath(entries: SnapshotIndexEntries, after: string | null) {
+  return gt(entries.sourcePath, after ?? '');
 }
 
 /**
  * One keyset page of the stored source paths a selective restore may resolve
  * against: the same rows the listing would show (#11026), decided in the
- * statement that reads them. Ordered by source_path, the second column of
- * backup_snapshot_files_snapshot_source_idx, so each page is an index range.
+ * statement that reads them, with each row's kind (a directory entry is the
+ * folder it names, #11235). Ordered by source_path, the second column of
+ * backup_snapshot_files_snapshot_source_idx, so each page is an index range
+ * once the table's statistics know the snapshot's rows (#11209). Exported,
+ * unexecuted, so a test can EXPLAIN this exact statement.
  */
-async function readableSourcePathPage(snapshotDbId: string, after: string | null): Promise<string[]> {
-  const rows = await db
-    .select({ sourcePath: backupSnapshotFiles.sourcePath })
-    .from(backupSnapshotFiles)
+export function readableSourcePathPageQuery(snapshotDbId: string, after: string | null, executor: Executor = db) {
+  const entries = snapshotIndexEntries(snapshotDbId);
+  return executor
+    .select({ sourcePath: entries.sourcePath, kind: entries.kind })
+    .from(entries)
     .where(and(
-      eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
       snapshotIndexIsReadable(snapshotDbId),
-      afterSourcePath(after),
+      afterSourcePath(entries, after),
     ))
-    .orderBy(asc(backupSnapshotFiles.sourcePath))
+    .orderBy(asc(entries.sourcePath))
     .limit(SELECTION_PAGE_SIZE);
-  return rows.map((row) => row.sourcePath);
 }
 
-async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<string[]> {
+type ReadableSourcePath = { sourcePath: string; kind: SnapshotEntryKind | null };
+
+export type SelectionWalkOptions = {
+  /** The whole walk's budget; default SELECTION_WALK_DEADLINE_MS. */
+  deadlineMs?: number;
+  /** Test seam: each page statement's timeout instead of BROWSE_STATEMENT_TIMEOUT_MS. */
+  statementTimeoutMs?: number;
+};
+
+/**
+ * The readable rows in keyset pages. Each page is one statement under its own
+ * timeout (never more than what is left of the walk's deadline); a page that
+ * runs out of time, or a walk past its deadline, ends with
+ * IndexQueryTimeoutError.
+ */
+async function* readableSourcePaths(
+  snapshotDbId: string,
+  options: SelectionWalkOptions = {},
+): AsyncGenerator<ReadableSourcePath[]> {
+  const endsAt = Date.now() + (options.deadlineMs ?? SELECTION_WALK_DEADLINE_MS);
+  const pageTimeoutMs = options.statementTimeoutMs ?? BROWSE_STATEMENT_TIMEOUT_MS;
   let after: string | null = null;
   for (;;) {
-    const page = await readableSourcePathPage(snapshotDbId, after);
+    const remaining = endsAt - Date.now();
+    if (remaining <= 0) throw new IndexQueryTimeoutError();
+    const cursor = after;
+    const page: ReadableSourcePath[] = await withStatementTimeout(
+      Math.max(1, Math.min(pageTimeoutMs, remaining)),
+      (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx),
+    );
     if (page.length > 0) yield page;
     if (page.length < SELECTION_PAGE_SIZE) return;
-    after = page[page.length - 1]!;
+    after = page[page.length - 1]!.sourcePath;
   }
 }
 
@@ -198,7 +236,7 @@ async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<string
  */
 export async function readableSnapshotSourcePaths(snapshotDbId: string): Promise<string[]> {
   const all: string[] = [];
-  for await (const page of readableSourcePaths(snapshotDbId)) all.push(...page);
+  for await (const page of readableSourcePaths(snapshotDbId)) all.push(...page.map((row) => row.sourcePath));
   return all;
 }
 
@@ -211,16 +249,19 @@ export type SnapshotSelectionResolution =
  * Resolves a selective restore's selections against a snapshot's readable
  * index (createSelectionResolver) without loading every path: the rows are
  * walked in keyset pages, and only the selections and their results are held.
+ * Throws IndexQueryTimeoutError when the walk runs out of time (see
+ * readableSourcePaths); the caller's transaction stays usable.
  */
 export async function resolveSelectedSnapshotPathsInDb(
   snapshotDbId: string,
   selected: readonly string[],
+  options: SelectionWalkOptions = {},
 ): Promise<SnapshotSelectionResolution> {
   const resolver = createSelectionResolver(selected);
   let anyRows = false;
-  for await (const page of readableSourcePaths(snapshotDbId)) {
+  for await (const page of readableSourcePaths(snapshotDbId, options)) {
     anyRows = true;
-    for (const path of page) resolver.add(path);
+    for (const row of page) resolver.add(row.sourcePath, row.kind);
     // Nothing to match: the first page already answers whether rows exist.
     if (selected.length === 0) break;
   }
@@ -245,32 +286,37 @@ export async function listSnapshotDirectory(params: {
   // np = stored path with `\`→`/`, repeated `/` collapsed and leading `/`
   // stripped — the same segmentation normalizeSnapshotPath + filter(Boolean)
   // gave the old in-JS tree builder, so Windows and POSIX roots are unchanged.
+  //
+  // A directory entry (kind 'dir', #11235) is a folder at its own level: it
+  // groups with the rows beneath it, so a folder recorded for its mode or ACL
+  // is listed once, and an empty one is listed at all. It is not counted as a
+  // file. A symlink is a file. A content-less row of unknown kind (written
+  // before kinds were recorded) is a file, as it always was.
   const result = await withStatementTimeout(params.statementTimeoutMs ?? BROWSE_STATEMENT_TIMEOUT_MS, (tx) => tx.execute(sql`
     WITH n AS (
-      SELECT source_path, size, modified_at,
+      SELECT source_path, size, modified_at, kind,
         regexp_replace(regexp_replace(replace(source_path, E'\\\\', '/'), '/{2,}', '/', 'g'), '^/+', '') AS np
-      FROM backup_snapshot_files
-      WHERE snapshot_db_id = ${snapshotDbId}
-        AND EXISTS (
-          SELECT 1 FROM ${backupSnapshots}
-          LEFT JOIN ${backupSnapshotAttestations} ON ${backupSnapshotAttestations.snapshotDbId} = ${backupSnapshots.id}
-          WHERE ${backupSnapshots.id} = ${snapshotDbId} AND ${readableIndexCondition()}
-        )
+      FROM ${snapshotIndexEntries(snapshotDbId)}
+      WHERE EXISTS (
+        SELECT 1 FROM ${backupSnapshots}
+        LEFT JOIN ${backupSnapshotAttestations} ON ${backupSnapshotAttestations.snapshotDbId} = ${backupSnapshots.id}
+        WHERE ${backupSnapshots.id} = ${snapshotDbId} AND ${readableIndexCondition()}
+      )
     ),
     r AS (
-      SELECT source_path, size, modified_at,
+      SELECT source_path, size, modified_at, kind,
         CASE WHEN ${prefix}::text = '' THEN np ELSE substr(np, length(${prefix}::text) + 2) END AS rest
       FROM n
       WHERE ${prefix}::text = '' OR left(np, length(${prefix}::text) + 1) = ${prefix}::text || '/'
     ),
     g AS (
       SELECT split_part(rest, '/', 1) AS name,
-        position('/' in rest) > 0 AS is_dir,
-        CASE WHEN position('/' in rest) > 0 THEN 0 ELSE 1 END AS rank,
+        (position('/' in rest) > 0 OR kind IS NOT DISTINCT FROM 'dir') AS is_dir,
+        CASE WHEN position('/' in rest) > 0 OR kind IS NOT DISTINCT FROM 'dir' THEN 0 ELSE 1 END AS rank,
         min(source_path) AS source_path,
         max(size) AS size,
         max(modified_at) AS modified_at,
-        count(*) AS file_count
+        count(*) FILTER (WHERE kind IS DISTINCT FROM 'dir') AS file_count
       FROM r
       WHERE rest <> ''
       GROUP BY 1, 2, 3
@@ -304,10 +350,12 @@ function lastSegment(sourcePath: string): string {
 }
 
 /**
- * Files of a snapshot whose stored path contains `query`, case-insensitively,
+ * Entries of a snapshot whose stored path contains `query`, case-insensitively,
  * anywhere: a file name or any folder above it. Matched with position(), so
  * `%` and `_` are plain characters. Only an index that may be listed is read
  * (readableIndexCondition), in source_path order, keyset-paged after `after`.
+ * A directory entry (#11235) is returned as a folder at its browse path, the
+ * value browse takes back as `dir` and selection resolves.
  */
 export async function searchSnapshotFiles(params: {
   snapshotDbId: string;
@@ -318,35 +366,42 @@ export async function searchSnapshotFiles(params: {
   statementTimeoutMs?: number;
 }): Promise<BrowsePage> {
   const { snapshotDbId, query, limit, after } = params;
-  const rows = await withStatementTimeout(params.statementTimeoutMs ?? SEARCH_STATEMENT_TIMEOUT_MS, (tx) =>
-    tx
+  const rows = await withStatementTimeout(params.statementTimeoutMs ?? SEARCH_STATEMENT_TIMEOUT_MS, (tx) => {
+    const entries = snapshotIndexEntries(snapshotDbId);
+    return tx
       .select({
-        sourcePath: backupSnapshotFiles.sourcePath,
-        size: backupSnapshotFiles.size,
-        modifiedAt: backupSnapshotFiles.modifiedAt,
+        sourcePath: entries.sourcePath,
+        size: entries.size,
+        modifiedAt: entries.modifiedAt,
+        kind: entries.kind,
       })
-      .from(backupSnapshotFiles)
+      .from(entries)
       .where(and(
-        eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
         snapshotIndexIsReadable(snapshotDbId),
         // Compared as the browser shows paths (forward slashes), so a Windows path
         // is found whichever separator was typed. chr(92) is a backslash.
-        sql`position(lower(${normalizeSnapshotPath(query)}::text) in lower(replace(${backupSnapshotFiles.sourcePath}, chr(92), '/'))) > 0`,
-        afterSourcePath(after),
+        sql`position(lower(${normalizeSnapshotPath(query)}::text) in lower(replace(${entries.sourcePath}, chr(92), '/'))) > 0`,
+        afterSourcePath(entries, after),
       ))
-      .orderBy(asc(backupSnapshotFiles.sourcePath))
-      .limit(limit + 1),
-  );
+      .orderBy(asc(entries.sourcePath))
+      .limit(limit + 1);
+  });
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
-  const entries: BrowseEntry[] = page.map((row) => ({
-    name: lastSegment(row.sourcePath),
-    path: normalizeSnapshotPath(row.sourcePath),
-    type: 'file',
-    sizeBytes: row.size === null || row.size === undefined ? undefined : Number(row.size),
-    modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : undefined,
-  }));
+  const entries: BrowseEntry[] = page.map((row) => {
+    if (row.kind === 'dir') {
+      const segments = dirSegments(row.sourcePath);
+      return { name: lastSegment(row.sourcePath), path: `/${segments.join('/')}`, type: 'directory' };
+    }
+    return {
+      name: lastSegment(row.sourcePath),
+      path: normalizeSnapshotPath(row.sourcePath),
+      type: 'file',
+      sizeBytes: row.size === null || row.size === undefined ? undefined : Number(row.size),
+      modifiedAt: row.modifiedAt ? new Date(row.modifiedAt).toISOString() : undefined,
+    };
+  });
   const last = page[page.length - 1];
   return { entries, nextCursor: hasMore && last ? encodeSearchCursor(last.sourcePath) : null };
 }

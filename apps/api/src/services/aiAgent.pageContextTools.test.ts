@@ -35,6 +35,7 @@ vi.mock('./aiModels/sessionModel', () => ({
 }));
 
 import { buildSystemPrompt } from './aiAgent';
+import type { GrantCeiling } from './wisp/grantAuthority';
 
 const auth: any = {
   user: { id: 'user-1', name: 'Tess Tech' },
@@ -83,6 +84,15 @@ describe('buildSystemPrompt page-context tool blocks (W19)', () => {
     const prompt = await buildSystemPrompt(auth, { type: 'dashboard' } as never);
     expect(prompt).toContain('The user is on the main dashboard.');
     expect(prompt.endsWith('The user is on the main dashboard.')).toBe(true);
+  });
+
+  // #10430: a Wisp session's prompt names only tools its grant ceiling admits.
+  it('builds a Wisp session\'s index and page blocks from the tools its ceiling admits', async () => {
+    const ceiling = { deniedTools: new Set(['run_script']), toolAllowlist: null } as unknown as GrantCeiling;
+    const page = { type: 'device', id: '44444444-4444-4444-4444-444444444444', hostname: 'web-01' } as const;
+    await buildSystemPrompt(auth, page as never, undefined, ceiling);
+    expect(composeStaticSystemPrompt).toHaveBeenCalledWith(['query_devices'], 'lazy');
+    expect(renderPageContextToolBlocks).toHaveBeenCalledWith(page, ['query_devices']);
   });
 
   it('AI_TOOL_INDEX=full: legacy static prefix and no page blocks', async () => {

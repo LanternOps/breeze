@@ -2,7 +2,7 @@ import { Worker, type Job, type Queue } from 'bullmq';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
-import { reconcileTelemetry, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
+import { reconcileTelemetry, type ReconcileResult, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
 import { markCollectorPoll, getCollectorOwnerDeviceId } from '../services/unifi/unifiCollectorService';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -21,12 +21,56 @@ export async function enqueueUnifiTelemetry(payload: TelemetryPayload): Promise<
   }));
 }
 
+const MAX_LOGGED_IDS = 50;
+// A permanently unmapped site skips records on every ~60 s poll; re-log the
+// same condition at most hourly per collector. Removals always log.
+export const UNMAPPED_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const lastUnmappedLog = new Map<string, { signature: string; at: number }>();
+
+/**
+ * W04 (#11504): one structured line when a mapped-only (self-hosted) collector
+ * skipped records (unmapped site, or no site id from an older agent) or removed
+ * device/client rows the controller reported under an unmapped site. The
+ * discovered_assets linked from removed device telemetry rows are listed for
+ * review (capped); nothing deletes them. Call it only after the reconcile
+ * transaction commits, so a rolled-back removal is never reported.
+ */
+export function logUnmappedSites(collectorId: string, result: Partial<ReconcileResult> | undefined, now = Date.now()): void {
+  const counters = {
+    devicesSkippedUnmapped: result?.devicesSkippedUnmapped ?? 0,
+    clientsSkippedUnmapped: result?.clientsSkippedUnmapped ?? 0,
+    devicesSkippedNoSiteId: result?.devicesSkippedNoSiteId ?? 0,
+    clientsSkippedNoSiteId: result?.clientsSkippedNoSiteId ?? 0,
+    devicesRemovedUnmapped: result?.devicesRemovedUnmapped ?? 0,
+    clientsRemovedUnmapped: result?.clientsRemovedUnmapped ?? 0,
+  };
+  if (Object.values(counters).every((n) => n === 0)) {
+    lastUnmappedLog.delete(collectorId); // condition cleared: a recurrence logs at once
+    return;
+  }
+  const siteIds = result?.unmappedSiteIds ?? [];
+  const removed = counters.devicesRemovedUnmapped + counters.clientsRemovedUnmapped > 0;
+  const noSiteId = counters.devicesSkippedNoSiteId + counters.clientsSkippedNoSiteId > 0;
+  const signature = `${siteIds.join('\u0000')}|${noSiteId}`;
+  const last = lastUnmappedLog.get(collectorId);
+  if (!removed && last && last.signature === signature && now - last.at < UNMAPPED_LOG_INTERVAL_MS) return;
+  lastUnmappedLog.set(collectorId, { signature, at: now });
+  const assetIds = result?.removedDiscoveredAssetIds ?? [];
+  console.warn(JSON.stringify({
+    event: 'unifi.reconcile.unmapped', collectorId, ...counters,
+    unmappedSiteIds: siteIds.slice(0, MAX_LOGGED_IDS),
+    removedDiscoveredAssetIdCount: assetIds.length,
+    removedDiscoveredAssetIds: assetIds.slice(0, MAX_LOGGED_IDS),
+  }));
+}
+
 export async function processIngest(payload: TelemetryPayload): Promise<void> {
   // Set to the collector id only once we're past the ownership gate, so a
   // reconcile failure can be reflected as 'error' status. Stays null for a
   // rejected cross-device payload — we must never flip another collector's
   // status (this path is system-scoped and bypasses RLS).
   let recordErrorFor: string | null = null;
+  let reconciled: ReconcileResult | undefined;
   try {
     await withSystemDbAccessContext(async () => {
       // Ownership gate (system context bypasses RLS): the posting agent's
@@ -54,7 +98,7 @@ export async function processIngest(payload: TelemetryPayload): Promise<void> {
       // partial (or fully failed). Don't stale on partial data; report the right
       // status: 'unreachable' when nothing came back, 'error' when some did.
       const partial = !!payload.error;
-      await reconcileTelemetry(db, payload, { markStale: !partial });
+      reconciled = await reconcileTelemetry(db, payload, { markStale: !partial });
       if (partial) {
         const empty = payload.devices.length === 0 && payload.clients.length === 0;
         await markCollectorPoll(db, payload.collectorId, empty ? 'unreachable' : 'error', true, payload.error ?? null);
@@ -63,6 +107,8 @@ export async function processIngest(payload: TelemetryPayload): Promise<void> {
       }
       recordErrorFor = null; // success — no error status to record
     });
+    // Committed: only now is a reported removal real.
+    if (reconciled) logUnmappedSites(payload.collectorId, reconciled);
   } catch (err) {
     if (recordErrorFor) {
       // The reconcile transaction (and any status write inside it) rolled back,

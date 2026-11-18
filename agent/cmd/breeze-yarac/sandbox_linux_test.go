@@ -22,7 +22,7 @@ import (
 // sandbox is irreversible, and stage 1 re-executes os.Executable() (here the
 // test binary) as stage 2.
 //
-//	docker run --rm -v "$PWD":/src -w /src/agent golang:1.26.10-alpine \
+//	docker run --rm -v "$PWD":/src -w /src/agent golang:1.26.11-alpine \
 //	  go test -run Sandbox -v ./cmd/breeze-yarac/
 func buildCgoFreeYarac(t *testing.T) string {
 	t.Helper()

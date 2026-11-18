@@ -303,6 +303,13 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_agent_onlytools_unknown_name',
   /**
+   * An in-process SDK MCP server handed to `unknownToolArgsHooks` was not built
+   * by `createArgCheckedSdkMcpServer` (or is a copy of one), so unknown tool
+   * arguments on it are stripped by the SDK instead of refused (#11861).
+   * Always a wiring bug; expected never to fire.
+   */
+  'ai_tool_arg_guard_unrecorded_server',
+  /**
    * An AI chat tool call reached our handler without the SDK's tool_use id
    * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
    * instead (#7931). Reported once per session. Expected never to fire; if it
@@ -318,6 +325,13 @@ export const SENTRY_EVENT_CODES = [
   'backup_result_org_divergence',
   /** Snapshots are unattributable because two orgs share a destination. */
   'backup_snapshot_ambiguous_destination',
+  /**
+   * The stale-backup reaper's signal-recording window keeps closing before it
+   * outlives the stall limit, so the stall rule cannot fail a running backup
+   * (#11766, jobs/backupSignalRecording.ts). Usually recurring pool-acquire or
+   * context-setup timeouts on an otherwise healthy database.
+   */
+  'backup_signal_window_reset_repeatedly',
 
   // --- filesystem analysis results (#8024) ------------------------------
   /** A `filesystem_analysis` result reported `completed` but its stdout was
@@ -428,6 +442,13 @@ export const SENTRY_EVENT_CODES = [
    * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
    */
   'ai_transcript_sweep_incomplete',
+  /**
+   * #4342 W4: a nightly AI transcript retention run (report or enforce) had
+   * orgs that failed or carried an unusable window, or transcript deletes that
+   * failed, so its counts or its stubbing are incomplete. Per-org errors are in
+   * the worker log (`[AiTranscriptRetention]`).
+   */
+  'ai_transcript_retention_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is
@@ -490,6 +511,24 @@ export const SENTRY_EVENT_CODES = [
    *  uuid): legacy admits it without a claim and a switched flow does not
    *  attempt it, so exactly one engine runs it. */
   'flow_conversion_event_key_unbuildable',
+
+  // --- portal directory deprovisioning (portal registration W8 #11385) ----
+  /** An enforced directory run was held whole for MSP approval (D8a/D8c): a
+   *  threshold or the chain's first enforcement. Leavers keep access until the
+   *  MSP applies or dismisses it in the org's Portal tab. Counts only. */
+  'portal_directory_held',
+
+  // --- portal Entra SCIM provisioning (portal registration W9 #11386) ------
+  /** The Redis session purge after a SCIM deactivate failed. The auth epoch
+   *  bump already makes both session stores refuse those sessions; this is
+   *  cleanup, with no retry (W9 plan OD3). Ids only, in the log. */
+  'portal_scim_purge_failed',
+
+  // --- trust center serving set (#9087) ----------------------------------
+  /** A serving-set reconcile lost the epoch check three times in a row and
+   *  applied without removing members (a stale member lingers until the next
+   *  reconcile). Frequent events mean writers are contending for the epoch. */
+  'trust_serving_reconcile_fallback',
 ] as const;
 
 /**

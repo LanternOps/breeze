@@ -76,10 +76,21 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  // #10301 rotation grace window (oauth/refreshRotationGrace.ts). Written only
+  // by consume() in the same UPDATE that consumes the token during a rotation:
+  // rotated_at is rotation provenance (revoked_at alone is also set by
+  // destroy()); successor_sealed is the successor token sealed under a key that
+  // needs this row's RAW token, cleared by the client's next rotation once older
+  // than REFRESH_ROTATION_GRACE_MAX_MS (30 s, not the configured window).
+  rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+  successorSealed: text('successor_sealed'),
 }, (table) => ({
   userIdx: index('oauth_refresh_tokens_user_idx').on(table.userId),
   partnerIdx: index('oauth_refresh_tokens_partner_idx').on(table.partnerId),
   clientIdx: index('oauth_refresh_tokens_client_idx').on(table.clientId),
+  sealedClientIdx: index('oauth_refresh_tokens_sealed_client_idx')
+    .on(table.clientId, table.rotatedAt)
+    .where(sql`${table.successorSealed} IS NOT NULL`),
 }));
 
 // oauth_sessions: oidc-provider Session payloads (was in-memory, now persisted

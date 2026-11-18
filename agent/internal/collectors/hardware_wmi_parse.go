@@ -52,6 +52,7 @@ type windowsHardwareJSON struct {
 	SysModel          string      `json:"SysModel"`
 	SysSKU            string      `json:"SysSKU"`
 	ProductSKU        string      `json:"ProductSKU"`
+	SysUUID           string      `json:"SysUUID"`
 	GPUNames          gpuNameList `json:"GPUNames"`
 }
 

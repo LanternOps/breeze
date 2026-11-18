@@ -159,7 +159,8 @@
       "missing": "Permissões ausentes",
       "unexpectedAlert": "Permissões inesperadas detectadas",
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
-      "grantsVerifiedAt": "Permissões verificadas"
+      "grantsVerifiedAt": "Permissões verificadas",
+      "graphTokenOnly": "Permissões do Graph verificadas. As permissões em outros recursos da Microsoft não foram verificadas; conceda Application.Read.All para uma verificação completa."
     },
     "actions": {
       "connect": "Conectar",
@@ -170,6 +171,7 @@
       "consentFailed": "Não foi possível iniciar o consentimento.",
       "retestFailed": "Não foi possível testar a conexão novamente.",
       "retestSucceeded": "O novo teste da conexão foi concluído.",
+      "retestNeedsAttention": "O novo teste foi concluído, mas a conexão ainda precisa de atenção.",
       "disconnectWarning": "A desconexão impede o Breeze de usar esta conexão. O consentimento da Microsoft para todo o locatário permanece até que um administrador do cliente o remova no Microsoft Entra.",
       "disconnectFailed": "Não foi possível desconectar a conexão.",
       "disconnectSucceeded": "A conexão do Breeze foi desconectada.",
@@ -192,6 +194,7 @@
       "grant_unexpected": "A Microsoft informou permissões fora do manifesto aprovado.",
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
+      "grant_reconciliation_unavailable": "A Microsoft aceitou a conexão, mas o Breeze não consegue ler quais permissões este locatário concedeu ao app de ações administrativas, então elas não podem ser verificadas. As ações administrativas ficam pausadas até que sejam.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
       "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
@@ -289,11 +292,9 @@
     "unableToSendTestNotification": "Não foi possível enviar notificação de teste.",
     "failedToLoadCommunicationSettings": "Falha ao carregar as configurações de comunicação",
     "slackSettingsSaved": "Configurações do Slack salvas.",
-    "slackTestNotificationQueued": "Notificação de teste do Slack na fila.",
     "teamsSettingsSaved": "Configurações de equipes salvas.",
-    "teamsTestNotificationQueued": "Notificação de teste do Teams na fila.",
     "discordSettingsSaved": "Configurações do Discord salvas.",
-    "discordTestNotificationQueued": "Notificação de teste do Discord na fila.",
+    "discordTestNotificationSent": "Notificação de teste do Discord enviada.",
     "loadingCommunicationIntegrations": "Carregando integrações de comunicação...",
     "communicationIntegrations": "Integrações de comunicação",
     "connectChatToolsRouteAlertsBySeverityAnd": "Conecte ferramentas de chat, encaminhe alertas por gravidade e personalize modelos de mensagens. ",
@@ -374,6 +375,9 @@
       "delivery_failed": "Falha nas entregas",
       "sync_stale": "Sincronização parada",
       "verification_failed": "Falha na verificação",
+      "destination_access_denied": "O destino recusou o acesso",
+      "destination_not_found": "Destino não encontrado",
+      "destination_failing": "O destino está falhando",
       "unknown": "Requer atenção"
     }
   },
@@ -958,6 +962,8 @@
     "integrationUpdated": "Integração do Pax8 atualizada",
     "integrationConnected": "Integração do Pax8 conectada",
     "companyMapped": "Empresa do Pax8 mapeada",
+    "companiesRefreshFailed": "Não foi possível atualizar a lista de empresas, que pode estar desatualizada. Recarregue para ver a versão mais recente.",
+    "syncStillRunning": "A sincronização ainda está em andamento ou o status não está disponível. Verifique novamente em alguns minutos.",
     "companyUnmapped": "Mapeamento da empresa do Pax8 removido",
     "observationsPaused": "Observações de quantidade do Pax8 pausadas",
     "observationsResumed": "Observações de quantidade do Pax8 retomadas",
@@ -1072,7 +1078,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Falha ao salvar mapeamentos de sites.",
     "siteMappingsSaved": "Mapeamentos de sites salvos",
-    "pickTheSiteThisControllerServesACollector": "Escolha o site que este controlador atende, um agente coletor e insira a URL do controlador e a chave de API local.",
+    "pickTheSiteThisControllerServesACollector": "Escolha o local do agente coletor e um agente coletor e insira a URL do controlador e a chave de API local.",
     "failedToRegisterTheController": "Falha ao registrar o controlador.",
     "controllerRegistered": "Controlador registrado",
     "pickABreezeSiteACollectorAgentAnd": "Escolha um site Breeze, um agente coletor e insira o URL do controlador e a chave de API local.",
@@ -1115,7 +1121,8 @@
     "controllers": "Controladores",
     "registerEachSelfHostedUniFiNetworkControllerA": "Registre cada controlador de rede UniFi auto-hospedado. Um agente Breeze na rede do controlador pesquisa diretamente sua API de integração local (firmware ≥ 9.3), então não é necessária conta na nuvem UniFi. O Breeze armazena a chave da API local criptografada e a envia ao agente que você escolher.",
     "controllerURL": "URL do controlador",
-    "siteThisControllerServes": "Site que este controlador atende",
+    "collectorAgentLocation": "Local do agente coletor",
+    "collectorAgentLocationHelp": "Onde fica o agente que consulta este controlador, muitas vezes a sua própria organização interna. Você associa os sites do controlador aos clientes depois de registrá-lo.",
     "selectSite": "— Selecione o local —",
     "collectorAgent": "Agente coletor",
     "localAPIKey": "Chave de API local",
@@ -1154,6 +1161,7 @@
     "started": "Iniciado",
     "trigger": "Acionar",
     "hostsSeen": "Anfitriões vistos",
+    "sitesUnmapped": "Sites não mapeados",
     "hosts": "Anfitriões",
     "devicesCreated": "Dispositivos adicionados nesta sincronização",
     "new": "Adicionados",
@@ -1478,7 +1486,8 @@
     "status": {
       "connected": "Conectado",
       "error": "Erro",
-      "reauth_required": "Nova autenticação necessária"
+      "reauth_required": "Nova autenticação necessária",
+      "inactive": "Inativa"
     },
     "syncStatus": {
       "running": "Em execução",
@@ -1580,5 +1589,28 @@
     "pushTestNote": "O evento de teste pode levar alguns minutos para chegar.",
     "pushLast": "Último evento push: {{relative}}",
     "pushNone": "Nenhum evento push recebido ainda"
+  },
+  "externalMatch": {
+    "suggested": "Sugerido: {{target}}",
+    "matchedOn": "correspondência em “{{key}}”",
+    "accept": "Aceitar",
+    "possibleMatches_one": "{{count}} possível correspondência",
+    "possibleMatches_other": "{{count}} possíveis correspondências",
+    "alsoMatches": "Também corresponde a {{names}}",
+    "pickSite": "Escolha um site em {{org}}",
+    "reviewButton_one": "Revisar {{count}} correspondência sugerida",
+    "reviewButton_other": "Revisar {{count}} correspondências sugeridas",
+    "reviewTitle": "Revisar correspondências sugeridas",
+    "confirm_one": "Mapear {{count}} selecionado",
+    "confirm_other": "Mapear {{count}} selecionados",
+    "resolveInTable": "Resolva estes na tabela",
+    "tierExact": "Mesmo nome",
+    "tierNormalized": "Mesmo nome, ignorando sufixos",
+    "summary": "{{unmapped}} não mapeados · {{suggested}} sugeridos",
+    "staleReview": "Algumas linhas mudaram desde que você abriu esta revisão. A lista foi recarregada.",
+    "newSinceSync_one": "{{count}} novo desde a última sincronização",
+    "newSinceSync_other": "{{count}} novos desde a última sincronização",
+    "bulkMapped_one": "{{count}} empresa mapeada",
+    "bulkMapped_other": "{{count}} empresas mapeadas"
   }
 }

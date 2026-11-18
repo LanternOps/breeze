@@ -693,7 +693,8 @@
     "confirmLargeFolderSelection": "Cette sélection couvre environ {{count}} fichiers et la restauration peut prendre du temps. Continuer?",
     "name": "Nom",
     "size2": "Taille",
-    "modified": "Modifié"
+    "modified": "Modifié",
+    "noSnapshotsYetFilesAppearHere": "Aucun instantané pour le moment. Les fichiers apparaîtront ici une fois la première sauvegarde terminée."
   },
   "vMRestoreConfirmStep": {
     "reviewConfirm": "Vérifiez et confirmez",
@@ -1091,6 +1092,7 @@
     "status": {
       "no_backups": "Aucune sauvegarde",
       "completed": "Terminée",
+      "overdue": "Aucune sauvegarde récente",
       "completed_with_errors": "Terminée avec des erreurs",
       "in_progress": "En cours",
       "unsuccessful": "Sans succès",
@@ -1162,6 +1164,7 @@
       "other": "Autre"
     },
     "noObservation": "Aucune observation",
+    "overdueLast": "Dernière : {{date}}",
     "openDevice": "Ouvrir l'appareil",
     "empty": "Aucun appareil ne correspond à ces filtres.",
     "loadMore": "Charger plus",
@@ -1261,6 +1264,39 @@
       "hint": "Breeze ne reconnaît pas encore cette erreur. Le message complet est affiché ci-dessous."
     },
     "troubleshootingLink": "Guide de dépannage"
+  },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "La destination de sauvegarde a refusé la requête. Vérifiez que la clé d’accès est valide et permet l’écriture, la politique du compartiment et l’état du compte de stockage, puis lancez « Tester la connexion »."
+    },
+    "storage_not_found": {
+      "hint": "La destination de sauvegarde indique que le compartiment ou ses objets sont introuvables. Vérifiez que le compartiment existe toujours et qu’aucune règle de cycle de vie ne supprime les données de sauvegarde."
+    },
+    "storage_clock_skew": {
+      "hint": "La destination de sauvegarde a rejeté l’heure de la requête, ce qui indique couramment une horloge très décalée. Vérifiez la date et l’heure de l’appareil."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze n’a pas pu terminer une opération de stockage avec la destination. C’est habituellement temporaire ou lié à une incompatibilité du fournisseur. Si le problème persiste, communiquez avec le soutien."
+    },
+    "storage_session_expired": {
+      "hint": "La session de téléversement a pris fin avant la fin de l’exécution. La prochaine exécution reprend là où celle-ci s’est arrêtée."
+    },
+    "helper_stopped": {
+      "hint": "Le processus de sauvegarde sur l’appareil a été arrêté en cours d’exécution, couramment parce que l’appareil est passé en veille, a redémarré ou s’est éteint. Gardez-le allumé et actif pendant la fenêtre de sauvegarde."
+    },
+    "run_cancelled_on_device": {
+      "hint": "L’exécution a été interrompue sur l’appareil, couramment par un redémarrage ou un arrêt."
+    },
+    "never_started": {
+      "hint": "L’appareil n’a jamais démarré cette exécution, habituellement parce qu’une autre sauvegarde était encore en cours ou que l’agent redémarrait."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze n’a plus eu de nouvelles de l’appareil pendant l’exécution."
+    },
+    "destination": {
+      "title": "{{name}} : la dernière sauvegarde a échoué sur {{failing}} appareils sur {{total}}",
+      "link": "Ouvrir les profils de sauvegarde pour tester la connexion"
+    }
   },
   "fullRunReason": {
     "no_prior_snapshot": "Première sauvegarde pour cet appareil et cette destination",

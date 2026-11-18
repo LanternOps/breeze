@@ -194,6 +194,8 @@ vi.mock('../../db/schema', () => ({
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
     deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
     mergedIntoTicketId: 'mergedIntoTicketId', mergedAt: 'merged_at',
+    migrationWindowId: 'migrationWindowId',
+    submitterName: 'submitter_name',
     // #8973 W3 stored deadlines.
     responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
     responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at',
@@ -308,6 +310,20 @@ describe('GET /tickets', () => {
       await makeApp().request('/tickets');
       expect(checklistCountsMock).not.toHaveBeenCalled();
     });
+  });
+
+  it('selects the requester name for queue rows (triage row line 2)', async () => {
+    dbSelectMock.mockResolvedValue([{ id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer', submitterName: 'Dana Whitfield' }]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].submitterName).toBe('Dana Whitfield');
+
+    const { db } = await import('../../db');
+    const listSelection = (db.select as any).mock.calls
+      .map((args: unknown[]) => args[0])
+      .find((cols: any) => cols && typeof cols === 'object' && 'internalNumber' in cols && 'subject' in cols);
+    expect(listSelection).toHaveProperty('submitterName', 'submitter_name');
   });
 
   it('selects SLA fields and returns them in list rows (SLA chips)', async () => {
@@ -495,6 +511,27 @@ describe('GET /tickets', () => {
     const res = await makeApp().request('/tickets?showMerged=true');
     expect(res.status).toBe(200);
     expect(JSON.stringify(lastWhereArgs[0]!.conditions)).not.toContain('mergedIntoTicketId');
+  });
+
+  it('imported=true lists only window-imported tickets; absent or false adds no predicate (#8313)', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    let res = await makeApp().request('/tickets?imported=true');
+    expect(res.status).toBe(200);
+    let serialized = JSON.stringify(lastWhereArgs.at(-1)!.conditions);
+    expect(serialized).toContain('"migrationWindowId",{"value":[" is not null"]}');
+
+    for (const query of ['', '?imported=false']) {
+      lastWhereArgs.length = 0;
+      res = await makeApp().request(`/tickets${query}`);
+      expect(res.status).toBe(200);
+      serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+      expect(serialized).not.toContain('migrationWindowId');
+    }
+  });
+
+  it('rejects an imported value other than true or false (#8313)', async () => {
+    const res = await makeApp().request('/tickets?imported=1');
+    expect(res.status).toBe(400);
   });
 
   it('the breached / at-risk queue filters exclude tombstones even with showMerged=true (#8972)', async () => {

@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { makePolicyView } from './portalAccess/viewFixture';
 
 import OrgSettingsPage, { runOrgNameSave } from './OrgSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -114,6 +115,18 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
   default: (props: Record<string, unknown>) => (
     <div data-testid="extension-slot-host-stub" data-props={JSON.stringify(props)} />
   ),
+}));
+
+// Organization › Domains (portal registration W5): shown to partner/system callers only.
+const jwtState = vi.hoisted(() => ({
+  current: { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } } as unknown,
+}));
+vi.mock('@/lib/authScope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/authScope')>()),
+  useJwtClaims: () => jwtState.current,
+}));
+vi.mock('./orgDomains/OrgDomainsTab', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid="org-domains-tab-stub">{orgId}</div>,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -1028,5 +1041,97 @@ describe('OrgSettingsPage — archived organization (2026-08-28 pre-release swee
       expect(banner.textContent).toMatch(/2026/);
       expect(screen.getByTestId('org-archived-restore-link')).toBeInTheDocument();
     });
+  });
+});
+
+describe('OrgSettingsPage portal tab layout', () => {
+  const orgDetails = {
+    id: 'org-1', name: 'Acme Systems', slug: 'acme', status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z', settings: {}
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '#portal';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (url === '/orgs/organizations/org-1/portal-settings') return Promise.resolve(makeJsonResponse({ data: {} }));
+      if (url === '/orgs/organizations/org-1/portal-access-policy') return Promise.resolve(makeJsonResponse({ data: makePolicyView() }));
+      if (url === '/orgs/organizations/org-1/portal-access-requests?status=pending') return Promise.resolve(makeJsonResponse({ data: [], hasMore: false }));
+      if (url === '/orgs/organizations/org-1/portal-users') return Promise.resolve(makeJsonResponse({ data: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  });
+
+  afterEach(() => { window.location.hash = ''; });
+
+  it('renders the Sign-in & registration card between the portal settings and the portal users list', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    const settings = await screen.findByTestId('org-portal-settings');
+    const card = await screen.findByTestId('org-sign-in-card');
+    const users = await screen.findByTestId('portal-users-editor');
+    expect(settings.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(users) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('OrgSettingsPage — Domains tab (portal registration W5)', () => {
+  const orgDetails = {
+    id: 'org-1', name: 'Acme Systems', slug: 'acme', status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z', settings: {}
+  };
+  const partnerClaims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    jwtState.current = partnerClaims;
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+    jwtState.current = partnerClaims;
+  });
+
+  it('#domains selects the tab and mounts the Domains tab for this org', async () => {
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    const link = await screen.findByRole('link', { name: /^domains$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(await screen.findByTestId('org-domains-tab-stub')).toHaveTextContent('org-1');
+  });
+
+  it('lists Domains in the Organization group after Contacts for a system caller too', async () => {
+    jwtState.current = { status: 'resolved', claims: { scope: 'system', orgId: null, partnerId: null } };
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+    const contacts = screen.getByTestId('org-settings-tab-contacts');
+    const domains = screen.getByTestId('org-settings-tab-domains');
+    expect(contacts.compareDocumentPosition(domains) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the tab is hidden for callers without domain governance (organization scope)', async () => {
+    jwtState.current = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: null } };
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    // An old #domains link lands on a notice, never a blank pane or the tab itself.
+    expect(await screen.findByTestId('org-domains-partner-only')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-settings-tab-domains')).toBeNull();
+    expect(screen.queryByTestId('org-domains-tab-stub')).toBeNull();
+  });
+
+  it('does not mount the Domains tab while the scope is still unresolved', async () => {
+    jwtState.current = { status: 'unresolved' };
+    window.location.hash = '#domains';
+    render(<OrgSettingsPage orgId="org-1" />);
+    expect(await screen.findByTestId('org-domains-pending')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-domains-tab-stub')).toBeNull();
+    expect(screen.queryByTestId('org-settings-tab-domains')).toBeNull();
   });
 });

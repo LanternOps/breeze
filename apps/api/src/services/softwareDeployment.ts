@@ -1,7 +1,7 @@
 import { cancelledCommandError } from './commandCancelMessage';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { findVariableTokens, isSoftwareFileType, variableToken } from '@breeze/shared';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   deploymentResults,
   devices,
@@ -40,7 +40,7 @@ import {
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { captureException } from './sentry';
-import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
+import type { AgentCommand } from '../routes/agentWs';
 import {
   fingerprintSoftwareInstallMethodDependency,
   fingerprintSoftwareVersionDependency,
@@ -983,7 +983,7 @@ export async function buildAndDispatchSoftwareInstalls(
   // device either way.
   const failDevice = async (deviceId: string, errorMessage: string) => {
     try {
-      await db
+      await withDbTransactionIfHeld(() => db
         .update(deploymentResults)
         .set({ status: 'failed', errorMessage, completedAt: new Date() })
         .where(
@@ -991,7 +991,7 @@ export async function buildAndDispatchSoftwareInstalls(
             eq(deploymentResults.deploymentId, deploymentId),
             eq(deploymentResults.deviceId, deviceId),
           ),
-        );
+        ));
     } catch (err) {
       console.error(
         `[software-deploy] could not record a gate failure for device ${deviceId} in deployment ${deploymentId}:`,

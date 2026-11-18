@@ -1,7 +1,14 @@
-import { pgTable, uuid, text, varchar, timestamp, jsonb, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, text, varchar, timestamp, jsonb, boolean, integer, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import type {
+  DomainCheckStatus,
+  DomainVerificationClearedReason,
+  DomainVerificationMethod,
+} from '@breeze/shared/types/customerDomains';
 import { partners } from './orgs';
 import { tickets } from './portal';
 import { users } from './users';
+import type { DomainVerificationEvidence } from '../../services/portalDomainVerification/types';
 
 // Shape 3 (partner-axis). Audit trail + dead-letter/review queue for inbound mail.
 // partner_id is nullable: rows whose recipient resolves to no partner are logged
@@ -56,8 +63,25 @@ export const customerEmailDomains = pgTable('customer_email_domains', {
   isActive: boolean('is_active').notNull().default(true),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  // Portal registration W5 (#11382, plan D2): ownership verification. CHECKs,
+  // the clear-on-repoint trigger and the org-merge exemption live in
+  // 2027-01-22-233700-portal-domain-verification.sql. Only a live checker
+  // `pass` writes verified_at (inv. 2).
+  verificationToken: text('verification_token'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verifiedMethod: text('verified_method').$type<DomainVerificationMethod>(),
+  verifiedEvidence: jsonb('verified_evidence').$type<DomainVerificationEvidence>(),
+  verifiedByUserId: uuid('verified_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  lastPassedAt: timestamp('last_passed_at', { withTimezone: true }),
+  lastCheckStatus: text('last_check_status').$type<DomainCheckStatus>(),
+  checkFailures: integer('check_failures').notNull().default(0),
+  clearedAt: timestamp('cleared_at', { withTimezone: true }),
+  clearedReason: text('cleared_reason').$type<DomainVerificationClearedReason>()
 }, (t) => [
   uniqueIndex('customer_email_domains_partner_domain_uq').on(t.partnerId, t.domain),
-  index('customer_email_domains_lookup_idx').on(t.partnerId, t.isActive)
+  index('customer_email_domains_lookup_idx').on(t.partnerId, t.isActive),
+  // D4: a domain is verified for at most one org, platform-wide.
+  uniqueIndex('customer_email_domains_verified_domain_uq').on(sql`lower(${t.domain})`).where(sql`verified_at IS NOT NULL`)
 ]);

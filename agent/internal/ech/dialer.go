@@ -51,12 +51,15 @@ type Dialer struct {
 	serverEnabled atomic.Bool
 	oneShot       atomic.Bool
 
-	// mu guards states, fetching and warned. It is never held across a
-	// network call or cache I/O.
+	// mu guards states, fetching, warned and certWarned. It is never held
+	// across a network call or cache I/O.
 	mu       sync.Mutex
 	states   map[string]*hostState
 	fetching map[string]bool
 	warned   map[string]bool
+	// certWarned latches the once-per-streak untrusted-certificate warning
+	// (#8868). A plain success clears it.
+	certWarned map[string]bool
 }
 
 // HostStatus is a snapshot of one host's ECH state for health reporting.
@@ -77,6 +80,10 @@ type HostStatus struct {
 	// LastECHAcceptedAt is the last ECH-accepted handshake, or zero.
 	LastECHAcceptedAt time.Time
 	InCooldown        bool
+	// Evidence is what the last failed plain dial to the host learned about
+	// an interceptor (#8868), or zero. It is history, not state: a plain
+	// success does not erase it, so compare SeenAt with LastPlainSuccessAt.
+	Evidence BlockEvidence
 	// Disabled names the switch that keeps subsequent dials plain, or
 	// DisabledByNone while ECH is enabled.
 	Disabled DisabledBy
@@ -137,10 +144,11 @@ func New(opts Options) *Dialer {
 		opts.HandshakeTimeout = defaultHandshakeTimeout
 	}
 	d := &Dialer{
-		opts:     opts,
-		states:   map[string]*hostState{},
-		fetching: map[string]bool{},
-		warned:   map[string]bool{},
+		opts:       opts,
+		states:     map[string]*hostState{},
+		fetching:   map[string]bool{},
+		warned:     map[string]bool{},
+		certWarned: map[string]bool{},
 	}
 	d.localEnabled.Store(opts.LocalEnabled)
 	d.serverEnabled.Store(opts.ServerEnabled)
@@ -182,15 +190,28 @@ func (d *Dialer) update(host string, fn func(st *hostState) (warn bool)) Mode {
 	from := st.mode
 	warn := fn(st)
 	to := st.mode
+	ev := st.lastEvidence
 	if from == ModeCooldown && to == ModePlain {
 		delete(d.warned, host)
 	}
 	d.mu.Unlock()
 	logTransition(host, from, to)
 	if warn {
-		log.Warn("control plane answered the TLS handshake with plaintext HTTP; a network security filter is likely intercepting this host", "host", host)
+		// The message text is grepped by the lab recipe; keep it verbatim.
+		// Only sanitized evidence is logged: WARN lines are shipped to the
+		// server, so a Location path or query must never appear here.
+		log.Warn("control plane answered the TLS handshake with plaintext HTTP; a network security filter is likely intercepting this host",
+			"host", host, "kind", string(ev.Kind), "http_status", ev.HTTPStatus, "location_host", ev.LocationHost)
 	}
 	return to
+}
+
+// streakWarned reports whether host's filter-signature streak has already
+// warned, i.e. this is not the first signature of the streak.
+func (d *Dialer) streakWarned(host string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.warned[host]
 }
 
 func logTransition(host string, from, to Mode) {
@@ -218,6 +239,7 @@ func (d *Dialer) Status(host string) HostStatus {
 	plainOK := st.LastPlainSuccessAt()
 	echOK := st.LastECHAcceptedAt()
 	onWire := st.ECHOnWire()
+	ev := st.lastEvidence
 	d.mu.Unlock()
 	logTransition(host, from, mode)
 	return HostStatus{
@@ -227,6 +249,7 @@ func (d *Dialer) Status(host string) HostStatus {
 		LastPlainSuccessAt:    plainOK,
 		LastECHAcceptedAt:     echOK,
 		InCooldown:            mode == ModeCooldown,
+		Evidence:              ev,
 		Disabled:              d.disabledBy(),
 	}
 }
@@ -290,20 +313,69 @@ func (a *attempt) config() *tls.Config {
 
 // handshake dials TCP and runs the TLS handshake under budget(ctx).
 // tcpFailed reports that the TCP dial itself failed. On any handshake error
-// the TCP connection is closed.
+// the TCP connection is closed. A plain attempt (no ECH config) reads through
+// a captureConn so a failure can record what answered (#8868); the bytes on
+// the wire are unchanged.
 func (a *attempt) handshake(ctx context.Context, cfg *tls.Config, budget func(context.Context) time.Duration) (tc *tls.Conn, tcpFailed bool, err error) {
 	raw, err := a.d.opts.TCPDial(ctx, a.network, a.addr)
 	if err != nil {
 		return nil, true, err
 	}
-	tc = tls.Client(raw, cfg)
+	conn := raw
+	var capture *captureConn
+	if cfg.EncryptedClientHelloConfigList == nil {
+		capture = newCaptureConn(raw)
+		conn = capture
+	}
+	tc = tls.Client(conn, cfg)
 	hctx, cancel := context.WithTimeout(ctx, budget(ctx))
 	defer cancel()
 	if err := tc.HandshakeContext(hctx); err != nil {
+		if capture != nil {
+			a.noteEvidence(ctx, capture, err)
+		}
 		_ = raw.Close()
 		return nil, false, err
 	}
 	return tc, false, nil
+}
+
+// noteEvidence records what a failed plain handshake learned about an
+// interceptor, before the connection is closed. On a filter signature it
+// drains the rest of the plaintext reply, but only on the first signature of
+// a streak (bounded by filterDrainBudget and ctx), and always reads through
+// capture, never through RecordHeaderError.Conn; a latched streak classifies
+// what crypto/tls already read ahead. An untrusted-authority certificate is
+// recorded with a once-per-streak warning and never touches the signature
+// state, so it never engages ECH. Anything else (resets, timeouts, alerts,
+// hostname or expiry failures) is not evidence.
+func (a *attempt) noteEvidence(ctx context.Context, capture *captureConn, err error) {
+	d := a.d
+	if IsFilterSignature(err) {
+		if !d.streakWarned(a.host) {
+			capture.drainHeaders(ctx, filterDrainBudget)
+		}
+		ev := plaintextEvidence(capture.Captured(), d.opts.Now())
+		d.update(a.host, func(st *hostState) bool { st.NoteEvidence(ev); return false })
+		return
+	}
+	ev, ok := certEvidence(err, d.opts.Now())
+	if !ok {
+		return
+	}
+	var warn bool
+	d.update(a.host, func(st *hostState) bool {
+		st.NoteEvidence(ev)
+		if !d.certWarned[a.host] {
+			d.certWarned[a.host] = true
+			warn = true
+		}
+		return false
+	})
+	if warn {
+		log.Warn("control plane presented a TLS certificate this device does not trust; TLS inspection or a broken certificate chain is likely",
+			"host", a.host, "kind", string(ev.Kind), "cert_issuer", ev.CertIssuer)
+	}
 }
 
 // plainBudget is the full HandshakeTimeout (today's behaviour).
@@ -504,6 +576,7 @@ func (a *attempt) notePlainSuccess(kind string) {
 	a.d.update(a.host, func(st *hostState) bool {
 		st.NotePlainSuccessAt(now)
 		delete(a.d.warned, a.host)
+		delete(a.d.certWarned, a.host)
 		return false
 	})
 	log.Debug("ech dial attempt", "host", a.host, "attempt", kind, "result", "ok")

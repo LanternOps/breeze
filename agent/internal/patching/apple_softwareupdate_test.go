@@ -53,6 +53,84 @@ func TestParseAppleInstallHistoryFiltersThirdPartyAndOldEntries(t *testing.T) {
 	if installed[0].Version != "15.3" {
 		t.Fatalf("unexpected version %q", installed[0].Version)
 	}
+	// #9723: the install_date the history already parsed is the install date.
+	if installed[0].InstalledAt != "2026-02-01T10:00:00Z" {
+		t.Fatalf("InstalledAt = %q, want 2026-02-01T10:00:00Z", installed[0].InstalledAt)
+	}
+}
+
+// #9723: the history lists an item once per install. With dates sent, the one
+// the API keeps must be the newest install, whatever order the history uses.
+func TestParseAppleInstallHistoryKeepsNewestInstallPerItem(t *testing.T) {
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	jsonPayload := []byte(`{
+		"SPInstallHistoryDataType": [
+			{"_name": "XProtectPlistConfigData", "install_version": "5290", "package_source": "package_source_apple", "install_date": "2026-01-20T08:00:00Z"},
+			{"_name": "XProtectPlistConfigData", "install_version": "5300", "package_source": "package_source_apple", "install_date": "2026-02-03T08:00:00Z"},
+			{"_name": "XProtectPlistConfigData", "install_version": "5295", "package_source": "package_source_apple", "install_date": "2026-01-27T08:00:00Z"},
+			{"_name": "Safari", "install_version": "18.3", "package_source": "package_source_apple", "install_date": "2026-01-15"},
+			{"_name": "Undated Update", "install_version": "1.0", "package_source": "package_source_apple", "install_date": ""}
+		]
+	}`)
+
+	installed, err := parseAppleInstallHistory(jsonPayload, now, 90*24*time.Hour)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	got := map[string]InstalledPatch{}
+	for _, p := range installed {
+		if _, dup := got[p.ID]; dup {
+			t.Fatalf("duplicate entry for %q: %#v", p.ID, installed)
+		}
+		got[p.ID] = p
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 items, got %d: %#v", len(got), installed)
+	}
+	if xp := got["XProtectPlistConfigData"]; xp.Version != "5300" || xp.InstalledAt != "2026-02-03T08:00:00Z" {
+		t.Errorf("XProtect = %+v, want version 5300 installed 2026-02-03T08:00:00Z", xp)
+	}
+	if s := got["Safari"]; s.InstalledAt != "2026-01-15T00:00:00Z" {
+		t.Errorf("Safari InstalledAt = %q, want 2026-01-15T00:00:00Z", s.InstalledAt)
+	}
+	if u := got["Undated Update"]; u.InstalledAt != "" {
+		t.Errorf("Undated Update InstalledAt = %q, want empty", u.InstalledAt)
+	}
+}
+
+// The dated entry wins over an undated one in either order, and equal dates
+// keep the later-listed entry (what the API kept before entries were merged).
+func TestParseAppleInstallHistoryDedupeOrdering(t *testing.T) {
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	entry := func(version, date string) string {
+		return `{"_name": "Item", "install_version": "` + version + `", "package_source": "package_source_apple", "install_date": "` + date + `"}`
+	}
+	cases := []struct {
+		name        string
+		entries     []string
+		wantVersion string
+		wantAt      string
+	}{
+		{"undated then dated", []string{entry("1", ""), entry("2", "2026-02-01T00:00:00Z")}, "2", "2026-02-01T00:00:00Z"},
+		{"dated then undated", []string{entry("1", "2026-02-01T00:00:00Z"), entry("2", "")}, "1", "2026-02-01T00:00:00Z"},
+		{"equal dates", []string{entry("1", "2026-02-01T00:00:00Z"), entry("2", "2026-02-01T00:00:00Z")}, "2", "2026-02-01T00:00:00Z"},
+		{"both undated", []string{entry("1", ""), entry("2", "")}, "2", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(`{"SPInstallHistoryDataType": [` + strings.Join(tc.entries, ",") + `]}`)
+			installed, err := parseAppleInstallHistory(payload, now, 90*24*time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(installed) != 1 {
+				t.Fatalf("got %d entries, want 1: %#v", len(installed), installed)
+			}
+			if installed[0].Version != tc.wantVersion || installed[0].InstalledAt != tc.wantAt {
+				t.Errorf("got version %q at %q, want %q at %q", installed[0].Version, installed[0].InstalledAt, tc.wantVersion, tc.wantAt)
+			}
+		})
+	}
 }
 
 func TestIsApplePackageSource(t *testing.T) {

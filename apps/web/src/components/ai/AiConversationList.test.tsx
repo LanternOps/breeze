@@ -164,3 +164,17 @@ describe('open elsewhere', () => {
     expect(label('c')).toBeNull();
   });
 });
+
+describe('transcript removed by retention (#4342 W4)', () => {
+  it('labels a purged row "Removed by retention" in place of its null title', () => {
+    renderList({ rows: [row('s1', { title: null, transcriptPurgedAt: '2027-02-01T03:15:00Z' })] });
+    expect(rowEl('s1')).toHaveTextContent('Removed by retention');
+    expect(rowEl('s1')).not.toHaveTextContent('Untitled conversation');
+  });
+
+  it('keeps the untitled label when the row was not purged', () => {
+    renderList({ rows: [row('s2', { title: null })] });
+    expect(rowEl('s2')).not.toHaveTextContent('Removed by retention');
+    expect(rowEl('s2')).toHaveTextContent('Untitled conversation');
+  });
+});

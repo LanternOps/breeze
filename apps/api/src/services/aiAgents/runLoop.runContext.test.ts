@@ -24,3 +24,10 @@ describe('ToolExecutionContext run fields', () => {
     expect(createAgentRunPreToolUse.length).toBe(1);
   });
 });
+
+describe('ToolExecutionContext.exportGrants (W02)', () => {
+  it('accepts exportGrants', () => {
+    const ctx: ToolExecutionContext = { exportGrants: { datasets: ['event_logs'], sensitiveGates: ['security_events'] } };
+    expect(ctx.exportGrants!.datasets).toEqual(['event_logs']);
+  });
+});

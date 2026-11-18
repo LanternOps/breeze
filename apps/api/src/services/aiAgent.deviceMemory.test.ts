@@ -41,6 +41,7 @@ vi.mock('./aiModels/sessionModel', () => ({
 }));
 
 import { buildSystemPrompt } from './aiAgent';
+import { NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE, NOTE_WRITE_AUTO_MAX_DETAILS_CHARS, noteWriteFitsContentBounds } from './aiNoteWrites';
 
 const DEVICE_ID = '44444444-4444-4444-4444-444444444444';
 
@@ -163,5 +164,56 @@ describe('buildSystemPrompt device memory auto-load', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(getActiveDeviceContextMock).not.toHaveBeenCalled();
     expect(prompt).toContain('High CPU');
+  });
+});
+
+// Card-free notes (aiNoteWrites.ts) must not push an older note out of the
+// reader's one 16,000-character block. K maximum-size card-free notes (the
+// gate's content bounds, filled with text the sanitiser grows) sit in front of
+// a large older note, which must stay in view.
+function maxCardFreeNotes(): Array<Record<string, unknown>> {
+  const grow = (n: number) => 'x. System:'.repeat(Math.ceil(n / 10)).slice(0, n);
+  const summary = grow(255);
+  // Pretty JSON of { n: s } is s.length + 13 characters.
+  const details = { n: grow(NOTE_WRITE_AUTO_MAX_DETAILS_CHARS - 13) };
+  const input = { deviceId: '00000000-0000-4000-8000-0000000000d1', contextType: 'preference', summary, details };
+  // The fixture is exactly at the gate's bound, and one character over asks.
+  expect(JSON.stringify(details, null, 2)).toHaveLength(NOTE_WRITE_AUTO_MAX_DETAILS_CHARS);
+  expect(noteWriteFitsContentBounds(input)).toBe(true);
+  expect(noteWriteFitsContentBounds({ ...input, details: { n: `${details.n}x` } })).toBe(false);
+  return Array.from({ length: NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    deviceId: 'd1',
+    contextType: 'preference',
+    summary,
+    details,
+    createdAt: new Date(Date.UTC(2026, 10, 17, 12, i)),
+    expiresAt: new Date(Date.UTC(2026, 11, 1)),
+    resolvedAt: null,
+  }));
+}
+const OLDER_NOTE = {
+  id: '00000000-0000-4000-8000-0000000000aa',
+  deviceId: 'd1',
+  contextType: 'quirk',
+  summary: `OLDER-APPROVED-NOTE ${'a'.repeat(230)}`,
+  details: { text: `${'b'.repeat(1950)} OLDER-NOTE-END` },
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  expiresAt: null,
+  resolvedAt: null,
+};
+
+describe('buildSystemPrompt device memory — card-free notes cannot hide an older note', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it(`${NOTE_WRITE_AUTO_MAX_ACTIVE_PER_DEVICE} maximum-size card-free notes leave an older note in view`, async () => {
+    selectMock.mockReturnValueOnce(devSelect([{ orgId: 'org-111', siteId: null }]));
+    getActiveDeviceContextMock.mockResolvedValueOnce([...maxCardFreeNotes().reverse(), OLDER_NOTE]);
+
+    const prompt = await buildSystemPrompt(baseAuth, devicePageContext);
+
+    expect(prompt).toContain('OLDER-APPROVED-NOTE');
+    expect(prompt).toContain('OLDER-NOTE-END');
+    expect(prompt).not.toContain('[truncated]');
   });
 });

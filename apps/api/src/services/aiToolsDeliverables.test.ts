@@ -345,14 +345,14 @@ describe('org document AI tools (#5573 W03)', () => {
 
   it('list_org_documents returns heads only by default and reports the count', async () => {
     docs.listDocuments.mockResolvedValueOnce([{ id: DOC, title: 'Runbook' }]);
-    expect(await run('list_org_documents', { orgId: ORG })).toEqual({ documents: [{ id: DOC, title: 'Runbook' }], showing: 1 });
+    expect(await run('list_org_documents', { orgId: ORG })).toMatchObject({ documents: [{ id: DOC, title: 'Runbook' }], showing: 1, total: 1, hasMore: false });
     expect(docs.listDocuments).toHaveBeenCalledWith(ORG, { category: undefined, includeSuperseded: false }, ACTOR);
   });
 
   it('is NOT limited to partner scope — the documents routes serve org-scope roles', async () => {
     docs.listDocuments.mockResolvedValueOnce([]);
     const orgAuth = { user: { id: 'u2' }, scope: 'organization', partnerId: 'p1', accessibleOrgIds: [ORG] } as never;
-    expect(await run('list_org_documents', { orgId: ORG }, orgAuth)).toEqual({ documents: [], showing: 0 });
+    expect(await run('list_org_documents', { orgId: ORG }, orgAuth)).toMatchObject({ documents: [], showing: 0, total: 0 });
   });
 
   it('list_org_documents promises metadata only, never bytes', () => {

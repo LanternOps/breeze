@@ -18,7 +18,7 @@
  */
 
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { clientAiUsage } from '../db/schema/clientAi';
 import type { ClientAiOrgPolicy } from './clientAiPolicy';
 
@@ -55,7 +55,7 @@ export async function recordClientUsage(
     ['monthly', clientUsageMonthlyKey(now)],
   ] as const) {
     try {
-      await db
+      await withDbTransactionIfHeld(() => db
         .insert(clientAiUsage)
         .values({
           orgId,
@@ -84,7 +84,7 @@ export async function recordClientUsage(
             messageCount: sql`${clientAiUsage.messageCount} + ${messageCount}`,
             updatedAt: now,
           },
-        });
+        }));
     } catch (err) {
       console.error(
         `[client-ai] Failed to update ${period} usage bucket for org=${orgId}, user=${clientUserId}:`,

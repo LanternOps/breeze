@@ -1,6 +1,6 @@
 import './setup';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ExtensionStateStore,
   type ExtensionStateBackend,
@@ -12,16 +12,19 @@ import {
   extensionLockKey,
   type MigratableExtension,
 } from '../../extensions/migrator';
+import { MigrationLockTimeoutError } from '../../db/migrationAdvisoryLock';
 
 /**
- * Real-Postgres proof of the two guarantees the unit runner cannot express:
+ * Real-Postgres proof of the guarantees the unit runner cannot express:
  *   1. atomic rollback — a migration file that fails mid-way leaves NO table and
  *      NO ledger row (the INSERT into breeze_migrations shares the file's tx).
  *   2. advisory-lock serialization — two callers contend for the SAME extension
  *      on DIFFERENT pooled connections, yet exactly ONE applies the migration
- *      set. A holder pre-takes the session advisory lock so both reconcilers are
- *      provably blocked on it (2 advisory waiters) before either can proceed —
- *      genuine contention, not accidental sequencing.
+ *      set. A holder pre-takes the session advisory lock so both reconcilers
+ *      provably find it taken (each logs a wait naming the holder's pid) before
+ *      either can proceed — genuine contention, not accidental sequencing.
+ *   3. bounded wait (#4144) — a holder that never lets go makes the reconciler
+ *      give up at its deadline with the holder's pid, applying nothing.
  *
  * The migrator's state store is in-memory here: this file exercises the
  * migrator's transactional/lock behaviour against real Postgres, not the store's
@@ -158,28 +161,31 @@ describe('reconcileExtensionMigrations against real Postgres', () => {
     };
 
     // Hold the extension's advisory lock on a dedicated connection so both
-    // reconcilers are forced to queue on it — deterministic contention.
+    // reconcilers are forced to wait for it — deterministic contention.
     const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
     const lockKey = extensionLockKey(EXT);
+    const firstLogger = { log: vi.fn(), warn: vi.fn() };
+    const secondLogger = { log: vi.fn(), warn: vi.fn() };
     let bothWaited = false;
     try {
+      const holderPid = Number((await holder<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`)[0]!.pid);
       await holder`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
 
-      const first = reconcileExtensionMigrations(extension, pool, store, 'replace');
-      const second = reconcileExtensionMigrations(extension, pool, store, 'replace');
+      const lockWait = { timeoutMs: 20_000, pollIntervalMs: 25 };
+      const first = reconcileExtensionMigrations(extension, pool, store, 'replace', { ...lockWait, logger: firstLogger });
+      const second = reconcileExtensionMigrations(extension, pool, store, 'replace', { ...lockWait, logger: secondLogger });
 
-      // Wait until BOTH reconcilers are blocked on an advisory lock. If the
-      // advisory lock had connection-affinity bugs, they would not both queue
-      // here (they'd race on their own connections instead).
-      for (let attempt = 0; attempt < 200; attempt++) {
-        const rows = await admin<{ n: number }[]>`
-          SELECT count(*)::int AS n FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`;
-        if ((rows[0]?.n ?? 0) >= 2) { bothWaited = true; break; }
+      // Wait until BOTH reconcilers have tried the lock, found it held, and
+      // named the holder. The wait is a bounded poll (#4144), so it shows up
+      // in each reconciler's log rather than as a server-side lock wait.
+      const waitedOnHolder = (logger: typeof firstLogger) =>
+        logger.warn.mock.calls.some((c) => String(c[0]).includes(`held by backend pid ${holderPid}`));
+      for (let attempt = 0; attempt < 600; attempt++) {
+        if (waitedOnHolder(firstLogger) && waitedOnHolder(secondLogger)) { bothWaited = true; break; }
         await new Promise((r) => setTimeout(r, 25));
       }
 
-      // Release the holder so the queued reconcilers proceed one at a time.
+      // Release the holder so the waiting reconcilers proceed one at a time.
       await holder`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
 
       await expect(Promise.all([first, second])).resolves.toBeDefined();
@@ -190,6 +196,42 @@ describe('reconcileExtensionMigrations against real Postgres', () => {
     expect(bothWaited, 'both reconcilers must contend on the advisory lock').toBe(true);
     expect(await tableExists(CONTENTION_TABLE)).toBe(true);
     // Exactly ONE ledger row — the second caller saw it already applied.
+    expect(await ledgerCount(`${EXT}/0001-contention.sql`)).toBe(1);
+  });
+
+  it('gives up at the deadline naming a holder that never releases, and applies nothing (#4144)', async () => {
+    const store = new ExtensionStateStore(new InMemoryBackend());
+    const extension: MigratableExtension = {
+      name: EXT,
+      version: '1.0.0',
+      schemaCompatibilityFloor: '1.0.0',
+      migrations: [{ filename: '0001-contention.sql', sql: `CREATE TABLE ${CONTENTION_TABLE} (id int);` }],
+    };
+
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    try {
+      const holderPid = Number((await holder<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`)[0]!.pid);
+      await holder`SELECT pg_advisory_lock(hashtextextended(${extensionLockKey(EXT)}, 0))`;
+
+      const error = await reconcileExtensionMigrations(extension, pool, store, 'replace', {
+        timeoutMs: 600,
+        pollIntervalMs: 50,
+        logger: { log: vi.fn(), warn: vi.fn() },
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MigrationLockTimeoutError);
+      expect((error as MigrationLockTimeoutError).holderPid).toBe(holderPid);
+      expect((error as Error).message).toContain('[extensions]');
+    } finally {
+      await holder.end({ timeout: 5 });
+    }
+
+    expect(await tableExists(CONTENTION_TABLE)).toBe(false);
+    expect(await ledgerCount(`${EXT}/0001-contention.sql`)).toBe(0);
+    expect(await store.highestSchemaFloor(EXT)).toBeNull();
+    // The reserved connection went back to the pool: a fresh reconcile on the
+    // same pool now runs to completion.
+    await reconcileExtensionMigrations(extension, pool, store, 'replace', { timeoutMs: 5_000 });
     expect(await ledgerCount(`${EXT}/0001-contention.sql`)).toBe(1);
   });
 });

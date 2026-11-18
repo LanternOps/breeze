@@ -308,6 +308,65 @@ describe('runContractBillingSweep tenant scope', () => {
   });
 });
 
+// BRZ-8807: a partner with billing off is never selected, and a flag that flips
+// off mid-sweep is a deferral, not a failure.
+describe('runContractBillingSweep billing-disabled gate (BRZ-8807)', () => {
+  const dialect = new PgDialect();
+  const disabled = () => Object.assign(new Error('Not found'), { code: 'BILLING_DISABLED' });
+
+  beforeEach(() => { vi.clearAllMocks(); dueRows.length = 0; });
+
+  it('excludes contracts of billing-off partners in the due select (compiled SQL)', async () => {
+    await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+    const whereArg = (db as unknown as { where: Mock }).where.mock.calls[0]![0] as SQL;
+    const { sql } = dialect.sqlToQuery(whereArg);
+    expect(sql).toContain('billing_gate_partner.billing_enabled = false');
+    expect(sql).toContain('billing_gate_org.id = "contracts"."org_id"');
+    expect(sql).toContain('automation_eligible_org.id = "contracts"."org_id"');
+  });
+
+  it('BILLING_DISABLED from generateDueInvoice is neither reported nor counted as failed', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockRejectedValue(disabled());
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+      expect(res).toEqual({ billed: 0, failed: 0, deferred: 0 });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    } finally { err.mockRestore(); }
+  });
+
+  it('a different error still counts as failed and is reported', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockRejectedValue(new Error('boom'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+      expect(res.failed).toBe(1);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    } finally { err.mockRestore(); }
+  });
+
+  it('BILLING_DISABLED from the post-commit issue is not reported; another error is', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: true, actor: ACTOR,
+      priceBookGaps: [], uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      issueInvoiceMock.mockRejectedValueOnce(disabled());
+      const res = await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+      expect(res).toEqual({ billed: 1, failed: 0, deferred: 0 });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+
+      issueInvoiceMock.mockRejectedValueOnce(new Error('smtp down'));
+      await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    } finally { err.mockRestore(); }
+  });
+});
+
 describe('billing-sweep job ordering (#8181)', () => {
   beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
 

@@ -263,8 +263,10 @@ Test monitors with `POST /monitor-definitions/:id/test`.
 ### Built-in alerts
 
 Breeze raises some alerts itself rather than through a monitor: **Patch job failures**,
-**Reboot pending too long**, and policy-violation alerts. Each rule belongs to one
-organization (policy violations get one per policy), is created the first time its
+**Reboot pending too long**, policy-violation alerts, and
+[new remote access tool alerts](/features/management-posture/#new-remote-access-tool-alerts).
+Each rule belongs to one organization (policy violations get one per policy, new
+remote access tools one per tool), is created the first time its
 alert fires, and is never offered for conversion. **Alerts → Monitors** lists them under **Built-in alerts** with an
 **Active** switch per organization. Switching one off stops new alerts of that kind
 for that organization and stays off; alerts that are already open stay open until

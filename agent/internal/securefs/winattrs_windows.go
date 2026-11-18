@@ -57,6 +57,11 @@ func ApplyWinAttrs(path string, attrs uint32) error {
 	if attrs&windows.FILE_ATTRIBUTE_SPARSE_FILE != 0 {
 		if err := setSparseByPath(p); err != nil {
 			sparseErr = fmt.Errorf("mark restored file sparse: %w", err)
+		} else if err := punchHolesByPath(p); err != nil {
+			// #6446: the content was written before the flag, so every zero
+			// run is allocated. Releasing them is fidelity only — the bytes
+			// are already right — so a failure is a warning like the above.
+			sparseErr = fmt.Errorf("recreate sparse holes: %w", err)
 		}
 	}
 	settable := attrs &^ uint32(windows.FILE_ATTRIBUTE_SPARSE_FILE)

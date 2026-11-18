@@ -4,7 +4,7 @@ import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
+  tickets, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
   softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations, portalBranding,
@@ -25,6 +25,12 @@ import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 import type { VerifiedTopologyDiagnostic } from '../topology/aiDiagnosticEffect';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME as DIAGNOSE_CONNECTIVITY_TOOL } from './pinnedEffectPolicy';
+import {
+  drPlanDefinitionMaterial,
+  readDrPlanDefinition,
+  type DrPlanDefinition,
+  type VerifiedDrPlan,
+} from '../drPlanDefinition';
 
 /**
  * Effect-digest pinning for tier-3 action intents (spec
@@ -117,6 +123,8 @@ type ResolverResult =
       verifiedIsolationRelease?: ApprovalBinding;
       /** Full-control W16 PR B (#6786): the handler re-derives under its lock (digest attached by resolveEffectDigest). */
       bindsFleetDesign?: true;
+      /** execute_dr_plan: the definition hashed (digest attached by resolveEffectDigest). */
+      verifiedDrPlan?: DrPlanDefinition;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -848,26 +856,18 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     return material(JSON.stringify(channel));
   },
 
-  // execute_dr_plan — structurally the same TOCTOU shape as run_script: the
-  // approver approves "execute plan <id>", and the PLAN DEFINITION can be
-  // edited inside the approval window while the intent's arguments stay
-  // byte-identical. Pins the plan's revision (updated_at) + status; a DR plan
-  // is edited rarely and deliberately, so this has essentially no spurious
-  // -failure surface. (The plan's child groups/steps live in dr_plan_groups,
-  // which this does NOT walk — a step-only edit that leaves dr_plans.updated_at
-  // untouched is still undetected. Noted as a known partial pin rather than
-  // fixed here, since it needs an ordered multi-table snapshot like
-  // manage_quotes:send's.)
+  // execute_dr_plan — the approver approves "execute plan <id>", and the
+  // execution runs the plan's groups. Pins the whole definition the execution
+  // will consume (drPlanDefinition.ts): plan revision and status plus every
+  // group, in execution order, with devices, dependency and restore
+  // configuration. The release hands that exact definition to the handler,
+  // and execution creation re-checks it under the plan row lock.
   execute_dr_plan: async (args, database) => {
     const planId = typeof args.planId === 'string' ? args.planId : null;
     if (!planId) return MISSING_ARG;
-    const [plan] = await database
-      .select({ updatedAt: drPlans.updatedAt, status: drPlans.status })
-      .from(drPlans)
-      .where(eq(drPlans.id, planId))
-      .limit(1);
-    if (!plan?.updatedAt) return TARGET_ABSENT;
-    return material(JSON.stringify({ updatedAt: plan.updatedAt.toISOString(), status: plan.status }));
+    const definition = await readDrPlanDefinition(planId, database);
+    if (!definition) return TARGET_ABSENT;
+    return { kind: 'material', material: drPlanDefinitionMaterial(definition), verifiedDrPlan: definition };
   },
 
   // delete_tenant — soft-deletes a PARTNER (arg is snake_case `tenant_id`,
@@ -1156,6 +1156,7 @@ async function resolveEffectDigest(
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
   verifiedIsolationRelease?: ApprovalBinding;
   verifiedFleetDesignBinding?: { digest: string };
+  verifiedDrPlan?: VerifiedDrPlan;
 }> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
@@ -1173,6 +1174,7 @@ async function resolveEffectDigest(
       : {}),
     ...(result.verifiedIsolationRelease ? { verifiedIsolationRelease: result.verifiedIsolationRelease } : {}),
     ...(result.bindsFleetDesign ? { verifiedFleetDesignBinding: { digest } } : {}),
+    ...(result.verifiedDrPlan ? { verifiedDrPlan: { digest, definition: result.verifiedDrPlan } } : {}),
   };
 }
 
@@ -1231,6 +1233,7 @@ export async function computeEffectDigestForRelease(
   if (resolved.verifiedFleetDesignBinding) {
     return { digest, context: { verifiedFleetDesignBinding: resolved.verifiedFleetDesignBinding } };
   }
+  if (resolved.verifiedDrPlan) return { digest, context: { verifiedDrPlan: resolved.verifiedDrPlan } };
   return { digest };
 }
 

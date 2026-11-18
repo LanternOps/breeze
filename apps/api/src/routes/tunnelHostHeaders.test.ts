@@ -63,7 +63,7 @@ describe('device Set-Cookie (spec §5)', () => {
 });
 
 describe('upstream request headers', () => {
-  it('strips proxy cookies (any case), keeps device cookies, never forwards credentials or Referer', () => {
+  it('strips proxy cookies (any case), keeps device cookies, never forwards credentials or a foreign Referer', () => {
     expect(stripProxyCookies('__Host-bzt=x; SID=1; __Host-bzt-top=y; __Host-dev=2')).toBe('SID=1; __Host-dev=2');
     expect(stripProxyCookies('__HOST-BZT=x;__host-bzt-TOP=y; __Host-bzt; a=b')).toBe('a=b');
     expect(stripProxyCookies('__Host-bzt=x')).toBe('');
@@ -72,7 +72,7 @@ describe('upstream request headers', () => {
         accept: '*/*',
         cookie: '__Host-bzt=x; SID=1',
         authorization: 'Bearer t',
-        referer: `${TUNNEL_ORIGIN}/a`,
+        referer: `${ANCESTOR}/devices`,
         'proxy-authorization': 'Basic x',
         'x-api-key': 'k',
         'x-forwarded-for': '203.0.113.7',
@@ -96,6 +96,49 @@ describe('upstream request headers', () => {
     expect(up(ANCESTOR)).toBeUndefined();
     expect(up(SIBLING_ORIGIN)).toBeUndefined();
     expect(up('null')).toBeUndefined();
+  });
+
+  // #11458: device login forms that check Referer as CSRF protection.
+  it('rewrites a same-tunnel Referer to the device origin, keeping path and query', () => {
+    const up = (referer: string, targetOrigin = TARGET) =>
+      buildHostModeUpstreamHeaders({ referer }, { tunnelOrigin: TUNNEL_ORIGIN, targetOrigin }).referer;
+    expect(up(`${TUNNEL_ORIGIN}/`)).toEqual(['http://192.168.1.50/']);
+    expect(up(`${TUNNEL_ORIGIN}/PRESENTATION/ADVANCED/PASSWORD/SET?lang=it`)).toEqual(['http://192.168.1.50/PRESENTATION/ADVANCED/PASSWORD/SET?lang=it']);
+    expect(up(`${TUNNEL_ORIGIN}/login.htm`, 'https://192.168.1.50:8443')).toEqual(['https://192.168.1.50:8443/login.htm']);
+    // Userinfo and fragment never reach the device.
+    expect(up(`https://u:p@${new URL(TUNNEL_ORIGIN).host}/a#frag`)).toEqual(['http://192.168.1.50/a']);
+  });
+
+  it('drops a Referer from any other origin, an unparsable one, and any naming a proxy-reserved /__bz page', () => {
+    const up = (referer: string) =>
+      buildHostModeUpstreamHeaders({ referer }, { tunnelOrigin: TUNNEL_ORIGIN, targetOrigin: TARGET }).referer;
+    expect(up(`${ANCESTOR}/devices/1`)).toBeUndefined();
+    expect(up(`${SIBLING_ORIGIN}/a`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}:8443/a`)).toBeUndefined();
+    expect(up(TUNNEL_ORIGIN.replace('https:', 'http:') + '/a')).toBeUndefined();
+    expect(up('null')).toBeUndefined();
+    expect(up('/relative')).toBeUndefined();
+    expect(up('')).toBeUndefined();
+    // The enter page's URL carries the one-time ticket; it must never reach the device.
+    expect(up(`${TUNNEL_ORIGIN}/__bz/enter?t=TICKET`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}/__bz/enter?t=TICKET&mode=tab`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}/__BZ/enter?t=TICKET`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}/%5F%5Fbz/enter?t=TICKET`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}/a/../__bz/enter?t=TICKET`)).toBeUndefined();
+    expect(up(`${TUNNEL_ORIGIN}/__bz`)).toBeUndefined();
+    // Every spelling the router treats as reserved is dropped here too.
+    for (const path of ['//__bz/enter', '/%255F%255Fbz/enter', '/__bz%2Fenter', '/%5C__bz/enter', '/__Bz%2fenter']) {
+      expect(up(`${TUNNEL_ORIGIN}${path}?t=TICKET`), path).toBeUndefined();
+    }
+  });
+
+  it('rewrites Referer independently of Origin: a null Origin is not forwarded beside a same-tunnel Referer', () => {
+    const headers = buildHostModeUpstreamHeaders(
+      { origin: 'null', referer: `${TUNNEL_ORIGIN}/login.htm` },
+      { tunnelOrigin: TUNNEL_ORIGIN, targetOrigin: TARGET },
+    );
+    expect(headers.origin).toBeUndefined();
+    expect(headers.referer).toEqual(['http://192.168.1.50/login.htm']);
   });
 });
 

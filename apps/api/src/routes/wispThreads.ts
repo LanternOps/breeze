@@ -330,6 +330,8 @@ export async function threadPayload(partnerId: string, thread: WispThread, grant
       floorTickMinutes: grant.floorTickMinutes,
       // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
       spentTodayCents: spend.spentTodayCents,
+      backgroundCents: spend.backgroundCents,
+      chatCents: spend.chatCents,
       budgetResetsAt: spend.budgetResetsAt.toISOString(),
       // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
       pausedReason: grant.pausedReason,

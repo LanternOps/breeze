@@ -40,13 +40,11 @@ import {
   organizationUsers,
   partners,
   partnerUsers,
-  permissions,
-  rolePermissions,
-  roles,
   users,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { permissionGrantMatches } from './permissionMatching';
+import { getRoleGrantRows } from './roleInheritance';
 import {
   normalizeSiteIds,
   siteScopeFingerprint,
@@ -184,29 +182,12 @@ async function computeReachInSystemContext(partnerId: string, userId: string): P
   const roleIds = new Set<string>();
   if (membership.roleId) roleIds.add(membership.roleId);
   for (const row of orgMemberships) if (row.roleId) roleIds.add(row.roleId);
+  // Runtime grants of each role INCLUDING inherited ones, tagged with the base
+  // role's ownership (services/roleInheritance.ts, #11702). The ownership and
+  // wildcard checks stay in roleGrantsReportsRead.
   const grants: RoleGrantRow[] = roleIds.size === 0
     ? []
-    : await db
-      .select({
-        roleId: rolePermissions.roleId,
-        resource: permissions.resource,
-        action: permissions.action,
-        roleScope: roles.scope,
-        roleIsSystem: roles.isSystem,
-        roleOrgId: roles.orgId,
-        rolePartnerId: roles.partnerId,
-      })
-      .from(rolePermissions)
-      .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(
-        and(
-          inArray(rolePermissions.roleId, [...roleIds]),
-          // '*' rows must survive so wildcard super-roles are honored.
-          inArray(permissions.resource, ['reports', '*']),
-          inArray(permissions.action, ['read', '*']),
-        ),
-      );
+    : await getRoleGrantRows([...roleIds]);
 
   const partnerRoleGrants = membership.roleId !== null
     && roleGrantsReportsRead(grants, membership.roleId, { scope: 'partner', partnerId });

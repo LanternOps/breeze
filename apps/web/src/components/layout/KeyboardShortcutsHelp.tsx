@@ -5,6 +5,7 @@ import { Dialog } from '../shared/Dialog';
 import { useUiStore } from '../../stores/uiStore';
 import { useAuthStore } from '../../stores/auth';
 import { CREATE_SHORTCUTS, GO_TO_SHORTCUTS, type CreateShortcut, type GoToShortcut } from '../../lib/keyboard/goToShortcuts';
+import { QUEUE_SHORTCUTS, queueKeyLabel } from '../tickets/queueShortcuts';
 
 function Kbd({ children }: { children: ReactNode }) {
   return (
@@ -48,9 +49,10 @@ function ChordSection({ id, prefix, title, hint, then, rows, testId, label }: {
 
 /**
  * The "?" cheat sheet. Open state lives in the ui store so the global shortcut
- * hook and the command palette's quick action can both open it. The go-to
- * and create rows are generated from the same tables the chord handler uses, so the card
- * can never advertise a key that does nothing.
+ * hook and the command palette's quick action can both open it. The go-to,
+ * create and ticket-queue rows are generated from the same tables their key
+ * handlers dispatch from, so the card can never advertise a key that does
+ * nothing.
  */
 export default function KeyboardShortcutsHelp() {
   const { t } = useTranslation('common');
@@ -99,21 +101,40 @@ export default function KeyboardShortcutsHelp() {
       </div>
 
       <div className="grid gap-6 sm:grid-cols-2">
-        <section aria-labelledby="keyboard-shortcuts-general">
-          <h3 id="keyboard-shortcuts-general" className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('layout.shortcuts.general')}
-          </h3>
-          <dl className="space-y-1.5">
-            {general.map((row) => (
-              <div key={row.keys.join('+')} className="flex items-center justify-between gap-3 text-sm">
-                <dd className="min-w-0 text-foreground">{row.label}</dd>
-                <dt className="flex shrink-0 items-center gap-1">
-                  {row.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
-                </dt>
-              </div>
-            ))}
-          </dl>
-        </section>
+        <div className="space-y-6">
+          <section aria-labelledby="keyboard-shortcuts-general">
+            <h3 id="keyboard-shortcuts-general" className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('layout.shortcuts.general')}
+            </h3>
+            <dl className="space-y-1.5">
+              {general.map((row) => (
+                <div key={row.keys.join('+')} className="flex items-center justify-between gap-3 text-sm">
+                  <dd className="min-w-0 text-foreground">{row.label}</dd>
+                  <dt className="flex shrink-0 items-center gap-1">
+                    {row.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
+                  </dt>
+                </div>
+              ))}
+            </dl>
+          </section>
+
+          <section aria-labelledby="keyboard-shortcuts-queue">
+            <h3 id="keyboard-shortcuts-queue" className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('layout.shortcuts.queueTitle')}
+            </h3>
+            <p className="mb-2 text-xs text-muted-foreground">{t('layout.shortcuts.queueHint')}</p>
+            <dl className="space-y-1.5">
+              {QUEUE_SHORTCUTS.map((s) => (
+                <div key={s.action} data-testid="shortcut-queue" className="flex items-center justify-between gap-3 text-sm">
+                  <dd className="min-w-0 text-foreground">{t(/* i18n-dynamic */ s.labelKey)}</dd>
+                  <dt className="flex shrink-0 items-center gap-1">
+                    {s.keys.map((k) => <Kbd key={k}>{queueKeyLabel(k)}</Kbd>)}
+                  </dt>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </div>
 
         <div className="space-y-6">
           <ChordSection

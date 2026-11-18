@@ -139,17 +139,19 @@ func (s *Session) onViewerChannelClosed(label string, ch any) {
 	}
 }
 
-// wireInputEpochHooks tells the viewer about agent-side resets. onReset runs on
-// the resetting goroutine and onResync on the input worker. Neither may wait on
-// Session, so both only spawn.
+// wireInputEpochHooks tells the viewer about agent-side resets, and the
+// clipboard watcher about injected copy chords. onReset runs on the resetting
+// goroutine, onResync and onCopyChord on the input worker. None may wait on
+// Session, so all only spawn.
 func (s *Session) wireInputEpochHooks() {
 	si := s.safeInput()
 	if si == nil {
 		return
 	}
 	si.SetHooks(safeInputHooks{
-		onReset:  func(reason string) { go s.announceInputEpoch(reason) },
-		onResync: func() { go s.announceInputEpoch("resync") },
+		onReset:     func(reason string) { go s.announceInputEpoch(reason) },
+		onResync:    func() { go s.announceInputEpoch("resync") },
+		onCopyChord: s.onCopyChordInjected,
 	})
 }
 
@@ -200,7 +202,12 @@ func (s *Session) currentDisplayIndex() int {
 // announceCurrentMonitor sends monitor_switched for the monitor the session is
 // on now, with the current epochs. Used after a geometry transition that kept
 // the monitor: a desktop switch, or a monitor switch whose capturer failed.
-func (s *Session) announceCurrentMonitor() {
+func (s *Session) announceCurrentMonitor() { s.announceMonitor("") }
+
+// announceMonitor is announceCurrentMonitor with a reason. A non-empty reason
+// is sent as "reason"; "resolution_change" makes the viewer hold pointer
+// input until it decodes a frame at the announced size (#11754).
+func (s *Session) announceMonitor(reason string) {
 	s.mu.RLock()
 	capturer, index := s.capturer, s.displayIndex
 	s.mu.RUnlock()
@@ -210,7 +217,11 @@ func (s *Session) announceCurrentMonitor() {
 			w, h = bw, bh
 		}
 	}
-	s.sendControlJSON(s.monitorSwitchedMessage(index, w, h))
+	body := s.monitorSwitchedMessage(index, w, h)
+	if reason != "" {
+		body["reason"] = reason
+	}
+	sendGeometryAnnouncement(s, body)
 }
 
 // isReliableOrdered reports whether a data channel delivers every message in

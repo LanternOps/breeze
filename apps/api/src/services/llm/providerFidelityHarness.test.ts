@@ -64,6 +64,7 @@ import {
   runFidelityCheck,
 } from './providerFidelityHarness';
 import { CURRENT_HARNESS_VERSION } from '../llmProviderCatalog';
+import { SDK_PERMISSION_MODE } from './sdkChildEnvGuards';
 
 const INPUT = {
   baseUrl: 'https://openrouter.example/api/v1',
@@ -153,6 +154,9 @@ describe('runFidelityCheck transport seam (W06 #7604)', () => {
     expect(sdkEnvOf(0)).toEqual(buildFidelityChildEnv(INPUT));
     // The catalog path's subprocess spawn is unchanged: no cwd override.
     expect((sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options).not.toHaveProperty('cwd');
+    // #11817: the subprocess stage runs under the same pinned mode as production.
+    expect((sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options.permissionMode)
+      .toBe(SDK_PERMISSION_MODE);
   });
 
   it('with a transport, the subprocess runs in the shared empty private temp directory, never the host cwd', async () => {

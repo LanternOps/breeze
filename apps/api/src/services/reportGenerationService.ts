@@ -1,6 +1,6 @@
 import { and, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   devices,
   manualAssets,
@@ -44,6 +44,7 @@ import { resolveReportDateRange } from './reportDateRange';
 import { endpointManagementConfigSchema } from './reportConfigSchemas';
 import { organizationScope, reportOwnerOfScope, type ReportScope } from './reportScope';
 import { alertSiteScopeByDeviceIds } from '../routes/alerts/helpers';
+import { fillStoredAlertCopy } from '../routes/alerts/alertCopy';
 // #3198 W02: shared with the business generators, which refuse a restricted
 // authority with a non-empty site list themselves (the zero-safe branch below
 // only sees the empty-list case).
@@ -54,7 +55,7 @@ import {
   UnsupportedReportScopeError,
 } from './reportErrors';
 
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { managedDeviceConditions } from './managedDeviceScope';
 export {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -104,7 +105,7 @@ export async function previousBaselineFor(
   scopeFingerprint: string,
 ): Promise<ReportResult['previous']> {
   try {
-    const [prior] = await db
+    const [prior] = await withDbTransactionIfHeld(() => db
       .select({
         summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
         generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
@@ -117,7 +118,7 @@ export async function previousBaselineFor(
         eq(reportRuns.executionScopeFingerprint, scopeFingerprint),
       ))
       .orderBy(desc(reportRuns.completedAt))
-      .limit(1);
+      .limit(1));
     if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
     return {
       generatedAt: prior.generatedAt ?? prior.completedAt?.toISOString() ?? null,
@@ -415,7 +416,7 @@ export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) 
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(devices.hostname);
 }
 
@@ -436,7 +437,7 @@ export async function generateDeviceInventoryReport(
   // devices live in the partner's hidden 'quick_support' org, which deliberately
   // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
   // Nothing filters them out for us — reports must exclude them explicitly.
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -536,7 +537,7 @@ export async function readSoftwareInventoryRows(orgId: string, conditions: SQL[]
     })
     .from(deviceSoftware)
     .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition(), ...conditions))
+    .where(and(...managedDeviceConditions(orgId), ...conditions))
     .orderBy(deviceSoftware.name, devices.hostname);
 }
 
@@ -546,7 +547,7 @@ export async function generateSoftwareInventoryReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -631,7 +632,7 @@ export async function generateComplianceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'compliance');
-  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const conditions: SQL[] = managedDeviceConditions(orgId);
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
@@ -702,7 +703,7 @@ export async function generatePerformanceReport(
   authority: OrgReportExecutionAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'performance');
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
   }
@@ -757,6 +758,79 @@ export async function generatePerformanceReport(
   return { rows, rowCount: rows.length };
 }
 
+/** Days before generation a device must have reported in to count toward the
+ * Executive Summary's headline score (#12045). */
+const EXEC_RECENT_WINDOW_DAYS = 7;
+/** Critical/high alerts named on the Executive Summary cover. */
+const EXEC_NOTABLE_ALERT_LIMIT = 5;
+
+type ExecutiveSummaryDevices = NonNullable<ExecutiveSummary['devices']>;
+
+/** Fold per-status device counts into the snapshot's device block. Every row
+ * lands in exactly one of online / offline / otherStatuses, so the three
+ * always add up to `total`, whatever statuses the enum grows (#12045). */
+function summarizeDeviceStatuses(
+  rows: ReadonlyArray<{ status: string; count: number | string; seen: number | string | null }>,
+): Required<ExecutiveSummaryDevices> {
+  let total = 0;
+  let online = 0;
+  let offline = 0;
+  let recentlySeen = 0;
+  const otherStatuses: Record<string, number> = {};
+  for (const row of rows) {
+    const count = Number(row.count ?? 0);
+    if (count <= 0) continue;
+    total += count;
+    recentlySeen += Number(row.seen ?? 0);
+    if (row.status === 'online') online += count;
+    else if (row.status === 'offline') offline += count;
+    else otherStatuses[row.status] = (otherStatuses[row.status] ?? 0) + count;
+  }
+  // An empty fleet keeps the long-standing 100 rather than dividing by zero.
+  const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 100);
+  return {
+    total,
+    online,
+    offline,
+    otherStatuses,
+    healthPercentage: pct(online),
+    recentWindowDays: EXEC_RECENT_WINDOW_DAYS,
+    recentlySeen,
+    recentlySeenPercentage: pct(recentlySeen),
+  };
+}
+
+const DEVICE_NAME_CONTEXT_KEYS = new Set(['device', 'deviceName', 'hostname', 'device.name', 'device.hostname']);
+
+/** A notable alert's title with stored {{device}}-style tokens filled the way
+ * the alerts list fills them. When the scoped join named no device (it is
+ * outside the report's org or sites, or there is none), the device names the
+ * alert's stored context carries are not used either: the token reads
+ * "a device" rather than naming a device the report may not show. */
+function notableAlertTitle(title: string, context: unknown, device: string | null): string {
+  return capNotableAlertTitle(fillNotableAlertTitle(title, context, device));
+}
+
+/** Longest filled title the snapshot (and the PDF cover) will carry. */
+const NOTABLE_ALERT_TITLE_MAX = 200;
+
+/** Truncates after filling, so a long device name or token value cannot make
+ * the stored title unbounded. Counts code points so a surrogate pair is never
+ * split. */
+function capNotableAlertTitle(title: string): string {
+  const points = Array.from(title);
+  if (points.length <= NOTABLE_ALERT_TITLE_MAX) return title;
+  return points.slice(0, NOTABLE_ALERT_TITLE_MAX - 1).join('') + '…';
+}
+
+function fillNotableAlertTitle(title: string, context: unknown, device: string | null): string {
+  if (device) return fillStoredAlertCopy({ title, context }, device).title;
+  const stored = context && typeof context === 'object' && !Array.isArray(context)
+    ? Object.fromEntries(Object.entries(context).filter(([k]) => !DEVICE_NAME_CONTEXT_KEYS.has(k)))
+    : {};
+  return fillStoredAlertCopy({ title, context: stored }, 'a device').title;
+}
+
 export async function generateExecutiveSummaryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -774,24 +848,33 @@ export async function generateExecutiveSummaryReport(
 
   // #9562: the alert figures (alerts in window, severity counts, resolution
   // rate) are the report's time-scoped section and MUST be bounded by the
-  // configured window, preset or explicit. The device figures are a
-  // point-in-time snapshot of the fleet and are deliberately not windowed.
+  // configured window, preset or explicit. The device status counts are a
+  // point-in-time snapshot of the fleet; the headline score is the share seen
+  // in the EXEC_RECENT_WINDOW_DAYS before generation (#12045), because the
+  // share online at one instant brands a laptop fleet "at risk" whenever the
+  // report runs after hours.
   const reportWindow = resolveReportDateRange(config.dateRange);
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()];
+  const recentCutoff = new Date(Date.now() - EXEC_RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 
-  // Device stats
-  const deviceStats = emptyDeviceScope
-    ? [{ total: 0, online: 0, offline: 0 }]
+  // Device counts per status, so every managed device lands in a bucket
+  // (#12045: maintenance/pending/... devices were counted in the total but in
+  // neither online nor offline). An online device counts as seen even if its
+  // last_seen_at lags.
+  const deviceStatusRows = emptyDeviceScope
+    ? []
     : await db
       .select({
-        total: sql<number>`count(*)`,
-        online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
-        offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`
+        status: devices.status,
+        count: sql<number>`count(*)`,
+        seen: sql<number>`sum(case when ${devices.status} = 'online' or ${gte(devices.lastSeenAt, recentCutoff)} then 1 else 0 end)`,
       })
       .from(devices)
-      .where(deviceWhereCondition);
+      .where(deviceWhereCondition)
+      .groupBy(devices.status);
+  const deviceStats = summarizeDeviceStatuses(deviceStatusRows);
 
   // Alert stats
   const alertConditions: SQL[] = [eq(alerts.orgId, orgId)];
@@ -816,6 +899,34 @@ export async function generateExecutiveSummaryReport(
       })
       .from(alerts)
       .where(and(...alertConditions));
+
+  // The critical/high alerts the counts above summarise, named on the cover
+  // (#12045): critical first, then most recent. Same window and site scope.
+  // The device is joined only inside the report's org (and allowed sites): a
+  // site-owned topology alert keeps its origin device id after that device
+  // moves, and scheduled runs execute in system context where RLS hides
+  // nothing, so an unscoped join could name a device the report may not show.
+  const notableDeviceJoin = and(
+    eq(alerts.deviceId, devices.id),
+    eq(devices.orgId, orgId),
+    restrictedSiteIds ? inArray(devices.siteId, restrictedSiteIds) : undefined,
+  );
+  const notableAlertRows = restrictedSiteIds?.length === 0
+    ? []
+    : await db
+      .select({
+        title: alerts.title,
+        context: alerts.context,
+        severity: alerts.severity,
+        status: alerts.status,
+        device: devices.hostname,
+        triggeredAt: alerts.triggeredAt,
+      })
+      .from(alerts)
+      .leftJoin(devices, notableDeviceJoin)
+      .where(and(...alertConditions, inArray(alerts.severity, ['critical', 'high'])))
+      .orderBy(sql`case when ${alerts.severity} = 'critical' then 0 else 1 end`, desc(alerts.triggeredAt))
+      .limit(EXEC_NOTABLE_ALERT_LIMIT);
 
   // OS distribution
   const osDistribution = emptyDeviceScope
@@ -846,14 +957,7 @@ export async function generateExecutiveSummaryReport(
   return {
     summary: {
       org: { id: orgId, name: orgRow?.name ?? '' },
-      devices: {
-        total: Number(deviceStats[0]?.total ?? 0),
-        online: Number(deviceStats[0]?.online ?? 0),
-        offline: Number(deviceStats[0]?.offline ?? 0),
-        healthPercentage: deviceStats[0]?.total
-          ? Math.round((Number(deviceStats[0]?.online ?? 0) / Number(deviceStats[0]?.total)) * 100)
-          : 100
-      },
+      devices: deviceStats,
       alerts: {
         total: Number(alertStats[0]?.total ?? 0),
         critical: Number(alertStats[0]?.critical ?? 0),
@@ -863,6 +967,17 @@ export async function generateExecutiveSummaryReport(
           ? Math.round((Number(alertStats[0]?.resolved ?? 0) / Number(alertStats[0]?.total)) * 100)
           : 100
       },
+      period: {
+        start: reportWindow.start?.toISOString() ?? null,
+        end: reportWindow.end?.toISOString() ?? null,
+      },
+      notableAlerts: notableAlertRows.map((a) => ({
+        title: notableAlertTitle(a.title, a.context, a.device),
+        severity: a.severity,
+        status: a.status,
+        device: a.device ?? null,
+        triggeredAt: new Date(a.triggeredAt).toISOString(),
+      })),
       osDistribution: Object.fromEntries(osDistribution.map(o => [o.osType, Number(o.count)])),
       siteBreakdown: siteBreakdown.map(s => ({ site: s.siteName, count: Number(s.deviceCount) }))
     } satisfies ExecutiveSummary,
@@ -886,6 +1001,17 @@ export type EvidenceRunContext = {
   /** The deliverable this run is evidence for; the baseline selector's key. */
   deliverableId: string;
 };
+
+/**
+ * How a run with no `EvidenceRunContext` was started (#12048). Only
+ * `on_demand` (a person pressed Generate) lets vulnerability management use
+ * the shared ad-hoc window, so it prints the same period as a threat detection
+ * review run beside it. A scheduled run, an auto-evidence run of a user
+ * definition, and any caller that does not say keep the one-calendar-month
+ * window they always had.
+ */
+export type ReportRunOrigin = 'on_demand' | 'scheduled';
+export type ReportRunOptions = { origin?: ReportRunOrigin };
 
 /**
  * ONE dispatcher for both execution paths. The 14-arm switch this replaced is
@@ -913,6 +1039,7 @@ async function dispatchReportGeneration(
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
   evidence?: EvidenceRunContext,
+  options?: ReportRunOptions,
 ): Promise<ReportResult> {
   const def = reportTypeDef(type);
 
@@ -953,7 +1080,7 @@ async function dispatchReportGeneration(
     return zeroSafeReport(type, authority.scope.orgId);
   }
 
-  return def.generate(scope, config, authority, evidence);
+  return def.generate(scope, config, authority, evidence, options);
 }
 
 /** Dispatch to the matching report generator by type (request path).
@@ -961,14 +1088,16 @@ async function dispatchReportGeneration(
  *  #3198 W02 (spec §3.2, ruling P10): the second parameter is a `ReportScope`,
  *  not an org id. Org-scope call sites read
  *  `generateReport(type, organizationScope(orgId), config, authority)`; a
- *  partner scope comes only from `reportScopeFromAuthority`. */
+ *  partner scope comes only from `reportScopeFromAuthority`. `options.origin`
+ *  is `'on_demand'` only on the Generate routes (see `ReportRunOrigin`). */
 export async function generateReport(
   type: ReportType,
   scope: ReportScope,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
+  options?: ReportRunOptions,
 ): Promise<ReportResult> {
-  return dispatchReportGeneration(type, scope, config, authority);
+  return dispatchReportGeneration(type, scope, config, authority, undefined, options);
 }
 
 /**
@@ -1020,8 +1149,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
       return {
         summary: {
           org: { id: orgId, name: '' },
-          devices: { total: 0, online: 0, offline: 0, healthPercentage: 100 },
+          devices: summarizeDeviceStatuses([]),
           alerts: { total: 0, critical: 0, high: 0, resolved: 0, resolutionRate: 100 },
+          notableAlerts: [],
           osDistribution: {},
           siteBreakdown: [],
         },

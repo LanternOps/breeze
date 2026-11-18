@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { computeChargeNow, toMinorUnits } from '@breeze/shared';
+import { computeCheckoutCharge } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
@@ -58,7 +58,7 @@ export interface ConvertedQuotePayment {
  * The payment step a public quote page offers once the quote is accepted
  * (#3740): what a Pay button would charge now, or null when there is nothing a
  * customer could pay online. Display-only and a strict PRE-CHECK of
- * createInvoicePayLink's guards (PAYABLE status, positive charge-now amount,
+ * createInvoicePayLink's guards (PAYABLE status, positive representable charge-now amount,
  * partner takes online payment) — the mint itself re-checks all of them plus
  * the collection/revocation gates, so this can only ever hide a button the
  * mint would have refused, never offer one it would accept for a different
@@ -78,8 +78,10 @@ export async function getConvertedInvoicePayment(invoiceId: string, orgId: strin
     })
     .from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.orgId, orgId))).limit(1)));
   if (!inv || inv.orgId !== orgId || !PAYABLE.has(inv.status)) return null;
-  const charge = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance }, inv.currencyCode);
-  if (toMinorUnits(charge.amount, inv.currencyCode) <= 0) return null;
+  // The mint's own rule: a balance the currency cannot express is refused there
+  // (BALANCE_NOT_REPRESENTABLE, #3803 item 8), so no button is offered for it.
+  const charge = computeCheckoutCharge({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance }, inv.currencyCode);
+  if (charge.kind !== 'charge') return null;
   if (!(await isPayOnAcceptAvailable(inv.partnerId))) return null;
   return { amount: charge.amount, currencyCode: inv.currencyCode, isDeposit: charge.isDeposit, invoiceNumber: inv.invoiceNumber };
 }

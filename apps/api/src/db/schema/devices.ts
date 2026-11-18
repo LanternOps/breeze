@@ -3,7 +3,8 @@ import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
-import type { IsolationMechanism, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
+import type { ControlPlaneBlockRecord } from '../../services/controlPlaneBlockHealth';
+import type { IsolationMechanism, PossibleReplacementReason, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
 export const deviceStatusEnum = pgEnum('device_status', ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending']);
@@ -207,6 +208,13 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // The watchdog's OWN reported build edition (#4297), written together with
+  // watchdogVersion on every watchdog beat. NULL when the build at
+  // watchdogVersion has not reported one (never beaten, a pre-reporting build,
+  // or the main agent has since reported a different installed watchdog
+  // version). Read via effectiveWatchdogEdition (services/agentEditionCompat),
+  // which falls back to agentEdition when this is NULL.
+  watchdogEdition: varchar('watchdog_edition', { length: 20 }),
   // Installed breeze-backup version, reported by the agent's heartbeat.
   // Nullable: old agents and devices without the backup binary installed
   // never report one.
@@ -238,6 +246,8 @@ export const devices = pgTable('devices', {
   networkIsolationMechanism: text('network_isolation_mechanism').$type<IsolationMechanism>(),
   networkIsolationUnsupportedReason: text('network_isolation_unsupported_reason'),
   networkIsolationReady: boolean('network_isolation_ready').notNull().default(false),
+  // securityCapabilities.networkIsolationDeadMan (#10103): its own flag, not a level. Same non-sticky contract.
+  networkIsolationDeadMan: boolean('network_isolation_dead_man').notNull().default(false),
   // #3409 PR4 — agent capability for encrypted secret-env delivery. 0 for every
   // agent build predating PR4b and for any heartbeat omitting the field; only
   // the recognized integer version 1 is written as anything else. Non-sticky
@@ -381,6 +391,15 @@ export const devices = pgTable('devices', {
   watchdogInstallState: varchar('watchdog_install_state', { length: 20 }),
   watchdogInstallErrorClass: varchar('watchdog_install_error_class', { length: 20 }),
   watchdogInstallSince: timestamp('watchdog_install_since', { withTimezone: true }),
+  // #8868 — agent-reported control-plane block episode (a network filter,
+  // captive portal or untrusted TLS interceptor answered instead of the
+  // server). Written by the heartbeat on transition only (services/
+  // controlPlaneBlockHealth). kind is a closed enum, non-null only while an
+  // episode is active (drives the list badge). The jsonb holds the last
+  // episode incl. network-supplied host/issuer text: export `excludedOpen`,
+  // never in PUBLIC_DEVICE_FIELDS; the detail response returns a derived view.
+  controlPlaneBlockKind: varchar('control_plane_block_kind', { length: 24 }),
+  controlPlaneBlock: jsonb('control_plane_block').$type<ControlPlaneBlockRecord>(),
   // #8608 — agent-reported log-shipping health (#8406). Classified per beat by
   // services/logShippingHealth and written ONLY on a state change. NULL state =
   // unknown (old agent / field absent), never healthy and never failing.
@@ -397,6 +416,15 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #8318 §4.1/§7.3 — why and when this (source) row was flagged as a probable
+  // reinstall of possibleReplacementOfDeviceId: 'hostname' (the #2764 collision
+  // path, or a partner-wide hostname match), 'hardware' (SMBIOS UUID or serial
+  // + manufacturer, services/reinstallCandidates) or 'tpm' (reserved, wave T2).
+  // NULL exactly when the link is NULL (devices_possible_replacement_reason_chk);
+  // devices_possible_replacement_reason_sync nulls both when the link is cleared,
+  // including by the link's ON DELETE SET NULL.
+  possibleReplacementReason: text('possible_replacement_reason').$type<PossibleReplacementReason>(),
+  possibleReplacementDetectedAt: timestamp('possible_replacement_detected_at', { withTimezone: true }),
   // #2787 item 4 — WHEN this device was removed (status flipped to
   // 'decommissioned'). NULL for every device that is not removed, and cleared
   // again on Restore. `updated_at` cannot stand in for it: it moves on every
@@ -464,6 +492,11 @@ export const deviceHardware = pgTable('device_hardware', {
   motherboardProduct: varchar('motherboard_product', { length: 255 }),
   motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
+  // #8318 §7.2 — SMBIOS system UUID, canonical lower-case form; placeholders and
+  // malformed values are stored NULL. A reinstall hint, never authority. Partial
+  // indexes device_hardware_system_uuid_idx and device_hardware_serial_vendor_idx
+  // (2027-01-23-090200) serve the partner-wide candidate search.
+  systemUuid: uuid('system_uuid'),
   // Memory summary (#5351). All NULL until an agent reports a valid `memory`
   // block; `memoryObservedAt` is when one was last applied (updatedAt also
   // advances when memory collection failed). See device_memory_modules.
@@ -570,6 +603,7 @@ export const deviceDisks = pgTable('device_disks', {
   freeGb: real('free_gb').notNull(),
   usedPercent: real('used_percent').notNull(),
   health: varchar('health', { length: 50 }).default('healthy'),
+  isOsVolume: boolean('is_os_volume'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
@@ -810,7 +844,18 @@ export const deviceCommands = pgTable('device_commands', {
   // immutable after. NULL only on rows from before the trigger, and a NULL
   // counts as incarnation 1. See services/commandIncarnation.ts.
   deviceIncarnation: integer('device_incarnation')
-});
+}, (table) => ({
+  // #4342 W1 retention (2027-01-23-101000, built CONCURRENTLY). The job's
+  // terminal-age scan, and its keep-newest-per-reader probe
+  // (jobs/deviceCommandRetention.ts KEEP_NEWEST_COMMAND_READERS). Older
+  // device_commands indexes live only in their migrations.
+  terminalAgeIdx: index('idx_device_commands_terminal_age')
+    .on(sql`(COALESCE(${table.completedAt}, ${table.createdAt}))`)
+    .where(sql`${table.status} IN ('completed', 'failed', 'timeout', 'cancelled')`),
+  keepNewestIdx: index('idx_device_commands_keep_newest')
+    .on(table.deviceId, table.type, sql`${table.createdAt} DESC`)
+    .where(sql`${table.type} IN ('patch_scan', 'set_log_level', 'self_uninstall', 'oem_update_run', 'oem_update_release')`),
+}));
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);
 
@@ -864,5 +909,7 @@ export const deviceBootMetrics = pgTable('device_boot_metrics', {
   deviceBootIdx: index('device_boot_metrics_device_boot_idx').on(table.deviceId, table.bootTimestamp),
   deviceCreatedIdx: index('device_boot_metrics_device_created_idx').on(table.deviceId, table.createdAt),
   orgDeviceIdx: index('device_boot_metrics_org_device_idx').on(table.orgId, table.deviceId),
+  // export_dataset boot_performance pages (org_id, boot_timestamp, id) DESC.
+  orgBootIdx: index('device_boot_metrics_org_boot_idx').on(table.orgId, table.bootTimestamp.desc(), table.id.desc()),
   deviceBootUnique: unique('device_boot_metrics_device_boot_uniq').on(table.deviceId, table.bootTimestamp),
 }));

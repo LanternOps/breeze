@@ -103,6 +103,20 @@ export const ADMISSION_LEVEL1_HOLD_BOUNDS_MS = [ADMISSION_TICK_MS, 60_000] as co
 export const ADMISSION_EXIT_RATIO = 0.6;
 export const ADMISSION_DB_TIMEOUT_FLOOR_MS = 30_000;
 export const ADMISSION_WS_LEVEL_SCALE = [1, 0.5, 0.2, 0.05] as const;
+/**
+ * Immediate offline writes from agent WS close/error handlers in flight at
+ * once, in enforce mode (#9520). Further closes leave the offline flip to the
+ * offline detector, as they already do at level 1+ (W08 D13).
+ *
+ * Each write holds two pool permits: the agent's own context, and
+ * transitionDeviceOffline's system context nested inside it. Without a cap a
+ * planned drain of 400 sockets at level 0 needed 800 permits in all, and left
+ * about 370 contexts queued behind a 30-permit pool. The oldest waiter passed
+ * emergencyMs and the level jumped to 3, refusing the redials the drain had
+ * just spread out. Ordinary churn spreads closes out over time and each write
+ * takes milliseconds, so 4 (8 permits) only bites on a burst.
+ */
+export const ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT = 4;
 
 const MODES: readonly AdmissionMode[] = ['off', 'observe', 'enforce'];
 

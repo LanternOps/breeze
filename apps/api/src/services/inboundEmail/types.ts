@@ -44,6 +44,17 @@ export interface SenderAuth {
    * Absent: `verified` is the DMARC result of a provider stamp.
    */
   source?: 'exchange-internal' | 'exchange-online' | 'trusted-arc-sealer';
+  /**
+   * The RFC 5322 From domain (lower-case) that the verdict behind `verified` is
+   * for, set by the normalizer that read the verdict. The pipeline accepts
+   * `verified` only when this equals the domain of `from`, so a verdict about one
+   * domain can never vouch for an address on another. Every normalizer sets it
+   * whenever `verified` is true: null when the verdict names no single From
+   * domain (a different `header.from`, several From addresses, no usable From
+   * address), and the sender is then treated as unverified. A verified verdict
+   * with no such key was queued by an earlier release (see processInboundEmail).
+   */
+  authenticatedDomain?: string | null;
 }
 
 // Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a
@@ -64,7 +75,12 @@ export interface NormalizedInboundEmail {
    *  mailbox), skip recipient-based resolution. This is feeder-trusted, not
    *  derived from untrusted message content. */
   resolvedPartnerId?: string;
-  from: string;          // sender (untrusted)
+  /** The RFC 5322 From mailbox address: the sender identity. Untrusted unless
+   *  `senderAuth` is verified for its domain (see SenderAuth.authenticatedDomain). */
+  from: string;
+  /** The SMTP envelope sender (MAIL FROM), when the provider reports it. Used only
+   *  for loop handling; never an identity. */
+  envelopeFrom?: string;
   fromName?: string;
   subject: string;
   text: string;          // plain body

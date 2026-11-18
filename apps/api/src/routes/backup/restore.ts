@@ -14,7 +14,7 @@ import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
 import { selectedSnapshotPathError } from '../../services/backupSelectedPaths';
-import { resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
+import { IndexQueryTimeoutError, resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
 import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
@@ -63,10 +63,10 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
         completedAt: now,
         updatedAt: now,
         targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-          'error', ${error},
+          'error', ${error}::text,
           'result', jsonb_build_object(
             'status', 'failed',
-            'error', ${error}
+            'error', ${error}::text
           )
         )`,
       })
@@ -248,7 +248,20 @@ restoreRoutes.post(
       // The browse tree shows forward-slash paths; map each selection back to
       // the stored original the agent indexed (and matches against), and each
       // folder to its stored-form prefix. The index is read in pages (#11026).
-      const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
+      let resolution: Awaited<ReturnType<typeof resolveSelectedSnapshotPathsInDb>>;
+      try {
+        resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
+      } catch (err) {
+        // The walk is bounded (SELECTION_WALK_DEADLINE_MS); past it the honest
+        // answer is "try again", and nothing has been created yet.
+        if (err instanceof IndexQueryTimeoutError) {
+          return c.json({
+            error: 'Resolving the selected files took too long. Try again in a moment, or select fewer folders.',
+            code: 'index_query_timeout',
+          }, 503);
+        }
+        throw err;
+      }
 
       if (!resolution.ok && resolution.reason === 'no_readable_index') {
         // #11026: a snapshot that has files but no index yet builds one, so
@@ -430,7 +443,8 @@ restoreRoutes.post(
         responseRow = updatedRestoreJob;
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+      // A fixed message: target_config is tenant-readable, the raw error goes to the log.
+      const error = 'Failed to dispatch restore command to agent';
       console.error('[BackupRestore] Failed to dispatch restore:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(orgId, row.id, error);
@@ -536,10 +550,10 @@ restoreRoutes.post(
           completedAt: now,
           updatedAt: now,
           targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-            'error', ${reason},
+            'error', ${reason}::text,
             'result', jsonb_build_object(
               'status', 'cancelled',
-              'error', ${reason}
+              'error', ${reason}::text
             )
           )`,
         })

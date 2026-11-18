@@ -43,6 +43,7 @@ import {
   getCurrentDbAccessContext,
   runOutsideDbContext,
   withSystemDbAccessContext,
+  withDbTransaction,
 } from '../../db';
 import {
   playbookDefinitions,
@@ -241,35 +242,27 @@ async function insertPlaybookExecutionRow(
   playbookRowId: string,
   variables: Record<string, unknown>,
 ): Promise<string | null> {
+  // Fail-closed on purpose (#11225): this row is the record that an AI action
+  // ran on a device, so a failed insert propagates and the playbook does not
+  // start. No catch, and no savepoint that would let the failure be survived.
   return inSystemDbContext(async () => {
-    try {
-      const triggeredByUserId = await resolveTriggeredByUserId(agentUserId);
-      const [execution] = await db
-        .insert(playbookExecutions)
-        .values({
-          orgId: run.orgId,
-          deviceId: run.deviceId,
-          playbookId: playbookRowId,
-          status: 'running',
-          currentStepIndex: 0,
-          steps: [],
-          context: { variables },
-          triggeredBy: 'ai',
-          triggeredByUserId,
-          startedAt: new Date(),
-        })
-        .returning({ id: playbookExecutions.id });
-      return execution?.id ?? null;
-    } catch (error) {
-      // Best-effort, same philosophy as `startToolExecution` in runLoop.ts:
-      // a ledger/audit write failing must never block a mutation that has
-      // already been individually revalidated per-step below. The playbook
-      // still runs for real; only the audit row is missing.
-      console.error('[playbookActExecutor] failed to insert the playbook_executions row (non-fatal — execution proceeds)', {
-        runId: run.id, playbookRowId, error,
-      });
-      return null;
-    }
+    const triggeredByUserId = await resolveTriggeredByUserId(agentUserId);
+    const [execution] = await db
+      .insert(playbookExecutions)
+      .values({
+        orgId: run.orgId,
+        deviceId: run.deviceId,
+        playbookId: playbookRowId,
+        status: 'running',
+        currentStepIndex: 0,
+        steps: [],
+        context: { variables },
+        triggeredBy: 'ai',
+        triggeredByUserId,
+        startedAt: new Date(),
+      })
+      .returning({ id: playbookExecutions.id });
+    return execution?.id ?? null;
   });
 }
 
@@ -280,25 +273,23 @@ async function finalizePlaybookExecutionRow(
   errorMessage: string | undefined,
 ): Promise<void> {
   if (!executionId) return;
-  await inSystemDbContext(async () => {
-    try {
-      await db
-        .update(playbookExecutions)
-        .set({
-          status,
-          currentStepIndex: steps.length,
-          steps,
-          errorMessage: errorMessage ?? null,
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(playbookExecutions.id, executionId));
-    } catch (error) {
-      console.error('[playbookActExecutor] failed to finalize the playbook_executions row (non-fatal)', {
-        executionId, status, error,
-      });
-    }
-  });
+  try {
+    await inSystemDbContext(() => withDbTransaction(() => db
+      .update(playbookExecutions)
+      .set({
+        status,
+        currentStepIndex: steps.length,
+        steps,
+        errorMessage: errorMessage ?? null,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(playbookExecutions.id, executionId))));
+  } catch (error) {
+    console.error('[playbookActExecutor] failed to finalize the playbook_executions row (non-fatal)', {
+      executionId, status, error,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

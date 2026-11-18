@@ -35,6 +35,7 @@ export const INLINE_SETTINGS_EXAMPLES: Readonly<Partial<Record<ConfigFeatureType
   },
   maintenance: {
     recurrence: 'weekly',
+    dayOfWeek: 'sat',
     windowStart: '02:00',
     durationHours: 4,
     timezone: 'America/New_York',
@@ -50,6 +51,7 @@ export const INLINE_SETTINGS_EXAMPLES: Readonly<Partial<Record<ConfigFeatureType
     reboot: 'overnight',
     vendors: { dell: { enabled: true, categories: {}, blockedUpdateIds: [] } },
   },
+  wake_on_lan: { configureSettings: false, buttonMode: 'always' },
   containment: { version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false },
   system_protection: { beforePatching: true, beforeScripts: true, beforeSoftwareInstall: false, labelPrefix: 'Breeze' },
   security_agents: { version: 1, agents: [{ vendor: 'huntress', enabled: false, platforms: ['windows'] }] },

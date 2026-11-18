@@ -7,7 +7,6 @@ import { users } from '../../db/schema';
 import {
   verifyToken,
   verifyPassword,
-  hashPassword,
   rateLimiter,
   loginLimiter,
   getRefreshRateLimit,
@@ -22,9 +21,9 @@ import {
   isFamilyRevoked,
   touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
-  recordAccountFailure,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
-  isAccountLocked,
   getAccountLockoutWindowSeconds,
   getUserEpochs,
   getRefreshFamily,
@@ -44,7 +43,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs } from '../../services/authLifecycle';
-import { mfaSrcFor } from '../../services/mfaAssuranceSource';
+import { resolveNoFactorSessionMfa } from '../../services/mfaAssuranceSource';
 import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -75,6 +74,7 @@ import {
   authResponseFloorPromise,
   mintLoginRegisterGrant,
   validateStrictCookieCsrfRequest,
+  hasActiveTotpFactor,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -86,22 +86,13 @@ import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from '../../mi
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { waitForAuthTransitionFinalizationTestBarrier } from './authTransitionTestControl';
+import { getDummyPasswordHash } from '../../services/password';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
-// Lazily-computed dummy argon2id hash used to constant-time the
-// user-not-found branch of the login handler. The first miss after
-// startup computes and caches it; every miss after that reuses the same
-// hash. Without this, response timing reveals whether an email exists
-// in the users table (hit runs verifyPassword → ~100-500ms argon2; miss
-// returns immediately → ~1ms), trivially enabling email enumeration.
-let dummyPasswordHashPromise: Promise<string> | null = null;
-function getDummyPasswordHash(): Promise<string> {
-  if (!dummyPasswordHashPromise) {
-    dummyPasswordHashPromise = hashPassword('__login-timing-dummy-never-matches__');
-  }
-  return dummyPasswordHashPromise;
-}
+// The user-not-found branch verifies against a dummy argon2id hash
+// (getDummyPasswordHash, services/password.ts — shared with the portal login)
+// so response timing does not reveal whether an email exists.
 
 // Task 11: floor-the-clock timing equalizer for /login (audit finding H-4).
 //
@@ -161,23 +152,22 @@ function refreshIssuanceAdmissionError(c: Context, error: unknown): Response | n
   return authIssuanceAdmissionError(c, error);
 }
 
-// Task 10 helper: bump the per-account failure counter, and if THIS
-// attempt is the one that crossed the lockout threshold, fire a security
-// notification email + audit event exactly once. Pulled into a helper so
-// the login handler stays readable; called fire-and-forget so the user
-// still gets their 401 promptly.
-// Exported for the #4067 SSO link-confirm ceremony, which is a password
-// oracle of the same class as /login and must share the same lockout
-// escalation (audit + notify email + reset envelope), not just the counter.
-export async function recordAccountFailureAndMaybeNotify(
+// Task 10 helper: the account has just been locked (a wrong password on the
+// attempt that reached the limit, see reserveAccountAttempt's reachesLimit):
+// fire the security notification email + audit event. Exactly one attempt
+// reaches the limit each time the counter climbs to it, so this fires once per
+// lock. Called fire-and-forget so
+// the user still gets their 401 promptly.
+// Exported for the #4067 SSO link-confirm ceremony and the signup-link
+// password confirmation, which are password oracles of the same class as
+// /login and share the same lockout escalation (audit + notify email + reset
+// envelope), not just the counter.
+export async function notifyAccountLocked(
   c: Context,
   user: { id: string; email: string; name?: string | null },
-  normalizedEmail: string
+  consecutiveFailures: number
 ): Promise<void> {
   try {
-    const result = await recordAccountFailure(getRedis(), normalizedEmail);
-    if (!result.newlyLocked) return;
-
     // Audit the lockout itself (separate from the normal `user.login.failed`
     // audit row that the caller already emits). Lets ops correlate the
     // lockout event with the surrounding failure pattern.
@@ -189,7 +179,7 @@ export async function recordAccountFailureAndMaybeNotify(
       result: 'denied',
       details: {
         method: 'password',
-        consecutiveFailures: result.count,
+        consecutiveFailures,
         action: 'auth.login.account_locked',
         lockoutWindowSeconds: getAccountLockoutWindowSeconds()
       }
@@ -238,7 +228,7 @@ export async function recordAccountFailureAndMaybeNotify(
       console.warn('[auth] Email service not configured; account-locked email was not sent');
     }
   } catch (err) {
-    console.error('[auth] recordAccountFailureAndMaybeNotify failed:', err);
+    console.error('[auth] notifyAccountLocked failed:', err);
   }
 }
 
@@ -344,33 +334,35 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     return c.json(genericAuthError(), 401);
   }
 
-  // Task 10: per-account lockout check. Runs AFTER the user lookup so
-  // a locked vs unlocked email isn't observable via timing — the timing
-  // already says "this email exists" since we run a real argon2 verify
-  // below on the user-found branch, so an additional Redis GET here
-  // doesn't leak any new information. Important: DENYING the login even
-  // when the password is correct is the whole point — a locked account
-  // means "we don't trust this session right now", not "your password
-  // is wrong". The response shape is the generic 401 (SR2-23), but the
-  // denial stands. The lockout window expires automatically; the user can
-  // also unblock themselves by completing a password reset.
+  // Task 10: per-account lockout. Runs AFTER the user lookup so a locked vs
+  // unlocked email isn't observable via timing — the timing already says
+  // "this email exists" since we run a real argon2 verify below on the
+  // user-found branch. DENYING the login even when the password is correct is
+  // the whole point — a locked account means "we don't trust this session
+  // right now", not "your password is wrong". The response shape is the
+  // generic 401, but the denial stands. The lockout window expires
+  // automatically; the user can also unblock themselves by completing a
+  // password reset.
   //
-  // SR2-23: this is a FLAG, not an early return. The old code short-circuited
-  // here, which meant a locked account skipped the argon2 verify below and
-  // answered measurably sooner than a live account whenever argon2 outruns the
-  // wall-clock floor — moving the enumeration oracle from the body into the
-  // latency. Both denial paths now do identical work: one Redis GET, one argon2
-  // verify, one floored 401.
-  const accountLocked = e2eMode
-    ? false
-    : await isAccountLocked(getRedis(), normalizedEmail);
+  // The attempt is RESERVED before the password is checked (one atomic Redis
+  // step), so concurrent guesses each take their own slot and at most
+  // LOGIN_ACCOUNT_LOCKOUT_MAX password results are honoured per window. A
+  // reservation past the limit is the locked case. Redis down or failing
+  // denies (fail-closed), as the lockout check always has; the route already
+  // answers 503 when there is no Redis client at all.
+  //
+  // The reservation is a FLAG, not an early return: the argon2 verify
+  // below runs on every branch so a locked account is not measurably faster.
+  const reservation = e2eMode
+    ? { allowed: true, count: 0, reachesLimit: false }
+    : await reserveAccountAttempt(getRedis(), normalizedEmail);
 
   // Verify password. Runs unconditionally — see the SR2-23 note above; the
   // result is discarded on the locked branch (a locked account is denied
   // regardless of whether the password was right).
   const validPassword = await verifyPassword(user.passwordHash, password);
 
-  if (accountLocked) {
+  if (!reservation.allowed) {
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -381,33 +373,29 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
     // SR2-23: the public response is the SAME generic 401 an unknown email or
     // a wrong password gets — same status, same body, same headers, floored on
-    // the same clock. The previous `429 { error: 'Account temporarily locked…',
-    // retryAfter }` was a pure account-existence oracle: unknown emails never
-    // lock (we deliberately do not bump their failure counter — see the miss
-    // branch above), so seeing that body proved the address had an account
-    // without ever guessing the password.
+    // the same clock. Unknown emails never lock (we deliberately do not count
+    // their attempts — see the miss branch above), so a distinct body would
+    // prove the address had an account without guessing the password.
     //
     // The owner is still told — out of band, in the lockout email that
-    // recordAccountFailureAndMaybeNotify already sends to the address itself,
-    // which is the only channel that proves ownership. Ops still get the audit
-    // row + the anomaly metric. Only the attacker loses a signal.
+    // notifyAccountLocked sends to the address itself, which is the only
+    // channel that proves ownership. Ops still get the audit row + the
+    // anomaly metric; only the public response carries no signal.
     //
-    // We deliberately do NOT bump the failure counter here: an already-locked
-    // account re-bumping on every attempt would let an attacker hold a victim
-    // locked out indefinitely, turning the control into a DoS amplifier.
+    // Attempts made while locked are counted but never move the window's
+    // expiry (set on the first attempt only), so trying again cannot keep an
+    // account locked. No second notice is sent.
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }
 
   if (!validPassword) {
-    // Task 10: bump the per-account failure counter. If THIS attempt is
-    // the one that crosses the threshold, fire the lockout-notice email
-    // exactly once (newlyLocked flag). The audit log records the
-    // `account_locked` event so ops can correlate lockouts with the
-    // surrounding failed-login pattern. Fire-and-forget — never blocks
-    // the response (we still want the generic 401 to come back fast).
-    if (!e2eMode) {
-      void recordAccountFailureAndMaybeNotify(c, user, normalizedEmail);
+    // Task 10: the attempt is already counted. If it was the one that reached
+    // the limit, the account is now locked: fire the lockout-notice email and
+    // audit row (once per window). Fire-and-forget — never blocks the
+    // response (we still want the generic 401 to come back fast).
+    if (!e2eMode && reservation.reachesLimit) {
+      void notifyAccountLocked(c, user, reservation.count);
     }
     void auditUserLoginFailure(c, {
       userId: user.id,
@@ -418,6 +406,14 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
     await floorPromise;
     return c.json(genericAuthError(), 401);
+  }
+
+  // The password was right: give the reserved attempt back so the counter
+  // keeps measuring failed passwords only (a later denial below for account,
+  // tenant or network state must not count toward the lock). A completed
+  // sign-in still clears the counter further down.
+  if (!e2eMode) {
+    void releaseAccountAttempt(getRedis(), normalizedEmail);
   }
 
   // Check account status. Avoid response-content differentiation here: a
@@ -514,7 +510,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 
   // Check if MFA is required. This happens after the SSO-only check so an
   // org-enforced SSO user cannot obtain an MFA temp token through password auth.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
 
@@ -543,7 +539,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
     const allowedMethods = {
-      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      // #10650: the shared predicate, so a backup authenticator beside a
+      // passkey primary is offered and a stale secret beside SMS is not.
+      totp: hasActiveTotpFactor(user) && pendingPolicy.allowedMethods.totp,
       sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
       passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
     };
@@ -656,8 +654,14 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // middleware exempt paths (/auth/mfa/*, /users/me) still admit the enrollment
   // flow; every other route 428s until they enroll.
   const policy = await getEffectiveMfaPolicy({ scope, userId: user.id, orgId, partnerId });
-  const mfaEnrollmentRequired = ENABLE_2FA && !user.mfaEnabled && policy.required;
-  const mfaSatisfied = !ENABLE_2FA || (!user.mfaEnabled && !policy.required);
+  // Shared with accept-invite and registration auto-login (#11854), so every
+  // no-factor mint records the same state for the same user and policy.
+  const sessionMfa = resolveNoFactorSessionMfa({
+    twoFactorEnabled: ENABLE_2FA,
+    userMfaEnabled: user.mfaEnabled === true,
+    policyRequired: policy.required,
+  });
+  const mfaEnrollmentRequired = sessionMfa.mfaEnrollmentRequired;
 
   // Task 7: mint a fresh refresh-token family for this login. The family id
   // is embedded in the refresh token's `fam` claim and tracked in
@@ -677,10 +681,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     orgId,
     partnerId,
     scope,
-    mfa: mfaSatisfied,
+    mfa: sessionMfa.mfa,
     // The enrolled branch returned early above, so anyone minting here proved
     // no factor: `mfa: true` here is policy-admitted, never factor-earned.
-    mfaSrc: mfaSrcFor(mfaSatisfied, 'policy'),
+    mfaSrc: sessionMfa.mfaSrc,
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.

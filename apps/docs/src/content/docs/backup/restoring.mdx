@@ -46,6 +46,7 @@ The browser and the selective-restore tree read a per-snapshot **file list** tha
 - **If it can't be built.** The browser shows *This snapshot's file list isn't available right now. You can still restore the whole snapshot.* with a **Try again** button, which starts a fresh build from the manifest (it needs the `backup:write` permission, is limited to sites you can manage, and is recorded in the audit log). A snapshot that failed its [integrity check](#integrity-checks-on-restore) shows *This snapshot failed its integrity check, so its files can't be listed.* with no retry. A snapshot stored on the device itself shows *This snapshot is stored on the device, and Breeze can't read its file list from there yet.*
 - **A whole-snapshot restore never depends on the file list.** A full restore, and recovery from recovery media, work whatever state the list is in. Only browsing, search and selective restore need it.
 - **Integrity.** Breeze checks the manifest against its recorded hash before writing any row, so a manifest that doesn't match produces *unavailable*, never a wrong listing.
+- **Empty folders and symlinks.** The list includes the empty folders and symlinks the snapshot recorded, whichever way it was built. An empty folder appears as a folder you can check, and restoring it recreates it empty. A symlink appears as a file without a size, and restoring it recreates the link. A list built from a manifest by an earlier Breeze version leaves them out, and one sent with an earlier backup result shows them as files; restoring the folder above them still recreates them either way.
 
 **Search.** The search box above the tree finds files anywhere in the snapshot by name or path fragment. Type at least two characters; results come back in pages. Typing a Windows path with `/` finds the same files as with `\`.
 
@@ -63,7 +64,9 @@ The browser and the selective-restore tree read a per-snapshot **file list** tha
 </Aside>
 
 <Aside type="note" title="Large snapshots: current bound">
-  Browsing, search and folder restore are tested to the 1.1-million-entry shape above. That is not a claim that Breeze fully supports snapshots of that size yet: storage cleanup and the reconcile job still skip manifests over 200 MiB, and the agent parses a whole manifest in memory on restore. Those are tracked as follow-ups.
+  Browsing, search and folder restore are tested to the 1.1-million-entry shape above. That is not a claim that Breeze fully supports snapshots of that size yet: the agent still parses a whole manifest in memory on restore, which is tracked as a follow-up.
+
+  Storage cleanup and the reconcile job read a manifest as a stream, up to the same 2 GiB limit as browsing. Storage cleanup keeps every object key that a retained snapshot still references in memory while it runs. In a lab measurement with 132-character keys, that was 170 to 180 bytes per key, or about 165 MiB for one million keys on one destination. When reconcile adopts a snapshot whose file list is larger than an agent's own result can carry (about 5 MB), it leaves the list out and the file index is built from the manifest, the same as for an agent result.
 </Aside>
 
 ---

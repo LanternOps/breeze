@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildAgentRunSystemPrompt, buildAgentRunTaskPrompt, type AgentRunPromptContext } from './runnerPrompt';
-import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_MODE_PROMPT, renderContinuationSeed } from './troubleshootProfile';
+import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_GOAL_MAX_CHARS, TROUBLESHOOT_MODE_PROMPT, renderContinuationSeed } from './troubleshootProfile';
 
 const DEVICE_ID = '00000000-0000-4000-8000-0000000000d1';
 
@@ -27,6 +27,13 @@ function ctx(goal: string | null = 'Outlook crashes on start since Tuesday'): Ag
 }
 
 describe('device_troubleshooting prompts (#11084)', () => {
+  it('renders a long goal whole up to the schema cap, keeping an exact path at its tail (#11973)', () => {
+    const tail = 'HKLM\\SOFTWARE\\Vendor\\Product\\Deep\\Key';
+    const goal = `${'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS - tail.length)}${tail}`;
+    expect(goal.length).toBe(TROUBLESHOOT_GOAL_MAX_CHARS);
+    expect(buildAgentRunTaskPrompt(ctx(goal))).toContain(tail);
+  });
+
   it('the system prompt carries the fixed troubleshooting mode section, not the generic shadow one', () => {
     const p = buildAgentRunSystemPrompt(ctx());
     expect(p).toContain(TROUBLESHOOT_MODE_PROMPT);
@@ -63,7 +70,7 @@ describe('device_troubleshooting prompts (#11084)', () => {
   it('W2 #11085: a continuation renders its seed after the goal fence, with the no-repeat line, and keeps the goal fenced', () => {
     const seed = renderContinuationSeed({
       fromRunId: 'run-0', summary: 'Spooler crashed 3 times.',
-      steps: [{ label: 'Restart the Print Spooler', status: 'completed', outcome: 'Service restarted' }],
+      steps: [{ label: 'Restart the Print Spooler', status: 'completed', result: 'Service restarted' }],
     });
     const base = ctx();
     const p = buildAgentRunTaskPrompt({ ...base, troubleshoot: { goal: base.troubleshoot!.goal, continuation: { fromRunId: 'run-0', chain: 1, seed } } });

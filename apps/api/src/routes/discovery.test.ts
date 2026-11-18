@@ -272,6 +272,40 @@ describe('discovery routes', () => {
     app.route('/discovery', discoveryRoutes);
   });
 
+  describe('joined profile and bridge details stay within the record site', () => {
+    it.each([
+      ['/discovery/jobs', 200, 'discoveryJobs'],
+      ['/discovery/assets', 200, 'discoveredAssets'],
+      ['/discovery/assets/00000000-0000-4000-8000-000000000001', 404, 'discoveredAssets'],
+    ])('joins the profile on the record org and site for %s', async (path, status, parent) => {
+      const joins: unknown[] = [];
+      const chain: any = {};
+      for (const method of ['from', 'where', 'orderBy', 'limit']) chain[method] = () => chain;
+      chain.leftJoin = (_table: unknown, condition: unknown) => { joins.push(condition); return chain; };
+      chain.then = (resolve: any, reject: any) => Promise.resolve([]).then(resolve, reject);
+      vi.mocked(db.select).mockReturnValueOnce(chain);
+      if (parent === 'discoveryJobs') vi.mocked(db.select).mockReturnValueOnce(chain);
+      const res = await app.request(path, { headers: { 'x-restrict-site': 'site-a' } });
+      expect(res.status).toBe(status);
+      const profileJoin = joins.find((condition) => collectSqlLeafStrings(condition).includes('discoveryProfiles.siteId'));
+      expect(profileJoin).toBeDefined();
+      expect(collectSqlLeafStrings(profileJoin)).toEqual(expect.arrayContaining([
+        'discoveryProfiles.orgId', `${parent}.orgId`, 'discoveryProfiles.siteId', `${parent}.siteId`,
+      ]));
+      if (parent === 'discoveryJobs') {
+        // The returned profile id comes from the joined row, so it is null when the join drops.
+        expect(vi.mocked(db.select).mock.calls[0]![0]).toMatchObject({ profileId: 'discoveryProfiles.id' });
+      }
+      if (path.includes('/assets/')) {
+        const bridgeJoin = joins.find((condition) => collectSqlLeafStrings(condition).includes('devices.agentId'));
+        expect(bridgeJoin).toBeDefined();
+        expect(collectSqlLeafStrings(bridgeJoin)).toEqual(expect.arrayContaining([
+          'devices.orgId', 'discoveredAssets.orgId', 'devices.siteId', 'discoveredAssets.siteId',
+        ]));
+      }
+    });
+  });
+
   describe('GET /discovery/topology', () => {
     it('is gated by requirePermission(topology, read) at the route module', () => {
       // topology:read is its own grant (no longer piggy-backed on devices:read).
@@ -1680,6 +1714,66 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.snmpCommunities).toEqual(['********']);
       expect(body.snmpCredentials.authPassphrase).toBe('********');
+    });
+
+    describe('alertSettings (#11901)', () => {
+      const createWith = async (extra: Record<string, unknown>) => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+            }),
+          }),
+        } as any);
+        const insertValues = vi.fn((v: any) => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: 'profile-001',
+            orgId: '00000000-0000-0000-0000-000000000000',
+            ...v,
+            createdAt: new Date('2026-05-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+          }]))
+        }));
+        vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+        const res = await app.request('/discovery/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Alerts',
+            siteId: '00000000-0000-0000-0000-000000000001',
+            subnets: ['10.0.2.0/24'],
+            methods: ['ping'],
+            schedule: { type: 'interval', intervalMinutes: 30 },
+            ...extra
+          })
+        });
+        return { res, saved: (insertValues.mock.calls as any)[0]?.[0] };
+      };
+
+      it('stores alertSettings sent on create and returns them', async () => {
+        const alertSettings = {
+          enabled: true, alertOnNew: true, alertOnDisappeared: false, alertOnChanged: true, changeRetentionDays: 30
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+        expect((await res.json()).alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores an explicitly disabled configuration as sent', async () => {
+        const alertSettings = {
+          enabled: false, alertOnNew: false, alertOnDisappeared: false, alertOnChanged: false, changeRetentionDays: 7
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores null when alertSettings is omitted', async () => {
+        const { res, saved } = await createWith({});
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toBeNull();
+      });
     });
 
     it('rejects a profile site that does not belong to the resolved organization', async () => {

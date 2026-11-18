@@ -822,7 +822,9 @@
         "wispHome": "Ouvrir Wisp",
         "wispHomeDescription": "Accéder à votre accueil Wisp"
       },
-      "numberHint": "{{mod}}1–9 pour ouvrir"
+      "numberHint": "{{mod}}1–9 pour ouvrir",
+      "thisCustomerOnly": "Ce client seulement",
+      "partnerWide": "Tout le partenaire"
     },
     "notifications": {
       "title": "Notifications",
@@ -834,6 +836,8 @@
       "unread_other": "{{count}} non lu",
       "markAllRead": "Mark tout lu",
       "markAllUnread": "Marque tout non lu",
+      "muteSound": "Couper le son des approbations",
+      "unmuteSound": "Activer le son des approbations",
       "confirmClear": "Confirmez que c’est clair",
       "clearAll": "Tout effacer",
       "loading": "Notifications de chargement...",
@@ -903,7 +907,20 @@
       },
       "charKeysOn": "Les raccourcis à touche unique sont activés.",
       "charKeysOff": "Les raccourcis à touche unique sont désactivés. Seuls les raccourcis Ctrl/Cmd fonctionnent.",
-      "charKeysManage": "Modifier dans les paramètres du profil"
+      "charKeysManage": "Modifier dans les paramètres du profil",
+      "queueTitle": "File d’attente des billets",
+      "queueHint": "Sur la page des billets, hors d’un champ de texte.",
+      "queue": {
+        "next": "Billet suivant",
+        "previous": "Billet précédent",
+        "open": "Ouvrir le billet (après une résolution : le suivant proposé)",
+        "toggleBulk": "Ajouter à la sélection groupée ou l’en retirer",
+        "assignMe": "M’assigner",
+        "reply": "Rédiger une réponse",
+        "internal": "Rédiger une note interne",
+        "resolve": "Résoudre avec une note",
+        "back": "Retour à la file"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1465,10 @@
           "deviceOnline": {
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Déclenché lorsqu’un appareil nouvellement inscrit semble être une réinstallation d’une fiche d’appareil existante et inactive.",
+            "label": "Réinstallation possible d’un appareil"
           },
           "deviceReinstalled": {
             "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
@@ -2453,6 +2474,7 @@
           "invalidTimeRange": "L’heure de début doit être avant la fin de l’heure.",
           "searchFailed": "Impossible de rechercher dans les journaux",
           "saveFailed": "Impossible d’enregistrer la requête",
+          "savedQueriesFailed": "Impossible de charger les requêtes enregistrées.",
           "noRowsExport": "Pas de lignes à exporter."
         },
         "savePrompt": "Nomme cette requête enregistrée :",
@@ -2472,10 +2494,14 @@
         },
         "searchFleetLogs": "Rechercher dans les journaux du parc",
         "saveQuery": "Enregistrer la requête",
+        "usingSavedFilters": "Cette recherche utilise les filtres enregistrés.",
+        "customSearch": "Recherche personnalisée",
+        "savedQueries": "Requêtes enregistrées",
         "exportCsv": "Exportation CSV",
         "resultsTitle": "Résultats de recherche",
         "loading": "Chargement...",
         "resultsCount": "{{shown}} montré de {{total}} total",
+        "resultsCountWithoutTotal": "{{shown}} affichés",
         "table": {
           "timestamp": "Horodatage",
           "level": "Niveau",
@@ -2485,6 +2511,7 @@
         "unknownSite": "Site inconnu",
         "empty": "Aucun journal ne correspondait aux filtres actuels.",
         "pageCount": "Page {{page}} de {{totalPages}}",
+        "currentPage": "Page n° {{page}}",
         "previous": "Précédent"
       }
     },
@@ -2935,5 +2962,8 @@
   "featureLock": {
     "lockedLabel": "Verrouillé",
     "upgrade": "Voir les forfaits"
+  },
+  "inheritChoice": {
+    "inherit": "Hériter — {{value}} ({{source}})"
   }
 }

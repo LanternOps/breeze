@@ -41,6 +41,7 @@ import {
   stagedSet,
   type ReattachTenant,
   type SeededAgentDevice,
+  targetVersionOf,
 } from './deviceReattachFixtures';
 import { getTestDb } from './setup';
 
@@ -49,7 +50,8 @@ const NO_CERT = { assertionTrusted: false, assertedVerified: false, assertedSeri
 async function requested(tenant: ReattachTenant, source: SeededAgentDevice, target: SeededAgentDevice, now?: Date) {
   const result = await requestDeviceReattach({
     actor: { userId: tenant.admin.id }, sourceDeviceId: source.id, targetDeviceId: target.id,
-    evidenceLevel: 'hint', restoreDecommissioned: false, ...(now ? { now } : {}),
+    evidenceLevel: 'hint', restoreDecommissioned: false, confirmTargetName: target.hostname,
+    targetVersion: await targetVersionOf(target.id), stepUp: { kind: 'not_required' }, ...(now ? { now } : {}),
   });
   if (!result.ok) throw new Error(`request refused: ${result.code}`);
   return result.intent;

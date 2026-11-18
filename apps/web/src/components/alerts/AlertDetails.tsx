@@ -218,7 +218,7 @@ export default function AlertDetails({
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* Alert Message */}
           <div className="rounded-md border bg-muted/20 p-4">
-            <p className="text-sm">{alert.message}</p>
+            <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm">{alert.message}</p>
           </div>
 
           <RemediationSuggestionsPanel sourceType="alert" sourceId={alert.id} orgId={alert.orgId ?? undefined} />

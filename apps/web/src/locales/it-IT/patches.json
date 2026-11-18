@@ -487,6 +487,7 @@
     "rebootDone": "Completato",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Saltato: nessuno degli aggiornamenti in sospeso su questo dispositivo è approvato.",
       "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
       "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
       "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo.",

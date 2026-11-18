@@ -27,6 +27,7 @@ import {
   stripInlineIndexDropNote,
   type ActiveBackupJob,
   type BackupFailureCategory,
+  type BackupFailureCause,
   type BackupJobDataAccounting,
 } from '@breeze/shared';
 import DeviceBackupActiveJobs from './DeviceBackupActiveJobs';
@@ -79,6 +80,7 @@ type BackupJob = {
   // by the job's own status rather than always as an error.
   errorLog?: string | null;
   failureCategory?: BackupFailureCategory | null;
+  failureCause?: BackupFailureCause | null;
   // Absent on an older API during a rolling deploy.
   dataAccounting?: BackupJobDataAccounting | null;
 };
@@ -499,6 +501,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
     splitReparseSkipNotice(stripInlineIndexDropNote(lastJob?.errorLog).warning);
   const lastJobFailed = lastJobStatus === 'failed';
   const lastFailureCategory = lastJobFailed ? (lastJob?.failureCategory ?? null) : null;
+  const lastFailureCause = lastJobFailed ? (lastJob?.failureCause ?? null) : null;
   // #5396: distinct from the generic "completed with warnings" framing — this
   // run has a concrete, agent-reported count of files that failed to read or
   // upload (still under the `partial` threshold), which the banner should name.
@@ -672,8 +675,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                       <td className="py-2 pr-4 text-muted-foreground">
                         {formatDuration(job.startedAt, job.completedAt)}
                       </td>
-                      <td className="py-2 pr-4 text-muted-foreground">
-                        {job.dataAccounting && job.status !== 'running' && job.status !== 'pending' ? (
+                      <td data-testid="backup-job-size" className="py-2 pr-4 text-muted-foreground">
+                        {job.status === 'running' || job.status === 'pending' ? (
+                          // The total is the whole job's size; live progress is on the active card above.
+                          '-'
+                        ) : job.dataAccounting ? (
                           <BackupJobDataSummary accounting={job.dataAccounting} variant="cell" />
                         ) : (
                           formatBytes(job.totalSize, '-')
@@ -681,7 +687,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                       </td>
                       <td className="py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <BackupFailureCategoryBadge category={job.failureCategory} />
+                          <BackupFailureCategoryBadge category={job.failureCategory} cause={job.failureCause} />
                           {errorCount > 0 ? (
                             <span
                               data-testid="backup-job-error-count"
@@ -743,7 +749,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                   : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
             </p>
             <p className="mt-1 whitespace-pre-line break-words opacity-90">{lastJobDiagnostic}</p>
-            {lastFailureCategory && <BackupFailureCategoryHint category={lastFailureCategory} className="mt-2" />}
+            {lastFailureCategory && <BackupFailureCategoryHint category={lastFailureCategory} cause={lastFailureCause} className="mt-2" />}
           </div>
         </div>
       )}

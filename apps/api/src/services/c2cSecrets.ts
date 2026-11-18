@@ -98,6 +98,9 @@ export async function backfillC2cConnectionSecrets(batchSize = 500): Promise<{ s
         continue;
       }
 
+      // Deliberately no savepoint (#11225): the batch re-selects any row still in
+      // plaintext, so surviving a failed write here would loop forever. A failure
+      // rolls the backfill back and the next boot retries it.
       try {
         const encrypted = encryptC2cConnectionSecrets(row);
         await db

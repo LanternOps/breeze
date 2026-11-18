@@ -1,8 +1,12 @@
 /**
  * Vendor updates worker (#11065). A 10-minute tick, on the
- * `maintenanceRebootWorker.ts` model, with five stages. Each fails alone: a broken
+ * `maintenanceRebootWorker.ts` model, with six stages. Each fails alone: a broken
  * sweep must not stop a run from starting, or the other way round.
  *
+ *  0. The policy side (#11242): the per-device rows the fleet view counts from
+ *     (`policySideStore.ts`), due rows first. Nothing to do with the flag off. The
+ *     same queue also runs `policy-side-refresh` jobs: one partner or org, a few
+ *     seconds after a write to its vendor updates policy.
  *  1. The not-returned monitor stands in for what a tech would otherwise find at
  *     the next ticket: a machine stuck at a BitLocker recovery prompt or a failed
  *     flash, which by nature cannot send a final result. `return_deadline_at` is
@@ -18,7 +22,9 @@
  *     again at the seam, so with them closed nothing reaches a device.
  *  5. Overdue alerts (`overdueSweep.ts`), last: a page never holds up a run.
  *
- * With nothing armed and nothing owed, a tick is a few small reads.
+ * With the flag off, nothing armed and nothing owed, a tick is a few small reads. With
+ * the flag on, the policy-side stage also reads every fleet device, 500 a page, and
+ * writes only the rows that changed.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gt, isNotNull, lte, ne } from 'drizzle-orm';
@@ -33,6 +39,12 @@ import {
 } from '../services/oemUpdates/candidates';
 import { dispatchOemUpdateRun } from '../services/oemUpdates/dispatch';
 import { runOemOverdueSweep } from '../services/oemUpdates/overdueSweep';
+import { refreshOemPolicySide } from '../services/oemUpdates/policySideStore';
+import {
+  resolveOemPolicySideRefreshScope,
+  type OemPolicySideRefreshScope,
+  type OemPolicySideRefreshTarget,
+} from '../services/oemUpdates/policySideRefreshTrigger';
 import { runOemRebootSweep } from '../services/oemUpdates/rebootSweep';
 import { runOemReleaseSweep } from '../services/oemUpdates/releaseSweep';
 import { resolveOemUpdatesLinkForDevice } from '../services/oemUpdates/resolver';
@@ -254,8 +266,23 @@ async function runScheduledDispatch(now: Date): Promise<void> {
   }
 }
 
+/**
+ * The fleet view's materialised policy side (#11242): rows already due first (missing,
+ * rolled over, or from other gates), then every fleet device, so device-side changes
+ * no policy write announces show within one tick. Unchanged rows are not rewritten.
+ */
+async function runPolicySideRefresh(now: Date): Promise<void> {
+  // A failed page is reported by the refresh itself; the next tick computes it again.
+  const due = await refreshOemPolicySide({ now, dueOnly: true, source: 'tick' });
+  const all = await refreshOemPolicySide({ now, source: 'tick' });
+  if (due.upserted + all.upserted > 0 || due.failedPages + all.failedPages > 0) {
+    console.log('[OemUpdates] policy side', { due: due.upserted, refreshed: all.upserted, failedPages: due.failedPages + all.failedPages });
+  }
+}
+
 export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
   const stages: ReadonlyArray<readonly [string, (at: Date) => Promise<void>]> = [
+    ['policy side', runPolicySideRefresh],
     ['not-returned monitor', runNotReturnedMonitor],
     ['release sweep', runOemReleaseSweep],
     ['reboot sweep', runOemRebootSweep],
@@ -278,19 +305,65 @@ export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
 // ── Queue / Worker / Lifecycle (mirrors maintenanceRebootWorker.ts) ───────────
 
 type TickJobData = { type: 'tick' };
+type PolicySideRefreshJobData = { type: 'policy-side-refresh' } & OemPolicySideRefreshTarget;
+type OemUpdatesJobData = TickJobData | PolicySideRefreshJobData;
+
+const POLICY_SIDE_JOB = 'policy-side-refresh';
+/** Long enough to fold a burst of policy edits into one refresh, short enough to read as immediate. */
+const POLICY_SIDE_DELAY_MS = 5_000;
 
 let queue: Queue | null = null;
-let worker: Worker<TickJobData> | null = null;
+let worker: Worker<OemUpdatesJobData> | null = null;
 
 function getQueue(): Queue {
   if (!queue) queue = new Queue(QUEUE_NAME, { connection: getBullMQConnection() });
   return queue;
 }
 
+/**
+ * A refresh of one partner's or org's policy side, a few seconds out (#11242). One
+ * job per scope at a time: a request while one waits is folded into it, and one
+ * while it runs queues a single rerun, so an edit made mid-run is not lost. Never
+ * throws: a missed refresh is covered by the next tick.
+ */
+export async function requestOemPolicySideRefresh(scope: OemPolicySideRefreshScope): Promise<void> {
+  const key = 'partnerId' in scope ? `partner-${scope.partnerId}` : `org-${scope.orgId}`;
+  try {
+    await getQueue().add(POLICY_SIDE_JOB, { type: POLICY_SIDE_JOB, ...scope }, {
+      delay: POLICY_SIDE_DELAY_MS,
+      deduplication: { id: `oem-policy-side-${key}`, keepLastIfActive: true },
+      removeOnComplete: true,
+      removeOnFail: { count: 20 },
+    });
+  } catch (error) {
+    console.error(`[OemUpdates] could not queue a policy side refresh for ${key}; the next tick covers it:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      worker: 'oemUpdatesWorker',
+      stage: 'policy side enqueue',
+    });
+  }
+}
+
+/** Fails the job when a page failed, so the queue records it rather than a clean completion. */
+async function runPolicySideRefreshJob(data: PolicySideRefreshJobData): Promise<void> {
+  const { type: _type, ...target } = data;
+  const scope = await resolveOemPolicySideRefreshScope(target as OemPolicySideRefreshTarget);
+  if (!scope) return;
+  const result = await refreshOemPolicySide({ now: new Date(), scope, source: 'policy-write' });
+  if (result.failedPages > 0) {
+    throw new Error(`policy side refresh: ${result.failedPages} page(s) failed; the next tick covers them`);
+  }
+}
+
+async function processJob(job: Job<OemUpdatesJobData>): Promise<void> {
+  if (job.name === POLICY_SIDE_JOB) return runPolicySideRefreshJob(job.data as PolicySideRefreshJobData);
+  return runOemUpdatesTick();
+}
+
 export async function initializeOemUpdatesWorker(): Promise<void> {
-  worker = new Worker<TickJobData>(
+  worker = new Worker<OemUpdatesJobData>(
     QUEUE_NAME,
-    async (_job: Job<TickJobData>) => runOemUpdatesTick(),
+    processJob,
     { connection: getBullMQConnection(), concurrency: 1, lockDuration: 120_000 },
   );
   attachWorkerObservability(worker, 'oemUpdatesWorker');

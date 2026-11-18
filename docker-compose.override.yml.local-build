@@ -4,7 +4,7 @@
 
 services:
   binaries-init:
-    image: alpine:3.19
+    image: alpine:3.24
     entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
 
   api:
@@ -27,6 +27,12 @@ services:
       TURN_HOST: ${TURN_HOST:-}
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
+
+  # `--profile worker-split` must run the locally built image, not the
+  # registry ref the base file requires (#4144). Reuses the image `api` builds.
+  worker:
+    image: breeze-api:local
+    platform: linux/arm64
 
   web:
     image: breeze-web:local

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 const mocks = vi.hoisted(() => ({
   auth: { value: null as Record<string, unknown> | null },
+  mfa: { satisfied: true },
   store: {
     listSources: vi.fn(),
     getSource: vi.fn(),
@@ -47,7 +48,7 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (c: any, next: any) => (mocks.mfa.satisfied ? next() : c.json({ error: 'MFA required' }, 403)),
   withAuthDbAccessContext: async (_auth: unknown, fn: () => unknown) => fn(),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
@@ -375,5 +376,94 @@ describe('/ticket-imports routes', () => {
       expect(mocks.runs.listRunIssues).toHaveBeenCalledWith({ partnerId: PARTNER, runId: RUN, kind: 'failed', limit: 10 });
       expect((await send('GET', `/runs/${RUN}/issues?kind=bogus`)).status).toBe(400);
     });
+  });
+});
+
+describe('POST /sources/:id/source-users/resolve (#8313 W6, spec §5.10)', () => {
+  const resolvePeople = vi.fn();
+  registerTicketImportModule({
+    id: 'peoplemod',
+    label: 'People module',
+    optionsSchema: z.object({}).strict(),
+    connect: async () => connectReport,
+    catalog: async () => ({ orgs: [], groups: [], priorities: [], states: [], attributes: [], counts: {} }),
+    scan: async () => ({ rows: [], next: null }),
+    load: async () => { throw new Error('unused'); },
+    convert: () => { throw new Error('unused'); },
+    fetchAttachment: async () => new Uint8Array(),
+    probe: async () => ({ state: 'deleted' }),
+    isSourceArticleId: () => true,
+    resolvePeople: (src, keys) => resolvePeople(src, keys),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signIn();
+    mocks.store.readSourceForUse.mockResolvedValue({ view: sourceView({ module: 'peoplemod' }), credentialsEncrypted: 'ciphertext-blob' });
+    resolvePeople.mockResolvedValue(new Map([['3', { name: 'Alice Agent', email: 'alice@example.test' }], ['9', null]]));
+  });
+
+  it('names the keys through the module, deduplicated, with an unknown key as null, and writes no audit', async () => {
+    const res = await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3', '9', '3', 'zz'] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { 3: { name: 'Alice Agent', email: 'alice@example.test' }, 9: null, zz: null } });
+    const [handle, keys] = resolvePeople.mock.calls[0]!;
+    expect(keys).toEqual(['3', '9', 'zz']);
+    expect(handle.credentials).toEqual({ token: 'stored-token' });
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('takes at most 200 keys, at least one, and no other field', async () => {
+    const keys = Array.from({ length: 201 }, (_, i) => String(i + 1));
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys })).status).toBe(400);
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: keys.slice(0, 200) })).status).toBe(200);
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: [] })).status).toBe(400);
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['1'], extra: true })).status).toBe(400);
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['x'.repeat(65)] })).status).toBe(400);
+  });
+
+  it('is for partner-wide admins of the partner only', async () => {
+    signIn({ scope: 'organization' });
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
+    signIn({ partnerOrgAccess: 'selected' });
+    expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
+    expect(mocks.store.readSourceForUse).not.toHaveBeenCalled();
+    expect(resolvePeople).not.toHaveBeenCalled();
+  });
+
+  // #11949 review: each call opens the stored credentials, so MFA gates it, as the preflight.
+  it('needs MFA before the stored credentials are opened', async () => {
+    mocks.mfa.satisfied = false;
+    try {
+      expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
+    } finally {
+      mocks.mfa.satisfied = true;
+    }
+    expect(mocks.store.readSourceForUse).not.toHaveBeenCalled();
+    expect(resolvePeople).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 for another partner\'s or a deleted source, 409 for a revoked one', async () => {
+    mocks.store.readSourceForUse.mockResolvedValueOnce(null);
+    const missing = await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] });
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).code).toBe('TICKET_IMPORT_SOURCE_NOT_FOUND');
+    mocks.store.readSourceForUse.mockResolvedValueOnce({ view: sourceView({ module: 'peoplemod', hasCredentials: false }), credentialsEncrypted: null });
+    const revoked = await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] });
+    expect(revoked.status).toBe(409);
+    expect(resolvePeople).not.toHaveBeenCalled();
+  });
+
+  it('maps a source failure without echoing the source', async () => {
+    resolvePeople.mockRejectedValueOnce(new SourceAuthError(401));
+    const res = await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('TICKET_IMPORT_INVALID_CREDENTIALS');
+  });
+
+  it('answers every key as unknown for a module that cannot name people', async () => {
+    mocks.store.readSourceForUse.mockResolvedValueOnce({ view: sourceView({ module: 'testmod' }), credentialsEncrypted: 'ciphertext-blob' });
+    const res = await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] });
+    expect(await res.json()).toEqual({ data: { 3: null } });
   });
 });

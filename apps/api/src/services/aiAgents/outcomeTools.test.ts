@@ -745,6 +745,20 @@ describe('assessment outcome tools (Wisp W05b)', () => {
       .toMatchObject({ status: 'resolved', outcome: 'fixed' });
   });
 
+  // #11427: the captured (validated) call is what the finalizer applies, so the
+  // outcome-implies-resolved transform must survive validateOutcomeToolInput.
+  it('validateOutcomeToolInput("update_concern") turns an outcome without a status into a resolve', () => {
+    expect(validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, summary: 'Rebooted', outcome: 'Reboot alert cleared' }))
+      .toEqual({ concernId: CONCERN_ID, summary: 'Rebooted', outcome: 'Reboot alert cleared', status: 'resolved' });
+  });
+
+  it('update_concern tells the model how to close a concern and that a summary edit keeps it open', () => {
+    const [update] = buildOutcomeSdkTools(['update_concern']);
+    expect(update!.description).toMatch(/status: 'resolved'/);
+    expect(update!.description).toMatch(/outcome/);
+    expect(update!.description).toMatch(/keeps it open/i);
+  });
+
   it('validates nudge / propose_action / request_specialist with the shared schemas', () => {
     expect(validateOutcomeToolInput('nudge', { concernId: CONCERN_ID, nextStep: 'Call the customer' }))
       .toMatchObject({ nextStep: 'Call the customer' });

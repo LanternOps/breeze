@@ -18,11 +18,11 @@ import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getBlobStream, BlobStorageError } from '../services/blobStorage';
 import { contentDispositionFor } from '../services/attachmentFilename';
-import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
+import { isServing, trustServingMember } from '../services/trustPage/servingSet';
+import { loadServedPayload } from '../services/trustPage/servedPayload';
 import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage, type ResolvedTrustPageWithEmbed } from '../services/trustPage/resolve';
 import { verifyTrustPreviewToken } from '../services/trustPage/previewToken';
 import { buildSnapshotForPage } from '../services/trustPage/publication';
-import { normalizeTrustPagePayload, type TrustPagePublicPayload } from '@breeze/shared';
 
 export const trustPagePublicRoutes = new Hono();
 const STALE_AFTER_MS = 24 * 3600_000;
@@ -58,14 +58,11 @@ async function admit(c: Context, partnerSlug: string, orgSlug: string | undefine
   const resolved = await sys(() => resolvePublishedTrustPage(slugs.partnerSlug, slugs.orgSlug));
   return resolved ?? notFound(c);
 }
-/** The current snapshot's payload, normalized to v2 (a W1 snapshot stays renderable until its next refresh). */
-async function payloadFor(r: ResolvedTrustPage): Promise<TrustPagePublicPayload | null> {
-  if (!r.snapshotId) return null;
-  const cached = await readCachedSnapshotPayload(r.snapshotId);
-  if (cached) return normalizeTrustPagePayload(cached);
-  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return normalizeTrustPagePayload(r.payload); }
-  return null;
-}
+/**
+ * The current snapshot's payload as served: normalized to v2 (a W1 snapshot stays renderable until its next
+ * refresh) and CIS-gated at read time (#9087). Shared with the attestation and access routes.
+ */
+const payloadFor = (r: ResolvedTrustPage) => loadServedPayload(r);
 
 // ---- card (SSR header + OG). Mounted under /trust/card; exempt from the global limiter.
 async function card(c: Context, partnerSlug: string, orgSlug?: string) {

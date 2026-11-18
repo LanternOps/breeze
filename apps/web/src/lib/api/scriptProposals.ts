@@ -46,7 +46,7 @@ export async function promoteScriptProposal(
         body: JSON.stringify(input),
       }),
     errorFallback: i18n.t('ai:scriptProposal.saveToLibrary'),
-    successMessage: i18n.t('ai:scriptProposal.saveToLibrary'),
+    successMessage: i18n.t('ai:scriptProposal.savedToLibrary'),
   });
 }
 
@@ -104,7 +104,7 @@ export async function overrideSaveScriptProposal(
         body: JSON.stringify({ ...input, confirmNoPassingReview: true }),
       }),
     errorFallback: i18n.t('ai:scriptProposal.overrideSave'),
-    successMessage: i18n.t('ai:scriptProposal.saveToLibrary'),
+    successMessage: i18n.t('ai:scriptProposal.savedToLibrary'),
     friendly: overrideErrorMessage,
   });
 }

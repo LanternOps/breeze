@@ -127,7 +127,14 @@ function TrustedArcSealers({
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => setDraft(saved), [saved]);
+  // Adopt a new server value only when `saved` actually changes. Derived during
+  // render (not a mount-time effect) so a late passive effect can never overwrite
+  // an edit the user made before it flushed (#11350).
+  const [lastSaved, setLastSaved] = useState(saved);
+  if (lastSaved !== saved) {
+    setLastSaved(saved);
+    setDraft(saved);
+  }
 
   if (!canAdminMailbox) {
     return saved ? (

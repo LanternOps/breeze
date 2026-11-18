@@ -404,3 +404,177 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
     }
   });
 });
+
+/**
+ * #12130: a rule whose value the device's org does not collect is not assessed.
+ * Alone it leaves the rule set `pending`: no policy.violation (so no alert), no
+ * policy.compliant, and no remediation, even under `enforce`.
+ */
+describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not collected (#12130)', () => {
+  const SCRIPT_ID = '77777777-7777-4777-8777-777777777777';
+  const REGISTRY_RULE = {
+    ...RULE,
+    name: 'Firewall on',
+    enforcementLevel: 'enforce',
+    remediationScriptId: SCRIPT_ID,
+    rules: [{
+      type: 'registry_check',
+      registryPath: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall',
+      registryValueName: 'EnableFirewall',
+      registryExpectedValue: '1',
+      remediation: { type: 'script', scriptId: SCRIPT_ID },
+    }],
+  };
+
+  beforeEach(() => {
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([REGISTRY_RULE]);
+  });
+
+  it('records pending, publishes policy.evaluated and policy.not_assessed, and dispatches no remediation', async () => {
+    publishEventMock.mockResolvedValue('event-id');
+    const upserts: Array<Record<string, unknown>> = [];
+    insertMock.mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        upserts.push(v);
+        return { onConflictDoUpdate: () => Promise.resolve(), returning: () => Promise.resolve([{ id: 'run-1' }]) };
+      },
+    }));
+
+    // Every list select resolves to [], so the org's probe list is empty.
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ complianceRuleId: REGISTRY_RULE.id, status: 'pending', remediationTriggered: false }),
+    ]);
+    // Strix (PR #12184): a rule the probe cap left uncollected is announced on
+    // its own event, never only as a quiet `pending`; still no violation.
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.not_assessed']);
+    expect(publishEventMock.mock.calls[1]![1]).toBe(ORG_ID);
+    expect(publishEventMock.mock.calls[1]![2]).toMatchObject({
+      configPolicyComplianceRuleId: REGISTRY_RULE.id,
+      configPolicyComplianceRuleName: REGISTRY_RULE.name,
+      configPolicyId: REGISTRY_RULE.featureLinkId,
+      deviceId: DEVICE.id,
+      status: 'pending',
+      reason: 'probe_cap',
+      notAssessedRules: 1,
+    });
+    // Only the compliance upsert: no automation run was inserted.
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({ status: 'pending' });
+    const ruleResult = (upserts[0]!.details as { ruleResults: Array<Record<string, unknown>> }).ruleResults[0];
+    expect(ruleResult).toMatchObject({ passed: null, data: { outcome: 'not_collected' } });
+  });
+
+  /** Records every `.from(table)`; list selects resolve [], `.limit` the device. */
+  function trackFromTables(): unknown[] {
+    const fromTables: unknown[] = [];
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = (table: unknown) => { fromTables.push(table); return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    return fromTables;
+  }
+
+  it('in a set that fails on another rule, only the failed rule\'s remediation is attempted', async () => {
+    const MIXED = {
+      ...REGISTRY_RULE,
+      remediationScriptId: null,
+      rules: [
+        REGISTRY_RULE.rules[0],
+        {
+          type: 'required_software', softwareName: 'Contoso Agent', versionOperator: 'any',
+          remediation: { type: 'script', scriptId: '99999999-9999-4999-8999-999999999999' },
+        },
+      ],
+    };
+    scanDueMock.mockResolvedValue([
+      { complianceRule: MIXED, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([MIXED]);
+    publishEventMock.mockResolvedValue('event-id');
+    const fromTables = trackFromTables();
+
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+
+    expect(result.results).toEqual([expect.objectContaining({ status: 'non_compliant' })]);
+    // The failed rule raises its violation; the uncollected one is still announced.
+    expect(publishEventMock.mock.calls.map((c) => c[0]))
+      .toEqual(['policy.evaluated', 'policy.violation', 'policy.not_assessed']);
+    // triggerConfigPolicyRemediation looks for a matching automation once per
+    // attempted remediation; the unassessed registry rule must not be one.
+    const { automations } = await import('../db/schema');
+    expect(fromTables.filter((t) => t === automations)).toHaveLength(1);
+  });
+
+  it('a failed probe-list read fails the device; nothing is recorded as a verdict', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { automationPolicies } = await import('../db/schema');
+    const readError = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      let table: unknown;
+      chain.from = (t: unknown) => { table = t; return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+        (table === automationPolicies ? reject(readError) : resolve([]));
+      return chain;
+    });
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance())
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 0 rule set(s))');
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(publishEventMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('reads each org\'s probe list once per scan, and not at all for rule sets that read no collected state', async () => {
+    const OTHER = { ...DEVICE, id: '88888888-8888-4888-8888-888888888888', hostname: 'WS-3' };
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+    ]);
+    const fromTables: unknown[] = [];
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = (table: unknown) => { fromTables.push(table); return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    publishEventMock.mockResolvedValue('event-id');
+
+    const { automationPolicies } = await import('../db/schema');
+    const first = await scanAndEvaluateConfigPolicyCompliance();
+    expect(first.results).toHaveLength(2);
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(1);
+
+    fromTables.length = 0;
+    resolveRulesMock.mockResolvedValue([RULE]);
+    scanDueMock.mockResolvedValue([
+      { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    await scanAndEvaluateConfigPolicyCompliance();
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(0);
+  });
+});

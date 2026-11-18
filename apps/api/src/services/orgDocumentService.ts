@@ -176,7 +176,8 @@ export async function listDocuments(
     .from(orgDocuments)
     .leftJoin(successor, and(eq(successor.supersedesDocumentId, orgDocuments.id), eq(successor.orgId, orgDocuments.orgId)))
     .where(and(...conditions))
-    .orderBy(desc(orgDocuments.createdAt));
+    // id breaks created_at ties (one transaction = one timestamp): callers page this list.
+    .orderBy(desc(orgDocuments.createdAt), desc(orgDocuments.id));
   return rows.map(({ supersededByDocumentId, ...row }) => toView(row, supersededByDocumentId ?? null));
 }
 

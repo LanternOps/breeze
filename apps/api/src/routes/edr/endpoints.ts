@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { and, eq, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -218,7 +219,7 @@ edrEndpointRoutes.put(
       return c.json({ data: updated });
     } catch (error) {
       const code = pgErrorCode(error);
-      if (code === '23503') {
+      if (isPgForeignKeyViolationCode(code)) {
         return c.json({
           error: 'That device belongs to a different organization than this EDR endpoint',
           code: 'DEVICE_ORG_MISMATCH',

@@ -12,7 +12,7 @@ const {
   auditSensitiveReadMock: vi.fn(),
   getReportRunMock: vi.fn(),
   selectRows: [] as unknown[][],
-  rowsToCsvMock: vi.fn((rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
+  rowsToCsvMock: vi.fn((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
   rowsToXlsxMock: vi.fn(),
 }));
 
@@ -128,7 +128,7 @@ vi.mock('@breeze/shared', async (importOriginal) => {
   rowsToXlsxMock.mockImplementation(actual.rowsToXlsx);
   return {
     ...actual,
-    rowsToCsv: rowsToCsvMock,
+    reportRunRowsToCsv: rowsToCsvMock,
     rowsToXlsx: rowsToXlsxMock,
   };
 });
@@ -170,7 +170,7 @@ describe('report run sensitive-read audit', () => {
     vi.clearAllMocks();
     selectRows.length = 0;
     getReportRunMock.mockResolvedValue(runAccess());
-    rowsToCsvMock.mockImplementation((rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
+    rowsToCsvMock.mockImplementation((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
   });
 
   it('audits the exact CSV response bytes and actual result-row count', async () => {
@@ -540,5 +540,25 @@ describe('report run sensitive-read audit', () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(`csv:${JSON.stringify(rows)}`);
+  });
+
+  // #11282: the staff CSV goes through the same serializer as the portal CSV,
+  // keyed by report type, so SLA performance gets its labelled headers.
+  it('serializes the staff CSV with the run report type so labelled headers apply', async () => {
+    const rows = [{ priority: 'high' }];
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows },
+      reportType: 'ticket_sla_performance',
+      reportName: 'SLA performance',
+      reportFormat: 'csv',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download`);
+
+    expect(res.status).toBe(200);
+    expect(rowsToCsvMock).toHaveBeenCalledWith('ticket_sla_performance', rows);
   });
 });

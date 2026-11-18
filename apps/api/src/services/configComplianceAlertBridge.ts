@@ -434,3 +434,13 @@ function keyFromPayload(payload: ConfigCompliancePayload): ComplianceKey | null 
   const { configPolicyId: featureLinkId, configPolicyComplianceRuleName: ruleName } = payload;
   return featureLinkId && ruleName ? { featureLinkId, ruleName } : null;
 }
+
+/**
+ * The same lookups the alert handlers use, for the not-assessed notice
+ * (policyNotAssessedNotice.ts, Strix PR #12184): which rule an event refers to
+ * (followed across saves), whether its policy reaches the event's org, and the
+ * persisted row for (link, name, device).
+ */
+export const loadConfigComplianceEventRule = loadEventRule;
+export const configComplianceRuleReachesOrg = policyReachesOrg;
+export const persistedConfigCompliance = persistedCompliance;

@@ -25,7 +25,7 @@ Routing is more than a two-way split between `web` and `api`. In match order, th
 | `/activate/complete`, `/activate/*` (with a `status` query) | `web:4321` | Account-activation pages |
 | `/oauth/consent`, `/oauth/consent/*` | `web:4321` | OAuth consent UI — matched before the API's `/oauth/*` block |
 | `/oauth/*`, the OAuth `.well-known` endpoints | `api:3001` | OAuth provider (authorize, token, registration, discovery) |
-| `/billing/invoices*`, `/billing/quotes*` | `web:4321` | MSP invoicing/quotes UI — matched before the billing sidecar |
+| `/billing/invoices*`, `/billing/quotes*`, `/billing/autopay*` | `web:4321` | MSP invoicing, quotes and automatic-payment UI — matched before the billing sidecar |
 | `/billing`, `/billing/*` | `billing:3002` | Hosted billing UI sidecar |
 | `/portal`, `/portal/*` | `portal:4322` | Customer portal |
 | `/api/*`, `/s/*`, `/health*`, `/ready`, `/metrics/*`, `/i/*` | `api:3001` | General API traffic. Also normalizes the client-certificate assertion headers used by agent mTLS — see [Certificate Pinning & mTLS](/security/mtls/) |

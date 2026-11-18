@@ -2775,3 +2775,33 @@ describe('RunDetailPage Wisp provenance', () => {
     expect(screen.queryByText(/Wisp for/)).toBeNull();
   });
 });
+
+describe('RunDetailPage analysis chain and scope (W06)', () => {
+  const CHAIN = [
+    { id: 'r0', step: 1, continuedFromRunId: null, goal: 'export inventory', status: 'completed' as const, costCents: 35, queuedAt: '2026-08-20T09:00:00.000Z' },
+    { id: 'run-1', step: 2, continuedFromRunId: 'r0', goal: null, status: 'completed' as const, costCents: 12, queuedAt: '2026-08-20T10:00:00.000Z' },
+  ];
+
+  it('renders the scope line and the chain section when the API sends them', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        analysisScope: { kind: 'org', siteId: null, siteName: null, deviceCount: 412 },
+        chain: CHAIN,
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('run-detail-scope')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-scope').textContent).toContain('412');
+    expect(screen.getByTestId('run-detail-chain')).toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-chain-current')).toBeInTheDocument();
+  });
+
+  it('renders neither and does not throw for a run without the new fields', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-scope')).toBeNull();
+    expect(screen.queryByTestId('run-detail-chain')).toBeNull();
+  });
+});

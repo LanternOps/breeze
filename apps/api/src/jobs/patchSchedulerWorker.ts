@@ -24,6 +24,8 @@ import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { getLocalTimeParts, normalizeTimezone, zonedWallClockToUtc } from '../services/zonedTime';
 import { attachWorkerObservability } from './workerObservability';
+import { deferUntilDatabaseWritable } from '../db/deferUntilWritable';
+import { isReadOnlySqlError } from '../db/readOnlyDatabase';
 import {
   checkDeviceMaintenanceWindow,
   resolvePatchPolicyWinnersForDevices,
@@ -1070,7 +1072,7 @@ function createSchedulerWorker(): Worker {
   );
 }
 
-export async function initializePatchSchedulerWorker(): Promise<void> {
+async function repairPatchSettings(): Promise<void> {
   await runWithSystemDbAccess(async () => {
     try {
       const repair = await backfillMissingPatchSettings();
@@ -1089,6 +1091,18 @@ export async function initializePatchSchedulerWorker(): Promise<void> {
       }
     }
   });
+}
+
+export async function initializePatchSchedulerWorker(): Promise<void> {
+  try {
+    await repairPatchSettings();
+  } catch (error) {
+    // #11741: the repair writes only when a feature link lacks its settings
+    // row. On a read-only database, repair once writes are accepted instead
+    // of failing the scheduler for the life of the process.
+    if (!isReadOnlySqlError(error)) throw error;
+    deferUntilDatabaseWritable('PatchScheduler settings repair', repairPatchSettings);
+  }
 
   schedulerWorker = createSchedulerWorker();
   attachWorkerObservability(schedulerWorker, 'patchSchedulerWorker');

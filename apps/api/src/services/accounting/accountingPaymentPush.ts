@@ -464,7 +464,8 @@ function toCurrencyPushError(err: unknown, conn: AccountingConnection): Accounti
 
 /**
  * The payment's mapping row, looked up the way its DESTROYERS know it: by the
- * `invoice_payments` id alone. `voidPayment`/`reflectStripeRefund` hold no
+ * `invoice_payments` id alone. `voidPayment` and the Stripe reversal state machine
+ * (`stripeReversalState.applyStripeFinancialEvent`) hold no
  * partner id, and `(breeze_entity_type, breeze_entity_id)` is already unique per
  * connection; RLS scopes the read to the caller's partner.
  */
@@ -762,8 +763,8 @@ export async function requestPaymentPush(
  * accounting mapping. The single destroyer-side helper (it REPLACES Phase D's
  * `clearPaymentMappingForInvoicePayment`, which only ever deleted the row).
  *
- * Called by `invoiceService.voidPayment` and `stripeReconcile`'s full-refund
- * branch, BEFORE the `invoice_payments` delete, inside the transaction that
+ * Called by `invoiceService.voidPayment` and the full-refund arm of
+ * `stripeReversalState.applyStripeFinancialEvent`, BEFORE the `invoice_payments` delete, inside the transaction that
  * already holds the invoice lock. `breeze_entity_id` is polymorphic, so there is
  * no FK to cascade: without this call the mapping outlives its payment and a
  * later CDC delivery for the same QuickBooks Payment reads as "already applied"

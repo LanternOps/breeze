@@ -63,6 +63,13 @@ const TEST_TOOLS = [
   // Tier 3 here (not in the registry) so the intent-filing path is exercised.
   { name: 'sync_edr_data', tier: 3, schema: { type: 'object', properties: {} } },
   { name: 'run_script', tier: 3, schema: { type: 'object', properties: {} } },
+  // #11287: PARTNER_SCOPE_ONLY_TOOLS entries; the last one Tier 3 for the intent-filing path.
+  { name: 'get_org_summary', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'list_portal_users', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'get_account_readiness', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'manage_org_portal_settings', tier: 3, schema: { type: 'object', properties: { action: { type: 'string', enum: ['get', 'update'] } } } },
+  // #11287: a mixed tool whose partner-wide action is visible in the input.
+  { name: 'manage_ai_agent_schedules', tier: 3, schema: { type: 'object', properties: { action: { type: 'string', enum: ['create', 'update', 'delete'] }, ownerScope: { type: 'string', enum: ['partner', 'organization'] } } } },
 ];
 const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
@@ -119,11 +126,17 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/recoveryBootstrap', () => ({
   resolveServerUrl: (requestUrl?: string) => (requestUrl ? new URL(requestUrl).origin : 'http://localhost:3001'),
 }));
-vi.mock('./mcpExecutionOrg', () => ({
-  resolveMcpExecutionOrgId: () => 'org-1',
-  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
-  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
-}));
+const execOrg = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock('./mcpExecutionOrg', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./mcpExecutionOrg')>();
+  return {
+    // The real error class and its JSON-RPC mapping; the resolution is stubbed.
+    McpExecutionOrgError: actual.McpExecutionOrgError,
+    mcpExecutionOrgRpcError: actual.mcpExecutionOrgRpcError,
+    resolveMcpExecutionOrgId: () => 'org-1',
+    resolveMcpExecutionContext: (...args: unknown[]) => execOrg.resolve(...args),
+  };
+});
 vi.mock('../services/toolSources/resolver', () => ({
   resolveTenantTools: vi.fn(async () => []),
   resolveTenantToolByName: vi.fn(async () => null),
@@ -177,6 +190,7 @@ beforeEach(() => {
   testState.authPatch = null;
   setPartnerKey();
   mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  execOrg.resolve.mockResolvedValue({ orgId: 'org-1' });
   mocks.checkToolPermission.mockResolvedValue(null);
   mocks.ledgerBegin.mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockResolvedValue(undefined);
@@ -288,5 +302,105 @@ describe('#10930 partner-wide tools over MCP — tools/call', () => {
     testState.authPatch = { partnerOrgAccess: 'all' };
     mocks.executeTool.mockResolvedValueOnce(JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }));
     expect((await callText('manage_patches', { action: 'approve' })).parsed).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+  });
+});
+
+// #11287: a tool whose handler refuses every organization-scoped caller
+// (PARTNER_SCOPE_ONLY_TOOLS, pinned to the handlers by
+// partnerWideOnlyTools.contract.test.ts) is not offered to an org-scoped key,
+// and a direct call is refused before the handler or any intent.
+describe('#11287 partner-scope tools over MCP for an org-scoped key', () => {
+  const ISSUE_TOOLS = ['get_org_summary', 'list_portal_users', 'get_account_readiness', 'manage_org_portal_settings'];
+
+  it('an org-scoped key is not offered them; ordinary tools stay listed', async () => {
+    setOrgKey();
+    const names = await listNames();
+    for (const name of ISSUE_TOOLS) expect(names, name).not.toContain(name);
+    expect(names).toContain('list_sites');
+  });
+
+  it('a partner-scoped key is still offered them', async () => {
+    // The Tier-3 one is listed only where the key could file it.
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    const names = await listNames();
+    for (const name of ISSUE_TOOLS) expect(names, name).toContain(name);
+  });
+
+  it('a direct call from an org-scoped key is refused before the handler with PARTNER_SCOPE_REQUIRED', async () => {
+    setOrgKey();
+    const { result, parsed } = await callText('get_org_summary', { orgId: 'org-1' });
+    expect(result.isError).toBe(true);
+    expect(parsed.code).toBe('PARTNER_SCOPE_REQUIRED');
+    expect(parsed.error).toMatch(/partner-scoped/);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('with MCP intents on, an org-scoped key\'s Tier-3 call to one is refused before an intent is filed', async () => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    setOrgKey();
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    intentMocks.createMcpActionIntent.mockRejectedValue(new Error('stop after filing'));
+    const { result, parsed } = await callText('manage_org_portal_settings', { action: 'update', orgId: 'org-1' });
+    expect(result.isError).toBe(true);
+    expect(parsed.code).toBe('PARTNER_SCOPE_REQUIRED');
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+// #11287: a partner baseline create (manage_ai_agent_schedules, ownerScope
+// partner) is refused before an approval card is filed: its release runs under
+// the same MCP credential, which never carries full partner org access, so it
+// could only end PARTNER_WIDE_WRITE_DENIED. The tool's other actions still file.
+describe('#11287 partner-wide action of a mixed tool over MCP', () => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    intentMocks.createMcpActionIntent.mockRejectedValue(new Error('stop after filing'));
+    // An MFA-satisfied principal (the issue's OAuth token), so the MFA gate on create does not refuse first.
+    testState.authPatch = { token: { mfa: true } };
+  });
+
+  it('control: an organization override create reaches intent filing', async () => {
+    await rpc('tools/call', { name: 'manage_ai_agent_schedules', arguments: { action: 'create', ownerScope: 'organization' } });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a partner baseline create is refused before an intent is filed, with the one MCP wording', async () => {
+    const { result, parsed } = await callText('manage_ai_agent_schedules', { action: 'create', ownerScope: 'partner' });
+    expect(result.isError).toBe(true);
+    expect(parsed).toEqual({ error: PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE, code: 'ACCESS_DENIED' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    // The tool stays listed: its organization actions work.
+    expect(await listNames()).toContain('manage_ai_agent_schedules');
+  });
+
+  it('a principal carrying partnerOrgAccess "all" still files it', async () => {
+    testState.authPatch = { token: { mfa: true }, partnerOrgAccess: 'all' };
+    await rpc('tools/call', { name: 'manage_ai_agent_schedules', arguments: { action: 'create', ownerScope: 'partner' } });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #11287: the MCP dispatch's mixed-org refusal carries the split hint (the
+// chat path's split_by_org never reaches an MCP client); every other
+// execution-org refusal stays the generic invalid params.
+describe('#11287 execution-org refusals over MCP tools/call', () => {
+  it('a mixed-org device set answers -32602 telling the client to call once per organization', async () => {
+    const { McpExecutionOrgError } = await import('./mcpExecutionOrg');
+    execOrg.resolve.mockRejectedValue(new McpExecutionOrgError('Devices span more than one organization', 'split_by_org'));
+    const { body } = await rpc('tools/call', { name: 'list_sites', arguments: {} });
+    expect(body.error).toEqual({ code: -32602, message: expect.stringContaining('once per organization'), data: { reason: 'split_by_org' } });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('any other execution-org refusal stays the generic invalid params, with no data', async () => {
+    const { McpExecutionOrgError } = await import('./mcpExecutionOrg');
+    execOrg.resolve.mockRejectedValue(new McpExecutionOrgError('Device not found or access denied'));
+    const { body } = await rpc('tools/call', { name: 'list_sites', arguments: {} });
+    expect(body.error).toEqual({ code: -32602, message: 'Invalid params' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });

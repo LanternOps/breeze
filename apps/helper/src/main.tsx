@@ -14,9 +14,16 @@ import { MessageCardWindow } from './components/MessageCard';
 import { EndpointChatWindow } from './components/EndpointChat';
 import { PromptCardWindow } from './prompt/PromptCardWindow';
 import { initTheme } from './lib/theme';
+import { loadUiContext, useUiContext } from './i18n/uiContext';
 
 // Initialize theme before rendering
 initTheme();
+
+// Locale + runtime branding of this session (never throws; defaults stay on
+// failure). Cards that render technician or agent text (message, chat,
+// prompt) are denied this command by design and do not call it; the message
+// card receives its locale inside its own label-checked view instead.
+if (!/^#(message|chat|prompt)\//.test(window.location.hash)) void loadUiContext();
 
 // ── Banner window ────────────────────────────────────────────────────────────
 
@@ -44,6 +51,9 @@ type CallerView = { request: CallerRequest; deadlineMs: number };
 function CallerVerifyHost({ verificationId }: { verificationId: string }) {
   const [view, setView] = useState<CallerView | null>(null);
   const [branding, setBranding] = useState<Branding>(null);
+  // Session locale from the Helper's UI context; the partner branding below
+  // keeps its own source (/api/v1/helper/config).
+  const { locale } = useUiContext();
 
   useEffect(() => {
     let live = true;
@@ -65,7 +75,7 @@ function CallerVerifyHost({ verificationId }: { verificationId: string }) {
       deadlineMs={view.deadlineMs}
       branding={branding}
       logo={logo}
-      locale={navigator.language}
+      locale={locale}
       onDecision={(choice) => invoke<void>('submit_caller_verify', { verificationId, choice })}
     />
   );

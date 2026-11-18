@@ -167,12 +167,12 @@ export default function AiKillSwitch() {
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <Power className="w-6 h-6" /> {t('admin.aiKillSwitch.title')}
           </h1>
-          <p className="text-sm text-gray-600 mt-1 max-w-2xl">{t('admin.aiKillSwitch.description')}</p>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">{t('admin.aiKillSwitch.description')}</p>
         </div>
         <button
           data-testid="ai-kill-switch-refresh"
           onClick={fetchState}
-          className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
+          className="px-3 py-2 text-sm border rounded hover:bg-muted/50 flex items-center gap-1"
         >
           <RefreshCw className="w-4 h-4" /> {t('admin.aiKillSwitch.refresh')}
         </button>
@@ -181,9 +181,9 @@ export default function AiKillSwitch() {
       {error && <div className="bg-red-50 text-red-800 px-4 py-3 rounded mb-4">{error}</div>}
 
       {loading ? (
-        <div className="text-center py-12 text-gray-500">{t('admin.aiKillSwitch.loading')}</div>
+        <div className="text-center py-12 text-muted-foreground">{t('admin.aiKillSwitch.loading')}</div>
       ) : row ? (
-        <div className="border rounded p-6 bg-white space-y-4 max-w-2xl">
+        <div className="border rounded p-6 bg-card text-card-foreground space-y-4 max-w-2xl">
           <div className="flex items-center gap-3">
             <span
               data-testid="ai-kill-switch-status-badge"
@@ -197,21 +197,21 @@ export default function AiKillSwitch() {
           </div>
 
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.epoch')}</dt>
+            <dt className="text-muted-foreground">{t('admin.aiKillSwitch.fields.epoch')}</dt>
             <dd data-testid="ai-kill-switch-epoch" className="font-mono">{row.epoch}</dd>
-            <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.updatedBy')}</dt>
+            <dt className="text-muted-foreground">{t('admin.aiKillSwitch.fields.updatedBy')}</dt>
             <dd data-testid="ai-kill-switch-updated-by" title={actorTitle}>
               {actor ?? t('admin.aiKillSwitch.fields.none')}
             </dd>
-            <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.updatedAt')}</dt>
+            <dt className="text-muted-foreground">{t('admin.aiKillSwitch.fields.updatedAt')}</dt>
             <dd data-testid="ai-kill-switch-updated-at">
               {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : t('admin.aiKillSwitch.fields.none')}
             </dd>
-            <dt className="text-gray-500">{t('admin.aiKillSwitch.fields.lastReason')}</dt>
+            <dt className="text-muted-foreground">{t('admin.aiKillSwitch.fields.lastReason')}</dt>
             <dd data-testid="ai-kill-switch-last-reason">{row.reason ?? t('admin.aiKillSwitch.fields.none')}</dd>
           </dl>
 
-          <p className="text-xs text-gray-500">{t('admin.aiKillSwitch.impactNote')}</p>
+          <p className="text-xs text-muted-foreground">{t('admin.aiKillSwitch.impactNote')}</p>
 
           <button
             data-testid="ai-kill-switch-toggle"
@@ -231,7 +231,7 @@ export default function AiKillSwitch() {
           data-testid="ai-kill-switch-confirm-modal"
           className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
         >
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-md">
+          <div className="bg-card text-card-foreground rounded-lg shadow-lg w-full max-w-md">
             <div className="px-6 py-4 border-b">
               <h2 className="text-lg font-medium">
                 {row.killed
@@ -240,7 +240,7 @@ export default function AiKillSwitch() {
               </h2>
             </div>
             <div className="px-6 py-4 space-y-3">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-muted-foreground">
                 {row.killed
                   ? t('admin.aiKillSwitch.confirm.restoreDescription')
                   : t('admin.aiKillSwitch.confirm.killDescription')}
@@ -253,7 +253,7 @@ export default function AiKillSwitch() {
                   onChange={(e) => setReason(e.target.value)}
                   placeholder={t('admin.aiKillSwitch.confirm.reasonPlaceholder')}
                   rows={3}
-                  className="w-full border rounded px-3 py-2 text-sm"
+                  className="w-full border rounded px-3 py-2 text-sm bg-background text-foreground dark:[color-scheme:dark]"
                   autoFocus
                 />
               </div>
@@ -263,7 +263,7 @@ export default function AiKillSwitch() {
                 data-testid="ai-kill-switch-confirm-cancel"
                 onClick={closeConfirm}
                 disabled={submitting}
-                className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded"
+                className="px-3 py-2 text-sm text-foreground hover:bg-muted/50 rounded"
               >
                 {t('admin.aiKillSwitch.confirm.cancel')}
               </button>

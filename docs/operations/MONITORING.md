@@ -5,6 +5,7 @@ This guide covers setting up comprehensive monitoring for the Breeze RMM platfor
 ## Table of Contents
 
 - [Overview](#overview)
+- [Native Health Tab (no Prometheus required)](#native-health-tab-no-prometheus-required)
 - [Architecture](#architecture)
 - [Prometheus Setup](#prometheus-setup)
 - [Grafana Setup](#grafana-setup)
@@ -24,6 +25,17 @@ The Breeze monitoring stack provides:
 - **Alerting**: Alertmanager sends notifications for critical conditions
 - **Error Tracking**: Sentry captures and analyzes application errors
 - **Log Aggregation**: Centralized logging with Loki or ELK stack
+
+## Native Health Tab (no Prometheus required)
+
+Platform administrators can see shared background-work status at **Administration → System → Health** (`/admin/system?tab=health`). It works without `ENABLE_MONITORING`.
+
+- **Queues:** pending counts (`waiting`, `prioritized`, `delayed`, `active`) for the connection-health reconciler, the connection-health digest, alerts and event dispatch. Status is `unknown` until a threshold is defined for that queue, so counts are not a health verdict.
+- **Jobs:** the connection-health reconciler, the digest, and each per-kind heartbeat. A known failure streak shows as `degraded`; a stale or missing heartbeat shows as `unknown`.
+- **Source:** Redis only. `GET /api/v1/admin/system/health` never queries the database. If Redis is unavailable, the tab still loads and marks the affected items `unknown`.
+- **Refresh:** manual only; the tab does not poll.
+
+The tab does not report per-process or per-host health. Use `/health/ready` and the monitoring overlay below for that.
 
 ## Architecture
 
@@ -185,6 +197,7 @@ not represented in it.
 | `breeze_alert_queue_length` | Gauge | Alerts pending processing |
 | `agent_heartbeat_total` | Counter | Authenticated agent heartbeats, by `status` |
 | `breeze_agent_ingest_submissions_total` | Counter | Agent telemetry submits (`logs`, `eventlogs`, `sessions`, `security_status`, `management_posture`) by `kind` and `outcome` (`success`/`partial`/`failed`). Routine submits are counted here instead of being written to `audit_logs` |
+| `breeze_agent_eventlog_noise_dropped_total` | Counter | Windows Security event-log records dropped at ingest as known noise (`routes/agents/eventLogNoiseFilter.ts`), by Windows `event_id`. A record re-sent after a rejected batch is counted again |
 | `breeze_scripts_executed_total` | Counter | Scripts executed |
 
 The two fleet gauges are refreshed from the database on scrape and cached for

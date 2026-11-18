@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 func TestApplicationProviderNames(t *testing.T) {
@@ -86,7 +88,7 @@ func TestApplicationProviderInjectionPipeline(t *testing.T) {
 		if !strings.Contains(xpath, "@Name='MSSQL$SQLEXPRESS'") {
 			t.Fatalf("valid literal missing: %s", xpath)
 		}
-		if !strings.Contains(command, "-FilterXPath "+psSingleQuote(xpath)+" -Oldest") {
+		if !strings.Contains(command, "-FilterXPath "+psscript.Quote(xpath)+" -Oldest") {
 			t.Fatalf("XPath not one quoted literal: %s", command)
 		}
 	}

@@ -389,7 +389,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
                   <SecurityAgentCoverageStateBadge state={row.state} />
                   {row.reasonCode && (
                     <span className="text-xs text-muted-foreground">
-                      {coverageReasonLabel(tSecurity, row.reasonCode)}
+                      {coverageReasonLabel(tSecurity, row.reasonCode, row.vendor)}
                     </span>
                   )}
                   <SecurityAgentCoverageSetupLink row={row} />

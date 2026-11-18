@@ -94,6 +94,7 @@ export const PIN_PARTNER_ROW = {
   // Live partner presentation differs from the invoice's frozen snapshot on purpose (D14).
   documentTheme: 'classic',
   documentPageSize: 'letter',
+  billingAddressCountry: null,
   settings: {},
   invoiceLineGrouping: 'entry',
   invoiceLineShowDate: false,

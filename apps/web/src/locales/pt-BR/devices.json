@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Nenhum resultado de conformidade foi relatado. Atribua uma Política de Configuração com regras de conformidade a este dispositivo ou aguarde a próxima avaliação.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Atribuir uma política de configuração"
+    "assignPolicy": "Atribuir uma política de configuração",
+    "notCollectedProbeLimit": "Não coletado (limite de sondagens)",
+    "notCollectedProbeLimitHint": "A lista de sondagens de conformidade desta organização está cheia, então pelo menos uma verificação aqui não é coletada. Ela não é avaliada, alertada nem corrigida até que a lista tenha espaço."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} foi movido para {{orgName}}",
@@ -1465,6 +1467,19 @@
         "unknown": "ocorreu um erro não reconhecido"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqueado por um filtro de rede",
+      "titleUntrustedCertificate": "Certificado do servidor não confiável",
+      "webFilter": "Um filtro de segurança na rede deste dispositivo está respondendo no lugar do servidor do Breeze ({{locationHost}}). Normalmente é um recurso de segurança do roteador do provedor de internet, um filtro web do firewall ou uma página de login da rede.",
+      "captivePortal": "A rede deste dispositivo está retendo as conexões em uma página de login (portal cativo).",
+      "plaintextUnknown": "Algo na rede deste dispositivo respondeu à conexão do Breeze com HTTP sem criptografia em vez de TLS.",
+      "untrustedCertificate": "A conexão com o servidor do Breeze apresentou um certificado em que este dispositivo não confia (emitido por {{certIssuer}}). Normalmente é uma inspeção TLS feita por um firewall ou proxy, um problema de certificado em um servidor auto-hospedado ou um repositório de certificados raiz desatualizado neste dispositivo. O Breeze não vai ignorá-lo.",
+      "viaEch": "Atualmente acessível via Encrypted Client Hello.",
+      "cleared": "Ficou bloqueado de {{from}} a {{to}}.",
+      "lastKnown": "Último relato: {{time}}. O dispositivo não se comunicou desde então, então isso pode não se aplicar mais.",
+      "howToFix": "Como corrigir",
+      "noDetail": "sem detalhes"
+    },
     "logShipping": {
       "label": "Envio de logs",
       "state": {
@@ -1661,6 +1676,12 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Uso dos discos",
+    "diskUsageScope": "Discos a exibir",
+    "allDisks": "Todos os discos",
+    "osDiskOnly": "Somente o disco do sistema",
+    "sortByDiskUsage": "Ordenar por uso dos discos (maior uso exibido)",
+    "osDiskUsageUnavailable": "O agente ainda não identificou o disco do sistema.",
     "selectedComposition": "{{agent}} com agente, {{network}} de rede",
     "agentOnlyBulkAction": "Aplica-se apenas a dispositivos com agente",
     "eligibleOfSelected": "{{count}} de {{total}}",
@@ -1682,6 +1703,7 @@
       "lastSeen": "Visto por último",
       "serial": "Série",
       "productSku": "Número do produto",
+      "hardwareModel": "Modelo",
       "assetTag": "Etiqueta do ativo",
       "location": "Localização",
       "source": "Origem"
@@ -1700,6 +1722,7 @@
       "lastSeen": "Ordenar pela última vez em que foi visto",
       "serial": "Ordenar por número de série",
       "productSku": "Ordenar por número do produto",
+      "hardwareModel": "Ordenar por modelo",
       "assetTag": "Ordenar por etiqueta do ativo",
       "location": "Ordenar por localização",
       "source": "Ordenar por origem"
@@ -1857,6 +1880,9 @@
       "unmanagedInstall": "O Breeze Assist não foi instalado pelo Breeze e a implantação está desativada, então o agente o deixa como está.",
       "unknown": "O Breeze Assist está ativado, mas não instalado."
     },
+    "controlPlaneBlockBadge": "Filtro de rede",
+    "controlPlaneBlockBadgeCertificate": "Certificado não confiável",
+    "controlPlaneBlockLastKnownTooltip": "Último relato: {{time}}; o dispositivo não se comunicou desde então.",
     "agentVersionRelation": {
       "equalTooltip": "Corresponde à versão efetiva {{version}}",
       "aheadTooltip": "À frente do pin {{version}}",
@@ -2531,9 +2557,9 @@
       "couldNotQueue": "Não foi possível colocar {{action}} na fila",
       "updateVersionQueued": "Atualização para {{version}} colocada na fila para \"{{name}}\""
     },
-    "uninstallTitle": "Desinstalar software",
+    "uninstallTitle": "Desinstalar este pacote",
     "unknownSoftware": "Software desconhecido",
-    "updateTitle": "Atualizar software",
+    "updateTitle": "Enfileirar uma atualização para este pacote",
     "updatesAvailable": "{{count}} atualizações disponíveis",
     "updatesAvailable_one": "{{count}} atualização disponível",
     "updatesAvailable_other": "{{count}} atualizações disponíveis"
@@ -2711,8 +2737,8 @@
       "advancedFilterFailed": "Falha ao carregar o filtro avançado — nenhum dispositivo exibido. Edite ou limpe o filtro para tentar novamente.",
       "agentOnlyAction": "Esta ação se aplica somente a dispositivos com agente. Os dispositivos de rede não têm agente e foram ignorados.",
       "agentOnlyActionManual": "Esta ação se aplica somente a dispositivos com agente. Ativos manuais não têm agente.",
-      "alreadyPendingTail": "Já estava pendente",
-      "bulkActionFailed": "Falha na ação em massa",
+      "alreadyPendingTail": ", {{count}} já pendentes",
+      "bulkActionFailed": "Falha na ação em massa {{action}}",
       "bulkMaintenanceSuccess": "{{count}} dispositivos {{verb}} modo de manutenção",
       "bulkMaintenanceSuccess_one": "{{count}} dispositivo {{verb}} modo de manutenção",
       "bulkMaintenanceSuccess_other": "{{count}} dispositivos {{verb}} modo de manutenção",
@@ -2733,14 +2759,14 @@
       "decommissionFailed": "Falha ao remover",
       "decommissioned": "Removido",
       "decommissioning": "Removendo",
-      "deleteFailed": "Falha na exclusão",
+      "deleteFailed": "Falha ao excluir {{hostname}}",
       "deviceError": "Erro no dispositivo",
-      "deviceOnline": "Dispositivo online",
-      "inventoryRefreshRequested": "Atualização do inventário solicitada",
+      "deviceOnline": "{{hostname}} agora está online.",
+      "inventoryRefreshRequested": "Atualização do inventário solicitada para {{hostname}}. Dados atualizados em 1–2 minutos.",
       "listTruncated": "Lista truncada",
       "maintenanceOff": "Manutenção desativada",
       "maintenanceOn": "Manutenção ativada",
-      "multibootLinked": "Inicialização múltipla vinculada",
+      "multibootLinked": "{{count}} dispositivos vinculados como perfis de multi-boot.",
       "networkSkipped_one": "1 dispositivo de rede ignorado — esta ação se aplica apenas a dispositivos com agente.",
       "networkSkipped_other": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
       "networkSkipped": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
@@ -2749,15 +2775,15 @@
       "permanentlyDeleted": "{{hostname}} excluído permanentemente",
       "refreshFailed": "Não foi possível atualizar os dispositivos. A lista exibida pode estar desatualizada.",
       "restored": "Restaurado",
-      "scriptQueueFailed": "Falha ao colocar o script na fila",
-      "scriptQueuedMany": "Scripts colocados na fila",
-      "scriptQueuedOne": "Script colocado na fila",
-      "selectDeviceForScript": "Selecione um dispositivo para o script",
-      "selectTwoForMultiboot": "Selecione dois dispositivos para inicialização múltipla",
-      "unknownAction": "Ação desconhecida",
-      "unknownBulkAction": "Ação em massa desconhecida",
-      "wakeSentWatching": "Comando de despertar enviado; aguardando",
-      "wakeTimeout": "Tempo limite do despertar excedido",
+      "scriptQueueFailed": "Falha ao enfileirar o script",
+      "scriptQueuedMany": "Script \"{{script}}\" enfileirado para {{count}} dispositivos",
+      "scriptQueuedOne": "Script \"{{script}}\" enfileirado para {{hostname}}",
+      "selectDeviceForScript": "Selecione pelo menos um dispositivo para executar um script",
+      "selectTwoForMultiboot": "Selecione pelo menos dois dispositivos para vincular como perfis de multi-boot.",
+      "unknownAction": "Ação desconhecida: {{action}}",
+      "unknownBulkAction": "Ação em massa desconhecida: {{action}}",
+      "wakeSentWatching": "Wake-on-LAN enviado para {{hostname}} via {{relay}} ({{broadcast}}). Aguardando o dispositivo ficar online…",
+      "wakeTimeout": "{{hostname}} não ficou online em 4 minutos. Verifique o ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} na fila para dispositivos offline",
       "runsWhenOnline": "Executa quando o dispositivo estiver online — expira em {{date}}",
       "runsWhenOnlineNoExpiry": "Executa quando o dispositivo estiver online",
@@ -2810,7 +2836,12 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (não encontrado; pode ter sido excluído)",
       "bulkMoveSiteNotMovedError": "{{devices}} (ocorreu um erro inesperado; tente novamente)",
       "deviceMovedToSite": "{{hostname}} movido para um novo site",
-      "bulkWakeResult": "Enviado para {{sent}}, ignorados {{skipped}}"
+      "bulkWakeResult": "Enviado para {{sent}}, ignorados {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} ignorados pela política de Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "Nenhum wake enviado: {{count}} bloqueados pela política de Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} não puderam ser verificados, tente novamente",
+      "bulkWakeAllLookupFailed": "Nenhum wake enviado: {{count}} não puderam ser verificados, tente novamente",
+      "scriptQueuedOneOffline": "Script \"{{script}}\" na fila para {{hostname}} — será executado quando o dispositivo se reconectar"
     },
     "tryAgain": "Tentar novamente",
     "unknownDevice": "Desconhecido",
@@ -2859,7 +2890,9 @@
       "relayDisconnected": "relay desconectado durante o envio — tente novamente",
       "missingTarget": "não encontrados ou acesso negado",
       "removed": "removidos",
-      "invalidRelay": "com seleção de relay inválida"
+      "invalidRelay": "com seleção de relay inválida",
+      "policyNotReady": "bloqueados pela política de Wake-on-LAN (não prontos)",
+      "policyLookupFailed": "cuja política de Wake-on-LAN não pôde ser verificada — tente novamente"
     }
   },
   "filterAddDropdown": {
@@ -2941,6 +2974,13 @@
       "logShippingFailing": "Envio de logs com falha",
       "networkIsolation": {
         "active": "Isolado"
+      },
+      "helperVersion": "Versão do assistente",
+      "deviceFunction": "Função do dispositivo",
+      "hostsWorkloads": "Hospeda cargas de trabalho",
+      "workloadRuntimes": "Runtimes de cargas de trabalho",
+      "warranty": {
+        "status": "Status da garantia"
       }
     }
   },
@@ -3729,9 +3769,9 @@
       "noneRecorded": "Ainda não foram registradas amostras de processos para este dispositivo. O agente as coleta periodicamente — volte depois que ele tiver enviado dados."
     },
     "errors": {
-      "liveProcesses": "Falha ao obter os processos em tempo real",
+      "liveProcesses": "Falha ao obter os processos ao vivo",
       "loadProcesses": "Falha ao carregar os processos",
-      "processSample": "Falha ao carregar a amostra de processos"
+      "processSample": "Falha ao obter a amostra do processo"
     },
     "live": "Em tempo real",
     "subtitle": {
@@ -3772,6 +3812,7 @@
     "deleteTitle": "Excluir \"{{name}}\"",
     "empty": "Ainda não há visualizações salvas. Crie um filtro e salve-o como uma visualização.",
     "manageAll": "Gerenciar todas as visualizações",
+    "ownerOrgHint": "As visualizações pertencem a uma única organização. Escolha qual delas é a proprietária desta visualização.",
     "saveCurrent": "Salvar atual como visualização…",
     "saveCurrentTitle": "Salvar o filtro atual como uma visualização",
     "setDefaultTitle": "Definir como visualização padrão",
@@ -3830,7 +3871,11 @@
     "oldDeviceUnavailable": "O registro do dispositivo antigo não está mais disponível.",
     "title": "Possível registro duplicado",
     "unknownDevice": "o dispositivo anterior",
-    "viewOldDevice": "Ver dispositivo antigo"
+    "viewOldDevice": "Ver dispositivo antigo",
+    "reattach": "Revincular",
+    "reattachPending": "Há uma revinculação pendente ao registro antigo: a nova instalação a concluirá quando o agente dela se comunicar. A solicitação expira em {{expiresAt}}.",
+    "reviewPending": "Uma possível reinstalação aguarda a revisão do parceiro.",
+    "reattachPendingOther": "Há uma revinculação pendente deste dispositivo. A solicitação expira em {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Não foi possível carregar os achados de segurança de acesso remoto para esta visualização.",
@@ -4263,7 +4308,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite de dispositivos atingido",
       "STEP_UP_REQUIRED": "Confirmação necessária",
       "ASSIGNMENT_FAILED": "Falhou"
-    }
+    },
+    "modeLegend": "O que fazer com este dispositivo",
+    "modeAssign": "Atribuir como novo dispositivo",
+    "modeReattach": "Revincular a {{hostname}} (reinstalação de um registro existente)",
+    "reattachPending": "Há uma revinculação pendente deste dispositivo: a nova instalação a concluirá quando o agente dela se comunicar. A solicitação expira em {{expiresAt}}.",
+    "cancelReattachConfirm": "Atribuir este dispositivo como novo cancela a revinculação pendente. Estou ciente."
   },
   "timeFleet": {
     "title": "Sincronização de horário",
@@ -4852,6 +4902,7 @@
     "startDescription": "Bloquear o tráfego de rede, exceto as comunicações de gerenciamento do Breeze.",
     "releaseDescription": "Solicitar a remoção das regras de isolamento do Breeze. Um dispositivo offline recebe a liberação ao reconectar.",
     "serverWarning": "Este é um sistema operacional de servidor. O isolamento pode interromper serviços de outros dispositivos.",
+    "deadManUnsupported": "A política de contenção deste dispositivo define uma liberação dead-man, mas a versão do agente dele não a suporta. O dispositivo será isolado sem ela.",
     "reason": "Motivo",
     "ttlHours": "Duração (horas)",
     "incidentId": "ID de incidente existente (opcional)",
@@ -4875,6 +4926,20 @@
     "codeNext": "Código da próxima hora",
     "codeValidUntil": "Código atual válido até {{date}}",
     "codeError": "Não foi possível carregar os códigos de emergência. Tente novamente.",
+    "tabCode": "Código de emergência",
+    "tabToken": "Token de liberação",
+    "issueToken": "Emitir token de liberação",
+    "hideToken": "Ocultar token",
+    "tokenLabel": "Token de liberação",
+    "copyToken": "Copiar token",
+    "tokenCopied": "Copiado",
+    "tokenCopyError": "Não foi possível copiar o token. Selecione-o e copie manualmente.",
+    "tokenQrAlt": "QR code com o token de liberação",
+    "tokenValidUntil": "Token válido até {{date}}",
+    "tokenCommandHint": "No dispositivo isolado, execute este comando como administrador ou root, substituindo <token> pelo token:",
+    "tokenError": "Não foi possível emitir um token de liberação. Tente novamente.",
+    "tokenUnavailable": "Não há token de liberação disponível para este isolamento.",
+    "codesDisabledNote": "Os códigos de emergência estão desativados para este dispositivo. Use um token de liberação assinado.",
     "incidentHeading": "Isolamento de rede",
     "retry": "Tentar novamente o status de isolamento",
     "filterLabel": "Isolado",
@@ -4908,6 +4973,11 @@
       "isolation_not_found": "Este episódio de isolamento não foi encontrado.",
       "relay_unavailable": "Nenhum relay de área de trabalho remota está disponível. Desative a opção de relay ou configure TURN.",
       "invalid_allowlist": "A lista de permissões de isolamento do servidor é inválida. Contate seu administrador.",
+      "invalid_allowlist_server_url_missing": "Este dispositivo não tem URL do servidor do agente e AGENT_SERVER_URL não está definida no servidor. Defina AGENT_SERVER_URL e tente novamente.",
+      "invalid_allowlist_server_url_invalid": "A URL do servidor do agente deste dispositivo não é uma URL http(s) válida. Verifique a URL do servidor do dispositivo ou AGENT_SERVER_URL.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL não é uma URL http(s) válida. Corrija-a e tente novamente.",
+      "invalid_allowlist_relay_config_invalid": "As configurações do relay TURN (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) são inválidas. Corrija-as ou desative a opção de relay.",
+      "invalid_allowlist_policy_invalid": "A política de contenção salva tem uma entrada de lista de permissão inválida ou grande demais. Revise os destinos permitidos da política.",
       "isolation_conflict": "O episódio de isolamento mudou. Atualize o status e tente novamente.",
       "isolation_secret_unavailable": "Os códigos de recuperação estão temporariamente indisponíveis. Contate seu administrador.",
       "approval_mismatch": "A aprovação não corresponde a esta solicitação de isolamento.",
@@ -5033,5 +5103,86 @@
       "previousPage": "Anterior",
       "nextPage": "Próxima"
     }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstalado em {{date}}",
+    "title": "Este registro assumiu uma máquina reinstalada em {{at}}. A nova instalação reconstruiu o inventário."
+  },
+  "reattachDialog": {
+    "title": "Revincular a {{target}}",
+    "description": "Use o registro existente {{target}} para a nova instalação {{source}}, mantendo histórico, políticas e configuração.",
+    "newInstall": "Nova instalação",
+    "existingRecord": "Registro existente",
+    "holdingArea": "Área de espera",
+    "fields": {
+      "hostname": "Nome do host",
+      "os": "Sistema operacional",
+      "model": "Fabricante e modelo",
+      "serial": "Número de série",
+      "systemUuid": "UUID do sistema",
+      "agentVersion": "Versão do agente",
+      "place": "Organização / local",
+      "enrolledAt": "Registrado em",
+      "lastSeenAt": "Visto por último"
+    },
+    "matchedOn": "Correspondência por: {{evidence}}",
+    "evidence": {
+      "systemUuid": "UUID do sistema",
+      "serial": "número de série e fabricante",
+      "hostname": "somente o nome do host",
+      "other": "identificadores informados"
+    },
+    "evidenceNoticeHint": "Identificadores de hardware informados pelo dispositivo. Não verificados.",
+    "evidenceNoticeTpm": "Mesma chave de endosso do TPM cuja posse a instalação antiga comprovou. Isso comprova a continuidade da chave, não o mesmo TPM físico; TPMs virtuais clonados compartilham chaves.",
+    "consequences": "A nova instalação reconstrói o inventário de {{target}}. Trabalhos na fila, concessões e sessões da instalação antiga são cancelados, e o registro {{source}} é desativado.",
+    "possession": "Confirmei, fora do Breeze, que a nova instalação roda na máquina que {{target}} descreve.",
+    "acknowledgeOsChange": "A nova instalação informa {{sourceOs}} e o registro existente {{targetOs}}. Confirmo que o sistema operacional mudou.",
+    "restoreDecommissioned": "{{target}} foi removido. Restaurar o registro como parte desta revinculação.",
+    "confirmNameLabel": "Digite {{hostname}} para confirmar",
+    "stepUpHeading": "Confirme que é você",
+    "stepUpIntro": "A revinculação desativa um registro de dispositivo. Verifique com seu segundo fator para continuar.",
+    "stepUpPasskeyNote": "Seu navegador pedirá sua chave de acesso quando você continuar.",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpRetry": "Essa verificação expirou ou não corresponde mais. Digite um novo código.",
+    "noStepUpFactor": "A revinculação exige uma chave de acesso ou um app autenticador. Configure um no seu perfil e tente novamente.",
+    "genericError": "Não foi possível solicitar a revinculação. Tente novamente.",
+    "cancel": "Cancelar",
+    "close": "Fechar",
+    "submit": "Revincular a {{hostname}}",
+    "submitting": "Solicitando…",
+    "submitStepUp": "Verificar e revincular",
+    "requestedToast": "Revinculação a {{hostname}} solicitada",
+    "pendingTitle": "Revinculação solicitada",
+    "pendingMessage": "{{source}} assumirá {{target}}: a nova instalação a concluirá quando o agente dela se comunicar; nada mais é necessário aqui. A solicitação expira em {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "Um dos dispositivos não existe mais ou está fora do seu acesso.",
+      "not_partner_user": "Somente usuários do parceiro podem revincular dispositivos.",
+      "user_inactive": "Sua conta não está ativa.",
+      "permission_denied": "Você precisa de permissão para editar e remover dispositivos nas organizações dos dois dispositivos.",
+      "org_access_denied": "Você não tem acesso às organizações dos dois dispositivos.",
+      "full_admin_required": "Revincular um dispositivo da área de espera com base em identificadores informados exige um administrador de parceiro completo.",
+      "partner_mismatch": "Os dispositivos não pertencem mais ao seu parceiro.",
+      "MFA_REQUIRED": "A revinculação exige uma sessão iniciada com autenticação de dois fatores. Entre novamente com seu segundo fator.",
+      "target_alive": "{{hostname}} ainda está em uso: a instalação se autenticou recentemente. A revinculação exige que a instalação antiga esteja inativa.",
+      "liveness_unknown": "Não foi possível verificar se {{hostname}} ainda está em uso. Tente novamente em instantes.",
+      "os_changed": "Os sistemas operacionais são diferentes. Confirme a mudança de sistema operacional e tente novamente.",
+      "target_changed": "{{hostname}} mudou desde que foi exibido (foi registrado novamente ou revinculado). Abra a revinculação de novo para ver o estado atual.",
+      "rebind_unsupported": "O agente da nova instalação é antigo demais para a revinculação. Atualize o agente primeiro.",
+      "source_decommissioned": "O registro da nova instalação foi removido.",
+      "source_ineligible": "Dispositivos do Suporte rápido não podem ser revinculados.",
+      "target_ephemeral": "{{hostname}} é um dispositivo temporário e não pode receber uma revinculação.",
+      "target_decommissioned": "{{hostname}} foi removido. Escolha restaurá-lo para revincular a ele.",
+      "target_ineligible": "{{hostname}} não é um registro gerenciado.",
+      "target_retired": "{{hostname}} já foi desativado por uma revinculação anterior.",
+      "device_quarantined": "Um dos dispositivos está em quarentena.",
+      "device_suspended": "Um dos dispositivos está com as credenciais do agente suspensas.",
+      "org_draining": "A organização de um dos dispositivos não está ativa.",
+      "device_in_open_intent": "Um dos dispositivos já está em uma revinculação pendente.",
+      "confirm_target_name_required": "Digite o nome do dispositivo existente para confirmar.",
+      "confirm_target_name_mismatch": "O nome digitado não corresponde a {{hostname}}.",
+      "same_device": "Um dispositivo não pode ser revinculado a si mesmo.",
+      "invalid_target_version": "A versão do registro existente está ausente. Abra a revinculação de novo."
+    },
+    "stepUpHeld": "Sua verificação ainda é válida para esta revinculação."
   }
 }

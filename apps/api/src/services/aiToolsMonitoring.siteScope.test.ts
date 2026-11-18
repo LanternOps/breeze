@@ -4,6 +4,8 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 
@@ -198,7 +200,7 @@ describe('get_service_monitoring_status known_services — DB error surfacing', 
   it('a missing-table error is tolerated as an empty source (other sources still returned)', async () => {
     mockDb.select.mockImplementation((cols?: unknown) => {
       if (isChangeLogSelect(cols)) {
-        return rejectChain(new Error('relation "device_change_log" does not exist'));
+        return rejectChain(Object.assign(new Error('relation "device_change_log" does not exist'), { code: '42P01' }));
       }
       return chain([{ name: 'nginx', watchType: 'service' }]);
     });
@@ -213,7 +215,7 @@ describe('get_service_monitoring_status known_services — DB error surfacing', 
 
   it('both sources missing-table tolerated → empty list without error', async () => {
     mockDb.select.mockImplementation(() =>
-      rejectChain(new Error('relation does not exist')));
+      rejectChain(Object.assign(new Error('relation does not exist'), { code: '42P01' })));
 
     const r = await handlerFor('get_service_monitoring_status')(
       { action: 'known_services' }, makeAuth(undefined),

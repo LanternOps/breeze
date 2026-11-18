@@ -49,9 +49,20 @@ const (
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
-	role       ipc.HelperRole // "system" or "user"
-	binaryKind string
-	context    string
+	// serverVerifier decides, before any byte of the auth handshake is sent,
+	// whether the process that accepted the connection is the broker. Set to
+	// the platform verifier by NewWithOptions (Unix only; Windows verifies
+	// inside its own dialIPC). Tests substitute it to talk to a non-root
+	// listener.
+	serverVerifier func(conn net.Conn, socketPath string) error
+	role           ipc.HelperRole // "system" or "user"
+	binaryKind     string
+	context        string
+	// logindSessionID and spawnTicket are set only on the Linux desktop
+	// helper (NewLinuxDesktopClient). The ticket is single-use: authenticate
+	// clears it after its one attempt, and it is never logged.
+	logindSessionID string
+	spawnTicket     string
 	// connMu guards conn against the Stop-from-another-goroutine race the
 	// reconnect supervisor creates; see connect and currentConn.
 	connMu     sync.Mutex
@@ -85,6 +96,7 @@ type Client struct {
 	pendingMu    sync.Mutex
 	pending      map[string]chan *ipc.Envelope
 	sasReqSeq    atomic.Uint64
+	clipReadSeq  atomic.Uint64
 
 	// authenticatedAt is set when the broker accepts the helper. Zero when
 	// the client has never completed auth on this Run(). Reset on each Run().
@@ -122,14 +134,15 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 		binaryKind = ipc.HelperBinaryUserHelper
 	}
 	c := &Client{
-		socketPath: socketPath,
-		role:       role,
-		binaryKind: binaryKind,
-		context:    context,
-		stopChan:   make(chan struct{}),
-		desktopMgr: newHelperDesktopManager(context),
-		executor:   executor.New(nil),
-		pending:    make(map[string]chan *ipc.Envelope),
+		socketPath:     socketPath,
+		serverVerifier: platformServerVerifier,
+		role:           role,
+		binaryKind:     binaryKind,
+		context:        context,
+		stopChan:       make(chan struct{}),
+		desktopMgr:     newHelperDesktopManager(context),
+		executor:       executor.New(nil),
+		pending:        make(map[string]chan *ipc.Envelope),
 	}
 	show := showNativePromptOS
 	if role == ipc.HelperRoleSystem {
@@ -241,6 +254,8 @@ func (c *Client) Run() error {
 		}
 	}
 
+	c.wireDesktopClipboard(runtime.GOOS)
+
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
 	// It never captures the screen (#8390), so it needs no coordination with
 	// a live session's capturer.
@@ -305,6 +320,9 @@ func (c *Client) currentConn() *ipc.Conn {
 // dialIPC is implemented in client_windows.go and client_unix.go.
 
 func (c *Client) authenticate() error {
+	// The spawn ticket is good for one attempt whatever its outcome.
+	defer func() { c.spawnTicket = "" }()
+
 	var (
 		uid      uint64
 		sid      string
@@ -377,6 +395,12 @@ func (c *Client) authenticate() error {
 		RendererVersion:       helperRendererVersion(),
 		// The session's UI language (#10190 W03); the agent negotiates it.
 		UILocale: helperUILocale(),
+	}
+	// Only the Linux desktop helper carries these; the broker refuses them
+	// on any other role or binary kind.
+	if c.spawnTicket != "" {
+		authReq.SpawnTicket = c.spawnTicket
+		authReq.LogindSessionID = c.logindSessionID
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -587,6 +611,9 @@ func (c *Client) commandLoop() error {
 			if !c.resolvePendingResponse(env) {
 				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
 			}
+
+		case ipc.TypeDesktopClipboardReadResult:
+			c.handleDesktopClipboardReadResult(env)
 
 		case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
 			if c.prompts != nil {
@@ -1706,8 +1733,19 @@ func detectDisplayEnv() string {
 	return ""
 }
 
+// linuxSessionBackendRegistered reports whether a capture backend for the
+// Linux desktop helper's session is compiled in and registered: the desktop
+// session backend registry (#12117), where only the Linux desktop helper
+// process registers one. A variable so tests can stand in for it.
+var linuxSessionBackendRegistered = desktop.SessionBackendRegistered
+
 func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
-	display := detectDisplayEnv()
+	return detectCapabilitiesForOS(runtime.GOOS, binaryKind, desktopContext, detectDisplayEnv())
+}
+
+// detectCapabilitiesForOS is detectCapabilities with the platform and the
+// display server passed in, so every platform's decision is testable.
+func detectCapabilitiesForOS(goos, binaryKind, desktopContext, display string) ipc.Capabilities {
 	hasDisplay := display != ""
 
 	caps := ipc.Capabilities{
@@ -1722,7 +1760,12 @@ func detectCapabilities(binaryKind, desktopContext string) ipc.Capabilities {
 		caps.CanNotify = false
 		caps.CanTray = false
 		caps.CanClipboard = false
-		if runtime.GOOS == "darwin" {
+		if goos == "linux" && !linuxSessionBackendRegistered() {
+			// The Linux desktop helper captures only through a registered
+			// session backend; without one it must not offer capture.
+			caps.CanCapture = false
+		}
+		if goos == "darwin" {
 			// A permission check: it never captures (#8390) and never calls
 			// ScreenCaptureKit (#8058). A session may try unless access is
 			// known to be denied; its own capture is the precise check, and

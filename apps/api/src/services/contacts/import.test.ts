@@ -194,6 +194,21 @@ describe('previewContactImport', () => {
     expect(row).toMatchObject({ annotation: 'link-match', contactId: EXISTING });
   });
 
+  it('refuses a row naming the ticket import\'s reserved link system, even when that link exists (#8313 W4b)', async () => {
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      links: [{ contactId: EXISTING, orgId: ORG, system: 'ticket-import:src-1', externalId: '812' }],
+    });
+    const rows = await previewContactImport([
+      { organizationId: ORG, name: 'Jane Renamed', externalId: '812', externalSystem: 'ticket-import:src-1' },
+      { organizationId: ORG, name: 'New Person', externalId: '9', externalSystem: ' Ticket-Import:other ' },
+    ], CTX);
+    for (const row of rows) {
+      expect(row).toMatchObject({ annotation: 'conflict', contactId: null });
+      expect(row.conflictReason).toMatch(/reserved for ticket imports/);
+    }
+  });
+
   it('flags a single email hit as email-match, case-insensitively', async () => {
     stubState({ contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }] });
     const [row] = await previewContactImport(

@@ -178,6 +178,33 @@ describe('BackupJobDataSummary detail', () => {
     expect(summary.textContent).not.toContain('Protected');
   });
 
+  it('a failed run does not show the incremental explainer, even with a recorded run kind', () => {
+    render(
+      <BackupJobDataSummary
+        accounting={{ ...stopped, runKind: 'incremental' }}
+        variant="detail"
+      />,
+    );
+
+    const summary = screen.getByTestId('backup-job-data-summary');
+    expect(summary.textContent).not.toContain('Only new or changed files');
+    expect(summary.textContent).not.toContain('How incremental backups work');
+  });
+
+  it('an in-flight run keeps the incremental explainer', () => {
+    render(
+      <BackupJobDataSummary accounting={{ ...stopped, runKind: 'incremental' }} variant="detail" inFlight />,
+    );
+
+    expect(screen.getByText('How incremental backups work')).toBeTruthy();
+  });
+
+  it('a finished run still shows the incremental explainer', () => {
+    render(<BackupJobDataSummary accounting={accounting()} variant="detail" />);
+
+    expect(screen.getByText('How incremental backups work')).toBeTruthy();
+  });
+
   it('a stopped run with no recorded reason makes no claim about its backup type', () => {
     // It may never have reached dispatch, so "ran before Breeze tracked it" is
     // not something the row can support.

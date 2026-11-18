@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { WispTimelinePost } from '@breeze/shared';
 import WispPost from './WispPost';
 
@@ -110,11 +110,56 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it('renders a nudge_resolved post like a nudge, with the Resolved eyebrow, a check icon and the concern link (#11427)', () => {
+    render(<WispPost post={post({ kind: 'nudge_resolved', title: 'Resolved: Disk almost full on FS-01', body: 'Disk almost full on FS-01 — the disk was cleaned; no action needed.' })} />);
+    const root = screen.getByTestId('wisp-post');
+    expect(root.getAttribute('data-kind')).toBe('nudge_resolved');
+    expect(screen.getByText('Resolved')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-resolved-icon')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('Resolved: Disk almost full on FS-01');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Disk almost full on FS-01 — the disk was cleaned; no action needed.');
+    expect(screen.getByTestId('wisp-post-open').getAttribute('href')).toBe('/ai/wisp/thread/th-1#concern=c-1');
+  });
+
+  it('a plain nudge carries no resolved check icon', () => {
+    render(<WispPost post={post({})} />);
+    expect(screen.queryByTestId('wisp-post-resolved-icon')).toBeNull();
+  });
+
   it('renders a specialist_result post with the Specialist report heading', () => {
     render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
     expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');
     expect(screen.getByText('Specialist report')).toBeTruthy();
     expect(screen.getByTestId('wisp-post-title').textContent).toBe('FS-01 troubleshooting');
+  });
+
+  it('#11673: a markdown run report renders bold, lists and code, with no literal ** or backticks', () => {
+    const body = '**Verdict:** spooler crashes.\n\n- **Memory:** 92% at crash\n- Driver `hpcpp.dll` faulted\n\n**Next step:** collect a dump.';
+    render(<WispPost post={post({ kind: 'specialist_result', bodyFormat: 'markdown', body, link: '/ai-agents/runs/r-1', concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.textContent).not.toContain('**');
+    expect(el.textContent).not.toContain('`');
+    expect(el.textContent).toContain('Next step: collect a dump.');
+    expect(Array.from(el.querySelectorAll('strong')).map((n) => n.textContent)).toEqual(['Verdict:', 'Memory:', 'Next step:']);
+    expect(el.querySelectorAll('li')).toHaveLength(2);
+    expect(el.querySelector('code')?.textContent).toBe('hpcpp.dll');
+  });
+
+  it('#11673: a markdown body renders no raw HTML and no unsafe link', () => {
+    const body = 'See <img src=x onerror="alert(1)"> and [this](javascript:alert(1)) and [docs](https://example.com/a).';
+    render(<WispPost post={post({ kind: 'specialist_result', bodyFormat: 'markdown', body, link: null, concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.querySelector('img')).toBeNull();
+    const links = Array.from(el.querySelectorAll('a'));
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a']);
+    expect(el.textContent).toContain('this');
+  });
+
+  it('#11673: a body without bodyFormat stays literal text (a step outcome, every other post)', () => {
+    render(<WispPost post={post({ kind: 'specialist_result', body: 'Approved step ran: **restart** `spooler`', link: null, concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.textContent).toBe('Approved step ran: **restart** `spooler`');
+    expect(el.querySelector('strong')).toBeNull();
   });
 
   it.each(['https://evil.example/x', '//evil', 'javascript:alert(1)', null])(
@@ -160,5 +205,43 @@ describe('WispPost', () => {
   it.each([null, ''])('renders no body element for body %j', (body) => {
     render(<WispPost post={post({ body })} />);
     expect(screen.queryByTestId('wisp-post-body')).toBeNull();
+  });
+
+  describe('check_in Run now', () => {
+    const checkIn = post({ kind: 'check_in', title: 'Check-in due: x', body: null, link: '/ai/wisp/thread/th-1#checkin=ci-1', concernId: null });
+
+    it('tags the post with the check-in id from its link and shows the clock icon', () => {
+      render(<WispPost post={checkIn} />);
+      const root = screen.getByTestId('wisp-post');
+      expect(root.getAttribute('data-check-in-id')).toBe('ci-1');
+      expect(screen.getByTestId('wisp-post-check-in-icon')).toBeTruthy();
+    });
+
+    it('a check_in post shows Run now only when onRunNow is given, and clicking calls it', () => {
+      const { unmount } = render(<WispPost post={checkIn} />);
+      expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+      unmount();
+      const onRunNow = vi.fn();
+      render(<WispPost post={checkIn} onRunNow={onRunNow} />);
+      const button = screen.getByTestId('wisp-post-run-now');
+      expect(button.textContent).toBe('Run now');
+      fireEvent.click(button);
+      expect(onRunNow).toHaveBeenCalledTimes(1);
+    });
+
+    it('Run now is disabled while runNowDisabled', () => {
+      const onRunNow = vi.fn();
+      render(<WispPost post={checkIn} onRunNow={onRunNow} runNowDisabled />);
+      const button = screen.getByTestId('wisp-post-run-now') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+      expect(onRunNow).not.toHaveBeenCalled();
+    });
+
+    it('other post kinds never show Run now or a check-in id', () => {
+      render(<WispPost post={post({ kind: 'nudge' })} onRunNow={vi.fn()} />);
+      expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+      expect(screen.getByTestId('wisp-post').hasAttribute('data-check-in-id')).toBe(false);
+    });
   });
 });

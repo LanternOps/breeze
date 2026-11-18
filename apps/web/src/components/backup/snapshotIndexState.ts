@@ -129,6 +129,13 @@ export function useSnapshotIndexState({ snapshotId, onReady }: { snapshotId: str
       await runAction({
         request: () => fetchWithAuth(`/backup/snapshots/${id}/file-index/rebuild`, { method: 'POST' }),
         errorFallback: "Couldn't start rebuilding the file list",
+        // The cooldown 429 says why and for how long; the generic localized
+        // RATE_LIMITED headline would replace that (#11280).
+        friendly: (code, _message, body) => {
+          if (code !== 'RATE_LIMITED' || !body || typeof body !== 'object') return undefined;
+          const reason = (body as Record<string, unknown>).error;
+          return typeof reason === 'string' && reason.trim() ? reason : undefined;
+        },
       });
       if (latest.current.snapshotId === id) setCurrent({ snapshotId: id, view: { state: 'building' } });
     } catch (err) {

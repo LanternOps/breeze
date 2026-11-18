@@ -290,6 +290,38 @@ describe('M365MailboxCard', () => {
       ));
     });
 
+    it('keeps an edit made before the mount effects flush (no late saved→draft clobber, #11350)', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      // Edit the instant the input is inserted into the DOM — a microtask after the
+      // commit, before React's passive effects flush. Under CPU load a user (or a
+      // test) can land in this window; a mount-time `setDraft(saved)` would then
+      // overwrite the edit.
+      const observer = new MutationObserver(() => {
+        const el = document.querySelector<HTMLInputElement>('[data-testid="m365-arc-sealers-input"]');
+        if (!el) return;
+        observer.disconnect();
+        fireEvent.change(el, { target: { value: 'edited.example' } });
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      render(<M365MailboxCard />);
+      await waitFor(() => expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example'));
+      // Let any pending passive effect run, then confirm the edit survived.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example');
+      observer.disconnect();
+    });
+
+    it('still adopts a genuinely new saved list from the server', async () => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['gateway.example'] })] }));
+      render(<M365MailboxCard />);
+      const input = await screen.findByTestId('m365-arc-sealers-input');
+      fireEvent.change(input, { target: { value: 'edited.example' } });
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ ok: true, trustedArcSealers: ['edited.example'] }));
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn({ trustedArcSealers: ['edited.example', 'mx.edited.example'] })] }));
+      fireEvent.click(screen.getByTestId('m365-arc-sealers-save'));
+      await waitFor(() => expect(screen.getByTestId('m365-arc-sealers-input')).toHaveValue('edited.example, mx.edited.example'));
+    });
+
     it.each(['*.gateway.example', 'a@gateway.example', 'localhost'])('blocks saving the invalid entry %s without calling the API', async (value) => {
       fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [conn()] }));
       render(<M365MailboxCard />);

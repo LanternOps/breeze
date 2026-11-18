@@ -65,6 +65,24 @@ describe('identity authorization URL (phase 1, v2 OIDC + PKCE)', () => {
     expect(url.searchParams.get('redirect_uri')).toBe(ACTIONS_CB);
   });
 
+  it('buildMicrosoftIdentityAuthorizationUrl without scope still sends "openid profile"', () => {
+    // Existing M365 callers pass no scope (portal registration W4 added the option).
+    const url = new URL(identity());
+    expect(url.searchParams.getAll('scope')).toEqual(['openid profile']);
+    expect(url.searchParams.getAll('scope')).toEqual(
+      new URL(identity({ authority: TENANT })).searchParams.getAll('scope'),
+    );
+  });
+
+  it('sends a caller-supplied scope verbatim, once', () => {
+    const url = new URL(identity({ scope: 'openid profile email' }));
+    expect(url.searchParams.getAll('scope')).toEqual(['openid profile email']);
+  });
+
+  it.each(['', 'openid\nprofile', 'x'.repeat(513)])('rejects scope %j', (scope) => {
+    expect(() => identity({ scope })).toThrow('m365_authorization_invalid');
+  });
+
   it.each(['common', 'consumers', 'contoso.example', 'ORGANIZATIONS', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA', ''])(
     'rejects identity authority %s',
     (authority) => {

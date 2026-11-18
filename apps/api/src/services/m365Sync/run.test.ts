@@ -198,6 +198,36 @@ describe('runSyncDomain', () => {
     expect(mocks.completion.at(-1)!.nextSyncAt).toBeInstanceOf(Date);
   });
 
+  it('#9394: a Graph timeout on a NON-final attempt writes nothing, so BullMQ retries it shortly', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_request_timeout', message: 'm', executorMs: 110_000 });
+    await expect(run({ isFinalAttempt: false })).resolves.toBe('throttled');
+    expect(mocks.completion).toEqual([]);
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('#9394: a Graph timeout on the FINAL attempt records the timeout honestly, without Sentry', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_request_timeout', message: 'timed out', executorMs: 110_000 });
+    await expect(run({ isFinalAttempt: true })).resolves.toBe('error');
+    expect(mocks.completion.at(-1)).toMatchObject({ lastStatus: 'error', leaseUntil: null });
+    expect(String(mocks.completion.at(-1)!.lastError)).toMatch(/^graph_request_timeout: /);
+    expect(mocks.completion.at(-1)!.nextSyncAt).toBeInstanceOf(Date);
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('#9394: a FAILED run\'s latency is not evidence of tenant size — cadence never sees it', async () => {
+    // A 110 s run that timed out reads as a "slow, large tenant" to the cadence
+    // and doubled the interval on every failure: 24 h -> 48 h -> 96 h -> the
+    // 7-day ceiling, which is how a transient Graph limit pushed the next
+    // sign-in sync about eight days out.
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_request_timeout', message: 'm', executorMs: 110_000 });
+    await run({ isFinalAttempt: true });
+    expect(mocks.cadence).toHaveBeenCalledWith(
+      'users', { intervalSeconds: 21600 }, 'error',
+      expect.objectContaining({ latencyMs: 0, truncated: false }),
+      expect.any(Function),
+    );
+  });
+
   it('a connection auth failure unschedules and is NOT re-thrown (Huntress Sentry rule, spec §6)', async () => {
     mocks.callExecutor.mockResolvedValue({ ok: false, code: 'application_token_invalid', message: 'm', executorMs: 5 });
     await expect(run()).resolves.toBe('error');
@@ -398,21 +428,25 @@ describe('runSyncDomain', () => {
 
 describe('outcomeForFailure (spec §6)', () => {
   it.each([
-    ['graph_permission_missing', 'needs_consent', true, false, false],
-    ['sync_capacity', 'throttled', false, false, false],
-    ['graph_throttled', 'throttled', false, false, false],
-    ['read_rate_limited', 'throttled', false, false, false],
-    ['credential_unavailable', 'error', true, false, false],
-    ['application_token_invalid', 'error', true, false, false],
-    ['continuation_invalid', 'partial', false, false, true],
-    ['graph_transport_failed', 'error', false, true, false],
-    ['executor_unavailable', 'error', false, true, false],
-    ['graph_response_invalid', 'error', false, true, false],
+    ['graph_permission_missing', 'needs_consent', true, false, false, false],
+    ['sync_capacity', 'throttled', false, false, false, true],
+    ['graph_throttled', 'throttled', false, false, false, true],
+    ['read_rate_limited', 'throttled', false, false, false, true],
+    // #9394: a Graph timeout is transient: retried on the BullMQ ladder, then
+    // recorded as an error (the health card should show it) but not paged to
+    // Sentry once per scheduled run.
+    ['graph_request_timeout', 'error', false, false, false, true],
+    ['credential_unavailable', 'error', true, false, false, false],
+    ['application_token_invalid', 'error', true, false, false, false],
+    ['continuation_invalid', 'partial', false, false, true, false],
+    ['graph_transport_failed', 'error', false, true, false, false],
+    ['executor_unavailable', 'error', false, true, false, false],
+    ['graph_response_invalid', 'error', false, true, false, false],
     // #9393: a query Graph refused is a Breeze-side bug — alert on it.
-    ['graph_provider_rejected', 'error', false, true, false],
-    ['connection_not_ready', 'error', false, true, false],
-  ])('%s -> %s (unschedule=%s, sentry=%s, restartWalk=%s)', (code, outcome, unschedule, sentryWorthy, restartWalk) => {
-    expect(outcomeForFailure(code as never)).toEqual({ outcome, unschedule, sentryWorthy, restartWalk });
+    ['graph_provider_rejected', 'error', false, true, false, false],
+    ['connection_not_ready', 'error', false, true, false, false],
+  ])('%s -> %s (unschedule=%s, sentry=%s, restartWalk=%s, retryable=%s)', (code, outcome, unschedule, sentryWorthy, restartWalk, retryable) => {
+    expect(outcomeForFailure(code as never)).toEqual({ outcome, unschedule, sentryWorthy, restartWalk, retryable });
   });
 
   it('never reports a dead credential OR an expired cursor to Sentry', () => {
@@ -524,6 +558,31 @@ describe('W05: sign-in continuation loop (spec §5.7, §6)', () => {
       expect.objectContaining({ orgId: 'org-1', domains: ['signin_activity'], priority: 10 }),
     );
     expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ domain: 'signin_activity', generation: 6 }));
+  });
+
+  it('#9394: the continuation log says when a walk stopped early, so an interrupted page is not invisible', async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args) => { logged.push(args.join(' ')); });
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    const page = SIGNIN_PAGE('blob-2');
+    mocks.callExecutor.mockResolvedValue({ ...page, result: { ...page.result, sources: { signInActivity: 'throttled' } } });
+
+    await runSignin();
+
+    spy.mockRestore();
+    const line = logged.find((entry) => entry.startsWith('[M365Sync] m365.sync.continuation'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({ primarySource: 'throttled' });
+  });
+
+  it('#9394: a Graph timeout that outlasts the ladder KEEPS the stored cursor, so the walk resumes there', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_request_timeout', message: 'm', executorMs: 110_000 });
+    await expect(runSyncDomain(SIGNIN_JOB, {
+      callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5, isFinalAttempt: true,
+      deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+    })).resolves.toBe('error');
+    expect(mocks.completion.at(-1)).toMatchObject({ lastStatus: 'error', continuation: 'blob-1' });
+    expect(mocks.claim).not.toHaveBeenCalled();
   });
 
   it('stores ONLY the cursor and clears the lease — the state is unchanged until exhausted', async () => {

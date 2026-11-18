@@ -243,8 +243,10 @@ func TestReclaimConfigDirUnixClearsWorldWriteOnRootsOwnEntry(t *testing.T) {
 	mkdirMode(t, root, 0o755)
 	state := filepath.Join(root, "agent.state")
 	cfg := filepath.Join(root, "agent.yaml")
+	aside := filepath.Join(root, "rebind-staged.json.unusable-20261026T000000Z")
 	writeMode(t, state, 0o666)
 	writeMode(t, cfg, 0o666)
+	writeMode(t, aside, 0o666)
 	fakeRoot(t, 0, nil)
 	if err := reclaimConfigDir(root, false); err != nil {
 		t.Fatalf("reclaimConfigDir: %v", err)
@@ -254,6 +256,10 @@ func TestReclaimConfigDirUnixClearsWorldWriteOnRootsOwnEntry(t *testing.T) {
 	}
 	if m := modeOfPath(t, cfg); m != 0o644 {
 		t.Errorf("agent.yaml mode %o, want 644", m)
+	}
+	// #8318: a corrupt staged reattach set moved aside holds its secrets.
+	if m := modeOfPath(t, aside); m != 0o600 {
+		t.Errorf("set-aside staged set mode %o, want 600", m)
 	}
 }
 

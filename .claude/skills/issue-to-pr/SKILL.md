@@ -59,21 +59,25 @@ If invoked with a specific issue number, skip to step 1. If asked to "find
 something to work on" / "grab an issue off the backlog", select one yourself:
 
 ```bash
-# Open issues with the signals needed to rank them.
-gh issue list --repo LanternOps/breeze --state open --limit 60 \
-  --json number,title,assignees,labels,createdAt,comments
+# Every unassigned bug not parked behind a decision: priority first, then oldest.
+.claude/skills/issue-to-pr/candidates.sh bug
+# Only if no bug passes the guard: the rest of the backlog, same order, first 60.
+.claude/skills/issue-to-pr/candidates.sh other
 ```
 
-Rank candidates, best first. **Prefer** an issue that is:
+The script already orders the list (priority, then age) and already drops
+assigned issues and the parked labels. **Walk it top to bottom** — do not
+re-sort by recency, and do not replace it with a `gh issue list --limit N`: the
+newest-N window is how old bugs went unseen for weeks. Within that order,
+**prefer** an issue that is:
 
-- **Unassigned** (or assigned to you — see the note on "you" in step 1).
 - **Actionable without design** — a clear repro, root cause, or file pointers in
   the body/comments. A precise root-cause comment from a maintainer is gold.
 - **Bounded** — one component, a contained fix.
 
 **Skip** (don't even open a worktree):
 
-- Anything labeled `tracking`/epic/meta, `needs-design`/`question`/`discussion`/`RFC`.
+- Anything that is tracking/epic/meta or needs design, a question answered or an RFC, even when it carries none of the labels the script filters on.
 - Infra firefighting (`ci-red`, broad "X is broken on main") unless explicitly asked.
 - Anything that needs a product/pricing/policy decision.
 

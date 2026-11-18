@@ -57,7 +57,7 @@ vi.mock('./grantAuthority', async (orig) => ({
 vi.mock('./budget', () => ({ chargeableUnderGrant: h.chargeableUnderGrant }));
 vi.mock('./specialistLaunchers', async (orig) => {
   const actual = await orig<typeof import('./specialistLaunchers')>();
-  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply', 'device_troubleshooting'];
+  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply', 'device_troubleshooting', 'assessment'];
   for (const k of kinds) h.launch[k] = vi.fn(async () => ({ admitted: true, runId: `run-${k}` }));
   for (const k of kinds) h.prereq[k] = vi.fn(async () => null);
   return {
@@ -101,12 +101,13 @@ function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
 
 const PARAMS: Record<SpecialistKind, Record<string, unknown>> = {
   sweep: {},
-  analysis: { goal: 'Why are backups failing at Greenwood?' },
+  analysis: { goal: 'Why are backups failing at Greenwood?', scope: 'org' },
   operator_recipe: { workflowKey: 'service_recovery', workflowVersion: 1, objective: 'Restart spooler', recipeInput: {} },
   patch_plan: {},
   remediation_research: { deviceId: DEVICE },
   bulk_ticket_reply: { concernId: null, ticketIds: [TICKET], message: 'We are on it.' },
   device_troubleshooting: { deviceId: DEVICE, goal: 'Outlook crashes on start' },
+  assessment: { scope: 'orgs_with_open_alerts' },
 };
 
 function base(o: { kind?: SpecialistKind; params?: Record<string, unknown>; orgId?: string; requestedByRunId?: string | null } = {}) {
@@ -156,6 +157,49 @@ beforeEach(() => {
   for (const f of Object.values(h.launch)) f.mockResolvedValue({ admitted: true, runId: 'run-x' });
   for (const f of Object.values(h.prereq)) f.mockResolvedValue(null);
   seed();
+});
+
+// #10406: the assessment kind is chat-only. An assessment's own request (the
+// run path) or an approval card raised by one may never start more
+// assessments; the refusal comes before the grant budget is read.
+describe('chat-only assessment kind (#10406)', () => {
+  it('the run path is refused unknown_kind before the budget is read', async () => {
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('run') })).resolves.toEqual({ refused: 'unknown_kind', detail: 'chat_only' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('the approval path is refused unknown_kind too', async () => {
+    await expect(requestSpecialist(base({ kind: 'assessment' }), { requester: requesterOf('approval') })).resolves.toEqual({ refused: 'unknown_kind', detail: 'chat_only' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('a chat user reaches the launcher, gated on ai_agents:write and alerts:read', async () => {
+    const r = await requestSpecialist(base({ kind: 'assessment', requestedByRunId: null }), { requester: requesterOf('user') });
+    expect(r).toEqual({ admitted: true, runId: 'run-x' });
+    expect(h.launch.assessment).toHaveBeenCalledTimes(1);
+    expect(h.launch.assessment!.mock.calls[0]![0]).toMatchObject({ orgId: ORG, params: { scope: 'orgs_with_open_alerts' } });
+  });
+
+  it('a chat user without alerts:read is refused permission_missing', async () => {
+    h.getUserPermissions.mockResolvedValue(perms([{ resource: 'ai_agents', action: 'write' }]));
+    await expect(requestSpecialist(base({ kind: 'assessment', requestedByRunId: null }), { requester: requesterOf('user') }))
+      .resolves.toEqual({ refused: 'permission_missing' });
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('scope defaults to org; any other key or value is invalid_params', async () => {
+    const r = await requestSpecialist(base({ kind: 'assessment', params: {}, requestedByRunId: null }), { requester: requesterOf('user') });
+    expect(r).toEqual({ admitted: true, runId: 'run-x' });
+    expect(h.launch.assessment!.mock.calls[0]![0]).toMatchObject({ params: { scope: 'org' } });
+    for (const params of [{ scope: 'all' }, { scope: 'org', orgIds: [ORG_B] }]) {
+      seed();
+      await expect(requestSpecialist(base({ kind: 'assessment', params, requestedByRunId: null }), { requester: requesterOf('user') }))
+        .resolves.toEqual({ refused: 'invalid_params' });
+    }
+  });
 });
 
 // #10144: the cheap, deterministic gates the chat tool runs BEFORE raising an
@@ -376,6 +420,30 @@ describe('requestSpecialist gating matrix', () => {
     await expect(requestSpecialist(base())).resolves.toMatchObject({ refused: 'org_out_of_ceiling' });
   });
 
+  // W04 carry-over (W03 review, site reach): a continuation carries files and a
+  // seed from an earlier, possibly org-wide run, and its coverage check compares
+  // datasets and sensitive gates only. That is safe because a grantor whose
+  // site access has narrowed never reaches the analysis launcher at all: gate 4
+  // refuses any site-restricted ceiling, ceiling-wide or through the org's
+  // membership term, before the prerequisite or the launcher runs.
+  it.each([
+    ['ceiling-wide', { siteIds: new Set(['site-1']) }],
+    ['through the org membership term', {
+      orgTerms: new Map([[ORG, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]),
+    }],
+  ] as const)('a continuation under a site-restricted ceiling (%s) is refused before any prerequisite or launcher, on every path', async (_l, o) => {
+    const params = { ...PARAMS.analysis, continueFromRunId: '00000000-0000-4000-8000-0000000000c9' };
+    for (const path of ['user', 'approval'] as const) {
+      seed();
+      h.resolveGrantCeiling.mockResolvedValue(ceiling(o as Partial<GrantCeiling>));
+      await expect(requestSpecialist(base({ kind: 'analysis', params, requestedByRunId: null }), { requester: requesterOf(path) }))
+        .resolves.toEqual({ refused: 'org_out_of_ceiling', detail: 'site_restricted' });
+    }
+    expect(h.prereq.analysis).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+    expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['a child (depth 1)', { depth: 1 }],
     ['not an assessment', { profile: 'sweep' }],
@@ -399,6 +467,13 @@ describe('requestSpecialist gating matrix', () => {
     await expect(requestSpecialist(base({ kind: 'analysis', params: { goal: '' } }))).resolves.toEqual({ refused: 'invalid_params' });
     seed();
     await expect(requestSpecialist(base({ kind: 'sweep', params: { extra: 1 } }))).resolves.toEqual({ refused: 'invalid_params' });
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('W02: an analysis that names no scope is refused at gate 6, before any launch', async () => {
+    seed();
+    const r = await requestSpecialist(base({ kind: 'analysis', params: { goal: 'why' } }));
+    expect(r).toMatchObject({ refused: 'invalid_params' });
     expect(launchCalls()).toBe(0);
   });
 

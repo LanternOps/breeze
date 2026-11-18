@@ -436,6 +436,7 @@
         "publishing": "Yayımlanıyor…",
         "cancel": "İptal",
         "success": "Güven Merkezi sayfası yayımlandı.",
+        "successPending": "Yayımlandı. Herkese açık sayfa bir dakika içinde güncellenecek.",
         "failed": "Güven Merkezi sayfası yayımlanamadı.",
         "disabledNoWrite": "Yayımlamak için kuruluşları düzenleme izni gerekir.",
         "disabledSlug": "Yayımlamadan önce sayfa adresini düzeltin."
@@ -472,6 +473,7 @@
       },
       "errors": {
         "revisionMismatch": "Bu sayfa siz yükledikten sonra değişti. Yenileyip tekrar deneyin.",
+        "templateChanged": "Partnerinizin Güven Merkezi şablonu siz bu sayfayı yükledikten sonra değişti. Yenileyip yeniden yayımlayın.",
         "authorizationRequired": "Yayımlamayı kimin yetkilendirdiğini kaydedin.",
         "mfaRequired": "Yayımlamak için çok faktörlü kimlik doğrulama gerekir. Profilinizin güvenlik ayarlarında MFA'yı etkinleştirin ve tekrar deneyin.",
         "trustProbation": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",

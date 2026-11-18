@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({
@@ -99,12 +99,37 @@ describe('LoginPage navigation after login', () => {
 
   it('navigates to next when login succeeds and setup is complete', async () => {
     vi.mocked(apiLogin).mockResolvedValueOnce(baseLoginSuccess);
+    let finishNavigation!: (mode: 'hard' | 'soft') => void;
+    vi.mocked(navigateTo).mockImplementationOnce(
+      () => new Promise((resolve) => { finishNavigation = resolve; })
+    );
     render(<LoginPage next="/oauth/consent?uid=abc" />);
 
     await fillAndSubmit();
 
+    const welcome = await screen.findByTestId('login-welcome');
+    expect(welcome).toHaveTextContent('Welcome back');
+    expect(welcome).toHaveTextContent('Jane');
+    expect(welcome).toHaveTextContent('jane@example.com');
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    await act(async () => finishNavigation('hard'));
+    expect(screen.getByTestId('login-welcome')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
+  });
+
+  it('restores the login form when navigation fails', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce(baseLoginSuccess);
+    vi.mocked(navigateTo).mockRejectedValueOnce(new Error('Navigation failed'));
+    render(<LoginPage />);
+
+    await fillAndSubmit();
+
+    expect(await screen.findByText('Navigation failed')).toBeInTheDocument();
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });
 
   it('navigates to "/" when next is omitted', async () => {

@@ -24,6 +24,7 @@ import {
   Zap,
   type LucideIcon,
   Cpu,
+  Power,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -34,6 +35,8 @@ import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { i18n } from "../../lib/i18n";
 import EffectiveContainmentSummary from "./EffectiveContainmentSummary";
+import { OEM_VENDOR_NAMES } from "./vendorUpdatesApi";
+import type { OemLane } from "@breeze/shared";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -169,6 +172,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     },
     Icon: Cpu,
   },
+  wake_on_lan: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.wakeOnLanTab.title");
+    },
+    Icon: Power,
+  },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -262,12 +271,62 @@ const PATCH_UNUSED_APPROVAL_KEYS = new Set([
   "apps",
 ]);
 
+// #11281: the generic dump showed the schema "version" and no schedule or vendors.
+// State what the policy does: whether it is on, when it runs, and for which vendors.
+function summarizeOemUpdates(settings: Record<string, unknown> | null): SettingsSummaryItem[] {
+  if (!settings) return [];
+  const items: SettingsSummaryItem[] = [];
+  if (typeof settings.enabled === "boolean") {
+    items.push({ label: "enabled", value: settings.enabled ? "yes" : "no" });
+  }
+  const schedule = settings.schedule;
+  if (schedule && typeof schedule === "object") {
+    const { weekOfMonth, dayOfWeek, windowStart, windowHours } = schedule as Record<string, unknown>;
+    if (typeof weekOfMonth === "string" && typeof dayOfWeek === "string") {
+      const when = `${weekOfMonth} ${dayOfWeek}`;
+      const window =
+        typeof windowStart === "string" && typeof windowHours === "number"
+          ? `, ${windowStart}, ${windowHours} h window`
+          : "";
+      items.push({ label: "schedule", value: `${when}${window}` });
+    }
+  }
+  const vendors = settings.vendors;
+  if (vendors && typeof vendors === "object") {
+    const enabled = Object.entries(vendors as Record<string, unknown>)
+      .filter(([, v]) => !!v && typeof v === "object" && (v as { enabled?: unknown }).enabled === true)
+      .map(([lane]) => OEM_VENDOR_NAMES[lane as OemLane] ?? lane);
+    items.push({ label: "vendors", value: enabled.length > 0 ? enabled.join(", ") : "none enabled" });
+  }
+  return items;
+}
+
+// #9574: the day a weekly / monthly window opens on rides on the recurrence
+// line ("weekly on sat", "monthly on day 31"), so a Saturday and a Sunday window
+// summarize differently without pushing timezone out of the four slots. The
+// separate day keys are dropped; the one the recurrence does not read would
+// only mislead.
+function withMaintenanceDay(settings: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settings) return settings;
+  const { dayOfWeek, dayOfMonth, ...rest } = settings;
+  if (rest.recurrence === "weekly" && typeof dayOfWeek === "string") {
+    rest.recurrence = `weekly on ${dayOfWeek}`;
+  } else if (rest.recurrence === "monthly" && typeof dayOfMonth === "number") {
+    rest.recurrence = `monthly on day ${dayOfMonth}`;
+  }
+  return rest;
+}
+
 function summarizeFeatureSettings(
   featureType: FeatureType,
   feature: ResolvedFeature,
   approvalItem: (ringLinked: boolean) => SettingsSummaryItem,
 ): SettingsSummaryItem[] {
+  if (featureType === "oem_updates") return summarizeOemUpdates(feature.inlineSettings);
   const pickedKeys = FEATURE_SUMMARY_KEYS[featureType];
+  if (featureType === "maintenance") {
+    return summarizeSettings(withMaintenanceDay(feature.inlineSettings), pickedKeys);
+  }
   if (featureType !== "patch") return summarizeSettings(feature.inlineSettings, pickedKeys);
   const settings = feature.inlineSettings;
   const hasSettings = !!settings && Object.keys(settings).length > 0;

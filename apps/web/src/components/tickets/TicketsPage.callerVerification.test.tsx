@@ -25,6 +25,7 @@ vi.mock('../../stores/auth', () => ({
 }));
 vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }),
+  useJwtClaims: () => ({ status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } }),
   loginPathWithNext: () => '/login?next=%2F',
 }));
 vi.mock('../../lib/ticketConfigApi', async (orig) => ({

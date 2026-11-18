@@ -164,6 +164,8 @@ generateRoutes.post(
         scope,
         config,
         authority,
+        // A person pressed Generate: see ReportRunOrigin (#12048).
+        { origin: 'on_demand' },
       );
     } catch (error) {
       // Also maps ReportScopeMismatchError (a subclass, ruling P11).

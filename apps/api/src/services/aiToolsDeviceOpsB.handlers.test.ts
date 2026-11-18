@@ -38,6 +38,9 @@ vi.mock('../db', () => ({
   db: { select: h.select },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // The support-session `end` action reads in its own short context.
+  hasDbAccessContext: () => false,
+  withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: h.verify }));
 vi.mock('./aiDispatch', () => ({ aiExecuteCommand: h.exec }));
@@ -299,6 +302,21 @@ describe('review fixes (#10352)', () => {
     expect((await run('browse_device_event_log', { action: 'get_event', deviceId: DEV, logName: 'System', recordId: 42 })).code).toBe('INVALID_AGENT_RESPONSE');
   });
 
+  it('list_logs passes real record counts through and omits a count the agent did not send (#11975)', async () => {
+    h.exec.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ logs: [
+        { name: 'Security', displayName: 'Security', recordCount: 9500000 },
+        { name: 'Setup', displayName: 'Setup', recordCount: 0 },
+        { name: 'HardwareEvents', displayName: 'HardwareEvents' },
+      ] }),
+    });
+    const out = await run('browse_device_event_log', { action: 'list_logs', deviceId: DEV });
+    expect(out.logs[0].recordCount).toBe(9500000);
+    expect(out.logs[1].recordCount).toBe(0);
+    expect(out.logs[2]).not.toHaveProperty('recordCount');
+  });
+
   it('a malformed event in a query result is counted, not silently lost', async () => {
     h.exec.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ events: [{ recordId: 1, message: 'ok' }, { message: 'no id' }], total: 2 }) });
     const out = await run('browse_device_event_log', { action: 'query', deviceId: DEV, logName: 'System' });
@@ -346,6 +364,9 @@ describe('review fixes (#10352)', () => {
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/not connected right now/);
     h.endSession.mockResolvedValue({ ended: true, disconnect: 'close-failed', commandDelivered: true });
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/did not close cleanly/);
+    // #4142: a close handed to another instance with no confirming answer is not reported as clean.
+    h.endSession.mockResolvedValue({ ended: true, disconnect: 'unconfirmed', commandDelivered: true });
+    expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/was not confirmed/);
     h.select.mockImplementation(() => chain([{ session: { id: SESSION, orgId: ORG, status: 'pending', deviceId: null, createdAt: new Date() } }]));
     h.endSession.mockResolvedValue({ ended: true, disconnect: null, commandDelivered: false });
     expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/No client had joined/);

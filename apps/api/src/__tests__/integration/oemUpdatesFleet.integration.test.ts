@@ -12,7 +12,9 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { PostgresJsSession } from 'drizzle-orm/postgres-js/session';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   alertRules,
@@ -22,12 +24,28 @@ import {
   configurationPolicies,
   deviceCommands,
   deviceHardware,
+  deviceOemPolicySide,
   deviceOemUpdateStatus,
   devices,
+  organizations,
   organizationUsers,
+  partners,
+  sites,
 } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
-import { fleetRowsQuery, fleetScopeCondition, oemUpdatesFleetRoutes } from '../../routes/oemUpdates/fleet';
+import {
+  fleetPageQuery,
+  fleetSummaryStatement,
+  fleetScopeCondition,
+  OEM_FLEET_PENDING_REFRESH_LIMIT,
+  oemUpdatesFleetRoutes,
+  type FleetRead,
+} from '../../routes/oemUpdates/fleet';
+import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
+import { OEM_DISPLAY_STATES, type OemDisplayState } from '../../services/oemUpdates/displayState';
+import { classifyOemDevice, oemOccurrenceMemo, oemOfferedLane, type OemDeviceFacts } from '../../services/oemUpdates/policySide';
+import { oemGatesFingerprint, refreshOemPolicySide } from '../../services/oemUpdates/policySideStore';
+import { resolveOemUpdatesLinksForDevices } from '../../services/oemUpdates/resolver';
 import { clearDeviceCooldowns } from '../../services/alertCooldown';
 import { CommandTypes } from '../../services/commandTypes';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -130,15 +148,84 @@ const payloadFor = (env: TestEnvironment, scope: 'organization' | 'partner'): Om
   sid: randomUUID(),
 });
 
-// 2,500 by default: seeding 10,000 devices through the export-watermark triggers took ~50 s on
-// a fresh test database. The scale guard is the route's two-statement count (fleet.test.ts) and
-// the org-index plan below, neither of which needs 10k rows. OEM_FLEET_SCALE_ROWS=10000 for a
-// local full-size run.
-const FLEET_ROWS = Number(process.env.OEM_FLEET_SCALE_ROWS ?? 2_500);
-const SEED_BATCH = 500;
-// Measured seed ~4.5 s at 2,500 rows on a fresh database (~50 s at 10,000); the 60 s floor is >10x
-// the 2,500 figure for a loaded CI host, and larger overrides scale with their row count.
-const FLEET_TEST_TIMEOUT_MS = Math.max(60_000, FLEET_ROWS * 12);
+/** Postgres's plan for a built statement, parameters inlined so it plans for these values. */
+async function explain(statement: { sql: string; params: unknown[] }): Promise<string> {
+  const literal = (value: unknown) => (typeof value === 'string' ? `'${value.replaceAll("'", "''")}'` : String(value));
+  const inlined = statement.sql.replace(/\$(\d+)/g, (_, index) => literal(statement.params[Number(index) - 1]));
+  const plan = await withSystemDbAccessContext(() => db.execute(sql.raw(`EXPLAIN ${inlined}`))) as unknown as Array<{ 'QUERY PLAN': string }>;
+  return plan.map((line) => line['QUERY PLAN']).join('\n');
+}
+
+/**
+ * What the device section and the overdue alerts would say for these devices now: the
+ * live rule over freshly read facts, with links from the batch resolver (a different
+ * read path from the store's).
+ */
+async function liveStates(deviceIds: string[], now: Date): Promise<Map<string, OemDisplayState>> {
+  const rows = await withSystemDbAccessContext(() => db
+    .select({
+      deviceId: devices.id,
+      partnerId: organizations.partnerId,
+      osType: devices.osType,
+      isVirtual: devices.isVirtual,
+      deviceRole: devices.deviceRole,
+      enrolledAt: devices.enrolledAt,
+      manufacturer: deviceHardware.manufacturer,
+      model: deviceHardware.model,
+      siteTimezone: sites.timezone,
+      orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
+      statusLane: deviceOemUpdateStatus.lane,
+      applicability: deviceOemUpdateStatus.applicability,
+      lastOutcome: deviceOemUpdateStatus.lastOutcome,
+      occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
+      attempts: deviceOemUpdateStatus.attempts,
+      lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
+      rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .leftJoin(partners, eq(partners.id, organizations.partnerId))
+    .leftJoin(sites, eq(sites.id, devices.siteId))
+    .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
+    .leftJoin(deviceOemUpdateStatus, eq(deviceOemUpdateStatus.deviceId, devices.id))
+    .where(inArray(devices.id, deviceIds)));
+  const links = await withSystemDbAccessContext(() => resolveOemUpdatesLinksForDevices(deviceIds));
+  const occurrenceOf = oemOccurrenceMemo(now);
+  return new Map(rows.map((row) => {
+    const facts = row as unknown as OemDeviceFacts;
+    return [row.deviceId, classifyOemDevice({
+      facts,
+      lane: oemOfferedLane(facts),
+      link: links.get(row.deviceId) ?? null,
+      timezone: effectiveTimezoneFrom(row),
+      now,
+      occurrenceOf,
+    }).state];
+  }));
+}
+
+const FLEET_ROWS = 10_000;
+// A wall-clock ceiling, not the guard: what keeps the route from reading the scope into
+// the process is the statement and row counts below, which do not depend on the host.
+// Most of what is left is the per-row RLS check on each table of the one pass (46 ms for
+// it in system scope against ~350 ms under a partner context on a heavily loaded host,
+// where the previous in-process route took 1.0-1.2 s on the same rows). Overridable;
+// record the medians it prints.
+const FLEET_LATENCY_BUDGET_MS = Number(process.env.OEM_FLEET_LATENCY_BUDGET_MS ?? 600);
+const FLEET_TEST_TIMEOUT_MS = 120_000;
+const HOUR_MS = 60 * 60 * 1000;
+/** The scale case's seeded mix (see its status and policy-side inserts). */
+const SEEDED_COUNTS = {
+  up_to_date: 2_000,
+  overdue: 2_000,
+  failing: 1_000,
+  waiting_for_reboot: 1_000,
+  reboot_overdue: 1_000,
+  not_supported: 500,
+  not_managed: 2_500,
+};
 
 describe('#11074 GET /oem-updates/fleet', () => {
   let app: Hono;
@@ -300,92 +387,260 @@ describe('#11074 GET /oem-updates/fleet', () => {
     expect(body.devices[0].displayState).toBe('not_managed');
   });
 
-  runDb('fleet at scale: correct counts in bounded time, and a small org stays on the org index', async () => {
+  runDb('fleet at 10,000 devices: two statements, under budget, counts agree with the rule', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const small = await createOrganization({ partnerId: env.partner.id });
     const smallSite = await createSite({ orgId: small.id });
     const smallDevice = await seedDevice(small.id, smallSite.id);
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    const fingerprint = oemGatesFingerprint();
 
-    // Seeding is batched: the device-child tables carry statement-level triggers over a
-    // transition table, and one 10,000-row statement is quadratic in them (~100 s on a
-    // fresh database). 500 rows a statement, in one transaction, is linear. It goes through
-    // the owner connection: under the app role, RLS is evaluated on every row the triggers
-    // touch, which costs ~3 s a batch instead of ~50 ms.
+    // Seeded through the owner connection with replication-role triggers off: the
+    // device-child export triggers (#11259) and the FK triggers are skipped, so 10,000
+    // rows take seconds. Every row is consistent by construction.
     const seedStartedAt = performance.now();
     const orgId = env.organization.id;
-    const seedDb = getTestDb();
-    await seedDb.transaction(async (tx) => {
-      for (let lo = 1; lo <= FLEET_ROWS; lo += SEED_BATCH) {
-        const hi = Math.min(lo + SEED_BATCH - 1, FLEET_ROWS);
-        await tx.execute(sql`
-          INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
-          SELECT ${orgId}::uuid, ${env.site.id}::uuid, 'fleet-bulk-' || n, 'bulk-' || lpad(n::text, 5, '0'),
-                 'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
-          FROM generate_series(${lo}::int, ${hi}::int) AS n
-        `);
-      }
-      await tx.execute(sql`ANALYZE devices`);
-      for (let lo = 1; lo <= FLEET_ROWS; lo += SEED_BATCH) {
-        const hi = Math.min(lo + SEED_BATCH - 1, FLEET_ROWS);
-        await tx.execute(sql`
-          INSERT INTO device_hardware (device_id, org_id, manufacturer, model)
-          SELECT d.id, d.org_id, 'Dell Inc.', 'Latitude 7420'
-          FROM generate_series(${lo}::int, ${hi}::int) AS n
-          JOIN devices d ON d.org_id = ${orgId}::uuid AND d.agent_id = 'fleet-bulk-' || n
-        `);
-        await tx.execute(sql`
-          INSERT INTO device_oem_update_status (device_id, org_id, applicability, lane, last_outcome, occurrence_key, last_success_at)
-          SELECT d.id, d.org_id, 'applicable', 'dell', 'success', '2020-01', ${LONG_AGO.toISOString()}::timestamptz
-          FROM generate_series(${lo}::int, ${hi}::int) AS n
-          JOIN devices d ON d.org_id = ${orgId}::uuid AND d.agent_id = 'fleet-bulk-' || n
-        `);
-      }
+    const seededAt = new Date();
+    const at = (offsetMs: number) => new Date(seededAt.getTime() + offsetMs).toISOString();
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`
+        INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
+        SELECT ${orgId}::uuid, ${env.site.id}::uuid, 'fleet-bulk-' || n, 'bulk-' || lpad(n::text, 5, '0'),
+               'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
+        FROM generate_series(1, ${FLEET_ROWS}::int) AS n
+      `);
+      await tx.execute(sql`
+        INSERT INTO device_hardware (device_id, org_id, manufacturer, model)
+        SELECT d.id, d.org_id, 'Dell Inc.', 'Latitude 7420' FROM devices d WHERE d.org_id = ${orgId}::uuid
+      `);
+      // The mix, by device number: see SEEDED_COUNTS.
+      await tx.execute(sql`
+        INSERT INTO device_oem_update_status
+          (device_id, org_id, applicability, lane, last_outcome, occurrence_key, attempts, last_success_at, reboot_pending_since)
+        SELECT d.id, d.org_id,
+          CASE WHEN g.n BETWEEN 7001 AND 7500 THEN 'not_supported' ELSE 'applicable' END,
+          'dell',
+          CASE WHEN g.n BETWEEN 4001 AND 5000 THEN 'failed' WHEN g.n BETWEEN 7001 AND 7500 THEN 'not_supported' ELSE 'success' END,
+          CASE WHEN g.n BETWEEN 2001 AND 4000 THEN '2020-01' ELSE '2099-01' END,
+          1,
+          ${LONG_AGO.toISOString()}::timestamptz,
+          CASE WHEN g.n BETWEEN 5001 AND 6000 THEN ${at(-HOUR_MS)}::timestamptz
+               WHEN g.n BETWEEN 6001 AND 7000 THEN ${at(-4 * DAY_MS)}::timestamptz END
+        FROM (SELECT d.id, d.org_id, substring(d.agent_id FROM 12)::int AS n FROM devices d WHERE d.org_id = ${orgId}::uuid) g
+        JOIN devices d ON d.id = g.id
+        WHERE g.n <= 7500
+      `);
+      // Devices 1-7500 are under an armed link whose occurrence (2099-01) is past its last
+      // night for 2001-4000 only; 7501+ are offered no lane.
+      await tx.execute(sql`
+        INSERT INTO device_oem_policy_side
+          (device_id, org_id, offered_lane, gates_fingerprint, link_id, link_enabled, reboot_mode,
+           occurrence_key, last_night_start, past_last_night_at, refresh_after, managed_since, computed_at)
+        SELECT g.id, g.org_id,
+          CASE WHEN g.n <= 7500 THEN 'dell' END,
+          ${fingerprint},
+          CASE WHEN g.n <= 7500 THEN ${randomUUID()}::uuid END,
+          g.n <= 7500,
+          CASE WHEN g.n <= 7500 THEN 'overnight' END,
+          CASE WHEN g.n <= 7500 THEN '2099-01' END,
+          CASE WHEN g.n BETWEEN 2001 AND 4000 THEN ${at(-DAY_MS - HOUR_MS)}::timestamptz WHEN g.n <= 7500 THEN ${at(4 * DAY_MS)}::timestamptz END,
+          CASE WHEN g.n BETWEEN 2001 AND 4000 THEN ${at(-DAY_MS)}::timestamptz WHEN g.n <= 7500 THEN ${at(5 * DAY_MS)}::timestamptz END,
+          CASE WHEN g.n <= 7500 THEN ${at(20 * DAY_MS)}::timestamptz END,
+          CASE WHEN g.n <= 7500 THEN ${LONG_AGO.toISOString()}::timestamptz END,
+          now()
+        FROM (SELECT d.id, d.org_id, substring(d.agent_id FROM 12)::int AS n FROM devices d WHERE d.org_id = ${orgId}::uuid) g
+      `);
     });
+    await getTestDb().execute(sql`ANALYZE devices, device_hardware, device_oem_update_status, device_oem_policy_side, organizations`);
     process.stderr.write(`[oemUpdatesFleet] seeded ${FLEET_ROWS} devices in ${Math.round(performance.now() - seedStartedAt)} ms\n`);
-    await withSystemDbAccessContext(() => db.execute(sql`ANALYZE devices`));
-    await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_hardware`));
-    await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_oem_update_status`));
-    // The lab override re-reads its list per device, so a sample: enough to prove the
-    // pass classifies each row on its own, and the rest of the fleet stays closed.
+
+    const token = await createAccessToken(payloadFor(env, 'partner'));
+    const urls = [
+      `?orgId=${orgId}&limit=50`,
+      `?orgId=${orgId}&state=failing`,
+      `?orgId=${orgId}&lane=dell&offset=7450`,
+    ];
+
+    // Statements that read the fleet tables, through any session or transaction, and the
+    // rows each one hands back to this process: two statements, and never the scope.
+    type Seen = { sql: string; rows: number };
+    let seen: Seen[] = [];
+    const prepare = PostgresJsSession.prototype.prepareQuery;
+    const prepared = vi.spyOn(PostgresJsSession.prototype, 'prepareQuery').mockImplementation(function (
+      this: PostgresJsSession<never, never, never>,
+      ...args: Parameters<typeof prepare>
+    ) {
+      const query = prepare.apply(this, args);
+      const execute = query.execute.bind(query);
+      query.execute = (async (...executeArgs: Parameters<typeof execute>) => {
+        const result = await execute(...executeArgs);
+        seen.push({ sql: args[0].sql, rows: Array.isArray(result) ? result.length : 0 });
+        return result;
+      }) as typeof query.execute;
+      return query;
+    });
+    try {
+      for (const url of urls) {
+        seen = [];
+        const { status, body } = await fleet(token, url);
+        expect(status, url).toBe(200);
+        const fleetReads = seen.filter(({ sql: text }) => text.includes('"device_oem_policy_side"'));
+        expect(fleetReads, url).toHaveLength(2);
+        const limit = Number(new URLSearchParams(url).get('limit') ?? 50);
+        for (const read of fleetReads) expect(read.rows, url).toBeLessThanOrEqual(limit + OEM_DISPLAY_STATES.length);
+        expect(body.pendingRefresh, url).toBeUndefined();
+      }
+    } finally {
+      prepared.mockRestore();
+    }
+
+    // Latency: one warm-up, then the median of five, per URL.
+    const medians: Record<string, number> = {};
+    for (const url of urls) {
+      await fleet(token, url);
+      const samples: number[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        const startedAt = performance.now();
+        await fleet(token, url);
+        samples.push(performance.now() - startedAt);
+      }
+      samples.sort((a, b) => a - b);
+      medians[url] = Math.round(samples[2]!);
+    }
+    process.stderr.write(`[oemUpdatesFleet] ${FLEET_ROWS} devices, median ms per URL: ${JSON.stringify(medians)}\n`);
+    for (const [url, median] of Object.entries(medians)) expect(median, url).toBeLessThan(FLEET_LATENCY_BUDGET_MS);
+
+    // Counts are the seeded mix; the list pages and filters through the same rule.
+    const first = await fleet(token, urls[0]!);
+    expect(first.body.counts).toEqual(SEEDED_COUNTS);
+    expect(first.body.total).toBe(FLEET_ROWS);
+    expect(first.body.devices).toHaveLength(50);
+    expect(first.body.devices[0].hostname).toBe('bulk-00001');
+    const failing = await fleet(token, `?orgId=${orgId}&state=failing&limit=200&offset=900`);
+    expect(failing.body.total).toBe(1_000);
+    expect(failing.body.devices).toHaveLength(100);
+    expect(failing.body.devices.every((device: any) => device.displayState === 'failing')).toBe(true);
+    const dell = await fleet(token, urls[2]!);
+    expect(dell.body.total).toBe(7_500);
+    expect(dell.body.devices).toHaveLength(50);
+    expect(Object.values<number>(dell.body.counts).reduce((sum, n) => sum + n, 0)).toBe(7_500);
+
+    // Both statements for a small org start from its org id, not the table.
+    const smallRead: FleetRead = {
+      where: fleetScopeCondition({ orgCondition: eq(devices.orgId, small.id), orgId: small.id }),
+      now: new Date(),
+      flagOn: true,
+      fingerprint,
+    };
+    for (const statement of [
+      new PgDialect().sqlToQuery(fleetSummaryStatement(smallRead, { limit: 50, offset: 0 })),
+      fleetPageQuery(smallRead, [smallDevice.id]).toSQL(),
+    ]) {
+      const text = await explain(statement);
+      expect(text, text).toMatch(/devices/);
+      expect(text, text).not.toMatch(/Seq Scan on devices/);
+    }
+    const smallFleet = await fleet(token, `?orgId=${small.id}`);
+    expect(smallFleet.body.devices.map((row: any) => row.deviceId)).toEqual([smallDevice.id]);
+
+    // End to end against the live rule: for a sample across every seeded group, the
+    // worker's materialisation plus the SQL rule reads what classifyOemDevice reads
+    // over the same facts and a real policy.
     const sample = await withSystemDbAccessContext(() => db
       .select({ id: devices.id })
       .from(devices)
-      .where(eq(devices.orgId, env.organization.id))
-      .limit(100));
-    openGatesFor(...sample.map((row) => row.id));
+      .where(and(eq(devices.orgId, orgId), sql`substring(${devices.agentId} FROM 12)::int % 50 = 0`)));
+    expect(sample).toHaveLength(FLEET_ROWS / 50);
+    const sampleIds = sample.map((row) => row.id);
+    openGatesFor(...sampleIds);
     await armPolicy({ partnerId: env.partner.id }, { level: 'partner', id: env.partner.id });
+    const now = new Date();
+    const refreshed = await refreshOemPolicySide({ now, scope: { deviceIds: sampleIds } });
+    expect(refreshed.failedPages).toBe(0);
+    const sampleRead: FleetRead = { where: inArray(devices.id, sampleIds), now, flagOn: true, fingerprint: oemGatesFingerprint() };
+    const listed = await withSystemDbAccessContext(() => fleetPageQuery(sampleRead, sampleIds));
+    const live = await liveStates(sampleIds, now);
+    expect(listed).toHaveLength(sampleIds.length);
+    const disagreements = listed.filter((row) => row.displayState !== live.get(row.deviceId));
+    expect(disagreements.map((row) => ({ id: row.deviceId, sql: row.displayState, live: live.get(row.deviceId) }))).toEqual([]);
+    expect(new Set(listed.map((row) => row.displayState)).size).toBeGreaterThanOrEqual(3);
+  }, FLEET_TEST_TIMEOUT_MS);
 
-    const token = await createAccessToken(payloadFor(env, 'partner'));
-    const startedAt = performance.now();
-    const { status, body } = await fleet(token, `?orgId=${env.organization.id}&limit=50`);
-    const elapsedMs = performance.now() - startedAt;
+  runDb('a stored row under other gates is pending: the request refreshes it before counting', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const device = await seedDevice(env.organization.id, env.site.id);
+    openGatesFor(device.id);
+    await armPolicy({ orgId: env.organization.id }, { level: 'organization', id: env.organization.id });
+    // What a previous deploy, with the lane killed, would have stored.
+    await getTestDb().insert(deviceOemPolicySide).values({
+      deviceId: device.id,
+      orgId: env.organization.id,
+      offeredLane: 'dell',
+      gatesFingerprint: 'f'.repeat(64),
+      linkEnabled: false,
+    });
+
+    const { body } = await fleet(await createAccessToken(payloadFor(env, 'partner')));
+
+    expect(body.devices[0].displayState).toBe('overdue');
+    expect(body.pendingRefresh).toBeUndefined();
+    const [stored] = await getTestDb().select().from(deviceOemPolicySide).where(eq(deviceOemPolicySide.deviceId, device.id));
+    expect(stored).toMatchObject({ gatesFingerprint: oemGatesFingerprint(), linkEnabled: true, offeredLane: 'dell' });
+  });
+
+  runDb('a stored row past its rollover is pending, not counted under the old occurrence', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const device = await seedDevice(env.organization.id, env.site.id);
+    openGatesFor(device.id);
+    // Armed today: the occurrence that just closed gave it no chance, so it is not overdue.
+    await armPolicy({ orgId: env.organization.id }, { level: 'organization', id: env.organization.id }, { armedAt: new Date() });
+    // A stale row that would read overdue if trusted: past its last night, rolled over.
+    await getTestDb().insert(deviceOemPolicySide).values({
+      deviceId: device.id,
+      orgId: env.organization.id,
+      offeredLane: 'dell',
+      gatesFingerprint: oemGatesFingerprint(),
+      linkEnabled: true,
+      rebootMode: 'overnight',
+      occurrenceKey: '2020-01',
+      lastNightStart: new Date(Date.now() - 40 * DAY_MS),
+      pastLastNightAt: new Date(Date.now() - 39 * DAY_MS),
+      refreshAfter: new Date(Date.now() - DAY_MS),
+      managedSince: LONG_AGO,
+    });
+
+    const { body } = await fleet(await createAccessToken(payloadFor(env, 'partner')));
+
+    expect(body.devices[0].displayState).toBe('not_managed');
+    const [stored] = await getTestDb().select().from(deviceOemPolicySide).where(eq(deviceOemPolicySide.deviceId, device.id));
+    expect(stored!.refreshAfter!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  runDb('more pending devices than a request refreshes: answered as not managed, with pendingRefresh', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    const count = OEM_FLEET_PENDING_REFRESH_LIMIT + 1;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`
+        INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
+        SELECT ${env.organization.id}::uuid, ${env.site.id}::uuid, 'fleet-pending-' || n, 'pending-' || lpad(n::text, 4, '0'),
+               'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
+        FROM generate_series(1, ${count}::int) AS n
+      `);
+    });
+
+    const { status, body } = await fleet(await createAccessToken(payloadFor(env, 'partner')), '?limit=10');
 
     expect(status).toBe(200);
-    expect(body.total).toBe(FLEET_ROWS);
-    expect(body.devices).toHaveLength(50);
-    expect(body.counts.overdue).toBe(100);
-    expect(body.counts.not_managed).toBe(FLEET_ROWS - 100);
-    // The query count itself is pinned in routes/oemUpdates/fleet.test.ts, where db.select
-    // can be counted. Here, a per-device walk would not finish in this time: it would be
-    // several queries for each of 10,000 devices.
-    expect(elapsedMs).toBeLessThan(30_000);
-    process.stderr.write(`[oemUpdatesFleet] ${FLEET_ROWS} devices in ${Math.round(elapsedMs)} ms\n`);
-
-    // The route's own statement, for the small org: the plan starts from its org id, not the table.
-    const statement = fleetRowsQuery(fleetScopeCondition({
-      orgCondition: eq(devices.orgId, small.id),
-      orgId: small.id,
-    }), true).toSQL();
-    const literal = (value: unknown) => (typeof value === 'string' ? `'${value.replaceAll("'", "''")}'` : String(value));
-    const inlined = statement.sql.replace(/\$(\d+)/g, (_, index) => literal(statement.params[Number(index) - 1]));
-    const plan = await withSystemDbAccessContext(() => db.execute(sql.raw(`EXPLAIN ${inlined}`))) as unknown as Array<{ 'QUERY PLAN': string }>;
-    const text = plan.map((line) => line['QUERY PLAN']).join('\n');
-    expect(text, text).toMatch(/devices/);
-    expect(text, text).not.toMatch(/Seq Scan on devices/);
-
-    const small_ = await fleet(token, `?orgId=${small.id}`);
-    expect(small_.body.devices.map((row: any) => row.deviceId)).toEqual([smallDevice.id]);
-  }, FLEET_TEST_TIMEOUT_MS);
+    expect(body.pendingRefresh).toBe(count);
+    expect(body.total).toBe(count);
+    expect(body.counts.not_managed).toBe(count);
+    expect(body.devices).toHaveLength(10);
+    const stored = await getTestDb().execute(sql`SELECT count(*)::int AS n FROM device_oem_policy_side WHERE org_id = ${env.organization.id}::uuid`) as unknown as Array<{ n: number }>;
+    expect(stored[0]!.n).toBe(0);
+  });
 });
 
 describe('#11074 overdue alerts, through the real createAlert', () => {

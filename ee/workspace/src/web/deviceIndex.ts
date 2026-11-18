@@ -21,7 +21,7 @@ function formatTimestamp(value: string | null): string {
 }
 
 export class WorkspaceDeviceIndex extends WorkspaceBaseElement {
-  #api: WorkspaceApi = createWorkspaceApi();
+  #api: WorkspaceApi = createWorkspaceApi(() => this.hostApi);
   #context: DeviceDetailTabContextV1 | null = null;
 
   set context(value: unknown) {

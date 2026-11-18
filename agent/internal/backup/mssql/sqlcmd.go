@@ -1,10 +1,17 @@
 package mssql
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
@@ -90,13 +97,33 @@ func (p *trustCertProbe) reset() {
 
 var globalTrustCertProbe trustCertProbe
 
-// looksLikeUnknownOptionError reports whether sqlcmd's output indicates it
-// doesn't recognize an option we passed — as opposed to a real connection
-// or query failure — so the caller can fall back instead of surfacing a
-// spurious error to the user.
-func looksLikeUnknownOptionError(output string) bool {
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "unknown option") || strings.Contains(lower, "usage: sqlcmd")
+// looksLikeTrustCertUnsupported reports whether sqlcmd's output says it
+// doesn't recognize -C — as opposed to a real connection or query failure,
+// or a complaint about some other option — so the caller can fall back
+// instead of surfacing a spurious error to the user.
+//
+// A line reporting an unknown option counts only when it names -C (matched
+// case-sensitively: -c is a different sqlcmd option). Output that is only
+// the usage text, with no unknown-option line, still counts, as it always
+// has, because it names no option at all. That case cannot be told apart
+// from a build that rejects -X1 or -x; it does no harm, because those two
+// are sent on every attempt, so such a build fails every call with or
+// without -C.
+// trustCertOption matches -C as a whole option token.
+var trustCertOption = regexp.MustCompile(`(^|[^A-Za-z0-9-])-C([^A-Za-z0-9]|$)`)
+
+func looksLikeTrustCertUnsupported(output string) bool {
+	sawUnknownOption := false
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(strings.ToLower(line), "unknown option") {
+			continue
+		}
+		sawUnknownOption = true
+		if trustCertOption.MatchString(line) {
+			return true
+		}
+	}
+	return !sawUnknownOption && strings.Contains(strings.ToLower(output), "usage: sqlcmd")
 }
 
 // sqlcmdArgs returns the sqlcmd invocation arguments for connecting to
@@ -110,8 +137,13 @@ func looksLikeUnknownOptionError(output string) bool {
 // -C is safe in this context: every connection this package makes is local
 // (named pipes/shared memory over "." or ".\<instance>"), so trusting the
 // server's own self-signed certificate adds no real exposure.
+//
+// -X1 turns off sqlcmd's own !! and ED commands (sqlcmd exits with an error
+// if one is met) along with its startup script and environment-variable
+// input, and -x turns off $(name) scripting-variable substitution. Nothing
+// this package sends uses either: every -Q text is a T-SQL batch only.
 func sqlcmdArgs(server string, extra ...string) []string {
-	args := []string{"-S", server, "-E"}
+	args := []string{"-S", server, "-E", "-X1", "-x"}
 	if globalTrustCertProbe.enabled() {
 		args = append(args, "-C")
 	}
@@ -123,19 +155,27 @@ func sqlcmdArgs(server string, extra ...string) []string {
 // On the first call of the process it sends -C. If sqlcmd itself rejects
 // the flag (an older build), it retries once without -C and caches that
 // decision for every subsequent call — see trustCertProbe.
+//
+// The query must be one line of printable text (see checkSqlcmdQuery):
+// sqlcmd reads its own commands only at the start of a line, so a query
+// that stays on one line, and that starts with the T-SQL this package
+// writes, is always handled as a single T-SQL batch.
 func runSqlcmd(serverName, query string) (string, error) {
+	if err := checkSqlcmdQuery(query); err != nil {
+		return "", err
+	}
 	sqlcmdPath, err := findSqlcmd()
 	if err != nil {
 		return "", err
 	}
 
-	extra := []string{"-Q", query, "-W", "-h", "-1", "-s", "|"}
+	extra := []string{"-Q", query, "-W", "-w", "65535", "-h", "-1", "-s", "|"}
 	firstAttempt := globalTrustCertProbe.needsProbe()
 
 	out, cmdErr := sqlcmdRunner(sqlcmdPath, sqlcmdArgs(serverName, extra...)...)
 
 	if firstAttempt {
-		if cmdErr != nil && looksLikeUnknownOptionError(string(out)) {
+		if cmdErr != nil && looksLikeTrustCertUnsupported(string(out)) {
 			globalTrustCertProbe.recordUnsupported()
 			out, cmdErr = sqlcmdRunner(sqlcmdPath, sqlcmdArgs(serverName, extra...)...)
 		} else {
@@ -232,4 +272,182 @@ func defaultFindSqlcmd() (string, error) {
 	}
 
 	return "", ErrSqlcmdNotFound
+}
+
+// maxSqlcmdQueryLen is the longest -Q text runSqlcmd sends, in UTF-16 code
+// units. A Windows command line holds at most 32,767 characters, including
+// the sqlcmd path and the other arguments; this leaves room for those.
+const maxSqlcmdQueryLen = 30000
+
+// checkSqlcmdQuery refuses -Q text that is empty, is not a single line of
+// printable text, or is too long to fit one Windows command line.
+func checkSqlcmdQuery(query string) error {
+	if strings.TrimSpace(query) == "" {
+		return fmt.Errorf("sqlcmd: query is empty")
+	}
+	if !isPrintableText(query) {
+		return fmt.Errorf("sqlcmd: query must be a single line of printable text")
+	}
+	if n := len(utf16.Encode([]rune(query))); n > maxSqlcmdQueryLen {
+		return fmt.Errorf("sqlcmd: query is too long for one command line (%d characters, limit %d)", n, maxSqlcmdQueryLen)
+	}
+	return nil
+}
+
+// singleLine collapses every run of whitespace in a fixed query template to
+// one space, so a template written across several lines in the source is
+// sent as one line. Use it only on templates, never on text holding values.
+func singleLine(query string) string {
+	return strings.Join(strings.Fields(query), " ")
+}
+
+// boundNVarcharLen is the declared length, in UTF-16 code units, of every
+// variable bindNVarchar declares.
+const boundNVarcharLen = 4000
+
+// tsqlVariableName matches the fixed variable names this package binds.
+var tsqlVariableName = regexp.MustCompile(`^@[a-z_][a-z0-9_]*$`)
+
+// bindNVarchar returns T-SQL that declares variable as nvarchar(4000) and
+// sets it to value. The value is written as the hexadecimal form of its
+// UTF-16LE encoding and cast back to nvarchar, so none of its characters
+// appear in the statement text and no quoting is involved: the result is
+// one line of ASCII whatever value holds. variable must be a fixed name
+// written in this package.
+func bindNVarchar(variable, value string) (string, error) {
+	if !tsqlVariableName.MatchString(variable) {
+		return "", fmt.Errorf("invalid T-SQL variable name %q", variable)
+	}
+	if !utf8.ValidString(value) {
+		return "", fmt.Errorf("value for %s is not valid UTF-8", variable)
+	}
+	units := utf16.Encode([]rune(value))
+	if len(units) > boundNVarcharLen {
+		return "", fmt.Errorf("value for %s is longer than %d characters", variable, boundNVarcharLen)
+	}
+	encoded := make([]byte, 2*len(units))
+	for i, u := range units {
+		binary.LittleEndian.PutUint16(encoded[2*i:], u)
+	}
+	return fmt.Sprintf("DECLARE %s nvarchar(%d); SET %s = CAST(0x%s AS nvarchar(%d));",
+		variable, boundNVarcharLen, variable, strings.ToUpper(hex.EncodeToString(encoded)), boundNVarcharLen), nil
+}
+
+// validateInstanceName checks a SQL Server instance name before it is used.
+// The name is only ever passed as an argument (sqlcmd -S, icacls) or joined
+// as one component of the ProgramData staging path; it is never written
+// into T-SQL or a shell command. Letters and digits (any script),
+// underscore, hyphen, dot, space, dollar sign and number sign are accepted,
+// up to SQL Server's 16-character limit. A leading or trailing dot or space
+// is refused: Windows drops trailing ones from a path component, and "."
+// and ".." would not name a directory of their own.
+const maxInstanceNameLen = 16
+
+func validateInstanceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("instance name is required")
+	}
+	if utf8.RuneCountInString(name) > maxInstanceNameLen {
+		return fmt.Errorf("SQL Server instance name %q is longer than %d characters", name, maxInstanceNameLen)
+	}
+	if strings.ContainsAny(name[:1], ". ") || strings.ContainsAny(name[len(name)-1:], ". ") {
+		return fmt.Errorf("SQL Server instance name %q starts or ends with a dot or space", name)
+	}
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ' ', '$', '#':
+			continue
+		}
+		return fmt.Errorf("invalid character %q in SQL Server instance name %q", r, name)
+	}
+	return nil
+}
+
+// serverPathQuery returns a query that prints the nvarchar server property
+// as "<byte count>:<hex of its UTF-16LE bytes>" (CONVERT style 2, no 0x
+// prefix). sqlcmd prints text in the console code page, which can alter
+// non-ASCII characters; hex does not depend on it. The byte count is taken
+// from the full value, so a value that was cut short anywhere (by the
+// nvarchar(1024) cast, or by line wrapping in the output) no longer matches
+// it and is refused by parseServerPathOutput. The bounded varchar/varbinary
+// types keep the value clear of sqlcmd's display limit for (max) types.
+func serverPathQuery(property string) string {
+	return fmt.Sprintf("SELECT CAST(DATALENGTH(CAST(SERVERPROPERTY('%[1]s') AS nvarchar(4000))) AS varchar(10)) + ':' + "+
+		"CONVERT(varchar(4096), CAST(CAST(SERVERPROPERTY('%[1]s') AS nvarchar(1024)) AS varbinary(2048)), 2)", property)
+}
+
+// parseServerPathOutput decodes one "<byte count>:<hex>" value printed by
+// serverPathQuery, refusing it unless the hex holds exactly that many bytes.
+func parseServerPathOutput(value string) (string, error) {
+	countText, encoded, ok := strings.Cut(strings.TrimSpace(value), ":")
+	if !ok {
+		return "", fmt.Errorf("value has no byte count")
+	}
+	count, err := strconv.Atoi(countText)
+	if err != nil || count < 0 {
+		return "", fmt.Errorf("invalid byte count %q", countText)
+	}
+	if len(encoded) != 2*count {
+		return "", fmt.Errorf("value holds %d hex digits, want %d", len(encoded), 2*count)
+	}
+	return decodeUTF16LEHex(encoded)
+}
+
+// decodeUTF16LEHex decodes the hex of a UTF-16LE string, as printed by
+// serverPathQuery. It refuses anything that is not whole, correctly paired
+// UTF-16 code units.
+func decodeUTF16LEHex(value string) (string, error) {
+	value = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(value), "0x"), "0X")
+	raw, err := hex.DecodeString(value)
+	if err != nil {
+		return "", fmt.Errorf("not hex: %w", err)
+	}
+	if len(raw)%2 != 0 {
+		return "", fmt.Errorf("odd byte count %d", len(raw))
+	}
+	units := make([]uint16, len(raw)/2)
+	for i := range units {
+		units[i] = binary.LittleEndian.Uint16(raw[2*i:])
+	}
+	for i := 0; i < len(units); i++ {
+		switch u := units[i]; {
+		case u >= 0xD800 && u <= 0xDBFF:
+			if i+1 >= len(units) || units[i+1] < 0xDC00 || units[i+1] > 0xDFFF {
+				return "", fmt.Errorf("unpaired surrogate")
+			}
+			i++
+		case u >= 0xDC00 && u <= 0xDFFF:
+			return "", fmt.Errorf("unpaired surrogate")
+		}
+	}
+	return string(utf16.Decode(units)), nil
+}
+
+// queryServerPath reads one of the instance's default directories
+// (InstanceDefaultBackupPath, InstanceDefaultDataPath,
+// InstanceDefaultLogPath) through serverPathQuery. A NULL, empty,
+// undecodable or non-printable value is an error.
+func queryServerPath(serverName, property string) (string, error) {
+	out, err := runSqlcmd(serverName, serverPathQuery(property))
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", property, err)
+	}
+	if containsSqlError(out) {
+		return "", fmt.Errorf("resolve %s: %s", property, extractSqlError(out))
+	}
+	encoded := parseSqlcmdSingleValue(out)
+	if encoded == "" || strings.EqualFold(encoded, "NULL") {
+		return "", fmt.Errorf("resolve %s: returned no usable value", property)
+	}
+	value, err := parseServerPathOutput(encoded)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %v", property, err)
+	}
+	if value == "" || !isPrintableText(value) {
+		return "", fmt.Errorf("resolve %s: returned no usable value", property)
+	}
+	return value, nil
 }

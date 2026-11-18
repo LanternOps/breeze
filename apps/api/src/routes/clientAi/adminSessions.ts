@@ -8,6 +8,7 @@ import { portalUsers } from '../../db/schema/portal';
 import { requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE, type SiteCeilingAuth } from '../../services/siteCeilingAccess';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { CLIENT_SESSION_TYPES } from '../../services/clientAiHosts';
 import { adminSessionListQuerySchema, flagSessionSchema } from './schemas';
@@ -74,6 +75,8 @@ const sessionSelection = {
   flagReason: aiSessions.flagReason,
   createdAt: aiSessions.createdAt,
   lastActivityAt: aiSessions.lastActivityAt,
+  /** Set when transcript retention stubbed the session (#4342 W4); null otherwise. */
+  transcriptPurgedAt: aiSessions.transcriptPurgedAt,
 };
 
 // ── GET /sessions — filtered, paginated list ─────────────────────────────────
@@ -132,6 +135,7 @@ clientAiAdminSessionRoutes.get(
         flaggedAt: r.flaggedAt,
         flagReason: r.flagReason,
         status: r.status,
+        transcriptPurgedAt: r.transcriptPurgedAt,
       })),
       pagination: { total: Number(totalRow?.n ?? 0), limit: q.limit, offset: q.offset },
     });
@@ -223,7 +227,12 @@ clientAiAdminSessionRoutes.post(
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
-    const auth = c.get('auth') as SessionAuth;
+    const auth = c.get('auth') as SessionAuth & SiteCeilingAuth;
+    // Flags are an organization-level review marker on an AI for Office
+    // session, which has no site; same rule as the other AI for Office writes.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const session = await getClientSession(auth, c.req.param('id')!);
     if (!session) return c.json({ error: 'Session not found' }, 404);
 
@@ -270,7 +279,12 @@ clientAiAdminSessionRoutes.delete(
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
-    const auth = c.get('auth') as SessionAuth;
+    const auth = c.get('auth') as SessionAuth & SiteCeilingAuth;
+    // Flags are an organization-level review marker on an AI for Office
+    // session, which has no site; same rule as the other AI for Office writes.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const session = await getClientSession(auth, c.req.param('id')!);
     if (!session) return c.json({ error: 'Session not found' }, 404);
 

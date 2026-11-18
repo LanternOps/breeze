@@ -1,18 +1,45 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { MigrationWindowError } from '../migrationWindows';
 import { TicketServiceError } from '../ticketService';
 import { IMPORT_ATTACHMENT_MAX_BYTES } from './importAttachments';
 import type { ImportedTicket } from './importedTicket';
 import type { ImportTicketResult } from './importWriter';
 import type { Conversion, ReportNote } from './moduleContract';
+import type { ItemRow, ItemWrite } from './runLedger';
 import type { IssueBuffer, RunCounters, RunIssue } from './runReport';
-import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceUnavailableError } from './sourceFetch';
+import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceShapeError, SourceUnavailableError } from './sourceFetch';
 
 /**
  * The pure decisions of a slice (#8313 W4; spec 2026-10-19 §5.2, §5.8–§5.10):
  * what a conversion's notes, an import result and an error mean for the
  * ledger, the counters and the report. No I/O.
  */
+
+/**
+ * A list row the module could key but not read (`SourceRow.failure`) whose
+ * ticket the ledger shows imported (#11296 follow-up). Not a new failure:
+ * the Breeze ticket is there and nothing new could be read, so failing it
+ * would mark an imported ticket failed on every run until the row reads
+ * again. The item stays imported (its imported version too, so the row is
+ * imported again once it reads), is seen by this run (the deletions phase
+ * does not probe it), is counted skipped and listed once as
+ * `row_unreadable` with the module's code. Returns the item to stage, or
+ * null when the row fails as before: a ticket never imported, or one whose
+ * item is in any other state.
+ */
+export function keepImportedOnUnreadableRow(
+  item: ItemRow | undefined,
+  code: string,
+  seen: Pick<ItemWrite, 'seenVersion' | 'seenRunId'>,
+  counters: RunCounters,
+  issues: IssueBuffer,
+  target: IssueTarget,
+): ItemWrite | null {
+  if (!item || item.state !== 'imported' || item.importedVersion === null) return null;
+  counters.tickets.skipped += 1;
+  issues.add({ sourceTicketKey: target.key, sourceTicketNumber: target.number, kind: 'row_unreadable', code: code.slice(0, 64) });
+  return { ...item, ...seen };
+}
 
 /** A source time clamped to now, or a ticket that fails `clock_skew` (§5.2). */
 export function clampTicketTimes(
@@ -95,6 +122,11 @@ export function applyNotes(
         counters.customAttributes[name] = (counters.customAttributes[name] ?? 0) + Math.max(1, note.count ?? 1);
         break;
       }
+      case 'module_count': {
+        const name = note.name.slice(0, 64);
+        counters.moduleCounts[name] = (counters.moduleCounts[name] ?? 0) + Math.max(0, note.count ?? 1);
+        break;
+      }
     }
   }
 }
@@ -117,6 +149,10 @@ export function recordImportResult(
   counters.comments.skipped += result.commentsSkipped;
   counters.attachments.written += result.attachmentsWritten;
   counters.attachments.bytes += result.attachmentBytes;
+  // W4b (§5.13): a created contact, or a `{ createContact }` requester the
+  // writer left display-only (several contacts share the email).
+  counters.contactsCreated += result.contactsCreated;
+  if (result.requesterResolution === 'display_only') counters.requestersWithoutContact += 1;
   const base = { sourceTicketKey: target.key, sourceTicketNumber: target.number };
 
   if (result.statusSkipped) {
@@ -166,6 +202,47 @@ export function predictTicket(ticket: ImportedTicket, counters: RunCounters, res
   }
 }
 
+/**
+ * The dry run's dedupe key of a contact to create: an HMAC-SHA256 of (org,
+ * lower(email)) keyed by the run id, never the address. Keyed per run, so a
+ * digest stored in one run's cursor cannot be checked against a guessed
+ * address by computing it once and looking for it across runs. Within one
+ * run it hides nothing (the run's own id is in the cursor next to it); that is
+ * fine, because the addresses it stands for are already in `contacts` or in
+ * the source the run reads.
+ */
+export function predictedContactKey(runId: string, orgId: string, email: string): string {
+  return createHmac('sha256', runId).update(`${orgId}:${email.trim().toLowerCase()}`).digest('hex').slice(0, 16);
+}
+
+/**
+ * A dry run's prediction for a `{ createContact }` requester (§5.10, §5.13):
+ * `create` counts once per (org, email) across the run (`seen`, the cursor's
+ * keys, bounded by `maxKeys`; past it, counted without dedupe), `display_only`
+ * counts a requester without contact. A linked or matched requester counts
+ * nothing.
+ */
+export function predictRequesterContact(
+  prediction: 'linked' | 'matched' | 'create' | 'display_only',
+  runId: string,
+  orgId: string,
+  email: string,
+  counters: RunCounters,
+  seen: Set<string>,
+  maxKeys: number,
+): void {
+  if (prediction === 'display_only') {
+    counters.requestersWithoutContact += 1;
+    return;
+  }
+  if (prediction !== 'create') return;
+  const key = predictedContactKey(runId, orgId, email);
+  if (seen.has(key)) return;
+  if (seen.size < maxKeys) seen.add(key);
+  else counters.predicted.contactsToCreateOverCap += 1;
+  counters.predicted.contactsToCreate[orgId] = (counters.predicted.contactsToCreate[orgId] ?? 0) + 1;
+}
+
 /** What an `importTicket` failure means for the run (§5.8). */
 export type ImportFailure =
   | { kind: 'failed'; code: string }
@@ -211,10 +288,16 @@ export type SourceFailure =
   | { kind: 'unauthorized' }
   | { kind: 'http'; status: number }
   | { kind: 'too_large' }
+  /** An answer the module cannot read (SourceShapeError): not an outage. */
+  | { kind: 'shape' }
   | { kind: 'rethrow' };
+
+/** The failure code of a ticket whose row or load the module could not read. */
+export const SOURCE_SHAPE_INVALID = 'source_shape_invalid';
 
 export function classifySourceError(error: unknown): SourceFailure {
   if (error instanceof SourceAuthError) return { kind: 'unauthorized' };
+  if (error instanceof SourceShapeError) return { kind: 'shape' };
   if (error instanceof SourceHttpError) return { kind: 'http', status: error.status };
   if (error instanceof SourceUnavailableError) return { kind: 'unavailable', retryAfterMs: error.retryAfterMs };
   if (error instanceof SourceResponseTooLargeError) return { kind: 'too_large' };

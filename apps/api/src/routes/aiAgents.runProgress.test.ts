@@ -13,22 +13,13 @@ describe('run detail progress DTO', () => {
     expect(detail.progress).toEqual([]);
   });
 
-  it(
-    'the run detail route exposes progress from the ring',
-    // Higher timeout: this dynamically imports the real (unmocked)
-    // `./aiAgents` module purely to prove the source shape below — that pulls
-    // in the real `../db` client, whose module-scope `postgres()` construction
-    // is slow to settle under the no-DB unit runner. Same tradeoff other
-    // source-string-check tests in this repo accept rather than replicating
-    // aiAgents.test.ts's full mock surface for a check that never calls the
-    // handler.
-    async () => {
-      const mod = await import('./aiAgents');
-      expect(mod).toBeTruthy();
-      const source = await import('node:fs/promises').then((fs) => fs.readFile(new URL('./aiAgents.ts', import.meta.url), 'utf8'));
-      expect(source).toContain('readRunProgress(run.id)');
-      expect(source).toMatch(/\n\s+progress,/);
-    },
-    15000,
-  );
+  it('the run detail route exposes progress from the ring', async () => {
+    // A source-shape check only. It reads the file and does not import
+    // `./aiAgents`: importing the real module pulled in the real `../db`
+    // client, and under a loaded runner that import alone exceeded the test
+    // timeout (four unrelated PR runs on 2026-11-10).
+    const source = await import('node:fs/promises').then((fs) => fs.readFile(new URL('./aiAgents.ts', import.meta.url), 'utf8'));
+    expect(source).toContain('readRunProgress(run.id)');
+    expect(source).toMatch(/\n\s+progress,/);
+  });
 });

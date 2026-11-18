@@ -10,7 +10,8 @@
  * possibly with nobody watching (the eviction sweep). When on, it spends only when
  * the grant is active and has daily budget left and the org's own budget gates
  * pass, and the call is charged to the grant's daily budget: the settled ledger
- * rows carry `summaryRefineSourceRef(grantId)`, which `spentUnderGrant` sums.
+ * rows carry `summaryRefineSourceRef(grantId)`, a registered grant overhead ref
+ * (`GRANT_OVERHEAD_SOURCE_REF_PREFIXES`) that `spendBreakdownUnderGrant` sums on the background line.
  *
  * Billing copies the continuation summary (routes/aiSessionContinue.ts): a
  * SESSIONLESS reservation under its own key prefix, budget-bounded output, settled

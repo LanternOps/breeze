@@ -14,8 +14,9 @@
  * field would force a policy-snapshot version bump for nothing. `profileCaps`
  * in `runService.ts` reads them directly.
  */
-import type { AiAgentLimits, AiAgentRunProfile } from '@breeze/shared';
+import type { AiAgentLimits, AiAgentRunProfile, WispCheckInTriggerEvent } from '@breeze/shared';
 import { outcomeToolsForProfile } from './outcomeTools';
+import type { CheckInSubject } from '../wisp/assessmentTypes';
 
 /** Turns per assessment run (w00 "Assessment limits"). */
 export const ASSESSMENT_MAX_TURNS = 15;
@@ -41,7 +42,12 @@ export const ASSESSMENT_MAX_RUNS_PER_HOUR = 6;
  * (assessmentProfile.test.ts asserts all four). `manage_alerts` is a
  * multiplexed tool whose mutating actions escalate in `aiGuardrails.ts`, so
  * it is listed ONLY action-scoped to its two reads — the same entries
- * `VERDICT_TOOL_ALLOWLIST` uses. There is no agent-reachable ticket read
+ * `VERDICT_TOOL_ALLOWLIST` uses. `manage_device_anomalies` is the same shape
+ * (a read plus mutating actions that escalate in `aiGuardrails.ts`) and is
+ * listed only as `:list` (#11425): an anomaly wake drills into the device's
+ * anomaly rows.
+ * Every action-scoped entry must be a `TIER1_READ_ACTIONS` read (asserted in
+ * the test). There is no agent-reachable ticket read
  * tool today (`manage_tickets` is not in `TOOL_TIERS`); ticket facts reach
  * the run through the context block instead.
  *
@@ -59,6 +65,8 @@ export const ASSESSMENT_TOOL_ALLOWLIST: readonly string[] = [
   'query_devices', 'get_device_details', 'query_audit_log',
   // Alerts (read actions only).
   'manage_alerts:list', 'manage_alerts:get',
+  // Metric anomaly rows on one device (read action only, #11425).
+  'manage_device_anomalies:list',
   // Backup health.
   'get_backup_status', 'query_backup_sla',
   // Incidents.
@@ -68,6 +76,48 @@ export const ASSESSMENT_TOOL_ALLOWLIST: readonly string[] = [
   // Wisp memory (W03), grant-scoped.
   'recall',
 ];
+
+/**
+ * #11978 — the extra reads a run-mode check-in's assessment gets for the
+ * subject its trigger waits on, keyed by every trigger event so a new event
+ * makes a deliberate choice. The floor above covers a device (`device_online`:
+ * `get_device_details`); the trigger's evidence carries a script's or a
+ * command's result. An AI agent run has neither, so a `run_settled` check-in
+ * gets `get_ai_agent_run` — and only that run's check-in, not every
+ * assessment. Same four guarantees as the floor (assessmentProfile.test.ts):
+ * tier 1, registered, agent-reachable, declared on the breeze MCP server. The
+ * per-call grant-ceiling check still applies (`ai_agents:read`, the same
+ * permission scheduling a `run_settled` check-in required).
+ */
+export const CHECK_IN_SUBJECT_READ_TOOLS: Readonly<Record<WispCheckInTriggerEvent, readonly string[]>> = {
+  device_online: [],
+  script_finished: [],
+  command_finished: [],
+  run_settled: ['get_ai_agent_run'],
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A stored check-in subject (#11978), or null when absent or not a trigger event + uuid. */
+export function parseCheckInSubject(v: unknown): CheckInSubject | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const { kind, id } = v as { kind?: unknown; id?: unknown };
+  if (typeof kind !== 'string' || !Object.hasOwn(CHECK_IN_SUBJECT_READ_TOOLS, kind)) return null;
+  if (typeof id !== 'string' || !UUID_RE.test(id)) return null;
+  return { kind: kind as WispCheckInTriggerEvent, id };
+}
+
+/**
+ * The trigger subject of a check-in assessment's `trigger_ref`, or null for
+ * any other run or a malformed subject. Read inline rather than through
+ * `parseWispTriggerRef` (wisp/assessment.ts) so this module stays off the
+ * assessment graph; that parser applies the same `parseCheckInSubject`.
+ */
+export function checkInSubjectOf(triggerRef: Record<string, unknown> | null | undefined): CheckInSubject | null {
+  const wisp = triggerRef?.wisp as { reason?: { kind?: unknown; subject?: unknown } } | null | undefined;
+  if (wisp?.reason?.kind !== 'check_in') return null;
+  return parseCheckInSubject(wisp.reason.subject);
+}
 
 export function isAssessmentProfile(run: { profile: AiAgentRunProfile }): boolean {
   return run.profile === 'assessment';
@@ -116,7 +166,15 @@ export function assessmentLimits(limits: AiAgentLimits): AiAgentLimits {
  * the same reason the siblings filter `OUTCOME_TOOL_NAMES` instead of
  * hard-coding a literal. `resolveRunToolExposure` maps an outcome name to its
  * MCP name and keeps it out of `onlyTools`.
+ *
+ * #11978: a run check-in's assessment also gets its trigger subject's reads
+ * (`CHECK_IN_SUBJECT_READ_TOOLS`), from the run's own `trigger_ref`.
  */
-export function assessmentToolAllowlist(_agentAllowlist: string[]): string[] {
-  return [...ASSESSMENT_TOOL_ALLOWLIST, ...outcomeToolsForProfile('assessment')];
+export function assessmentToolAllowlist(
+  _agentAllowlist: string[],
+  triggerRef?: Record<string, unknown> | null,
+): string[] {
+  const subject = checkInSubjectOf(triggerRef);
+  const subjectReads = subject ? CHECK_IN_SUBJECT_READ_TOOLS[subject.kind] : [];
+  return [...ASSESSMENT_TOOL_ALLOWLIST, ...subjectReads, ...outcomeToolsForProfile('assessment')];
 }

@@ -151,7 +151,7 @@ const REASON_KEYS: Record<string, string> = {
   installer_link_missing: "installerLinkMissing",
 };
 
-type TFn = (key: string) => string;
+type TFn = (key: string, opts?: Record<string, string>) => string;
 
 export function coverageStateLabel(t: TFn, state: string): string {
   const key = isCoverageState(state) ? STATE_KEYS[state] : null;
@@ -159,10 +159,13 @@ export function coverageStateLabel(t: TFn, state: string): string {
 }
 
 /** Translated reason label; an unknown code falls back to the raw code. */
-export function coverageReasonLabel(t: TFn, code: string | null): string {
+export function coverageReasonLabel(t: TFn, code: string | null, vendor?: string): string {
   if (!code) return "";
   const key = REASON_KEYS[code];
-  return key ? t(/* i18n-dynamic */ `security:securityAgentCoverage.reasons.${key}`) : code;
+  // Reasons that name the vendor interpolate the row's own vendor; a fixed brand would be wrong for the other rows.
+  return key
+    ? t(/* i18n-dynamic */ `security:securityAgentCoverage.reasons.${key}`, { vendor: vendor ? vendorLabel(vendor) : "" })
+    : code;
 }
 
 /** Setup-link labels per reason; any other reason with a setup path reads the default. */

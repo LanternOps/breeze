@@ -64,6 +64,21 @@ describe('BackupHealthOverview', () => {
     expect(unsuccessful.textContent).toContain('3');
   });
 
+  it('counts overdue devices under "No recent backup", not "Completed" (#12025)', async () => {
+    respond({
+      summary: summary({
+        byStatus: { completed: 9, failed: 0, over_quota: 0, no_backups: 0, completed_with_errors: 0, in_progress: 0, interrupted: 0, no_selection: 0, not_started: 0, unknown: 0, paused: 0 },
+        byStatusBucket: { no_backups: 0, completed: 6, overdue: 3, completed_with_errors: 0, in_progress: 0, unsuccessful: 0, other: 0 },
+      }),
+    });
+    render(<BackupHealthOverview orgId="org-1" />);
+    const completed = await screen.findByTestId('backup-health-status-completed');
+    expect(completed.textContent).toContain('6');
+    const overdue = screen.getByTestId('backup-health-status-overdue');
+    expect(overdue.textContent).toContain('3');
+    expect(overdue.textContent).toContain('No recent backup');
+  });
+
   it('renders the four last-successful-backup bars', async () => {
     render(<BackupHealthOverview orgId="org-1" />);
     for (const id of ['never', 'over_48h', 'under_48h', 'under_24h']) {

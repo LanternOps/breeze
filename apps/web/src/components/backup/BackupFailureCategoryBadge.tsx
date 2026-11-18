@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { BackupFailureCategory } from '@breeze/shared';
+import type { BackupFailureCategory, BackupFailureCause } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import '../../lib/i18n';
 
@@ -21,15 +21,20 @@ const CATEGORY_TONE: Record<BackupFailureCategory, string> = {
 /** The muted "what this means and where to read more" lines under a category. */
 export function BackupFailureCategoryHint({
   category,
+  cause,
   className,
 }: {
   category: BackupFailureCategory;
+  /** #11768: the finer cause, when the API knows one; its hint replaces the category's. */
+  cause?: BackupFailureCause | null;
   className?: string;
 }) {
   const { t } = useTranslation('backup');
   return (
     <p className={cn('text-xs text-muted-foreground', className)}>
-      {t(/* i18n-dynamic */ `failureCategory.${category}.hint`)}{' '}
+      {cause
+        ? t(/* i18n-dynamic */ `failureCause.${cause}.hint`)
+        : t(/* i18n-dynamic */ `failureCategory.${category}.hint`)}{' '}
       <a href={TROUBLESHOOTING_URL} target="_blank" rel="noopener noreferrer" className="underline">
         {t('failureCategory.troubleshootingLink')}
       </a>
@@ -41,9 +46,11 @@ export function BackupFailureCategoryHint({
 // comes from the API, so it is absent on an older API during a rolling deploy.
 export default function BackupFailureCategoryBadge({
   category,
+  cause,
   showHint = false,
 }: {
   category: BackupFailureCategory | null | undefined;
+  cause?: BackupFailureCause | null;
   showHint?: boolean;
 }) {
   const { t } = useTranslation('backup');
@@ -53,7 +60,12 @@ export default function BackupFailureCategoryBadge({
     <span
       data-testid="backup-failure-category"
       data-category={category}
-      title={t(/* i18n-dynamic */ `failureCategory.${category}.hint`)}
+      data-cause={cause ?? undefined}
+      title={
+        cause
+          ? t(/* i18n-dynamic */ `failureCause.${cause}.hint`)
+          : t(/* i18n-dynamic */ `failureCategory.${category}.hint`)
+      }
       className={cn(
         'inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium',
         CATEGORY_TONE[category],
@@ -67,7 +79,7 @@ export default function BackupFailureCategoryBadge({
   return (
     <div>
       {badge}
-      <BackupFailureCategoryHint category={category} className="mt-1" />
+      <BackupFailureCategoryHint category={category} cause={cause} className="mt-1" />
     </div>
   );
 }

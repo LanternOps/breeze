@@ -483,7 +483,7 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity, provenan
 	if identity && digest != "" && digest == imageID && !img.pulledFrom(parsed.Repository) {
 		digest, dropped = "", true
 	}
-	if digest == "" && parsed.Pinned && digestPattern.MatchString(parsed.Digest) {
+	if digest == "" && parsed.Pinned && digestPattern().MatchString(parsed.Digest) {
 		digest = parsed.Digest
 	}
 	var prov string

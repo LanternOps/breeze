@@ -67,6 +67,7 @@ function syncDependencies() {
       maxItemsSkus: 200,
       maxItemsSigninEvents: 25_000,
       signinEventsRpm: 6,
+      signinEventsPageSize: 100,
       continuationKey: null,
     },
     continuations: createSyncContinuationCodec({ key: null }),
@@ -80,6 +81,25 @@ function validSyncRequest(): SyncActionRequest {
 }
 
 describe('executor operations', () => {
+  // The shared retest contract requires a reconciliation mode on a complete
+  // result (#12085). Read always reads the exact inventory.
+  it('returns a schema-valid complete result in exact mode', async () => {
+    const grant = {
+      resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+      appRoleId: 'df021288-bdef-4463-88db-98f22de89214',
+      value: 'User.Read.All',
+    };
+    const result = await retestOperation(
+      { correlationId: CORRELATION_ID, tenantId: TENANT_ID },
+      dependencies({ observedGrants: [grant] }) as never,
+    );
+    expect(result).toMatchObject({
+      success: true,
+      grantReconciliation: 'complete',
+      grantReconciliationMode: 'exact',
+    });
+  });
+
   it('preserves verified tenant proof when grant reconciliation is unavailable', async () => {
     const result = await retestOperation({
       correlationId: '11111111-1111-4111-8111-111111111111',

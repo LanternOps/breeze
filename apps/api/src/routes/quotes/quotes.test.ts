@@ -303,7 +303,8 @@ describe('quote crud + lines routes', () => {
     });
     // No partner/documentTheme row preset → resolveThemeId/resolvePageSize fall
     // through to their defaults, same as `branding` (Task 12).
-    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+    // #12097: no page-size choice and no country → the (US) deployment default, Letter.
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'letter' });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
   });
 

@@ -250,6 +250,18 @@ describe('POST /devices/:id/remote-access-launch', () => {
     expect(requireMfaCallCountAtImport).toBeGreaterThan(0);
   });
 
+  // #11621: a caller without remote:access gets the same readable, coded 403 as
+  // /remote/* — not a bare "Permission denied".
+  it('refuses a caller without remote:access with the coded remote-access denial', () => {
+    const remoteGate = requirePermissionCallsAtImport.find((c) => c[0] === 'remote' && c[1] === 'access');
+    expect(remoteGate?.[2]).toEqual({
+      denial: expect.objectContaining({
+        code: 'REMOTE_ACCESS_PERMISSION_REQUIRED',
+        message: expect.stringContaining('remote:access'),
+      }),
+    });
+  });
+
   it('returns 404 when device does not exist', async () => {
     vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(null as never);
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);

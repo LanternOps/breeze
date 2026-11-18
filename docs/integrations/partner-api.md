@@ -227,6 +227,30 @@ Disable the principal to stop all of its keys. Revoke one key to contain a
 single credential without affecting another active key. Revocation is
 idempotent and cannot be undone; issue a replacement instead.
 
+### The principal's owner
+
+A principal acts within the authority of its owner, the operator who created
+it. Every request re-checks the owner's current access:
+
+- the owner's account is active, and their password and MFA factors have not
+  changed since the key was issued;
+- the owner is still a member of the partner, on that partner's role, with
+  access to all of its organizations;
+- the owner's current role still grants the permission behind every Partner
+  API scope the principal holds (for example `tickets:write` needs
+  `tickets.write`, `organizations:write` and `enrollment-keys:write` need
+  `organizations.write`).
+
+If any of these stops holding, every request with the principal's keys returns
+`401`. The principal's access is never narrowed to the scopes the owner still
+covers. Restoring the owner's role or organization access restores the
+principal. A password or MFA change, or removing the owner from the partner,
+ends the existing keys for good; the owner issues new ones. A principal that a
+system operator created for a partner they are not a member of is accepted
+while that operator is still a platform administrator.
+Before an owner leaves or changes role, create a replacement principal under
+an operator who holds the needed access and move the consumer to its key.
+
 ## Pagination, checkpoints, and versioning
 
 Every resource except `/alerts` returns the same strict envelope (the alerts feed has its own checkpoint envelope, described under "Alerts feed" below):
@@ -294,7 +318,7 @@ around the limit.
 | Status | Consumer action |
 |---|---|
 | `400` | Stop; correct invalid filters, cursor, timestamp, or schema handling. |
-| `401` | Stop; verify key capture, expiry, revocation, principal/partner state, and CIDR trust. |
+| `401` | Stop; verify key capture, expiry, revocation, principal/partner state, the owner's current access, and CIDR trust. |
 | `403` | Stop; add only the exact missing read scope. |
 | `404` | Stop; the requested organization is not accessible to this partner. |
 | `429` | Preserve the checkpoint and retry after `Retry-After`, with a bounded attempt count. |

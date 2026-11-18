@@ -5,6 +5,7 @@ import {
   dismissBodySchema,
   listConcernsQuerySchema,
   listConcernsToolSchema,
+  normalizeConcernPattern,
   nudgeSchema,
   proposeActionSchema,
   raiseConcernChatSchema,
@@ -15,6 +16,7 @@ import {
   snoozeBodySchema,
   snoozeConcernToolSchema,
   updateConcernSchema,
+  updateConcernToolShape,
   validateRequestSpecialist,
 } from './wispConcerns';
 import { CONCERN_SUBJECT_KINDS } from '../types/wispConcerns';
@@ -52,6 +54,29 @@ describe('JSON byte caps', () => {
   });
 });
 
+// #11426: the shared key the same-org rollup groups device concerns by.
+describe('record_concern pattern + normalizeConcernPattern', () => {
+  it('accepts an optional pattern on record_concern and keeps it out of the chat raise_concern', () => {
+    const base = { subject: { kind: 'device' as const, id }, summary: 's', severity: 'low' as const };
+    expect(raiseConcernSchema.parse({ ...base, pattern: ' phantom_incident_event ' }).pattern).toBe('phantom_incident_event');
+    expect(raiseConcernSchema.safeParse({ ...base, pattern: 'x'.repeat(101) }).success).toBe(false);
+    expect('pattern' in raiseConcernChatSchema.shape).toBe(false);
+    expect(raiseConcernChatSchema.parse({ ...base, orgId: id2, pattern: 'phantom_incident_event' })).not.toHaveProperty('pattern');
+  });
+
+  it('normalises to lowercase snake_case, cut at an underscore, null when too short', () => {
+    expect(normalizeConcernPattern('  Phantom Incident-Event ')).toBe('phantom_incident_event');
+    expect(normalizeConcernPattern('Browser: critical CVEs!')).toBe('browser_critical_cves');
+    const long = normalizeConcernPattern(`${'abcdefghij_'.repeat(7)}tail`)!;
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(long.endsWith('_')).toBe(false);
+    expect(long).toBe('abcdefghij_'.repeat(4) + 'abcdefghij');
+    expect(normalizeConcernPattern('a-')).toBeNull();
+    expect(normalizeConcernPattern('---')).toBeNull();
+    expect(normalizeConcernPattern(42)).toBeNull();
+  });
+});
+
 describe('raiseConcernChatSchema (raise_concern)', () => {
   it('accepts the chat subject kinds with an explicit orgId', () => {
     for (const kind of ['ticket', 'org', 'quote', 'invoice', 'contract', 'device']) {
@@ -75,6 +100,23 @@ describe('updateConcernSchema', () => {
   it('rejects a status other than resolved', () => {
     expect(updateConcernSchema.safeParse({ concernId: id, status: 'dismissed', outcome: 'x' }).success).toBe(false);
   });
+  // #11427: the model sent `{ concernId, summary, outcome }` with no status for
+  // a week, which only edited the summary. An outcome is a conclusion: it resolves.
+  it('an outcome without a status parses as a resolve', () => {
+    expect(updateConcernSchema.parse({ concernId: id, outcome: 'Device restarted on its own' })).toEqual({
+      concernId: id, outcome: 'Device restarted on its own', status: 'resolved',
+    });
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Rebooted', outcome: 'Reboot alert cleared' }).status).toBe('resolved');
+  });
+  it('an edit without an outcome stays an edit (no status added)', () => {
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Still pending a restart' })).toEqual({
+      concernId: id, summary: 'Still pending a restart',
+    });
+  });
+  it('the tool shape describes status and outcome to the model', () => {
+    expect(updateConcernToolShape.status.description).toMatch(/resolved/);
+    expect(updateConcernToolShape.outcome.description).toMatch(/resolve/i);
+  });
 });
 
 describe('outcome-tool schemas', () => {
@@ -91,9 +133,11 @@ describe('outcome-tool schemas', () => {
     expect(requestSpecialistSchema.safeParse({ kind: 'sweep', params: {}, reason: 'look at all backups' }).success).toBe(true);
   });
   it('request_specialist accepts only the W07 specialist kinds', () => {
-    for (const kind of WISP_SPECIALIST_KINDS) {
+    for (const kind of WISP_SPECIALIST_KINDS.filter((k) => k !== 'assessment')) {
       expect(requestSpecialistSchema.safeParse({ kind, params: {}, reason: 'look at all backups' }).success).toBe(true);
     }
+    // #10406: chat-only — an assessment never asks for more assessments.
+    expect(requestSpecialistSchema.safeParse({ kind: 'assessment', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'run_script', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'backup', params: {}, reason: 'look at all backups' }).success).toBe(false);
   });

@@ -6,6 +6,7 @@
  */
 import { z } from 'zod';
 import { templateLeafKinds, type FlowIssue } from '@breeze/shared';
+import { findUnknownInputKeys, formatUnknownKeyFinding, unknownKeysCovered } from '../aiToolUnknownKeys';
 
 export function issue(
   code: FlowIssue['code'],
@@ -173,10 +174,19 @@ export function zodInputIssues(schema: z.ZodType, input: Record<string, unknown>
   const kinds = templateLeafKinds(input);
   const seen = new Set<string>();
   const out: FlowIssue[] = [];
+  // #11861: an argument the tool does not define is refused at dispatch, so it
+  // is an authoring error here too, templated value or not. A strict schema's
+  // own `unrecognized_keys` for the same object is the duplicate, dropped below.
+  const unknown = findUnknownInputKeys(schema, input);
+  for (const f of unknown) {
+    const pointer = toPointer(f.path);
+    out.push(issue('input_invalid', `${pointer || '/'}: ${formatUnknownKeyFinding({ ...f, path: [] })}`, { stepId, pointer: `${base}${pointer}` }));
+  }
   const collect = (issues: LooseZodIssue[]): LooseZodIssue[] => {
     const masked: LooseZodIssue[] = [];
     for (const zi of issues) {
       const pointer = toPointer(zi.path);
+      if (zi.code === 'unrecognized_keys' && unknownKeysCovered(unknown, zi.path, (zi as { keys?: string[] }).keys ?? [])) continue;
       if (zodIssueMasked(zi, templateKindAt(pointer, kinds))) {
         masked.push(zi);
         continue;

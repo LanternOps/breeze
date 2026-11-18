@@ -205,6 +205,48 @@ Moving is refused while durable PAM lifecycle evidence exists for the device, an
 
 ---
 
+## Reattaching a Reinstalled Machine
+
+When a machine is reformatted or reimaged and the agent is installed again, the new install enrolls as a new device. Breeze compares what the new install reports (system UUID, serial number and manufacturer, hostname) with the partner's existing records. When an older record matches and has gone silent, the new device is flagged as a possible reinstall of it. **Reattach** lets the new install take over the existing record, so the machine keeps its history, policies, custom fields and tickets instead of starting over as a new device.
+
+### Where to start a reattach
+
+- **The device page.** A flagged device shows the possible-replacement banner. When the old record is in the same organization, the banner offers **Reattach** beside **Remove old device**.
+- **Unassigned Devices.** When a device waiting in the holding area matches an existing record, its **Assign** dialog offers **Reattach to *name*** beside **Assign as a new device**.
+
+The action is offered only to partner users with `devices:write` and `devices:delete`. Others still see the banner and its **Remove old device** action, without **Reattach**. A user who cannot see the matching record at all, such as an organization user or a technician without access to that record's organization or site, is told only that a possible reinstall awaits partner review. While a reattach is pending, the banner says so instead of offering another, and assigning the device as new from Unassigned Devices asks you to confirm that it cancels the pending reattach.
+
+### The reattach dialog
+
+The dialog shows the new install and the existing record side by side, with what matched. The identifiers come from the device itself and are not verified, and the dialog says so. To request the reattach you:
+
+<Steps>
+1. **Confirm possession.** Tick the box to confirm, outside Breeze, that the new install runs on the machine the existing record describes.
+
+2. **Type the existing record's hostname.** Matching identifiers are only a hint, so the name must be typed (case does not matter).
+
+3. **Acknowledge an operating system change**, when the new install reports a different operating system than the record.
+
+4. **Choose to restore a removed record**, when the existing record was removed.
+
+5. **Verify with your second factor**, when two-factor authentication is enabled. The verification is bound to this device pair and to the existing record's current install, so it cannot be reused for another reattach.
+</Steps>
+
+Only partner users with `devices:write` and `devices:delete` reattach devices, from an interactive session. A technician limited to selected organizations needs both devices' organizations. Reattaching a device from the holding area on matching identifiers alone needs a full partner administrator.
+
+### After the request
+
+The request is pending until the new install's agent picks it up the next time it checks in and completes it. Nothing else is needed in the console. When it completes:
+
+- the new install rebuilds the existing record's inventory;
+- queued work, grants and sessions of the old install are cancelled;
+- the new device record is retired;
+- the existing record shows a **Reinstalled on *date*** badge, and the reattach appears in its activity feed.
+
+A request expires if the agent does not complete it in time. Breeze refuses a reattach with an explanation when the existing record is still in use (its install authenticated recently), when either device is already in a pending reattach, when the new install's agent is too old to reattach, or when the existing record changed since the dialog was opened.
+
+---
+
 ## Billing Coverage
 
 The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:

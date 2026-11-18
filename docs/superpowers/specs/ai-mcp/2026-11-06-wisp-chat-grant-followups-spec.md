@@ -163,6 +163,8 @@ This adds no new authority: it only converts a proposal into a refusal, never th
 
 ### 6.2 Options
 
+> **Shipped as (W04 #11493, 2026-11-09):** a third timing, `trigger: { event, subjectId, deadlineMinutes? }`, beside the existing `delayMinutes` / `at`. There is no `deadline_at` column: for an event row, `due_at` is the deadline. `fire_reason` records why the row fired and is also the fire claim.
+
 **A. Event triggers on check-ins (recommended, wave 1).** `schedule_check_in` accepts `when: {after_minutes} | {event: 'device_online' | 'script_finished' | 'command_finished' | 'run_settled', subjectId}`. Every event check-in carries a **deadline**: default 24 h, at most 7 days, inside the existing DB window.
 - Firing is a **state predicate**, not trust in a single event:
   - `devices.status = 'online'`;

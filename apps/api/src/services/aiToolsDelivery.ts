@@ -4,13 +4,14 @@ import { db } from '../db';
 import { notificationChannels, notificationRoutingRules, escalationPolicies } from '../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
-import type { AiTool } from './aiTools';
+import type { AiTool, PreFilingVerdict } from './aiTools';
+import { resolveWritableToolOrgId, withOwnerScopeOption } from './aiToolWriteOrg';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { deliveryToolSchema } from './aiToolSchemas';
 import { createRoutingRuleSchema, updateRoutingRuleSchema, upsertDefaultRowSchema,
   canAccessRoutingSites, routingSiteIds, getRoutingRuleWithAccess } from './delivery/railContracts';
 import { createPolicySchema, updatePolicySchema } from './delivery/railContracts';
-import { resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from './delivery/railContracts';
+import { getEscalationPolicyWithOrgCheck } from './delivery/railContracts';
 import { canManagePartnerWidePolicies, canReadPartnerWideRows, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { DeliveryWriteError, assertDefaultRowPatch, escalationPolicyCompatible,
@@ -21,20 +22,55 @@ import { readInheritedRails } from './delivery/inheritedRails';
 import { validatePolicyUsers } from './delivery/railContracts';
 
 const READS = new Set(['resolve', 'list_routing', 'list_escalation']);
+/** Writes whose owner comes from the input (`orgId` / `ownerScope`), not from a row named by id. */
+const OWNER_FROM_INPUT_WRITES = new Set(['create_routing', 'set_default', 'create_escalation']);
 type Input = z.infer<typeof deliveryToolSchema>;
 function fail(status: 400 | 403 | 404 | 409, message: string): never { throw new DeliveryWriteError(status, message); }
-function resolveOwner(input: Input, auth: AuthContext): RoutingOwner {
+type OwnerResolution = { owner: RoutingOwner } | { status: 400 | 403; error: string };
+/**
+ * The owner a list or an input-owned write acts on, or its refusal. Shared by
+ * the handler and `validateBeforeFiling` (#11432). The org comes from the AI
+ * write resolver every other AI write uses: never guessed for a caller that
+ * reaches several orgs (#6667), and a write may default to the session's
+ * anchor (`aiWriteDefaultOrgId`); a list never does. The ambiguous refusal
+ * names both owners, since on a partner-wide grant the model has to choose.
+ */
+function resolveOwnerFor(input: Pick<Input, 'action' | 'orgId' | 'ownerScope'>, auth: AuthContext): OwnerResolution {
   if (input.ownerScope === 'partner') {
-    if (!auth.partnerId || !canReadPartnerWideRows(auth, auth.partnerId)) fail(403, PARTNER_WIDE_WRITE_DENIED_MESSAGE);
-    return { orgId: null, partnerId: auth.partnerId };
+    if (!auth.partnerId || !canReadPartnerWideRows(auth, auth.partnerId)) return { status: 403, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
+    return { owner: { orgId: null, partnerId: auth.partnerId } };
   }
-  const owner = resolveWriteOrgId(auth, input.orgId);
-  if (owner.error || !owner.orgId) fail(owner.status ?? 400, owner.error ?? 'Organization context required');
-  if (!auth.canAccessOrg(owner.orgId)) fail(403, 'Access to this organization denied');
-  return { orgId: owner.orgId, partnerId: null };
+  const resolved = resolveWritableToolOrgId(auth, input.orgId, { useWriteDefault: !READS.has(input.action) });
+  if (!resolved.orgId) {
+    const error = withOwnerScopeOption(resolved.error ?? 'Organization context required');
+    return { status: input.orgId || auth.scope === 'organization' ? 403 : 400, error };
+  }
+  // A carried `auth.orgId` is returned unchecked; a Wisp-narrowed auth keeps
+  // the login's, so it is re-checked against the call's reach.
+  if (!auth.canAccessOrg(resolved.orgId)) return { status: 403, error: 'Access denied to this organization' };
+  return { owner: { orgId: resolved.orgId, partnerId: null } };
+}
+function resolveOwner(input: Input, auth: AuthContext): RoutingOwner {
+  const resolved = resolveOwnerFor(input, auth);
+  if ('error' in resolved) fail(resolved.status, resolved.error);
+  return resolved.owner;
 }
 function assertWritable(owner: RoutingOwner, auth: AuthContext): void {
   if (owner.orgId === null && !canManagePartnerWidePolicies(auth)) fail(403, PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+}
+/**
+ * `validateBeforeFiling` (#11432): an input-owned write whose owner cannot
+ * resolve, or a partner-owned one without full partner org access, is refused
+ * before an approval card. Reads file no card; a row named by id and an input
+ * the schema refuses are left to the handler.
+ */
+function validateDeliveryBeforeFiling(raw: Record<string, unknown>, auth: AuthContext): PreFilingVerdict {
+  const parsed = deliveryToolSchema.safeParse(raw);
+  if (!parsed.success || !OWNER_FROM_INPUT_WRITES.has(parsed.data.action)) return { ok: true };
+  const resolved = resolveOwnerFor(parsed.data, auth);
+  if ('error' in resolved) return { ok: false, error: resolved.error };
+  if (resolved.owner.orgId === null && !canManagePartnerWidePolicies(auth)) return { ok: false, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
+  return { ok: true };
 }
 async function validateChannels(ids: string[], owner: RoutingOwner): Promise<void> {
   const unique = [...new Set(ids)]; if (!unique.length) return;
@@ -197,5 +233,6 @@ export function registerDeliveryTools(registry: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Delivery operation failed' });
       }
     },
+    validateBeforeFiling: validateDeliveryBeforeFiling,
   });
 }

@@ -14,6 +14,12 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportType } from './ReportsList';
 import { TicketSlaPerformancePreview } from './TicketSlaPerformancePreview';
 import { useTranslation } from 'react-i18next';
+import {
+  deviceCountSourcesNote,
+  endpointCoverageCounts,
+  type ThreatDetectionSummary,
+  type ThreatSourceStatus,
+} from '@breeze/shared';
 
 type PreviewMode = 'table' | 'chart';
 
@@ -340,11 +346,14 @@ export default function ReportPreview({
             opened?: number | null; resolved?: number | null;
             meanResolveHours?: number | null; carriedIn?: number | null;
           };
-          agentCoverage?: { huntressAgents?: number | null; breezeDevices?: number | null; devicesWithoutAgent?: number | null };
+          agentCoverage?: ThreatDetectionSummary['agentCoverage'];
           dataGaps?: string[];
         };
         const na = t('reports.reportPreview.threatDetection.notMeasured');
         const show = (v: number | null | undefined) => (v === null || v === undefined ? na : String(v));
+        // #12046: the same reconciled device counts the PDF prints (with +
+        // without = managed), from the shared helper so the two cannot drift.
+        const fleet = endpointCoverageCounts(s.agentCoverage);
         const tiles: { key: string; value: string; unmeasured: boolean }[] = [
           { key: 'opened', value: show(s.incidents?.opened), unmeasured: s.incidents?.opened == null },
           { key: 'resolved', value: show(s.incidents?.resolved), unmeasured: s.incidents?.resolved == null },
@@ -355,14 +364,21 @@ export default function ReportPreview({
           ...(s.coverage?.carriedInIncluded === false
             ? []
             : [{ key: 'carriedIn', value: show(s.incidents?.carriedIn), unmeasured: s.incidents?.carriedIn == null }]),
-          { key: 'agents', value: show(s.agentCoverage?.huntressAgents), unmeasured: s.agentCoverage?.huntressAgents == null },
           // Breeze's OWN fleet count, which is measured even when the detection
           // source was never connected — the same tile the PDF prints, so the
           // preview and the delivered artifact cannot disagree.
-          { key: 'breezeDevices', value: show(s.agentCoverage?.breezeDevices), unmeasured: s.agentCoverage?.breezeDevices == null },
-          { key: 'devicesWithoutAgent', value: show(s.agentCoverage?.devicesWithoutAgent), unmeasured: s.agentCoverage?.devicesWithoutAgent == null },
+          { key: 'breezeDevices', value: show(fleet.managed), unmeasured: fleet.managed == null },
+          { key: 'devicesWithAgent', value: show(fleet.withAgent), unmeasured: fleet.withAgent == null },
+          { key: 'devicesWithoutAgent', value: show(fleet.withoutAgent), unmeasured: fleet.withoutAgent == null },
         ];
-        const gaps = Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : [];
+        // #12046 follow-up: when the device tiles were counted without
+        // Huntress, the same English sentence the PDF prints (generated, like
+        // the dataGaps lines, not a UI string).
+        const sourcesNote = deviceCountSourcesNote(s.agentCoverage, s.coverage?.sourceStatus as ThreatSourceStatus | undefined);
+        const gaps = [
+          ...(Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : []),
+          ...(sourcesNote ? [sourcesNote] : []),
+        ];
         return (
           <div className="space-y-4" data-testid="threat-detection-summary">
             {gaps.length > 0 && (

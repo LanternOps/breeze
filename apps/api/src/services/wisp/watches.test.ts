@@ -77,7 +77,7 @@ vi.mock('../sentry', () => ({ captureException: h.captureException }));
 import { CeilingViolationError, type GrantCeiling } from './grantAuthority';
 import {
   WATCH_MAX_PER_GRANT, WatchLimitReachedError, claimDueWatches, createWatch, deleteWatch, listWatches,
-  stopWatchesForInactiveGrants, watchPromptLines, type Watch,
+  recordWatchHits, stopWatchesForInactiveGrants, watchPromptLines, type Watch,
 } from './watches';
 
 const GRANT = '00000000-0000-4000-8000-000000000a01';
@@ -239,6 +239,7 @@ describe('claimDueWatches', () => {
       id: 'w1', partner_id: PARTNER, org_id: ORG_A, grant_id: GRANT, owner_user_id: GRANTOR, kind: 'alert_pattern',
       params: { pattern: 'disk' }, cadence_minutes: 30, status: 'active', stopped_reason: null,
       last_ran_at: NOW, next_due_at: new Date('2026-10-24T12:30:00Z'), created_at: '2026-10-20T00:00:00+00', updated_at: NOW,
+      hit_hash: 'hash-a', hit_count: '3',
     }]];
     const claimed = await claimDueWatches(NOW, 25);
 
@@ -258,12 +259,42 @@ describe('claimDueWatches', () => {
       id: 'w1', partnerId: PARTNER, orgId: ORG_A, grantId: GRANT, kind: 'alert_pattern', params: { pattern: 'disk' },
       cadenceMinutes: 30, status: 'active', stoppedReason: null, lastRanAt: NOW.toISOString(),
       nextDueAt: '2026-10-24T12:30:00.000Z', createdAt: '2026-10-20T00:00:00.000Z',
+      // #11424: the last recorded hit-set rides along for the scheduler.
+      hitHash: 'hash-a', hitCount: 3,
     }]);
+  });
+
+  it('a watch never evaluated maps hitHash / hitCount to null (#11424)', async () => {
+    h.executeQueue = [[{
+      id: 'w1', partner_id: PARTNER, org_id: ORG_A, grant_id: GRANT, owner_user_id: GRANTOR, kind: 'alert_pattern',
+      params: null, cadence_minutes: 30, status: 'active', stopped_reason: null,
+      last_ran_at: NOW, next_due_at: NOW, created_at: NOW, updated_at: NOW, hit_hash: null, hit_count: null,
+    }]];
+    const [claimed] = await claimDueWatches(NOW, 25);
+    expect(claimed).toMatchObject({ hitHash: null, hitCount: null, params: {} });
   });
 
   it('claims nothing for a non-positive limit', async () => {
     expect(await claimDueWatches(NOW, 0)).toEqual([]);
     expect(h.executes).toHaveLength(0);
+  });
+});
+
+describe('recordWatchHits (#11424)', () => {
+  it('compare-and-sets hit_hash / hit_count on the hash the claim returned, in system context', async () => {
+    h.executeQueue = [[{ id: 'w1' }]];
+    expect(await recordWatchHits('w1', 'hash-a', { hash: 'hash-b', count: 2 }, NOW)).toBe(true);
+    expect(h.executes).toHaveLength(1);
+    expect(h.executes[0]!.system).toBe(true);
+    const { text, params } = sqlOf(h.executes[0]!.query);
+    expect(text).toMatch(/^update wisp_watches set hit_hash = \$1, hit_count = \$2, updated_at = \$3::timestamptz where id = \$4 and hit_hash is not distinct from \$5::text returning id$/);
+    expect(params).toEqual(['hash-b', 2, NOW.toISOString(), 'w1', 'hash-a']);
+  });
+
+  it('a first record compares against NULL; a lost compare-and-set reports false', async () => {
+    h.executeQueue = [[]];
+    expect(await recordWatchHits('w1', null, { hash: 'hash-a', count: 1 }, NOW)).toBe(false);
+    expect(sqlOf(h.executes[0]!.query).params).toEqual(['hash-a', 1, NOW.toISOString(), 'w1', null]);
   });
 });
 

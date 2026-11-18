@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { vpnPresenceIngestSchema, ERROR_CODES } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import {
   devices,
   deviceHardware,
@@ -22,6 +22,7 @@ import {
   type AgentMemoryInventory,
 } from './schemas';
 import { sanitizeDate } from './helpers';
+import { detectReinstallCandidates, shouldDetectAfterHardwareReport } from '../../services/reinstallCandidates';
 import { upsertAgentWarranty } from '../../services/warrantySync';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
@@ -85,6 +86,15 @@ inventoryRoutes.put('/:id/hardware', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
   // One short transaction: the hardware upsert, the memory_* summary columns
   // and the per-slot rows commit together (services/inventoryChildSync.ts).
   await db.transaction((tx) => writeHardwareReport(tx, device, hardware, memory, new Date()));
+
+  // #8318 §7.3: a report that carries hardware evidence may reveal (or
+  // upgrade) a probable reinstall. Registered to run only once the request's
+  // transaction has COMMITTED, so the search sees this report's values; it
+  // runs in its own system contexts and never throws.
+  if (shouldDetectAfterHardwareReport(hardware, device)) {
+    runAfterDbContextCommit('reinstall-candidates', () =>
+      detectReinstallCandidates({ sourceDeviceId: device.id, trigger: 'hardware_report' }));
+  }
 
   // Enqueue a warranty sync only when this report makes both the manufacturer
   // and serial number known for the first time (empty/absent -> populated).

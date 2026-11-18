@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -122,6 +123,11 @@ const fetchBackupObjectTextMock = vi.fn();
 // keeps working unchanged. Tests that need to prove genuine multi-page
 // streaming set their own `iterateBackupObjectsUnderPrefixMock.mockImplementation`.
 const iterateBackupObjectsUnderPrefixMock = vi.fn();
+// #11233: reconcile reads each manifest as a stream. Unless a test sets its
+// own implementation, the stream carries whatever fetchBackupObjectTextMock
+// answers for the key, so the `fetchBackupObjectTextMock.mockResolvedValue(
+// manifest(...))` fixtures below keep working unchanged.
+const openBackupObjectStreamMock = vi.fn();
 vi.mock('./backupSnapshotStorage', () => ({
   BACKUP_SNAPSHOT_ROOT_DIR: 'snapshots',
   BACKUP_SNAPSHOT_MANIFEST_KEY: 'manifest.json',
@@ -138,7 +144,12 @@ vi.mock('./backupSnapshotStorage', () => ({
     })();
   },
   fetchBackupObjectText: (...args: unknown[]) => fetchBackupObjectTextMock(...(args as [])),
+  openBackupObjectStream: async (...args: unknown[]) => {
+    if (openBackupObjectStreamMock.getMockImplementation()) return openBackupObjectStreamMock(...(args as []));
+    return Readable.from([Buffer.from(String(await fetchBackupObjectTextMock(...(args as []))))]);
+  },
   MANIFEST_FETCH_MAX_BYTES: 200 * 1024 * 1024,
+  MANIFEST_STREAM_MAX_BYTES: 2 * 1024 * 1024 * 1024,
 }));
 
 const applyBackupCommandResultToJobMock = vi.fn();
@@ -150,6 +161,11 @@ vi.mock('./backupResultPersistence', () => ({
   LATE_RESULT_FENCE_REASON_PATTERN: /publish_lease_expired|base_retired/,
 }));
 
+const recordSnapshotFileIndexMock = vi.fn();
+vi.mock('./backupMetrics', () => ({
+  recordSnapshotFileIndex: (...args: unknown[]) => recordSnapshotFileIndexMock(...(args as [])),
+}));
+
 const captureExceptionMock = vi.fn();
 const captureMessageMock = vi.fn();
 vi.mock('./sentry', () => ({
@@ -159,6 +175,7 @@ vi.mock('./sentry', () => ({
 
 import {
   BackupReconcileError,
+  RECONCILE_INLINE_INDEX_MAX_CHARS,
   reconcileOrphanedBackupSnapshots,
 } from './backupSnapshotReconcile';
 
@@ -238,6 +255,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     listBackupObjectsUnderPrefixMock.mockReset();
     iterateBackupObjectsUnderPrefixMock.mockReset();
     fetchBackupObjectTextMock.mockReset();
+    openBackupObjectStreamMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
     applyBackupCommandResultToJobMock.mockResolvedValue({
       applied: true,
@@ -338,6 +356,123 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     });
     expect(call.result.snapshot.files).toHaveLength(2);
     expect(call.result.metadata.storagePrefix).toBe('snapshots/snap-1');
+  });
+
+  describe('manifest larger than the whole-object fetch cap (#11233)', () => {
+    const MiB = 1024 * 1024;
+    const MANIFEST_KEY = 'snapshots/snap-1/manifest.json';
+
+    // Serves MANIFEST_KEY as an object of `size` bytes with each storage entry
+    // point's real size check: the whole-object text fetch refuses it over its
+    // maxBytes, the stream refuses it over its own cap and otherwise yields
+    // `chunks` lazily, so the test never holds the manifest either.
+    function serveManifest(size: number, chunks: () => Iterable<Buffer>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string; maxBytes?: number }) => {
+        throw Object.assign(new Error(`Object ${input.key} is ${size} bytes, exceeding the ${input.maxBytes}-byte fetch cap`), {
+          name: 'BackupObjectTooLargeError',
+        });
+      });
+      openBackupObjectStreamMock.mockImplementation(async (input: { key: string; maxBytes: number }) => {
+        if (input.key !== MANIFEST_KEY) throw new Error(`unexpected stream of ${input.key}`);
+        if (size > input.maxBytes) throw new Error(`Object ${input.key} is ${size} bytes, exceeding the ${input.maxBytes}-byte fetch cap`);
+        return Readable.from(chunks());
+      });
+    }
+
+    // A manifest of exactly `size` bytes: `head`, then whitespace, then `tail`.
+    function* padded(size: number, head: string, tail: string): Generator<Buffer> {
+      let left = size - Buffer.byteLength(head) - Buffer.byteLength(tail);
+      yield Buffer.from(head);
+      const block = Buffer.alloc(MiB, ' ');
+      while (left > 0) {
+        const piece = left >= MiB ? block : block.subarray(0, left);
+        left -= piece.length;
+        yield piece;
+      }
+      yield Buffer.from(tail);
+    }
+
+    const entry = (i: number) => JSON.stringify({
+      sourcePath: `C:/data/file-${i}.txt`,
+      backupPath: `snapshots/snap-1/files/path_0/file-${i}.txt.gz`,
+      size: 150,
+      modTime: '2026-08-01T09:00:00-07:00',
+    });
+
+    function adoptionSelects() {
+      queueSelects([
+        [CONFIG_ROW],
+        [],
+        [claimingJob()],
+        [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
+      ]);
+    }
+
+    it('adopts a snapshot whose manifest is over 200 MiB, with the entry listed past the old cap', async () => {
+      oneManifest('snap-1');
+      adoptionSelects();
+      const size = 200 * MiB + MiB;
+      serveManifest(size, () => padded(
+        size,
+        `{"id":"snap-1","timestamp":"2026-08-01T10:15:00Z","size":300,"formatVersion":2,"files":[${entry(0)}`,
+        `,${entry(1)}]}`,
+      ));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.candidates[0]).toMatchObject({ snapshotId: 'snap-1', adopted: true, fileCount: 2, size: 300, skipReason: null });
+      expect(result.adopted).toBe(1);
+      const call = applyBackupCommandResultToJobMock.mock.calls[0]![0];
+      expect(call.result).toMatchObject({ filesBackedUp: 2, bytesBackedUp: 300 });
+      expect(call.result.snapshot).toMatchObject({ id: 'snap-1', timestamp: '2026-08-01T10:15:00Z', formatVersion: 2 });
+      expect(call.result.snapshot.files.map((f: { sourcePath: string }) => f.sourcePath)).toEqual(['C:/data/file-0.txt', 'C:/data/file-1.txt']);
+      expect(call.result.metadata.fileIndexInlineDroppedEntries).toBeUndefined();
+      expect(recordSnapshotFileIndexMock).not.toHaveBeenCalled();
+      expect(openBackupObjectStreamMock).toHaveBeenCalledWith(expect.objectContaining({ key: MANIFEST_KEY, maxBytes: 2 * 1024 * MiB }));
+    }, 60_000);
+
+    it('reports a manifest whose stream drops partway as manifest-unreadable and adopts nothing', async () => {
+      oneManifest('snap-1');
+      adoptionSelects();
+      serveManifest(200 * MiB + MiB, function* () {
+        yield Buffer.from(`{"id":"snap-1","files":[${entry(0)}`);
+        throw new Error('connection reset');
+      });
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.candidates[0]).toMatchObject({ adopted: false, skipReason: 'manifest-unreadable' });
+      expect(result.candidates[0]!.error).toContain('connection reset');
+      expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+    });
+
+    it('adopts a file list past the inline budget without the inline list, counting every entry, as an agent result that dropped it', async () => {
+      oneManifest('snap-1');
+      adoptionSelects();
+      const pad = 'x'.repeat(200);
+      const own = 'snapshots/snap-1/files/';
+      const files = Array.from({ length: Math.ceil(RECONCILE_INLINE_INDEX_MAX_CHARS / 200) + 1_000 }, (_, i) => ({
+        sourcePath: `/data/${pad}/file-${i}`,
+        backupPath: i % 3 === 0 ? `snapshots/snap-0/files/data/file-${i}.gz` : `${own}data/file-${i}.gz`,
+        size: 10,
+      }));
+      fetchBackupObjectTextMock.mockResolvedValue(JSON.stringify({ id: 'snap-1', size: 4_242, files }));
+
+      const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+      expect(result.candidates[0]).toMatchObject({ adopted: true, fileCount: files.length, size: 4_242 });
+      const call = applyBackupCommandResultToJobMock.mock.calls[0]![0];
+      const referenced = files.filter((f) => !f.backupPath.startsWith(own)).length;
+      expect(call.result).toMatchObject({
+        filesBackedUp: files.length,
+        bytesBackedUp: 4_242,
+        referencedFiles: referenced,
+        referencedBytes: referenced * 10,
+      });
+      expect(call.result.snapshot.files).toBeUndefined();
+      expect(call.result.metadata.fileIndexInlineDroppedEntries).toBe(files.length);
+      expect(recordSnapshotFileIndexMock).toHaveBeenCalledWith('inline_dropped', 'dropped');
+    }, 60_000);
   });
 
   // #6843: reconcile must never materialize the whole destination listing —
@@ -1447,9 +1582,9 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
         modTime: '2026-09-09T19:17:35.000Z',
       }],
     };
-    const result = manifestToCommandResult({
+    const result = await manifestToCommandResult({
       snapshotId: manifest.id,
-      manifestText: JSON.stringify(manifest),
+      manifest: JSON.stringify(manifest),
       matchedBy: 'job-snapshot-id',
     });
     // Without this the orphan-reconcile path indexes the transient shadow-copy
@@ -1460,9 +1595,9 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
   it('derives referencedBytes/referencedFiles from backupPath ownership so an adopted incremental does not over-report transfer (#5410)', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
     const own = 'snapshots/snap-1/files/';
-    const result = manifestToCommandResult({
+    const result = await manifestToCommandResult({
       snapshotId: 'snap-1',
-      manifestText: JSON.stringify({
+      manifest: JSON.stringify({
         id: 'snap-1',
         baseSnapshotId: 'snap-0',
         files: [
@@ -1480,9 +1615,9 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
 
   it('omits the dedup fields, like the agent, for a manifest whose every object lives under its own snapshot prefix', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
-    const result = manifestToCommandResult({
+    const result = await manifestToCommandResult({
       snapshotId: 'snap-1',
-      manifestText: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: 'snapshots/snap-1/files/a.gz', size: 5 }] }),
+      manifest: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: 'snapshots/snap-1/files/a.gz', size: 5 }] }),
       matchedBy: 'time-window',
     });
     // A reconciled full backup must persist NULL, not 0, so the UI's dedup
@@ -1501,29 +1636,50 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
     const external = manifest.files.filter((f) => f.backupPath && !f.backupPath.startsWith(`snapshots/${manifest.id}/`));
     expect(contentless.length).toBeGreaterThan(0);
     // Pre-fix: the blanket .min(1) threw here and adoption skipped the snapshot as manifest-unreadable.
-    const result = manifestToCommandResult({ snapshotId: manifest.id, manifestText: fixture, matchedBy: 'job-snapshot-id' });
+    const result = await manifestToCommandResult({ snapshotId: manifest.id, manifest: fixture, matchedBy: 'job-snapshot-id' });
     expect(result.referencedFiles).toBe(external.length);
     expect(result.referencedBytes).toBe(external.reduce((n, f) => n + (f.size ?? 0), 0));
   });
 
   it('still rejects a CONTENT entry (no kind) with an empty backupPath', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
-    expect(() => manifestToCommandResult({
+    await expect(manifestToCommandResult({
       snapshotId: 'snap-1',
-      manifestText: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: '' }] }),
+      manifest: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: '' }] }),
       matchedBy: 'job-snapshot-id',
-    })).toThrow();
+    })).rejects.toThrow();
   });
 
   it('forwards baseSnapshotId and formatVersion (D18 W01)', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
-    const result = manifestToCommandResult({
+    const result = await manifestToCommandResult({
       snapshotId: 'snap-1',
-      manifestText: JSON.stringify({ id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, files: [] }),
+      manifest: JSON.stringify({ id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, files: [] }),
       matchedBy: 'job-snapshot-id',
     });
     expect(result.snapshot?.baseSnapshotId).toBe('snap-0');
     expect(result.snapshot?.formatVersion).toBe(2);
+  });
+
+  it('reads a null files key, which the agent writes for a snapshot with no files, as no files (#11233)', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const result = await manifestToCommandResult({
+      snapshotId: 'snap-1',
+      manifest: JSON.stringify({ id: 'snap-1', size: 0, files: null }),
+      matchedBy: 'job-snapshot-id',
+    });
+    expect(result).toMatchObject({ filesBackedUp: 0, bytesBackedUp: 0, snapshot: { files: [] } });
+  });
+
+  it('still refuses a manifest with no id, a mismatched id, or a top-level field of the wrong type', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const read = (doc: unknown) => manifestToCommandResult({ snapshotId: 'snap-1', manifest: JSON.stringify(doc), matchedBy: 'job-snapshot-id' });
+    await expect(read({ files: [] })).rejects.toThrow(/no snapshot id/);
+    await expect(read({ id: '', files: [] })).rejects.toThrow(/no snapshot id/);
+    await expect(read({ id: 'snap-2', files: [] })).rejects.toThrow(/declares snapshot snap-2/);
+    await expect(read({ id: 'snap-1', size: -1, files: [] })).rejects.toThrow();
+    await expect(read({ id: 'snap-1', timestamp: 7, files: [] })).rejects.toThrow();
+    await expect(read({ id: 'snap-1', files: [7] })).rejects.toThrow(/entry 0/);
   });
 });
 

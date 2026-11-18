@@ -1,0 +1,87 @@
+---
+title: Importing Tickets from Another Help Desk
+description: Move your ticket history from another help desk into Breeze with the ticket import wizard -- connect a source, check it, map organizations, run a dry run, open a migration window, import, and close the window after the cutover.
+sidebar:
+  label: "Ticket Import"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The ticket import wizard brings the tickets of another help desk into Breeze: their comments, files, requesters, status and dates. It is built for a cutover: a **bulk run** imports the history while the old help desk stays live, and a short **delta run** after you freeze it picks up what changed in between.
+
+The first supported source is **Zammad 7.2**.
+
+Open it from **Tickets → Import tickets**, or go to `/tickets/import`.
+
+<Aside type="note">
+Only **partner administrators with access to all organizations** see the button and can use the page. Opening a migration window also needs **two-factor authentication** (an authenticator app or a passkey).
+</Aside>
+
+## What gets imported
+
+- **Tickets** go into the Breeze organization you map their source organization to. Breeze gives each ticket its own number. The source number is kept and can be searched: type the whole number in the ticket search box.
+- **Comments** keep their author's name, their date and whether they were public or internal. Nobody is notified: an import sends no email, raises no alert and starts no SLA.
+- **Files** attached to comments are imported into object storage, which must be configured first.
+- **Requesters** are linked to an existing contact when exactly one contact in the organization has their email. Otherwise their name and email are shown on the ticket. You can turn on **Create missing requester contacts** to create the missing ones (see [Created contacts](#created-contacts)).
+- **Owners** are matched to Breeze users by email. A ticket whose owner has no Breeze user is imported unassigned, with an internal note naming the owner.
+- **Status**: new and open stay open, pending reminders become *Pending*, "pending close" becomes *Resolved*, and closed or merged tickets become *Closed*. You can override a custom state.
+
+Custom attributes and time entries are not imported. The report counts tickets with custom attributes, and the accounted time can be kept as one internal note.
+
+Imported tickets carry an **Imported** chip in the ticket list and in the ticket header. Tick **Imported only** above the list to see just them (the filter is kept in the address as `#imported=1`).
+
+## Before you start
+
+- Configure **object storage**; an import refuses to start without it.
+- Create the **organizations** the tickets belong to, and the **users** for your current agents, with the same email addresses as in the old help desk.
+- Create the **ticket categories** you want groups mapped to.
+- Import your existing **contacts** first (from the Organizations page), so tickets link to them instead of creating duplicates.
+- In Zammad, create a dedicated agent (for example `breeze-import`) with **read** access to every group, and an API token for it with the `ticket.agent` permission and an expiry a couple of weeks after the cutover. Temporarily reactivate any inactive group whose tickets you want: Zammad hides inactive groups from every token.
+
+## The steps
+
+<Steps>
+
+1. **Connect.** Choose the help desk, enter its HTTPS address, the API token and a label. Breeze tests the token, stores it encrypted and never shows it again. The connection is bound to an **import principal**: a keyless service account, named `Import: <label>`, that writes the imported tickets. You become its owner. Only the owner can edit the source and its mappings, and open its migration windows. You can also reuse a keyless import principal you already own.
+
+2. **Preflight.** Checks object storage, who the token acts as and what it may do, the help desk version and clock, and lists every group, flagging inactive groups and groups the token cannot read. Their tickets will not be imported.
+
+3. **Mappings.** Map each source organization to a Breeze organization, or skip it. A **fallback organization** receives the tickets of skipped organizations and of tickets with none. Map groups to categories, choose how priorities and custom states translate, and set the options:
+   - **Create missing requester contacts** (off by default), optionally **only for tickets updated since** a date.
+   - Whether Zammad's system articles are skipped or kept as internal notes.
+   - Whether the accounted time is added as an internal note.
+
+4. **Dry run.** Reads and converts every ticket but writes nothing. The page follows it until it ends. Read the report: tickets skipped for lack of an organization, owners without a user, how many contacts would be created per organization, files that would be skipped, and tickets that would fail. Fix and repeat until it is what you expect, and compare its ticket count with the help desk's own.
+
+5. **Migration window.** Opens a time-boxed window, at most 14 days, over the mapped organizations, with a write rate (writes per hour). Only the import principal can write imported tickets, and only while the window is open. You confirm it with your second factor. A partner has one open window at a time.
+
+6. **Bulk run.** Imports every mapped ticket through the window while the old help desk stays live. Read the report, fix the causes of failed tickets, and run it again: a new run only loads what failed or changed.
+
+7. **Delta run.** On cutover day, stop the old help desk's email channels and tell agents to stop working there, but keep its API reachable. Confirm the freeze and start the delta run. It imports new comments and files and header changes, and applies the status unless someone already changed it in Breeze. Its report lists, in this order, comments edited or made internal in the source, requesters changed, statuses Breeze kept, and tickets deleted in the source. Nothing is ever deleted in Breeze.
+
+8. **Close the window.** Once mail points at Breeze, close the window. Each organization receives its import summary (`migration.window_closed`), and the page shows the counts per organization.
+
+</Steps>
+
+After the cutover, revoke the source's token on the **Connect** step (or keep the source for a later re-import), revoke the token in Zammad, and deactivate the groups you reactivated.
+
+## Runs and reports
+
+A run can be cancelled at any time. It stops at the next ticket, and a later run resumes from there. A run also stops when its window closes, when the token is revoked, or when the help desk stops answering.
+
+The report lists issues by kind, each with the source ticket number. It never contains ticket content.
+
+## Created contacts
+
+With **Create missing requester contacts** on, a requester with an email and no matching contact in the target organization becomes a contact, without portal access. Turn it on **before the bulk run**: requesters are not re-applied to tickets already imported.
+
+The bulk and delta steps list the contacts this source created. **Remove created contacts** deletes them as a set, up to 500 per click. It keeps any contact that has since gained a portal login, a role or another link, or was edited, and says why. Tickets of a removed contact keep the requester's name and email.
+
+## Migration windows
+
+The bottom of the page lists every migration window of your partner, with the tickets, comments and files it imported per organization. Any partner administrator with access to all organizations can close an open window. A closed window cannot be reopened; a later import opens a new one.
+
+## Revoking and deleting a source
+
+- **Revoke token** deletes the stored token. The source, its mappings and its run history stay, so you can reconnect with a new token and resume.
+- **Delete source** removes the source with its mappings and run history. Imported tickets stay. A new source would import every ticket again, so prefer revoking.

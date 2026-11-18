@@ -36,7 +36,7 @@ func countExecSeam(t *testing.T) *[]string {
 
 func seedStateSnapshot(t *testing.T, snapshotID string) *providers.LocalProvider {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 	content := []byte("state artifact bytes")
 	uploadSystemStateArtifact(t, provider, snapshotID, "registry_SYSTEM", content)
@@ -70,7 +70,7 @@ func TestRunRecoveryContext_WindowsHost_FilesOnly(t *testing.T) {
 			if tc.seed {
 				provider = seedStateSnapshot(t, snapshotID)
 			} else {
-				provider = providers.NewLocalProvider(t.TempDir())
+				provider = privateTestLocalProvider(t, t.TempDir())
 				buildOrdinaryManifestFixture(t, provider, snapshotID)
 			}
 

@@ -120,6 +120,33 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
     expect(text).not.toMatch(/secrets\./);
   });
 
+  it('storm warn-only covers a measured gate miss only; a harness failure fails the job (#11623)', () => {
+    // On 2026-11-10 the stack never started, run-perf.sh exited 1, and a
+    // step-level continue-on-error turned that into a green 3.5-minute job.
+    const job = all.storm!;
+    expect(job, 'no job-level warn-only switch').not.toMatch(/^ {4}continue-on-error:/m);
+    const storm = steps(job).find((s) => /run-perf\.sh --storm /.test(s));
+    expect(storm, 'storm-suite step').toBeDefined();
+    expect(storm, 'no step-level warn-only switch').not.toMatch(/^ {8}continue-on-error:/m);
+    const run = storm!.slice(storm!.search(/^ {8}run: \|$/m));
+    expect(run, 'the storm exit code is captured, not swallowed').toMatch(/^ {12}--gate-pool-recovery .* \|\| rc=\$\?$/m);
+    expect(run, 'no other way to swallow it').not.toMatch(/\|\| true|set \+e/);
+    // The only path that downgrades a non-zero exit: exit 3 (storm.sh: pass is
+    // false), enforcement off, AND storm-measured.sh confirming the report is a
+    // measured miss — pass is also false when a fault step failed, an event never
+    // ran, or a gate saw no data, and those are harness failures.
+    expect(run.match(/\bexit 0\b/g)?.length, 'exactly one exit 0').toBe(1);
+    const downgrades = [...run.matchAll(/^ {10}if (.*); then\n((?: {12}.*\n)*?) {10}fi$/gm)].filter(([, , body]) =>
+      /^ {12}exit 0$/m.test(body!),
+    );
+    expect(downgrades.length, 'exactly one warn-only branch').toBe(1);
+    expect(downgrades[0]![1]).toBe(
+      `[ "$rc" -eq 3 ] && [ "$PERF_GATES_ENFORCE" != 'true' ] && load-tests/perf/storm-measured.sh "$OUT/storm/storm.json"`,
+    );
+    expect(downgrades[0]![2]).toContain('::warning::');
+    expect(run.trimEnd().split('\n').at(-1)!.trim(), 'everything else keeps its exit code').toBe('exit "$rc"');
+  });
+
   it('applies the slowdown patch only on a workflow_dispatch with inject=slow-heartbeat', () => {
     const on = topBlock(text, 'on')!;
     const inject = on.match(/^ {6}inject:\n((?: {8}.*\n)*)/m)?.[1];
@@ -153,6 +180,81 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
       expect(last, `${id} last step`).toMatch(/docker run --rm [\s\S]*alpine:\d+\.\d+@sha256:[0-9a-f]{64}/);
       expect(last, `${id} last step`).not.toMatch(/sudo/);
     }
+  });
+
+  it('fails fast on a low runner disk, as the first step of each self-hosted job (#11623)', () => {
+    const prechecks: string[] = [];
+    for (const id of ['gate', 'storm']) {
+      const first = steps(all[id]!)[0]!;
+      prechecks.push(first);
+      expect(first, `${id} first step`).toMatch(/^name: Runner disk precheck$/m);
+      // Threshold direction, the self-heal sequence and the re-measure after it.
+      expect(first.match(/-lt "\$PERF_MIN_FREE_GB"/g)?.length, `${id} threshold compared twice`).toBe(2);
+      expect(first).toMatch(/compose -p "\$p" down -v --remove-orphans/);
+      expect(first).toContain('docker volume prune -a -f');
+      expect(first).toMatch(/docker builder prune -a -f --keep-storage \S+/);
+      expect(first.indexOf('docker builder prune'), `${id} re-measure after reclaim`).toBeLessThan(
+        first.lastIndexOf('free="$(free_gb)"'),
+      );
+      expect(first).not.toMatch(/docker (system|image) prune/);
+      expect(first, `${id} first step`).toContain('PERF_MIN_FREE_GB');
+      expect(first, `${id} first step`).toContain('runner disk low');
+      expect(first, `${id} first step`).toMatch(/\bexit 1\b/);
+      expect(first, `${id} first step`).not.toMatch(/uses:/);
+    }
+    expect(prechecks[0]).toBe(prechecks[1]);
+    expect(topBlock(text, 'env')).toMatch(/^ {2}PERF_MIN_FREE_GB: '10'$/m);
+  });
+
+  it("clears a previous run's leftover compose stacks before measuring (#11623)", () => {
+    const pres: string[] = [];
+    for (const id of ['gate', 'storm']) {
+      const list = steps(all[id]!);
+      const names = list.map((s) => s.match(/^name: (.*)$/m)?.[1]);
+      const pi = names.indexOf('Clear leftovers from a previous run');
+      expect(pi, `${id} preclean step`).toBeGreaterThan(-1);
+      const pre = list[pi]!;
+      // steps() leaves the next step's leading comment block on this step; drop it.
+      pres.push(pre.replace(/^\s*#.*$/gm, '').trim());
+      expect(pre).toContain('com.docker.compose.project');
+      expect(pre).toContain('breeze-wt-');
+      expect(pre).toMatch(/compose -p "\$p" down -v --remove-orphans/);
+      expect(pre).toContain('docker volume prune -a -f');
+      // Images are reused between runs for speed: never prune them.
+      expect(pre).not.toMatch(/docker (system|image) prune/);
+      expect(pi, `${id} order`).toBeGreaterThan(names.indexOf('Runner disk precheck'));
+      expect(pi, `${id} before measuring`).toBeLessThan(
+        names.findIndex((n) => /^(Measure|Run storm-suite|Inject A\/B — clean)/.test(n ?? '')),
+      );
+    }
+    expect(pres[0]).toBe(pres[1]);
+  });
+
+  it('tears the stack and caches down on always(), after the upload and before the ownership step (#11623)', () => {
+    const bodies: string[] = [];
+    for (const id of ['gate', 'storm']) {
+      const list = steps(all[id]!);
+      const names = list.map((s) => s.match(/^name: (.*)$/m)?.[1]);
+      const ti = names.indexOf('Tear down the perf stack and bound the caches');
+      expect(ti, `${id} teardown step`).toBeGreaterThan(-1);
+      const td = list[ti]!;
+      expect(td).toMatch(/^ {8}if: always\(\)$/m);
+      expect(td).toMatch(/^ {8}continue-on-error: true$/m);
+      expect(td).toMatch(/compose -p "\$p" down -v --remove-orphans/);
+      expect(td).toContain('docker volume prune -a -f');
+      expect(td).toMatch(/docker builder prune -a -f --keep-storage \S+/);
+      expect(td).toMatch(/^ {8}timeout-minutes: \d+$/m);
+      expect(td).toContain('go clean -cache');
+      expect(td).not.toMatch(/docker (system|image) prune/);
+      expect(td).not.toMatch(/sudo/);
+      const ui = names.findIndex((n) => /^Upload /.test(n ?? ''));
+      expect(ui, `${id} upload step`).toBeGreaterThan(-1);
+      expect(ti, `${id} after upload`).toBeGreaterThan(ui);
+      expect(ti, `${id} directly before ownership`).toBe(names.indexOf('Return workspace ownership to the runner') - 1);
+      bodies.push(td.replace(/^name:.*$/m, ''));
+    }
+    // One policy, two jobs: the copies must not drift.
+    expect(bodies[0]).toBe(bodies[1]);
   });
 
   it('uploads load-tests/perf/out/** on always()', () => {

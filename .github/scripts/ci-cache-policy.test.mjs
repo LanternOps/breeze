@@ -93,7 +93,7 @@ test('buildkit never exports to gha from ci.yml', () => {
 });
 
 test('restore composites exist and use only actions/cache/restore', () => {
-  for (const name of ['restore-go-cache', 'restore-pnpm-cache']) {
+  for (const name of ['restore-go-cache', 'restore-pnpm-cache', 'restore-osv-scanner']) {
     const c = composites.find((x) => x.name === name);
     assert.ok(c, `missing composite ${name}`);
     assert.match(c.text, /uses: actions\/cache\/restore@[0-9a-f]{40} # v/);
@@ -144,7 +144,7 @@ test('seed workflow saves every key ci.yml and the composites restore', () => {
     ...restoresIn(ciSteps),
     ...restoresIn(compositeSteps.map((c) => c.step)),
   ];
-  assert.ok(wanted.length >= 4, `expected go, pnpm, golangci-lint and tauri restores, saw ${wanted.length}`);
+  assert.ok(wanted.length >= 5, `expected go, pnpm, golangci-lint, osv-scanner and tauri restores, saw ${wanted.length}`);
   for (const w of wanted) {
     assert.ok(w.key && w.path, `restore without key/path: ${JSON.stringify(w)}`);
     assert.ok(
@@ -216,7 +216,8 @@ test('seed workflow exports every buildkit cache scope ci.yml reads', () => {
 test('seed workflow triggers, concurrency and pins', () => {
   const seed = seedText();
   for (const t of ['workflow_dispatch:', 'schedule:', 'pnpm-lock.yaml', 'agent/go.sum',
-    '.github/tauri-apt-packages.txt', '.github/scripts/tauri-apt.sh', 'docker/**', '.github/actions/**', '.github/workflows/ci-cache-seed.yml']) {
+    '.github/tauri-apt-packages.txt', '.github/scripts/tauri-apt.sh', 'scripts/security/install-osv-scanner.sh',
+    'docker/**', '.github/actions/**', '.github/workflows/ci-cache-seed.yml']) {
     assert.ok(seed.includes(t), `seed missing trigger ${t}`);
   }
   assert.match(seed, /group: ci-cache-seed\s*\n\s+cancel-in-progress: false/);
@@ -258,12 +259,13 @@ function jobOses(job) {
 
 test('seed runner OS set covers every OS that restores each cache in ci.yml', () => {
   const seedJobs = jobBlocks(seedText());
-  const needs = { go: new Set(), pnpm: new Set(), 'golangci-lint': new Set(), tauri: new Set() };
+  const needs = { go: new Set(), pnpm: new Set(), 'golangci-lint': new Set(), 'osv-scanner': new Set(), tauri: new Set() };
   for (const job of jobBlocks(ci)) {
     const oses = jobOses(job).filter(Boolean);
     if (/restore-go-cache/.test(job.text)) oses.forEach((o) => needs.go.add(o));
     if (/restore-pnpm-cache/.test(job.text)) oses.forEach((o) => needs.pnpm.add(o));
     if (/golangci-lint-v/.test(job.text)) oses.forEach((o) => needs['golangci-lint'].add(o));
+    if (/restore-osv-scanner/.test(job.text)) oses.forEach((o) => needs['osv-scanner'].add(o));
     if (/tauri-apt-cache/.test(job.text)) oses.forEach((o) => needs.tauri.add(o));
   }
   const seedOses = (re) => new Set(seedJobs.filter((j) => re.test(j.text)).flatMap(jobOses).filter(Boolean));
@@ -271,6 +273,7 @@ test('seed runner OS set covers every OS that restores each cache in ci.yml', ()
     go: seedOses(/cache\/save[\s\S]*key: go-/),
     pnpm: seedOses(/cache\/save[\s\S]*key: pnpm-/),
     'golangci-lint': seedOses(/cache\/save[\s\S]*key: golangci-lint-/),
+    'osv-scanner': seedOses(/cache\/save[\s\S]*key: osv-scanner-/),
     tauri: seedOses(/cache\/save[\s\S]*key: tauri-apt-/),
   };
   for (const [cache, oses] of Object.entries(needs)) {
@@ -430,7 +433,7 @@ test('composite actions save no Actions cache', () => {
 // to be there, after the setup step whose tool it asks for the cache dirs, and
 // gated the same way (codeql sets up Go on one matrix leg only).
 const RESTORES = {
-  'security.yml': ['restore-pnpm-cache', 'restore-go-cache', 'restore-trivy-db'],
+  'security.yml': ['restore-pnpm-cache', 'restore-go-cache', 'restore-trivy-db', 'restore-osv-scanner'],
   'codeql.yml': ['restore-go-cache'],
   'yara-pack.yml': ['restore-go-cache'],
   'ci-smoke-binary-source-github.yml': ['restore-pnpm-cache'],
@@ -624,7 +627,7 @@ test('seed schedules: daily for everything, six-hourly for the Tauri closure, we
 
 test('only the Tauri and Trivy seeds run on the six-hourly schedule', () => {
   for (const name of ['seed-tauri-apt', 'seed-trivy-db']) assert.equal(jobIf(name), null, `${name} is gated`);
-  for (const name of ['seed-pnpm', 'seed-go', 'seed-golangci-lint']) {
+  for (const name of ['seed-pnpm', 'seed-go', 'seed-golangci-lint', 'seed-osv-scanner']) {
     assert.equal(jobIf(name), `github.event.schedule != '${SIX_HOURLY}'`, name);
   }
 });

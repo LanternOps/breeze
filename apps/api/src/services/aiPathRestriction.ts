@@ -27,9 +27,9 @@
  * under an ordinary name) cannot be seen from here; only the agent can resolve
  * those, at open time.
  */
-
 import { isAgentConfigPath } from '../routes/systemTools/sensitiveTargets';
 import { candidateForms, isShortNameComponent, normalizePath, UNRESOLVED_FORM } from './devicePathForms';
+import { DEVICE_PATH_BLOCKED_MESSAGE, devicePathFloorRefusal } from '@breeze/shared';
 import type { AiDeviceFileReadLevel } from '../db/schema/aiDataPolicies';
 
 export { normalizePath };
@@ -60,7 +60,7 @@ function matchesBlockedPrefix(form: string): boolean {
   });
 }
 
-export const PATH_BLOCKED_MESSAGE = 'Access to this path is blocked';
+export const PATH_BLOCKED_MESSAGE = DEVICE_PATH_BLOCKED_MESSAGE;
 
 /**
  * User-profile roots (AI data policy, spec 2026-10-15): refused unless the
@@ -103,14 +103,8 @@ export function aiPathRefusal(path: unknown, opts?: { level?: AiDeviceFileReadLe
   }
   if (path.includes('\0')) return 'Path contains null bytes';
   if (path.includes('..')) return 'Path traversal (..) not allowed';
-  // Device namespace and UNC forms (\\?\, \\.\, \\host\share), checked on the
-  // raw string because normalisation collapses the leading separators.
-  if (/^[\\/]{2}/.test(path)) return `${PATH_BLOCKED_MESSAGE}: UNC and device namespace paths are not supported`;
-  // Drive-relative (C:foo) resolves against that drive's current directory,
-  // and a relative path against the agent's working directory.
-  if (/^[A-Za-z]:(?![\\/])/.test(path) || !/^(?:[\\/]|[A-Za-z]:[\\/])/.test(path)) {
-    return 'Use an absolute path (for example C:\\ProgramData\\Vendor\\Logs or /var/log)';
-  }
+  const floorRefusal = devicePathFloorRefusal(path);
+  if (floorRefusal) return floorRefusal;
   if (/[?*]/.test(path)) return `${PATH_BLOCKED_MESSAGE}: wildcard characters are not supported`;
 
   const normalized = normalizePath(path);

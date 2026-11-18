@@ -74,6 +74,8 @@ vi.mock('../db', () => ({
   // routes/scripts.test.ts and tenantVariableResolution.test.ts.
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbTransaction: <T>(fn: () => T): T => fn(),
+  withDbTransactionIfHeld: <T>(fn: () => T): T => fn(),
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can

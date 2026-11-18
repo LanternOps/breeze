@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetInvalidStoredSettingsReportsForTest } from './invalidStoredSettingsReport';
 
 // ============================================
 // Mocks for containment resolution. Harness shape copied
@@ -156,7 +157,7 @@ function resolveRows(rows: unknown[]) {
   return resolveContainmentPolicy('device-1');
 }
 
-beforeEach(() => { vi.clearAllMocks(); selectMock.mockReset(); });
+beforeEach(() => { vi.clearAllMocks(); selectMock.mockReset(); resetInvalidStoredSettingsReportsForTest(); });
 
 describe('resolveContainmentPolicy', () => {
   it('no policy returns W1 defaults and their content revision', async () => {

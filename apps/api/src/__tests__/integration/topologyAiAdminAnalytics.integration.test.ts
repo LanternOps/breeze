@@ -88,6 +88,48 @@ describe('AI admin analytics topology site isolation (M4-D2, real DB)', () => {
     expect(body.data.map((e) => e.resourceId).sort()).toEqual([ids.b, ids.general].sort());
   });
 
+  // #4342 W4 (plan correction 9): the audit filter fails CLOSED. A row naming a
+  // session that no longer exists (retention hard-deleted it) cannot be shown
+  // to be about a visible session, so a restricted reader does not get it.
+  async function insertOrphanAuditRow(): Promise<string> {
+    const ghostId = randomUUID();
+    await getTestDb().insert(auditLogs).values({
+      orgId: env.organization.id, actorType: 'user', actorId: env.user.id, action: 'ai.tool.get_topology',
+      resourceType: 'ai_session', resourceId: ghostId, result: 'success', details: { sessionId: ghostId },
+    });
+    return ghostId;
+  }
+
+  it("security-events ('sites' viewer): a row whose session no longer exists is withheld; in-site and unpinned rows are not", async () => {
+    const ghost = await insertOrphanAuditRow();
+    const body = await get<{ data: Array<{ resourceId: string }> }>(`/ai/admin/security-events?orgId=${env.organization.id}`);
+    const seen = body.data.map((e) => e.resourceId);
+    expect(seen).not.toContain(ghost);
+    expect(seen).not.toContain(ids.a);
+    expect(seen.sort()).toEqual([ids.b, ids.general].sort());
+  });
+
+  it("security-events ('none' viewer): only the unpinned session's row survives; topology and missing-session rows are withheld", async () => {
+    // Without topology:read the visibility is kind 'none' (own env: the shared one holds topology:read).
+    env = await setupTestEnvironment({ rolePermissions: PERMS.filter((p) => p.resource !== 'topology') });
+    const pinned = await insertSessionWithExecution(env, env.site.id, 'get_topology');
+    const unpinned = await insertSessionWithExecution(env, null, 'query_devices');
+    const ghost = await insertOrphanAuditRow();
+    token = await mfaToken(env);
+    const body = await get<{ data: Array<{ resourceId: string }> }>(`/ai/admin/security-events?orgId=${env.organization.id}`);
+    const seen = body.data.map((e) => e.resourceId);
+    expect(seen).toEqual([unpinned]);
+    expect(seen).not.toContain(pinned);
+    expect(seen).not.toContain(ghost);
+  });
+
+  it('security-events (unrestricted reader): no filter, so a missing-session row is still listed', async () => {
+    await restrict(env, null);
+    const ghost = await insertOrphanAuditRow();
+    const body = await get<{ data: Array<{ resourceId: string }> }>(`/ai/admin/security-events?orgId=${env.organization.id}`);
+    expect(body.data.map((e) => e.resourceId).sort()).toEqual([ids.a, ids.b, ids.general, ghost].sort());
+  });
+
   it('an unrestricted topology reader still sees every session', async () => {
     await restrict(env, null);
     const body = await get<{ executions: Array<{ sessionId: string }> }>(`/ai/admin/tool-executions?orgId=${env.organization.id}`);

@@ -209,6 +209,16 @@ describe('FileManager new folder', () => {
     });
   });
 
+  it('disables New folder while the listing failed (agent not connected)', async () => {
+    mockFetchWithAuth.mockImplementation((url: string) => {
+      if (url.includes('/files/drives')) return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
+      return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'Agent is not currently connected' }) });
+    });
+    render(<FileManager deviceId="device-1" deviceHostname="workstation-1" initialPath="/data" />);
+    await screen.findByText(/not currently connected/i);
+    expect(screen.getByTestId('file-manager-new-folder')).toBeDisabled();
+  });
+
   describe('failures', () => {
     it('toasts the agent refusal and keeps the dialog open with the name', async () => {
       setup({

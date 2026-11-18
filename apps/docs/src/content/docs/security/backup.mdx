@@ -191,6 +191,31 @@ crontab -e
 
 `restore.sh` covers the same three components as `backup.sh`. To restore the `api_data` volume, use the `tar` command in [The `api_data` Volume](#the-api_data-volume). Do not restore `redis_data`.
 
+### Restoring into a new Postgres cluster
+
+Roles and role memberships belong to the Postgres cluster, not to a database, so a `pg_dump` does not contain them. Breeze uses three: `breeze_app` (the API request role), `breeze_audit_admin` (deletes append-only audit and evidence rows) and `breeze_search`. A restore into a new cluster, such as a Postgres 16 to 18 move, starts without them.
+
+`./scripts/restore.sh --db` creates the three roles before it runs `pg_restore`. The `DATABASE_URL` user needs `CREATEROLE` only when those roles are missing (for example after a database-only restore into a new cluster); if they already exist, it does not. If it cannot create them, the script stops before restoring anything and tells you to restore globals first. After `pg_restore`, any `role "..." does not exist` error is a failure that names the missing roles. It is no longer a warning.
+
+If you restore by hand, copy the globals first. On the old cluster:
+
+```bash
+pg_dumpall --globals-only > globals.sql   # contains role passwords: treat as a secret
+psql -d postgres -f globals.sql           # on the new cluster, before restoring the dump
+```
+
+Restore the roles before the database. If the dump was restored into a cluster where `breeze_app` did not exist, the row-level security policies scoped to `breeze_app` were dropped, and the API cannot recreate them. At boot it logs a `[cluster-roles]` error when it finds none. Create the roles, then restore again into an empty database.
+
+### If permanent delete fails with 42501 after a restore
+
+A permanent device delete that fails with SQLSTATE 42501 means `breeze_app` is no longer a member of `breeze_audit_admin`. As the Postgres superuser, run:
+
+```sql
+GRANT breeze_audit_admin TO breeze_app;
+```
+
+It takes effect at once, with no restart. On boot the API also recreates `breeze_audit_admin` and `breeze_search` if they are missing, re-grants their privileges, and restores the membership when the migration role is allowed to. It restores the membership only when `AUDIT_ADMIN_DATABASE_URL` is unset, so a deliberate revoke is never undone. If the migration role lacks the privilege, the API logs a `[cluster-roles]` warning with the exact SQL to run as a superuser, and boot continues. If `AUDIT_ADMIN_DATABASE_URL` is set and its login fails after a restore, recreate it with `ALTER ROLE breeze_audit_admin LOGIN PASSWORD '...'`.
+
 ## Retention
 
 Backups older than `BACKUP_RETENTION_DAYS` (default: 30) are automatically pruned during each backup run.

@@ -41,6 +41,9 @@ export type FakeTicket = {
   comments?: FakeComment[];
   ownerEmail?: string;
   requesterEmail?: string;
+  /** The requester's source user key (W4b); defaults to the lower-cased email. */
+  requesterKey?: string;
+  requesterName?: string;
   links?: Array<Omit<ImportedLink, 'sourceKey'>>;
   notes?: ReportNote[];
   /** The conversion skips it as `unsupported`. */
@@ -106,7 +109,11 @@ function listed(source: FakeSource): FakeTicket[] {
   return source.tickets.filter((t) => !source.deleted.has(t.key) && !source.hidden.has(t.key) && !source.shifted.has(t.key));
 }
 
-export const fakeOptionsSchema = z.object({ timeNote: z.boolean().default(false) }).strict();
+export const fakeOptionsSchema = z.object({
+  timeNote: z.boolean().default(false),
+  /** W4b: an unmatched requester with an email is sent as `{ createContact }`. */
+  createRequesterContacts: z.boolean().default(false),
+}).strict();
 export type FakeOptions = z.infer<typeof fakeOptionsSchema>;
 
 export const FAKE_MODULE_ID = 'fake';
@@ -162,7 +169,15 @@ export const fakeTicketImportModule: TicketImportModule<FakeOptions, number> = {
     const owner = t.ownerEmail ? ctx.userIdByEmail.get(t.ownerEmail.toLowerCase()) : undefined;
     if (t.ownerEmail && !owner) notes.push({ kind: 'owner_unmatched', sourceUserKey: t.ownerEmail.toLowerCase() });
     const contactId = t.requesterEmail ? ctx.contactIdByEmail.get(t.requesterEmail.toLowerCase()) : undefined;
-    if (!contactId) notes.push({ kind: 'requester_without_contact' });
+    const options = fakeOptionsSchema.parse(ctx.options ?? {});
+    const createContact = !contactId && t.requesterEmail && options.createRequesterContacts
+      ? {
+        ...(t.requesterName ? { name: t.requesterName } : {}),
+        email: t.requesterEmail,
+        sourceUserKey: t.requesterKey ?? t.requesterEmail.toLowerCase(),
+      }
+      : null;
+    if (!contactId && !createContact) notes.push({ kind: 'requester_without_contact' });
     const comments: ImportedComment[] = (t.comments ?? []).map((c) => ({
       sourceId: `article:${c.id}`,
       createdAt: c.at,
@@ -192,7 +207,11 @@ export const fakeTicketImportModule: TicketImportModule<FakeOptions, number> = {
       description: '',
       priority: 'normal',
       source: 'manual',
-      requester: contactId ? { contactId } : { name: 'Requester', ...(t.requesterEmail ? { email: t.requesterEmail } : {}) },
+      requester: contactId
+        ? { contactId }
+        : createContact
+          ? { createContact }
+          : { name: t.requesterName ?? 'Requester', ...(t.requesterEmail ? { email: t.requesterEmail } : {}) },
       ...(owner ? { assigneeUserId: owner } : {}),
       finalStatus: status,
       ...(status === 'closed' ? { closedAt: updatedAt } : {}),

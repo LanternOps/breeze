@@ -24,6 +24,7 @@ const REFUSAL_STATUS: Record<IsolationRefusalCode, 400 | 403 | 404 | 409 | 503> 
   site_forbidden: 403, device_not_found: 404, isolation_not_found: 404, relay_unavailable: 400,
   invalid_allowlist: 400, isolation_conflict: 409, isolation_secret_unavailable: 503, approval_mismatch: 409,
   device_offline: 409, device_decommissioned: 409, device_pending_assignment: 409, backup_helper_update_required: 409,
+  release_token_unavailable: 409, break_glass_code_disabled: 409,
 };
 function noteRefusal(c: Context, code: IsolationRefusalCode, orgId?: string) {
   const deviceId = c.req.param('id');
@@ -33,7 +34,7 @@ function noteRefusal(c: Context, code: IsolationRefusalCode, orgId?: string) {
 function response(c: Context, result: object, created = false) {
   if ('error' in result) {
     const code = result.error as IsolationRefusalCode;
-    return c.json({ error: code, code, ...('networkIsolationUnsupportedReason' in result ? { networkIsolationUnsupportedReason: result.networkIsolationUnsupportedReason } : {}) }, REFUSAL_STATUS[code]);
+    return c.json({ error: code, code, ...('networkIsolationUnsupportedReason' in result ? { networkIsolationUnsupportedReason: result.networkIsolationUnsupportedReason } : {}), ...('allowlistReason' in result ? { allowlistReason: result.allowlistReason } : {}) }, REFUSAL_STATUS[code]);
   }
   return c.json(result, created ? 201 : 200);
 }
@@ -130,6 +131,26 @@ networkIsolationRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { getBreakGlassCodes } = await import('../../services/networkIsolation/service');
     const result = await getBreakGlassCodes(auth, device.id, c.req.param('isolationId')!, c);
+    return response(c, result, false);
+  },
+);
+
+// Signed offline release token (#10102). POST: each call issues a new, audited credential.
+networkIsolationRoutes.post(
+  '/:id/network-isolation/:isolationId/release-token',
+  requireInteractiveSession(),
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('param', params),
+  async c => {
+    const found = await deviceFor(c);
+    if ('response' in found) return found.response;
+    const { device } = found;
+    const auth = c.get('auth') as AuthContext;
+    const { getReleaseToken } = await import('../../services/networkIsolation/service');
+    const result = await getReleaseToken(auth, device.id, c.req.param('isolationId')!, c);
+    c.header('Cache-Control', 'no-store');
     return response(c, result, false);
   },
 );

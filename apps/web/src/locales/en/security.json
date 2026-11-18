@@ -2429,7 +2429,7 @@
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization",
-      "tenantAmbiguous": "Organization maps to more than one Bitdefender GravityZone company",
+      "tenantAmbiguous": "Organization maps to more than one {{vendor}} company",
       "installerLinkMissing": "Bitdefender GravityZone installer link not available yet — run Sync in Integrations"
     },
     "setupLink": {

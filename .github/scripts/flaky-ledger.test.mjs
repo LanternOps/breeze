@@ -258,6 +258,17 @@ test('failureTouched (vitest-integration): a declared covers list is used instea
   assert.equal(failureTouched(it_, new Set([`apps/api/${it_.file}`]), paths), true);
 });
 
+test('failureTouched (vitest-integration): a migration-only or db-only change touches every integration test, covers or not', () => {
+  const INT_SCHEMA = { ...INT, schemaRoots: ['apps/api/migrations/', 'apps/api/src/db/'] };
+  const migration = new Set(['apps/api/migrations/2026-11-14-000000-x.sql']);
+  assert.equal(failureTouched(it_, migration, INT_SCHEMA), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/db/schema/devices.ts']), INT_SCHEMA), true);
+  // A declared covers list replaces the source rule, never the schema rule.
+  const covered = { ...INT_SCHEMA, covers: new Map([[it_.id, ['apps/api/src/services/billing/']]]) };
+  assert.equal(failureTouched(it_, migration, covered), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/migrationsx/a.sql', 'docs/migrations/a.md']), covered), false);
+});
+
 test('failureTouched: covers on a unit/go entry only adds paths (never narrows the sibling/package rule)', () => {
   const f = vt('src/services/foo.test.ts');
   const paths = { ...API, covers: new Map([[f.id, ['apps/api/src/lib/']]]) };

@@ -87,7 +87,7 @@ function openCreateAndFill() {
     screen.getByPlaceholderText("e.g. Block Unauthorized Software"),
     { target: { value: "Required Apps" } },
   );
-  fireEvent.change(screen.getByPlaceholderText("Name *"), {
+  fireEvent.change(screen.getByPlaceholderText("Software name *"), {
     target: { value: "Zoom" },
   });
 }
@@ -125,7 +125,7 @@ describe("ComplianceDashboard — autoInstall arming (#5509)", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
       fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
 
-      expect(await screen.findByPlaceholderText("Name *")).toHaveValue("Zoom");
+      expect(await screen.findByPlaceholderText("Software name *")).toHaveValue("Zoom");
       expect(screen.getByPlaceholderText("Vendor")).toHaveValue("Zoom Communications");
       expect(screen.getByLabelText("Mode")).toHaveValue("blocklist");
       expect(window.location.hash).toBe("#policies");

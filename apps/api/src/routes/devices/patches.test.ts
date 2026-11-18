@@ -26,6 +26,8 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => any) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   // #7647: the ambient request context. Org-scoped, own partner = the partner
   // resolvePartnerIdForOrg returns below, so the patch_policies /
   // patch_approvals reads are legible in place via the own-partner SELECT

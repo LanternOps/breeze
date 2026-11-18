@@ -7,6 +7,7 @@
  * so programming bugs stay diagnosable.
  */
 import { carriesQueryValues, errorSqlstate, formatSafeDbErrorDetail, safeDbErrorDetail } from './safeDbError';
+import { isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { OfferingWriteError } from './offerings';
 import { ConnectionKeyError } from './connectionKeys';
 
@@ -23,7 +24,10 @@ export type RegistryWriteCode =
   | 'key_required_for_new_endpoint' | 'too_many_models'
   // #8510: only a hand-added model can be removed; discovered/platform/catalog
   // rows are re-created by the next sync, so they are disabled instead.
-  | 'not_removable';
+  | 'not_removable'
+  // #11398: a tool profile / window override write would leave a feature
+  // using this model without a tool it requires.
+  | 'tool_profile_underpowered';
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 
@@ -64,7 +68,7 @@ export function toRegistryWriteError(error: unknown, fallbackMessage: string): n
   let mapped: RegistryWriteError;
   if (sqlstate === '23505') {
     mapped = new RegistryWriteError('This conflicts with an existing setting.', 'conflict', 409, constraint ? { constraint } : undefined);
-  } else if (sqlstate === '23503' || sqlstate === '23514') {
+  } else if (isPgForeignKeyViolationCode(sqlstate) || sqlstate === '23514') {
     mapped = new RegistryWriteError('That value is not allowed here.', 'invalid', 422, constraint ? { constraint } : undefined);
   } else {
     mapped = new RegistryWriteError(fallbackMessage, 'write_failed', 500);

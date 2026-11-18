@@ -11,7 +11,7 @@ const AI_KEYS = [
   'title','goal','expectedEffect','verificationClaim','rollback','findings','blastRadius','touches','devices',
   'showCode','hideCode','acknowledgeTitle','acknowledgeRequirement','acknowledgeIncomplete','expiresIn',
   'requestChanges','notePlaceholder','noteRequired','sendBack','severityInfo','severityWarning','severityBlocking',
-  'saveToLibrary','verificationPending','verified','verificationFailed','verificationUnknown',
+  'saveToLibrary','savedToLibrary','verificationPending','verified','verificationFailed','verificationUnknown',
   'notRunAwaitingReview','notRunReviewed','notRunApproved','notRun',
   'reviewVerdictApprove','reviewVerdictChanges','reviewVerdictReject',
   'promoteDescription','ownerScopeOrganization','ownerScopePartner','nameRequired',

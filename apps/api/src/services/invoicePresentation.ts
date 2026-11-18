@@ -13,13 +13,14 @@
 // that stamp the columns) goes through this function, so a partner changing its
 // default can never reflow a document the customer has already been shown.
 // Each field resolves independently; unknown values normalize through the
-// shared documentThemes resolvers (→ 'classic' / 'a4').
+// shared documentThemes resolvers (theme → 'classic'; a partner with no page
+// size choice → its region default, #12097 resolvePartnerPageSize).
 //
 // Invoice PDF theming is deliberately out of scope (#6227 quorum amendment 7):
 // invoicePdf.ts still renders fixed A4/Helvetica. The stored values are
 // shaped so a later wave can read them there without another migration.
 
-import { resolvePageSize, resolveThemeId, type DocumentPageSize, type DocumentThemeId } from './documentThemes';
+import { resolvePageSize, resolvePartnerPageSize, resolveThemeId, type DocumentPageSize, type DocumentThemeId } from './documentThemes';
 
 export interface InvoicePresentation {
   theme: DocumentThemeId;
@@ -32,11 +33,14 @@ export interface InvoicePresentationSource {
   documentPageSize: string | null;
 }
 
-/** Presentation-relevant subset of a partner row (or a quote's frozen snapshot
- *  mapped to the same shape). */
+/** Presentation-relevant subset of a partner row. `billingAddressCountry` and
+ *  `settings` are required so every caller carries the region signal the page
+ *  size falls back to when the partner never chose one (#12097). */
 export interface PartnerPresentationSource {
   documentTheme: string | null;
   documentPageSize: string | null;
+  billingAddressCountry: string | null;
+  settings: unknown;
 }
 
 export function resolveInvoicePresentation(
@@ -45,7 +49,7 @@ export function resolveInvoicePresentation(
 ): InvoicePresentation {
   return {
     theme: resolveThemeId(invoice.documentTheme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(invoice.documentPageSize ?? partner?.documentPageSize),
+    pageSize: resolvePageSize(invoice.documentPageSize ?? resolvePartnerPageSize(partner)),
   };
 }
 

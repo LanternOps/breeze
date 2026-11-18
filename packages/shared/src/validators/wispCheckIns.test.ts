@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { cancelCheckInSchema, listCheckInsToolSchema, scheduleCheckInSchema } from './wispCheckIns';
-import { WISP_CHECK_IN_INSTRUCTION_MAX, WISP_CHECK_IN_MAX_DELAY_MINUTES } from '../types/wispCheckIns';
+import { cancelCheckInSchema, listCheckInsToolSchema, scheduleCheckInSchema, wispCheckInTriggerSchema } from './wispCheckIns';
+import { WISP_CHECK_IN_INSTRUCTION_MAX, WISP_CHECK_IN_LABEL_MAX, WISP_CHECK_IN_MAX_DELAY_MINUTES, WISP_CHECK_IN_TRIGGER_EVENTS } from '../types/wispCheckIns';
 
 const id = '6f1c2b1e-4a7d-4c55-9a35-2d8f5f0e1a01';
 const instruction = 'Verify no msiexec processes remain on the device.';
@@ -49,6 +49,15 @@ describe('scheduleCheckInSchema (schedule_check_in)', () => {
     expect(parsed.instruction).toBe(instruction);
   });
 
+  it('#11675: label is optional, 1..120 code points after trimming', () => {
+    expect(WISP_CHECK_IN_LABEL_MAX).toBe(120);
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction }).label).toBeUndefined();
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction, label: '  FS01 disk space  ' }).label).toBe('FS01 disk space');
+    expect(scheduleCheckInSchema.safeParse({ delayMinutes: 5, instruction, label: '😀'.repeat(120) }).success).toBe(true);
+    expect(issuePaths({ delayMinutes: 5, instruction, label: '😀'.repeat(121) })).toEqual(['label']);
+    expect(issuePaths({ delayMinutes: 5, instruction, label: '   ' })).toEqual(['label']);
+  });
+
   it('subject is an optional { kind, id } with a known kind and a guid', () => {
     expect(scheduleCheckInSchema.safeParse({ delayMinutes: 5, instruction, subject: { kind: 'device', id } }).success).toBe(true);
     expect(issuePaths({ delayMinutes: 5, instruction, subject: { kind: 'printer', id } })).toEqual(['subject.kind']);
@@ -58,6 +67,42 @@ describe('scheduleCheckInSchema (schedule_check_in)', () => {
   it('strips unknown keys (a grantId or threadId the model adds never reaches the handler)', () => {
     const parsed = scheduleCheckInSchema.parse({ delayMinutes: 5, instruction, grantId: id, threadId: id });
     expect(parsed).toEqual({ delayMinutes: 5, instruction });
+  });
+
+  it('W04: a trigger is the third timing — alone it is valid, with delayMinutes or at it is not', () => {
+    for (const event of WISP_CHECK_IN_TRIGGER_EVENTS) {
+      expect(scheduleCheckInSchema.safeParse({ trigger: { event, subjectId: id }, instruction }).success, event).toBe(true);
+    }
+    expect(issuePaths({ trigger: { event: 'device_online', subjectId: id }, delayMinutes: 5, instruction })).toContain('delayMinutes');
+    expect(issuePaths({ trigger: { event: 'device_online', subjectId: id }, at: '2026-11-04T14:30:00Z', instruction })).toContain('delayMinutes');
+  });
+
+  it('W04: a trigger names a known event (never time) and a guid subject; the deadline is 1 .. 10080 whole minutes', () => {
+    for (const trigger of [
+      { event: 'time', subjectId: id },
+      { event: 'device_offline', subjectId: id },
+      { event: 'device_online', subjectId: 'WS-01' },
+      { event: 'device_online' },
+      { event: 'device_online', subjectId: id, deadlineMinutes: 0 },
+      { event: 'device_online', subjectId: id, deadlineMinutes: 10_081 },
+      { event: 'device_online', subjectId: id, deadlineMinutes: 1.5 },
+    ]) {
+      expect(scheduleCheckInSchema.safeParse({ trigger, instruction }).success, JSON.stringify(trigger)).toBe(false);
+    }
+    for (const deadlineMinutes of [1, 10_080]) {
+      expect(scheduleCheckInSchema.safeParse({ trigger: { event: 'run_settled', subjectId: id, deadlineMinutes }, instruction }).success).toBe(true);
+    }
+    expect(wispCheckInTriggerSchema.parse({ event: 'script_finished', subjectId: id, extra: 1 })).toEqual({ event: 'script_finished', subjectId: id });
+  });
+});
+
+describe('scheduleCheckInSchema mode (W07)', () => {
+  it('takes notify or run, and leaves it absent when not given', () => {
+    for (const mode of ['notify', 'run'] as const) {
+      expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction: 'Check WS-01.', mode }).mode).toBe(mode);
+    }
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction: 'Check WS-01.' }).mode).toBeUndefined();
+    expect(scheduleCheckInSchema.safeParse({ delayMinutes: 5, instruction: 'Check WS-01.', mode: 'auto' }).success).toBe(false);
   });
 });
 

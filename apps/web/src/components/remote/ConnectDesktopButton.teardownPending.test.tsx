@@ -9,6 +9,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// #11621: the button gates on remote:access; these cases are about a caller who holds it.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [{ resource: 'remote', action: 'access' }], can: () => true }),
+}));
+
 vi.mock('../shared/Toast', async () => {
   const actual = await vi.importActual<typeof import('../shared/Toast')>('../shared/Toast');
   return {

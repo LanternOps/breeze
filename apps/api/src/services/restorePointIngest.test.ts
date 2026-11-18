@@ -150,6 +150,18 @@ describe('ingestRestorePointOutcome — terminalisation', () => {
     });
   });
 
+  // #9163: an outcome the agent could not report before it restarted.
+  it('terminalises a requested row as interrupted through the same compare-and-set', async () => {
+    const res = await ingestRestorePointOutcome(
+      outcome({ status: 'interrupted', durationMs: 0, message: "the agent restarted before it reported this checkpoint's outcome" }),
+      ctx,
+    );
+    expect(res).toEqual({ outcome: 'terminalised' });
+    expect(state.sets[0]).toMatchObject({ status: 'interrupted', acceptedExistingPoint: false, sequenceNumber: 42n });
+    const { params } = renderWhere(state.updateWheres[0]);
+    expect(params).toEqual(expect.arrayContaining(['requested']));
+  });
+
   it('stores an int64 sequence number without loss', async () => {
     await ingestRestorePointOutcome(outcome({ sequenceNumber: '9223372036854775807' }), ctx);
     expect(state.sets[0]!.sequenceNumber).toBe(9223372036854775807n);

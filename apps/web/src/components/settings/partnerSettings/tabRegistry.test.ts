@@ -11,9 +11,16 @@ describe('partner settings tab registry', () => {
       security: ['security', 'callerVerification'],
       communications: ['notifications', 'emailTemplates', 'sendingDomains', 'ticketing'],
       ai: ['aiProvider', 'aiFeatures', 'aiBudgets', 'aiApprovals'],
-      branding: ['branding', 'loginBranding', 'trustCenter'],
+      branding: ['branding', 'loginBranding', 'trustCenter', 'customerPortal'],
     });
-    expect(ALL_TABS).toHaveLength(20);
+    expect(ALL_TABS).toHaveLength(21);
+  });
+
+  it('tab registered in the branding group with hash customer-portal', () => {
+    expect(TAB_GROUPS.find(g => g.id === 'branding')!.tabs.map(t => t.key)).toContain('customerPortal');
+    expect(tabFromHash('customer-portal')).toBe('customerPortal');
+    expect(TAB_BY_KEY.customerPortal.hash).toBe('customer-portal');
+    expect(TAB_BY_KEY.customerPortal.kind).toBe('panel');
   });
 
   it('hash aliases', () => {
@@ -36,11 +43,11 @@ describe('partner settings tab registry', () => {
     const keys = visibleTabGroups({ sendingDomains: false, callerVerification: false }).flatMap(g => g.tabs.map(t => t.key));
     expect(keys).not.toContain('sendingDomains');
     expect(keys).not.toContain('callerVerification');
-    expect(keys).toHaveLength(18);
+    expect(keys).toHaveLength(19);
     expect(tabFromHash('sending-domains')).toBe('sendingDomains');
     expect(tabFromHash('caller-verification')).toBe('callerVerification');
     const all = visibleTabGroups({ sendingDomains: true, callerVerification: true }).flatMap(g => g.tabs);
-    expect(all).toHaveLength(20);
+    expect(all).toHaveLength(21);
   });
 
   it('blurbs match fields (§4.4)', () => {

@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import TicketImportPage from '../../components/ticketImport/TicketImportPage';
+---
+
+<DashboardLayout titleKey="titles.ticketsImport">
+  <TicketImportPage client:load />
+</DashboardLayout>

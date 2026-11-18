@@ -40,7 +40,7 @@ func TestResolveBackupTargetDir_UsesInstanceDefaultBackupPath(t *testing.T) {
 	mkdirCalls := withMkdirAllRecorder(t)
 
 	r := &recordingRunner{responses: []fakeResponse{
-		{out: []byte("C:\\Program Files\\Microsoft SQL Server\\MSSQL17.SQLEXPRESS\\MSSQL\\Backup\n\n(1 rows affected)\n")},
+		{out: []byte(serverPathOutput(`C:\Program Files\Microsoft SQL Server\MSSQL17.SQLEXPRESS\MSSQL\Backup`))},
 	}}
 	withRecordingRunner(t, r)
 

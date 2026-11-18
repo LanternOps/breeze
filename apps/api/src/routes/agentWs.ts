@@ -114,6 +114,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
   commandResultSchema as baseCommandResultSchema,
   commandResultResultByteLength,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
 import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
@@ -136,12 +137,19 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
-import { shouldDeferOfflineTransition } from '../services/admission/admissionRuntime';
-import { recordOfflineDeferred } from '../services/admission/admissionMetrics';
+import {
+  ORPHANED_RESULT_EXPECTATION_TTL_MS,
+  consumeOrphanedResultExpectation,
+  peekOrphanedResultExpectation,
+  recordOrphanedResultExpectation as storeOrphanedResultExpectation,
+  type OrphanedResultExpectation,
+} from '../services/orphanedResultExpectations';
+import { beginOfflineTransition } from '../services/admission/admissionRuntime';
 import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
+import type { AgentEvictCloseCode } from '../services/agentCommandRelayEvict';
 import {
   evaluateCapability,
   isLifecycleCommand,
@@ -301,6 +309,13 @@ interface ActiveAgentConnection {
    * should that admission ever change.
    */
   parked: boolean;
+  /**
+   * The fencing token this connection wrote into its presence lease. A
+   * relay-evict job carries the token the producer read from the lease, and
+   * disconnectAgentConnection closes this socket only when they match, so an
+   * eviction can never close a newer connection (#4142).
+   */
+  connectionToken: string;
 }
 
 // Store active WebSocket connections and their connect-time trust snapshot by agentId.
@@ -645,7 +660,6 @@ interface AgentPingState {
 const agentPingStates = new Map<string, AgentPingState>();
 const AGENT_PING_INTERVAL_MS = 30_000;
 const AGENT_PONG_TIMEOUT_MS = 10_000;
-const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
 
 // F5: a `vault-auto-sync-<snapshotID>` result is only honored if a real,
 // recently-COMPLETED backup snapshot exists for the authenticated device with
@@ -655,37 +669,21 @@ const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
 const VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS = 24 * 60 * 60 * 1000; // 24h
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
-type OrphanedResultExpectation =
-  | { agentId: string; kind: 'snmp'; targetId: string; expiresAt: number }
-  | { agentId: string; kind: 'monitor'; targetId: string; expiresAt: number }
-  // Spec §5 — a manual probe. The expected ip/site are captured at DISPATCH so
-  // the result handler can refuse a result for an asset that has since moved or
-  // been re-addressed; they are not derivable from the agent's reply.
-  | { agentId: string; kind: 'probe'; targetId: string; ipAddress: string; siteId: string; expiresAt: number };
-
-const orphanedResultExpectations = new Map<string, OrphanedResultExpectation>();
-
-function pruneOrphanedResultExpectations(now = Date.now()): void {
-  for (const [commandId, expectation] of orphanedResultExpectations.entries()) {
-    if (expectation.expiresAt <= now) {
-      orphanedResultExpectations.delete(commandId);
-    }
-  }
-}
-
+// #4135: the dispatch records behind orphaned results live in Redis (see
+// services/orphanedResultExpectations.ts), so a result that reaches a replica
+// other than the one that sent the command is still honored.
 function recordOrphanedResultExpectation(agentId: string, command: AgentCommand): void {
   const payload = command.payload ?? {};
   const expiresAt = Date.now() + ORPHANED_RESULT_EXPECTATION_TTL_MS;
+  // The send path is synchronous. The store never rejects, and a later read on
+  // this process waits for the write, so the promise can be dropped here.
+  const record = (expectation: OrphanedResultExpectation) =>
+    void storeOrphanedResultExpectation(command.id, expectation);
 
   if (command.type === 'snmp_poll') {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
     if (!deviceId) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'snmp',
-      targetId: deviceId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'snmp', targetId: deviceId, expiresAt });
     return;
   }
 
@@ -697,37 +695,15 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
     const probeSiteId = typeof payload.probeSiteId === 'string' ? payload.probeSiteId : null;
     const target = typeof payload.target === 'string' ? payload.target : null;
     if (!probeSiteId || !target) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'probe',
-      targetId: probeAssetId,
-      ipAddress: target,
-      siteId: probeSiteId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'probe', targetId: probeAssetId, ipAddress: target, siteId: probeSiteId, expiresAt });
     return;
   }
 
   if (MONITOR_COMMAND_TYPES.has(command.type)) {
     const monitorId = typeof payload.monitorId === 'string' ? payload.monitorId : null;
     if (!monitorId) return;
-    orphanedResultExpectations.set(command.id, {
-      agentId,
-      kind: 'monitor',
-      targetId: monitorId,
-      expiresAt,
-    });
+    record({ agentId, kind: 'monitor', targetId: monitorId, expiresAt });
   }
-}
-
-function consumeOrphanedResultExpectation(agentId: string, commandId: string): OrphanedResultExpectation | null {
-  pruneOrphanedResultExpectations();
-  const expectation = orphanedResultExpectations.get(commandId);
-  if (!expectation || expectation.agentId !== agentId) {
-    return null;
-  }
-  orphanedResultExpectations.delete(commandId);
-  return expectation;
 }
 
 // Message types from agent
@@ -747,7 +723,7 @@ function consumeOrphanedResultExpectation(agentId: string, commandId: string): O
 // duplicating the very thing this removes.
 const commandResultSchema = baseCommandResultSchema.extend({
   type: z.literal('command_result'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 type AgentCommandResult = z.infer<typeof commandResultSchema>;
@@ -962,7 +938,8 @@ const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
   timestamp: z.number(),
   ipHistoryUpdate: z.object({
-    deviceId: z.string().optional(),
+    // The agent's own device id (a UUID); only compared and, on a mismatch, logged.
+    deviceId: z.string().max(64).optional(),
     currentIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     changedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     removedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
@@ -997,7 +974,7 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
 // progress body is dropped rather than failing the whole WS message parse.
 const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   progress: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -1014,6 +991,16 @@ const revocationLeaseRenewSchema = z.object({
    * renewals send none, and older agents do not send it at all.
    */
   syncNonce: z.string().min(1).max(64).optional(),
+  /**
+   * #11840: the agent's own monotonic reading (ms) when it queued this
+   * request, opaque to the server. Echoed on a renewed answer so the agent
+   * measures the lease from when it ASKED: the decision came after that, so
+   * no delay on the way can stretch the lease past what was granted. A bad
+   * value is dropped rather than failing the renew — losing the renewal would
+   * push the session into its grace window — and the agent then measures
+   * from receipt. Older agents send none.
+   */
+  renewAnchor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
 });
 
 // #3578: in-flight stage for a command the agent is executing (agent side:
@@ -1023,7 +1010,7 @@ const revocationLeaseRenewSchema = z.object({
 // be a quiet drop in applyCommandProgress, not an INVALID_MESSAGE error frame.
 const commandProgressMessageSchema = z.object({
   type: z.literal('command_progress'),
-  commandId: z.string().max(128),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   stage: z.string().max(32),
 });
 
@@ -1533,13 +1520,27 @@ export async function processOrphanedCommandResult(
     success?: boolean;
   } | undefined;
 
+  const snmpByPayload = Boolean(snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0);
+  // Spec §5 — a manual "Check now" result is matched on its command id.
+  const probeAssetId = parseProbeCommandId(result.commandId);
+  // A network monitor result is matched on its payload.
+  const monitorData = result.result as {
+    monitorId?: string;
+    status?: string;
+    responseMs?: number;
+    statusCode?: number;
+    error?: string;
+  } | undefined;
+  const monitorByPayload = Boolean(monitorData?.monitorId && monitorData.status);
+
   // Failed polls carry no result payload. Recover their target from dispatch
   // evidence, without consuming expectations belonging to other command kinds.
-  pruneOrphanedResultExpectations();
-  const dispatched = orphanedResultExpectations.get(result.commandId);
-  const isSnmpDispatch = dispatched?.agentId === agentId && dispatched.kind === 'snmp';
-  if (isSnmpDispatch || (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0)) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+  // That lookup is a Redis read inside the org-scoped transaction (#4135), so a
+  // result its own payload or command id already places skips it.
+  const isSnmpDispatch = !snmpByPayload && !probeAssetId && !monitorByPayload
+    && (await peekOrphanedResultExpectation(agentId, result.commandId))?.kind === 'snmp';
+  if (snmpByPayload || isSnmpDispatch) {
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'snmp' || (snmpData?.deviceId && expectation.targetId !== snmpData.deviceId)) {
       console.warn(
         `[AgentWs] Rejecting unexpected SNMP result ${result.commandId} from agent ${agentId}: ` +
@@ -1593,9 +1594,8 @@ export async function processOrphanedCommandResult(
   // Spec §5 — a manual "Check now" result. Matched on the command id (the agent
   // echoes an empty monitorId for a probe, so the monitor branch below would
   // fall through anyway; matching here first keeps the intent explicit).
-  const probeAssetId = parseProbeCommandId(result.commandId);
   if (probeAssetId) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'probe' || expectation.targetId !== probeAssetId) {
       console.warn(
         `[AgentWs] Rejecting unexpected probe result ${result.commandId} from agent ${agentId}: ` +
@@ -1638,16 +1638,8 @@ export async function processOrphanedCommandResult(
   }
 
   // Check if this is a network monitor result
-  const monitorData = result.result as {
-    monitorId?: string;
-    status?: string;
-    responseMs?: number;
-    statusCode?: number;
-    error?: string;
-  } | undefined;
-
   if (monitorData?.monitorId && monitorData.status) {
-    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'monitor' || expectation.targetId !== monitorData.monitorId) {
       console.warn(
         `[AgentWs] Rejecting unexpected monitor result ${result.commandId} from agent ${agentId}: ` +
@@ -3237,6 +3229,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         credentialTokenHash: agentDb.credentialTokenHash,
         credentialRevoked: false,
         parked: agentDb.parked === true,
+        connectionToken,
       });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
@@ -3602,7 +3595,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
             return;
           }
-          const { sessionId: leaseSessionId, syncNonce } = parsedRenew.data;
+          const { sessionId: leaseSessionId, syncNonce, renewAnchor } = parsedRenew.data;
           const nonceEcho = syncNonce ? { syncNonce } : {};
           // Bind the renew to the device this socket authenticated as: an agent
           // must never be able to renew (or learn about) another tenant's
@@ -3616,6 +3609,13 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               sessionId: leaseSessionId,
               expiresAt: leaseResult.expiresAt,
               hardDeadline: leaseResult.hardDeadline,
+              // The same deadlines as time remaining at the decision (#11840).
+              // A current agent measures these from the echoed renewAnchor
+              // (else from receipt), so its own clock skew cannot cut the
+              // lease short or stretch it; an older agent ignores them.
+              expiresInMs: leaseResult.expiresInMs,
+              hardDeadlineInMs: leaseResult.hardDeadlineInMs,
+              ...(renewAnchor !== undefined ? { renewAnchor } : {}),
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
               // The agent's durable start fence resyncs from these.
@@ -3801,7 +3801,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         // Handle command_result for terminal/desktop commands (non-UUID IDs).
         // H5: validate the message shape with Zod BEFORE any field access. On
         // parse failure we drop + log without touching the DB or downstream.
+        // An id over the limit is not read here: it falls through to the
+        // schema below, which refuses it like any other malformed frame.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
+            message.commandId.length <= MAX_AGENT_COMMAND_ID_LENGTH &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
           // Exact delivery-epoch proof: a stop/start result carries authority
           // to tear down a live session, so a superseded socket may not submit
@@ -3927,6 +3930,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                       write: {
                         status: 'disconnected',
                         endedAt: new Date(),
+                        // #11839: only the agent's no-video watchdog sets a
+                        // stopReason on a peer drop (#5300); every other
+                        // agent-side stop (operator, lifetime, lease, ICE
+                        // failure) reports it empty today.
+                        endReason: stopReason ? 'capture_failed' : 'peer_disconnected',
                         // Only fills errorMessage when it's still empty — never
                         // overwrites a startup-probe failure text (#5284/#5295)
                         // that a `desk-start` failure already stored there.
@@ -4077,6 +4085,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'denied',
                       endedAt: new Date(),
+                      endReason: 'consent_denied',
                       errorMessage: consentDeniedMessage(
                         reason,
                         typeof fastResult.consentDetail === 'string' ? fastResult.consentDetail : undefined,
@@ -4378,7 +4387,8 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'failed',
                       errorMessage: errorMsg,
-                      endedAt: new Date()
+                      endedAt: new Date(),
+                      endReason: 'start_failed',
                     },
                     phase: 'confirmed',
                     where: [
@@ -4681,14 +4691,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         //
-        // W08: while admission is shedding (enforce, level 1+), leave the
-        // offline flip to the offline detector — lastSeenAt still ages out
-        // within 5 min — instead of one transaction per socket at the moment
-        // thousands drop at once. Presence was cleared above, so command
-        // routing already treats the agent as gone.
-        if (agentDb && shouldDeferOfflineTransition()) {
-          recordOfflineDeferred('close');
-        } else if (agentDb) {
+        // W08: in enforce mode, admission may leave the offline flip to the
+        // offline detector — lastSeenAt still ages out within 5 min — instead
+        // of two pool permits per socket at the moment hundreds drop at once:
+        // always at level 1+, and past a small in-flight cap at level 0, so a
+        // planned drain's own writes cannot escalate the level (#9520). Presence was
+        // cleared above, so command routing already treats the agent as gone.
+        const releaseOfflineWrite = agentDb ? beginOfflineTransition('close') : null;
+        if (releaseOfflineWrite) {
           // #6836: the inner try/catch below only covers the query/transition
           // body. When the context PROLOGUE itself fails (observed: a
           // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
@@ -4734,6 +4744,8 @@ onClose: async (_event: unknown, ws: WSContext) => {
           } catch (err) {
             console.error(`[AgentWs] agentWs.onClose.markOffline failed for agent ${agentId}; offline detector will correct status:`, err);
             captureException(err instanceof Error ? err : new Error(String(err)));
+          } finally {
+            releaseOfflineWrite();
           }
         }
       } else {
@@ -4757,9 +4769,9 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }
         void clearAgentPresence(agentId, connectionToken);
       }
-      if (agentDb && shouldDeferOfflineTransition()) {
-        recordOfflineDeferred('error');
-      } else if (agentDb) {
+      // W08 / #9520: same admission gate as onClose.
+      const releaseOfflineWrite = agentDb ? beginOfflineTransition('error') : null;
+      if (releaseOfflineWrite) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await withDbTransaction(() => db
@@ -4782,7 +4794,7 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
           captureException(err instanceof Error ? err : new Error(String(err)));
-        });
+        }).finally(releaseOfflineWrite);
       }
     }
   };
@@ -5118,7 +5130,7 @@ async function failUnreadableDesktopStart(
     await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
       const result = await commitDesktopTerminalIntent({
         sessionId: startCommand.sessionId,
-        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date() },
+        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date(), endReason: 'start_failed' },
         phase: 'confirmed',
         where: [
           eq(remoteSessions.deviceId, deviceId),
@@ -5347,7 +5359,7 @@ export function __resetCrossTenantDropsForTest() {
 export function registerConnection(
   agentId: string,
   ws: { send(data: string): void },
-  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean } = {
+  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean; connectionToken?: string } = {
     partnerId: 'test-partner',
     trustState: 'trusted',
   },
@@ -5361,6 +5373,7 @@ export function registerConnection(
     trustState: trust.trustState,
     credentialRevoked: false,
     parked: trust.parked === true,
+    connectionToken: trust.connectionToken ?? randomUUID(),
   });
   installAgentSocketEpoch(agentId);
 }
@@ -5380,19 +5393,6 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
-    // Rate limiting middleware (M-D2: Redis-backed sliding window)
-    async (c, next) => {
-      const agentId = c.req.param('id');
-      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
-      if (!allowed) {
-        return c.json({ error: 'Too many connection attempts' }, 429);
-      }
-      if (degraded) {
-        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
-        c.set('agentWsRateLimitDegraded' as never, true as never);
-      }
-      return next();
-    },
     // Authentication middleware — validates BEFORE WebSocket upgrade
     async (c, next) => {
       const agentId = c.req.param('id');
@@ -5423,6 +5423,20 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
 
       // Store validated device context for the upgrade handler to access
       c.set('agentDb', result.ctx);
+      return next();
+    },
+    // Charge the device budget only after its credential is validated.
+    async (c, next) => {
+      const agentId = c.req.param('id');
+      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
+      if (!allowed) {
+        c.header('Retry-After', String(WS_RATE_WINDOW_SECONDS));
+        return c.json({ error: 'Too many connection attempts' }, 429);
+      }
+      if (degraded) {
+        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
+        c.set('agentWsRateLimitDegraded' as never, true as never);
+      }
       return next();
     },
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {
@@ -5564,6 +5578,35 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
   }
   // Don't delete from map here — the WS onClose handler does that itself
   // (lines ~1905-1907) and we don't want to race with reconnect logic.
+  return 'closed';
+}
+
+/**
+ * Fenced close for the relay-evict consumer (#4142): close the agent's socket
+ * only when it is the exact connection whose presence lease the producer read,
+ * i.e. its `connectionToken` matches. A replacement socket (a reconnect after
+ * the producer's read) answers `token_mismatch` and stays open. Synchronous by
+ * design: nothing awaits between the compare and `close()`, so no reconnect can
+ * slip in between them on this process. Outcomes otherwise match
+ * {@link disconnectAgent}; the map entry is left to onClose the same way. A
+ * throwing `close()` is logged here and reported to Sentry by the relay
+ * consumer, once per job, so a fleet sever cannot raise one event per socket.
+ */
+export function disconnectAgentConnection(
+  agentId: string,
+  connectionToken: string,
+  code: AgentEvictCloseCode,
+  reason: string,
+): AgentWsDisconnectResult | 'token_mismatch' {
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
+  if (conn.connectionToken !== connectionToken) return 'token_mismatch';
+  try {
+    conn.ws.close(code, reason);
+  } catch (error) {
+    console.error(`disconnectAgentConnection(${agentId.slice(0, 12)}) close threw:`, error);
+    return 'close-failed';
+  }
   return 'closed';
 }
 

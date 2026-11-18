@@ -1,5 +1,7 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { db, runAfterDbContextExit } from '../db';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { db, runAfterDbContextCommit, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
+import { nudgeConnectionHealth } from './connectionHealth/nudge';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -39,6 +41,7 @@ import {
 } from './backupSnapshotIdReservations';
 import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { createAuditLog } from './auditService';
+import { contentlessEntryKind } from './backupSnapshotEntryKind';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -896,10 +899,20 @@ async function checkLateResultBaseFence(job: {
  */
 export const EAGER_HYDRATION_MAX_ENTRIES = 250_000;
 
-/** Entries a snapshot's index will hold: files the run backed up plus those it referenced. */
+/**
+ * Entries a snapshot's index will hold.
+ *
+ * The agent reports `filesBackedUp` as every manifest entry, reference entries
+ * included, and counts `referencedFiles` from that same list, so the
+ * references are a part of `filesBackedUp`, not an addition to it (#11743;
+ * agent/internal/backup/backup.go, both the normal and the journal-adoption
+ * path). `referencedFiles` is a lower bound: it stands in when `filesBackedUp`
+ * is absent, and a malformed report with fewer files than references still
+ * counts at least the references.
+ */
 export function indexedEntriesOf(result: { filesBackedUp?: number; referencedFiles?: number }): number | undefined {
   if (result.filesBackedUp === undefined && result.referencedFiles === undefined) return undefined;
-  return (result.filesBackedUp ?? 0) + (result.referencedFiles ?? 0);
+  return Math.max(result.filesBackedUp ?? 0, result.referencedFiles ?? 0);
 }
 
 export function snapshotIndexHydrationReason(params: {
@@ -917,7 +930,29 @@ export function snapshotIndexHydrationReason(params: {
   return null;
 }
 
-export async function applyBackupCommandResultToJob(params: {
+type ApplyBackupCommandResultParams = Parameters<typeof applyBackupCommandResult>[0];
+type ApplyBackupCommandResultOutcome = Awaited<ReturnType<typeof applyBackupCommandResult>>;
+
+/**
+ * Records a backup job's terminal result (see applyBackupCommandResult below).
+ *
+ * #11772: an applied result can change whether its destination is failing, so
+ * the connection-health `backup_destination` source is asked to look again
+ * once the write commits (a rollback drops the request). The nudge coalesces
+ * per kind and never throws, so it costs at most one reconcile of the kind per
+ * delay window whatever the result volume.
+ */
+export async function applyBackupCommandResultToJob(
+  params: ApplyBackupCommandResultParams,
+): Promise<ApplyBackupCommandResultOutcome> {
+  const outcome = await applyBackupCommandResult(params);
+  if (outcome.applied) {
+    runAfterDbContextCommit('backupDestinationHealth.nudge', () => nudgeConnectionHealth('backup_destination'));
+  }
+  return outcome;
+}
+
+async function applyBackupCommandResult(params: {
   jobId: string;
   orgId: string;
   deviceId: string;
@@ -1800,6 +1835,9 @@ export async function applyBackupCommandResultToJob(params: {
         backupPath: file.backupPath ?? '',
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,
+        // #11235: the same kind hydration records, so an inline index and a
+        // hydrated one list the same tree.
+        kind: contentlessEntryKind(file),
       }));
 
       for (let i = 0; i < fileRows.length; i += BATCH_SIZE) {
@@ -1854,6 +1892,10 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (snapshot) {
     try {
+      // Deliberately no savepoint here (#11225): a snapshot must not commit without
+      // the legal hold or immutability it was asked for, and a read failure must not
+      // be recorded as a permanent WORM downgrade. The commit fails, and the result
+      // is retried.
       const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
       let protectionUpdate = {
         legalHold: protection.legalHold,
@@ -1951,7 +1993,7 @@ export async function applyBackupCommandResultToJob(params: {
     }
 
     try {
-      await reconcileMssqlBackupChain({
+      await withDbTransactionIfHeld(() => reconcileMssqlBackupChain({
         // #3036: the job row's org, not the caller's — a stale value here would
         // miss the device's real chain and fork a duplicate under the old org.
         orgId: effectiveOrgId,
@@ -1960,29 +2002,33 @@ export async function applyBackupCommandResultToJob(params: {
         snapshotDbId: snapshot.id,
         timestamp,
         metadata: snapshotMetadata,
-      });
+      }));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to reconcile MSSQL chain for snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'mssql_chain' });
     }
 
     try {
-      const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
-      const gfsConfig = await resolveGfsConfigForJob(jobId);
-      const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
-      if (expiresAt) {
-        await db
-          .update(backupSnapshots)
-          .set({ expiresAt })
-          .where(eq(backupSnapshots.id, snapshot.id));
-      }
+      await withDbTransactionIfHeld(async () => {
+        const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
+        const gfsConfig = await resolveGfsConfigForJob(jobId);
+        const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
+        if (expiresAt) {
+          await db
+            .update(backupSnapshots)
+            .set({ expiresAt })
+            .where(eq(backupSnapshots.id, snapshot.id));
+        }
+      });
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'gfs_tags' });
     }
   }
 

@@ -66,7 +66,7 @@ export default function BuiltinPackageDetail({
               rel="noreferrer"
               className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
             >
-              {branding.label}
+              {branding.label}{" "}
               {i18n.t("policies:software.builtinPackageDetail.website")}
               <ExternalLink className="h-3 w-3" />
             </a>

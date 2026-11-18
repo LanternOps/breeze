@@ -134,6 +134,10 @@ func providerFromName(name string) string {
 		return "emsisoft"
 	case strings.Contains(lower, "webroot"):
 		return "webroot"
+	// Trend Micro Apex One / OfficeScan / Worry-Free / Vision One (#8171).
+	// "trend" alone is too common, so require the vendor name.
+	case strings.Contains(lower, "trend micro"), strings.Contains(lower, "trendmicro"):
+		return "trend_micro"
 	// CylancePROTECT was rebranded Aurora Endpoint Defense, but Windows Security
 	// Center still registers it as "CylancePROTECT" (#9178).
 	case strings.Contains(lower, "cylance"):

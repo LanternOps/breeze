@@ -157,6 +157,9 @@ pub struct MessageView {
     pub branding: Branding,
     /// Oversize content: the frontend renders it as plain text.
     pub plain: bool,
+    /// Session UI locale for the card's static copy, filled in by the
+    /// `get_message_view` command so the card needs no other command.
+    pub locale: Option<String>,
 }
 
 /// Window flags for a card.
@@ -241,9 +244,9 @@ impl MessageTracker {
             "critical" => Severity::Critical,
             _ => return ShowAction::Reject("invalid severity".into()),
         };
-        let expires_ms = match chrono::DateTime::parse_from_rfc3339(&req.expires_at) {
-            Ok(t) => t.timestamp_millis(),
-            Err(_) => return ShowAction::Reject("invalid expiresAt".into()),
+        let expires_ms = match crate::timestamp::parse_rfc3339_millis(&req.expires_at) {
+            Some(ms) => ms,
+            None => return ShowAction::Reject("invalid expiresAt".into()),
         };
         if self.active.contains_key(&req.message_id) {
             return ShowAction::AlreadyShown;
@@ -273,6 +276,7 @@ impl MessageTracker {
             expires_at: req.expires_at.clone(),
             branding,
             plain,
+            locale: None,
         };
         self.arrivals += 1;
         self.active.insert(
@@ -507,7 +511,7 @@ mod tests {
     }
 
     fn future() -> String {
-        chrono::DateTime::from_timestamp_millis(NOW + 3_600_000).unwrap().to_rfc3339()
+        crate::timestamp::rfc3339_from_millis(NOW + 3_600_000)
     }
 
     fn show(sev: &str, ack: bool) -> MessageShow {

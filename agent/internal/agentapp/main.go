@@ -87,7 +87,6 @@ var (
 	serverURL        string
 	backupServerURL  string // seeded by bootstrap/enroll responses (#2288)
 	enrollmentSecret string
-	enrollSiteID     string
 	enrollDeviceRole string
 	forceEnroll      bool
 	quietEnroll      bool
@@ -324,10 +323,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
-	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Deprecated and ignored; the site comes from the enrollment key")
-	if err := enrollCmd.Flags().MarkDeprecated("site-id", siteIDDeprecationNotice); err != nil {
-		panic(err) // only fails if the flag above is not registered
-	}
+	enrollCmd.SetFlagErrorFunc(enrollFlagError)
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
@@ -771,6 +767,18 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	repairConfigThenInitLogging(cfg, func() {
 		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
+
+	// #8318 — finish a reattach a previous process confirmed but did not
+	// finish swapping, before anything below reads the identity or the
+	// credentials. Never in support mode: a Quick Support client takes no
+	// part in a reattach.
+	if !cfg.SupportMode {
+		reattached, err := finishConfirmedRebindAtStartup(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg = reattached
+	}
 
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
@@ -1464,6 +1472,17 @@ func gateEnrollResponseBackup(backup string) error {
 	return hostpolicy.AllowedURL(backup)
 }
 
+// enrollSecurityCapabilities is what an enrollment declares (#8318): the
+// rebind protocol, since a new install is exactly the device a reinstall
+// reattach makes the source. A Quick Support client declares nothing: a
+// disposable install must never become an existing device's identity.
+func enrollSecurityCapabilities(cfg *config.Config) *api.EnrollSecurityCapabilities {
+	if cfg.SupportMode {
+		return nil
+	}
+	return &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion}
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1599,7 +1618,6 @@ func enrollDevice(enrollmentKey string) {
 	initEnrollLogging(cfg, quietEnroll)
 
 	enrollLog := logging.L("enroll")
-	warnIgnoredSiteID(enrollLog, enrollSiteID)
 
 	// Clear any stale enroll-last-error.txt from a previous failed
 	// attempt BEFORE any validation or early return. Every attempt
@@ -1855,6 +1873,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	enrollReq := &api.EnrollRequest{
+		SecurityCapabilities:   enrollSecurityCapabilities(cfg),
 		EnrollmentKey:          enrollmentKey,
 		EnrollmentSecret:       secret,
 		Hostname:               systemInfo.Hostname,
@@ -1880,6 +1899,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 			MotherboardProduct:      hardwareInfo.MotherboardProduct,
 			MotherboardVersion:      hardwareInfo.MotherboardVersion,
 			BIOSVersion:             hardwareInfo.BIOSVersion,
+			SystemUUID:              hardwareInfo.SystemUUID,
 		},
 	}
 
@@ -2140,11 +2160,24 @@ func runUserHelper() {
 }
 
 func runDesktopHelper() {
+	if runtime.GOOS == "linux" {
+		runLinuxDesktopHelper() // linux_desktop_helper.go
+		return
+	}
 	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
 }
 
 func desktopHelperRole() ipc.HelperRole {
-	if runtime.GOOS == "darwin" {
+	return desktopHelperRoleFor(runtime.GOOS)
+}
+
+// desktopHelperRoleFor is the desktop helper's role on goos. On macOS and
+// Linux it runs as the logged-in user (on Linux the broker admits a user-role
+// desktop helper only with a spawn ticket, #12117); on Windows it is the
+// SYSTEM helper in the user's session.
+func desktopHelperRoleFor(goos string) ipc.HelperRole {
+	switch goos {
+	case "darwin", "linux":
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem
@@ -2173,6 +2206,14 @@ func openHelperPanicFile(path string) (*os.File, error) {
 }
 
 func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
+	runHelperProcessWith(name, role, context, binaryKind, nil)
+}
+
+// runHelperProcessWith is runHelperProcess with an optional Linux desktop
+// helper launch environment. With one, the helper dials the socket the agent
+// named, authenticates once with the spawn ticket, and exits when that
+// connection ends instead of reconnecting (#12117).
+func runHelperProcessWith(name string, role ipc.HelperRole, context, binaryKind string, linuxDesktop *userhelper.LinuxDesktopEnv) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
 	// helper subcommand routed through runHelperProcess — because all of
@@ -2243,6 +2284,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
 		socketPath = cfg.IPCSocketPath
+	}
+	if linuxDesktop != nil {
+		socketPath = linuxDesktop.SocketPath
 	}
 
 	// Ship helper logs to the API under the same agent identity.
@@ -2369,6 +2413,10 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// The helper is the same build as the agent: its prompt renderer
 	// version is the agent version (#10190 AuthRequest.rendererVersion).
 	userhelper.SetRendererVersion(version)
+	if linuxDesktop != nil {
+		runLinuxDesktopHelperClient(name, linuxDesktop, context, done)
+		return
+	}
 	sup := &userhelper.Supervisor{
 		Name: name,
 		Policy: userhelper.ReconnectPolicy{

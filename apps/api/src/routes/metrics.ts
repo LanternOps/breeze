@@ -259,6 +259,13 @@ const agentFilterSignatureReportsTotal = new Counter({
   registers: [register]
 });
 
+const agentControlPlaneBlockReportsTotal = new Counter({
+  name: 'breeze_agent_control_plane_block_reports_total',
+  help: 'Heartbeats carrying a controlPlaneBlock episode (#8868), by parse result. A rising result="invalid" means the server is discarding agent reports (contract drift between agent and API)',
+  labelNames: ['result'] as const,
+  registers: [register]
+});
+
 // #4340 — routine agent-telemetry submits used to be chained into audit_logs
 // (~97% of its volume). They are audited now only on failure or on a real
 // change; this counter is where the routine volume stays observable.
@@ -269,6 +276,16 @@ const agentIngestSubmissionsTotal = new Counter({
   name: 'breeze_agent_ingest_submissions_total',
   help: 'Agent telemetry submissions by kind and outcome',
   labelNames: ['kind', 'outcome'] as const,
+  registers: [register]
+});
+
+// #11735 — Windows Security audit records dropped at event-log ingest as known
+// noise (routes/agents/eventLogNoiseFilter.ts). `event_id` is bounded by that
+// list, so its cardinality is fixed.
+const agentEventLogNoiseDroppedTotal = new Counter({
+  name: 'breeze_agent_eventlog_noise_dropped_total',
+  help: 'Windows Security event-log records dropped at ingest as known noise, by Windows event id (a re-sent batch is counted again)',
+  labelNames: ['event_id'] as const,
   registers: [register]
 });
 
@@ -364,7 +381,7 @@ const backupAttestationsTotal = new Counter({
 
 const backupSnapshotFileIndexTotal = new Counter({
   name: 'breeze_backup_snapshot_file_index_total',
-  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit) and hydration (a run building the index from the manifest ended), by outcome (dropped, complete, skipped, or a failure code)',
+  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit), hydration (a run building the index from the manifest ended) and statistics (a large publish refreshed the table\'s planner statistics), by outcome (dropped, complete, skipped, a failure code, or analyzed/busy/error)',
   labelNames: ['event', 'outcome'] as const,
   registers: [register]
 });
@@ -658,6 +675,8 @@ function initializeMetricDefaults(): void {
   agentHeartbeatEchTotal.labels('true').inc(0);
   agentHeartbeatEchTotal.labels('false').inc(0);
   agentFilterSignatureReportsTotal.inc(0);
+  agentControlPlaneBlockReportsTotal.labels('valid').inc(0);
+  agentControlPlaneBlockReportsTotal.labels('invalid').inc(0);
   scriptsExecutedTotal.inc(0);
   backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
   backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
@@ -711,6 +730,7 @@ const httpRequestState = new Map<string, CounterValue>();
 const agentHeartbeatState = new Map<string, CounterValue>();
 const agentHeartbeatEchState = new Map<string, CounterValue>();
 let agentFilterSignatureReports = 0;
+const agentControlPlaneBlockReports = { valid: 0, invalid: 0 };
 const softwarePolicyEvaluationState = new Map<string, CounterValue>();
 const softwareRemediationDecisionState = new Map<string, CounterValue>();
 const sensitiveDataFindingState = new Map<string, CounterValue>();
@@ -873,8 +893,18 @@ export function recordAgentFilterSignatureReport(): void {
   agentFilterSignatureReports += 1;
 }
 
+/** #8868 — one heartbeat that carried a `controlPlaneBlock` object, by parse result. */
+export function recordAgentControlPlaneBlockReport(result: 'valid' | 'invalid'): void {
+  agentControlPlaneBlockReportsTotal.labels(result).inc();
+  agentControlPlaneBlockReports[result] += 1;
+}
+
 export function recordAgentIngestSubmission(kind: AgentIngestKind, outcome: AgentIngestOutcome): void {
   agentIngestSubmissionsTotal.labels(kind, outcome).inc();
+}
+
+export function recordEventLogNoiseDropped(eventId: number, count: number): void {
+  agentEventLogNoiseDroppedTotal.labels(String(eventId)).inc(count);
 }
 
 export function updateBusinessMetrics(metrics: {
@@ -1306,6 +1336,8 @@ export function resetMetricsForTesting(): void {
   agentHeartbeatState.clear();
   agentHeartbeatEchState.clear();
   agentFilterSignatureReports = 0;
+  agentControlPlaneBlockReports.valid = 0;
+  agentControlPlaneBlockReports.invalid = 0;
   softwarePolicyEvaluationState.clear();
   softwareRemediationDecisionState.clear();
   sensitiveDataFindingState.clear();
@@ -1651,6 +1683,26 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
   }
 });
 
+/**
+ * `device_metrics.timestamp` is `timestamp without time zone` holding UTC, so the
+ * raw fallback's date_trunc comes back as a bare "YYYY-MM-DD 00:00:00" (or a Date).
+ * Emit the same ISO-8601 `Z` form the rollup path does, so clients never have to
+ * guess the zone (#11284).
+ */
+function trendBucketToIso(bucket: unknown): string {
+  if (bucket instanceof Date) return bucket.toISOString();
+  const text = String(bucket);
+  const hasZone = /(Z|[+-]\d{2}(:?\d{2})?)$/i.test(text.replace(/^\d{4}-\d{2}-\d{2}/, ''));
+  // Postgres renders a whole-hour offset as "+00"; Date needs "+00:00".
+  const iso = text.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+  const parsed = new Date(`${iso}${hasZone ? '' : 'Z'}`);
+  if (Number.isNaN(parsed.getTime())) {
+    // Surfaces through the route's catch (500 + log) rather than shipping a non-ISO string.
+    throw new Error(`trendBucketToIso: unparseable bucket ${JSON.stringify(text)}`);
+  }
+  return parsed.toISOString();
+}
+
 metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   // Trend metrics aggregate `metric_rollups`, which is pre-aggregated per
   // organization and carries no site axis. There is no safe site predicate to
@@ -1741,7 +1793,7 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
     if (rows.length > 0) {
       return c.json(
         rows.map((r) => ({
-          timestamp: r.bucket,
+          timestamp: trendBucketToIso(r.bucket),
           cpu: Math.round(Number(r.cpu ?? 0)),
           memory: Math.round(Number(r.memory ?? 0))
         }))
@@ -1820,6 +1872,7 @@ metricsRoutes.get('/json', authMiddleware, requireScope('system'), async (c) => 
     agent_heartbeats: Array.from(agentHeartbeatState.values()),
     agent_heartbeat_ech: Array.from(agentHeartbeatEchState.values()),
     agent_filter_signature_reports_total: agentFilterSignatureReports,
+    agent_control_plane_block_reports: { ...agentControlPlaneBlockReports },
     process: {
       uptime_seconds: process.uptime(),
       node_version: process.version

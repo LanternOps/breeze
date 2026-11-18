@@ -14,7 +14,8 @@ import { Counter, Gauge, Histogram } from 'prom-client';
 import { metricsRegistry } from './metricsRegistry';
 
 export type LookupResult = 'hit' | 'miss' | 'bypass';
-export type PublishOutcome = 'published' | 'unavailable' | 'failed';
+/** `timeout`: the publish never settled within publishTimeoutMs; `failed`: it rejected or threw. */
+export type PublishOutcome = 'published' | 'unavailable' | 'failed' | 'timeout';
 export type ReceiveResult = 'applied' | 'self' | 'unknown_cache' | 'malformed' | 'error';
 
 // `getSingleMetric ?? new` keeps a vi.resetModules() re-import from throwing

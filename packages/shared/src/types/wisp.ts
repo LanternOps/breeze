@@ -125,7 +125,12 @@ export interface WispThreadGrantSummary {
   currentRevisionId: string | null;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
+  /** Today's total spend in cents: `backgroundCents + chatCents`. */
   spentTodayCents: number;
+  /** #10414: runs plus summaries/overhead (the unattended line of the spend). */
+  backgroundCents: number;
+  /** #10414: Wisp chat turns (counted and warned on, never refused). */
+  chatCents: number;
   budgetResetsAt: string;
   pausedReason: string | null;
   /** #10973: unattended reads are effective on the current revision (the live switch AND the pin). */

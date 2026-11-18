@@ -151,7 +151,7 @@ async function fixture() {
     revalidate: async (runId: string) => {
       const cmd = await command(runId);
       return system(() => validateTopologyCommandAuthority(
-        { id: cmd!.id, type: cmd!.type, deviceId, payload: cmd!.payload } as never, cmd!.payload));
+        { id: cmd!.id, type: cmd!.type, deviceId, payload: cmd!.payload } as never, cmd!.payload, { permissionVersions: 'live' }));
     },
     producer: (commandId: string) => ({ deviceId, agentId: deviceId, commandId }),
     withdrawTrace: () => system(() => db.execute(sql`UPDATE topology_collection_sources SET current_baseline = ${JSON.stringify({ capabilities: TRACE_CAPS.map((cap) => ({ ...cap, supported: cap.name !== 'network_trace' })) })}::jsonb WHERE id = ${envelopeId}::uuid`)),

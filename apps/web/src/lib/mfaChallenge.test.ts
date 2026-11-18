@@ -23,6 +23,18 @@ describe('parseMfaChallengeResponse', () => {
     });
   });
 
+  it('lists both totp and passkey for a passkey-primary challenge with a TOTP backup', () => {
+    const challenge = parseMfaChallengeResponse({
+      ...base,
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      recoveryAvailable: false,
+      passkeyAvailable: true,
+    });
+    expect(challenge?.primary).toBe('passkey');
+    expect(challenge?.methods).toEqual(['totp', 'passkey']);
+  });
+
   it('selects recovery for a recovery-only new challenge', () => {
     expect(parseMfaChallengeResponse({
       ...base,

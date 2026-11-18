@@ -15,6 +15,8 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 // #5128: scriptDispatch.ts now imports `CommandTypes` from './commandQueue'
 // (a re-export of the leaf module './commandTypes') to look up the script
@@ -38,7 +40,27 @@ vi.mock('./sensitiveCommandPayload', () => ({
     payload: c.payload,
   })),
 }));
-vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false), isAgentConnected: vi.fn().mockReturnValue(false) }));
+// #4142: scriptDispatch reaches agents through the relay facade. This mock
+// bridges over the agentWs mock above (a local socket send); the facade-outcome
+// tests drive dispatchCommandToAgent directly. The real mapping is pinned in
+// agentCommandRelay.test.ts.
+vi.mock('./agentCommandRelay', async () => {
+  const ws = await import('../routes/agentWs');
+  return {
+    dispatchCommandToAgent: vi.fn(async (agentId: string, frame: unknown) => (
+      vi.mocked(ws.sendCommandToAgent)(agentId, frame as never)
+        ? { status: 'sent', via: 'local' }
+        : { status: 'offline' }
+    )),
+    agentReachability: vi.fn(async (agentId: string) => (
+      vi.mocked(ws.isAgentConnected)(agentId) ? 'connected' : 'absent'
+    )),
+    dispatchDisposition: (o: { status: string }) => (
+      o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+    ),
+  };
+});
 // #3409 PR4c-2: the secret-delivery gates are unit-tested against their own
 // drizzle mocks in scriptSecretDelivery.test.ts. Here they are mocked so this
 // file tests the WIRING — that dispatch calls them at the right two points,

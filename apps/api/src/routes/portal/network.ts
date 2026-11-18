@@ -1,10 +1,10 @@
-import type { NetworkOverviewDto, NetworkAssetsDto, NetworkSitesDto } from '@breeze/shared';
+import type { NetworkOverviewDto, NetworkAssetsDto, NetworkSitesDto, NetworkSiteHealthDto } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { Hono } from 'hono';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
-import { networkAssets, networkOverview, networkSites } from '../../services/portal/networkVisibilityReadModel';
+import { networkAssets, networkOverview, networkSiteHealth, networkSites } from '../../services/portal/networkVisibilityReadModel';
 import { networkAssetsQuerySchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -39,7 +39,7 @@ function portalOrgContext(
 
 function cached(
   c: Parameters<typeof applyPortalCacheHeaders>[0],
-  payload: NetworkOverviewDto | NetworkAssetsDto | NetworkSitesDto,
+  payload: NetworkOverviewDto | NetworkAssetsDto | NetworkSitesDto | NetworkSiteHealthDto,
 ) {
   applyPortalCacheHeaders(c, {
     scope: 'private',
@@ -156,6 +156,42 @@ portalNetworkRoutes.get('/network/sites', async (c) => {
     }
 
     return cached(c, await networkSites(orgId));
+  });
+});
+
+/**
+ * Per-site health summary (CPEV-W2). Gated by enableNetworkVisibility only;
+ * alert fields follow enableNetworkAlerts. Takes no org/site/asset parameter.
+ */
+portalNetworkRoutes.get('/network/sites/health', async (c) => {
+  const auth = c.get('portalAuth');
+
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+
+  const orgId = auth.user.orgId;
+  const partnerId = auth.partnerId;
+
+  if (!partnerId) {
+    return c.json({ error: 'Organization is not available' }, 403);
+  }
+
+  return withDbAccessContext(portalOrgContext(orgId, partnerId), async () => {
+    const [settings] = await db
+      .select({
+        enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+        enableNetworkAlerts: portalBranding.enableNetworkAlerts,
+      })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1);
+
+    if (settings?.enableNetworkVisibility !== true) {
+      return cached(c, { dataStatus: 'not_enabled', data: [] });
+    }
+
+    return cached(c, await networkSiteHealth(orgId, settings.enableNetworkAlerts === true));
   });
 });
 

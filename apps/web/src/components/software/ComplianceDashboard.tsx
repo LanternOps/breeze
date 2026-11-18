@@ -785,7 +785,7 @@ export default function ComplianceDashboard({
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
                         <span className="flex flex-wrap items-center gap-2">
-                          <span>{coverageReasonLabel(tSecurity, row.reasonCode)}</span>
+                          <span>{coverageReasonLabel(tSecurity, row.reasonCode, row.vendor)}</span>
                           <SecurityAgentCoverageSetupLink row={row} />
                         </span>
                       </td>

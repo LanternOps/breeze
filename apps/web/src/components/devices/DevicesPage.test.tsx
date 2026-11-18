@@ -229,9 +229,9 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
+type StubDevice = { disks?: unknown[]; id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange }: { onWarrantyRequiredChange?: (required: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange, onDiskUsageColumnVisibilityChange }: { onWarrantyRequiredChange?: (required: boolean) => void; onDiskUsageColumnVisibilityChange?: (visible: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -239,6 +239,7 @@ vi.mock('./DeviceList', () => ({
       data-sort-in-hash={sortInHash ? 'true' : 'false'}
       data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-disks={JSON.stringify(devices.map(d => d.disks))}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
@@ -250,6 +251,8 @@ vi.mock('./DeviceList', () => ({
     >
       <button data-testid="stub-show-warranty" onClick={() => onWarrantyRequiredChange?.(true)}>Show warranty</button>
       <button data-testid="stub-hide-warranty" onClick={() => onWarrantyRequiredChange?.(false)}>Hide warranty</button>
+      <button data-testid="stub-show-disk-usage" onClick={() => onDiskUsageColumnVisibilityChange?.(true)}>Show disk usage</button>
+      <button data-testid="stub-hide-disk-usage" onClick={() => onDiskUsageColumnVisibilityChange?.(false)}>Hide disk usage</button>
       {/* #9035: the page hands its list/grid toggle to the table header strip. */}
       <div data-testid="device-list-header-actions">{headerActions}</div>
       {onClearFilters && (
@@ -412,6 +415,36 @@ beforeEach(() => {
       });
     }
     return jsonResponse({ data: [] }); // /orgs, /orgs/sites, /device-groups
+  });
+});
+
+describe('DevicesPage — disk inventory', () => {
+  it('loads disks in the background when enabled and keeps enriched rows across column toggles', async () => {
+    const disks = [{ mountPoint: '/', totalGb: 200, usedGb: 50, freeGb: 150, usedPercent: 25 }];
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeDisks: false }));
+    const before = vi.mocked(fetchAllDevices).mock.calls.length;
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), disks }, rawDevice(DEV_2, 'host-beta')],
+      pagesWalked: 1,
+    });
+    fireEvent.click(screen.getByTestId('stub-show-disk-usage'));
+    await waitFor(() => {
+      expect(screen.getByTestId('device-list').getAttribute('data-disks')).toBe(JSON.stringify([disks, []]));
+    });
+    expect(screen.getByTestId('device-list')).toBe(list);
+    expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeDisks: true }));
+    fireEvent.click(screen.getByTestId('stub-hide-disk-usage'));
+    fireEvent.click(screen.getByTestId('stub-show-disk-usage'));
+    expect(fetchAllDevices).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it('requests disks on the first walk when the column was remembered', async () => {
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'diskUsage']);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenNthCalledWith(1, expect.objectContaining({ includeDisks: true }));
   });
 });
 
@@ -789,6 +822,39 @@ describe('DevicesPage — multi-select run script keeps its target devices', () 
     const [scriptId, deviceIds] = vi.mocked(executeScript).mock.calls[0];
     expect(scriptId).toBe('script-1');
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+  });
+
+  // #11553: a single-device run toasted "Script Queued One" (a humanized key)
+  // and never said the device was offline. The offline variant must say the
+  // script runs on reconnect, with real copy and the script/host interpolated.
+  it.each([
+    ['queued_offline', /queued for .* — runs when the device reconnects/i],
+    ['queued_live', /queued for [^—]*$/i],
+  ])('single-device run with delivery %s toasts real copy', async (delivery, expected) => {
+    const { executeScript } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(executeScript).mockResolvedValue({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      status: 'queued',
+      targets: [{ requestedDeviceId: DEV_1, admission: 'admitted' as const, executionId: 'execution-1', delivery }],
+    } as never);
+
+    await renderAgentFleet();
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-run-script-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('pick-script'));
+    const confirm = screen.queryByTestId('confirm-fleet-action');
+    if (confirm) fireEvent.click(confirm);
+
+    await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const successes = vi.mocked(showToast).mock.calls
+        .map(([toast]) => toast)
+        .filter((toast) => toast.type === 'success')
+        .map((toast) => toast.message ?? '');
+      expect(successes.some((m) => expected.test(m))).toBe(true);
+      expect(successes.some((m) => /Script Queued One/.test(m))).toBe(false);
+    });
   });
 
   it('does not show a queued-success toast when a valid 201 rejects every target', async () => {
@@ -2043,6 +2109,110 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect([...(vi.mocked(requestBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
       [DEV_1, DEV_2, DEV_3].sort(),
     );
+  });
+
+  // #10838 W02: bulk Wake sends only devices the server said may show Wake.
+  describe('bulk wake policy gating (#10838)', () => {
+    const hiddenWake = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false };
+    async function renderWithHiddenWake() {
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [{ deviceId: DEV_1 }], failed: [] }));
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline' },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: hiddenWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      return requestBulkWakeCommand;
+    }
+
+    it('sends only eligible ids and reports how many were skipped for policy', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const requestBulkWakeCommand = await renderWithHiddenWake();
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(requestBulkWakeCommand).mock.calls[0][0]).toEqual([DEV_1]);
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /2/.test(m) && /policy/i.test(m))).toBe(true);
+      });
+    });
+
+    it('sends nothing and says so when every selected device is blocked by policy', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockReset();
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: hiddenWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /3/.test(m) && /policy/i.test(m))).toBe(true);
+      });
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
+    });
+
+    // A transient lookup failure is not a policy decision: count it apart so
+    // the operator is told to retry instead of that policy blocked the wake.
+    const lookupFailedWake = { show: false, mode: 'unknown', state: 'lookup_failed', testWakeAllowed: false, flaggedTimeouts: false };
+
+    it('reports lookup-failed devices separately from policy-hidden ones, as retryable', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [{ deviceId: DEV_1 }], failed: [] }));
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline' },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: lookupFailedWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(requestBulkWakeCommand).mock.calls[0][0]).toEqual([DEV_1]);
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        // 1 by policy, 1 could not be checked: never lumped into "2 by policy".
+        expect(messages.some(m => /1 skipped by Wake-on-LAN policy/.test(m) && /1 could not be checked/i.test(m))).toBe(true);
+      });
+    });
+
+    it('sends nothing and says to retry when every selected device failed its policy lookup', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockReset();
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline', wakeAvailability: lookupFailedWake },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: lookupFailedWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: lookupFailedWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /3 could not be checked/i.test(m) && /try again/i.test(m) && !/blocked by Wake-on-LAN policy/.test(m))).toBe(true);
+      });
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
+    });
   });
 
   it('sends exactly one bulk command when the confirm button is double-clicked', async () => {
@@ -4020,7 +4190,10 @@ describe('DevicesPage wake refusals', () => {
       relay: { hostname: 'relay-example' }, broadcast: '192.0.2.255',
     }, 202));
     fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Wake Sent Watching' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+      type: 'success',
+      message: expect.stringMatching(/Wake-on-LAN sent to .* via relay-example \(192\.0\.2\.255\)/),
+    }));
     expect(watchWakeOutcome).toHaveBeenCalledWith(DEV_1, { signal: expect.any(AbortSignal) });
     expect(showToast).toHaveBeenCalledTimes(1);
   });

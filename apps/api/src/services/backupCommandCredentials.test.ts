@@ -132,6 +132,50 @@ describe('materializeBackupStorageCredentials', () => {
     },
   );
 
+  // #11858: Sync now names the local destination the snapshot was written to.
+  describe('vault_sync', () => {
+    it('resolves the local destination at delivery, into the outgoing frame only', async () => {
+      const stored = {
+        vaultId: 'vault-1',
+        vaultPath: 'D:\\Vault',
+        snapshotId: 'snap-1',
+        ...backupReadCredentialPayload(CONFIG, ORG, 'local'),
+      };
+
+      const out = await materializeBackupStorageCredentials(stored, ctx('vault_sync'));
+
+      expect(resolveReadMock).toHaveBeenCalledWith(CONFIG, ORG);
+      expect(out).toEqual({
+        vaultId: 'vault-1',
+        vaultPath: 'D:\\Vault',
+        snapshotId: 'snap-1',
+        provider: 'local',
+        providerConfig: LOCAL_CONFIG,
+      });
+      expect(stored).not.toHaveProperty('providerConfig');
+    });
+
+    it('never resolves an S3 destination into a vault sync', async () => {
+      resolveReadMock.mockResolvedValue({ provider: 's3', providerConfig: S3_CONFIG });
+      await expect(
+        materializeBackupStorageCredentials(backupReadCredentialPayload(CONFIG, ORG, 's3'), ctx('vault_sync')),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+    });
+
+    it('refuses when the device no longer belongs to the organization that owns the destination', async () => {
+      deviceRows([]);
+      await expect(
+        materializeBackupStorageCredentials(backupReadCredentialPayload(CONFIG, OTHER_ORG, 'local'), ctx('vault_sync')),
+      ).rejects.toBeInstanceOf(CommandDeliveryRefusedError);
+      expect(resolveReadMock).not.toHaveBeenCalled();
+    });
+
+    it('passes a vault sync that names no destination through untouched', async () => {
+      const stored = { vaultId: 'vault-1', snapshotId: 'snap-1' };
+      expect(await materializeBackupStorageCredentials(stored, ctx('vault_sync'))).toBe(stored);
+    });
+  });
+
   it('opens an organization-scoped context for the referenced org when none is held', async () => {
     await materializeBackupStorageCredentials(
       backupReadCredentialPayload(CONFIG, ORG, 'local'),

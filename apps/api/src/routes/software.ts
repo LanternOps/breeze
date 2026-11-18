@@ -53,7 +53,6 @@ import {
   detectionRulesSchema,
   successExitCodesSchema,
   softwareDownloadPolicySchema,
-  defaultSilentArgsForFileType,
 } from '@breeze/shared';
 import {
   ALLOWED_EXTENSIONS,
@@ -74,7 +73,9 @@ import {
   authorizeCatalogItemWrite,
   createCatalogSchema,
   createVersionSchema,
+  defaultSilentArgsForCatalogItem,
   deleteCatalogAndUploadedObjects,
+  integrationInstallArgsError,
   isImmutableBuiltin,
   nullOrgCatalogBranches,
   platformSchema,
@@ -84,6 +85,7 @@ import {
   updateCatalogSchema,
   updateVersionSchema,
 } from '../services/softwareCatalogOps';
+import { softwarePackageObjectKey, uploadOwnerOf } from '../services/softwareUploadOwner';
 import {
   DEPLOYMENT_RESULT_STATUSES,
   cancelDeploymentSchema,
@@ -649,18 +651,30 @@ softwareRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     if (!isS3Configured()) {
       return c.json({ error: 'S3 storage is not configured' }, 503);
     }
 
+    // Dual-axis fetch + write authorization (#2135, #9246): partner-wide
+    // packages (org_id NULL) take uploads from system scope or a full-partner
+    // admin of the owning partner; an org-owned row must belong to the org this
+    // request resolves to. A partner-owned row ignores `?orgId` entirely.
     const catalogId = c.req.param('id')!;
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId), activeCatalog));
+      .where(and(eq(softwareCatalog.id, catalogId), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const writeError = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (writeError) return c.json({ error: writeError.error }, writeError.status);
+    if (catalogItem.orgId !== null) {
+      // Org-owned uploads keep their historical ?orgId resolution exactly: the
+      // request must resolve to the package's org (no All-organizations
+      // fallback, unlike authorizeCatalogItemWrite above, whose org-row branch
+      // delegates to the read check's canAccessOrg fallback).
+      const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      if (orgResult.orgId !== catalogItem.orgId) return c.json({ error: 'Catalog item not found' }, 404);
+    }
     if (isImmutableBuiltin(catalogItem, auth)) {
       return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
     }
@@ -783,13 +797,18 @@ softwareRoutes.post(
       const supportedOs = normalizedOs.value ?? null;
 
       // Auto-detect MSI silent args
-      const silentDefaults = defaultSilentArgsForFileType(fileType);
+      const silentDefaults = defaultSilentArgsForCatalogItem(catalogItem, fileType);
       if (silentDefaults && !silentInstallArgs) {
         silentInstallArgs = silentDefaults.install;
       }
       if (silentDefaults && !silentUninstallArgs) {
         silentUninstallArgs = silentDefaults.uninstall;
       }
+
+      // #9246: refuse args that drop a built-in package's per-org placeholder
+      // before a byte reaches object storage.
+      const placeholderError = integrationInstallArgsError(catalogItem, fileType, silentInstallArgs);
+      if (placeholderError) return c.json(placeholderError, 400);
 
       // #6958: a script runs as SYSTEM/root (devices.execute), and the install
       // spec is checked before any bytes reach object storage.
@@ -818,7 +837,7 @@ softwareRoutes.post(
 
       // Generate version ID for S3 key path
       const versionId = randomUUID();
-      const s3Key = `software/${orgId}/${catalogId}/${versionId}/${originalFileName}`;
+      const s3Key = softwarePackageObjectKey(uploadOwnerOf(catalogItem), catalogId, versionId, originalFileName);
 
       // Upload to S3. Previously a bare call, so any storage fault (bad
       // credentials, missing bucket, unreachable endpoint, MinIO TLS mismatch,
@@ -882,7 +901,7 @@ softwareRoutes.post(
       }
 
       writeRouteAudit(c, {
-        orgId,
+        orgId: catalogItem.orgId,
         action: 'software.catalog.version.upload',
         resourceType: 'software_version',
         resourceId: versionRecord.id,

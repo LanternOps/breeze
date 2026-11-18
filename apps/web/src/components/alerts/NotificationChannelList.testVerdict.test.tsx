@@ -130,7 +130,7 @@ describe('NotificationChannelList — last test verdict', () => {
 
     expect(screen.queryByText('Success')).toBeNull();
     expect(screen.queryByText('Failed')).toBeNull();
-    expect(screen.getByText('Never Tested')).toBeTruthy();
+    expect(screen.getByText('Never tested')).toBeTruthy();
   });
 
   // The card's own relative-time strings were extracted into title-cased

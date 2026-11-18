@@ -138,8 +138,8 @@ const workbookRels = (sheetCount: number) => XML_DECL
     `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
   + '</Relationships>';
 
-function worksheetXml(rows: readonly unknown[]): string {
-  const headers = rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : [];
+function worksheetXml(rows: readonly unknown[], fallbackHeaders: readonly string[] = []): string {
+  const headers = rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : [...fallbackHeaders];
   if (rows.length + 1 > XLSX_MAX_ROWS) {
     throw new XlsxLimitError(`Report has ${rows.length} rows; an Excel worksheet holds at most ${XLSX_MAX_ROWS - 1} plus a header row`);
   }
@@ -167,7 +167,8 @@ function worksheetXml(rows: readonly unknown[]): string {
     + '</worksheet>';
 }
 
-export type XlsxSheet = { name: string; rows: readonly unknown[] };
+/** `headers` is the header row of a sheet with no rows; otherwise the first row's keys are used. */
+export type XlsxSheet = { name: string; rows: readonly unknown[]; headers?: readonly string[] };
 
 /**
  * Serialize named sheets to one .xlsx workbook. Each sheet's header row is its
@@ -182,7 +183,7 @@ export function sheetsToXlsx(sheets: readonly XlsxSheet[]): Uint8Array<ArrayBuff
     'xl/_rels/workbook.xml.rels': strToU8(workbookRels(sheets.length)),
   };
   sheets.forEach((sheet, i) => {
-    files[`xl/worksheets/sheet${i + 1}.xml`] = strToU8(worksheetXml(sheet.rows));
+    files[`xl/worksheets/sheet${i + 1}.xml`] = strToU8(worksheetXml(sheet.rows, sheet.headers));
   });
   // fflate allocates a plain (non-shared) ArrayBuffer; narrowing the type lets
   // callers hand it straight to `new Blob([...])` and Hono's `c.body()`.

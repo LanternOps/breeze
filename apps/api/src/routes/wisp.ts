@@ -54,6 +54,7 @@ import { saveBrowserTimezone } from '../services/wisp/nudgePreferences';
 import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
 import { wispThreadLinkRoutes } from './wispThreadLinks';
+import { wispCheckInRoutes } from './wispCheckIns';
 import { wispHomeRoutes } from './wispHome';
 import { wispWatchesRoutes } from './wispWatches';
 import { wispNudgePreferenceRoutes, wispNudgeSettingsRoutes } from './wispNudgePreferences';
@@ -330,6 +331,8 @@ wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settin
 wispRoutes.route('/thread', wispThreadRoutes);
 // W08 (w00 A35): GET/POST/DELETE /thread/:id/links — same gates, same ownership.
 wispRoutes.route('/thread', wispThreadLinkRoutes);
+// Check-in timers W05 (#10996): GET/DELETE /thread/:id/check-ins — same gates, same ownership.
+wispRoutes.route('/thread', wispCheckInRoutes);
 // W08 (spec §17.2): GET /home — one table-only read for the home's first paint.
 wispRoutes.route('/home', wispHomeRoutes);
 // W05: same inheritance.

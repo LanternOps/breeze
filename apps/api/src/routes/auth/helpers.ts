@@ -50,6 +50,16 @@ import {
   ANONYMOUS_ACTOR_ID,
   ENABLE_2FA
 } from './schemas';
+import { hasActiveTotpFactor, type TotpFactorRow } from './mfaFactorPredicates';
+
+// #10650: the authenticator-app factor predicate lives in its own module; it
+// is re-exported here so route code keeps one import site for auth helpers.
+export {
+  activeTotpFactorSql,
+  canAddBackupTotp,
+  hasActiveTotpFactor,
+  type TotpFactorRow,
+} from './mfaFactorPredicates';
 
 const { db } = dbModule;
 
@@ -297,7 +307,8 @@ export async function requireCurrentPasswordStepUp(
    * #4470: MFA factor-management routes pass 400 so a mistyped password is not
    * mistaken for bearer expiry by the web client's generic 401 handler.
    * Defaults to 401 for every pre-existing caller whose client contract keys
-   * on it (approvals/PAM step-up, users email-change, authenticator).
+   * on it (approvals/PAM step-up, users email-change). The authenticator
+   * register-grant route moved to 400 with #9007.
    */
   opts: {
     rejectionStatus?: ProofRejectionStatus;
@@ -412,9 +423,11 @@ export async function requireFreshMfaStepUp(
     .limit(1);
 
   // Only TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
-  // Allowlist on the method (not a denylist) so any non-TOTP/unset method is
-  // rejected even if a stale secret lingers — defense-in-depth for the auth path.
-  if (!user?.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
+  // The shared predicate is an allowlist on the method (not a denylist): a
+  // TOTP primary, a backup beside a passkey primary (#10650), or a legacy
+  // enabled row whose mfa_method was never written qualifies, and
+  // a stale secret beside an SMS primary or on an MFA-off row never does.
+  if (!user || !hasActiveTotpFactor(user) || !user.mfaSecret) {
     return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);
   }
 
@@ -507,7 +520,7 @@ export async function enforceExistingFactorStepUp(
   grantId: string | undefined,
   opts: {
     consume: boolean;
-    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey';
+    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey' | 'remove_totp';
     resourceDigest?: string;
   },
 ): Promise<Response | null> {
@@ -561,10 +574,11 @@ export async function enforceExistingFactorStepUp(
  * the purpose it mints, and the one SR2-20 uses — so the three can never
  * drift apart:
  *   - no factor yet: only `enroll_first_factor`. That grant installs a FIRST
- *     factor and nothing else; an account that already holds one can never
- *     spend it (bindsMatch compares the operation, and the factor write bumped
- *     `mfa_epoch` anyway), so it cannot be used to side-step
- *     {@link enforceExistingFactorStepUp} (SR2-20).
+ *     factor or (#9007) is exchanged once at `POST /authenticator/register-grant`
+ *     for a `register_approver_device` grant, and nothing else; an account
+ *     that already holds a factor can never spend it (bindsMatch compares the
+ *     operation, and the factor write bumped `mfa_epoch` anyway), so it cannot
+ *     be used to side-step {@link enforceExistingFactorStepUp} (SR2-20).
  *   - already protected: only `sso_reauth_manage_factor` (#4045), and ONLY as
  *     the stand-in for the PASSWORD leg — exactly the role the password plays
  *     for a password account adding a second factor. The existing-factor leg
@@ -574,6 +588,19 @@ export async function enforceExistingFactorStepUp(
  *     Before #7369 this road refused a protected passwordless account outright,
  *     and with no password to take the other road it could never add a second
  *     factor at all — SR2-20 was never reached.
+ *
+ * #9007: `POST /authenticator/register-grant` is the one caller that is not a
+ * factor write. It spends whichever SSO grant this road accepts (one GETDEL,
+ * so still one spend in total) on a single exchange for a
+ * `register_approver_device` grant, standing in for the password proof that
+ * route takes from password accounts. That route runs its stronger-factor gate
+ * ({@link userHasStrongerReauthFactor}) first, so a protected account reaches
+ * this road from there only when that gate reports no TOTP/passkey: SMS-only,
+ * `ENABLE_2FA=false`, or a factor shape the gate does not count (it checks
+ * `mfaMethod === 'totp'` and live passkeys only). The
+ * approver-registration routes themselves still accept ONLY a
+ * `register_approver_device` grant; an SSO grant presented to them directly
+ * fails bindsMatch on the operation.
  *
  * Every rejection is the same opaque `Invalid credentials` response the
  * password path already returns — SAME status, same body, whichever road was
@@ -1618,7 +1645,7 @@ export type PendingMfaMethodVerdict =
 export function evaluatePendingMfaMethod(
   pending: PendingMfaRecord,
   method: PendingMfaVerificationMethod,
-  liveUser: { mfaSecret: string | null; mfaMethod: string | null; phoneNumber: string | null },
+  liveUser: TotpFactorRow & { phoneNumber: string | null },
   liveAllowedMethods: PendingMfaRecord['allowedMethods'],
 ): PendingMfaMethodVerdict {
   if (method === 'recovery') {
@@ -1632,7 +1659,7 @@ export function evaluatePendingMfaMethod(
   }
 
   const enrolled = method === 'totp'
-    ? Boolean(liveUser.mfaSecret)
+    ? hasActiveTotpFactor(liveUser)
     : liveUser.mfaMethod === 'sms' && Boolean(liveUser.phoneNumber);
   if (!enrolled) {
     return { ok: false, reason: 'factor_not_enrolled', terminal: false };
@@ -1831,11 +1858,13 @@ export async function resolveUserAuditOrgId(userId: string): Promise<string | nu
         return null;
       }
 
-      const [orgAssoc] = await db
+      // Savepoint: the catch is inside the context, so without one the failure
+      // rethrows when the context's transaction ends (#11225).
+      const [orgAssoc] = await dbModule.withDbTransaction(() => db
         .select({ orgId: organizationUsers.orgId })
         .from(organizationUsers)
         .where(eq(organizationUsers.userId, userId))
-        .limit(1);
+        .limit(1));
 
       return orgAssoc?.orgId ?? null;
     } catch (err) {

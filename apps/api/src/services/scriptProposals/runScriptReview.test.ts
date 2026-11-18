@@ -24,6 +24,7 @@ const shared = vi.hoisted(() => ({
   readOrgPartnerIdMock: vi.fn(),
   anthropicClientForMock: vi.fn(),
   settleInvocationMock: vi.fn(async () => ({ costCents: 1, invocationIds: [], deferred: false })),
+  quoteInvocationCentsMock: vi.fn(async () => 1),
   messagesCreateMock: vi.fn(),
   createAuditLogAsyncMock: vi.fn(async () => undefined),
   captureExceptionMock: vi.fn(),
@@ -113,7 +114,10 @@ vi.mock('../aiModels/connectionFactory', async (importActual) => ({
   ...(await importActual<typeof import('../aiModels/connectionFactory')>()),
   anthropicClientFor: shared.anthropicClientForMock,
 }));
-vi.mock('../aiModels/settleInvocation', () => ({ settleInvocation: shared.settleInvocationMock }));
+vi.mock('../aiModels/settleInvocation', () => ({
+  settleInvocation: shared.settleInvocationMock,
+  quoteInvocationCents: shared.quoteInvocationCentsMock,
+}));
 // W09: the cooldown write a provider failure makes (Redis; fails open).
 vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: shared.createAuditLogAsyncMock }));
@@ -796,6 +800,8 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expect(shared.insertValues.at(-1)).toMatchObject({
       summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: budget not admitted)',
       inputTokens: 300, outputTokens: 40,
+      // #11972: the one settlement's cents (the mock bills 1), counted once.
+      costCents: '1.0000',
     });
   });
 
@@ -813,6 +819,7 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expectSettledOnce(300, 40);
     expect(shared.insertValues.at(-1)).toMatchObject({
       summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: reservation failed)',
+      costCents: '1.0000',
     });
     expect(shared.captureExceptionMock).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'pool exhausted' }), undefined, expect.objectContaining({ area: 'script_review_parse_retry' }),
@@ -1155,5 +1162,193 @@ describe('runScriptReview — W09 failover (#7607)', () => {
     expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
     expect(settles().map((s) => s.reservationId)).toEqual([RESERVATION_ID]);
     expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('out of AI credits') });
+    // #11972: the zero-usage hop runWithFailover settled billed nothing (the
+    // mock's default 1 cent must not reach the row).
+    expect(shared.insertValues.at(-1)).toMatchObject({ costCents: '0.0000' });
+  });
+
+  it('#11972: a review served by the failover hop is priced on THAT hop: its binding and its reservation', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock
+      .mockRejectedValueOnce(overloaded())
+      .mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    shared.quoteInvocationCentsMock.mockResolvedValueOnce(3.5);
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+
+    await runScriptReview(JOB);
+
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledTimes(1);
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ wireModel: 'claude-backup-wire', offeringId: 'k' }),
+      [expect.objectContaining({ model: 'claude-backup-wire' })],
+      { orgId: ORG_ID, reservationId: HOP1_RESERVATION },
+    );
+    // The failed hop 0 settled at zero is not added on top of the quote.
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'completed', costCents: '3.5000', budgetReservationId: HOP1_RESERVATION,
+    });
+  });
+
+  it('#11972: a parse retry whose backup hop is not admitted keeps the settled first attempt\'s cents on the failure row', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(
+      makeResolvedModel('platform', { surface: 'script_reviewer', offering: { id: 'p2', displayName: 'P2' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [] }),
+    );
+    // Initial admission, the parse retry's admission, then the backup hop's: denied.
+    shared.checkBudgetDetailedMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+    shared.messagesCreateMock
+      .mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, stop_reason: 'end_turn', content: [{ type: 'text', text: 'prose, not JSON' }] })
+      .mockRejectedValueOnce(overloaded());
+    shared.settleInvocationMock.mockResolvedValueOnce({ costCents: 2.5, invocationIds: [], deferred: false });
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.messagesCreateMock).toHaveBeenCalledTimes(2);
+    // The first attempt (2.5) and the retry's failed hop (zero usage, settled by runWithFailover).
+    expect(settles().map((s) => [s.reservationId, s.usage.length])).toEqual([[RESERVATION_ID, 1], [HOP1_RESERVATION, 0]]);
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'failed', inputTokens: 300, outputTokens: 40, costCents: '2.5000',
+      summary: expect.stringContaining('out of AI credits'),
+    });
+  });
+});
+
+// #11972: the review row carries the cents this review was billed (the same
+// number the ledger holds), not a null next to real token counts.
+describe('runScriptReview — recorded cost (#11972)', () => {
+  const RETRY_RESERVATION_ID = '00000000-0000-4000-8000-0000000000c7';
+  const JOB = { proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 };
+  const verdictReply = (input: number, output: number) => ({
+    usage: { input_tokens: input, output_tokens: output },
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }],
+  });
+  const proseReply = (input: number, output: number) => ({
+    usage: { input_tokens: input, output_tokens: output },
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text: 'Sure! Here is my review in prose' }],
+  });
+  const settled = (costCents: number) => ({ costCents, invocationIds: [], deferred: false });
+
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    shared.messagesCreateMock.mockReset();
+    shared.reserveAiBudgetMock.mockReset();
+    shared.settleInvocationMock.mockReset();
+    shared.quoteInvocationCentsMock.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    shared.transitionProposalMock.mockResolvedValue(true);
+    primeResolver();
+    shared.reserveAiBudgetMock
+      .mockResolvedValueOnce(RESERVED)
+      .mockResolvedValueOnce({ ...RESERVED, reservationId: RETRY_RESERVATION_ID });
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model' }]);
+  });
+
+  it('a completed review records the quoted cost of its verdict call, priced on the served binding and reservation', async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce(verdictReply(500, 80));
+    shared.quoteInvocationCentsMock.mockResolvedValueOnce(12.345678);
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(12.345678));
+
+    await runScriptReview(JOB);
+
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'completed', inputTokens: 500, outputTokens: 80, costCents: '12.3457',
+    });
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledTimes(1);
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ wireModel: MODEL }),
+      [expect.objectContaining({ model: MODEL, tokens: expect.objectContaining({ input: 500, output: 80 }) })],
+      { orgId: ORG_ID, reservationId: RESERVATION_ID },
+    );
+    // Still one settlement: the quote prices the call, it does not bill it again.
+    expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a completed review after a parse retry records both calls: the settled first and the quoted verdict', async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce(proseReply(300, 40)).mockResolvedValueOnce(verdictReply(500, 80));
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(2.5)).mockResolvedValueOnce(settled(4.25));
+    shared.quoteInvocationCentsMock.mockResolvedValueOnce(4.25);
+
+    await runScriptReview(JOB);
+
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'completed', inputTokens: 800, outputTokens: 120, costCents: '6.7500', budgetReservationId: RETRY_RESERVATION_ID,
+    });
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), { orgId: ORG_ID, reservationId: RETRY_RESERVATION_ID },
+    );
+  });
+
+  it('a review that fails after real spend records the settled cents on the failure row', async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce(proseReply(300, 40)).mockResolvedValueOnce(proseReply(310, 45));
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(2.5)).mockResolvedValueOnce(settled(2.75));
+
+    await runScriptReview(JOB);
+
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', inputTokens: 610, outputTokens: 85, costCents: '5.2500' });
+    expect(shared.quoteInvocationCentsMock).not.toHaveBeenCalled();
+  });
+
+  it('a refusal records the settled cents of the refused call', async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce({
+      usage: { input_tokens: 300, output_tokens: 5 }, content: [],
+      stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber' },
+    });
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(1.125));
+
+    await runScriptReview(JOB);
+
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', costCents: '1.1250' });
+  });
+
+  it("a provider error on the retry keeps the first call's settled cents and adds the failed call's", async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce(proseReply(300, 40)).mockRejectedValueOnce(new Error('connection reset'));
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(2.5)).mockResolvedValueOnce(settled(0.5));
+
+    await runScriptReview(JOB);
+
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', costCents: '3.0000' });
+  });
+
+  it('a review that never dispatched records zero, not unknown', async () => {
+    shared.reserveAiBudgetMock.mockReset();
+    shared.reserveAiBudgetMock.mockResolvedValueOnce({ kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted' });
+
+    await runScriptReview(JOB);
+
+    expect(shared.messagesCreateMock).not.toHaveBeenCalled();
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', costCents: '0.0000' });
+  });
+
+  it('a quote that throws leaves the cost unknown (null) but still commits the review, settles it, and reports the fault', async () => {
+    shared.messagesCreateMock.mockResolvedValueOnce(verdictReply(500, 80));
+    shared.quoteInvocationCentsMock.mockRejectedValueOnce(new Error('rate lookup failed'));
+    shared.settleInvocationMock.mockResolvedValueOnce(settled(12));
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ id: REVIEW_ROW_ID });
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'completed', costCents: null });
+    expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+    expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'reviewed', expect.anything());
+    expect(shared.captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('rate lookup failed') }), undefined,
+      expect.objectContaining({ service: 'scriptReview', area: 'script_review_cost_quote' }),
+    );
   });
 });

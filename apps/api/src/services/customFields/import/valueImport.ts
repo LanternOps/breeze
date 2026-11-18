@@ -70,7 +70,7 @@
 import { inArray } from 'drizzle-orm';
 import { db } from '../../../db';
 import { deviceCustomFieldValues, deviceExternalLinks, deviceWarranty } from '../../../db/schema';
-import { pgErrorCode, pgErrorNode } from '../../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode, pgErrorNode } from '../../../utils/pgErrors';
 import {
   loadVisibleCustomFieldDefinitions,
   persistDeviceCustomFieldValues,
@@ -523,17 +523,25 @@ function checkExpectation(row: CommitValueRowInput, { resolution, target }: Reso
  * response body.
  */
 const WRITE_FAILURE_COPY: Record<string, string> = {
-  '23503': 'This device, or a custom field it names, no longer exists',
   '23505': 'Another write to this device raced this import — re-run it for this row',
   '23514': 'A value on this row violates a constraint on the field it targets',
   '22001': 'A value on this row is too long for the field it targets',
   '42501': 'You do not have access to write values for this device',
 };
+// Keyed off isPgForeignKeyViolationCode, not a '23503' table entry: Postgres 18
+// reports a RESTRICT refusal as 23001 (#11624).
+const FOREIGN_KEY_WRITE_FAILURE = 'This device, or a custom field it names, no longer exists';
 const GENERIC_WRITE_FAILURE = 'Could not write this device — check the server log for details';
 
-function writeFailure(err: unknown): RowProblem {
+/** Fixed copy for a recognised SQLSTATE, or undefined for anything else. */
+function knownWriteFailureCopy(err: unknown): string | undefined {
   const code = pgErrorCode(err);
-  return { error: (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE, code: 'write-failed' };
+  if (isPgForeignKeyViolationCode(code)) return FOREIGN_KEY_WRITE_FAILURE;
+  return code ? WRITE_FAILURE_COPY[code] : undefined;
+}
+
+function writeFailure(err: unknown): RowProblem {
+  return { error: knownWriteFailureCopy(err) ?? GENERIC_WRITE_FAILURE, code: 'write-failed' };
 }
 
 /**
@@ -811,7 +819,7 @@ export async function commitDeviceCustomFieldImport(
       // operator reads "check the server log" on all of them — page it.
       // Recognised, expected refusals stay log-only so a bad CSV cannot flood
       // Sentry.
-      if (!pgErrorCode(err) || !WRITE_FAILURE_COPY[pgErrorCode(err)!]) captureException(err);
+      if (!knownWriteFailureCopy(err)) captureException(err);
       summary.errors.push(withCause({ index, ...writeFailure(err) }, err));
     }
   }

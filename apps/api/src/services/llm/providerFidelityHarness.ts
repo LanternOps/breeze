@@ -44,7 +44,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { createAnthropicClient } from '../aiModels/connectionFactory';
 import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from './sdkChildEnvGuards';
 
 /**
  * Bump this whenever the harness gets meaningfully stricter — verification
@@ -523,6 +523,9 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
         abortController,
         env: childEnv ?? buildFidelityChildEnv(input),
         ...(isolatedCwd ? { cwd: isolatedCwd.cwd } : {}),
+        // #11817: the production mode, so the round-trip sees production's
+        // allow/deny decisions. Last, after every spread.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     } as Parameters<typeof sdk.query>[0]);
 

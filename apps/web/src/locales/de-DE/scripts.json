@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(leer)",
       "noOutput": "Keine Ausgabe",
+      "purged": "Ausgabe nach Ablauf der Aufbewahrungsfrist entfernt ({{date}})",
       "title": "Ausgabe",
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"
@@ -1552,6 +1553,22 @@
     "riskLow": "Niedrig",
     "riskMedium": "Mittel",
     "riskHigh": "Hoch",
-    "riskCritical": "Kritisch"
+    "riskCritical": "Kritisch",
+    "reviewInApprovals": "In Genehmigungen prüfen",
+    "status": {
+      "proposed": "Wartet auf Prüfung",
+      "scan_rejected": "Vom Sicherheitsscan abgelehnt",
+      "review_failed": "KI-Prüfung fehlgeschlagen",
+      "reviewed": "Geprüft",
+      "approved": "Genehmigt",
+      "rejected": "Abgelehnt",
+      "changes_requested": "Änderungen angefordert",
+      "expired": "Abgelaufen",
+      "superseded": "Ersetzt",
+      "executed": "Ausgeführt",
+      "verified": "Verifiziert",
+      "verification_failed": "Verifizierung fehlgeschlagen",
+      "promoted": "In der Bibliothek gespeichert"
+    }
   }
 }

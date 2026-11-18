@@ -487,6 +487,7 @@
     "rebootDone": "Abgeschlossen",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Übersprungen: Keines der ausstehenden Updates dieses Geräts ist freigegeben.",
       "ring_deleted": "Vor der Verteilung abgebrochen: Der Update-Ring wurde gelöscht.",
       "ring_disabled": "Vor der Verteilung abgebrochen: Der Update-Ring wurde deaktiviert.",
       "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war.",

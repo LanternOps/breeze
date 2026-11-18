@@ -1296,8 +1296,18 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // device_patch_status enum is covered by patches.integration.test.ts.
     const statusText = (set.status as { strings: string[] }).strings.join('<col>');
     expect(statusText).toBe("CASE WHEN <col> = 'pending' THEN <col> ELSE 'installed' END");
-    // installedAt is likewise preserved for pending rows.
-    expect((set.installedAt as { values: unknown[] }).values).toContain(tables.devicePatches.installedAt);
+    // installedAt is likewise preserved for pending rows, while the installed
+    // version is unchanged (#9723): the THEN branch is the version-guarded
+    // keep of the stored column, not the reported value.
+    const keepStored = {
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    };
+    const installedAtCase = set.installedAt as { strings: string[]; values: unknown[] };
+    expect(installedAtCase.strings.join('<v>')).toBe("CASE WHEN <v> = 'pending' THEN <v> ELSE <v> END");
+    expect(installedAtCase.values[0]).toBe(tables.devicePatches.status);
+    expect(installedAtCase.values[1]).toEqual(keepStored);
     // installedVersion still updates — it reports the currently-installed
     // version whether or not an upgrade is pending.
     expect(set.installedVersion).toBe('2.51.0.2');
@@ -1323,11 +1333,48 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // The version-aware flip bypasses the pending-preserving CASE entirely:
     // it writes the plain 'installed' literal, not a conditional expression.
     expect(set.status).toBe('installed');
-    // ...and installedAt takes the plain installedAtParam value (NULL::timestamp
-    // here, since the payload has no installedAt), not the CASE that would
-    // otherwise reference the stored column.
-    expect(set.installedAt).toEqual({ op: 'sql', strings: ['NULL::timestamp'], values: [] });
+    // ...and installedAt takes the plain installedAtParam value, not the
+    // pending-preserving CASE. The payload has no installedAt, so that value
+    // keeps the stored date while the installed version is unchanged rather
+    // than writing NULL over it (#9723). Real execution of the version guard
+    // is covered by patches.integration.test.ts.
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    });
     expect(set.installedVersion).toBe('2.51.0.2');
+  });
+
+  it('writes a reported installedAt on conflict, so a reinstall moves the date (#9723)', async () => {
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.51.0.2');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+            installedAt: '2026-01-05T10:20:30Z',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const { values, set } = devicePatchUpserts[0]!;
+    expect(values.installedAt).toEqual(new Date('2026-01-05T10:20:30Z'));
+    expect(set.installedAt).toEqual({
+      op: 'sql',
+      strings: ['', '::timestamp'],
+      values: ['2026-01-05T10:20:30.000Z'],
+    });
   });
 
   it('uses this device\'s own available_version, not a stale global patches.version, so a differently-stale catalog row cannot prematurely flip a still-pending row (#2736)', async () => {

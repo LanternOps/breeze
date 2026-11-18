@@ -368,3 +368,209 @@ describe('MailgunInboundProvider.parse', () => {
     expect(n1.providerMessageId).toBe(n2.providerMessageId); // stable across retries -> dedup works
   });
 });
+
+// The DMARC verdict is computed over the RFC 5322 From header's domain, so the
+// pipeline's sender identity must be that From mailbox. The envelope sender
+// (MAIL FROM, Mailgun's `sender` field) is kept separately for loop handling only.
+describe('MailgunInboundProvider.parse — sender identity', () => {
+  const provider = new MailgunInboundProvider();
+  const headers = (...ar: string[]) => JSON.stringify(ar.map((v) => ['Authentication-Results', v]));
+  const base = {
+    recipient: 'acme@tickets.example.com',
+    sender: 'jane@customer.com',
+    from: 'Mallory <mallory@sender.example>',
+    subject: 'hello',
+    'stripped-text': 'body',
+    'Message-Id': '<m-1@sender.example>',
+    'message-headers': headers('mxa.mailgun.org; dmarc=pass (p=REJECT) header.from=sender.example'),
+  };
+  const parse = (fields: Record<string, string>) => provider.parse({ parseBody: async () => fields } as any);
+
+  it('takes the sender address from the From header, not the envelope sender', async () => {
+    const n = await parse(base);
+    expect(n.from).toBe('mallory@sender.example');
+    expect(n.envelopeFrom).toBe('jane@customer.com');
+  });
+
+  it('records the From domain the DMARC pass is for', async () => {
+    const n = await parse(base);
+    expect(n.senderAuth!.verified).toBe(true);
+    expect(n.senderAuth!.authenticatedDomain).toBe('sender.example');
+  });
+
+  it('uses the From domain when the DMARC clause names no header.from', async () => {
+    const n = await parse({ ...base, 'message-headers': headers('mxa.mailgun.org; dmarc=pass') });
+    expect(n.senderAuth!.authenticatedDomain).toBe('sender.example');
+  });
+
+  it('records no authenticated domain when the DMARC pass names a different header.from', async () => {
+    const n = await parse({ ...base, 'message-headers': headers('mxa.mailgun.org; dmarc=pass header.from=customer.com') });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when the From header holds more than one mailbox', async () => {
+    const n = await parse({ ...base, from: 'mallory@sender.example, jane@customer.com' });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it.each([
+    ['two bare addresses', 'jane@customer.com mallory@sender.example'],
+    ['two angle addresses', '"x" <jane@customer.com> <mallory@sender.example>'],
+  ])('records no authenticated domain for a From header with %s and no header.from', async (_label, from) => {
+    const n = await parse({ ...base, from, 'message-headers': headers('mxa.mailgun.org; dmarc=pass') });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when DMARC did not pass', async () => {
+    const n = await parse({ ...base, 'message-headers': headers('mxa.mailgun.org; dmarc=fail header.from=sender.example') });
+    expect(n.senderAuth!.verified).toBe(false);
+    expect(n.senderAuth!.authenticatedDomain).toBeUndefined();
+  });
+
+  it('checks the From header when a second trusted stamp names header.from', async () => {
+    const n = await parse({
+      ...base,
+      from: 'x@other.example <jane@customer.com>',
+      'message-headers': headers('mxa.mailgun.org; dmarc=pass', 'mxb.mailgun.org; dmarc=pass header.from=customer.com'),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when message-headers holds more than one From', async () => {
+    const n = await parse({
+      ...base,
+      from: 'Jane <jane@customer.com>',
+      'message-headers': JSON.stringify([
+        ['From', 'x@other.example'], ['From', 'Jane <jane@customer.com>'],
+        ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass'],
+      ]),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when the message-headers From is on another domain', async () => {
+    const n = await parse({
+      ...base,
+      from: 'Jane <jane@customer.com>',
+      'message-headers': JSON.stringify([['From', 'x@other.example'], ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass']]),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain for two message-headers From on the same domain', async () => {
+    const n = await parse({
+      ...base,
+      'message-headers': JSON.stringify([
+        ['From', 'Mallory <mallory@sender.example>'], ['From', 'mallory@sender.example'],
+        ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass'],
+      ]),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when a message-headers From value is not a string', async () => {
+    const n = await parse({
+      ...base,
+      'message-headers': JSON.stringify([['From', 42], ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass']]),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBeNull();
+  });
+
+  it('binds when the message-headers From agrees with the form', async () => {
+    const n = await parse({
+      ...base,
+      'message-headers': JSON.stringify([['From', 'Mallory <mallory@sender.example>'], ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass']]),
+    });
+    expect(n.senderAuth!.authenticatedDomain).toBe('sender.example');
+  });
+
+  it.each([
+    ['inside a quoted smtp.mailfrom', 'mxa.mailgun.org; spf=pass smtp.mailfrom="dmarc=pass"@other.example; dmarc=fail header.from=sender.example'],
+    ['opened by a quoted ; and (', 'mxa.mailgun.org; spf=pass smtp.mailfrom="a; dmarc=pass header.from=sender.example; ("@other.example; dmarc=fail header.from=sender.example'],
+    ['inside a comment', 'mxa.mailgun.org; spf=pass (dmarc=pass) smtp.mailfrom=a@other.example; dmarc=fail header.from=sender.example'],
+  ])('does not read a dmarc=pass %s', async (_label, ar) => {
+    const n = await parse({ ...base, 'message-headers': headers(ar) });
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('verifies a stamp in Mailgun\'s usual format', async () => {
+    const n = await parse({ ...base, 'message-headers': headers(
+      'mxa.mailgun.org; dkim=pass header.i=@sender.example header.s=s1 header.b=AbCd; '
+      + 'spf=pass (mxa.mailgun.org: domain of bounce@sender.example designates 192.0.2.7 as permitted sender) smtp.mailfrom=bounce@sender.example; '
+      + 'dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=sender.example',
+    ) });
+    expect(n.senderAuth).toMatchObject({ verified: true, authenticatedDomain: 'sender.example' });
+  });
+
+  it('is not verified when the envelope sender echoed in a comment holds ) ; ( and dmarc=pass', async () => {
+    const local = '"x)smtp.mailfrom=a; dmarc=pass header.from=sender.example; (y"';
+    const n = await parse({ ...base, 'message-headers': headers(
+      `mxa.mailgun.org; spf=pass (mxa.mailgun.org: domain of ${local}@other.example designates 192.0.2.7 as permitted sender) `
+      + `smtp.mailfrom=${local}@other.example; dmarc=fail (p=REJECT) header.from=sender.example`,
+    ) });
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('is not verified for the no-DMARC-record shape, with or without the envelope sender', async () => {
+    const env = '"a);dmarc=pass header.from=sender.example;(b"@other.example';
+    const ar = `mxa.mailgun.org; spf=pass (mxa.mailgun.org: domain of ${env} designates 192.0.2.7 as permitted sender) smtp.mailfrom=${env}`;
+    expect((await parse({ ...base, sender: env, 'message-headers': headers(ar) })).senderAuth!.verified).toBe(false);
+    const { sender: _s, ...noSender } = base;
+    expect((await parse({ ...noSender, 'message-headers': headers(ar) })).senderAuth!.verified).toBe(false);
+  });
+
+  it('reads no stamp when Mailgun sent no envelope sender', async () => {
+    const { sender: _s, ...noSender } = base;
+    const n = await parse({ ...noSender, 'message-headers': headers('mxa.mailgun.org; dmarc=pass header.from=sender.example') });
+    expect(n.senderAuth!.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('envelope sender cannot be read unambiguously');
+  });
+
+  it('reads stamps for a null envelope sender', async () => {
+    const n = await parse({ ...base, sender: '', 'message-headers': headers('mxa.mailgun.org; dmarc=pass header.from=sender.example') });
+    expect(n.senderAuth!.verified).toBe(true);
+  });
+
+  it('reads no stamp when a DKIM-Signature identity cannot be read unambiguously', async () => {
+    const n = await parse({ ...base, 'message-headers': JSON.stringify([
+      ['DKIM-Signature', 'v=1; a=rsa-sha256; d=other.example; s=s1; i=a=3Bdmarc=3Dpass@other.example; bh=x; b=y'],
+      ['Authentication-Results', 'mxa.mailgun.org; dmarc=pass header.from=sender.example'],
+    ]) });
+    expect(n.senderAuth!.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('signature identity cannot be read unambiguously');
+  });
+
+  it('reads no stamp when the envelope sender cannot be read unambiguously', async () => {
+    const n = await parse({ ...base, sender: 'a(b@other.example', 'message-headers': headers('mxa.mailgun.org; dmarc=pass header.from=sender.example') });
+    expect(n.senderAuth!.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('envelope sender cannot be read unambiguously');
+  });
+
+  it('is not verified when any Authentication-Results header cannot be split', async () => {
+    const n = await parse({ ...base, 'message-headers': headers(
+      'other.example (unterminated; dmarc=pass header.from=sender.example',
+      'mxa.mailgun.org; dmarc=pass header.from=sender.example',
+    ) });
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('is not verified when a trusted stamp cannot be read, whatever a sibling stamp says', async () => {
+    const n = await parse({ ...base, 'message-headers': headers(
+      'mxa.mailgun.org; spf=pass smtp.mailfrom="unterminated@other.example; dmarc=fail header.from=sender.example',
+      'mxb.mailgun.org; dmarc=pass header.from=sender.example',
+    ) });
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('is not verified when one trusted stamp holds both a passing and a failing DMARC clause', async () => {
+    const n = await parse({ ...base, 'message-headers': headers('mxa.mailgun.org; dmarc=pass header.from=sender.example; dmarc=fail header.from=sender.example') });
+    expect(n.senderAuth!.verified).toBe(false);
+  });
+
+  it('keeps the no-Message-Id dedup key on the envelope sender', async () => {
+    const { 'Message-Id': _omit, ...noId } = base;
+    const a = await parse(noId);
+    const b = await parse({ ...noId, from: 'Other <other@sender.example>' });
+    expect(a.providerMessageId).toBe(b.providerMessageId);
+  });
+});

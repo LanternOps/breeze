@@ -352,7 +352,17 @@ func TestCollectorCommandInheritedPipeCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("expected success after inherited pipe cleanup, got %v", err)
 			}
-			if string(out) != "inherit-ok" {
+			// Combined output also carries stderr, and a -cover helper can add
+			// a line of its own there when it exits (#9062: "coverage meta-data
+			// emit failed: ... rename ... no such file" from two helpers
+			// sharing GOCOVERDIR). That line is not the command's output, so
+			// the combined stream only has to contain what the helper wrote.
+			// Stdout alone is exact.
+			if combined {
+				if !strings.Contains(string(out), "inherit-ok") {
+					t.Fatalf("captured output lost: %q", out)
+				}
+			} else if string(out) != "inherit-ok" {
 				t.Fatalf("captured output lost: %q", out)
 			}
 			if time.Since(start) < 5*time.Second {

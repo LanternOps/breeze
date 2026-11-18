@@ -220,7 +220,7 @@ async function loadCheckMonitorInputs(data: CheckMonitorJobData, selectedAgentId
   // The probe device comes from the RUNNING org (data.orgId), never from
   // monitor.orgId - which is NULL for a partner-wide check and would silently
   // match no device at all.
-  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId, siteId: monitor.siteId }, selectedAgentId);
+  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId, siteId: monitor.siteId, target: monitor.target }, selectedAgentId);
   return { status: 'ok', monitor, agentId };
 }
 
@@ -288,7 +288,7 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
  * manual probe (spec §5).
  */
 export async function selectExecutionAgentForMonitor(
-  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null; target?: string | null },
   agentId?: string,
 ): Promise<string | null> {
   const pick = await selectMonitorExecutor(monitor, { agentId });

@@ -194,6 +194,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
       backup_path: ownKey(4999),
       size: 4999,
       modified_at: '2026-11-01T10:11:12.123Z',
+      kind: null,
     });
     const batches = executeMock.mock.calls.map((c) => batchRows(c[0]).length);
     expect(batches).toEqual(Array.from({ length: 20 }, () => 250));
@@ -219,9 +220,25 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(open) });
     expect(open).toHaveBeenCalledWith({
       provider: 'local',
+      orgId: ORG_ID,
+      configId: undefined,
       providerConfig: { path: '/srv/backups' },
       key: 'snapshots/snap-current/manifest.json',
     });
+  });
+
+  it('passes the destination identifier only when the snapshot-owned configuration row grants it', async () => {
+    resolveSnapshotProviderConfigMock.mockResolvedValue({
+      snapshot: snapshotRow(),
+      config: { id: 'destination-1', orgId: ORG_ID },
+      localConfigId: 'destination-1',
+      providerType: 'local',
+      providerConfig: { path: '/srv/backups' },
+    });
+    loadSnapshot();
+    const open = vi.fn(async () => stream(manifest([])));
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(open) });
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, configId: 'destination-1' }));
   });
 
   it('a digest mismatch writes nothing and leaves the old rows', async () => {
@@ -421,16 +438,37 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     expect(await spoolDirs()).toEqual([]);
   });
 
-  it('skips directory and symlink entries and does not count them', async () => {
+  it('writes directory and symlink entries as rows with their kind, and counts them (#11235)', async () => {
     loadSnapshot();
     const files = [
       { sourcePath: '/d', backupPath: '', kind: 'dir' },
-      { sourcePath: '/l', backupPath: '', kind: 'symlink' },
+      { sourcePath: '/l', backupPath: '', kind: 'symlink', linkTarget: '/f' },
       { sourcePath: '/f', backupPath: ownKey(1) },
     ];
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
-    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
-    expect(committed.rows.map((r) => r.source_path)).toEqual(['/f']);
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 3, externalCount: 0 });
+    expect(committed.rows.map((r) => [r.source_path, r.backup_path, r.kind])).toEqual([
+      ['/d', '', 'dir'],
+      ['/l', '', 'symlink'],
+      ['/f', ownKey(1), null],
+    ]);
+  });
+
+  it('a manifest of nothing but directory and symlink entries publishes them all, with no origins (#11235)', async () => {
+    loadSnapshot();
+    const files = [
+      { sourcePath: '/srv', backupPath: '', kind: 'dir' },
+      { sourcePath: '/srv/empty', backupPath: '', kind: 'dir' },
+      { sourcePath: '/srv/current', backupPath: '', kind: 'symlink', linkTarget: 'releases/1' },
+    ];
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 3, externalCount: 0, originSnapshotIds: [] });
+    expect(committed.rows.map((r) => [r.source_path, r.kind])).toEqual([
+      ['/srv', 'dir'],
+      ['/srv/empty', 'dir'],
+      ['/srv/current', 'symlink'],
+    ]);
+    expect(committed.statuses).toContain('complete');
   });
 
   it('indexes the original path of a VSS entry', async () => {

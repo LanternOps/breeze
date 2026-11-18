@@ -36,11 +36,15 @@ const expectedSingleBoundaryFiles = new Map([
 const expectedLegacyIssuerFiles = new Map<string, number>();
 const expectedGuardedCookieInstallerFiles = new Map([
   ...expectedSingleBoundaryFiles,
-  // /mfa/verify (two issuance branches), /mfa/setup confirm, /mfa/enable,
-  // /mfa/recovery-codes, and /mfa/disable (#4934 — a self-disable that evicted
-  // its own caller bounced the user to /login?reason=session-expired, so it now
-  // installs a replacement too).
-  ['routes/auth/mfa.ts', 6],
+  // /mfa/verify login completion (two issuance branches), /mfa/recovery-codes,
+  // and /mfa/disable (#4934 — a self-disable that evicted its own caller
+  // bounced the user to /login?reason=session-expired, so it now installs a
+  // replacement too).
+  ['routes/auth/mfa.ts', 4],
+  // #10650: the TOTP confirm shared by /mfa/setup-confirm and /mfa/enable
+  // (initial enrollment inline; backup add and /mfa/totp/remove through its
+  // post-commit installReplacementSession helper).
+  ['routes/auth/totpFactor.ts', 2],
   // Login/registration transition sites plus passkey deletion, which advances
   // mfa_epoch and installs the actor's post-removal replacement session.
   ['routes/auth/passkeys.ts', 3],

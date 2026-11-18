@@ -16,20 +16,21 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 **It does nothing until the org ruleset exists.** Both triggers are filtered to the never-matching branch `ci-gate-ruleset-only`, so the ordinary trigger never fires, and `gh run list --workflow ci-gate.yml` stays empty. The ruleset ignores those filters. To see the current state: `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'` (needs `admin:org`). `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'` lists the rule only under Active, because GitHub leaves evaluate and disabled rulesets out of that endpoint. The rollout is Evaluate first (cannot block a merge), then Active; the owner does both. Evidence and steps are in `docs/superpowers/plans/ci/2026-11-05-ci-throughput-w02.md`.
 
 **What it does:**
-- `merge_group`: `ci-gate.mjs verify` waits for the entry's `ci.yml` run, classifies the entry diff with the **base** revision's classifier, and runs the **base** revision's `ci-success` script against job results from the Actions API. Exit 0 only on `verdict=pass`.
+- `merge_group`: `ci-gate.mjs select` first publishes the entry's queue selection (below). Then `ci-gate.mjs verify` waits for the entry's `ci.yml` run, classifies the entry diff with the **base** revision's classifier, and runs the **base** revision's `ci-success` script against job results from the Actions API and that selection. Exit 0 only on `verdict=pass`.
 - `pull_request`: `ci-gate.mjs anchor` passes at once and uploads a record of the merge commit tested, for W05. A green `CI Gate` on a PR says nothing about tests. `CI Success` still judges the PR.
 
 **What it claims:** a PR cannot lower its own selection by editing the classifier, floor, reader map, the `changes` job, `ci-success.needs` or the `ci-success` script, or by skipping, removing or renaming a required job.
 
 **What it does not claim:** it does not prove tests ran honestly. A PR can still replace a job's `run:` under the same id, and can edit `package.json` test scripts, vitest config or the tests themselves. Do not describe it as more than a selection check.
 
-**Reading a run.** Each run logs exactly one `ci-gate: verdict=… reason=… event=… base=… head=… ci_run=… attempt=… policy_paths=… flags=… oracle=…` line. `ci-gate-identity:` has the workflow ref and sha. Reasons:
+**Reading a run.** Each run logs exactly one `ci-gate: verdict=… reason=… event=… base=… head=… ci_run=… attempt=… policy_paths=… flags=… oracle=… thin=…` line. `thin=…` counts the jobs the published selection let this entry skip: 0 unless it said `mode=thin`, `none` on a PR. `ci-gate-identity:` has the workflow ref and sha. Reasons:
 
 | Reason | Meaning |
 |---|---|
 | `required_jobs_passed` | pass |
 | `required_jobs_failed:<jobs>` | the base script said no; these jobs are why |
 | `required_jobs_failed` | the base script said no, and no single job explains it; read the `ci-gate-script:` lines |
+| `thin_skip_unjustified:<jobs>` | the base script said no, and every job it blames is a thinnable job that was skipped though the published selection did not list it. A selection fault, not a test failure: the entry's CI skipped a job nothing allowed it to skip, either because the PR's own `ci.yml` skips it or because a thin queue consumer misread the list. If the PR does not explain it and the thin queue is on, turn the thin queue off |
 | `not_pinned` | the workflow sha is not on `main`, so this is not the pinned copy, or the check could not run; `ci-gate-detail:` says which |
 | `base_unreadable` | a queue sha, base or head, could not be fetched or read; `ci-gate-detail:` says which and why |
 | `head_unreadable`, `head_unparseable`, `aggregator_unparseable`, `aggregator_exec`, `duplicate_job_name`, `continue_on_error_unsupported` | the verdict could not be computed; fails closed |
@@ -43,27 +44,66 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 
 `oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, no anchor is safe: W05 treats it as "run everything". So when counting verdicts, read `reason`, because a PR with no anchor also logs `verdict=pass`.
 
-**The shadow selection.** After the verdict, a queue run logs one `ci-gate-selection: mode=… reason=… pr=… head=… B=… p=… …` line, with the same fields as the candidate-side `queue-selection:` line. It never changes a verdict: it runs after the `ci-gate:` line, an exception in it is only logged, and its children and sleeps stop after 3 minutes so it cannot outlast the job. W05 will read it. Its evidence comes only from sources the candidate cannot write: anchors from pinned gate runs, and the latest attempt of the PR's newest `ci.yml` run, judged by the base's script and classifier. `provenance.json` is never read. A pinned run is one at `.github/workflows/ci-gate.yml` whose `workflow_id` is not listed by `actions/workflows`, with a `ci-gate-identity:` line naming `@refs/heads/main`. `record_stats` has the detail. Each of these means "run everything":
+**The queue selection (W05, #10749).** Before CI fans out, a queue run's `select` step decides which jobs the entry may skip, writes `ci-gate-selection.json`, and the next step uploads it as `ci-gate-selection-attempt-<n>` (kept 7 days; the one soft step, since a failed upload only means CI finds no list and runs everything). `verify` then judges the entry against exactly that file: only `mode=thin` hands its `thin_skip` list to the base revision's `ci-success` as `THIN_SKIP`, and a base without the W05 block ignores it. A `mode=full` file lists nothing. A file that is missing, unreadable, or for another head, base, ref, run or attempt is judged as `mode=full` and logs `ci-gate-detail: selection unusable: …`. A thin list only ever removes jobs: `would_skip`, intersected with the 27 thinnable jobs (W04's build, unit, integration and reader classes) and with the base `ci-success`'s case labels. A re-run of the gate re-publishes attempt 1's file rather than choosing again, because CI may already have acted on it. With `CI_THIN_QUEUE` unset or `off`, every selection is `mode=full reason=thin_disabled`, so the selection changes nothing.
+
+Each queue run logs one `ci-gate-selection: mode=… reason=… thin_queue=… thin_skip=… source_attempt=… would_reason=… would_thin_skip=… pr=… head=… B=… p=… …` line; the fields after `would_thin_skip` are the candidate-side `queue-selection:` line's. `would_reason` and `would_thin_skip` are what `enforce` would have published. They are logged only, so the shadow record (and the audit sample's list) survives the kill switch without any file carrying a list. `select` always exits 0: an exception is `reason=error`, and its children and sleeps stop after 3 minutes so it cannot eat the wait `verify` needs. Its evidence comes only from sources the candidate cannot write: anchors from pinned gate runs, and the latest attempt of the PR's newest `ci.yml` run, judged by the base's script and classifier. `provenance.json` is never read. A pinned run is one at `.github/workflows/ci-gate.yml` whose `workflow_id` is not listed by `actions/workflows`, with a `ci-gate-identity:` line naming `@refs/heads/main`. `record_stats` has the detail. Each of these means "run everything":
 
 | Reason | Meaning |
 |---|---|
+| `thin_disabled` | `CI_THIN_QUEUE` is neither `enforce` nor `shadow`; `would_reason` says what enforce would have done |
+| `not_pinned`, `base_unreadable` | as for the verdict: not the pinned gate, or a queue sha could not be fetched |
+| `no_base_flags` | the base classifier's flags could not be computed, so no selection was |
 | `no_anchor` | no usable anchor for this head: no gate run, nothing written, expired after 7 days, or rejected (`record_stats.rejected`) |
 | `anchor_not_pinned` | anchors exist, but only from runs that are not the pinned gate (`record_stats.not_pinned`); a PR enabling its own copy of the gate looks like this |
 | `anchor_policy_in_p` | an anchor's files include a policy path |
 | `no_verified_pr_run` | the PR's run did not pass the base's script, or could not be checked (`record_stats.verification`) |
-| `no_base_flags` | the verdict produced no flags, so no selection was computed |
-| `selection_time_limit`, `selection_ancestry`, `base_io_refused` | shadow only, and text rather than a `reason=` value: usually in `error` under `reason=error`. Out of time, the check that a run's sha is on `main` could not run, or a read tried to run something other than the base classifier. Running out of time can also show as `delta_uncomputable` or `no_verified_pr_run`, and a child killed at the limit shows a timeout error |
+| `thin_unsupported_at_base` | the base revision's `ci-success` has no W05 block it can read exactly, so it could not excuse a skip |
+| `nothing_to_skip` | nothing in `would_skip` is both thinnable and labelled at the base |
+| `audit_sample` | under `enforce`, one thin-eligible entry in 5 (by head sha) runs full while logging the list it would have skipped |
+| `attempt1_selection_missing` | a re-run found no usable attempt-1 selection in its own run; if CI already skipped jobs, the entry goes red, which is the safe direction |
+| `error` | a bug or an unreadable input; `error` on the line has the cause |
+| `selection_time_limit`, `selection_ancestry`, `base_io_refused` | text rather than a `reason=` value: usually in `error` under `reason=error`. Out of time, the check that a run's sha is on `main` could not run, or a read tried to run something other than the base classifier. Running out of time can also show as `delta_uncomputable` or `no_verified_pr_run`, and a child killed at the limit shows a timeout error |
 
-Any other reason is a W4 fallback (`stale_base`, `entry_outside_p`, and so on).
+Any other reason is a W4 fallback (`stale_base`, `entry_outside_p`, `entry_not_single_commit`, and so on). `mode=shadow` carries the real list but means "run everything" too.
 
 **Changing the gate.** Any PR changing `ci-gate.mjs` or `ci-gate.yml` attaches a green replay run: `gh workflow run CI --ref <branch>`, then read the `ci-gate-replay:` line (`disagreements=0 controlFailures=0`). The dispatch cannot run `ci-gate.yml` itself. `pinned-ci-gate-invariants` in `check-workflow-security.mjs` fixes the workflow's shape.
 
 **Removing a required job takes two PRs.** The queue judges a PR with its base's `ci-success`, so deleting a job in the PR that drops it reads as `missing` and goes red. First drop it from `ci-success`'s `needs` and script, keeping the job. Delete the job in a later PR, once the first has landed. Changing only a display name needs no staging: job ids are the identity.
 
+### Thin queue kill switch
+
+`CI_THIN_QUEUE` is a repository variable that the gate's `select` step reads (W05, #10749). Unset or `off`, the default: every queue selection is `mode=full`, so CI runs everything. `shadow`: the gate publishes its real list but CI still runs everything, as a dress rehearsal. `enforce`: CI may skip what the list allows, and the gate judges the entry against that list. Any other value counts as off.
+
+- Turn it off with `gh variable set CI_THIN_QUEUE --body off -R LanternOps/breeze` and confirm with `gh variable get CI_THIN_QUEUE -R LanternOps/breeze`. Anyone working the queue may do this unprompted; tell the owner.
+- A change applies from the next queue entry. Entries already running finish under the list their gate published, so a flip never ejects anything. If a thin entry may have let a failure through, also remove and re-add every in-flight entry whose gate published `mode=thin`, so each one rebuilds in full.
+- Never set the ruleset to **Evaluate** while `CI_THIN_QUEUE` is `enforce`: in Evaluate the gate still runs and publishes, so CI would skip jobs while nothing enforces the verdict.
+
+### Thin queue negative leg (N3)
+
+N3 proves that a queue entry whose own CI skips a thinnable job the gate never listed is ejected, with `CI Gate` red as `thin_skip_unjustified:<job>`, even though the entry's own `CI Success` is green. The tamper is one line: the `changes` job's `thin_skip` output hard-codes `,test-shared,` instead of reading the gate's selection. `.github/scripts/thin-queue-n3.mjs` makes that edit, and also rewrites the three pins in `queue-selection.test.mjs` that the untampered line satisfies (two literals of the line, and T6's count of lines reading the consume step), so the throwaway passes its own PR CI. (The first attempt, PR 11583, changed only `ci.yml` and could not be enqueued.)
+
+**Automated, on every PR.** The `N3 automated` tests in `ci-gate.test.mjs` run the gate's real `select` and `verify` on an entry whose head carries exactly this tamper, under `THIN_QUEUE=shadow`, and expect `verdict=fail reason=thin_skip_unjustified:test-shared … thin=0` with exit 1. Controls: the entry's own `ci-success` passes the same jobs, the same entry with `test-shared` run passes, and a forged selection file cannot excuse the skip. The `N3 tamper` tests fail if `ci.yml` or its pins move, so the live steps below cannot silently go stale.
+
+**Live, once, on the owner's go** (the automated leg cannot prove the ruleset, the pinned gate's checkout, or the ejection itself). Run it with `CI_THIN_QUEUE` at `shadow`, as the plan's S1 does:
+
+1. `gh variable get CI_THIN_QUEUE -R LanternOps/breeze` says `shadow`.
+2. From a fresh `origin/main`: `git switch -c test/n3-thin-skip-unjustified origin/main`, then `node .github/scripts/thin-queue-n3.mjs apply`. `git diff --stat` shows exactly `ci.yml` (1 line) and `queue-selection.test.mjs` (3 lines). A `stale` error means the tamper no longer matches the tree: stop, fix `thin-queue-n3.mjs` in its own PR first.
+3. Every suite `lint` runs is green on the tampered tree: `node --test .github/scripts/*.test.mjs scripts/ci-shepherd/*.test.mjs`. A test that newly pins the output line fails here, not in PR CI; teach `thin-queue-n3.mjs` about it in its own PR first. (`the real TimingSequencer …` needs `pnpm install` locally; it does not read `ci.yml`.)
+4. Commit, push, open the PR with the title `test(ci): N3 negative leg — DO NOT MERGE (throwaway, #10749)`, body `Refs #10749`, and the label `ci-shepherd:ignore`, so the shepherd never re-queues it. Do not turn on auto-merge.
+5. Wait for the PR's `CI Success` to be green. `test-shared` is skipped there too (the hard-coded list applies to every event) and the PR's own `ci-success` counts it as satisfied. The iOS build runs, because `ci.yml` is a native input.
+6. Enqueue it once: `gh pr merge <N> -R LanternOps/breeze`.
+7. Expected, and the evidence to post on #10749:
+   - the merge-group `CI` run: `Test Shared` skipped, `CI Success` green;
+   - the `CI Gate` run (`gh run list -R LanternOps/breeze --workflow "CI Gate" --event merge_group --limit 5`, then `gh run view <id> --log | grep -E 'ci-gate(-selection)?:'`): `ci-gate-selection: mode=full …` (the entry changes a policy path, so its list is empty), then `ci-gate: verdict=fail reason=thin_skip_unjustified:test-shared … thin=0`;
+   - the PR's timeline shows it removed from the queue for failed checks.
+8. **If it merges, the gate failed open.** Set `CI_THIN_QUEUE=off` at once, revert the merge in a PR, report it. G3 stays blocked.
+9. Close the PR and delete the branch: `gh pr close <N> -R LanternOps/breeze --delete-branch`.
+
 ### CI Gate rollback
 
 **Under Active, a broken gate blocks its own fix**, and a revert of itself. Enforcement goes off first, always, and only the owner can do it (`admin:org`).
 
+0. Turn the thin queue off first: `gh variable set CI_THIN_QUEUE --body off -R LanternOps/breeze`, then confirm with `gh variable get CI_THIN_QUEUE -R LanternOps/breeze`. In Evaluate the gate still runs and publishes its selection, so CI would keep skipping jobs while nothing enforces the gate's verdict.
 1. The owner sets the org ruleset to **Evaluate** or **Disabled**. In the UI: LanternOps → Settings → Repository → Rulesets → `Breeze pinned CI gate` → Enforcement status. By API: find the id with `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'`, then `gh api -X PUT orgs/LanternOps/rulesets/<id> -f enforcement=evaluate`.
 2. Confirm with `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`. An empty list means the rule is no longer enforced, because that endpoint returns only active rules. `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement` shows which state it is in.
 3. Only then touch the workflow or `ci-gate.mjs`.
@@ -105,6 +145,22 @@ ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
     [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
 # every line must be OK; any SKEW means that service was never rolled.
 ```
+
+**The proxy config is not part of the image roll — check it for drift on every deploy (#11647).** The droplets run their own copy of `Caddyfile.prod`, not the repo file, so a route added in the repo never reaches production unless someone carries it over. `@webBillingAutopay` (added in v0.122.0) was missing from both regions for weeks, and `/billing/autopay` served the billing sidecar instead of the Autopay page. Run from a repo checkout (the script is pinned to the release's file by `--repo`):
+
+```bash
+git show v<new-version>:docker/Caddyfile.prod > /tmp/release.Caddyfile
+ssh root@<droplet> "cd /opt/breeze && docker compose exec -T caddy cat /etc/caddy/Caddyfile" | \
+  node scripts/prod/caddy-route-parity.mjs drift --running - --repo /tmp/release.Caddyfile
+# OK = every repo matcher is present and every /billing/<page> carve-out sits ahead of the sidecar route.
+# DRIFT lines name what to carry over. Hosted-only extra matchers are fine; a repo matcher
+# the region deliberately omits goes in --allow @name (say why in the deploy notes).
+node scripts/prod/caddy-route-parity.mjs smoke --url https://<region>.2breeze.app
+# Unauthenticated GETs: FAIL means that /billing/<page> returns the same response as /billing (the sidecar),
+# or a 404/5xx.
+```
+
+After carrying a route over: `docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile`, then `docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile` (graceful, no restart), then run both checks again.
 
 **Required env vars added by v0.65+ — droplets without these refuse to start:**
 

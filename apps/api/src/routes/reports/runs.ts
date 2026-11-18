@@ -29,7 +29,7 @@ import {
 import type { UserPermissions } from '../../services/permissions';
 import {
   isTicketSlaPerformanceSummary,
-  rowsToCsv,
+  reportRunRowsToCsv,
   rowsToXlsx,
   sheetsToXlsx,
   ticketSlaPerformanceSheets,
@@ -264,6 +264,8 @@ runsRoutes.post(
           scope,
           config,
           executionAuthority,
+          // "Generate now" on a saved definition: see ReportRunOrigin (#12048).
+          { origin: 'on_demand' },
         );
         const previous = await previousBaselineFor(
           report.id,
@@ -609,7 +611,7 @@ runsRoutes.get(
       return c.body(body);
     }
 
-    const body = rowsToCsv(rows);
+    const body = reportRunRowsToCsv(row.reportType, rows);
     c.header('Content-Type', 'text/csv;charset=utf-8;');
     c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
     auditSensitiveRead(c, {

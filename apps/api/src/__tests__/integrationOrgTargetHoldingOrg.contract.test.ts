@@ -36,7 +36,7 @@ const ORG_TARGET_WRITERS: Record<string, string> = {
   'routes/huntress.ts': 'POST /huntress/organizations/map',
   'routes/sentinelOne.ts': 'POST /s1/organizations/map',
   'services/pax8SyncService.ts': 'POST /pax8/companies/map (mapPax8Company)',
-  'routes/unifi/index.ts': 'PUT /unifi/mappings (the site\'s org)',
+  'services/unifi/unifiMappingWrites.ts': 'PUT /unifi/mappings (the site\'s org, resolveUnifiMappingTargets)',
   'services/backupProviders/mapping.ts': 'PUT /backup/providers/customers/:id/mapping (remapCustomer) and sync-time auto-mapping',
   'services/edrProviders/mapping.ts': 'PUT /edr/tenants/:id/mapping (remapEdrTenant) and sync-time auto-mapping',
   'routes/psa.ts': 'POST /psa/connections (organization-owned)',

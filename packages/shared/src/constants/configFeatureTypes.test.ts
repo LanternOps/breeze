@@ -58,12 +58,19 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
   });
 
   it('oem_updates is appended last, partner-wide, and protective (#11065, spec 4.1)', () => {
-    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('oem_updates');
+    expect(CONFIG_FEATURE_TYPES).toContain('oem_updates');
     // Protective, not execution_gated: dropping a group override that turns BIOS
     // off could expose a broader policy that turns it on. Arming is gated at write.
     expect(CONFIG_POLICY_FEATURE_TRUST_TIER.oem_updates).toBe('protective');
     expect(EXECUTION_GATED_FEATURE_TYPES.has('oem_updates')).toBe(false);
     expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('oem_updates')).toBe(false);
+  });
+
+  it('wake_on_lan is appended last, partner-wide, and protective (#10838)', () => {
+    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('wake_on_lan');
+    expect(CONFIG_POLICY_FEATURE_TRUST_TIER.wake_on_lan).toBe('protective');
+    expect(EXECUTION_GATED_FEATURE_TYPES.has('wake_on_lan')).toBe(false);
+    expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('wake_on_lan')).toBe(false);
   });
 
   it('classifies protective/restrictive feature types as protective (never gated)', () => {

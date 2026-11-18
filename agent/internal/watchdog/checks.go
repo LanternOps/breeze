@@ -85,6 +85,9 @@ type HealthChecker struct {
 	// received over IPC (state_sync). Same file-or-sync corroboration as
 	// lastSyncedHeartbeat — see AgentServerUnavailableAlive.
 	lastSyncedServerUnavailable time.Time
+	// lastSyncedControlPlaneBlocked is the freshest ControlPlaneBlockedAt
+	// received over IPC (state_sync) — see AgentControlPlaneBlockedAlive.
+	lastSyncedControlPlaneBlocked time.Time
 
 	// ipcProbeInterval sizes the state_sync recency window used by
 	// vetoIPCFailureForBackup (D3). Defaults to defaultIPCProbeInterval;
@@ -324,6 +327,42 @@ func (h *HealthChecker) AgentServerUnavailableAlive(s *state.AgentState) bool {
 	return !at.IsZero() && time.Since(at) <= h.staleThreshold
 }
 
+// NoteControlPlaneBlocked records an agent-reported blocked-control-plane
+// liveness timestamp delivered over IPC (state_sync). Never regresses.
+func (h *HealthChecker) NoteControlPlaneBlocked(t time.Time) {
+	if t.After(h.lastSyncedControlPlaneBlocked) {
+		h.lastSyncedControlPlaneBlocked = t
+	}
+}
+
+// LastKnownControlPlaneBlocked returns the freshest blocked-control-plane
+// liveness timestamp from either the on-disk agent.state or IPC state_sync.
+func (h *HealthChecker) LastKnownControlPlaneBlocked(s *state.AgentState) time.Time {
+	t := h.lastSyncedControlPlaneBlocked
+	if s != nil && s.ControlPlaneBlockedAt.After(t) {
+		t = s.ControlPlaneBlockedAt
+	}
+	return t
+}
+
+// AgentControlPlaneBlockedAlive reports whether the agent is demonstrably
+// running but a network filter is blocking its control plane (#8868): within
+// staleThreshold its heartbeat loop recorded a plaintext-filter failure. A
+// restart cannot lift the filter. Like the other markers the hold is safe
+// unbounded, because the heartbeat loop refreshes it on every failing tick, so
+// a wedged loop stops refreshing it and falls back to the staleness path.
+//
+// A marker in the future (the clock stepped backward after it was written) is
+// not fresh; otherwise the hold would last as long as the step.
+func (h *HealthChecker) AgentControlPlaneBlockedAlive(s *state.AgentState) bool {
+	at := h.LastKnownControlPlaneBlocked(s)
+	if at.IsZero() {
+		return false
+	}
+	age := time.Since(at)
+	return age >= 0 && age <= h.staleThreshold
+}
+
 // AgentAuthRejectedAlive reports whether the agent is demonstrably running
 // but locked out by the server (#2796): its heartbeat loop has written an
 // auth-rejected marker within staleThreshold.
@@ -350,7 +389,7 @@ func (h *HealthChecker) AgentAlive(s *state.AgentState) bool {
 	if hb := h.LastKnownHeartbeat(s); !hb.IsZero() && time.Since(hb) <= h.staleThreshold {
 		return true
 	}
-	return h.AgentAuthRejectedAlive(s) || h.AgentServerUnavailableAlive(s)
+	return h.AgentAuthRejectedAlive(s) || h.AgentServerUnavailableAlive(s) || h.AgentControlPlaneBlockedAlive(s)
 }
 
 // CheckHeartbeatStaleness returns CheckOK if the freshest known heartbeat
@@ -373,6 +412,9 @@ func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 		hb = h.LastKnownAuthRejected(s)
 		if busy := h.LastKnownServerUnavailable(s); busy.After(hb) {
 			hb = busy
+		}
+		if blocked := h.LastKnownControlPlaneBlocked(s); blocked.After(hb) {
+			hb = blocked
 		}
 	}
 	if s == nil && hb.IsZero() {
@@ -453,6 +495,11 @@ const (
 	// and would add a reconnect to the overload. Holds for as long as the
 	// marker stays fresh.
 	StaleServerUnavailable
+	// StaleControlPlaneBlocked — stale, but the agent is alive and a network
+	// filter is blocking its control plane (#8868). No restart and no veto
+	// budget spent: a restart cannot lift the filter. Holds for as long as
+	// the marker stays fresh.
+	StaleControlPlaneBlocked
 )
 
 // EvaluateStaleHeartbeat is the complete heartbeat-ticker decision:
@@ -474,6 +521,10 @@ func (h *HealthChecker) EvaluateStaleHeartbeat(s *state.AgentState, ipcConnected
 	if h.AgentServerUnavailableAlive(s) {
 		h.staleVetoCount = 0
 		return StaleServerUnavailable, 0
+	}
+	if h.AgentControlPlaneBlockedAlive(s) {
+		h.staleVetoCount = 0
+		return StaleControlPlaneBlocked, 0
 	}
 	vetoesBefore := h.staleVetoCount
 	if h.ShouldRestartOnStaleHeartbeat(ipcConnected) {

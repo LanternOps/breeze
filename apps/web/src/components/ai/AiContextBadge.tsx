@@ -15,7 +15,8 @@ export default function AiContextBadge({ context }: AiContextBadgeProps) {
   switch (context.type) {
     case "device":
       icon = <Monitor className="h-3 w-3" />;
-      label = context.hostname;
+      // The name the technician uses (#11673); the hostname when it has none.
+      label = context.displayName?.trim() || context.hostname;
       break;
     case "alert":
       icon = <Bell className="h-3 w-3" />;

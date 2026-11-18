@@ -4,7 +4,8 @@
  * (and sibling tunnel hosts are same-site until PSL inclusion), so a page on
  * tunnel A can send a request to tunnel B that carries B's partitioned cookie
  * (W00 confirmed this in every engine). Rules apply to GET too: device GET
- * endpoints often have side effects (reboot links, config toggles). Pure.
+ * endpoints often have side effects (reboot links, config toggles). Also home
+ * to `isReservedTunnelPath`, shared by the router and the Referer rewrite. Pure.
  */
 export interface TunnelAdmissionInput {
   method: string;
@@ -26,6 +27,34 @@ export type TunnelAdmissionResult =
   | { ok: false; status: 403 | 404; reason: TunnelAdmissionRefusal };
 
 export const TUNNEL_ENTER_PATH = '/__bz/enter';
+
+const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
+/**
+ * `/__bz` and everything under it, however it is spelled: case, ASCII
+ * percent-escapes (decoded repeatedly — `_`, `b`, `z` and `/` are all ASCII),
+ * backslashes, repeated slashes and dot segments. Non-ASCII or stray `%`
+ * sequences are left alone so a device path like `/100%` still works. A path
+ * that keeps changing after a few rounds is treated as reserved.
+ */
+export function isReservedTunnelPath(rawPathname: string): boolean {
+  let current = rawPathname;
+  for (let round = 0; round < 4; round += 1) {
+    // Collapse `\` and `//` first: `new URL('//__bz/x', base)` would read
+    // `__bz` as a HOST, not a path segment.
+    const flattened = current.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+    let normalized: string;
+    try {
+      normalized = new URL(`http://tunnel.invalid${flattened.startsWith('/') ? '' : '/'}${flattened}`).pathname.toLowerCase();
+    } catch {
+      return true;
+    }
+    if (normalized === '/__bz' || normalized.startsWith('/__bz/')) return true;
+    const decoded = current.replace(ASCII_ESCAPE, (_m, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+    if (decoded === current) return false;
+    current = decoded;
+  }
+  return true;
+}
 
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
 const NAVIGATION_DESTS = new Set(['iframe', 'document']);
@@ -50,12 +79,21 @@ export function admitTunnelHostRequest(input: TunnelAdmissionInput): TunnelAdmis
     return { ok: true };
   }
 
+  const site = norm(input.secFetchSite);
   // Any Origin other than this tunnel's own is refused outright, whatever
-  // Sec-Fetch-Site claims; that includes `null` (opaque/sandboxed contexts).
-  if (input.origin !== undefined && input.origin !== input.tunnelOrigin) {
+  // Sec-Fetch-Site claims, with one exception: `Origin: null` together with
+  // `Sec-Fetch-Site: same-origin`. Every tunnel-host response carries
+  // `Referrer-Policy: no-referrer`, and under that policy a browser sends
+  // `Origin: null` on a same-origin form POST (#11458). Sec-Fetch-Site is
+  // computed by the browser and page script cannot set it; `same-origin`
+  // means the initiating page and every redirect hop were this tunnel's
+  // origin. A sibling tunnel, the app, or an opaque (sandboxed, data:)
+  // context gets `same-site`/`cross-site` there, so `null` from any of them
+  // is still refused, as is `null` with Sec-Fetch-Site absent.
+  const sameOriginNull = input.origin === 'null' && site === 'same-origin';
+  if (input.origin !== undefined && input.origin !== input.tunnelOrigin && !sameOriginNull) {
     return { ok: false, status: 403, reason: 'foreign_origin' };
   }
-  const site = norm(input.secFetchSite);
   if (site !== undefined) {
     return site === 'same-origin' || site === 'none' ? { ok: true } : { ok: false, status: 403, reason: 'cross_site' };
   }

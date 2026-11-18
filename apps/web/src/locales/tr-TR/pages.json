@@ -192,7 +192,8 @@
     "aiTasks": "Yapay Zekâ Görevleri",
     "aiTask": "Yapay zekâ görevi",
     "settingsAi": "Yapay zeka ayarları",
-    "settingsFlowLimits": "Akış sınırları"
+    "settingsFlowLimits": "Akış sınırları",
+    "ticketsImport": "Biletleri İçe Aktar"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

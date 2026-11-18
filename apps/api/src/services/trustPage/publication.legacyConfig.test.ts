@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('../postureEvidence', () => ({ loadPostureEvidence: vi.fn(), TRUST_PAGE_EVIDENCE_POLICY: { sites: [], windowDays: 30, minPasswordLength: 8, maxLocalAdmins: 2, maxAvDefinitionsAgeDays: 7, maxSecurityStatusAgeDays: 30, includeCis: true, monitoringWindowHours: 24 } }));
-vi.mock('./servingSet', () => ({ addServing: vi.fn(), removeServing: vi.fn(), cacheSnapshotPayload: vi.fn(), trustServingMember: (p: string, o?: string) => (o ? `${p}/${o}` : p) }));
+vi.mock('./servingSet', () => ({ cacheSnapshotPayload: vi.fn(), refreshServingForPartner: vi.fn(), dropServingBuiltMarker: vi.fn() }));
 vi.mock('../portal/edrVisibility', () => ({ isEdrVisibilityEnabled: vi.fn(async () => false) }));
 vi.mock('./trustOnlyEvidence', () => ({ loadTrustOnlyEvidence: vi.fn() }));
 const dbm = vi.hoisted(() => ({ select: vi.fn(), transaction: vi.fn(), insert: vi.fn(), update: vi.fn() }));

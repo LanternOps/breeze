@@ -55,7 +55,15 @@ vi.mock('../db', () => {
       shared.txDepth -= 1;
     }
   };
-  return { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated: withSystemDbAccessContext };
+  const withDbTransaction = (fn: () => unknown) => fn();
+  const withDbTransactionIfHeld = (fn: () => unknown) => fn();
+  return {
+    db,
+    withSystemDbAccessContext,
+    withSystemDbAccessContextIsolated: withSystemDbAccessContext,
+    withDbTransaction,
+    withDbTransactionIfHeld,
+  };
 });
 
 vi.mock('../db/schema', () => ({

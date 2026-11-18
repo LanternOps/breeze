@@ -250,8 +250,9 @@ describe('GET /orgs/account-readiness', () => {
         { orgId: orgA, email: `stale-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(10), lastLoginAt: null }, // counts
         { orgId: orgA, email: `fresh-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(2), lastLoginAt: null }, // too recent
         { orgId: orgA, email: `signed-${suffix}@example.com`, status: 'active', invitedAt: daysAgo(10), lastLoginAt: daysAgo(1) }, // accepted
-        { orgId: orgA, email: `off-${suffix}@example.com`, status: 'disabled', invitedAt: daysAgo(10), lastLoginAt: null }, // disabled
-        { orgId: orgB, email: `off-b-${suffix}@example.com`, status: 'disabled', invitedAt: daysAgo(10), lastLoginAt: null },
+        // W8: disabled_by is set exactly when status = 'disabled' (CHECK).
+        { orgId: orgA, email: `off-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp', invitedAt: daysAgo(10), lastLoginAt: null }, // disabled
+        { orgId: orgB, email: `off-b-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp', invitedAt: daysAgo(10), lastLoginAt: null },
       ]);
 
       const ticket = (n: number, extra: Partial<typeof tickets.$inferInsert>) => ({

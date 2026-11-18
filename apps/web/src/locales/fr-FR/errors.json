@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Les groupes d’appareils à l’échelle du partenaire peuvent uniquement être ciblés par les politiques de configuration du partenaire",
   "PARTNER_GROUP_READ_ONLY": "Ce groupe d’appareils à l’échelle du partenaire ne peut pas être modifié ici",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "Les groupes d’appareils à l’échelle du partenaire ne peuvent pas être utilisés dans les filtres de groupes, et leurs filtres ne peuvent pas référencer des groupes ou des organisations",
-  "SCAN_ALREADY_QUEUED": "Une analyse est déjà en file d'attente pour cet appareil."
+  "SCAN_ALREADY_QUEUED": "Une analyse est déjà en file d'attente pour cet appareil.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "Ce contact n’existe plus ou ne vous est pas accessible.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "Ce contact n’a pas d’adresse e-mail. Ajoutez-en une d’abord.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "L’e-mail d’invitation doit correspondre à l’adresse e-mail du contact.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "Cette adresse e-mail a déjà un identifiant de portail lié à un autre contact. Dissociez-le d'abord.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "L’identifiant de portail de ce contact utilise une autre adresse e-mail. Mettez à jour l’e-mail du contact ou dissociez d’abord l’identifiant.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "Cette personne a déjà un identifiant de portail actif.",
+  "PORTAL_INVITE_USER_DISABLED": "L’identifiant de portail de cette personne est désactivé. Réactivez-le plutôt que de l’inviter de nouveau.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "Cet e-mail correspond uniquement à une connexion Microsoft Entra. Aucune invitation au portail web ne peut être envoyée."
 }

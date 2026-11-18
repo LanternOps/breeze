@@ -6,10 +6,17 @@ const ASSET_ID = '11111111-1111-1111-1111-111111111111';
 const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
 const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
 
+// Depth of runOutsideDbContext calls in progress: the probe dispatch must run
+// outside the request's held DB context, where the relay refuses (#4142).
+const outsideDb = vi.hoisted(() => ({ depth: 0 }));
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn(),
+  },
+  runOutsideDbContext: async (fn: () => unknown) => {
+    outsideDb.depth += 1;
+    try { return await fn(); } finally { outsideDb.depth -= 1; }
   },
 }));
 
@@ -237,6 +244,8 @@ describe('POST /discovery/assets/:id/probe', () => {
     // and answered with the "agent didn't answer in time" shape, not a 409.
     expect(res.status).toBe(202);
     expect(dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    // The asset address reaches selection so an on-subnet executor is preferred.
+    expect(selectNetworkExecutor).toHaveBeenCalledWith(expect.objectContaining({ targetIp: assetRow().ipAddress }));
   });
 
   it('returns 404 for an asset in another org', async () => {
@@ -291,6 +300,23 @@ describe('POST /discovery/assets/:id/probe', () => {
 
     // The update landed strictly before the dispatch call, not after.
     expect(callOrder).toEqual(['update', 'dispatch']);
+  });
+
+  it('dispatches the probe outside the request DB context (the relay refuses inside one, #4142)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([assetRow()]) as any);
+    vi.mocked(loadAssetSiteId).mockResolvedValueOnce(SITE_ALLOWED);
+    vi.mocked(selectNetworkExecutor).mockResolvedValueOnce({ agentId: 'agent-1' } as any);
+    vi.mocked(awaitProbeResult).mockResolvedValueOnce({ status: 'ok', responseMs: 5, error: null });
+    let depthAtSend = -1;
+    vi.mocked(dispatchCommandToAgent).mockImplementationOnce(async () => {
+      depthAtSend = outsideDb.depth;
+      return { status: 'sent', via: 'relay' };
+    });
+
+    const res = await post();
+
+    expect(res.status).toBe(200);
+    expect(depthAtSend).toBeGreaterThan(0);
   });
 
   it('returns 200 with the resolved probe and a reachability object when the agent answers in time', async () => {

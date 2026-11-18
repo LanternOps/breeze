@@ -22,6 +22,7 @@ import { eventLogsRoutes } from './eventlogs';
 import { hardwareHealthRoutes } from './hardwareHealth';
 import { oemUpdatesRoutes } from './oemUpdates';
 import { timeStatusRoutes } from './timeStatus';
+import { wakeStatusRoutes } from './wakeStatus';
 import { workloadsRoutes } from './workloads';
 import { logsRoutes } from './logs';
 import { mtlsRoutes } from './mtls';
@@ -50,7 +51,7 @@ export const AGENT_AUTH_SKIP_ID_SEGMENTS = new Set([
   'org',
   'download',
 ]);
-export const AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS = new Set(['install.sh', 'uninstall.sh']);
+export const AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS = new Set(['install.sh', 'install.ps1', 'uninstall.sh']);
 // Routes of the exact shape /:id/<action> that authenticate themselves: user
 // JWT (approve, deny), or the reattach confirm-only token (rebind-confirm,
 // #8318 §6.4 — agent auth never matches that token, and the confirming
@@ -110,6 +111,7 @@ agentRoutes.route('/', eventLogsRoutes);
 agentRoutes.route('/', hardwareHealthRoutes);
 agentRoutes.route('/', oemUpdatesRoutes);
 agentRoutes.route('/', timeStatusRoutes);
+agentRoutes.route('/', wakeStatusRoutes);
 agentRoutes.route('/', workloadsRoutes);
 agentRoutes.route('/', logsRoutes);
 agentRoutes.route('/', bootPerformanceRoutes);

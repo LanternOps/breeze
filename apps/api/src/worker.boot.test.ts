@@ -18,6 +18,7 @@
  * and out of scope here — this suite never touches a real database or Redis.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
@@ -56,7 +57,9 @@ const mocks = vi.hoisted(() => {
     startWedgedBackendMonitor: vi.fn<() => number | null>(() => 60_000),
     stopWedgedBackendMonitor: vi.fn(),
     updateRuntimeMetrics: vi.fn(),
-    dbExecute: vi.fn(async () => [] as unknown[]),
+    // One row with `ro: 'off'`: what every query here needs, including the
+    // read-only readiness probe (#11731), which rejects any other shape.
+    dbExecute: vi.fn(async () => [{ ro: 'off' }] as unknown[]),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     closeDb: vi.fn(async () => {}),
     redisPing: vi.fn(async () => 'PONG'),
@@ -87,11 +90,15 @@ const mocks = vi.hoisted(() => {
     shutdownEventDispatcher: vi.fn(async () => {}),
     shutdownEventDispatchQueue: vi.fn(async () => {}),
     getEventBus: vi.fn(() => ({ close: vi.fn(async () => {}) })),
+    clusterBus: { start: vi.fn(async () => 'subscribed'), stop: vi.fn(async () => {}) },
+    getClusterCacheBus: vi.fn(),
+    shutdownPhaseTasks: [] as Array<{ name: string; tasks: Array<() => unknown> }>,
     drainAuditRetryQueue: vi.fn(async () => {}),
     shutdownPhaseCalls: [] as string[][],
     runShutdownPhases: vi.fn(
       async (phases: Array<{ name: string }>): Promise<{ failures: unknown[]; timedOutPhases: string[] }> => {
         mocks.shutdownPhaseCalls.push(phases.map((p) => p.name));
+        mocks.shutdownPhaseTasks.push(...(phases as unknown as typeof mocks.shutdownPhaseTasks));
         return { failures: [], timedOutPhases: [] };
       },
     ),
@@ -196,6 +203,7 @@ vi.mock('./jobs/eventDispatchWorker', () => ({
 vi.mock('./services/eventDispatcher', () => ({ shutdownEventDispatcher: mocks.shutdownEventDispatcher }));
 vi.mock('./services/eventDispatchQueue', () => ({ shutdownEventDispatchQueue: mocks.shutdownEventDispatchQueue }));
 vi.mock('./services/eventBus', () => ({ getEventBus: mocks.getEventBus }));
+vi.mock('./services/clusterCacheBus', () => ({ getClusterCacheBus: mocks.getClusterCacheBus }));
 vi.mock('./services/auditService', () => ({ drainAuditRetryQueue: mocks.drainAuditRetryQueue }));
 // Stubbed rather than left real: real `runShutdownPhases` is already covered
 // by Part A's own tests, and stubbing it lets this suite assert exactly
@@ -316,7 +324,7 @@ beforeEach(() => {
   // Baseline "everything healthy" defaults; individual tests override.
   mocks.breezeRole.mockReturnValue('worker');
   mocks.validateConfig.mockReturnValue({ NODE_ENV: 'test' });
-  mocks.dbExecute.mockResolvedValue([]);
+  mocks.dbExecute.mockResolvedValue([{ ro: 'off' }]);
   mocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
   mocks.closeDb.mockResolvedValue(undefined);
   mocks.redisPing.mockResolvedValue('PONG');
@@ -347,6 +355,10 @@ beforeEach(() => {
   mocks.shutdownEventDispatcher.mockResolvedValue(undefined);
   mocks.shutdownEventDispatchQueue.mockResolvedValue(undefined);
   mocks.getEventBus.mockReturnValue({ close: vi.fn(async () => {}) });
+  mocks.shutdownPhaseTasks.length = 0;
+  mocks.clusterBus.start.mockReset().mockResolvedValue('subscribed');
+  mocks.clusterBus.stop.mockReset().mockResolvedValue(undefined);
+  mocks.getClusterCacheBus.mockReset().mockReturnValue(mocks.clusterBus);
   mocks.drainAuditRetryQueue.mockResolvedValue(undefined);
 });
 
@@ -585,7 +597,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     const ok = await getJson(port, '/health/ready');
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({
-      role: 'worker', ready: true, db: true, redis: true, workers: true, checkedAt: expect.any(String),
+      role: 'worker', ready: true, db: true, dbReadOnly: false, redis: true, workers: true, checkedAt: expect.any(String),
       consumerSummary: { required: 1, runnable: 1, unavailable: 0, optionalRunning: 0, optionalDisabled: 0 },
     });
 
@@ -594,7 +606,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     const degraded = await getText(port, '/health/ready');
     expect(degraded.status).toBe(503);
     expect(JSON.parse(degraded.text)).toEqual({
-      reason: 'workers-pending', role: 'worker', ready: false, db: true, redis: true, workers: false, checkedAt: expect.any(String),
+      reason: 'workers-pending', role: 'worker', ready: false, db: true, dbReadOnly: false, redis: true, workers: false, checkedAt: expect.any(String),
       consumerSummary: { required: 1, runnable: 0, unavailable: 1, optionalRunning: 0, optionalDisabled: 0 },
     });
     // The three redaction assertions the API-side test carries: name, timestamp, error code.
@@ -603,6 +615,28 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     expect(degraded.text).not.toContain('RedisSecretError');         // error code
     expect(degraded.text).not.toContain('secret.internal');          // error message / endpoint
     expect(degraded.text).not.toContain('"consumers"');              // the snapshot map itself
+  });
+
+  it('reports a reachable but read-only database as reason db-read-only on /health/ready (#11731)', async () => {
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      registry.expect('ro-consumer', true);
+    });
+    const consumer = fakeBullmqWorker();
+    mocks.startRegisteredWorkers.mockImplementation(async (_role, hooks) => {
+      (await liveRegistry()).attach('ro-consumer', consumer as unknown as Worker);
+      hooks.onResult('ro-consumer', true);
+    });
+    // `select 1` and every other read answer; only the read-only probe says on.
+    mocks.dbExecute.mockImplementation(async (...args: unknown[]) =>
+      JSON.stringify(args[0]).includes(TRANSACTION_READ_ONLY_PROBE_SQL) ? [{ ro: 'on' }] : [{ ro: 'off' }],
+    );
+    const worker = await importFreshWorker();
+    const port = await waitForListening(worker);
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    const res = await getJson(port, '/health/ready');
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ reason: 'db-read-only', ready: false, db: true, dbReadOnly: true });
   });
 
   it('reports migrations-pending over HTTP while parity is pending, then exits non-zero on failure', async () => {
@@ -652,6 +686,37 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     expect(mocks.startRegisteredWorkers).not.toHaveBeenCalled();
   });
 
+  it('subscribes the cluster cache bus after Redis is confirmed and before extensions/workers load (#8639)', async () => {
+    await importFreshWorker();
+    await waitFor(() => mocks.startRegisteredWorkers.mock.calls.length > 0);
+
+    expect(mocks.clusterBus.start).toHaveBeenCalledTimes(1);
+    expect(mocks.clusterBus.start.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.loadBuiltinExtensions.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.clusterBus.start.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.startRegisteredWorkers.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not subscribe the cluster cache bus when Redis is unreachable', async () => {
+    mocks.getRedis.mockReturnValue(null);
+    await importFreshWorker();
+    await waitFor(() => exitCalls.length > 0);
+
+    expect(mocks.clusterBus.start).not.toHaveBeenCalled();
+  });
+
+  it('a degraded cluster cache subscribe (timeout) warns but does not block boot (#8639)', async () => {
+    mocks.clusterBus.start.mockResolvedValue('timeout');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    expect(warn.mock.calls.some(([l]) => String(l).includes('[worker][clusterCache] subscriber timeout'))).toBe(true);
+    warn.mockRestore();
+  });
+
   it('loads built-in extensions in worker mode', async () => {
     await importFreshWorker();
     await waitFor(() => mocks.loadBuiltinExtensions.mock.calls.length > 0);
@@ -672,11 +737,15 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'drain',
       'workers',
       'queues',
+      'cluster-cache-bus',
       'eventbus',
       'redis',
       'db',
       'sentry',
     ]);
+    const busPhase = mocks.shutdownPhaseTasks.find((p) => p.name === 'cluster-cache-bus');
+    await Promise.all(busPhase!.tasks.map((t) => t()));
+    expect(mocks.clusterBus.stop).toHaveBeenCalledTimes(1);
     await waitFor(() => exitCalls.length > 0);
     expect(exitCalls).toEqual([0]);
   });

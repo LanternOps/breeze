@@ -14,6 +14,7 @@ import { loginContextRoutes } from './loginContext';
 import { ssoDiscoveryRoutes } from './ssoDiscovery';
 import { authBindingRoutes } from './binding';
 import { authTransitionTestControlRoutes } from './authTransitionTestControl';
+import { totpFactorRoutes } from './totpFactor';
 
 export const authRoutes = new Hono();
 
@@ -23,6 +24,7 @@ export const authRoutes = new Hono();
 authRoutes.route('/', registerRoutes);
 authRoutes.route('/', loginRoutes);
 authRoutes.route('/', mfaRoutes);
+authRoutes.route('/', totpFactorRoutes);
 authRoutes.route('/', passkeyRoutes);
 authRoutes.route('/', phoneRoutes);
 authRoutes.route('/', passwordRoutes);

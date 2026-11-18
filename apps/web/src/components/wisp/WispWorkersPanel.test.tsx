@@ -88,6 +88,21 @@ describe('WispWorkersPanel', () => {
       expect(h.fetch).toHaveBeenCalledTimes(1);
     });
 
+    // Otherwise a row the technician just approved from this card keeps saying "Awaiting approval".
+    it('keeps refetching while a listed specialist still has a pending approval, and stops once it is decided', async () => {
+      vi.useFakeTimers();
+      h.fetch
+        .mockResolvedValueOnce({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 1, pendingIntentId: 'i1' })], nextCursor: null, current: null })
+        .mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null })], nextCursor: null, current: null });
+      render(<WispWorkersPanel threadId="t1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('stops polling on unmount', async () => {
       vi.useFakeTimers();
       h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'queued' })], nextCursor: null, current: null });
@@ -96,6 +111,31 @@ describe('WispWorkersPanel', () => {
       unmount();
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(h.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // A run stays `awaiting_approval` after its steps resolve, so the raw status
+    // told a technician something was waiting when their inbox was empty. The
+    // label must not say "decided": expired or cancelled steps also reach 0.
+    it('says nothing is waiting on approval when an approval-parked run has nothing pending', async () => {
+      h.fetch.mockResolvedValue({
+        items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null })],
+        nextCursor: null, current: null,
+      });
+      render(<WispWorkersPanel threadId="t1" />);
+      const status = await screen.findByTestId('wisp-worker-status');
+      expect(status.textContent).toBe('Nothing waiting on approval');
+      expect(status.closest('a')).toBeNull();
+    });
+
+    it('links the status to the oldest pending approval while one is waiting', async () => {
+      h.fetch.mockResolvedValue({
+        items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 2, pendingIntentId: 'abc-123' })],
+        nextCursor: null, current: null,
+      });
+      render(<WispWorkersPanel threadId="t1" />);
+      const status = await screen.findByTestId('wisp-worker-status');
+      expect(status.textContent).toBe('Awaiting approval');
+      expect(status.closest('a')?.getAttribute('href')).toBe('/approvals#intent-abc-123');
     });
 
     it('shows a status label per row', async () => {

@@ -1,25 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
-import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { cn, widthPercentClass } from "@/lib/utils";
-import { formatCurrency, formatNumber } from "@/lib/i18n/format";
+import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import BuyCreditsLink from "./BuyCreditsLink";
-
-interface UsageData {
-  daily: { totalCostCents: number; messageCount: number };
-  monthly: { totalCostCents: number; messageCount: number };
-  budget: {
-    enabled: boolean;
-    monthlyBudgetCents: number | null;
-    dailyBudgetCents: number | null;
-    monthlyUsedCents: number;
-    dailyUsedCents: number;
-  } | null;
-  /** #4388 W04: the partner's cached platform-credit balance. `null`/absent
-   *  when BYOK, no partner id, or nothing cached yet. */
-  credits?: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
-}
+import { aiMonthlyAmount, useAiUsage } from "./useAiUsage";
 
 interface AiCostIndicatorProps {
   enabled?: boolean;
@@ -39,76 +23,7 @@ export default function AiCostIndicator({
   isStreaming,
 }: AiCostIndicatorProps) {
   const { t } = useTranslation("ai");
-  const [usage, setUsage] = useState<UsageData | null>(null);
-  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const wasStreamingRef = useRef(false);
-
-  // Refresh immediately when a turn just finished (true -> false), instead of
-  // waiting up to 60s for the next poll tick. Kept as a separate effect from
-  // the polling one below so it doesn't disturb the poll interval's lifecycle
-  // (401/error backoff, mount/unmount) on every streaming-state change.
-  useEffect(() => {
-    const wasStreaming = wasStreamingRef.current;
-    wasStreamingRef.current = !!isStreaming;
-    if (!enabled || !isAuthenticated || !wasStreaming || isStreaming) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth("/ai/usage");
-        if (res.ok && !cancelled) {
-          setUsage(await res.json());
-        }
-      } catch (err) {
-        console.warn("[AiCostIndicator] post-turn usage refresh failed:", err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isStreaming, enabled, isAuthenticated]);
-
-  useEffect(() => {
-    if (!enabled || !isAuthenticated) {
-      return;
-    }
-
-    let mounted = true;
-    let failCount = 0;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-
-    const stopPolling = () => {
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-    };
-
-    async function fetchUsage() {
-      try {
-        const res = await fetchWithAuth("/ai/usage");
-        if (res.ok && mounted) {
-          setUsage(await res.json());
-          failCount = 0;
-        } else if (res.status === 401 || res.status === 403) {
-          stopPolling();
-        } else {
-          failCount++;
-        }
-      } catch (err) {
-        console.warn("[AiCostIndicator] fetch failed:", err);
-        failCount++;
-        if (failCount >= 5) stopPolling();
-      }
-    }
-
-    intervalId = setInterval(fetchUsage, 60_000);
-    void fetchUsage();
-    return () => {
-      mounted = false;
-      stopPolling();
-    };
-  }, [enabled, isAuthenticated]);
+  const usage = useAiUsage({ enabled, isStreaming });
 
   if (!enabled || !usage) return null;
 
@@ -120,8 +35,8 @@ export default function AiCostIndicator({
 
   const costDisplay = (
     monthlyBudget
-      ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
-      : t("aiCostIndicator.thisMonth", { amount: formatCurrency(monthlyUsed / 100) })
+      ? aiMonthlyAmount(usage)
+      : t("aiCostIndicator.thisMonth", { amount: aiMonthlyAmount(usage) })
   ) + (usage.credits
     ? ` · ${t("aiCostIndicator.credits", {
         count: usage.credits.remaining,
@@ -139,9 +54,9 @@ export default function AiCostIndicator({
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 border-b">
       <Coins className="h-3 w-3 text-muted-foreground" />
-      <span className="text-[10px] text-muted-foreground">{costDisplay}</span>
+      <span className="text-xs text-muted-foreground">{costDisplay}</span>
       {usage.credits && (
-        <BuyCreditsLink className="text-[10px] font-medium text-primary underline underline-offset-2 hover:opacity-80" />
+        <BuyCreditsLink className="text-xs font-medium text-primary underline underline-offset-2 hover:opacity-80" />
       )}
       {monthlyBudget && (
         <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
@@ -154,7 +69,7 @@ export default function AiCostIndicator({
           />
         </div>
       )}
-      <span className="text-[10px] text-gray-400 dark:text-gray-600">
+      <span className="text-xs text-muted-foreground">
         {t("aiCostIndicator.messageCount", {
           count: usage.monthly.messageCount,
         })}

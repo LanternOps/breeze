@@ -15,11 +15,15 @@ const toastMock = vi.mocked(showToast);
 const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
+const RECENT = new Date(Date.now() - 3_600_000).toISOString();
+
 const providerRow = (o: Record<string, unknown> = {}) => ({
   id: 'row-1', provider: 'cove', orgId: 'org-1',
   vendorDeviceName: 'ACME-SRV01', computerName: 'srv01', customerName: 'Acme North',
   status: 'completed', health: 'healthy',
-  lastSuccessAt: '2026-09-15T01:00:00.000Z', lastSessionAt: '2026-09-15T01:00:00.000Z',
+  // Relative to the wall clock: the card judges recency against "now", and a
+  // fixed old date would read as overdue (#12025).
+  lastSuccessAt: RECENT, lastSessionAt: RECENT,
   selectedBytes: 2048, usedBytes: 4096, errorsCount: 0, dataSources: ['files', 'mssql'],
   breezeDeviceId: 'device-1',
   history28d: [{ day: '2026-09-15', status: 'completed' }],
@@ -50,6 +54,16 @@ describe('ExternalBackupCard', () => {
     expect(screen.getByTestId('external-backup-selected').textContent).toContain('2.00 KB');
     expect(screen.getByTestId('external-backup-used').textContent).toContain('4.00 KB');
     expect(screen.getByTestId('external-backup-health-dot')).toBeInTheDocument();
+  });
+
+  it('badges a completed device with no recent success as "No recent backup", not "Completed" (#12025)', async () => {
+    fetchMock.mockResolvedValue(res({ data: [providerRow({
+      health: 'critical', lastSuccessAt: '2026-03-23T02:00:00.000Z', lastSessionAt: '2026-03-23T02:00:00.000Z',
+    })] }));
+    render(<ExternalBackupCard deviceId="device-1" />);
+    const badge = await screen.findByTestId('external-backup-status');
+    expect(badge).toHaveTextContent('No recent backup');
+    expect(badge).not.toHaveTextContent('Completed');
   });
 
   it('renders the 28-day bar when the API supplies history', async () => {

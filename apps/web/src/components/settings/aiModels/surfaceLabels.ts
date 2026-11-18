@@ -83,7 +83,7 @@ export const DEFAULT_SOURCE_KEYS = {
  * which feature blocks the change). The `friendly` hook leaves those alone so
  * the toast keeps the specifics.
  */
-const SERVER_MESSAGE_CODES = new Set(['invalid', 'conflict', 'not_eligible', 'unpriced', 'tools_unsupported', 'widens_partner', 'offering_in_use', 'egress_blocked', 'invalid_url']);
+const SERVER_MESSAGE_CODES = new Set(['invalid', 'conflict', 'not_eligible', 'unpriced', 'tools_unsupported', 'widens_partner', 'offering_in_use', 'egress_blocked', 'invalid_url', 'tool_profile_underpowered']);
 
 /** `friendly` hook for runAction: localises the codes that carry no specifics. */
 export function registryFriendly(t: TFunction) {

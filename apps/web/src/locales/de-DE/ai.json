@@ -20,6 +20,30 @@
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
     "progressLabel": "Verbleibende Zeit, bevor dies automatisch abgelehnt wird",
     "showParameters": "Parameter anzeigen",
+    "ticketComment": {
+      "publicTo": "Für den Kunden sichtbare Antwort an {{recipient}}",
+      "publicNoRecipient": "Für den Kunden sichtbare Antwort (per E-Mail an den Anfragenden)",
+      "publicNoEmail": "Für den Kunden sichtbare Antwort (keine E-Mail-Adresse des Anfragenden hinterlegt, daher wird keine E-Mail gesendet)",
+      "internal": "Interne Notiz (für den Kunden nicht sichtbar)"
+    },
+    "memory": {
+      "heading": "Wisp merkt sich",
+      "subjectKey": "Schlüssel: {{key}} (ersetzt eine frühere Erinnerung mit diesem Schlüssel)",
+      "moreInParameters": "Weitere Felder stehen nur unter „Parameter anzeigen“.",
+      "scope": {
+        "user": "Nur Sie",
+        "org": "Dieser Kunde",
+        "partner": "Ihr gesamter MSP"
+      },
+      "types": {
+        "preference": "Präferenz",
+        "standing_instruction": "Dauerhafte Anweisung",
+        "fact": "Fakt",
+        "decision": "Entscheidung",
+        "concern_outcome": "Ergebnis eines Anliegens",
+        "work_summary": "Arbeitszusammenfassung"
+      }
+    },
     "approve": "Genehmigen",
     "reject": "Ablehnen",
     "approveVerify": "Bestätigen & genehmigen",
@@ -61,6 +85,7 @@
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
+    "stopped": "Angehalten",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
     "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben.",
@@ -313,8 +338,10 @@
     "noLimit": "Kein Limit",
     "messagesPerMinute": "Nachrichten/Minute je Benutzer",
     "messagesPerHour": "Nachrichten/Stunde je Organisation",
-    "retentionDays": "Aufbewahrung von Transkripten (Tage)",
+    "retentionDays": "Aufbewahrung von Client-KI-Transkripten (Tage)",
     "keepForever": "Unbegrenzt aufbewahren",
+    "retentionScope": "Gilt für Client-KI-Unterhaltungen (AI for Office). Leer bewahrt sie unbegrenzt auf. Techniker-KI-Unterhaltungen haben einen eigenen Zeitraum.",
+    "retentionTechnicianLink": "Aufbewahrungseinstellungen für Techniker-KI",
     "brandingDescription": "Wird in der Fußzeile des Add-Ins angezeigt: „Verwaltet von Ihrem IT-Dienstleister“ – die White-Label-Option (Spezifikation §11).",
     "displayName": "Anzeigename",
     "mspNamePlaceholder": "Name Ihres MSP",
@@ -563,7 +590,8 @@
     "overrideErrorStepUp": "Ihr Partner verlangt eine stärkere Genehmigung, als diese Ansicht bieten kann.",
     "overrideErrorNoDevice": "Kein Zielgerät hat das Skript angenommen, es wurde also nichts ausgeführt. Sie können es erneut versuchen.",
     "overrideErrorPolicy": "Die KI-Datenrichtlinie lehnt dieses Skript ab, weil es einen Benutzerprofilpfad liest.",
-    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein."
+    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein.",
+    "savedToLibrary": "In der Skriptbibliothek gespeichert"
   },
   "aiRunCard": {
     "title": "Analyselauf",
@@ -593,7 +621,12 @@
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
-    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen.",
+    "chainStep": "Schritt {{step}} dieser Untersuchung",
+    "goal": "Ziel: {{goal}}",
+    "findings": "Ergebnisse: {{count}}",
+    "findingsHigh": "({{count}} hoch)",
+    "files": "Dateien:"
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",
@@ -616,7 +649,11 @@
     "thinking": "Denken"
   },
   "aiThinking": {
-    "label": "Denkt nach… {{seconds}} s"
+    "label": "Denkt nach… {{seconds}} s",
+    "waitingApproval": "Warten auf Ihre Genehmigung",
+    "waitingApprovalPhone": "Warten auf Ihre Genehmigung (an Ihr Telefon gesendet)",
+    "waitingOthers": "Warten auf einen anderen Genehmiger",
+    "openApprovals": "Genehmigungen öffnen"
   },
   "aiTurnModel": {
     "answeredBy": "Beantwortet von {{model}}",
@@ -641,6 +678,10 @@
   "buyCredits": {
     "link": "Credits kaufen"
   },
+  "sessionClosed": {
+    "message": "Diese Unterhaltung wurde an anderer Stelle beendet, daher wurde deine Nachricht nicht gesendet. Sie steht weiterhin im Eingabefeld. Starte eine neue Sitzung, um fortzufahren.",
+    "startNew": "Neue Sitzung starten"
+  },
   "wisp": {
     "title": "Wisp",
     "turnLimitRolled": "Diese Unterhaltung hat ihr Zuglimit erreicht, deshalb hat Wisp eine neue Sitzung in diesem Thread geöffnet. Senden Sie Ihre Nachricht erneut.",
@@ -657,7 +698,7 @@
       "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
       "code": "Authentifizierungscode",
       "passkey": "Sie bestätigen mit Ihrem Passkey.",
-      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in <profileLink>Ihrem Profil</profileLink> ein.",
       "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
       "confirm": "Bestätigen",
       "cancel": "Abbrechen",
@@ -688,11 +729,19 @@
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
-      "dismissNote": "Schließen"
+      "dismissNote": "Schließen",
+      "menu": {
+        "label": "Weitere Aktionen",
+        "openHome": "Wisp-Startseite öffnen",
+        "settings": "Budget & Check-ins…",
+        "refresh": "Berechtigung erneuern…",
+        "revoke": "Wisp deaktivieren…"
+      }
     },
     "settings": {
       "title": "Budget und Check-in",
       "budget": "Tagesbudget",
+      "budgetHelp": "Enthält den Chat. Ist es aufgebraucht, pausieren die Hintergrundprüfungen bis 00:00 UTC, und der Chat funktioniert mit einer Warnung weiter. Für den Chat gilt weiterhin das KI-Budget der Organisation.",
       "tick": "Check-in alle (Minuten)",
       "save": "Speichern",
       "unattendedReads": {
@@ -759,11 +808,19 @@
     },
     "spend": {
       "meter": "{{spent}} von {{budget}} heute",
+      "breakdown": "Hintergrund {{background}} · Chat {{chat}} · {{spent}} von {{budget}} heute",
       "resets": "wird in {{hours}} Std. zurückgesetzt",
       "raise": "Heutiges Budget erhöhen",
       "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
       "seePlans": "Tarife ansehen",
-      "label": "Wisp-Ausgaben heute"
+      "label": "Wisp-Ausgaben heute",
+      "allAiMonth": "Gesamte KI diesen Monat: {{amount}}",
+      "allAiMessages": "{{formatted}} Nachrichten",
+      "allAiMessages_one": "{{formatted}} Nachricht",
+      "allAiMessages_other": "{{formatted}} Nachrichten"
+    },
+    "notice": {
+      "creditsExhausted": "Ihre KI-Credits sind aufgebraucht."
     },
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",
@@ -771,8 +828,8 @@
       "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
       "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten.",
       "system": {
-        "budgetExhausted": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht. Das Budget wird in {{hours}} Std. zurückgesetzt.",
-        "budgetExhaustedNoTime": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht.",
+        "budgetExhausted": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis {{time}} UTC pausiert. Der Chat funktioniert weiter.",
+        "budgetExhaustedNoTime": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis 00:00 UTC pausiert. Der Chat funktioniert weiter.",
         "grantorAccessLost": "Von Breeze pausiert: Ihr Zugriff deckt diese Berechtigung nicht mehr ab. Wisp läuft automatisch weiter, sobald Ihr Zugriff wiederhergestellt ist.",
         "grantorSuspended": "Von Breeze pausiert: Ihr Konto ist gesperrt. Wisp läuft automatisch weiter, sobald die Sperre aufgehoben ist.",
         "factorExpired": "Von Breeze pausiert: Ihre Anmeldeprüfung für diese Berechtigung ist abgelaufen.",
@@ -880,8 +937,9 @@
       "close": "Schließen"
     },
     "sidebar": {
-      "openHome": "In Wisp öffnen",
-      "meetWisp": "Wisp kennenlernen"
+      "meetWisp": "Wisp kennenlernen",
+      "handedOff": "Diese Unterhaltung ist auf der Seite geöffnet.",
+      "handedOffAction": "Auf der Seite fortfahren"
     },
     "partnerSwitch": {
       "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",
@@ -895,6 +953,7 @@
     "post": {
       "brief": "Morgenbericht",
       "nudge": "Hinweis",
+      "nudgeResolved": "Erledigt",
       "digest": "Übersicht",
       "checkIn": "Nachkontrolle",
       "summary": "Zusammenfassung",
@@ -903,6 +962,20 @@
       "specialistResult": "Spezialistenbericht",
       "firstLook": "Erster Überblick",
       "couldntLook": "Noch kein Überblick"
+    },
+    "checkIn": {
+      "runNow": "Jetzt ausführen",
+      "runNowMessage": "Führe die Nachkontrolle jetzt durch",
+      "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "waitingFor": {
+        "deviceOnline": "Wartet, bis das Gerät online ist · gibt um {{time}} auf",
+        "scriptFinished": "Wartet, bis das Skript fertig ist · gibt um {{time}} auf",
+        "commandFinished": "Wartet, bis der Befehl fertig ist · gibt um {{time}} auf",
+        "runSettled": "Wartet, bis der Lauf fertig ist · gibt um {{time}} auf"
+      },
+      "cancel": "Nachkontrolle abbrechen",
+      "cancelled": "Nachkontrolle abgebrochen",
+      "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
@@ -946,6 +1019,7 @@
         "queued": "In Warteschlange",
         "running": "Läuft",
         "awaiting_approval": "Wartet auf Genehmigung",
+        "no_approvals_pending": "Keine Genehmigung ausstehend",
         "completed": "Abgeschlossen",
         "failed": "Fehlgeschlagen"
       }
@@ -966,6 +1040,27 @@
       "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
       "wispDescription": "Wisp, mit Ihrer Berechtigung",
       "label": "Breeze AI · nicht Wisp"
+    },
+    "instruction": {
+      "remembered": "Gemerkt: {{text}}",
+      "conflictBanner": "Widerspricht einer gemerkten Anweisung: „{{text}}“",
+      "enforcedForm": "Wisp wird nicht vorschlagen: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "kein Enddatum",
+      "keep": "Behalten",
+      "keepForOrg": "Für alle bei {{org}} behalten",
+      "forget": "Vergessen",
+      "unmatched": "Als Notiz gespeichert: Ich konnte nicht jeden Gerätenamen zuordnen.",
+      "kept": "Behalten",
+      "keptForOrg": "Für alle bei {{org}} behalten",
+      "crossOrg": "Diese Geräte gehören zu mehr als einer Organisation, daher kann dies nur für Sie behalten werden.",
+      "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+      "verb": {
+        "reboot": "neu zu starten",
+        "shutdown": "herunterzufahren",
+        "run_script": "ein Skript auszuführen",
+        "patch_install": "Patches zu installieren",
+        "any_change": "irgendeine Änderung vorzunehmen"
+      }
     }
   },
   "wispConcerns": {
@@ -1018,5 +1113,39 @@
     "feedbackGivenUseful": "Sie haben dies als nützlich markiert",
     "feedbackGivenNotUseful": "Sie haben dies als nicht nützlich markiert",
     "feedbackSaved": "Danke. Wisp merkt sich das."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transkript am {{date}} durch Aufbewahrungsrichtlinie entfernt",
+    "removedLabel": "Durch Aufbewahrung entfernt",
+    "removedHelp": "Nachrichten, Titel und Tool-Details wurden gemäß dem Aufbewahrungszeitraum für Transkripte entfernt. Kosten, Modell und Anzahl der Runden bleiben erhalten.",
+    "preview": {
+      "counting": "Unterhaltungen, die älter als dieser Zeitraum sind, werden gezählt…",
+      "unavailable": "Die Unterhaltungen, die älter als dieser Zeitraum sind, konnten nicht gezählt werden.",
+      "noneEnforced": "Unter diesem Zeitraum steht keine Unterhaltung zur Entfernung an.",
+      "nonePending": "Unter diesem Zeitraum steht keine Unterhaltung zur Entfernung an. Die Durchsetzung der Aufbewahrung ist aus, daher wird noch nichts entfernt.",
+      "orgPending_one": "{{display}} Unterhaltung steht unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgPending_other": "{{display}} Unterhaltungen stehen unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgEnforced_one": "{{display}} Unterhaltung steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "orgEnforced_other": "{{display}} Unterhaltungen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "partnerPending_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerPending_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerEnforced_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "partnerEnforced_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt."
+    }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
+    "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
+    "tryAgain": "Erneut versuchen",
+    "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
+  },
+  "aiNotifications": {
+    "responseReady": "Antwort bereit",
+    "needsApproval": "Benötigt Ihre Genehmigung",
+    "needsInput": "Benötigt Ihre Eingabe",
+    "failed": "Antwort fehlgeschlagen",
+    "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
+    "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }

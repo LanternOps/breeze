@@ -77,7 +77,7 @@ export default function ChatFileCard({ files }: { files: WorkspaceFileSummary[] 
         return (
           <div
             key={file.fileIndexId}
-            className="helper-file-card-row bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]"
+            className="helper-file-card-row bg-ws-surface rounded-surface"
           >
 
             <div className="helper-file-card-info">

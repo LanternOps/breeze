@@ -7,12 +7,12 @@ const NOW = 100_000;
 function webrtc(state: Partial<ClipboardSyncState>) {
   return {
     kind: 'webrtc' as const,
-    state: { open: true, status: null, lastTransfer: null, remoteItemAvailable: false, ...state },
+    state: { open: true, status: null, lastTransfer: null, remoteItemAvailable: false, remoteHeld: null, ...state },
   };
 }
 
 const STATUS = {
-  hostToViewer: true, viewerToHost: true, chunked: true, suppressesBaseline: true,
+  hostToViewer: true, viewerToHost: true, chunked: true, suppressesBaseline: true, changeNotices: false,
   maxTextBytes: 1 << 20, maxImageBytes: 8 << 20,
 };
 
@@ -112,9 +112,38 @@ describe('clipboardChipView', () => {
   });
 });
 
+describe('clipboardChipView held remote change (#11310)', () => {
+  it('offers a one-click pull for a held remote item', () => {
+    const v = clipboardChipView(webrtc({ status: STATUS, remoteItemAvailable: true, remoteHeld: 'item' }), NOW);
+    expect(v.held).toEqual({ text: 'Remote clipboard changed', canPull: true, title: expect.stringMatching(/not copied to this computer/) });
+  });
+
+  it('explains a held remote change that cannot be pulled', () => {
+    const v = clipboardChipView(webrtc({ status: STATUS, remoteItemAvailable: false, remoteHeld: 'unsupported' }), NOW);
+    expect(v.held).toMatchObject({ canPull: false });
+    expect(v.held!.title).toMatch(/cannot be copied/);
+  });
+
+  it('shows no badge when nothing is held, or the channel is closed', () => {
+    expect(clipboardChipView(webrtc({ status: STATUS }), NOW).held).toBeNull();
+    expect(clipboardChipView(webrtc({ open: false, status: STATUS, remoteItemAvailable: true, remoteHeld: 'item' }), NOW).held).toBeNull();
+  });
+
+  it('offers the pull on VNC too', () => {
+    const v = clipboardChipView({
+      kind: 'vnc', policy: { hostToViewer: true, viewerToHost: true }, lastTransfer: null, remoteItemAvailable: true, remoteHeld: true,
+    }, NOW);
+    expect(v.held).toMatchObject({ canPull: true });
+  });
+});
+
 describe('clipboardFailureMessage', () => {
+  it('explains an unreadable local clipboard (#11310 row 1)', () => {
+    expect(clipboardFailureMessage('unreadable', 'paste')).toMatch(/^Nothing pasted — your clipboard is empty or holds something that can.t be sent/);
+  });
+
   it('says nothing was pasted when a paste was cancelled', () => {
-    for (const reason of ['too-large', 'send-failed', 'no-ack', 'closed', 'disabled'] as const) {
+    for (const reason of ['too-large', 'send-failed', 'no-ack', 'closed', 'disabled', 'unreadable'] as const) {
       expect(clipboardFailureMessage(reason, 'paste')).toMatch(/^Nothing pasted — /);
     }
   });

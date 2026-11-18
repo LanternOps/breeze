@@ -42,6 +42,7 @@ func (p *proxyProvider) GetContent() (Content, error) {
 	var data struct {
 		Type        string `json:"type"`
 		Text        string `json:"text,omitempty"`
+		RTF         []byte `json:"rtf,omitempty"`
 		Image       []byte `json:"image,omitempty"`
 		ImageFormat string `json:"imageFormat,omitempty"`
 	}
@@ -52,6 +53,7 @@ func (p *proxyProvider) GetContent() (Content, error) {
 	content := Content{
 		Type:        ContentType(data.Type),
 		Text:        data.Text,
+		RTF:         data.RTF,
 		Image:       data.Image,
 		ImageFormat: data.ImageFormat,
 	}
@@ -65,6 +67,9 @@ func (p *proxyProvider) GetContent() (Content, error) {
 // ErrNoSupportedFormat survives the trip so the watcher can tell an empty
 // clipboard from one it failed to open.
 func proxyHelperError(msg string) error {
+	if msg == ErrClipboardEmpty.Error() {
+		return fmt.Errorf("proxy: user helper error: %w", ErrClipboardEmpty)
+	}
 	if msg == ErrNoSupportedFormat.Error() {
 		return fmt.Errorf("proxy: user helper error: %w", ErrNoSupportedFormat)
 	}

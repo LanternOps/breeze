@@ -275,6 +275,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // site-restricted caller sees no sessions here in the first place.
   'routes/remote/supportSessions.ts:GET /support-sessions',
   'routes/remote/supportSessions.ts:GET /support-sessions/:id',
+  // New code: the session id addresses a row in the partner's hidden
+  // quick_support org, not a device or site; gated on partner scope + remote:access.
+  'routes/remote/supportSessions.ts:POST /support-sessions/:id/code',
   // ---- Partner/system-only aggregates: organization site-restricted roles
   // cannot reach these handlers. User-reachable software/SentinelOne summaries
   // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
@@ -334,6 +337,8 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // all, let alone reach a device through them.
   'routes/remote/supportSessions.ts:GET /support-sessions',
   'routes/remote/supportSessions.ts:GET /support-sessions/:id',
+  // New code: quick_support org session, partner scope + remote:access only.
+  'routes/remote/supportSessions.ts:POST /support-sessions/:id/code',
   // Partner/system-only aggregates use user auth but cannot be reached by
   // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',

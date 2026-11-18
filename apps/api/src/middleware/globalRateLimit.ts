@@ -97,6 +97,10 @@ export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhos
  * IP; it just can no longer touch the dashboard or auth budget.
  */
 export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
+  // Huntress webhook deliveries arrive from the vendor's shared senders; their
+  // own bucket keeps them off the dashboard/auth budget. The route also meters
+  // each source address (600/min) before reading the body.
+  { prefix: '/api/v1/huntress/webhook', name: 'huntresswebhook', limit: 1200 },
   { prefix: '/api/v1/desktop-ws/', name: 'desktopws', limit: 600 },
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
   // bearer-URL surface. Isolated so a scanner hammering a leaked/expired link
@@ -134,6 +138,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // anything without the connection's secret.
   { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
   { prefix: '/api/v1/webhooks/flows/', name: 'flowwebhook', limit: 1200 },
+  // Portal SCIM provisioning (W9 #11386, plan D9). Microsoft's provisioning
+  // service calls from shared egress addresses on behalf of every customer
+  // tenant, so on the shared 600/min budget one busy tenant would throttle
+  // another and anything else on that address. The router carries its own
+  // per-IP failure budget (checked before any lookup) and a per-org limiter.
+  { prefix: '/api/v1/scim/', name: 'scim', limit: 6000 },
   // Public trust pages (spec trust-center §8, §10): unauthenticated by design. Isolated so a scanner
   // enumerating slugs cannot burn the shared budget; 120/min is generous for one human reading a page
   // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed

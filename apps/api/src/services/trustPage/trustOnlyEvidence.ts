@@ -1,11 +1,13 @@
 // Trust-page-only evidence (amendment 30): mfa_enforced_m365 from Microsoft 365 Conditional Access policies.
 // It is overlaid onto loadPostureEvidence's controls by the trust page build and GET /controls, and is never
 // read inside loadPostureEvidence, so the posture report's positional query order is untouched.
+// Connection health gates the claim: a revoked/suspended/unconsented connection is not evidence (#9087).
 // Runs in the caller's DB context.
 import { and, eq } from 'drizzle-orm';
 import type { PostureControlEvidence } from '@breeze/shared';
 import { db } from '../../db';
-import { m365CaPolicies, m365SyncState } from '../../db/schema';
+import { m365CaPolicies, m365Connections, m365SyncState } from '../../db/schema';
+import { m365ConnectionHealth } from '../integrationStates';
 import { caPolicyEnforcesMfaForAllUsers } from '../m365CaMfaEnforcement';
 import type { PostureEvidencePolicy } from '../postureEvidence';
 
@@ -13,14 +15,40 @@ type MfaEvidence = PostureControlEvidence['mfa_enforced_m365'];
 
 const NO_DATA: MfaEvidence = { eligible: 0, assessed: 0, passing: 0, aggregatePct: null, newestEvidenceAt: null };
 
+/**
+ * A sync row is evidence only while its connection still stands behind it. Retired (revoked) and permanently
+ * broken (suspended, consent withdrawn) connections keep their rows for up to 30 days, so their last snapshot
+ * would otherwise keep claiming "MFA enforced". Transient breakage (throttling, executor outage) and consent
+ * in progress keep the last complete snapshot; the freshness window still bounds it. Only the ca_policies
+ * domain's own `needs_consent` counts: consent lost on another domain does not touch this claim.
+ */
+function syncRowIsEvidence(r: { lastStatus: string | null; connectionStatus: string; connectionErrorCode: string | null }): boolean {
+  if (r.lastStatus === 'needs_consent') return false;
+  const verdict = m365ConnectionHealth({ status: r.connectionStatus, lastErrorCode: r.connectionErrorCode });
+  if (verdict.state === 'retired') return false;
+  return !(verdict.state === 'broken' && verdict.severity === 'permanent');
+}
+
 async function loadMfaEnforcedM365(orgId: string, asOf: Date, policy: PostureEvidencePolicy): Promise<MfaEvidence> {
+  // Inner join: a sync row whose connection row is gone has no connection to vouch for it.
   const syncRows = await db
-    .select({ lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt })
+    .select({
+      lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
+      lastStatus: m365SyncState.lastStatus,
+      connectionStatus: m365Connections.status,
+      connectionErrorCode: m365Connections.lastErrorCode,
+    })
     .from(m365SyncState)
+    .innerJoin(
+      m365Connections,
+      and(eq(m365Connections.id, m365SyncState.connectionId), eq(m365Connections.orgId, m365SyncState.orgId)),
+    )
     .where(and(eq(m365SyncState.orgId, orgId), eq(m365SyncState.domain, 'ca_policies')));
 
+  // Filter per row, then take the newest survivor: a stale revoked row must not hide a healthy reconnected one.
   let snapshotAt: Date | null = null;
   for (const r of syncRows) {
+    if (!syncRowIsEvidence(r)) continue;
     if (r.lastCompleteSnapshotAt && (!snapshotAt || r.lastCompleteSnapshotAt > snapshotAt)) snapshotAt = r.lastCompleteSnapshotAt;
   }
   if (!snapshotAt) return NO_DATA;

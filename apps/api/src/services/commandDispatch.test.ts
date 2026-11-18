@@ -71,8 +71,14 @@ vi.mock('drizzle-orm', async (importOriginal) => {
 const { partitionClaimableMock } = vi.hoisted(() => ({ partitionClaimableMock: vi.fn() }));
 
 const revalidateCommandForDeliveryMock = vi.hoisted(() => vi.fn<() => Promise<string | null>>(async () => null));
+// #7268: the lock-free preparation the claim runs BEFORE its transaction locks
+// a row. Each test gets a fresh empty preparation (see beforeEach), so the
+// assertions on what reaches partitionClaimable can name it.
+const { prepareCommandRevalidationsMock } = vi.hoisted(() => ({ prepareCommandRevalidationsMock: vi.fn() }));
+let PREPARED: ReadonlyMap<string, unknown>;
 vi.mock('./commandClaimEligibility', () => ({
   partitionClaimable: partitionClaimableMock,
+  prepareCommandRevalidations: prepareCommandRevalidationsMock,
   POWER_STATE_BARRIER_TYPES: new Set(['reboot', 'shutdown', 'reboot_safe_mode']),
   typeHolds: {},
   // The delivery-time revalidation seam. Registered for real by
@@ -165,6 +171,8 @@ describe('command dispatch helpers', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     revalidateCommandForDeliveryMock.mockResolvedValue(null);
+    PREPARED = new Map();
+    prepareCommandRevalidationsMock.mockImplementation(async () => PREPARED);
     partitionClaimableMock.mockImplementation(async (_tx: unknown, _dev: unknown, rows: any[]) => ({
       claimable: rows,
       cancelled: [],
@@ -591,7 +599,7 @@ describe('command dispatch helpers', () => {
       tx,
       DEVICE_ROW,
       pendingRows,
-      { inFlight: 3 },
+      { inFlight: 3, prepared: PREPARED },
     );
   });
 
@@ -637,7 +645,7 @@ describe('command dispatch helpers', () => {
       tx,
       expect.objectContaining({ orgType: 'unassigned_pool' }),
       pendingRows,
-      { inFlight: 0 },
+      { inFlight: 0, prepared: PREPARED },
     );
   });
 
@@ -724,7 +732,7 @@ describe('command dispatch helpers', () => {
       expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
         status: 'held', id: 'cmd-1', reason: 'power_state_barrier',
       });
-      expect(partitionClaimableMock.mock.calls[0]![3]).toEqual({ inFlight: 2 });
+      expect(partitionClaimableMock.mock.calls[0]![3]).toEqual({ inFlight: 2, prepared: PREPARED });
     });
 
     it('control: a command every check admits is still pushed', async () => {
@@ -815,5 +823,99 @@ describe('command dispatch helpers', () => {
 
     expect(partitionClaimableMock).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  // #7268: a revalidation input that lives outside Postgres (the topology arm
+  // actor's permission-authority version, in Redis) is resolved BEFORE the
+  // claim transaction opens, so no network wait happens while the claim holds
+  // `device_commands` row locks. Pinned as an ordering: the preparation runs,
+  // THEN the transaction begins and locks rows, and eligibility gets the
+  // already-resolved preparation instead of reaching for Redis itself.
+  describe('#7268: revalidation inputs are prepared before the claim locks any row', () => {
+    function recordTransaction(events: string[], tx: unknown) {
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+        events.push('tx:begin');
+        try {
+          return await fn(tx);
+        } finally {
+          events.push('tx:end');
+        }
+      });
+    }
+
+    it('heartbeat claim: prepare, then lock, then eligibility with the preparation', async () => {
+      const events: string[] = [];
+      const prepared = new Map([['topology_interface_poll', new Map([['user-1', '["1","2"]']])]]);
+      prepareCommandRevalidationsMock.mockImplementation(async () => {
+        events.push('prepare');
+        return prepared;
+      });
+      const pending = [{ id: 'cmd-1', type: 'topology_interface_poll', deviceId: 'dev-1', status: 'pending', deviceIncarnation: 1 }];
+      const limit = vi.fn()
+        .mockResolvedValueOnce([DEVICE_ROW])
+        .mockResolvedValueOnce([{ inFlight: 0 }]);
+      const lock = vi.fn(async () => {
+        events.push('lock');
+        return pending;
+      });
+      const where = vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(() => ({ for: lock })) })), limit }));
+      const tx = {
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where, innerJoin: vi.fn(() => ({ where })) })) })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
+        }),
+      };
+      recordTransaction(events, tx);
+      partitionClaimableMock.mockImplementation(async (_tx: unknown, _dev: unknown, rows: any[]) => {
+        events.push('eligibility');
+        return { claimable: rows, cancelled: [], held: [] };
+      });
+
+      await claimPendingCommandsForDevice(
+        { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      );
+
+      expect(events).toEqual(['prepare', 'tx:begin', 'lock', 'eligibility', 'tx:end']);
+      expect(prepareCommandRevalidationsMock).toHaveBeenCalledWith(db, { deviceId: 'dev-1', targetRole: 'agent', typeAllowlist: undefined });
+      expect(partitionClaimableMock).toHaveBeenCalledWith(tx, DEVICE_ROW, pending, { inFlight: 0, prepared });
+    });
+
+    it('heartbeat claim: the drain allowlist scopes the preparation too', async () => {
+      const tx = { select: selectChain([]), update: vi.fn() };
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+      await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', ['self_uninstall']);
+
+      expect(prepareCommandRevalidationsMock).toHaveBeenCalledWith(db, { deviceId: 'dev-1', targetRole: 'watchdog', typeAllowlist: ['self_uninstall'] });
+    });
+
+    it('push claim: prepare the one command, then lock it, then eligibility with the preparation', async () => {
+      const events: string[] = [];
+      const prepared = new Map([['topology_interface_poll', new Map([['user-1', '["1","2"]']])]]);
+      prepareCommandRevalidationsMock.mockImplementation(async () => {
+        events.push('prepare');
+        return prepared;
+      });
+      stubSingleClaimCandidate({ type: 'topology_interface_poll' });
+      const locked = candidateFor;
+      candidateFor.mockImplementation(async () => {
+        events.push('lock');
+        return [{ ...DEFAULT_CANDIDATE, type: 'topology_interface_poll' }];
+      });
+      recordTransaction(events, db);
+      partitionClaimableMock.mockImplementation(async (_tx: unknown, _dev: unknown, rows: any[]) => {
+        events.push('eligibility');
+        return { claimable: [], cancelled: [], held: rows.map((r) => ({ id: r.id, reason: 'revalidation_unprepared' })) };
+      });
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'held', id: 'cmd-1', reason: 'revalidation_unprepared',
+      });
+
+      expect(locked).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(['prepare', 'tx:begin', 'lock', 'eligibility', 'tx:end']);
+      expect(prepareCommandRevalidationsMock).toHaveBeenCalledWith(db, { commandId: 'cmd-1' });
+      expect(partitionClaimableMock).toHaveBeenCalledWith(db, expect.anything(), expect.anything(), { inFlight: 0, prepared });
+    });
   });
 });

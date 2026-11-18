@@ -1,7 +1,9 @@
 import {
   canonicalGrantKey,
   getM365PermissionProfile,
+  MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
   type CanonicalAppRoleAssignment,
+  type GrantReconciliationMode,
 } from '@breeze/shared/m365';
 import type { GraphTenantObservation } from './graphClient';
 
@@ -29,6 +31,32 @@ function canonicalize(
     .map(([, grant]) => grant);
 }
 
+/**
+ * Maps the Graph role values from the app-only token onto canonical grants.
+ * A token names roles by value, not id. Required roles take the manifest's
+ * verified Graph appRoleId (Graph app role ids are the same in every tenant),
+ * so they key exactly like an inventory observation. Any other value is kept
+ * with `appRoleId: null`: resolving it would mean reading the Graph service
+ * principal, which needs the same Application.Read.All whose absence put us
+ * on this path. The value still makes it unexpected drift.
+ */
+function graphTokenGrants(
+  roles: readonly string[],
+  required: readonly CanonicalAppRoleAssignment[],
+): CanonicalAppRoleAssignment[] {
+  const requiredGraphByValue = new Map<string, CanonicalAppRoleAssignment>();
+  for (const grant of required) {
+    if (grant.resourceApplicationId === MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID && grant.value !== null) {
+      requiredGraphByValue.set(grant.value, grant);
+    }
+  }
+  return roles.map((value) => requiredGraphByValue.get(value) ?? {
+    resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+    appRoleId: null,
+    value,
+  });
+}
+
 export function reconcileCustomerGraphActions(
   observation: GraphTenantObservation,
   dependencies: ReconciliationDependencies = {},
@@ -44,7 +72,17 @@ export function reconcileCustomerGraphActions(
     verifiedAt: timestamp,
   } as const;
 
-  if (observation.observedGrants === null) {
+  // Exact inventory when Graph let us read it; otherwise the Graph token roles
+  // fallback (#12085); otherwise unavailable.
+  let mode: GrantReconciliationMode;
+  let observedSource: readonly CanonicalAppRoleAssignment[];
+  if (observation.observedGrants !== null) {
+    mode = 'exact';
+    observedSource = observation.observedGrants;
+  } else if (observation.graphTokenRoles !== undefined) {
+    mode = 'graph_token_only';
+    observedSource = graphTokenGrants(observation.graphTokenRoles, profile.applicationPermissionAssignments ?? []);
+  } else {
     return {
       ...proof,
       outcome: 'grant_reconciliation_unavailable' as const,
@@ -58,7 +96,7 @@ export function reconcileCustomerGraphActions(
   }
 
   const required = canonicalize(profile.applicationPermissionAssignments ?? []);
-  const observed = canonicalize(observation.observedGrants);
+  const observed = canonicalize(observedSource);
   const requiredKeys = new Set(required.map(canonicalGrantKey));
   const observedKeys = new Set(observed.map(canonicalGrantKey));
   const missing = required.filter((grant) => !observedKeys.has(canonicalGrantKey(grant)));
@@ -71,6 +109,7 @@ export function reconcileCustomerGraphActions(
     ...proof,
     outcome,
     grantReconciliation: 'complete' as const,
+    grantReconciliationMode: mode,
     observedGrants: observed,
     missingGrants: missing,
     unexpectedGrants: unexpected,

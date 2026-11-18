@@ -180,6 +180,7 @@ export async function completeConsentOperation(
       authorizationCode: request.authorizationCode,
       codeVerifier: request.codeVerifier,
       redirectUri: request.redirectUri,
+      nonce: request.nonce,
     });
   } catch (error) { return mapCredentialError(error) as CommsCompleteConsentResult; }
 
