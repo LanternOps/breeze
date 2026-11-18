@@ -190,7 +190,7 @@ function keyTopics(page: DocsIndexEntry): string {
  * the best-matching sections (MAX_EXCERPTS overall) inline under their page.
  * Exported for tests; the tool handler wraps it.
  */
-export function searchDocsIndex(index: DocsIndexEntry[], rawQuery: string, sectionFilter?: string): string {
+export function searchDocsIndex(index: DocsIndexEntry[], rawQuery: string, sectionFilter?: string, maxPages: number = MAX_PAGES): string {
   const keywords = toKeywords(rawQuery);
   if (keywords.length === 0) {
     return 'Please provide search terms to find relevant documentation.';
@@ -208,7 +208,7 @@ export function searchDocsIndex(index: DocsIndexEntry[], rawQuery: string, secti
   const pages: DocsIndexEntry[] = [];
   for (const hit of hits) {
     if (!pages.includes(hit.page)) pages.push(hit.page);
-    if (pages.length === MAX_PAGES) break;
+    if (pages.length >= maxPages) break;
   }
 
   const headers = new Map(pages.map((page) => [page, [
@@ -271,7 +271,8 @@ export function registerDocsTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             enum: ['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference'],
             description: 'Optional: filter results to a specific documentation section'
-          }
+          },
+          limit: { type: 'number', description: `Max pages (default ${MAX_PAGES}, max ${MAX_PAGES})` }
         },
         required: ['query']
       }
@@ -279,7 +280,11 @@ export function registerDocsTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, _auth) => {
       const rawQuery = typeof input.query === 'string' ? input.query : '';
       const sectionFilter = typeof input.section === 'string' ? (input.section as DocsSection) : undefined;
-      return searchDocsIndex(typedDocsIndex, rawQuery, sectionFilter);
+      // The whole result is char-capped (DOCS_SEARCH_MAX_CHARS) regardless; `limit`
+      // only narrows the page count, so out-of-range values clamp to [1, MAX_PAGES].
+      const requested = Math.trunc(Number(input.limit));
+      const maxPages = Number.isFinite(requested) && requested > 0 ? Math.min(requested, MAX_PAGES) : MAX_PAGES;
+      return searchDocsIndex(typedDocsIndex, rawQuery, sectionFilter, maxPages);
     }
   });
 }

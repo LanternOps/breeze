@@ -2601,6 +2601,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         query: z.string().min(1).max(500),
         section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+        limit: z.number().int().min(1).max(5).optional().describe('Max pages (default 5, max 5)'),
       },
       makeHandler('search_documentation')
     ),

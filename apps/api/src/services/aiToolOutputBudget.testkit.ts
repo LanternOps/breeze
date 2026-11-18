@@ -49,5 +49,4 @@ export function expectDefaultPageFits(toolName: string, raw: string): number {
 export const UNBOUNDED_LIST_READS: ReadonlySet<string> = new Set([
   'get_effective_configuration',
   'get_executive_summary',
-  'search_documentation',
 ]);
