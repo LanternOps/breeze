@@ -95,9 +95,9 @@ type Session struct {
 	// keepalive goroutine starts to drive a fake clock; nil in production.
 	clock func() time.Time
 
-	// closeReason is set (first writer wins) by CloseWithReason when the
-	// agent closes the session on purpose, so the teardown can report what
-	// happened instead of guessing (#11044).
+	// closeReason is set by CloseWithReason when that call is the one that
+	// closes the session (under mu, with closed), so the teardown can report
+	// what happened instead of guessing (#11044). Nil for any other close.
 	closeReason atomic.Pointer[string]
 
 	broker      *Broker
@@ -596,16 +596,15 @@ func (s *Session) HasScope(scope string) bool {
 
 // CloseWithReason closes the session on the agent's own initiative and records
 // why, so the teardown (the backup helper's death report) can say the agent
-// closed it rather than that the helper exited. The reason is kept only when
-// the session was still open: a session something else already closed keeps
-// whatever explanation that path left.
+// closed it rather than that the helper exited. The reason is recorded in the
+// same critical section that marks the session closed, so it is kept only when
+// this call is the one that closes it: a session the helper's own hang-up (or
+// anything else) closed first keeps no reason, and is reported as before.
 func (s *Session) CloseWithReason(reason string) error {
-	s.mu.Lock()
-	if !s.closed {
-		s.closeReason.CompareAndSwap(nil, &reason)
+	if s.broker != nil {
+		return s.broker.closeSessionWithReason(s, reason)
 	}
-	s.mu.Unlock()
-	return s.Close()
+	return s.closeTransportAndPeerWithReason(reason)
 }
 
 // Close closes the underlying connection and cancels all pending commands.
@@ -617,7 +616,13 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) closeTransportAndPeer() error {
-	transportErr := s.closeTransport()
+	return s.closeTransportAndPeerWithReason("")
+}
+
+// closeTransportAndPeerWithReason is closeTransportAndPeer that, when it is the
+// call that closes the session, records reason (non-empty) as CloseReason.
+func (s *Session) closeTransportAndPeerWithReason(reason string) error {
+	transportErr := s.closeTransportWithReason(reason)
 	peerErr := s.peerProcess.close()
 	if transportErr != nil {
 		return transportErr
@@ -626,12 +631,19 @@ func (s *Session) closeTransportAndPeer() error {
 }
 
 func (s *Session) closeTransport() error {
+	return s.closeTransportWithReason("")
+}
+
+func (s *Session) closeTransportWithReason(reason string) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
+	if reason != "" {
+		s.closeReason.Store(&reason)
+	}
 	for id := range s.pending {
 		delete(s.pending, id)
 	}

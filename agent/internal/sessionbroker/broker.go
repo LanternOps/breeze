@@ -2876,6 +2876,12 @@ func (b *Broker) removeSession(session *Session) {
 }
 
 func (b *Broker) closeSession(session *Session) error {
+	return b.closeSessionWithReason(session, "")
+}
+
+// closeSessionWithReason is closeSession that records reason as the session's
+// CloseReason when this call is the one that closes it (Session.CloseWithReason).
+func (b *Broker) closeSessionWithReason(session *Session, reason string) error {
 	b.mu.Lock()
 	removed := b.removeSessionMapsLocked(session)
 	if removed {
@@ -2885,7 +2891,7 @@ func (b *Broker) closeSession(session *Session) error {
 	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
-	closeErr := session.closeTransportAndPeer()
+	closeErr := session.closeTransportAndPeerWithReason(reason)
 	if removed {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
@@ -3747,24 +3753,31 @@ func (b *Broker) runKeepalive(session *Session) {
 			late := gap > lateAfter
 			if late {
 				lateTicks++
-				log.Info("keepalive tick late, agent was not running; re-pinging before judging the helper",
-					"sessionId", session.SessionID,
-					"identity", session.IdentityKey,
-					"gapMs", gap.Milliseconds(),
-					"pongAgeMs", session.LastPongAge().Milliseconds(),
-					"consecutiveLate", lateTicks,
-				)
 			}
 
 			// Authoritative wedge check: the age here is the time since the
 			// most recently received pong (seeded to session creation time
 			// in NewSession), not the time since the ping we're about to
 			// send below. A late tick defers the verdict (see above).
-			if age := session.LastPongAge(); age > timeout && (!late || lateTicks > keepaliveMaxLateTicks) {
+			age := session.LastPongAge()
+			if age > timeout && late && lateTicks <= keepaliveMaxLateTicks {
+				// The one case the late-tick rule changes: the old loop
+				// would have closed here. Warn so it ships with the agent's
+				// logs, and a field close that follows can be read in context.
+				log.Warn("keepalive tick late, agent was not running; re-pinging instead of closing",
+					"sessionId", session.SessionID,
+					"identity", session.IdentityKey,
+					"gapMs", gap.Milliseconds(),
+					"pongAgeMs", age.Milliseconds(),
+					"lateAfterMs", lateAfter.Milliseconds(),
+					"consecutiveLate", lateTicks,
+				)
+			} else if age > timeout {
 				log.Warn("keepalive pong timeout, closing stranded session",
 					"sessionId", session.SessionID,
 					"identity", session.IdentityKey,
 					"ageMs", age.Milliseconds(),
+					"gapMs", gap.Milliseconds(),
 					"consecutiveLate", lateTicks,
 				)
 				reason := fmt.Sprintf("keepalive timeout: no reply from the helper for %s", age.Round(time.Second))

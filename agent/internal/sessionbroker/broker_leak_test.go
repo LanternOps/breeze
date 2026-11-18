@@ -29,14 +29,14 @@ func withKeepaliveTiming(t *testing.T, interval, timeout time.Duration) {
 	})
 }
 
-// newPairedSession builds a broker-side Session plus a client ipc.Conn for
-// tests that need to drive the server-initiated keepalive path. The client
-// side intentionally does NOT auto-reply to pings so the timeout can fire.
 // setLastPong backdates a session's most recent pong.
 func setLastPong(s *Session, at time.Time) {
 	s.lastPongAt.Store(&at)
 }
 
+// newPairedSession builds a broker-side Session plus a client ipc.Conn for
+// tests that need to drive the server-initiated keepalive path. The client
+// side intentionally does NOT auto-reply to pings so the timeout can fire.
 func newPairedSession(t *testing.T, sessionID, identity string) (*Session, *ipc.Conn) {
 	t.Helper()
 	return createTestSessionWith(t, sessionID, identity)
@@ -502,6 +502,10 @@ func TestKeepaliveClosesAtSendFailureThreshold(t *testing.T) {
 	}
 	if !session.IsClosed() {
 		t.Error("session should have been closed at the send-failure threshold")
+	}
+	// #11044: the close is the agent's, and says why.
+	if reason := session.CloseReason(); !strings.Contains(reason, "keepalive pings to the helper failed 3 times") {
+		t.Errorf("CloseReason = %q, want the send-failure reason", reason)
 	}
 }
 

@@ -209,8 +209,8 @@ func TestKeepaliveEveryTickLateStillClosesSilentHelperEventually(t *testing.T) {
 
 	for i := 1; i <= keepaliveMaxLateTicks+2; i++ {
 		if got := r.tickAfter(2 * time.Minute); got == "closed" {
-			if i <= keepaliveMaxLateTicks {
-				t.Fatalf("closed on late tick %d, before the %d-tick bound", i, keepaliveMaxLateTicks)
+			if i != keepaliveMaxLateTicks+1 {
+				t.Fatalf("closed on late tick %d, want exactly tick %d (the first past the bound)", i, keepaliveMaxLateTicks+1)
 			}
 			return
 		}
@@ -279,5 +279,101 @@ func TestBackupHelperDeath_KeepaliveClose_ReportsAgentClosedSession(t *testing.T
 	}
 	if strings.Contains(result.Stderr, backupHelperDiedError) {
 		t.Fatalf("Stderr = %q still claims the helper exited", result.Stderr)
+	}
+}
+
+// CloseWithReason records its reason only when it is the call that closes the
+// session; a session already closed (the helper hung up first) keeps none, so
+// its teardown still reports a helper exit.
+func TestCloseWithReason_RecordsOnlyWhenItCloses(t *testing.T) {
+	t.Run("closes an open session", func(t *testing.T) {
+		session, clientIPC := newPairedSession(t, "reason-1", "5000")
+		defer func() { _ = clientIPC.Close() }()
+		if err := session.CloseWithReason("first"); err != nil {
+			t.Fatalf("CloseWithReason: %v", err)
+		}
+		_ = session.CloseWithReason("second")
+		if got := session.CloseReason(); got != "first" {
+			t.Fatalf("CloseReason = %q, want %q", got, "first")
+		}
+	})
+	t.Run("already closed session keeps no reason", func(t *testing.T) {
+		session, clientIPC := newPairedSession(t, "reason-2", "5001")
+		defer func() { _ = clientIPC.Close() }()
+		_ = session.Close()
+		_ = session.CloseWithReason("too late")
+		if got := session.CloseReason(); got != "" {
+			t.Fatalf("CloseReason = %q, want none for a session closed elsewhere first", got)
+		}
+	})
+	t.Run("broker-owned session", func(t *testing.T) {
+		session, clientIPC := newPairedSession(t, "reason-3", "5002")
+		defer func() { _ = clientIPC.Close() }()
+		b := &Broker{
+			sessions:   map[string]*Session{session.SessionID: session},
+			byIdentity: map[string][]*Session{session.IdentityKey: {session}},
+		}
+		session.broker = b
+		_ = session.CloseWithReason("via broker")
+		if got := session.CloseReason(); got != "via broker" {
+			t.Fatalf("CloseReason = %q, want %q", got, "via broker")
+		}
+		if _, still := b.sessions[session.SessionID]; still {
+			t.Fatal("CloseWithReason left the session registered with the broker")
+		}
+	})
+}
+
+// A keepalive close that lands while a backup_run forward still awaits its ack:
+// the forwarder owns that failure, and it must name the agent's close rather
+// than the bare "session closed" that classifies as nothing.
+func TestBackupForward_AgentCloseBeforeAck_NamesTheClose(t *testing.T) {
+	rig := newBackupDeathRig(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rig.broker.ForwardBackupCommand("cmd-unacked-ka", "backup_run", nil, backupDeathWait, true)
+		done <- err
+	}()
+	if _, err := rig.helper.Recv(); err != nil {
+		t.Fatalf("helper Recv: %v", err)
+	}
+	_ = rig.session.CloseWithReason("keepalive timeout: no reply from the helper for 1m0s")
+
+	select {
+	case err := <-done:
+		requireSessionClosedError(t, err, "the forward of an unacked run")
+		want := backupHelperSessionClosedError + " (keepalive timeout: no reply from the helper for 1m0s)"
+		if !strings.HasPrefix(err.Error(), want) {
+			t.Fatalf("forward error = %q, want it to start with %q", err.Error(), want)
+		}
+	case <-time.After(backupDeathWait):
+		t.Fatal("timed out waiting for the forward to fail")
+	}
+	select {
+	case <-rig.disconnected:
+	case <-time.After(backupDeathWait):
+		t.Fatal("timed out waiting for the session teardown")
+	}
+	rig.expectNoForwarded(t)
+}
+
+// The doomed-tombstone branch of ForwardBackupCommand reports the same way.
+func TestBackupSessionEndedError(t *testing.T) {
+	plain, c1 := newPairedSession(t, "ended-1", "6000")
+	defer func() { _ = c1.Close() }()
+	_ = plain.Close()
+	if got := backupSessionEndedError(plain); got != backupHelperDiedError {
+		t.Fatalf("plain close: %q, want %q", got, backupHelperDiedError)
+	}
+
+	closedByAgent, c2 := newPairedSession(t, "ended-2", "6001")
+	defer func() { _ = c2.Close() }()
+	_ = closedByAgent.CloseWithReason("x")
+	if got, want := backupSessionEndedError(closedByAgent), backupHelperSessionClosedError+" (x)"; got != want {
+		t.Fatalf("agent close: %q, want %q", got, want)
+	}
+	if got := backupSessionEndedError(nil); got != backupHelperDiedError {
+		t.Fatalf("nil session: %q, want %q", got, backupHelperDiedError)
 	}
 }

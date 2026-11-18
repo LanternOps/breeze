@@ -779,6 +779,12 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		bh.mu.Lock()
 		delete(bh.activeRuns, commandID)
 		bh.mu.Unlock()
+		// The agent closed the session while this forward awaited its ack
+		// (the keepalive, #11044): say so, rather than the bare "session
+		// closed" SendCommand returns, which classifies as nothing.
+		if err != nil && session.CloseReason() != "" {
+			return env, fmt.Errorf("%s: %w", backupSessionEndedError(session), err)
+		}
 		return env, err
 	}
 
