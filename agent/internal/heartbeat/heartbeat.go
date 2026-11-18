@@ -623,10 +623,13 @@ type Heartbeat struct {
 	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
 	// in Start, read by Stop.
 	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
-	// linuxHostedDesktops maps a desktop session id to the logind session
-	// whose Linux desktop helper hosts it (#12117 W3), so its live mark on
-	// the helper is released exactly once when its owner is forgotten.
-	linuxHostedDesktops sync.Map
+	// linuxHosted maps a desktop session id to its live mark on the Linux
+	// desktop helper of a logind session (#12117 W3), released exactly once
+	// when its owner is forgotten. linuxHostedMu also orders that release
+	// with the owner's removal (forgetDesktopOwner).
+	linuxHostedMu  sync.Mutex
+	linuxHosted    map[string]linuxHostedMark
+	linuxHostedSeq uint64
 	// Test seams for Linux desktop routing; production leaves them nil.
 	linuxDesktopHelperOverride linuxDesktopHelperController
 	linuxActiveSeatSession     func(context.Context) (*sessionbroker.DetectedSession, error)

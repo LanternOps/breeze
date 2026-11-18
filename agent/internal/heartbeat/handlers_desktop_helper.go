@@ -218,7 +218,11 @@ func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
 		return
 	}
 	// A session hosted by a Linux desktop helper is no longer live on it.
-	h.endLinuxHostedDesktop(desktopSessionID)
+	// The mark is released and the owner removed under one lock, so a
+	// completed start re-asserting its mark sees either both or neither.
+	h.linuxHostedMu.Lock()
+	defer h.linuxHostedMu.Unlock()
+	h.releaseLinuxHostedLocked(desktopSessionID)
 	h.sweepEndedDesktopOwners()
 	owner, ok := h.desktopOwners.Load(desktopSessionID)
 	if !ok {

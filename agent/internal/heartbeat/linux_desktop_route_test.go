@@ -251,9 +251,9 @@ func TestStartDesktop_LinuxWaylandFlagOnRoutesToHelper(t *testing.T) {
 	if result.Status != "failed" {
 		t.Fatalf("no helper can capture yet, so the start must fail, got %q", result.Status)
 	}
-	// The failed start released its live-desktop mark on the helper.
-	if started, ended := r.helpers.counts("7"); started != ended {
-		t.Fatalf("live-desktop accounting unbalanced after a failed start: started=%d ended=%d", started, ended)
+	// No helper was found, so nothing was ever marked live on one.
+	if started, ended := r.helpers.counts("7"); started != 0 || ended != 0 {
+		t.Fatalf("a start with no helper touched the live-desktop marks: started=%d ended=%d", started, ended)
 	}
 }
 
@@ -350,11 +350,16 @@ func TestFindOrSpawnLinuxHelper_IncapableHelperIsTerminal(t *testing.T) {
 	if s != nil {
 		t.Fatalf("an incapable helper must not be returned, got %v", s)
 	}
-	if err == nil || !strings.Contains(err.Error(), "cannot capture") {
-		t.Fatalf("error = %v, want a cannot-capture explanation", err)
+	if !errors.Is(err, errLinuxDesktopHelperCannotCapture) || !strings.Contains(err.Error(), "no Wayland capture backend") {
+		t.Fatalf("error = %v, want cannot-capture with the missing-backend cause", err)
 	}
 	if got := r.helpers.ensureCalls(); len(got) != 1 {
 		t.Fatalf("Ensure calls = %v, want exactly one", got)
+	}
+	// A helper without the desktop scope names that cause instead.
+	r.helpers.bound["4"] = linuxDesktopTestSession(t, "4", &ipc.Capabilities{CanCapture: true}, []string{"notify"})
+	if _, err := r.h.findOrSpawnLinuxHelper("4"); err == nil || !strings.Contains(err.Error(), "desktop scope") {
+		t.Fatalf("error = %v, want the missing desktop scope named", err)
 	}
 }
 
@@ -382,7 +387,7 @@ func TestStartDesktopViaLinuxHelper_FailedStartReleasesLiveMark(t *testing.T) {
 	if started, ended := r.helpers.counts("4"); started != 1 || ended != 1 {
 		t.Fatalf("a failed start must release its live mark: started=%d ended=%d, want 1/1", started, ended)
 	}
-	if _, ok := r.h.linuxHostedDesktops.Load("desk-fail"); ok {
+	if _, ok := r.h.linuxHostedLogindSession("desk-fail"); ok {
 		t.Fatal("a failed start left its hosted-desktop record behind")
 	}
 }
@@ -402,7 +407,7 @@ func TestLinuxRoutedDesktop_HelperStopEndsSessionAndReleasesLiveMark(t *testing.
 			t.Cleanup(func() { _ = s.Close(); _ = client.Close() })
 			go s.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 			go func() {
-				client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
 				env, err := client.Recv()
 				if err != nil {
 					return
@@ -485,9 +490,74 @@ func TestLinuxHostedDesktop_EndedOnceWhenOwnerForgotten(t *testing.T) {
 
 	r.h.forgetDesktopOwner("desk-1")
 	r.h.forgetDesktopOwner("desk-1")
-	r.h.endLinuxHostedDesktop("desk-1")
+	r.h.endLinuxHostedDesktopStart("desk-1", 1)
 
 	if started, ended := r.helpers.counts("4"); started != 1 || ended != 1 {
 		t.Fatalf("live-desktop accounting: started=%d ended=%d, want 1/1", started, ended)
+	}
+}
+
+// A teardown report for an earlier start of the same desktop session, landing
+// while a new start is in flight, must not leave the new, completed session
+// unmarked (the helper would be idle-expired mid-stream).
+func TestLinuxHostedDesktop_ReassertedAfterInFlightRelease(t *testing.T) {
+	r := newLinuxRouteHarness(t, true, seatSession("4", "wayland"), true)
+	r.h.rememberDesktopOwner("desk-1", "linux-helper-4") // the earlier start
+	r.h.noteLinuxHostedDesktop("desk-1", "4")            // the new start, in flight
+	r.h.forgetDesktopOwner("desk-1")                     // the earlier start's teardown report
+	r.h.rememberDesktopOwner("desk-1", "linux-helper-4") // the new start completes
+
+	r.h.reassertLinuxHostedDesktop("desk-1", "4", "linux-helper-4")
+
+	if _, ok := r.h.linuxHostedLogindSession("desk-1"); !ok {
+		t.Fatal("the completed session is not marked live")
+	}
+	if started, ended := r.helpers.counts("4"); started-ended != 1 {
+		t.Fatalf("live marks: started=%d ended=%d, want exactly one outstanding", started, ended)
+	}
+}
+
+// A completed start whose session already ended (owner forgotten) is not
+// re-marked: that would keep the helper from ever idle-expiring.
+func TestLinuxHostedDesktop_NotReassertedAfterSessionEnded(t *testing.T) {
+	r := newLinuxRouteHarness(t, true, seatSession("4", "wayland"), true)
+	r.h.noteLinuxHostedDesktop("desk-1", "4")
+	r.h.rememberDesktopOwner("desk-1", "linux-helper-4")
+	r.h.forgetDesktopOwner("desk-1") // the session ended right after it started
+
+	r.h.reassertLinuxHostedDesktop("desk-1", "4", "linux-helper-4")
+
+	if _, ok := r.h.linuxHostedLogindSession("desk-1"); ok {
+		t.Fatal("an ended session was re-marked live")
+	}
+	if started, ended := r.helpers.counts("4"); started != ended {
+		t.Fatalf("live marks leaked: started=%d ended=%d", started, ended)
+	}
+}
+
+// Note, forget and re-assert racing on one desktop session never leave the
+// manager's count disagreeing with the heartbeat's record.
+func TestLinuxHostedDesktop_ConcurrentNoteForgetBalanced(t *testing.T) {
+	r := newLinuxRouteHarness(t, true, seatSession("4", "wayland"), true)
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Add(3)
+		go func() { defer wg.Done(); r.h.noteLinuxHostedDesktop("desk-1", "4") }()
+		go func() {
+			defer wg.Done()
+			r.h.rememberDesktopOwner("desk-1", "linux-helper-4")
+			r.h.forgetDesktopOwner("desk-1")
+		}()
+		go func() { defer wg.Done(); r.h.reassertLinuxHostedDesktop("desk-1", "4", "linux-helper-4") }()
+	}
+	wg.Wait()
+	started, ended := r.helpers.counts("4")
+	_, marked := r.h.linuxHostedLogindSession("desk-1")
+	want := 0
+	if marked {
+		want = 1
+	}
+	if started-ended != want {
+		t.Fatalf("outstanding marks = %d (started=%d ended=%d), heartbeat record says %d", started-ended, started, ended, want)
 	}
 }

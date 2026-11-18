@@ -63,10 +63,11 @@ const (
 	StopReasonCaptureEnded = "capture_ended"
 )
 
-// sessionBackendOpenTimeout bounds opening a backend session. It stays under
-// the root agent's 30 s desktop-start command budget, so a start that waits
-// on the user ends here, with a reason, before root gives up on the helper.
-const sessionBackendOpenTimeout = 25 * time.Second
+// sessionBackendOpenTimeout bounds opening a backend session. Root gives the
+// whole desktop start 30 s, and after Open the session still probes capture,
+// builds the encoder and gathers ICE (up to ~6 s), so a start that waits on
+// the user ends here, with a reason, well before root gives up on the helper.
+const sessionBackendOpenTimeout = 20 * time.Second
 
 var (
 	sessionBackendMu sync.Mutex
@@ -110,6 +111,10 @@ func openRegisteredBackendSession(cfg CaptureConfig) (BackendSession, error) {
 	defer cancel()
 	bs, err := b.Open(ctx, cfg)
 	if err != nil {
+		if bs != nil {
+			// Nothing will own a session handed back with an error.
+			_ = bs.Close()
+		}
 		return nil, fmt.Errorf("open capture session: %w", err)
 	}
 	if bs == nil {
@@ -189,6 +194,12 @@ func (m *SessionManager) watchSessionBackend(sessionID string, s *Session, bs Ba
 	m.notifyActivity()
 	if s.LastStopReason() != reason {
 		return // another stop won the race and reports for itself
+	}
+	// A live peer connection reports the stop itself: StopWithReason closes
+	// it, and its Closed state handler sends OnSessionStopped with this
+	// reason. Reporting here too would send the disconnect twice.
+	if s.peerConn != nil {
+		return
 	}
 	if m.OnSessionStopped != nil {
 		go m.OnSessionStopped(sessionID, reason)

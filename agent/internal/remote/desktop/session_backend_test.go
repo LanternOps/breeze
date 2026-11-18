@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // fakeBackendCapturer is a ScreenCapturer owned by a fake backend session.
@@ -214,6 +216,47 @@ func TestSessionBackend_DoneEndsSession(t *testing.T) {
 				t.Fatalf("backend session closed %d times, want 1", bs.closed.Load())
 			}
 		})
+	}
+}
+
+// With a live peer connection the stop is reported once, by the peer's
+// Closed state handler (as StartSession wires it), never also by the watcher.
+func TestSessionBackend_DoneWithPeerReportsOnce(t *testing.T) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs := newFakeBackendSession()
+	s := newTestSession("desk-pc")
+	s.backend = bs
+	s.peerConn = pc
+	m := &SessionManager{sessions: map[string]*Session{"desk-pc": s}}
+	reports := make(chan string, 4)
+	m.OnSessionStopped = func(id, reason string) { reports <- reason }
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed {
+			m.StopSession("desk-pc")
+			if m.OnSessionStopped != nil {
+				go m.OnSessionStopped("desk-pc", s.LastStopReason())
+			}
+		}
+	})
+
+	go m.watchSessionBackend("desk-pc", s, bs)
+	bs.end(ErrShareStopped)
+
+	select {
+	case r := <-reports:
+		if r != StopReasonShareStopped {
+			t.Fatalf("reported reason %q, want %q", r, StopReasonShareStopped)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop was never reported")
+	}
+	select {
+	case r := <-reports:
+		t.Fatalf("the stop was reported twice (second reason %q)", r)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
