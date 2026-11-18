@@ -366,6 +366,11 @@ type publishLog struct {
 	renames []renameCall
 }
 
+// newPublishLog returns a log stamped by now. There is deliberately no zero
+// value fallback: the concurrency test must pass the reader's own orderedClock,
+// and silently stamping with time.Now instead would reopen #6176.
+func newPublishLog(now func() time.Time) *publishLog { return &publishLog{now: now} }
+
 // ntSetInformationFunc is ntSetRenameInformation's signature.
 type ntSetInformationFunc = func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error
 
@@ -505,7 +510,7 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 		t.Fatal(err)
 	}
 	clock := newOrderedClock(time.Now)
-	run := replacementRun{dest: dest, attempted: int64(writers * perWriter), log: &publishLog{now: clock.now}}
+	run := replacementRun{dest: dest, attempted: int64(writers * perWriter), log: newPublishLog(clock.now)}
 	orig := publishTemporary
 	t.Cleanup(func() { publishTemporary = orig })
 	publish := orig
@@ -902,7 +907,7 @@ func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
 // publish path — otherwise the excuse silently never fires and the flake
 // returns looking exactly like before.
 func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
-	var log publishLog
+	log := newPublishLog(time.Now)
 	entered := make(chan struct{})
 	release := make(chan error)
 	fake := log.wrapRename(func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error {
@@ -927,7 +932,7 @@ func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
 	}
 
 	// The seam is on the real publish path.
-	var real publishLog
+	real := newPublishLog(time.Now)
 	orig := ntSetRenameInformation
 	t.Cleanup(func() { ntSetRenameInformation = orig })
 	ntSetRenameInformation = real.wrapRename(orig)
