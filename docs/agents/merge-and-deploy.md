@@ -156,10 +156,11 @@ ssh root@<droplet> "cd /opt/breeze && docker compose exec -T caddy cat /etc/cadd
 # DRIFT lines name what to carry over. Hosted-only extra matchers are fine; a repo matcher
 # the region deliberately omits goes in --allow @name (say why in the deploy notes).
 node scripts/prod/caddy-route-parity.mjs smoke --url https://<region>.2breeze.app
-# Unauthenticated GETs: FAIL means that /billing/<page> returns the same response as /billing (the sidecar).
+# Unauthenticated GETs: FAIL means that /billing/<page> returns the same response as /billing (the sidecar),
+# or a 404/5xx.
 ```
 
-After carrying a route over: `docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile`, then `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile` (graceful, no restart), then run both checks again.
+After carrying a route over: `docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile`, then `docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile` (graceful, no restart), then run both checks again.
 
 **Required env vars added by v0.65+ — droplets without these refuse to start:**
 

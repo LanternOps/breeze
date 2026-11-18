@@ -40,19 +40,34 @@ function blockBody(text, open) {
   return text.slice(open + 1);
 }
 
+/** Matcher name -> its `path` arguments, for one-line and block-form matchers. */
+function pathMatchers(clean) {
+  const out = new Map();
+  for (const m of clean.matchAll(/^[ \t]*(@[\w-]+)[ \t]+path[ \t]+([^\n]+)/gm)) {
+    out.set(m[1], m[2].trim().split(/\s+/));
+  }
+  for (const m of clean.matchAll(/^[ \t]*(@[\w-]+)[ \t]*\{/gm)) {
+    const paths = [...blockBody(clean, m.index + m[0].length - 1).matchAll(/^[ \t]*path[ \t]+([^\n]+)/gm)]
+      .flatMap(p => p[1].trim().split(/\s+/));
+    if (paths.length > 0) out.set(m[1], paths);
+  }
+  return out;
+}
+
 function routes(text) {
   const clean = stripComments(text);
-  const pathMatchers = new Map(
-    [...clean.matchAll(/^[ \t]*(@[\w-]+)[ \t]+path[ \t]+([^\n]+)/gm)]
-      .map(m => [m[1], m[2].trim().split(/\s+/)]),
-  );
-  const handles = [...clean.matchAll(/^[ \t]*handle[ \t]+(@[\w-]+)[ \t]*\{/gm)].map(m => ({
+  const matchers = pathMatchers(clean);
+  return [...clean.matchAll(/^[ \t]*handle[ \t]+(@[\w-]+)[ \t]*\{/gm)].map(m => ({
     name: m[1],
     index: m.index,
-    paths: pathMatchers.get(m[1]) ?? [],
+    paths: matchers.get(m[1]) ?? [],
     body: blockBody(clean, m.index + m[0].length - 1),
   }));
-  return handles;
+}
+
+/** True when `paths` covers `prefix` and everything below it (`/x /x/*` or `/x*`). */
+function coversTree(paths, prefix) {
+  return paths.includes(`${prefix}*`) || (paths.includes(prefix) && paths.includes(`${prefix}/*`));
 }
 
 /**
@@ -62,12 +77,13 @@ function routes(text) {
  */
 export function webBillingCarveouts(text) {
   const handles = routes(text);
-  const sidecar = handles.find(h => h.paths.includes('/billing') && h.paths.includes('/billing/*'));
+  const sidecar = handles.find(h => coversTree(h.paths, '/billing'));
   if (!sidecar) return null;
   return handles
-    .filter(h => h.index < sidecar.index && /^\s*reverse_proxy\s+web:4321\s*$/m.test(h.body))
-    .flatMap(h => h.paths
-      .filter(p => /^\/billing\/[^/*]+$/.test(p) && h.paths.includes(`${p}/*`))
+    .filter(h => h.index < sidecar.index && /^\s*reverse_proxy\s+web:4321\s*(\{|$)/m.test(h.body))
+    .flatMap(h => [...new Set(h.paths
+      .map(p => p.match(/^(\/billing\/[^/*]+)\*?$/)?.[1])
+      .filter(p => p && coversTree(h.paths, p)))]
       .map(p => ({ name: h.name, path: p })))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
@@ -81,10 +97,19 @@ export function checkDrift(repoText, runningText, { allow = [] } = {}) {
       problems.push(`missing matcher ${name}: defined in the repo Caddyfile, absent from the running one`);
     }
   }
+  const runningHandles = new Set(routes(runningText).map(h => h.name));
+  for (const name of [...new Set(routes(repoText).map(h => h.name))].sort()) {
+    if (running.has(name) && !runningHandles.has(name) && !allow.includes(name)) {
+      problems.push(`missing handle ${name}: the running Caddyfile defines the matcher but never routes it`);
+    }
+  }
+  const repoCarveouts = webBillingCarveouts(repoText);
   const runningCarveouts = webBillingCarveouts(runningText);
-  if (runningCarveouts !== null) {
+  if (repoCarveouts !== null && runningCarveouts === null) {
+    problems.push('cannot locate the /billing sidecar route (`path /billing /billing/*`) in the running Caddyfile; billing carve-outs were not checked');
+  } else if (runningCarveouts !== null) {
     const routed = new Set(runningCarveouts.map(c => c.path));
-    for (const { name, path: p } of webBillingCarveouts(repoText) ?? []) {
+    for (const { name, path: p } of repoCarveouts ?? []) {
       if (!routed.has(p)) {
         problems.push(`${p} is not routed to web:4321 ahead of the /billing sidecar route in the running Caddyfile (repo: ${name})`);
       }
@@ -101,6 +126,9 @@ export function classifyBillingResponses(baseline, pages) {
   return pages.map(page => {
     if (baseline.error) return { path: page.path, ok: false, reason: `baseline /billing request failed: ${baseline.error}` };
     if (page.error) return { path: page.path, ok: false, reason: `request failed: ${page.error}` };
+    if (page.status === 404 || page.status >= 500) {
+      return { path: page.path, ok: false, reason: `HTTP ${page.status}: neither page served nor auth redirect` };
+    }
     const same = page.status === baseline.status
       && page.location === baseline.location
       && page.body === baseline.body;

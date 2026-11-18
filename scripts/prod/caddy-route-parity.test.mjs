@@ -93,6 +93,46 @@ test('smoke: a failed request is a failure, not a pass', () => {
   assert.match(result.reason, /ECONNREFUSED/);
 });
 
+// --- review round (#12183) ---
+
+test('a block-form sidecar matcher is still found, so a misordered carve-out is caught', () => {
+  const block = REPO_CADDYFILE.match(AUTOPAY_BLOCK)[0];
+  const blockForm = PRE_HOTFIX_COPY
+    .replace(/@billing path \/billing \/billing\/\*/, '@billing {\n    path /billing /billing/*\n  }')
+    .replace(/(\n[ \t]*handle @billing \{[^}]*\}\n)/, `$1${block}`);
+  const problems = checkDrift(REPO_CADDYFILE, blockForm);
+  assert.ok(problems.some(p => p.includes('/billing/autopay')), problems.join('\n'));
+});
+
+test('a running file with no recognisable sidecar route is drift when the repo has one', () => {
+  const noSidecar = REPO_CADDYFILE.replace(/@billing path \/billing \/billing\/\*/, '@billing path /billingx');
+  const problems = checkDrift(REPO_CADDYFILE, noSidecar);
+  assert.ok(problems.some(p => p.includes('sidecar route')), problems.join('\n'));
+});
+
+test('carve-outs written with a reverse_proxy block or a trailing-* path still count', () => {
+  const variant = REPO_CADDYFILE
+    .replace(/@webBillingAutopay path \/billing\/autopay \/billing\/autopay\/\*/, '@webBillingAutopay path /billing/autopay*')
+    .replace(/(handle @webBillingQuotes \{[^}]*?)reverse_proxy web:4321\n/, '$1reverse_proxy web:4321 {\n      header_up X-Test 1\n    }\n');
+  assert.notEqual(variant, REPO_CADDYFILE, 'fixture precondition: variant differs');
+  assert.deepEqual(checkDrift(REPO_CADDYFILE, variant), []);
+});
+
+test('a matcher whose handle was dropped is drift', () => {
+  const noHandle = REPO_CADDYFILE.replace(/handle @portal \{/, 'handle @portalRenamed {');
+  assert.notEqual(noHandle, REPO_CADDYFILE, 'fixture precondition: handle renamed');
+  const problems = checkDrift(REPO_CADDYFILE, noHandle);
+  assert.ok(problems.some(p => p.includes('handle @portal')), problems.join('\n'));
+});
+
+test('smoke: a 404 or 5xx from a carve-out page is a failure even if it differs from /billing', () => {
+  const results = classifyBillingResponses(sidecar, [
+    { path: '/billing/autopay', status: 404, location: null, body: 'Not found: /billing/autopay' },
+    { path: '/billing/quotes', status: 502, location: null, body: 'Bad gateway' },
+  ]);
+  assert.deepEqual(results.map(r => r.ok), [false, false]);
+});
+
 test('smoke: an unreachable /billing baseline fails every page', () => {
   const results = classifyBillingResponses({ error: 'timeout' }, [
     { path: '/billing/invoices', status: 200, location: null, body: 'x' },
