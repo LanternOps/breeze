@@ -356,6 +356,11 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   timezone: varchar('timezone', { length: 100 }).notNull().default('UTC'),
   /** ISO-8601 datetime for 'once' recurrence (e.g. "2026-03-15T02:00:00"). Ignored for other recurrence types. */
   windowStart: varchar('window_start', { length: 30 }),
+  // #9574: the weekday a 'weekly' window opens on and the day a 'monthly' one
+  // opens on (clamped to the month's last day), in `timezone`. Defaults are
+  // the days the evaluator pinned before these columns existed.
+  dayOfWeek: varchar('day_of_week', { length: 3 }).notNull().default('sun'),
+  dayOfMonth: integer('day_of_month').notNull().default(1),
   suppressAlerts: boolean('suppress_alerts').notNull().default(true),
   suppressPatching: boolean('suppress_patching').notNull().default(false),
   suppressAutomations: boolean('suppress_automations').notNull().default(false),
@@ -366,7 +371,13 @@ export const configPolicyMaintenanceSettings = pgTable('config_policy_maintenanc
   notifyOnEnd: boolean('notify_on_end').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => [
+  check(
+    'config_policy_maintenance_settings_day_of_week_check',
+    sql`${t.dayOfWeek} IN ('sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat')`,
+  ),
+  check('config_policy_maintenance_settings_day_of_month_check', sql`${t.dayOfMonth} BETWEEN 1 AND 31`),
+]);
 
 // Single-item: one row per feature link (event log settings)
 export const configPolicyEventLogSettings = pgTable('config_policy_event_log_settings', {

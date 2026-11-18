@@ -1518,6 +1518,8 @@ async function assembleInlineSettings(
         durationHours: row.durationHours,
         timezone: row.timezone,
         windowStart: row.windowStart,
+        dayOfWeek: row.dayOfWeek,
+        dayOfMonth: row.dayOfMonth,
         suppressAlerts: row.suppressAlerts,
         suppressPatching: row.suppressPatching,
         suppressAutomations: row.suppressAutomations,

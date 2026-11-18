@@ -35,6 +35,7 @@ export const INLINE_SETTINGS_EXAMPLES: Readonly<Partial<Record<ConfigFeatureType
   },
   maintenance: {
     recurrence: 'weekly',
+    dayOfWeek: 'sat',
     windowStart: '02:00',
     durationHours: 4,
     timezone: 'America/New_York',

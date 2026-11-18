@@ -796,8 +796,10 @@
         "notifyOnEnd": "Am Ende benachrichtigen",
         "sendNotificationWhenWindowCloses": "Benachrichtigung senden, wenn das Fenster geschlossen wird.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Wöchentliche Fenster öffnen jeden Sonntag zur Startzeit in der ausgewählten Zeitzone.",
-        "monthlyOpensOnTheFirst": "Monatliche Fenster öffnen am 1. jedes Monats zur Startzeit in der ausgewählten Zeitzone."
+        "dayOfWeek": "Wochentag",
+        "dayOfWeekHint": "Der Tag, an dem jedes wöchentliche Fenster öffnet, in der ausgewählten Zeitzone.",
+        "dayOfMonth": "Tag des Monats",
+        "dayOfMonthHint": "Der Tag, an dem jedes monatliche Fenster öffnet, in der ausgewählten Zeitzone. Hat ein Monat diesen Tag nicht, öffnet das Fenster am letzten Tag des Monats."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent-Erfassung",

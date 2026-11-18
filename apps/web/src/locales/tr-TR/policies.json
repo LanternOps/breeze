@@ -796,8 +796,10 @@
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
-        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
+        "dayOfWeek": "Haftanın günü",
+        "dayOfWeekHint": "Her haftalık pencerenin açıldığı gün, seçilen saat diliminde.",
+        "dayOfMonth": "Ayın günü",
+        "dayOfMonthHint": "Her aylık pencerenin açıldığı gün, seçilen saat diliminde. O günü olmayan bir ayda pencere ayın son gününde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",
