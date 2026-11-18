@@ -1,12 +1,13 @@
 /**
  * Bounds on a device note (`set_device_context`) that is written with no
- * person approving it (#12140). They apply where
- * `ToolExecutionContext.unattendedNoteWrite` is set, which today is only the
- * MCP server's direct Tier-2 dispatch of this tool (routes/mcpServer.ts). A
- * note written in the in-app chat behind the approval card has none of these
- * bounds. Other callers that can reach the tool with no person approving it
- * (agent runs, flow steps, Wisp unattended reads) do not set the flag and are
- * not bounded here.
+ * person approving it (#12140). They apply when the server pins either
+ *   - `ToolExecutionContext.unattendedNoteWrite`: the MCP server's direct
+ *     Tier-2 dispatch of this tool (routes/mcpServer.ts), or
+ *   - `ToolExecutionContext.pinnedWispUnattendedRead` of kind `device_context`:
+ *     a Wisp grant's unattended-reads switch let the note run without a card.
+ * A note written in the in-app chat behind the approval card has none of these
+ * bounds. Callers that pin neither (agent runs outside a Wisp grant, flow
+ * steps) are not bounded here.
  *
  * Why: notes are persistent and org-wide, and every later prompt that loads a
  * device's notes reads them (get_device_context, the device-page preload,
@@ -48,7 +49,7 @@ export const UNATTENDED_NOTE_MAX_EXPIRY_DAYS = 30;
 export const UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE =
   `This note was not saved: the device already has ${UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE} active notes, `
   + 'the most a note written without approval can add to. Resolve a note that no longer applies with '
-  + 'resolve_device_context, or add this note from the Breeze web app.';
+  + 'resolve_device_context, or have a person add this note in the Breeze web app.';
 
 /** Returned when the write cannot be bounded safely (a wiring fault, not a bound). */
 export const UNATTENDED_NOTE_UNAVAILABLE_MESSAGE =

@@ -159,7 +159,7 @@ Unattended reads is a switch on your grant, off by default, under **Budget and c
 - read a registry key (`registry_operations` `read_key`);
 - read a registry value (`registry_operations` `get_value`);
 - query the Windows Security event log, with an optional filter by event ID, level, provider or age (`event_logs_query`);
-- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device.
+- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device. A note saved this way has the same limits as one written over MCP: `details` at most 200 characters as JSON, an expiry of at most 30 days (30 when none is set), and none while the device has 8 active notes.
 
 Anything else still asks first. That includes every other event log channel, a Security query with a filter outside those four, and every registry write.
 

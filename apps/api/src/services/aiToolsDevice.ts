@@ -681,10 +681,12 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
       const summary = input.summary as string;
       const details = (input.details as Record<string, unknown>) ?? null;
-      // #12140: a note no person approves (the MCP dispatch pins the flag,
-      // never the model) is bounded in size and expiry here and in active
-      // notes per device by the service; see deviceNoteBounds.ts.
-      const unattended = context?.unattendedNoteWrite === true;
+      // #12140: a note no person approves is bounded in size and expiry here
+      // and in active notes per device by the service; see deviceNoteBounds.ts.
+      // Both signals are pinned by server code, never by the model: the MCP
+      // dispatch's flag, and a Wisp unattended-reads classification of this call.
+      const unattended = context?.unattendedNoteWrite === true
+        || context?.pinnedWispUnattendedRead?.kind === 'device_context';
       if (unattended) {
         const contentError = unattendedNoteContentError(input);
         if (contentError) return JSON.stringify({ error: contentError });

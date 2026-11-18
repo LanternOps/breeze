@@ -119,6 +119,24 @@ describe('set_device_context — unattended note bounds (#12140)', () => {
     expect(createDeviceContextMock).not.toHaveBeenCalled();
   });
 
+  it('applies the same bounds to a note the Wisp unattended-reads switch covers (Strix)', async () => {
+    const wispPin = {
+      pinnedWispUnattendedRead: { kind: 'device_context' as const, tool: 'set_device_context' as const, pinned: {} },
+    };
+    const tooLarge = await handler()(
+      { deviceId: DEVICE, contextType: 'issue', summary: 'note', details: detailsOfPrettyLength(UNATTENDED_NOTE_MAX_DETAILS_CHARS + 1) },
+      makeAuth(), wispPin,
+    );
+    expect(JSON.parse(tooLarge).error).toMatch(/details/);
+    expect(createDeviceContextMock).not.toHaveBeenCalled();
+
+    const ok = await handler()({ deviceId: DEVICE, contextType: 'issue', summary: 'note' }, makeAuth(), wispPin);
+    expect(ok).toContain(`expires in ${UNATTENDED_NOTE_MAX_EXPIRY_DAYS} days`);
+    expect(createDeviceContextMock).toHaveBeenCalledWith(
+      DEVICE, 'issue', 'note', null, expect.anything(), expect.any(Date), { unattended: true },
+    );
+  });
+
   it('applies none of these bounds without the flag (an approved or in-app note)', async () => {
     const details = detailsOfPrettyLength(UNATTENDED_NOTE_MAX_DETAILS_CHARS * 10);
     const r = await handler()(

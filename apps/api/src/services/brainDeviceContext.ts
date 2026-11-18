@@ -110,9 +110,11 @@ export async function createDeviceContext(
       console.error('[brainDeviceContext] unattended note reached the service with no expiry or one past the cap; not written');
       return { error: UNATTENDED_NOTE_UNAVAILABLE_MESSAGE };
     }
-    // Keyed per device; a future bounded note path should take the same key.
-    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${deviceId}`}, 0))`);
-    const active = await countActiveDeviceNotes(device.orgId, deviceId);
+    // Keyed on the STORED id, not the caller's spelling: the uuid column
+    // matches 'ABC…' and 'abc…' alike, so a key built from the input would give
+    // one device several locks. A future bounded note path takes the same key.
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${device.id}`}, 0))`);
+    const active = await countActiveDeviceNotes(device.orgId, device.id);
     // A count that is not a number fails closed, as a fault, not as a full device.
     if (!Number.isFinite(active)) {
       console.error('[brainDeviceContext] unattended note: active-note count was not a number; not written');

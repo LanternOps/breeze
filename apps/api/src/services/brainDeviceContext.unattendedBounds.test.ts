@@ -75,6 +75,15 @@ describe('createDeviceContext — unattended bounds (#12140)', () => {
     expect(calls.slice(2)).toEqual(['count', 'insert']);
   });
 
+  it('keys the lock on the stored device id, not the caller-supplied spelling (Strix)', async () => {
+    const stored = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    state.deviceRows = [{ id: stored, orgId: 'org-1' }];
+    await createDeviceContext(stored.toUpperCase(), 'issue', 'note', null, auth, inDays(30), { unattended: true });
+    const lock = calls.find((c) => c.startsWith('execute:'))!;
+    expect(lock).toContain(`brain_device_context:${stored}`);
+    expect(lock).not.toContain(stored.toUpperCase());
+  });
+
   it('writes nothing once the device has the maximum active notes', async () => {
     state.activeCount = UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE;
     const r = await createDeviceContext('dev-1', 'issue', 'note', null, auth, inDays(30), { unattended: true });
