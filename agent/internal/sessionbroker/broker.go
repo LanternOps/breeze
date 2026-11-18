@@ -282,7 +282,10 @@ type Broker struct {
 	nextLifecycleObserverID uint64
 	consoleUser             string        // macOS: current console user ("loginwindow" at login screen)
 	backup                  *backupHelper // backup helper process and session
-	closed                  bool
+	// respawnBackupHelper overrides how a queued backup run's replacement
+	// helper is obtained (test seam). Nil in production.
+	respawnBackupHelper func() (*Session, error)
+	closed              bool
 
 	acceptMu               sync.Mutex
 	acceptStopped          bool
@@ -2832,8 +2835,14 @@ func (b *Broker) finishHelperSession(session *Session) {
 	if session.HelperRole == backupipc.HelperRoleBackup {
 		// Report before clearing the session pointer: the report has to see
 		// that this session is the one that owns the in-flight run.
-		b.reportBackupHelperDeath(session)
+		redispatch := b.reportBackupHelperDeath(session)
 		b.ClearBackupSession(session)
+		// Queued runs go to a fresh helper only after the pointer is cleared,
+		// so the respawn cannot hand back the session that just ended. Off
+		// this goroutine: a spawn waits up to backupHelperSpawnTimeout.
+		if len(redispatch) > 0 {
+			go b.redispatchQueuedBackupRuns(session, redispatch)
+		}
 	}
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
@@ -3617,6 +3626,11 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		// on a websocket send, and the run must already be untracked by then.
 		if env.Type == backupipc.TypeBackupResult {
 			b.noteBackupRunResult(env)
+		}
+		// A queued run that reports any phase past "queued" has started, and
+		// is failed rather than re-sent if its helper session ends (#12193).
+		if env.Type == backupipc.TypeBackupProgress {
+			b.noteBackupRunProgress(env)
 		}
 		if b.onMessage != nil {
 			b.onMessage(s, env)
