@@ -64,6 +64,26 @@ var (
 // 15 minutes late and describing the wrong failure.
 const backupHelperDiedError = "backup helper exited unexpectedly"
 
+// backupHelperSessionClosedError leads the terminal error when the agent itself
+// closed the backup helper's session (today only the keepalive does, see
+// runKeepalive) with a run in flight. The helper did not exit on its own, and
+// saying it did sent #11044 hunting for a crash; the session's close reason
+// follows in parentheses. packages/shared backupFailureCategory.ts classifies
+// it by this prefix, so the prefix is fixed.
+const backupHelperSessionClosedError = "agent closed the backup helper session"
+
+// backupSessionEndedError is the terminal error for a run whose backup helper
+// session ended mid-run: what the agent did when it closed the session itself,
+// otherwise backupHelperDiedError.
+func backupSessionEndedError(session *Session) string {
+	if session != nil {
+		if reason := session.CloseReason(); reason != "" {
+			return backupHelperSessionClosedError + " (" + reason + ")"
+		}
+	}
+	return backupHelperDiedError
+}
+
 // backupRunCommandType is the wire value of the backup command that runs a
 // backup, duplicated here as a literal because internal/remote/tools (which
 // declares CmdBackupRun) imports this package — taking the constant from there
@@ -759,6 +779,12 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		bh.mu.Lock()
 		delete(bh.activeRuns, commandID)
 		bh.mu.Unlock()
+		// The agent closed the session while this forward awaited its ack
+		// (the keepalive, #11044): say so, rather than the bare "session
+		// closed" SendCommand returns, which classifies as nothing.
+		if err != nil && session.CloseReason() != "" {
+			return env, fmt.Errorf("%s: %w", backupSessionEndedError(session), err)
+		}
 		return env, err
 	}
 
@@ -785,7 +811,7 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 	case state == backupRunDoomed:
 		delete(bh.activeRuns, commandID)
 		bh.mu.Unlock()
-		return env, fmt.Errorf("%s", backupHelperDiedError)
+		return env, fmt.Errorf("%s", backupSessionEndedError(session))
 	default:
 		bh.activeRuns[commandID] = backupRunExecuting
 		bh.mu.Unlock()
@@ -1024,17 +1050,18 @@ func (b *Broker) reportBackupHelperDeath(session *Session) {
 		return
 	}
 
+	failure := backupSessionEndedError(session)
 	for _, commandID := range commandIDs {
-		backupLog.Warn("backup helper exited with a run in flight, failing the job",
+		backupLog.Warn("backup helper session ended with a run in flight, failing the job",
 			"sessionId", session.SessionID,
 			"commandId", commandID,
-			"error", backupHelperDiedError,
+			"error", failure,
 		)
 
 		payload, err := json.Marshal(backupipc.BackupCommandResult{
 			CommandID: commandID,
 			Success:   false,
-			Stderr:    backupHelperDiedError,
+			Stderr:    failure,
 		})
 		if err != nil {
 			backupLog.Error("failed to encode backup helper death result",

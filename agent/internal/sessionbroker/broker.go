@@ -370,6 +370,10 @@ type Broker struct {
 	// that other brokers' keepalive goroutines read.
 	keepaliveIntervalOverride time.Duration
 	keepaliveTimeoutOverride  time.Duration
+	// keepaliveTicker, when non-nil, replaces time.NewTicker in runKeepalive.
+	// It returns the tick channel and a stop function. Tests use it to deliver
+	// ticks by hand against a fake session clock.
+	keepaliveTicker func(interval time.Duration) (<-chan time.Time, func())
 	// linuxDesktopFrameDeadlineOverride shortens the Linux desktop helper frame
 	// deadline for this broker when nonzero (tests only).
 	linuxDesktopFrameDeadlineOverride time.Duration
@@ -385,6 +389,15 @@ func (b *Broker) keepaliveTiming() (interval, timeout time.Duration) {
 		timeout = b.keepaliveTimeoutOverride
 	}
 	return interval, timeout
+}
+
+// newKeepaliveTicker starts the tick source for one runKeepalive loop.
+func (b *Broker) newKeepaliveTicker(interval time.Duration) (<-chan time.Time, func()) {
+	if b.keepaliveTicker != nil {
+		return b.keepaliveTicker(interval)
+	}
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
 }
 
 // helperKillRetentionTTL is the hard cap on how long a helper key stays owned
@@ -2863,6 +2876,12 @@ func (b *Broker) removeSession(session *Session) {
 }
 
 func (b *Broker) closeSession(session *Session) error {
+	return b.closeSessionWithReason(session, "")
+}
+
+// closeSessionWithReason is closeSession that records reason as the session's
+// CloseReason when this call is the one that closes it (Session.CloseWithReason).
+func (b *Broker) closeSessionWithReason(session *Session, reason string) error {
 	b.mu.Lock()
 	removed := b.removeSessionMapsLocked(session)
 	if removed {
@@ -2872,7 +2891,7 @@ func (b *Broker) closeSession(session *Session) error {
 	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
-	closeErr := session.closeTransportAndPeer()
+	closeErr := session.closeTransportAndPeerWithReason(reason)
 	if removed {
 		if onSessionClosed != nil {
 			onSessionClosed(session)
@@ -3666,6 +3685,22 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 // TestKeepaliveToleratesSendFailuresBelowThreshold.
 const keepaliveMaxSendFailures = 3
 
+// keepaliveMaxLateTicks is how many consecutive late ticks, with no pong in
+// between, may skip the close decision. A late tick means the agent itself
+// was not running (system suspend, a whole-machine or process stall), so the
+// pong age it reads says nothing about the helper; the tick re-pings instead
+// of judging (#11044). The bound keeps a persistently starved agent from
+// shielding a genuinely wedged helper forever.
+const keepaliveMaxLateTicks = 4
+
+// keepaliveLateAfter is the tick gap past which runKeepalive treats a tick as
+// late: half an interval of slack over the ping cadence. With the production
+// 30 s / 45 s timing that is exactly the pong timeout, so any gap long enough
+// to time a pong out by itself is recognised as the agent's own absence.
+func keepaliveLateAfter(interval time.Duration) time.Duration {
+	return interval + interval/2
+}
+
 // runKeepalive pings the helper every keepalivePingInterval and closes the
 // session if no pong has arrived for keepaliveTimeout. Exits when the session
 // is closed by anything else (RecvLoop return, explicit Close, reaper, etc).
@@ -3676,32 +3711,77 @@ const keepaliveMaxSendFailures = 3
 // spuriously close a healthy session. Checking first means we only close
 // when the most recent pong we actually have is already too old — a
 // decision that is independent of this tick's outgoing ping.
+//
+// Agent absence is not helper silence (#11044). When a tick arrives late —
+// the machine slept, or the agent process or the whole machine stalled — the
+// pong age spans time the agent was not running, so the late tick never closes:
+// the helper may have been frozen alongside the agent, or its pong may be
+// sitting unread behind a stalled RecvLoop. It gets a fresh ping and one
+// on-time interval to answer, the same window an on-time helper gets, and the
+// next on-time tick judges it as usual. Before this, every helper session on a
+// device that slept for over 45 s was closed at resume, and a backup in flight
+// was failed as "backup helper exited unexpectedly".
 func (b *Broker) runKeepalive(session *Session) {
 	interval, timeout := b.keepaliveTiming()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	lateAfter := keepaliveLateAfter(interval)
+	ticks, stopTicks := b.newKeepaliveTicker(interval)
+	defer stopTicks()
 
 	sendFailures := 0
+	lastTick := session.now()
+	// seenPong is the pong record as of the previous tick; a different
+	// pointer means a pong arrived since. lateTicks counts consecutive late
+	// ticks without one.
+	seenPong := session.lastPong()
+	lateTicks := 0
 	for {
 		select {
 		case <-session.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			if session.IsClosed() {
 				return
+			}
+
+			now := session.now()
+			gap := now.Sub(lastTick)
+			lastTick = now
+			if p := session.lastPong(); p != seenPong {
+				seenPong = p
+				lateTicks = 0
+			}
+			late := gap > lateAfter
+			if late {
+				lateTicks++
 			}
 
 			// Authoritative wedge check: the age here is the time since the
 			// most recently received pong (seeded to session creation time
 			// in NewSession), not the time since the ping we're about to
-			// send below.
-			if age := session.LastPongAge(); age > timeout {
+			// send below. A late tick defers the verdict (see above).
+			age := session.LastPongAge()
+			if age > timeout && late && lateTicks <= keepaliveMaxLateTicks {
+				// The one case the late-tick rule changes: the old loop
+				// would have closed here. Warn so it ships with the agent's
+				// logs, and a field close that follows can be read in context.
+				log.Warn("keepalive tick late, agent was not running; re-pinging instead of closing",
+					"sessionId", session.SessionID,
+					"identity", session.IdentityKey,
+					"gapMs", gap.Milliseconds(),
+					"pongAgeMs", age.Milliseconds(),
+					"lateAfterMs", lateAfter.Milliseconds(),
+					"consecutiveLate", lateTicks,
+				)
+			} else if age > timeout {
 				log.Warn("keepalive pong timeout, closing stranded session",
 					"sessionId", session.SessionID,
 					"identity", session.IdentityKey,
 					"ageMs", age.Milliseconds(),
+					"gapMs", gap.Milliseconds(),
+					"consecutiveLate", lateTicks,
 				)
-				if err := session.Close(); err != nil {
+				reason := fmt.Sprintf("keepalive timeout: no reply from the helper for %s", age.Round(time.Second))
+				if err := session.CloseWithReason(reason); err != nil {
 					log.Error("keepalive close returned error",
 						"sessionId", session.SessionID,
 						"error", err.Error(),
@@ -3727,7 +3807,8 @@ func (b *Broker) runKeepalive(session *Session) {
 						"identity", session.IdentityKey,
 						"consecutive", sendFailures,
 					)
-					if err := session.Close(); err != nil {
+					reason := fmt.Sprintf("keepalive pings to the helper failed %d times in a row", sendFailures)
+					if err := session.CloseWithReason(reason); err != nil {
 						log.Error("keepalive close returned error",
 							"sessionId", session.SessionID,
 							"error", err.Error(),
