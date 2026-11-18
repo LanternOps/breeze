@@ -4116,8 +4116,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       return;
     }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
-      if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
+      try {
+        await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
+      } finally {
+        // The tool ran: its intent terminalizes even if the bookkeeping above threw.
+        if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
+      }
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup

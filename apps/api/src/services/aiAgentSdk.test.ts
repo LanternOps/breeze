@@ -7256,6 +7256,43 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
 
     expect(intentCompletions()).toEqual([{ intentId: 'intent-a', to: 'completed', result: WITHHELD }]);
   });
+
+  it('a topology call still finishes its intent when the investigation post hook throws (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    vi.mocked(session.eventBus.publish).mockImplementation(() => { throw new Error('bus down'); });
+    await expect(createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a')).rejects.toThrow('bus down');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+  });
+
+  it('a lost topology completion CAS is reported, not retried (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    mockWriteAuditEvent.mockClear();
+    mockTransitionIntent.mockResolvedValue(false);
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toHaveLength(1);
+    const marker = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'action_intent.executed');
+    expect(marker?.[1]).toMatchObject({
+      resourceId: 'intent-a',
+      result: 'failure',
+      details: expect.objectContaining({ errorCode: 'execution_cas_lost', intendedStatus: 'completed' }),
+    });
+  });
 });
 
 // #11968: an input refusal the model corrects on its next call must not flag
