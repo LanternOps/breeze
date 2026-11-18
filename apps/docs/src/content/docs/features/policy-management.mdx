@@ -165,7 +165,7 @@ Every time a policy is evaluated against a device, the result is stored in the `
 |---|---|
 | `compliant` | All rules passed |
 | `non_compliant` | One or more rules failed |
-| `pending` | Not yet evaluated |
+| `pending` | Not yet evaluated, or no rule failed but at least one could not be assessed because its registry or config value is not collected from the device. A `pending` result raises no violation and runs no remediation. |
 | `error` | Evaluation failed due to an internal error |
 
 ## Policy actions

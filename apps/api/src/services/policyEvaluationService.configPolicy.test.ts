@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { __isComplianceCheckDue, evaluateConfigPolicyComplianceRule } from './policyEvaluationService';
+import { __failedRuleRemediations, __isComplianceCheckDue, evaluateConfigPolicyComplianceRule } from './policyEvaluationService';
+import { policyConfigProbeKey, policyRegistryProbeKey } from './policyStateProbes';
 
 // Helper to build a minimal complianceRule object.
 // Cast as `any` to satisfy the Drizzle inferred type.
@@ -345,15 +346,33 @@ describe('evaluateConfigPolicyComplianceRule', () => {
       expect(JSON.stringify(result.details)).not.toContain('REG_DWORD');
     });
 
-    it('config_check mismatch still records the observed value (allow-listed, non-secret keys only)', () => {
+    it('config_check mismatch records the outcome and expected value, never the observed value (#12130)', () => {
+      // Same permission boundary as registry_check: stored details are
+      // readable with devices:read, a live read of the file is not.
       const rule = makeRule({
         rules: [{ type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configExpectedValue: 'no' }],
       });
       const ctx = makeContext({
-        configState: [{ filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'yes' }],
+        configState: [{ filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'observed-yes-7f3a' }],
       });
       const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
-      expect(result.details[0]?.data).toEqual({ expectedValue: 'no', actualValue: 'yes' });
+      expect(result.status).toBe('non_compliant');
+      expect(result.details[0]).toMatchObject({ passed: false, data: { outcome: 'mismatched', expectedValue: 'no' } });
+      expect(result.details[0]?.data).not.toHaveProperty('actualValue');
+      expect(JSON.stringify(result.details)).not.toContain('observed-yes-7f3a');
+    });
+
+    it('config_check records outcomes not_found and matched (#12130)', () => {
+      const rule = makeRule({
+        rules: [{ type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configExpectedValue: 'no' }],
+      });
+      expect(evaluateConfigPolicyComplianceRule(rule, 'dev-1', makeContext()).details[0])
+        .toMatchObject({ passed: false, data: { outcome: 'not_found', expectedValue: 'no' } });
+      const ctx = makeContext({
+        configState: [{ filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'no' }],
+      });
+      expect(evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx).details[0])
+        .toMatchObject({ passed: true, data: { outcome: 'matched', expectedValue: 'no' } });
     });
 
     it('evaluates config_check rule — pass', () => {
@@ -507,6 +526,101 @@ describe('evaluateConfigPolicyComplianceRule', () => {
       const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
       expect(result.status).toBe('compliant');
     });
+  });
+});
+
+/**
+ * #12130: a rule whose value the org's agents are not asked to collect (its
+ * probe is past the per-org cap, or the location is not collectable) was never
+ * read. Absence of a probe is not evidence of non-compliance, so such a rule is
+ * not assessed: it neither passes nor fails, and alone it leaves the rule set
+ * `pending`, which raises no violation and runs no remediation.
+ */
+describe('rules whose value is not collected (#12130)', () => {
+  const REG = { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Test', registryValueName: 'Enabled', registryExpectedValue: '1' };
+  const CFG = { type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configExpectedValue: 'no' };
+  const nothingCollected = { registry: new Set<string>(), config: new Set<string>() };
+  const everythingCollected = {
+    registry: new Set([policyRegistryProbeKey(REG.registryPath, REG.registryValueName)]),
+    config: new Set([policyConfigProbeKey(CFG.configFilePath, CFG.configKey)]),
+  };
+
+  it('a registry_check that is not collected is not assessed and leaves the rule set pending', () => {
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG] }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected }));
+    expect(result.status).toBe('pending');
+    expect(result.details[0]).toMatchObject({
+      ruleType: 'registry_check',
+      passed: null,
+      data: { outcome: 'not_collected', expectedValue: '1' },
+    });
+    expect(result.details[0]!.message).toMatch(/^Not assessed/);
+  });
+
+  it('a stored value is not trusted for a rule that is no longer collected', () => {
+    // A row can outlive the probe that wrote it; nothing refreshes it any more.
+    const ctx = makeContext({
+      collectedProbes: nothingCollected,
+      registryState: [{ registryPath: REG.registryPath, valueName: REG.registryValueName, valueData: '0', valueType: 'REG_SZ' }],
+    });
+    expect(evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG] }), 'dev-1', ctx).status).toBe('pending');
+  });
+
+  it('a config_check that is not collected is not assessed', () => {
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules: [CFG] }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected }));
+    expect(result.status).toBe('pending');
+    expect(result.details[0]).toMatchObject({ ruleType: 'config_check', passed: null, data: { outcome: 'not_collected' } });
+  });
+
+  it('a collected value that is absent still fails', () => {
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG, CFG] }), 'dev-1',
+      makeContext({ collectedProbes: everythingCollected }));
+    expect(result.status).toBe('non_compliant');
+    expect(result.details.map((d) => d.passed)).toEqual([false, false]);
+    expect(result.details.map((d) => (d.data as { outcome?: string } | undefined)?.outcome)).toEqual(['not_found', 'not_found']);
+  });
+
+  it('matching is case-insensitive and ignores surrounding whitespace, like the probe list', () => {
+    const rule = makeRule({ rules: [{ ...REG, registryPath: '  hklm\\software\\TEST ', registryValueName: 'ENABLED' }] });
+    const ctx = makeContext({
+      collectedProbes: everythingCollected,
+      registryState: [{ registryPath: REG.registryPath, valueName: REG.registryValueName, valueData: '1', valueType: 'REG_SZ' }],
+    });
+    expect(evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx).status).toBe('compliant');
+  });
+
+  it('another failing rule still makes the rule set non-compliant; the uncollected rule stays not assessed', () => {
+    const software = { type: 'required_software', softwareName: 'Contoso Agent', versionOperator: 'any' };
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG, software] }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected }));
+    expect(result.status).toBe('non_compliant');
+    expect(result.details.map((d) => d.passed)).toEqual([null, false]);
+  });
+
+  it('passing rules plus an uncollected rule are pending, not compliant', () => {
+    const os = { type: 'os_version', osType: 'any', minOsVersion: '10.0' };
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules: [os, REG] }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected }));
+    expect(result.status).toBe('pending');
+  });
+
+  it('a registry_check on a non-Windows device is still not applicable', () => {
+    const ctx = makeContext({
+      collectedProbes: nothingCollected,
+      device: { id: 'dev-1', hostname: 'mac', osType: 'macos', osVersion: '15.0' },
+    });
+    expect(evaluateConfigPolicyComplianceRule(makeRule({ rules: [REG] }), 'dev-1', ctx).status).toBe('compliant');
+  });
+
+  it('remediation never runs for a rule that was not assessed', () => {
+    const remediation = { type: 'script', scriptId: 'script-1' };
+    const software = { type: 'required_software', softwareName: 'Contoso Agent', versionOperator: 'any', remediation };
+    const rules = [{ ...REG, remediation }, null, software];
+    const result = evaluateConfigPolicyComplianceRule(makeRule({ rules }), 'dev-1',
+      makeContext({ collectedProbes: nothingCollected }));
+    expect(result.status).toBe('non_compliant');
+    expect(__failedRuleRemediations(rules, result.details)).toEqual([remediation]);
   });
 });
 

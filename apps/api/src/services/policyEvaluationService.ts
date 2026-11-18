@@ -22,6 +22,12 @@ import {
   scanDueComplianceChecks,
 } from './featureConfigResolver';
 import { isManagedAutomation } from './aiAgents/managedAutomation';
+import {
+  loadCollectedPolicyStateProbes,
+  policyConfigProbeKey,
+  policyRegistryProbeKey,
+  type CollectedPolicyStateProbes,
+} from './policyStateProbes';
 import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
@@ -29,7 +35,10 @@ import { sqlTextArray } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
-export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
+// `pending` (#12130): no rule failed, but at least one rule could not be
+// assessed because its value is not collected. It raises no violation and runs
+// no remediation.
+export type EvaluationStatus = 'compliant' | 'non_compliant' | 'pending' | 'error';
 
 type PolicyRow = typeof automationPolicies.$inferSelect;
 
@@ -226,10 +235,20 @@ type ConfigStateRecord = {
 
 type RuleEvaluationDetail = {
   ruleType: string;
-  passed: boolean;
+  /**
+   * `null` = not assessed (#12130): the value the rule checks is not collected
+   * from this org's devices, so there is no evidence either way. Readers that
+   * list failures match `passed === false` and skip it.
+   */
+  passed: boolean | null;
   message: string;
   data?: Record<string, unknown>;
 };
+
+/** What a registry_check / config_check found (#11976, #12130). */
+type StateRuleOutcome = 'matched' | 'mismatched' | 'not_found' | 'not_collected';
+
+const NOT_COLLECTED_REASON = 'the per-organization probe list is full, or the location is not collectable';
 
 type DeviceEvaluationContext = {
   device: TargetDevice;
@@ -237,10 +256,19 @@ type DeviceEvaluationContext = {
   disks: DiskRecord[];
   registryState: RegistryStateRecord[];
   configState: ConfigStateRecord[];
+  /**
+   * The registry/config probes the device's org is sent (#12130). A
+   * registry_check or config_check whose probe is not in it was never read and
+   * is not assessed. Absent = treat every rule as collected (debug helper only;
+   * both evaluation entry points always set it).
+   */
+  collectedProbes?: CollectedPolicyStateProbes;
 };
 
 type DeviceRuleEvaluation = {
   passed: boolean;
+  /** No rule failed, but at least one was not assessed (#12130). */
+  notAssessed: boolean;
   details: RuleEvaluationDetail[];
 };
 
@@ -303,7 +331,7 @@ export function buildConfigPolicyComplianceUpsert(input: {
   configPolicyId: string;
   configItemName: string;
   deviceId: string;
-  status: 'compliant' | 'non_compliant' | 'error';
+  status: EvaluationStatus;
   details: ComplianceUpsertDetails;
   checkedAt: Date;
 }) {
@@ -370,7 +398,7 @@ export type RuleEvaluationDebugOutput = {
   passed: boolean;
   details: Array<{
     ruleType: string;
-    passed: boolean;
+    passed: boolean | null;
     message: string;
     data?: Record<string, unknown>;
   }>;
@@ -811,19 +839,32 @@ function evaluateRegistryCheckRule(
     };
   }
 
+  // #11976: the result records the outcome and the value the rule's author
+  // wrote, never the value the device reported. These details are stored and
+  // returned to devices:read callers, while reading a registry value live
+  // needs devices:execute; the stored detail must not widen that.
+  const data = (outcome: StateRuleOutcome) =>
+    expectedValue === null ? { outcome } : { outcome, expectedValue };
+
+  // #12130: a value nobody asked the agent for was never read. A stored row
+  // for it predates the probe leaving the list and is no longer refreshed.
+  if (context.collectedProbes
+    && !context.collectedProbes.registry.has(policyRegistryProbeKey(registryPath, valueName))) {
+    return {
+      ruleType: rule.type,
+      passed: null,
+      message: `Not assessed: ${registryPath}\\${valueName} is not collected from this organization's devices `
+        + `(${NOT_COLLECTED_REASON}).`,
+      data: data('not_collected'),
+    };
+  }
+
   const normalizedPath = normalizeRegistryPath(registryPath);
   const normalizedValueName = normalizeComparable(valueName);
   const matched = context.registryState.find((entry) =>
     normalizeRegistryPath(entry.registryPath) === normalizedPath
     && normalizeComparable(entry.valueName) === normalizedValueName
   );
-
-  // #11976: the result records the outcome and the value the rule's author
-  // wrote, never the value the device reported. These details are stored and
-  // returned to devices:read callers, while reading a registry value live
-  // needs devices:execute; the stored detail must not widen that.
-  const data = (outcome: 'matched' | 'mismatched' | 'not_found') =>
-    expectedValue === null ? { outcome } : { outcome, expectedValue };
 
   if (!matched) {
     return {
@@ -868,6 +909,23 @@ function evaluateConfigCheckRule(
     };
   }
 
+  // #12130: like registry_check (#11976), the result records the outcome and
+  // the value the rule's author wrote, never the value the device reported:
+  // stored details are readable with devices:read, a live read is not.
+  const data = (outcome: StateRuleOutcome) =>
+    expectedValue === null ? { outcome } : { outcome, expectedValue };
+
+  if (context.collectedProbes
+    && !context.collectedProbes.config.has(policyConfigProbeKey(filePath, configKey))) {
+    return {
+      ruleType: rule.type,
+      passed: null,
+      message: `Not assessed: ${filePath} -> ${configKey} is not collected from this organization's devices `
+        + `(${NOT_COLLECTED_REASON}).`,
+      data: data('not_collected'),
+    };
+  }
+
   const normalizedFilePath = normalizeConfigPath(filePath);
   const normalizedConfigKey = normalizeComparable(configKey);
   const matched = context.configState.find((entry) =>
@@ -880,28 +938,25 @@ function evaluateConfigCheckRule(
       ruleType: rule.type,
       passed: false,
       message: `Config key not found: ${filePath} -> ${configKey}.`,
+      data: data('not_found'),
     };
   }
 
-  if (expectedValue !== null) {
-    const actualValue = matched.configValue ?? '';
-    if (normalizeComparable(actualValue) !== normalizeComparable(expectedValue)) {
-      return {
-        ruleType: rule.type,
-        passed: false,
-        message: `Config value mismatch for ${filePath} -> ${configKey}.`,
-        data: {
-          expectedValue,
-          actualValue,
-        },
-      };
-    }
+  if (expectedValue !== null
+    && normalizeComparable(matched.configValue ?? '') !== normalizeComparable(expectedValue)) {
+    return {
+      ruleType: rule.type,
+      passed: false,
+      message: `Config value mismatch for ${filePath} -> ${configKey}.`,
+      data: data('mismatched'),
+    };
   }
 
   return {
     ruleType: rule.type,
     passed: true,
     message: `Config value matches for ${filePath} -> ${configKey}.`,
+    data: data('matched'),
   };
 }
 
@@ -948,6 +1003,7 @@ function evaluateDeviceRules(
   if (!parsedRules.inputHadArray) {
     return {
       passed: false,
+      notAssessed: false,
       details: [{
         ruleType: 'policy_rules',
         passed: false,
@@ -959,6 +1015,7 @@ function evaluateDeviceRules(
   if (parsedRules.inputLength === 0) {
     return {
       passed: false,
+      notAssessed: false,
       details: [{
         ruleType: 'policy_rules',
         passed: false,
@@ -982,9 +1039,66 @@ function evaluateDeviceRules(
 
   const passed = parsedRules.invalidCount === 0
     && parsedRules.rules.length > 0
-    && details.every((detail) => detail.passed);
+    && details.every((detail) => detail.passed === true);
+  const notAssessed = !passed
+    && parsedRules.invalidCount === 0
+    && parsedRules.rules.length > 0
+    && details.every((detail) => detail.passed !== false);
 
-  return { passed, details };
+  return { passed, notAssessed, details };
+}
+
+/** A rule set's status from its evaluation (#12130: not assessed -> pending). */
+function statusOf(evaluation: DeviceRuleEvaluation): 'compliant' | 'non_compliant' | 'pending' {
+  if (evaluation.passed) return 'compliant';
+  return evaluation.notAssessed ? 'pending' : 'non_compliant';
+}
+
+/**
+ * The remediation config of each rule that FAILED (#12130: a rule that was not
+ * assessed is not a failure and is never remediated). `details` holds one entry
+ * per rule `parsePolicyRules` kept, in order, so entries it skips (null,
+ * non-object, no type) do not advance the detail index.
+ */
+export function __failedRuleRemediations(rules: unknown, details: RuleEvaluationDetail[]): Record<string, unknown>[] {
+  const rulesArray = Array.isArray(rules) ? rules as unknown[] : [];
+  const remediations: Record<string, unknown>[] = [];
+  let detailIdx = 0;
+  for (const r of rulesArray) {
+    if (!r || typeof r !== 'object') continue;
+    const typed = r as Record<string, unknown>;
+    const ruleType = typeof typed.type === 'string' ? typed.type : typeof typed.name === 'string' ? typed.name : null;
+    if (!ruleType?.trim()) continue;
+
+    const detail = details[detailIdx++];
+    const rem = typed.remediation as Record<string, unknown> | undefined;
+    if (!rem || rem.type === 'none') continue;
+    if (!detail || detail.passed !== false) continue;
+    remediations.push(rem);
+  }
+  return remediations;
+}
+
+/**
+ * Whether any rule reads agent-collected registry/config state, so the org's
+ * probe list is only read when a rule needs it (#12130).
+ */
+function readsCollectedState(rules: ParsedRule[]): boolean {
+  return rules.some((rule) => rule.type === 'registry_check' || rule.type === 'config_check');
+}
+
+/** Reads each org's collected probes once per evaluation run (#12130). */
+function memoizeCollectedProbes(
+  load: (orgId: string) => Promise<CollectedPolicyStateProbes>,
+): (orgId: string) => Promise<CollectedPolicyStateProbes> {
+  const byOrg = new Map<string, CollectedPolicyStateProbes>();
+  return async (orgId) => {
+    const cached = byOrg.get(orgId);
+    if (cached) return cached;
+    const loaded = await load(orgId);
+    byOrg.set(orgId, loaded);
+    return loaded;
+  };
 }
 
 export function __evaluateRulesForDevice(
@@ -1599,6 +1713,9 @@ function policyEventsFor(
   // consumers (policyAlertBridge) create org-scoped rows from this.
   const event = (type: DeferredPolicyEvent['type']): DeferredPolicyEvent => ({ type, orgId: device.orgId, payload, source });
 
+  // #12130: a rule set that could not be assessed is neither a violation nor a
+  // recovery; only that it was evaluated is published.
+  if (status === 'pending') return [event('policy.evaluated')];
   if (status !== 'non_compliant') return [event('policy.evaluated'), event('policy.compliant')];
   return remediationRunId
     ? [event('policy.evaluated'), event('policy.violation'), event('policy.remediation.triggered')]
@@ -1645,6 +1762,8 @@ export async function evaluatePolicy(
   const targetDevices = dedupeTargetDevices(await resolveTargetDevices(policy));
   const targetDeviceIds = targetDevices.map((device) => device.id);
   const parsedRules = parsePolicyRules(policy.rules);
+  // #12130: what each device org's agents collect, read once per org.
+  const collectedProbesForOrg = memoizeCollectedProbes(loadCollectedPolicyStateProbes);
   const ruleKeys = parsedRules.rules.map((rule) => rule.type);
 
   let existingComplianceRows: Array<typeof automationPolicyCompliance.$inferSelect> = [];
@@ -1763,9 +1882,10 @@ export async function evaluatePolicy(
       disks: disksByDevice.get(device.id) ?? [],
       registryState: registryStateByDevice.get(device.id) ?? [],
       configState: configStateByDevice.get(device.id) ?? [],
+      collectedProbes: readsCollectedState(parsedRules.rules) ? await collectedProbesForOrg(device.orgId) : undefined,
     });
     const checkedAt = new Date();
-    const status: EvaluationStatus = evaluation.passed ? 'compliant' : 'non_compliant';
+    const status: EvaluationStatus = statusOf(evaluation);
     const details = {
       evaluatedAt: checkedAt.toISOString(),
       rules: ruleKeys,
@@ -1889,6 +2009,12 @@ type EvaluateConfigPolicyComplianceOptions = {
     complianceRule: typeof configPolicyComplianceRules.$inferSelect,
     error: unknown,
   ) => void;
+  /**
+   * #12130 — the probes the device's org is sent. The scan passes one loader
+   * for all its devices so each org's list is read once; defaults to a fresh
+   * read.
+   */
+  collectedProbesForOrg?: (orgId: string) => Promise<CollectedPolicyStateProbes>;
 };
 
 export function __isComplianceCheckDue(
@@ -1918,18 +2044,18 @@ export function __isComplianceCheckDue(
  * Parses the `rules` JSONB field (same structure as automationPolicies.rules)
  * and delegates to the existing rule evaluators.
  *
- * Returns a compliance status of 'compliant', 'non_compliant', or 'error'.
+ * Returns a compliance status of 'compliant', 'non_compliant', 'pending' (a
+ * rule's value is not collected, #12130) or 'error'.
  */
 export function evaluateConfigPolicyComplianceRule(
   complianceRule: typeof configPolicyComplianceRules.$inferSelect,
   _deviceId: string,
   context: DeviceEvaluationContext
-): { status: 'compliant' | 'non_compliant' | 'error'; details: RuleEvaluationDetail[] } {
+): { status: EvaluationStatus; details: RuleEvaluationDetail[] } {
   try {
     const parsedRules = parsePolicyRules(complianceRule.rules);
     const evaluation = evaluateDeviceRules(parsedRules, context);
-    const status: 'compliant' | 'non_compliant' = evaluation.passed ? 'compliant' : 'non_compliant';
-    return { status, details: evaluation.details };
+    return { status: statusOf(evaluation), details: evaluation.details };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown evaluation error';
     return {
@@ -2060,6 +2186,9 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
     disks: buildDiskMap(diskRows).get(deviceId) ?? [],
     registryState: buildRegistryStateMap(registryStateRows).get(deviceId) ?? [],
     configState: buildConfigStateMap(configStateRows).get(deviceId) ?? [],
+    collectedProbes: complianceRules.some((rule) => readsCollectedState(parsePolicyRules(rule.rules).rules))
+      ? await (options.collectedProbesForOrg ?? loadCollectedPolicyStateProbes)(device.orgId)
+      : undefined,
   };
 
   const results: ConfigPolicyEvaluationResult[] = [];
@@ -2105,24 +2234,9 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
     // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
     if (status === 'non_compliant' && complianceRule.enforcementLevel === 'enforce') {
-      // Check per-rule remediation for individually failed rules (from rules JSONB)
-      // ruleDetails indices correspond to valid rules (parsePolicyRules skips invalid ones),
-      // so we track a separate detailIdx that only advances for valid rules.
-      const rulesArray = Array.isArray(complianceRule.rules) ? complianceRule.rules as Record<string, unknown>[] : [];
-      let detailIdx = 0;
-      for (let i = 0; i < rulesArray.length; i++) {
-        const r = rulesArray[i];
-        // Skip rules that parsePolicyRules would filter out (null, non-object, no type)
-        if (!r || typeof r !== 'object') continue;
-        const ruleType = typeof r.type === 'string' ? r.type : typeof r.name === 'string' ? r.name : null;
-        if (!ruleType?.trim()) continue;
-
-        const rem = r.remediation as Record<string, unknown> | undefined;
-        // Only remediate rules that actually failed evaluation and have remediation configured
-        const detail = ruleDetails[detailIdx++];
-        if (!rem || rem.type === 'none') continue;
-        if (!detail || detail.passed) continue;
-
+      // Per-rule remediation, only for rules that actually FAILED: a rule that
+      // was not assessed (#12130) never remediates a value nobody read.
+      for (const rem of __failedRuleRemediations(complianceRule.rules, ruleDetails)) {
         if (rem.type === 'script' && typeof rem.scriptId === 'string') {
           // Bridge: pass scriptId via legacy field until triggerConfigPolicyRemediation is refactored
           const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId };
@@ -2152,13 +2266,17 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
     const source = 'config-policy-compliance';
     const events: DeferredPolicyEvent[] = [
       { type: 'policy.evaluated', orgId: deviceOrgId, payload: eventPayload, source },
-      {
+    ];
+    // #12130: a rule set that could not be assessed is neither a violation nor
+    // a recovery, so it publishes only that it was evaluated.
+    if (status !== 'pending') {
+      events.push({
         type: status === 'non_compliant' ? 'policy.violation' : 'policy.compliant',
         orgId: deviceOrgId,
         payload: eventPayload,
         source,
-      },
-    ];
+      });
+    }
     if (deferredEvents) {
       deferredEvents.push(...events);
     } else {
@@ -2487,6 +2605,8 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   }
 
   const allDeviceIds = Array.from(dueRuleIdsByDeviceId.keys());
+  // #12130: each device org's collected probes, read once for the whole scan.
+  const collectedProbesForOrg = memoizeCollectedProbes(loadCollectedPolicyStateProbes);
   const allResults: ConfigPolicyEvaluationResult[] = [];
   const failures: unknown[] = [];
   let devicesFailed = 0;
@@ -2519,6 +2639,7 @@ export async function scanAndEvaluateConfigPolicyCompliance(
           ruleIds: dueRuleIds,
           deferred: deviceDeferred,
           deferredEvents: deviceEvents,
+          collectedProbesForOrg,
           onRuleSetError: (complianceRule, error) => {
             deviceRuleSetFailures++;
             failures.push(error);

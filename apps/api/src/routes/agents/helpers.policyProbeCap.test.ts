@@ -164,3 +164,107 @@ describe('probe sort tie-break', () => {
     expect(sortPolicyRegistryProbes([a, b])).toEqual(sortPolicyRegistryProbes([b, a]));
   });
 });
+
+/**
+ * #12130: the org's own policies and its partner's partner-wide policies each
+ * keep a reserved share of the cap. Before, the merged list's sorted head was
+ * kept, so partner-wide probes that sorted first could push every one of the
+ * org's own probes off the list.
+ */
+describe('buildPolicyProbeConfigUpdate reserves capacity per source (#12130)', () => {
+  let warn: { mock: { calls: unknown[][] }; mockRestore: () => void };
+  const orgKey = (n: number) => ({
+    type: 'registry_check', registryPath: `HKLM\\SOFTWARE\\ZZOrg\\Key${pad(n)}`, registryValueName: 'Enabled',
+  });
+  const partnerKey = (n: number) => ({
+    type: 'registry_check', registryPath: `HKLM\\SOFTWARE\\AAPartner\\Key${pad(n)}`, registryValueName: 'Enabled',
+  });
+  const countOf = (probes: Array<{ registry_path: string }>, marker: string) =>
+    probes.filter((p) => p.registry_path.includes(marker)).length;
+
+  beforeEach(() => {
+    queue.length = 0;
+    dbMock.select.mockClear();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {}) as unknown as typeof warn;
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('a partner-wide policy that sorts first cannot starve the org\'s own probes', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
+        { rules: rulesDescending(200, orgKey), ownerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    expect(registry).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+    expect(countOf(registry, 'ZZOrg')).toBe(MAX_POLICY_STATE_PROBES_PER_ORG / 2);
+    expect(countOf(registry, 'AAPartner')).toBe(MAX_POLICY_STATE_PROBES_PER_ORG / 2);
+    // Each source keeps its own sorted head, and the list is sent sorted.
+    expect(registry.some((p) => p.registry_path.endsWith('ZZOrg\\Key0000'))).toBe(true);
+    expect(registry).toEqual(sortPolicyRegistryProbes(registry));
+  });
+
+  it('an org that needs less than its share leaves the rest to partner-wide probes', async () => {
+    queue.push(
+      [{ rules: rulesDescending(50, orgKey), ownerOrgId: 'org-1' }],
+      [{ rules: rulesDescending(300, partnerKey), ownerOrgId: null }],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    expect(countOf(registry, 'ZZOrg')).toBe(50);
+    expect(countOf(registry, 'AAPartner')).toBe(MAX_POLICY_STATE_PROBES_PER_ORG - 50);
+  });
+
+  it('an org with many of its own probes keeps everything partner-wide probes do not use', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(40, partnerKey), ownerOrgId: null },
+        { rules: rulesDescending(400, orgKey), ownerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    expect(countOf(registry, 'AAPartner')).toBe(40);
+    expect(countOf(registry, 'ZZOrg')).toBe(MAX_POLICY_STATE_PROBES_PER_ORG - 40);
+  });
+
+  it('a probe both sides ask for counts once, as the org\'s own', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
+        { rules: [...rulesDescending(10, orgKey), partnerKey(299)], ownerOrgId: 'org-1' },
+      ],
+    );
+    const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const registry = probe!.policy_registry_state_probes;
+    // partnerKey(299) sorts last among partner probes, so only the org's claim keeps it.
+    expect(registry.some((p) => p.registry_path.endsWith('AAPartner\\Key0299'))).toBe(true);
+    expect(registry).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+  });
+
+  it('the truncation warning names the per-source counts', async () => {
+    queue.push(
+      [],
+      [
+        { rules: rulesDescending(300, partnerKey), ownerOrgId: null },
+        { rules: rulesDescending(200, orgKey), ownerOrgId: 'org-1' },
+      ],
+    );
+    await buildPolicyProbeConfigUpdate('org-1', { partnerId: 'partner-1' });
+    const capWarnings = warn.mock.calls.filter((call) => String(call[0]).includes('probe list truncated'));
+    expect(capWarnings).toHaveLength(1);
+    expect(capWarnings[0]![1] as object).toMatchObject({
+      orgId: 'org-1',
+      kind: 'registry',
+      total: 500,
+      kept: MAX_POLICY_STATE_PROBES_PER_ORG,
+      orgOwned: { total: 200, kept: 128 },
+      partnerWide: { total: 300, kept: 128 },
+    });
+  });
+});

@@ -404,3 +404,90 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
     }
   });
 });
+
+/**
+ * #12130: a rule whose value the device's org does not collect is not assessed.
+ * Alone it leaves the rule set `pending`: no policy.violation (so no alert), no
+ * policy.compliant, and no remediation, even under `enforce`.
+ */
+describe('scanAndEvaluateConfigPolicyCompliance — rules whose value is not collected (#12130)', () => {
+  const SCRIPT_ID = '77777777-7777-4777-8777-777777777777';
+  const REGISTRY_RULE = {
+    ...RULE,
+    name: 'Firewall on',
+    enforcementLevel: 'enforce',
+    remediationScriptId: SCRIPT_ID,
+    rules: [{
+      type: 'registry_check',
+      registryPath: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall',
+      registryValueName: 'EnableFirewall',
+      registryExpectedValue: '1',
+      remediation: { type: 'script', scriptId: SCRIPT_ID },
+    }],
+  };
+
+  beforeEach(() => {
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([REGISTRY_RULE]);
+  });
+
+  it('records pending, publishes only policy.evaluated and dispatches no remediation', async () => {
+    publishEventMock.mockResolvedValue('event-id');
+    const upserts: Array<Record<string, unknown>> = [];
+    insertMock.mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        upserts.push(v);
+        return { onConflictDoUpdate: () => Promise.resolve(), returning: () => Promise.resolve([{ id: 'run-1' }]) };
+      },
+    }));
+
+    // Every list select resolves to [], so the org's probe list is empty.
+    const result = await scanAndEvaluateConfigPolicyCompliance();
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ complianceRuleId: REGISTRY_RULE.id, status: 'pending', remediationTriggered: false }),
+    ]);
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated']);
+    // Only the compliance upsert: no automation run was inserted.
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]).toMatchObject({ status: 'pending' });
+    const ruleResult = (upserts[0]!.details as { ruleResults: Array<Record<string, unknown>> }).ruleResults[0];
+    expect(ruleResult).toMatchObject({ passed: null, data: { outcome: 'not_collected' } });
+  });
+
+  it('reads each org\'s probe list once per scan, and not at all for rule sets that read no collected state', async () => {
+    const OTHER = { ...DEVICE, id: '88888888-8888-4888-8888-888888888888', hostname: 'WS-3' };
+    scanDueMock.mockResolvedValue([
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+      { complianceRule: REGISTRY_RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+    ]);
+    const fromTables: unknown[] = [];
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = (table: unknown) => { fromTables.push(table); return chain; };
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([DEVICE]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    publishEventMock.mockResolvedValue('event-id');
+
+    const { automationPolicies } = await import('../db/schema');
+    const first = await scanAndEvaluateConfigPolicyCompliance();
+    expect(first.results).toHaveLength(2);
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(1);
+
+    fromTables.length = 0;
+    resolveRulesMock.mockResolvedValue([RULE]);
+    scanDueMock.mockResolvedValue([
+      { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+    ]);
+    await scanAndEvaluateConfigPolicyCompliance();
+    expect(fromTables.filter((t) => t === automationPolicies)).toHaveLength(0);
+  });
+});

@@ -248,3 +248,37 @@ describe('evaluatePolicy — tag-targeted results are observe-only (#8857)', () 
     expect(publishEventMock).toHaveBeenCalled();
   });
 });
+
+/**
+ * #12130: the legacy automation-policy path reads the same collected state. A
+ * registry rule whose value the org's agents are not sent a probe for was
+ * never read: the device is `pending`, not non-compliant, so an enforce
+ * policy remediates nothing and publishes only policy.evaluated.
+ */
+describe('evaluatePolicy — a rule whose value is not collected (#12130)', () => {
+  it('records pending, dispatches no remediation and publishes only policy.evaluated', async () => {
+    queueSelects(
+      [DEVICE],                // resolveTargetDevices
+      [], [], [], [], [], [],  // existing rows, disks, software, inventory, registry, config
+      [{ partnerId: null }],   // probe list: org lookup
+      [],                      // probe list: automation policies
+      [],                      // probe list: configuration-policy compliance rules
+      [{ partnerId: null }],   // remediation automation resolver (must not be reached)
+      [{ id: AUTOMATION_ID, actions: [{ scriptId: SCRIPT_ID }], orgId: DEVICE.orgId, partnerId: null }],
+      [{ partnerId: null }],
+      [{ id: AUTOMATION_ID, enabled: true, orgId: DEVICE.orgId, partnerId: null, retiredAt: null }],
+    );
+    const policy = {
+      ...(policyWithTargets({ deviceIds: [DEVICE.id] }) as object),
+      rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Contoso', registryValueName: 'Enabled', registryExpectedValue: '1' }],
+    };
+
+    const result = await evaluatePolicy(policy as never, { requestRemediation: true });
+
+    expect(result.results[0]).toMatchObject({ deviceId: DEVICE.id, status: 'pending', remediationRunId: null });
+    expect(result.summary).toEqual({ compliant: 0, non_compliant: 0 });
+    expect(enqueueAutomationRunMock).not.toHaveBeenCalled();
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated']);
+  });
+});

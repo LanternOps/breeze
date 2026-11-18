@@ -28,7 +28,7 @@ import {
 } from '../routes/configurationPolicies/oemUpdatesGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { withoutObservedRegistryValues } from './complianceRuleResults';
+import { withoutObservedStateValues } from './complianceRuleResults';
 import {
   uncollectableComplianceRegistryPaths,
   uncollectableComplianceRegistryPathMessage,
@@ -1137,7 +1137,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           policyId,
           policyName: policy.name,
-          devices: rows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
+          devices: rows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
           showing: rows.length,
         });
       }
