@@ -135,19 +135,28 @@ export async function readAiKillState(): Promise<AiKillStateSnapshot> {
   if (now - cachedAt < CACHE_TTL_MS) return cachedSnapshot;
 
   const generationAtStart = killStateGeneration;
+  let snapshot: AiKillStateSnapshot;
   try {
     const row = await readGlobalRowSystemScoped();
-    cachedSnapshot = row
+    snapshot = row
       ? { killed: row.killed, epoch: row.epoch }
       : { killed: true, epoch: -1 };
   } catch (error) {
     console.error('[aiKillState] failed to read ai_kill_state — failing closed', { error });
-    cachedSnapshot = { killed: true, epoch: -1 };
+    snapshot = { killed: true, epoch: -1 };
   }
-  // Invalidated while this read ran: the row may have been read before the
-  // flip, so keep the TTL expired and let the next call read again.
-  if (generationAtStart === killStateGeneration) cachedAt = now;
-  return cachedSnapshot;
+  if (generationAtStart === killStateGeneration) {
+    cachedSnapshot = snapshot;
+    cachedAt = now;
+  } else if (snapshot.epoch === -1) {
+    // Fail-closed always wins, even over a flip that landed mid-read.
+    cachedSnapshot = snapshot;
+  }
+  // Otherwise the flip (local bump or a received drop) landed while this read
+  // ran, so its row may predate the flip: it answers this caller only. The
+  // module snapshot is left alone (no regression of the sync seam), and the
+  // TTL stays as the flip left it, so the next call reads again if it expired.
+  return snapshot;
 }
 
 /**

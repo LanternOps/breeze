@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * Scaling W05 follow-up 1 (#8636; spec W4): every module-level cache is classified.
@@ -158,7 +158,8 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');
 const SCAN_ROOTS = ['apps/api/src', 'ee/workspace/src'];
 
 const CACHE_WORDS = new Set(['cache', 'cached', 'caches', 'memo', 'memoized', 'memos']);
-const DECLARATION = /^(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*([\s\S]{0,400})/;
+// The optional type annotation may contain `=>` (a function type), never a bare `=`.
+const DECLARATION = /^(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::(?:=>|[^=])+)?=\s*([\s\S]{0,400})/;
 const EXPIRING_ENTRY = /\b(?:expiresAt\w*|ttl\w*|fetchedAt|loadedAt|cachedAt)\b|\w*CacheEntry\b|\bCached\w*/;
 
 function identifierWords(identifier: string): string[] {
@@ -223,11 +224,14 @@ describe('module-level caches are classified for multiple replicas (#8636)', () 
       'export const barCache = new HotPathTtlCache<string, Bar>({',
       'const occurrences = new CronOccurrenceCache();',
       'const entries = new Map<string, { value: string; expiresAt: number }>();',
+      'const handlerCache: Map<string, () => void> = new Map();',
+      'let memo: ((id: string) => Promise<string>) | null = null;',
       'const MAX_CACHE_ENTRIES = 500;',
+      'const cacheTtlMs = 5_000;',
       'const cacheKey = (id: string) => `k:${id}`;',
       '  const innerCache = new Map();',
     ].join('\n');
-    expect(findCacheDeclarations(sample)).toEqual(['fooCache', 'cachedThing', 'barCache', 'occurrences', 'entries']);
+    expect(findCacheDeclarations(sample)).toEqual(['fooCache', 'cachedThing', 'barCache', 'occurrences', 'entries', 'handlerCache', 'memo']);
   });
 
   it('finds the known caches (the walk is not vacuous)', () => {
@@ -246,16 +250,24 @@ describe('module-level caches are classified for multiple replicas (#8636)', () 
     expect(stale, 'these declarations are gone or renamed; update CACHES').toEqual([]);
   });
 
-  it('every `cluster` cache is registered on the cluster bus under its name', () => {
-    const unregistered = Object.entries(CACHES)
-      .filter((entry): entry is [string, { kind: 'cluster'; name: string }] => entry[1].kind === 'cluster')
+  it('every `cluster` cache is registered on the cluster bus under its name, by its own file', async () => {
+    const cluster = Object.entries(CACHES)
+      .filter((entry): entry is [string, { kind: 'cluster'; name: string }] => entry[1].kind === 'cluster');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const file of new Set(cluster.map(([key]) => key.split('#')[0]!))) {
+      await import(join(REPO_ROOT, file));
+    }
+    warn.mockRestore();
+    const { clusterCacheTargets } = await import('../services/clusterCacheRegistry');
+    const registered = new Set([...clusterCacheTargets()].map((target) => target.name));
+    const unregistered = cluster
       .filter(([key, { name }]) => {
         const source = found.get(key);
         if (!source) return false; // reported as stale above
-        const binds = /cluster:\s*true\b|registerClusterCache\(|registerClusterInvalidator\(/.test(source);
-        return !binds || !source.includes(`'${name}'`);
+        // Registered at runtime, and the name is declared in this file (not a transitive import).
+        return !registered.has(name) || !source.includes(`'${name}'`);
       })
       .map(([key, { name }]) => `${key} → '${name}'`);
     expect(unregistered, 'register these on the cluster bus (registerClusterInvalidator or HotPathTtlCache cluster: true)').toEqual([]);
-  });
+  }, 120_000);
 });

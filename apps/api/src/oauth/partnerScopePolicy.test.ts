@@ -221,4 +221,54 @@ describe('cluster cache binding (#8636)', () => {
     await expect(getPartnerScopePolicy('p1')).resolves.toEqual({ mcp_allowed_scopes: ['mcp:write'] });
     expect(selectCallCount).toBe(2);
   });
+
+  it('a caller after the drop starts a fresh read instead of joining the stale flight, and the old flight does not evict the new one', async () => {
+    let releaseOld!: () => void;
+    readGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    selectRows.push(policy('mcp:read'));
+    const stale = getPartnerScopePolicy('p1');
+
+    getClusterCacheTarget(NAME)!.invalidate('p1');
+    let releaseNew!: () => void;
+    readGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+    selectRows.push(policy('mcp:write'));
+    const fresh = getPartnerScopePolicy('p1');
+    const joined = getPartnerScopePolicy('p1'); // joins the NEW flight
+    expect(selectCallCount).toBe(2);
+
+    // The old flight settles first; its cleanup must not drop the new flight.
+    releaseOld();
+    await expect(stale).resolves.toEqual({ mcp_allowed_scopes: ['mcp:read'] });
+    const third = getPartnerScopePolicy('p1');
+    expect(selectCallCount).toBe(2);
+
+    releaseNew();
+    readGate = null;
+    await expect(fresh).resolves.toEqual({ mcp_allowed_scopes: ['mcp:write'] });
+    await expect(joined).resolves.toEqual({ mcp_allowed_scopes: ['mcp:write'] });
+    await expect(third).resolves.toEqual({ mcp_allowed_scopes: ['mcp:write'] });
+    expect(_policyCacheForTests.get('p1')?.value).toEqual({ mcp_allowed_scopes: ['mcp:write'] });
+  });
+
+  it('a read that fails while a drop lands still fails closed and is not cached', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { db } = await import('../db');
+    const limitFn = (db.select() as unknown as { from: () => { where: () => { limit: ReturnType<typeof vi.fn> } } })
+      .from().where().limit;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limitFn.mockImplementationOnce(async () => {
+      selectCallCount += 1;
+      await gate;
+      throw new Error('db down');
+    });
+    const inFlight = getPartnerScopePolicy('p1');
+    getClusterCacheTarget(NAME)!.invalidate('p1');
+    release();
+    await expect(inFlight).resolves.toEqual({ mcp_allowed_scopes: [] });
+    expect(_policyCacheForTests.has('p1')).toBe(false);
+    selectRows.push(policy('mcp:read'));
+    await expect(getPartnerScopePolicy('p1')).resolves.toEqual({ mcp_allowed_scopes: ['mcp:read'] });
+    error.mockRestore();
+  });
 });
