@@ -310,7 +310,7 @@ function snapshot(overrides: Partial<CustomerGraphReadConnectionSnapshot> = {}):
   return {
     id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read',
     consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID, clientId: CLIENT_ID,
-    permissionManifestVersion: 3, observedGrants: [...REQUIRED],
+    permissionManifestVersion: 3, grantReconciliationMode: 'exact', observedGrants: [...REQUIRED],
     grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'), displayName: 'Contoso',
     status: 'active', lastVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
     lastErrorCode: null, ...overrides,
@@ -325,7 +325,7 @@ function retestOk(overrides: Partial<Extract<RetestResult, { success: true }>> =
   return {
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
     organizationDisplayName: 'Contoso', manifestVersion: 3,
-    verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
+    verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: [...REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z', ...overrides,
   } as RetestResult;
@@ -576,7 +576,7 @@ describe('customer Graph-read connection lifecycle', () => {
           organizationDisplayName: 'Contoso',
           manifestVersion: 3,
           verifiedAt: '2026-07-14T16:00:00.000Z',
-          grantReconciliation: 'complete',
+          grantReconciliation: 'complete', grantReconciliationMode: 'exact',
           observedGrants: [...REQUIRED],
           missingGrants: [],
           unexpectedGrants: [],
@@ -613,7 +613,7 @@ describe('customer Graph-read connection lifecycle', () => {
       organizationDisplayName: displayName,
       manifestVersion: 3,
       verifiedAt,
-      grantReconciliation: 'complete',
+      grantReconciliation: 'complete', grantReconciliationMode: 'exact',
       observedGrants: [...REQUIRED],
       missingGrants: [],
       unexpectedGrants: [],
@@ -774,7 +774,7 @@ describe('createConnectionService factory (non-read profile)', () => {
   function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
     organizationDisplayName: 'Contoso', manifestVersion: actionsManifest.version,
-    verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
+    verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
   } satisfies RetestResult))) {
@@ -1059,7 +1059,7 @@ describe('upgrade consent finalization', () => {
       organizationDisplayName: 'Contoso',
       manifestVersion: MANIFEST.version,
       verifiedAt: '2026-09-08T10:00:00.000Z',
-      grantReconciliation: 'complete' as const,
+      grantReconciliation: 'complete' as const, grantReconciliationMode: 'exact' as const,
       grantsVerifiedAt: '2026-09-08T10:00:01.000Z',
       observedGrants,
     };
@@ -1771,7 +1771,7 @@ describe('applyRetestResult manifest promotion (retestPromotesManifestOnlyWhenSa
     return {
       success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
       organizationDisplayName: 'Contoso Fresh', manifestVersion,
-      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'complete',
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'complete', grantReconciliationMode: 'exact',
       observedGrants: observed, missingGrants: [], unexpectedGrants: [],
       grantsVerifiedAt: '2026-07-15T10:00:00.000Z',
     } as unknown as RetestResult;
@@ -1888,5 +1888,105 @@ describe('applyRetestResult manifest promotion (retestPromotesManifestOnlyWhenSa
     expect(set).toMatchObject({
       permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_missing',
     });
+  });
+});
+
+// #12085: Admin actions may verify grants from the Graph token roles claim when
+// the tenant denies the appRoleAssignments inventory. The connection stores
+// which mode produced its observation, may go active in graph_token_only mode,
+// and treats an unresolved (null-id) Graph role as drift.
+describe('grant reconciliation mode (#12085)', () => {
+  const GRAPH = '00000003-0000-0000-c000-000000000000';
+  const UNRESOLVED = { resourceApplicationId: GRAPH, appRoleId: null, value: 'Directory.ReadWrite.All' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.insertResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateWheres.length = 0;
+    dbMocks.insertedValues.length = 0;
+    dbMocks.order.length = 0;
+  });
+
+  const retestSnapshot = () => ({ ...snapshot(), tenantId: TENANT_ID, status: 'active', auth: auth() } as RetestSnapshot);
+
+  it('stores exact mode from an exact retest', async () => {
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await applyRetestResult(retestSnapshot(), retestOk({ grantReconciliationMode: 'exact' } as never));
+    expect(dbMocks.updateSets[0]).toMatchObject({ status: 'active', grantReconciliationMode: 'exact' });
+  });
+
+  it('goes active and stores graph_token_only mode when the token carries exactly the required roles', async () => {
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    const applied = await applyRetestResult(retestSnapshot(), retestOk({ grantReconciliationMode: 'graph_token_only' } as never));
+    expect(dbMocks.updateSets[0]).toMatchObject({
+      status: 'active',
+      lastErrorCode: null,
+      grantReconciliationMode: 'graph_token_only',
+    });
+    expect(applied).toMatchObject({ grantReconciliationMode: 'graph_token_only' });
+  });
+
+  it('degrades with grant_unexpected when graph_token_only reports an unresolved extra Graph role', async () => {
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await applyRetestResult(retestSnapshot(), retestOk({
+      grantReconciliationMode: 'graph_token_only',
+      observedGrants: [...REQUIRED, UNRESOLVED],
+      unexpectedGrants: [UNRESOLVED],
+    } as never));
+    expect(dbMocks.updateSets[0]).toMatchObject({ status: 'degraded', lastErrorCode: 'grant_unexpected' });
+  });
+
+  it('keeps the stored mode alongside the retained grants when reconciliation is unavailable', async () => {
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await applyRetestResult(retestSnapshot(), {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso', manifestVersion: 3,
+      verifiedAt: '2026-07-14T17:00:00.000Z', grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
+      missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
+    });
+    expect(dbMocks.updateSets[0]).not.toHaveProperty('grantReconciliationMode');
+  });
+
+  it('stores the mode on first-time consent finalization', async () => {
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await applyConsentFinalizationResult(attempt(), fin(retestOk({ grantReconciliationMode: 'graph_token_only' } as never)));
+    expect(dbMocks.updateSets[0]).toMatchObject({ status: 'active', grantReconciliationMode: 'graph_token_only' });
+  });
+
+  it('stores the mode on upgrade finalization', async () => {
+    const upgradeAttempt = {
+      id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read' as const, consentAttemptId: ATTEMPT_ID, status: 'active' as const,
+    };
+    dbMocks.selectResults.push([row({ permissionManifestVersion: 2 })]);
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await applyUpgradeFinalizationResult(upgradeAttempt as never, {
+      verifiedTenantId: TENANT_ID,
+      result: retestOk({ grantReconciliationMode: 'graph_token_only' } as never),
+    });
+    expect(dbMocks.updateSets[0]).toMatchObject({ grantReconciliationMode: 'graph_token_only' });
+  });
+
+  it('clears the mode on disconnect', async () => {
+    dbMocks.selectResults.push([row({ grantReconciliationMode: 'graph_token_only' })]);
+    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    await disconnectCustomerGraphReadConnection({ id: CONNECTION_ID, orgId: ORG_ID, actorId: ACTOR_ID });
+    expect(dbMocks.updateSets[0]).toMatchObject({ grantReconciliationMode: null });
+  });
+
+  it('derives unexpected health from a stored unresolved Graph role and never matches it to a manifest grant', () => {
+    const health = deriveGrantHealth({
+      status: 'active',
+      permissionManifestVersion: 3,
+      observedGrants: [...REQUIRED, UNRESOLVED],
+      grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
+      lastErrorCode: null,
+    }, M365_PERMISSION_PROFILES['customer-graph-read']);
+    expect(health.state).toBe('unexpected');
+    expect(health.unexpectedGrants).toEqual([UNRESOLVED]);
+    expect(health.missingGrants).toEqual([]);
   });
 });

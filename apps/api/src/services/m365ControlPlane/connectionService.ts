@@ -75,6 +75,7 @@ export type M365ConnectionSnapshot<P extends M365ConnectionProfile = M365Connect
   | 'observedGrants'
   | 'consentAttemptId'
   | 'grantsVerifiedAt'
+  | 'grantReconciliationMode'
   | 'displayName'
   | 'status'
   | 'lastVerifiedAt'
@@ -442,6 +443,7 @@ export function createConnectionService<
       observedGrants: row.observedGrants,
       consentAttemptId: row.consentAttemptId,
       grantsVerifiedAt: row.grantsVerifiedAt,
+      grantReconciliationMode: row.grantReconciliationMode,
       displayName: row.displayName,
       status: row.status,
       lastVerifiedAt: row.lastVerifiedAt,
@@ -1091,6 +1093,7 @@ export function createConnectionService<
               ...common,
               observedGrants: result.observedGrants,
               grantsVerifiedAt,
+              grantReconciliationMode: result.grantReconciliationMode,
               status: state.status,
               lastErrorCode: state.errorCode,
             };
@@ -1177,6 +1180,7 @@ export function createConnectionService<
             displayName: result.organizationDisplayName,
             observedGrants: result.observedGrants,
             grantsVerifiedAt,
+            grantReconciliationMode: result.grantReconciliationMode,
             lastVerifiedAt: verifiedAt,
             permissionManifestVersion: deps.manifest.version,
             consentGeneration: sql`${m365Connections.consentGeneration} + 1`,
@@ -1188,6 +1192,7 @@ export function createConnectionService<
             displayName: result.organizationDisplayName,
             observedGrants: result.observedGrants,
             grantsVerifiedAt,
+            grantReconciliationMode: result.grantReconciliationMode,
             lastVerifiedAt: verifiedAt,
             lastErrorCode: 'grant_missing',
             updatedAt: new Date(),
@@ -1290,6 +1295,7 @@ export function createConnectionService<
               ...common,
               observedGrants: result.observedGrants,
               grantsVerifiedAt,
+              grantReconciliationMode: result.grantReconciliationMode,
               status: state.status,
               lastErrorCode: state.errorCode,
             };
@@ -1371,6 +1377,7 @@ export function createConnectionService<
         permissionManifestVersion: current.permissionManifestVersion,
         observedGrants: [],
         grantsVerifiedAt: null,
+        grantReconciliationMode: null,
         lastVerifiedAt: null,
         consentedAt: null,
         expiresAt: null,
