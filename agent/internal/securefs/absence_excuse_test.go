@@ -3,6 +3,7 @@ package securefs
 import (
 	"errors"
 	"io/fs"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,6 +63,77 @@ func TestWatchForAbsenceExcusing(t *testing.T) {
 				t.Fatalf("excuse got lastMiss only %v after firstMiss, want >= %v", gotLast.Sub(gotFirst), recheck)
 			}
 		})
+	}
+}
+
+// #6176 (2026-11-18): Go's wall clock on the hosted Windows runners ticks in
+// roughly 0.5ms steps, so a rename that entered the kernel a few hundred
+// microseconds before the reader's first miss got the SAME stamp as that miss.
+// renamesSpanning asks for start strictly before the first miss, so the very
+// absence the in-flight excuse exists for was reported as persistent with "0
+// inside a rename syscall". The stamps must order events exactly as they
+// happened, however coarse the underlying clock is.
+func TestOrderedClockOrdersSameTickEvents(t *testing.T) {
+	tick := time.Unix(1_800_000_000, 0)
+	coarse := func() time.Time { return tick } // a clock that never advances within the scenario
+	clock := newOrderedClock(coarse)
+
+	renameStart := clock.now() // the publisher enters the rename syscall...
+	firstMiss := clock.now()   // ...then the reader's first by-name probe misses, same tick
+	tick = tick.Add(100 * time.Millisecond)
+	lastMiss := clock.now()
+	tick = tick.Add(time.Millisecond)
+	renameEnd := clock.now()
+
+	log := []renameCall{{start: renameStart, end: renameEnd, done: true, class: 65}}
+	if got := renamesSpanning(log, firstMiss, lastMiss); len(got) != 1 {
+		t.Fatalf("a rename entered before the first miss in the same clock tick was not found spanning the absence: start=%v firstMiss=%v",
+			renameStart.UnixNano(), firstMiss.UnixNano())
+	}
+	// The reverse order must still be refused: a rename entered after the
+	// first miss cannot have opened the gap the reader already saw.
+	late := clock.now()
+	tick = tick.Add(time.Millisecond)
+	log = []renameCall{{start: late, end: clock.now(), done: true, class: 65}}
+	if got := renamesSpanning(log, firstMiss, lastMiss); len(got) != 0 {
+		t.Fatalf("a rename entered after the first miss was counted as spanning it")
+	}
+	// Durations still come from the underlying clock; the tie-breaking nudges
+	// shift a stamp by nanoseconds, never by a tick.
+	if d := lastMiss.Sub(firstMiss); d < 100*time.Millisecond-time.Microsecond || d > 100*time.Millisecond+time.Microsecond {
+		t.Fatalf("lastMiss-firstMiss = %v, want 100ms (±1µs) from the underlying clock", d)
+	}
+}
+
+// Stamps taken concurrently are unique and increase in every goroutine, so
+// two events never compare equal however many share a clock tick.
+func TestOrderedClockIsStrictlyIncreasingAcrossGoroutines(t *testing.T) {
+	tick := time.Unix(1_800_000_000, 0)
+	clock := newOrderedClock(func() time.Time { return tick })
+	const workers, per = 8, 2000
+	results := make([][]time.Time, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < per; i++ {
+				results[w] = append(results[w], clock.now())
+			}
+		}(w)
+	}
+	wg.Wait()
+	seen := make(map[int64]bool, workers*per)
+	for w, stamps := range results {
+		for i, s := range stamps {
+			if i > 0 && !s.After(stamps[i-1]) {
+				t.Fatalf("goroutine %d: stamp %d (%d) does not follow %d", w, i, s.UnixNano(), stamps[i-1].UnixNano())
+			}
+			if seen[s.UnixNano()] {
+				t.Fatalf("stamp %d handed out twice", s.UnixNano())
+			}
+			seen[s.UnixNano()] = true
+		}
 	}
 }
 
