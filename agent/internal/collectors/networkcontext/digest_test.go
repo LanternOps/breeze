@@ -84,6 +84,9 @@ func TestSharedDigestVectorInvalidUTF8(t *testing.T) {
 			if v.Report.Sections[i], e = json.Marshal(s); e != nil {
 				t.Fatal(e)
 			}
+			if sb, e := CanonicalizeSection(v.Report, v.Report.Sections[i], v.SourceIdentity); e != nil || digestBytes(sb) != s.ContentDigest {
+				t.Fatalf("section digest mismatch %s expected %s error %v", digestBytes(sb), s.ContentDigest, e)
+			}
 		}
 		got, e := CanonicalizeReport(v.Report, v.SourceIdentity)
 		if e != nil {
