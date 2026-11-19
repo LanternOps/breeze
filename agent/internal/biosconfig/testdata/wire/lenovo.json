@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "vendor": "lenovo",
+  "nativeArch": "amd64",
+  "interface": "present",
+  "errorCode": null,
+  "durationMs": 812,
+  "collectedWith": "0.131.0",
+  "lenovo": {
+    "settings": [
+      {
+        "name": "WakeOnLAN",
+        "value": "ACOnly",
+        "possibleValues": [
+          "Disable",
+          "ACOnly",
+          "ACandBattery",
+          "Enable"
+        ]
+      },
+      {
+        "name": "WakeOnLANDock",
+        "value": "Enable",
+        "possibleValues": [
+          "Disable",
+          "Enable"
+        ]
+      },
+      {
+        "name": "AfterPowerLoss",
+        "value": "PowerOff",
+        "possibleValues": [
+          "PowerOn",
+          "PowerOff",
+          "LastState"
+        ]
+      },
+      {
+        "name": "PXEIPV4NetworkStack",
+        "value": "Enable",
+        "possibleValues": [
+          "Disable",
+          "Enable"
+        ]
+      }
+    ],
+    "settingCount": 10,
+    "truncated": false,
+    "passwordState": 2,
+    "classes": [
+      "Lenovo_BiosCertificate",
+      "Lenovo_BiosPasswordSettings",
+      "Lenovo_BiosSetting",
+      "Lenovo_DiscardBiosSettings",
+      "Lenovo_GetBiosSelections",
+      "Lenovo_PlatformSetting"
+    ],
+    "machineType": "20U9",
+    "selectionCalls": 4,
+    "selectionErrors": 0
+  }
+}

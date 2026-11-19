@@ -50,6 +50,9 @@ const EXPECTED: Record<string, Classification> = {
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
+  // #8318 T1: TPM EK collection. Wave T2 opens both to a parked device (§11).
+  'POST /:id/attestation/challenge': 'deny',
+  'POST /:id/attestation/complete': 'deny',
   // #4618: a parked device cannot start or verify an isolation episode.
   'POST /:id/isolation/:isolationId/verify': 'deny',
   'PUT /:id/monitoring-results': 'deny',

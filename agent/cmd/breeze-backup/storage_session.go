@@ -131,9 +131,9 @@ func executeBrokeredRead(req backupipc.BackupCommandRequest, mgr *backup.BackupM
 	case "backup_restore":
 		return execBackupRestoreWithProgress(ctx, req.CommandID, req.Payload, nil, nil, conn), true
 	case "backup_verify":
-		return execBackupVerifyContext(ctx, req.CommandID, req.Payload, nil, nil, conn), true
+		return execBackupVerifyContext(ctx, req.CommandID, req.Payload, nil, nil, conn, verifyRunBudgetFor(req.TimeoutMs)), true
 	case "backup_test_restore":
-		return execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, nil, nil, conn), true
+		return execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, nil, nil, conn, verifyRunBudgetFor(req.TimeoutMs)), true
 	}
 
 	provider, err := storageSessionProvider(ctx, req.Payload)

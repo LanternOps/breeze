@@ -145,7 +145,13 @@ func (l *dellLane) Filter(cats []string, blocked []string) (FilterPlan, error) {
 			return FilterPlan{}, runErr("invalid_blocked_id", fmt.Errorf("blocked id %q is not a Dell release id", id))
 		}
 	}
-	return FilterPlan{Categories: ordered, BlockedIDs: append([]string(nil), blocked...)}, nil
+	if len(blocked) > 0 {
+		// W10: -localblockedswb is a /configure option, so /applyUpdates cannot
+		// take it, and blocking one release id made DCU offer another package
+		// for the same component. Refuse rather than install what was blocked.
+		return FilterPlan{}, runErr("blocked_ids_unsupported", fmt.Errorf("dell lane cannot honour %d blocked update id(s)", len(blocked)))
+	}
+	return FilterPlan{Categories: ordered}, nil
 }
 
 // argv is the /applyUpdates invocation. Reboot is always disabled: Breeze owns
@@ -166,11 +172,6 @@ func (l *dellLane) argv(plan FilterPlan) []string {
 		"-autoSuspendBitLocker=enable",
 		"-outputLog=" + filepath.Join(plan.WorkDir, dellLogName),
 		"-updateType=" + strings.Join(types, ","),
-	}
-	if len(plan.BlockedIDs) > 0 {
-		// Dell documents that dock updates ignore -updateType; whether they
-		// honour this blocklist is not confirmed (testdata/dell/README.md).
-		args = append(args, "-localblockedswb="+strings.Join(plan.BlockedIDs, ","))
 	}
 	return args
 }

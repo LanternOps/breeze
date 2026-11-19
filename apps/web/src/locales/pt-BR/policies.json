@@ -1266,7 +1266,8 @@
             "nic_unreadable": "Há um adaptador com fio, mas não foi possível lê-lo",
             "nic_cmdlets_unavailable": "As configurações do adaptador de rede não podem ser lidas neste dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet ativado",
-            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas"
+            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas",
+            "vendor_observe_only": "Observando o firmware do fabricante (somente leitura)"
           },
           "attempts": {
             "pending": "Pendente",
@@ -1276,6 +1277,14 @@
             "timed_out": "Tempo esgotado",
             "unknown": "Desconhecido",
             "refused": "Recusado"
+          },
+          "observing": "Observando {{vendor}}: {{interface}}",
+          "observingWithCode": "Observando {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interface presente",
+            "absent": "interface ausente",
+            "access_denied": "acesso negado",
+            "error": "erro de leitura"
           }
         }
       },
