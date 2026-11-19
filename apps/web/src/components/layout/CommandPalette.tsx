@@ -4,6 +4,7 @@ import {
   Clock,
   FileCode,
   Keyboard,
+  LayoutDashboard,
   Loader2,
   MessageSquare,
   Monitor,
@@ -18,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import { seedRouterHistoryState } from '@/lib/replaceUrl';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
@@ -26,10 +28,11 @@ import { getJwtClaims } from '../../lib/authScope';
 import { getPartnersMe } from '../../lib/api/partnersMe';
 import { hasPermission } from '../../lib/permissions';
 import { searchSettingsCatalog } from '../../lib/settingsSearch';
+import { searchNavPages, searchPartnerSettingsTabs } from '../../lib/paletteIndex';
 import { useUiStore } from '../../stores/uiStore';
 import { useRecentsStore } from '../../stores/recentsStore';
 
-type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'settings';
+type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'pages' | 'settings';
 
 type SearchResult = {
   id?: string;
@@ -67,6 +70,7 @@ const CATEGORY_ORDER: SearchCategory[] = [
   'devices',
   'scripts',
   'alerts',
+  'pages',
   'settings'
 ];
 
@@ -95,6 +99,11 @@ const CATEGORY_CONFIG: Record<
     label: 'Alerts',
     icon: Bell,
     baseHref: '/alerts'
+  },
+  pages: {
+    label: 'Pages',
+    icon: LayoutDashboard,
+    baseHref: '/'
   },
   settings: {
     label: 'Settings',
@@ -441,6 +450,20 @@ export default function CommandPalette() {
         return;
       }
       if (item.href && typeof window !== 'undefined') {
+        // Same page, different fragment (Partner Settings sections): Astro's
+        // router would pushState without a hashchange, so the page would not
+        // switch sections. Assign the hash instead (see samePageHashClick.ts).
+        const target = new URL(item.href, window.location.href);
+        if (
+          item.href.includes('#') &&
+          target.origin === window.location.origin &&
+          target.pathname === window.location.pathname &&
+          target.search === window.location.search
+        ) {
+          window.location.hash = target.hash;
+          seedRouterHistoryState();
+          return;
+        }
         void navigateTo(item.href);
       }
     },
@@ -538,33 +561,44 @@ export default function CommandPalette() {
     return quickActionItems.filter(matchesQuery);
   }, [matchesQuery, quickActionItems, trimmedQuery]);
 
-  // Settings results are the web's settings catalogue (#8365), gated like the
-  // nav and matched instantly, so they never wait on (or depend on) the server.
-  const settingsItems = useMemo<CommandItem[]>(() => {
-    if (!trimmedQuery) return [];
-    return searchSettingsCatalog(
-      trimmedQuery,
-      {
-        isPlatformAdmin,
-        permissions,
-        getScope: () => getJwtClaims().scope,
-        toolSourcesEnabled,
-        flowsEnabled,
-        // Read on first open, never at mount (usePartnerAiFlags).
-        aiForOfficeEnabled,
-        wispEnabled,
-        serviceManagementMode,
-      },
-      (key, fallback) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string
-    ).map((hit) => ({
-      key: `result:settings:${hit.id}`,
+  // Pages and settings results are built client-side from the sidebar nav, the
+  // settings catalogue (#8365) and the Partner Settings sections (#12210,
+  // #12216), gated like the nav and matched instantly, so they never wait on
+  // (or depend on) the server.
+  const { pageItems, settingsItems } = useMemo<{ pageItems: CommandItem[]; settingsItems: CommandItem[] }>(() => {
+    if (!trimmedQuery) return { pageItems: [], settingsItems: [] };
+    const gateCtx = {
+      isPlatformAdmin,
+      permissions,
+      getScope: () => getJwtClaims().scope,
+      toolSourcesEnabled,
+      flowsEnabled,
+      // Read on first open, never at mount (usePartnerAiFlags).
+      aiForOfficeEnabled,
+      wispEnabled,
+      serviceManagementMode,
+    };
+    const translate = (key: string, fallback: string) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string;
+    // A screen reachable from both the nav and the settings catalogue (Billing,
+    // Sites, Agents…) is listed once, under Settings.
+    const catalog = searchSettingsCatalog(trimmedQuery, gateCtx, translate);
+    const catalogHrefs = new Set(catalog.map((h) => h.href));
+    const pages = searchNavPages(trimmedQuery, gateCtx, translate).filter((h) => !catalogHrefs.has(h.href));
+    const taken = new Set([...catalogHrefs, ...pages.map((p) => p.href)]);
+    const tabs = searchPartnerSettingsTabs(trimmedQuery, gateCtx, translate).filter((h) => !taken.has(h.href));
+    const toItem = (category: 'pages' | 'settings') => (hit: { id: string; title: string; description?: string; href: string }): CommandItem => ({
+      key: `result:${category}:${hit.id}`,
       title: hit.title,
       description: hit.description || undefined,
       href: hit.href,
-      icon: CATEGORY_CONFIG.settings.icon,
+      icon: CATEGORY_CONFIG[category].icon,
       kind: 'result',
-      category: 'settings'
-    }));
+      category
+    });
+    return {
+      pageItems: pages.map(toItem('pages')),
+      settingsItems: [...catalog, ...tabs].map(toItem('settings'))
+    };
   }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, flowsEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
 
   const resultItemsByCategory = useMemo(() => {
@@ -581,7 +615,7 @@ export default function CommandPalette() {
 
     results.forEach((result, index) => {
       // The server no longer owns settings results; ignore any from an older API.
-      if (result.type === 'settings') return;
+      if (result.type === 'settings' || result.type === 'pages') return;
       const key = `result:${result.type}:${result.id ?? `${result.title}-${index}`}`;
       const orgLabel = !showOrgLabels
         ? undefined
@@ -598,9 +632,10 @@ export default function CommandPalette() {
       });
     });
 
+    grouped.pages = pageItems;
     grouped.settings = settingsItems;
     return grouped;
-  }, [results, settingsItems, narrowed, customerCount, t]);
+  }, [results, pageItems, settingsItems, narrowed, customerCount, t]);
 
   const { sections, selectableItems, indexByKey } = useMemo(() => {
     const builtSections: Section[] = [];

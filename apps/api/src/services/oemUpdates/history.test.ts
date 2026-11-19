@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeOemRun, type OemRunRow } from './history';
 
@@ -47,6 +49,8 @@ describe('normalizeOemRun', () => {
   it('reads the result out of the stored envelope', () => {
     expect(normalizeOemRun(row())).toEqual({
       commandId: COMMAND_ID,
+      kind: 'run',
+      observation: null,
       trigger: 'on_demand',
       status: 'completed',
       outcome: 'success_reboot_required',
@@ -105,5 +109,54 @@ describe('normalizeOemRun', () => {
 
   it('a scheduled run says so', () => {
     expect(normalizeOemRun(row({ payload: { trigger: 'scheduled', rebootControlled: true } })).trigger).toBe('scheduled');
+  });
+});
+
+// Observe-first (#11065): observations share the history list as `Observed` rows.
+describe('normalizeOemRun: observations', () => {
+  const WIRE = path.resolve(__dirname, '../../../../../agent/internal/oemupdates/observe/testdata/wire');
+  const golden = (lane: string) => JSON.parse(readFileSync(path.join(WIRE, `${lane}.json`), 'utf8'));
+  const observeRow = (result: unknown, overrides: Partial<OemRunRow> = {}) => row({
+    type: 'oem_observe',
+    payload: { lane: 'lenovo', observeLevel: 'passive', escrowedProtectorIds: [] },
+    result,
+    ...overrides,
+  });
+
+  it('a run row says it is a run', () => {
+    expect(normalizeOemRun(row()).kind).toBe('run');
+    expect(normalizeOemRun(row()).observation).toBeNull();
+  });
+
+  it('summarises an observation: lane, verdict and tools found, nothing else from the device', () => {
+    const view = normalizeOemRun(observeRow(envelope(golden('lenovo'))));
+    expect(view.kind).toBe('observe');
+    expect(view.observation).toEqual({
+      lane: 'lenovo',
+      verdict: 'observed',
+      tools: ['lenovo_system_update'],
+      conflicts: ['lenovo_commercial_vantage'],
+    });
+    expect(view.outcome).toBeNull();
+    expect(view.items).toEqual([]);
+    expect(view.trigger).toBe('on_demand');
+  });
+
+  it('a consumer HP reads as platform unsupported; errors are a verdict, not text', () => {
+    expect(normalizeOemRun(observeRow(envelope(golden('hp')))).observation?.verdict).toBe('platform_unsupported');
+    const surface = golden('surface');
+    surface.errors = [{ step: 'wu_search', code: 'wu_search_failed' }];
+    expect(normalizeOemRun(observeRow(envelope(surface))).observation?.verdict).toBe('observed_with_errors');
+  });
+
+  it('a scrubbed or unreadable observation is invalid, and a scheduled one has no actor', () => {
+    const view = normalizeOemRun(observeRow({ status: 'completed', rejected: 'observation_invalid' }, { actorId: null }));
+    expect(view.observation).toEqual({ lane: 'lenovo', verdict: 'invalid', tools: [], conflicts: [] });
+    expect(view.trigger).toBe('scheduled');
+    expect(view.actor).toBeNull();
+  });
+
+  it('a pending observation has no verdict yet', () => {
+    expect(normalizeOemRun(observeRow(null, { status: 'pending' })).observation).toBeNull();
   });
 });

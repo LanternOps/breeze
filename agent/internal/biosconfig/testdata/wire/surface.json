@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "vendor": "microsoft",
+  "nativeArch": "arm64",
+  "interface": "present",
+  "errorCode": null,
+  "durationMs": 812,
+  "collectedWith": "0.131.0",
+  "surface": {
+    "systemSku": "Surface_Laptop_5_1950",
+    "model": "Surface Laptop 5",
+    "virtual": false,
+    "virtualPlatform": null,
+    "decidedBy": "surface_model",
+    "adapters": [
+      {
+        "pnpId": "USB\\VID_045E\u0026PID_07C6",
+        "driverProvider": "Microsoft",
+        "description": "Surface Ethernet Adapter",
+        "surfaceMatch": true
+      }
+    ],
+    "adaptersTruncated": false
+  }
+}

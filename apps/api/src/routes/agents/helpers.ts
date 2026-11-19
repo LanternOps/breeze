@@ -44,6 +44,7 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { releaseFilesystemScanGenerationForCommand } from '../../services/filesystemScanGenerationRelease';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
+import { VENDOR_STAGES, vendorStage } from '../../services/vendorCanary';
 import {
   claimFilesystemScanGeneration,
   setFilesystemScanGeneration,
@@ -3685,18 +3686,47 @@ export interface WakeOnLanConfigUpdate {
   enabled: boolean;
   configureSettings: false;
   firmwareWrites: string[];
+  /** Vendors the agent may READ (observe-first amendment §1); never a write grant. */
+  observeVendors: string[];
+}
+
+/**
+ * The wake_on_lan vendors whose canary stage is `observe` or `act` for this
+ * partner, sorted. An env and code-table lookup only (services/vendorCanary.ts),
+ * so the heartbeat's query budget does not change. Empty for every partner
+ * while BREEZE_VENDOR_CANARY_PARTNER_IDS is unset, and for a pair named in
+ * BREEZE_VENDOR_CANARY_DISABLED. Dell is not in the table: it follows the
+ * plan's own write path (W04, W06).
+ */
+export function wakeObserveVendors(partnerId: string | null | undefined): string[] {
+  return Object.keys(VENDOR_STAGES.wake_on_lan)
+    .filter((vendor) => vendorStage('wake_on_lan', vendor, partnerId) !== 'off')
+    .sort();
 }
 
 /**
  * `enabled` = a wake_on_lan link resolves for the device, which tells the
  * agent to collect and upload its read-only readiness snapshot. Writes are off
  * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * `observeVendors` is always sent (`[]` when off) so a revoked vendor reaches
+ * the agent on the next heartbeat; it is empty without a link, because observe
+ * runs only on a device a wake_on_lan policy opted in.
  * Deliberately does NOT catch: the heartbeat omits the block on a resolver
  * error so a transient failure never stops collection.
  */
-export async function buildWakeOnLanConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WakeOnLanConfigUpdate> {
+export async function buildWakeOnLanConfigUpdate(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+  partnerId?: string | null,
+): Promise<WakeOnLanConfigUpdate> {
   const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
-  return { enabled: settings !== null, configureSettings: false, firmwareWrites: [] };
+  const enabled = settings !== null;
+  return {
+    enabled,
+    configureSettings: false,
+    firmwareWrites: [],
+    observeVendors: enabled ? wakeObserveVendors(partnerId) : [],
+  };
 }
 
 // ============================================

@@ -38,6 +38,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { auditLogs, partnerBillingFraudFlags, partners } from '../../db/schema';
 import type { PartnerTrustState } from '../../db/schema/orgs';
 import { BillingError, type BillingFraudFlag } from '../../services/breezeBillingClient';
+import { opsText } from '../../services/opsAlerts';
 import { setTrustState } from '../../services/partnerTrust';
 import {
   loadFraudRestoreEpisodes,
@@ -156,7 +157,7 @@ describe('billing fraud flag sweep', () => {
       expect(rows[0]!.effectsDoneAt).not.toBeNull();
       expect(billing.closeOpenCheckouts).toHaveBeenCalledWith({ partnerId: partner.id, reason: 'auto:test_reason_a' });
       expect(sendOpsAlert).toHaveBeenCalledTimes(1);
-      expect(sendOpsAlert.mock.calls[0]![0].body).toContain('test_kind_a');
+      expect(sendOpsAlert.mock.calls[0]![0].body).toContain(opsText('test_kind_a'));
     },
   );
 
@@ -234,6 +235,26 @@ describe('billing fraud flag sweep', () => {
     expect(billing.consumeFraudFlag).toHaveBeenCalledWith(next.id, 'restricted');
     const rejectedAlerts = sendOpsAlert.mock.calls.filter(([msg]) => String(msg.title).includes('refused'));
     expect(rejectedAlerts).toHaveLength(1);
+  });
+
+  it('escapes and caps a hostile billing response in the consume-refused alert', async () => {
+    const partner = await partnerWithTrust('trusted');
+    const stuck = flagFor(partner.id);
+    feed = [stuck];
+    const hostile = `**@everyone** [click](https://evil.example/x) <script>\n${'A'.repeat(2000)}`;
+    billing.consumeFraudFlag.mockImplementation(async () => {
+      throw new BillingError('FRAUD_FLAG_REJECTED', hostile);
+    });
+
+    await runBillingFraudFlagSweep();
+
+    const [msg] = sendOpsAlert.mock.calls.find(([m]) => String(m.title).includes('refused'))!;
+    expect(msg.body).not.toContain('@everyone');
+    expect(msg.body).not.toContain('**@');
+    expect(msg.body).not.toContain('](https://');
+    expect(msg.body).not.toContain('<script>');
+    expect(msg.body).not.toContain('A'.repeat(400));
+    expect(msg.body).toContain(opsText(hostile, 300));
   });
 
   it.each([

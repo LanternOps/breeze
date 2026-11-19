@@ -140,23 +140,90 @@ vi.mock('../../services/featureConfigResolver', async (importOriginal) => ({
   resolveWakeOnLanSettingsForDevice: resolveWakeMock,
 }));
 
-import { buildWakeOnLanConfigUpdate } from './helpers';
+import { buildWakeOnLanConfigUpdate, wakeObserveVendors } from './helpers';
+import { VENDOR_STAGES } from '../../services/vendorCanary';
+
+// Fake partners only. The real canary partner is an env value and never appears in the repo.
+const CANARY = 'aaaaaaaa-0000-4000-8000-000000000001';
+const OTHER = 'bbbbbbbb-0000-4000-8000-000000000002';
 
 describe('buildWakeOnLanConfigUpdate', () => {
-  beforeEach(() => resolveWakeMock.mockReset());
+  beforeEach(() => {
+    resolveWakeMock.mockReset();
+    vi.unstubAllEnvs();
+  });
 
   it('returns enabled=false when no wake_on_lan link resolves', async () => {
     resolveWakeMock.mockResolvedValue(null);
     await expect(buildWakeOnLanConfigUpdate('dev-1')).resolves.toEqual({
-      enabled: false, configureSettings: false, firmwareWrites: [],
+      enabled: false, configureSettings: false, firmwareWrites: [], observeVendors: [],
     });
   });
 
   it('returns enabled=true (writes still off) when a link resolves', async () => {
     resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
     await expect(buildWakeOnLanConfigUpdate('dev-1')).resolves.toEqual({
-      enabled: true, configureSettings: false, firmwareWrites: [],
+      enabled: true, configureSettings: false, firmwareWrites: [], observeVendors: [],
     });
+  });
+
+  // Observe-first amendment §1: the vendor list rides the existing block.
+  it('observe_vendors is empty for a non-canary partner', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
+    const out = await buildWakeOnLanConfigUpdate('dev-1', undefined, OTHER);
+    expect(out.observeVendors).toEqual([]);
+    expect(out.firmwareWrites).toEqual([]);
+  });
+
+  it('observe_vendors lists hp, lenovo and surface when the canary partner\'s stage is observe', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
+    const out = await buildWakeOnLanConfigUpdate('dev-1', undefined, CANARY);
+    expect(out.observeVendors).toEqual(['hp', 'lenovo', 'surface']);
+    // Observe never turns writes on.
+    expect(out.configureSettings).toBe(false);
+    expect(out.firmwareWrites).toEqual([]);
+  });
+
+  it('a disabled vendor in BREEZE_VENDOR_CANARY_DISABLED is omitted', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    vi.stubEnv('BREEZE_VENDOR_CANARY_DISABLED', 'wake_on_lan:lenovo,oem_updates:hp');
+    resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
+    const out = await buildWakeOnLanConfigUpdate('dev-1', undefined, CANARY);
+    expect(out.observeVendors).toEqual(['hp', 'surface']);
+  });
+
+  it('no wake_on_lan link: block says enabled false and observe_vendors is empty', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    resolveWakeMock.mockResolvedValue(null);
+    await expect(buildWakeOnLanConfigUpdate('dev-1', undefined, CANARY)).resolves.toEqual({
+      enabled: false, configureSettings: false, firmwareWrites: [], observeVendors: [],
+    });
+  });
+
+  it('no partner (null or undefined) observes nothing, even with the env set', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
+    expect((await buildWakeOnLanConfigUpdate('dev-1', undefined, null)).observeVendors).toEqual([]);
+    expect((await buildWakeOnLanConfigUpdate('dev-1')).observeVendors).toEqual([]);
+  });
+
+  // The hot-path budget: the stage is an env and code lookup, never a query.
+  it('budget unchanged: the observe list issues no query', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    resolveWakeMock.mockResolvedValue({ configureSettings: false, buttonMode: 'always' });
+    dbMock.select.mockClear();
+    await buildWakeOnLanConfigUpdate('dev-1', undefined, CANARY);
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(wakeObserveVendors(CANARY)).toEqual(['hp', 'lenovo', 'surface']);
+    expect(dbMock.select).not.toHaveBeenCalled();
+  });
+
+  it('lists only vendors the stage table names for wake_on_lan, in a stable order', () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', CANARY);
+    expect(wakeObserveVendors(CANARY)).toEqual(Object.keys(VENDOR_STAGES.wake_on_lan).sort());
+    expect(wakeObserveVendors(CANARY)).not.toContain('dell');
   });
 
   it('forwards the device id and policy-set opts to the resolver', async () => {

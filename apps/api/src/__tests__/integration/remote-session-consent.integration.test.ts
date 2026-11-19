@@ -169,7 +169,7 @@ describe('POST /remote/sessions/:id/offer prompt identity', () => {
   it('ships the partner name rather than the client organization name', async () => {
     const env = await setupTestEnvironment({
       scope: 'organization',
-      partnerOptions: { name: 'Olive Technology' },
+      partnerOptions: { name: 'Fabrikam MSP' },
     });
     const token = await mintMfaToken(env);
     const deviceId = await insertDevice(env.organization.id, env.site.id);
@@ -189,7 +189,7 @@ describe('POST /remote/sessions/:id/offer prompt identity', () => {
     expect(res.status).toBe(200);
     const [, command] = sendCommandToAgentMock.mock.calls[0]!;
     const prompt = (command as { payload: { prompt?: { orgName: string | null; mode: string } } }).payload.prompt;
-    expect(prompt?.orgName).toBe('Olive Technology');
+    expect(prompt?.orgName).toBe('Fabrikam MSP');
     expect(prompt?.orgName).not.toBe(env.organization.name);
     const [stored] = await getTestDb().select({
       commandId: remoteSessions.desktopStartCommandId,

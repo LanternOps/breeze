@@ -2,6 +2,7 @@ import { isIP } from 'net';
 import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES, OEM_LANES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
+import { knownVendorPairs, VENDOR_CANARY_MAX_PARTNERS } from '../services/vendorCanary';
 import { TICKET_IMPORT_LIMIT_ENV_VARS } from '../services/ticketImport/importLimits';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
@@ -27,6 +28,8 @@ import {
   parseApproverAssuranceDefaultEnforceFrom,
   parseOAuthAuthEpochEnforceAfter,
 } from './env';
+
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * W06 (#7604): minimum MCP_LLM_API_KEY length. Mirrors MIN_GATEWAY_KEY_LENGTH
@@ -912,6 +915,11 @@ const envObjectSchema = z
     BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: z.string().optional(),
     BREEZE_OEM_UPDATES_DISABLED_LANES: z.string().optional(),
     BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: z.string().optional(),
+    // Vendor canary (#11065 observe-first, services/vendorCanary.ts): who may run
+    // best-guess vendor code, and a per feature:vendor kill switch. Unlike the lab
+    // device list this IS allowed in production; that is its purpose.
+    BREEZE_VENDOR_CANARY_PARTNER_IDS: z.string().optional(),
+    BREEZE_VENDOR_CANARY_DISABLED: z.string().optional(),
     // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
     // (services/workspace/sandboxBackend.ts), which refuses an unset value in
     // production; the superRefine below additionally refuses 'fake' there.
@@ -2630,6 +2638,39 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_OEM_UPDATES_DISABLED_LANES'],
         message: `BREEZE_OEM_UPDATES_DISABLED_LANES names unknown lanes: ${unknownOemLanes.join(', ')}. Known lanes: ${OEM_LANES.join(', ')}.`,
+      });
+    }
+
+    // Vendor canary: empty is off for everyone, so a blank is harmless, but a value
+    // that is not a list of partner UUIDs, or names too many, refuses the boot.
+    const canaryRaw = (data.BREEZE_VENDOR_CANARY_PARTNER_IDS ?? '').trim();
+    if (canaryRaw) {
+      const ids = canaryRaw.split(',').map((id) => id.trim()).filter(Boolean);
+      const malformed = ids.filter((id) => !CANONICAL_UUID.test(id));
+      if (ids.length === 0 || malformed.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['BREEZE_VENDOR_CANARY_PARTNER_IDS'],
+          message: 'BREEZE_VENDOR_CANARY_PARTNER_IDS must be comma-separated partner UUIDs. Leave it unset to keep every vendor canary off.',
+        });
+      } else if (ids.length > VENDOR_CANARY_MAX_PARTNERS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['BREEZE_VENDOR_CANARY_PARTNER_IDS'],
+          message: `BREEZE_VENDOR_CANARY_PARTNER_IDS names ${ids.length} partners; at most ${VENDOR_CANARY_MAX_PARTNERS} are allowed.`,
+        });
+      }
+    }
+    const knownPairs = new Set(knownVendorPairs());
+    const unknownCanaryPairs = (data.BREEZE_VENDOR_CANARY_DISABLED ?? '')
+      .split(',')
+      .map((pair) => pair.trim().toLowerCase())
+      .filter((pair) => pair && !knownPairs.has(pair));
+    if (unknownCanaryPairs.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_VENDOR_CANARY_DISABLED'],
+        message: `BREEZE_VENDOR_CANARY_DISABLED names unknown pairs: ${unknownCanaryPairs.join(', ')}. Known pairs: ${[...knownPairs].join(', ')}.`,
       });
     }
 

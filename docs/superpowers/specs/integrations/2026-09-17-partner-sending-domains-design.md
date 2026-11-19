@@ -1078,7 +1078,7 @@ the decision. The alternatives are kept for the record.
 | **W02 — Foundation A** | Migration and schema (three tables, RLS, release guard), allowlist registrations, shared validators and DTOs, env and boot validation, `EmailDomainProvider` with `resend`, `static` and `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` and `finalizePartnerOffboarding`. | Dark: provider unset. |
 | **W03 — Foundation B** | Domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report. | Dark: provider unset. |
 | **W04 — Partner lane** | The partner-lane branch of `resolveSender`, partner-lane transport, fallback semantics, daily cap, `X-Breeze-Outbound` and the loop-prevention rules. | Dark: provider unset. |
-| **W05 — Web UI and docs** | Settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, and the self-hosting guide (§16.2). | Enabled for allow-listed partners only. Dogfood on OliveTech. Self-hosters can opt in from this release. |
+| **W05 — Web UI and docs** | Settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, and the self-hosting guide (§16.2). | Enabled for allow-listed partners only. Dogfood on our own tenant. Self-hosters can opt in from this release. |
 | **W06 — Feedback and abuse** | Delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics. | Allowlist removed: general availability for trusted partners. |
 | **Later, own spec** | SES adapter, SES tenants per partner, regional cutover. | |
 
@@ -1102,7 +1102,7 @@ which supersede this table where they differ.
    compose `environment:` mapping.
 2. Merge W01–W05 with the provider unset. Nothing changes for any tenant.
 3. Confirm `PARTNER_TRUST_MODE=enforce` on both regions. Set the provider and
-   an allowlist containing OliveTech. Run the lab check (§14) on a
+   an allowlist containing our own tenant. Run the lab check (§14) on a
    LanternOps-owned subdomain.
 4. Merge W06, watch one week of stats on the allow-listed partners, clear the
    allowlist.

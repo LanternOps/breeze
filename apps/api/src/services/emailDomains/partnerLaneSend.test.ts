@@ -8,13 +8,16 @@ const { getProviderMock, sendOpsAlertMock, getRedisMock, enqueueSyncDomainMock }
 }));
 
 vi.mock('./providerRegistry', () => ({ getEmailDomainProvider: getProviderMock }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert: sendOpsAlertMock }));
+vi.mock('../opsAlerts', async (orig) => ({ ...(await orig<typeof import('../opsAlerts')>()), sendOpsAlert: sendOpsAlertMock }));
 vi.mock('../redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: enqueueSyncDomainMock }));
 
 import { PartnerLaneSendFailure } from './provider';
 import { BREEZE_OUTBOUND_HEADER } from './outboundMarker';
 import { sendOnPartnerLane, type PartnerLaneSendInput } from './partnerLaneSend';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
 const DOMAIN_ID = '22222222-2222-2222-2222-222222222222';
@@ -204,5 +207,16 @@ describe('sendOnPartnerLane — no provider', () => {
     getProviderMock.mockReturnValue(null);
     await expect(sendOnPartnerLane(input())).resolves.toEqual({ delivered: false, failure: 'lane_unavailable' });
     expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('escapes the provider detail in the lane_unavailable ops alert', async () => {
+    getRedisMock.mockReturnValue({ set: vi.fn(async () => 'OK') });
+    sendMock.mockRejectedValue(new PartnerLaneSendFailure({ kind: 'lane_unavailable', detail: HOSTILE }));
+    await sendOnPartnerLane(input());
+    const { body } = sendOpsAlertMock.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 });

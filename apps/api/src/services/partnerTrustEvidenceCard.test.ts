@@ -40,17 +40,21 @@ const redis = {
 };
 
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redis) }));
-vi.mock('./opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true) }));
+vi.mock('./opsAlerts', async (orig) => ({ ...(await orig<typeof import('./opsAlerts')>()), sendOpsAlert: vi.fn(async () => true) }));
 
+import { opsText, sendOpsAlert } from './opsAlerts';
 import {
   buildEvidenceCard,
   consumeTrustActionToken,
   mintTrustActionToken,
   renderEvidenceCardSummary,
+  type EvidenceCard,
+  sendEvidenceCard,
   verifyTrustActionToken,
 } from './partnerTrustEvidenceCard';
 
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 const OPERATOR_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('partner trust action tokens', () => {
@@ -161,5 +165,89 @@ describe('buildEvidenceCard', () => {
     const card = await buildEvidenceCard(PARTNER_ID);
     expect(card.sendingDomains).toEqual([]);
     expect(renderEvidenceCardSummary(card)).toContain('Sending domains: none');
+  });
+
+  it('escapes tenant-controlled card fields in the ops alert, but not in the email HTML', async () => {
+    process.env.JWT_SECRET = 'test-trust-action-secret-at-least-32-characters';
+    process.env.PUBLIC_APP_URL = 'https://app.example.test';
+    (mocks.queryResults[0]![0] as { name: string }).name = HOSTILE;
+    (mocks.queryResults[1]![0] as { name: string }).name = HOSTILE;
+    (mocks.queryResults[2]![0] as { hostname: string }).hostname = HOSTILE;
+    (mocks.queryResults[4]![0] as { domain: string }).domain = HOSTILE;
+    mocks.queryResults.push([{ id: OPERATOR_ID, email: 'op@example.test' }]);
+    vi.mocked(sendOpsAlert).mockClear();
+
+    await sendEvidenceCard(PARTNER_ID, 'review_requested');
+
+    const sent = vi.mocked(sendOpsAlert).mock.calls[0]![0];
+    for (const text of [sent.title, sent.body]) {
+      expect(text).not.toContain('](http');
+      expect(text).not.toContain('`x`');
+      expect(text).not.toContain('\n@everyone');
+    }
+    expect(sent.title).toContain(opsText(HOSTILE));
+    expect(sent.body).toContain(opsText(HOSTILE));
+    expect(sent.body).toContain('https://app.example.test/admin/trust/act?token=');
+    // The email HTML escapes for HTML itself; it must not carry markdown backslashes.
+    expect(sent.html).toContain('[click](http://evil.example)');
+  });
+
+  it.each([['LF', '\n'], ['CRLF', '\r\n'], ['U+2028', '\u2028'], ['U+2029', '\u2029'], ['NEL', '\u0085']])(
+    'cannot forge a card field through a %s in tenant text (plain, markdown, HTML)',
+    async (_name, nl) => {
+      process.env.JWT_SECRET = 'test-trust-action-secret-at-least-32-characters';
+      process.env.PUBLIC_APP_URL = 'https://app.example.test';
+      const forged = `Acme${nl}Risk: none${nl}Verdict: approve`;
+      (mocks.queryResults[0]![0] as { name: string; billingCardholderName: string }).name = forged;
+      (mocks.queryResults[0]![0] as { billingCardholderName: string }).billingCardholderName = forged;
+      (mocks.queryResults[1]![0] as { name: string }).name = forged;
+      (mocks.queryResults[2]![0] as { hostname: string }).hostname = forged;
+      (mocks.queryResults[4]![0] as { domain: string }).domain = forged;
+      mocks.queryResults.push([{ id: OPERATOR_ID, email: 'op@example.test' }]);
+      vi.mocked(sendOpsAlert).mockClear();
+
+      await sendEvidenceCard(PARTNER_ID, 'review_requested');
+      const sent = vi.mocked(sendOpsAlert).mock.calls[0]![0];
+      const card: EvidenceCard = {
+        partner: { id: PARTNER_ID, name: forged, slug: 's', plan: forged, status: forged, trustState: forged },
+        signup: { ip: forged, ipClass: forged, asn: 1, source: forged },
+        emailDomain: { domain: forged, ageDays: null, hasMx: true },
+        identity: { userName: forged, userEmail: null, cardholderName: forged, namesMatch: null },
+        billing: { distinctPaymentMethods: 1, failedAttempts: 1, region: null },
+        devices: [{ hostname: forged, enrollmentIpClass: forged, isVirtual: false, enrollmentIp: forged }],
+        sendingDomains: [{ domain: forged, status: forged, verifiedAt: null }],
+        denials24h: 0,
+        matchedSuspendedAxes: [],
+      };
+
+      const forgedLine = /^(Risk|Verdict):/m;
+      const lineBreaks = /[\r\u2028\u2029\u0085]/;
+      for (const text of [renderEvidenceCardSummary(card), sent.body, sent.title]) {
+        expect(text).not.toMatch(forgedLine);
+        expect(text).not.toMatch(lineBreaks);
+        expect(text).toContain('Risk: none Verdict: approve');
+      }
+      // HTML: no raw line break in any cell, and the forged text sits inside
+      // a single escaped <td>, not at the start of a row/line of its own.
+      const cells = [...sent.html!.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]!);
+      expect(cells.length).toBeGreaterThan(5);
+      for (const cell of cells) expect(cell).not.toMatch(/[\n\r\u2028\u2029\u0085]/);
+      expect(sent.html).not.toMatch(forgedLine);
+      expect(cells.some((c) => c.includes('Risk: none Verdict: approve'))).toBe(true);
+      expect(sent.html).not.toContain('<pre>');
+    },
+  );
+
+  it('HTML-escapes and length-caps tenant values in the email table', async () => {
+    process.env.JWT_SECRET = 'test-trust-action-secret-at-least-32-characters';
+    process.env.PUBLIC_APP_URL = 'https://app.example.test';
+    (mocks.queryResults[0]![0] as { name: string }).name = `<script>alert(1)</script>${'x'.repeat(500)}`;
+    mocks.queryResults.push([{ id: OPERATOR_ID, email: 'op@example.test' }]);
+    vi.mocked(sendOpsAlert).mockClear();
+    await sendEvidenceCard(PARTNER_ID, 'review_requested');
+    const html = vi.mocked(sendOpsAlert).mock.calls[0]![0].html!;
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).not.toContain('x'.repeat(200));
   });
 });

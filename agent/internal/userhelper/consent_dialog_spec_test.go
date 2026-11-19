@@ -64,7 +64,7 @@ func zenityDefaultExit(args []string) int {
 // fallbacks behind Breeze Assist, which already focuses Deny.
 func TestNativeConsentDialogsDefaultToDeny(t *testing.T) {
 	req := sanitizeConsentRequest(ipc.ConsentRequest{
-		TechnicianName: "Billy", OrgName: "Olive Technology",
+		TechnicianName: "Billy", OrgName: "Fabrikam MSP",
 		TimeoutMs: 30_000, OnTimeout: "block",
 	})
 

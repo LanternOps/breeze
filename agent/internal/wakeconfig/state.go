@@ -19,33 +19,39 @@ const StateFileName = "wake_status_state.json"
 // DefaultStatePath is where the state is persisted.
 func DefaultStatePath() string { return filepath.Join(config.GetDataDir(), StateFileName) }
 
-// State is the persisted adapter memory plus the last accepted upload.
+// State is the persisted adapter memory, the last accepted upload, and the
+// apply limiter and pending writes.
 type State struct {
 	Adapters              AdapterMemory `json:"adapters"`
 	LastUploadAt          time.Time     `json:"lastUploadAt"`
 	LastUploadFingerprint string        `json:"lastUploadFingerprint"`
+	Apply                 ApplyState    `json:"apply"`
 }
 
-// loadState returns the persisted state; a missing file is a clean start and a
-// corrupt one starts empty with a warning.
-func loadState(path string) State {
+// loadStateAt returns the persisted state. A missing file is a clean start. A
+// corrupt one starts empty with a warning and embargoes writes for 24 h from
+// now: the write limiter is lost, and losing it must not hand out a fresh
+// budget. Any other read error is returned, and the caller must not save over
+// the file.
+func loadStateAt(path string, now time.Time) (State, error) {
 	st := State{Adapters: AdapterMemory{}}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Warn("wake status state unreadable; starting empty", "error", err.Error())
+		if errors.Is(err, os.ErrNotExist) {
+			return st, nil
 		}
-		return st
+		return st, err
 	}
 	var parsed State
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		log.Warn("wake status state corrupt; starting empty", "error", err.Error())
-		return st
+		log.Warn("wake status state corrupt; starting empty, writes paused 24 h", "error", err.Error())
+		st.Apply.Limiter.EmbargoUntil = now.UTC().Add(attemptInterval)
+		return st, nil
 	}
 	if parsed.Adapters == nil {
 		parsed.Adapters = AdapterMemory{}
 	}
-	return parsed
+	return parsed, nil
 }
 
 // saveState writes atomically (tmp + rename) with mode 0600.

@@ -197,8 +197,10 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 82 → 83 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
  * half of the reinstall-target rule (notHiddenOrgType() beside the filter;
  * hidden-org targets never qualify).
+ * 83 → 84 (#11065 observe-first): services/oemUpdates/observe.ts, the vendor
+ * canary observe sweep (notParkedDeviceCondition() beside the filter).
  */
-const EPHEMERAL_DISCOVERED_FILES = 83;
+const EPHEMERAL_DISCOVERED_FILES = 84;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
   // What a policy could send. Apart from `open`, which is the gates the route reports.
   policyOpen: { categories: ['bios', 'firmware', 'driver', 'application'] as string[] },
   killSwitch: { value: false },
+  observeLaneForRunNow: vi.fn(async (): Promise<string | null> => null),
+  dispatchOemObserve: vi.fn(),
+  assertOemObserveAllowedForActor: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../db', () => {
@@ -104,6 +107,11 @@ vi.mock('../../services/oemUpdates/dispatch', () => ({
   assertOemRunAllowedForActor: h.assertOemRunAllowedForActor,
 }));
 vi.mock('../../services/oemUpdates/history', () => ({ listOemRuns: h.listOemRuns }));
+vi.mock('../../services/oemUpdates/observe', () => ({
+  observeLaneForRunNow: h.observeLaneForRunNow,
+  dispatchOemObserve: h.dispatchOemObserve,
+  assertOemObserveAllowedForActor: h.assertOemObserveAllowedForActor,
+}));
 vi.mock('../../services/oemUpdates/resolver', () => ({
   resolveOemUpdatesLinkForDevice: h.resolveOemUpdatesLinkForDevice,
 }));
@@ -396,6 +404,7 @@ describe('GET /devices/:id/oem-updates/status', () => {
     expect(await res.json()).toEqual({
       displayState: 'not_managed',
       lane: 'dell',
+      observe: false,
       status: null,
       gates: { bios: 'closed', firmware: 'closed', driver: 'closed', application: 'closed' },
     });
@@ -617,5 +626,88 @@ describe('GET /devices/:id/oem-updates/history', () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
     expect((await get('history')).status).toBe(404);
     expect(h.listOemRuns).not.toHaveBeenCalled();
+  });
+});
+
+// Observe-first (#11065): for a vendor canary partner whose lane is at stage
+// `observe`, Run Now sends the read-only `oem_observe` instead of a run. The seam's
+// own refusals are tested in services/oemUpdates/observe.test.ts.
+describe('Run Now at stage observe', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  beforeEach(() => {
+    h.observeLaneForRunNow.mockResolvedValue('lenovo');
+    h.dispatchOemObserve.mockResolvedValue({ ok: true, commandId: COMMAND_ID });
+    h.assertOemObserveAllowedForActor.mockResolvedValue(undefined);
+  });
+
+  it('dispatches oem_observe, never a run, and audits it as an observation', async () => {
+    const res = await post();
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ commandId: COMMAND_ID, observe: true, categories: [], skippedCategories: [] });
+    expect(h.dispatchOemUpdateRun).not.toHaveBeenCalled();
+    expect(h.dispatchOemObserve).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID,
+      expectedOrgId: 'org-123',
+      trigger: 'on_demand',
+      actorUserId: 'user-123',
+    });
+    expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({
+      action: 'device.oem_updates.observe',
+      resourceId: DEVICE_ID,
+      details: { commandId: COMMAND_ID, lane: 'lenovo' },
+    });
+  });
+
+  it('keeps every human gate: MFA is still required', async () => {
+    h.authState.mfa = false;
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(h.dispatchOemObserve).not.toHaveBeenCalled();
+  });
+
+  it('a partner trust denial answers 403 before anything is queued', async () => {
+    h.assertOemObserveAllowedForActor.mockRejectedValue(new TrustDeniedError('partner_restricted' as never, 'restricted', DEVICE_ID, 'oem_observe'));
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(h.dispatchOemObserve).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no_policy', 409],
+    ['recent_observation', 409],
+    ['not_canary', 409],
+    ['device_not_found', 404],
+  ])('refusal %s answers %i with its code', async (refusal, status) => {
+    h.dispatchOemObserve.mockResolvedValue({ ok: false, refusal });
+    const res = await post();
+    expect(res.status).toBe(status);
+    const body = await res.json();
+    expect(body.code).toBe(refusal);
+    expect(typeof body.error).toBe('string');
+    expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({
+      action: 'device.oem_updates.observe',
+      result: 'denied',
+      details: { refusal },
+    });
+  });
+
+  it('status offers an observe lane for a canary partner, even one whose lane has not shipped', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', 'partner-1');
+    h.rows.hardware = { manufacturer: 'LENOVO', model: '21K5000AUS' };
+    const body = await (await get('status')).json();
+    expect(body.lane).toBe('lenovo');
+    expect(body.observe).toBe(true);
+    expect(body.gates).toEqual({ bios: 'closed', firmware: 'closed', driver: 'closed', application: 'closed' });
+  });
+
+  it('status offers nothing new to a partner off the canary list', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', 'partner-other');
+    h.rows.hardware = { manufacturer: 'LENOVO', model: '21K5000AUS' };
+    const body = await (await get('status')).json();
+    expect(body.lane).toBeNull();
+    expect(body.observe).toBe(false);
   });
 });

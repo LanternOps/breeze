@@ -79,7 +79,11 @@ vi.mock('./originIp', async (importOriginal) => ({
 }));
 vi.mock('./sendingDomains', () => ({ loadSendingDomainAggregates, computeSendingDomainSignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
+vi.mock('../opsAlerts', async (orig) => ({
+  ...(await orig<typeof import('../opsAlerts')>()),
+  sendOpsAlert,
+  isOpsAlertingConfigured: vi.fn(() => true),
+}));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
 vi.mock('../partnerTrustPromotion', () => ({
   restrictOnHardDeny,
@@ -89,6 +93,9 @@ vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode }));
 vi.mock('../sentry', () => ({ captureException }));
 
 import { runAbuseSweep } from './index';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
   return {
@@ -165,6 +172,17 @@ describe('runAbuseSweep', () => {
     expect(markDelivered).toHaveBeenCalledTimes(1);
     expect(markDelivered.mock.calls[0]![0]).toEqual(['r1', 'r2']);
     expect(result.notified).toBe(2);
+  });
+
+  it('escapes the partner name and evidence in the signal alert', async () => {
+    persistSignals.mockResolvedValue({ toNotify: [{ ...notifiable('r1'), evidence: { partnerName: HOSTILE, note: HOSTILE } }] });
+    sendOpsAlert.mockResolvedValue(true);
+    await runAbuseSweep();
+    const { body } = sendOpsAlert.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('does not call markDelivered when sendOpsAlert returns false for everything', async () => {

@@ -228,6 +228,50 @@ describe('email service', () => {
     expect(body.getAll('h:Reply-To')).toEqual(['support@example.com', 'help@example.com']);
   });
 
+  it('forwards cc on the Mailgun urlencoded payload', async () => {
+    process.env.EMAIL_PROVIDER = 'mailgun';
+    process.env.MAILGUN_API_KEY = 'mg-key-123';
+    process.env.MAILGUN_DOMAIN = 'mg.example.com';
+    process.env.MAILGUN_FROM = 'mailgun-from@example.com';
+
+    const { getEmailService } = await import('./email');
+    await getEmailService()!.sendEmail({
+      to: 'a@example.com',
+      cc: ['c1@example.com', 'c2@example.com'],
+      subject: 'cc test',
+      html: '<p>cc</p>',
+      purpose: 'ops.alert'
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(String(fetchMock.mock.calls[0]![1]?.body ?? ''));
+    expect(body.getAll('to')).toEqual(['a@example.com']);
+    expect(body.getAll('cc')).toEqual(['c1@example.com', 'c2@example.com']);
+  });
+
+  it('forwards a single cc on the Mailgun multipart (attachment) payload', async () => {
+    process.env.EMAIL_PROVIDER = 'mailgun';
+    process.env.MAILGUN_API_KEY = 'mg-key-123';
+    process.env.MAILGUN_DOMAIN = 'mg.example.com';
+    process.env.MAILGUN_FROM = 'mailgun-from@example.com';
+
+    const { getEmailService } = await import('./email');
+    await getEmailService()!.sendEmail({
+      to: 'a@example.com',
+      cc: 'c1@example.com',
+      subject: 'cc attachment test',
+      html: '<p>cc</p>',
+      attachments: [{ filename: 'a.txt', content: Buffer.from('hi'), contentType: 'text/plain' }],
+      purpose: 'ops.alert'
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = fetchMock.mock.calls[0]![1]?.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.getAll('to')).toEqual(['a@example.com']);
+    expect(body.getAll('cc')).toEqual(['c1@example.com']);
+  });
+
   it('sendEmailChanged notifies the old address with a security notice', async () => {
     process.env.EMAIL_PROVIDER = 'smtp';
     process.env.SMTP_HOST = 'smtp.example.com';

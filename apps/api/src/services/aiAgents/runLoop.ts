@@ -2246,7 +2246,7 @@ function troubleshootPromptContext(triggerRef: unknown): TroubleshootPromptConte
  * `full` run's `profileAllowlist` was `null` ("nothing to narrow"), so
  * `exposedNames`/`onlyTools` below fell through to `BREEZE_MCP_TOOL_NAMES` /
  * `undefined` and the SDK registered and exposed the ENTIRE tool catalog
- * regardless of the agent's own `toolAllowlist`. In production (US, OliveTech,
+ * regardless of the agent's own `toolAllowlist`. In production (US, our own tenant,
  * 51 alert-triage runs 09-22->09-24) the model then spent a full turn calling
  * a tool it was never going to be allowed to use, only to have
  * `checkAgentGuardrails` deny it at dispatch — `set_device_context` alone 21

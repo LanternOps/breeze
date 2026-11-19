@@ -151,7 +151,7 @@ func TestTargetValueNotInAllowedListIsUnproven(t *testing.T) {
 func TestDetectNilForOtherMakesIsUnproven(t *testing.T) {
 	in := winInputs("disabled", readyNIC("aa:bb:cc:dd:ee:01"))
 	in.Manufacturer, in.Model = "HP", "EliteDesk 800 G6"
-	in.Firmware = ReadFirmware(context.Background(), biosconfig.Detect(in.Manufacturer, in.Model))
+	in.Firmware = ReadFirmware(context.Background(), biosconfig.DetectReadiness(in.Manufacturer, in.Model))
 	if in.Firmware != nil {
 		t.Fatalf("no adapter must mean no readings, got %+v", in.Firmware)
 	}

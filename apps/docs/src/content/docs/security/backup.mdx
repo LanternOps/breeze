@@ -14,7 +14,7 @@ A Compose deployment keeps state in six named Docker volumes, plus your object s
 
 | Persistent location | Back it up? | Script flag | Details |
 |---|---|---|---|
-| `postgres_data` | Yes. This is the critical backup. | `--db` | PostgreSQL data at `/var/lib/postgresql/data` |
+| `postgres_data` (or `postgres_data_alt` when `POSTGRES_DATA_VOLUME` selects it) | Yes. This is the critical backup. | `--db` | PostgreSQL data at `/var/lib/postgresql/data` |
 | Object storage | Yes, when configured. | `--storage` | The bucket configured by `S3_ENDPOINT` and `S3_BUCKET` |
 | Configuration | Yes. | `--config` | `.env`, certificates, and Compose files. Encrypted with `tar` and `openssl` |
 | `api_data` | Yes. | `--data` (included in `--all` since 2026-09-03) | Patch compliance report CSV files at `/data/patch-reports` |
@@ -98,8 +98,10 @@ Do not back up the `binaries` volume. The `binaries-init` container rebuilds it 
 
 ## Prerequisites
 
+The client tools must be the same major version as your Postgres server or newer: a `pg_dump` older than the server refuses to dump it. After a move to Postgres 17 or 18 (see [PostgreSQL 16 to 18](/deploy/upgrades/#postgresql-16-to-18)), install the matching client, and take a backup the same day to prove it works.
+
 ```bash
-# PostgreSQL client tools
+# PostgreSQL client tools: the server's major version or newer
 sudo apt-get install postgresql-client-16
 
 # psql is used by the restore verification step

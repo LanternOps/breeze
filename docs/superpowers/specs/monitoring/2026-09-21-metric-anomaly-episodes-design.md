@@ -26,7 +26,7 @@ or the 365-day retention sweep (`apps/api/src/jobs/mlOutputRetention.ts`). The d
 (`apps/web/src/components/devices/DeviceAnomaliesPanel.tsx`) lists those rows sorted by confidence
 and shows observed value, baseline and a confidence percentage. That is the whole product.
 
-Measured on US prod, partner OliveTech, 12 hours after enabling the flag (2026-09-21 17:00Z →
+Measured on US prod, our own partner tenant, 12 hours after enabling the flag (2026-09-21 17:00Z →
 2026-09-22 04:41Z):
 
 | Measure | Value |

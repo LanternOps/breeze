@@ -5516,7 +5516,7 @@ implementing agent must not attempt any of it.**
 
 - [ ] **§16.1 step 3 — turn it on for one partner.** Confirm
   `PARTNER_TRUST_MODE=enforce` on both regions. Set `EMAIL_DOMAINS_PROVIDER` and
-  an `EMAIL_DOMAINS_PARTNER_ALLOWLIST` containing OliveTech only. Verify with
+  an `EMAIL_DOMAINS_PARTNER_ALLOWLIST` containing our own tenant only. Verify with
   the version-parity enumeration from CLAUDE.md that both regions are actually
   running the release that contains W05 — `/health` cannot see a service that
   was never rolled.

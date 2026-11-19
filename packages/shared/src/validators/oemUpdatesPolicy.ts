@@ -73,7 +73,13 @@ export type OemUpdatesInlineSettings = z.infer<typeof oemUpdatesInlineSettingsSc
  * the lab override never opens a gate for a stored policy.
  */
 export type OemUpdatesGateSnapshot = {
-  lanes: Array<{ lane: OemLane; shipped: boolean; categories: Record<OemCategory, boolean> }>;
+  lanes: Array<{
+    lane: OemLane;
+    shipped: boolean;
+    /** The caller's partner is a vendor canary for this lane: it may be switched on to be observed. */
+    observable?: boolean;
+    categories: Record<OemCategory, boolean>;
+  }>;
 };
 export type OemUpdatesVendorSettings = z.infer<typeof vendorSchema>;
 

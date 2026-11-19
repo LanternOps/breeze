@@ -79,6 +79,7 @@ import { handleChatMessageResult, handleChatOpenResult } from './endpointMessagi
 // #9662: AI/incident containment actions follow their command's real outcome.
 import { handleExecuteContainmentResult } from './incidentContainmentResults';
 import { applyOemUpdateRelease, applyOemUpdateResult } from './oemUpdates/results';
+import { applyOemObserveResult } from './oemUpdates/observe';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1298,8 +1299,25 @@ async function handleOemUpdateReleaseResult({ commandId, resolvedDeviceId, stdou
   await applyOemUpdateRelease({ commandId, deviceId: resolvedDeviceId, result });
 }
 
+/**
+ * A read-only vendor observation (#11065 observe-first). The transport has
+ * already stored the envelope in this transaction; the handler rewrites it to
+ * the validated observation only (or a rejection), so raw output never persists.
+ */
+async function handleOemObserveResult({ command, commandId, resolvedDeviceId, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await applyOemObserveResult({
+    commandId,
+    deviceId: resolvedDeviceId,
+    command,
+    envelopeStatus: result.status,
+    stdout: stdout ?? '',
+    error: result.error ?? null,
+  });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   [CommandTypes.OEM_UPDATE_RUN]: handleOemUpdateRunResult,
+  [CommandTypes.OEM_OBSERVE]: handleOemObserveResult,
   [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
   [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,

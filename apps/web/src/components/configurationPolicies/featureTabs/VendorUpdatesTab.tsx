@@ -109,6 +109,7 @@ function readGates(body: unknown): OemUpdatesGateSnapshot | null {
     return [{
       lane: entry.lane as OemLane,
       shipped: entry.shipped === true,
+      observable: entry.observable === true,
       categories: Object.fromEntries(OEM_CATEGORIES.map((c) => [c, categories[c] === true])) as Record<OemCategory, boolean>,
     }];
   });
@@ -164,6 +165,9 @@ export default function VendorUpdatesTab({
   const laneGates = (lane: OemLane) => gates?.lanes.find((l) => l.lane === lane);
   const isOpen = (lane: OemLane, category: OemCategory) => laneGates(lane)?.categories[category] === true;
   const isShipped = (lane: OemLane) => laneGates(lane)?.shipped === true;
+  // Vendor canary only (#11065 observe-first): the lane can be switched on so its
+  // devices are observed read-only. Its categories stay closed.
+  const isObservable = (lane: OemLane) => laneGates(lane)?.observable === true;
 
   // A new policy preselects Dell plus the categories open today (spec 4.1). Once.
   useEffect(() => {
@@ -383,7 +387,7 @@ export default function VendorUpdatesTab({
                     type="checkbox"
                     role="switch"
                     checked={vendor.enabled}
-                    disabled={!shipped && !vendor.enabled}
+                    disabled={!shipped && !isObservable(lane) && !vendor.enabled}
                     onChange={(e) => setVendor(lane, { enabled: e.target.checked })}
                   />
                   {k('vendorEnabled', { vendor: VENDOR_NAMES[lane] })}

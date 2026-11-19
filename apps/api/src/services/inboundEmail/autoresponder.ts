@@ -17,8 +17,14 @@ interface AutoresponseTicket {
   subject: string;
 }
 
-const AUTORESPONSE_CAP_LIMIT = 1;
-const AUTORESPONSE_CAP_WINDOW_SECONDS = 24 * 60 * 60; // 1 per sender per 24h
+// Per-sender, per-partner autoresponse cap: 5 per sender per partner per hour.
+// This is a BACKSTOP, not the loop guard — mail loops are stopped first by
+// loopPrevention.ts (Auto-Submitted / Precedence / system-sender / self-domain / X-Loop).
+// It is sized so a requester emailing about several separate issues in quick
+// succession is still acknowledged each time (#12201), while a runaway burst
+// that slips past loopPrevention is still bounded.
+const AUTORESPONSE_CAP_LIMIT = 5;
+const AUTORESPONSE_CAP_WINDOW_SECONDS = 60 * 60; // 1 hour
 
 // Resolve TICKETS_INBOUND_DOMAIN defensively — mirrors inboundEmailService's
 // inboundDomainOrNull(). `getConfig()` THROWS when config isn't initialized (e.g.
@@ -61,7 +67,7 @@ async function autoresponderEnabled(partnerId: string): Promise<boolean> {
   }
 }
 
-// Per-sender sliding-window cap, best-effort. The cap check runs INSIDE
+// Per-sender, per-partner sliding-window cap (backstop), best-effort. The cap check runs INSIDE
 // processInboundEmail's system-context transaction (the autoresponder is called
 // from createFromEmail). `rateLimiter` already fails CLOSED (denies) when Redis
 // is null and swallows its own Redis errors — but we additionally wrap the whole
@@ -69,15 +75,19 @@ async function autoresponderEnabled(partnerId: string): Promise<boolean> {
 // the autoresponse rather than propagating into — and rolling back — the work
 // transaction. An autoresponse is best-effort; losing one must never undo ticket
 // creation. Returns true to PROCEED, false to SUPPRESS.
-async function capAllows(senderEmail: string): Promise<boolean> {
+async function capAllows(partnerId: string, senderEmail: string): Promise<boolean> {
   try {
-    // Key on the lowercased sender — loopPrevention + the portal-user lookup
-    // already lowercase, so the cap must too, else case-variant senders
-    // (Jane@x.com vs jane@x.com) would each get their own 1/24h budget and
-    // bypass the cap.
+    // Scope the key to the partner so one partner's acknowledgements never
+    // consume another partner's budget for the same requester (multi-partner
+    // deployments). Key on the lowercased sender — loopPrevention + the
+    // portal-user lookup already lowercase, so the cap must too, else
+    // case-variant senders (Jane@x.com vs jane@x.com) would each get their own
+    // budget and bypass the cap. rateLimiter's DB-context tripwire label is the
+    // `autoresponse` prefix only, so neither the partner id nor the address is
+    // in that label (its Redis-unavailable error log does print the full key).
     const cap = await rateLimiter(
       getRedis(),
-      `autoresponse:${senderEmail.trim().toLowerCase()}`,
+      `autoresponse:${partnerId}:${senderEmail.trim().toLowerCase()}`,
       AUTORESPONSE_CAP_LIMIT,
       AUTORESPONSE_CAP_WINDOW_SECONDS,
     );
@@ -95,8 +105,8 @@ async function capAllows(senderEmail: string): Promise<boolean> {
  * (handled by ticketNotifyWorker) only when ALL hold:
  *   - the ticket belongs to the resolved partner (spec §6 re-assertion),
  *   - the partner has autoresponder enabled (default true),
- *   - no loop-prevention rule fires (Auto-Submitted/Precedence/system-sender/self-domain),
- *   - the per-sender Redis cap (1 / 24h) has room.
+ *   - no loop-prevention rule fires (Auto-Submitted/Precedence/system-sender/self-domain/X-Loop),
+ *   - the per-sender, per-partner Redis cap (5 / hour, a backstop) has room.
  * Called ONLY on the created-for-known-sender path — never for quarantined,
  * ignored, or closed-continuation mail (spec §5: never autorespond to unknown).
  */
@@ -121,7 +131,7 @@ export async function maybeSendAutoresponse(
     return;
   }
 
-  if (!(await capAllows(n.from))) {
+  if (!(await capAllows(partnerId, n.from))) {
     console.info('[InboundEmail] autoresponse suppressed', { reason: 'rate-capped', from: n.from, ticketId: ticket.id });
     return;
   }

@@ -3263,6 +3263,53 @@ describe('validateConfig', () => {
     });
   });
 
+  // Vendor canary (#11065 observe-first): who may run best-guess vendor code.
+  describe('BREEZE_VENDOR_CANARY_PARTNER_IDS', () => {
+    const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const b = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const c = 'cccccccc-0000-4000-8000-000000000003';
+    const d = 'dddddddd-0000-4000-8000-000000000004';
+
+    it('malformed UUID fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a},not-a-uuid` }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('a value that parses to nothing fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: ' , ' }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('more than 3 ids fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: [a, b, c, d].join(',') }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS.*at most 3/);
+      });
+    });
+
+    it('allowed under NODE_ENV=production', () => {
+      withEnv({ ...workspaceProdEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a}, ${b}` }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('empty is allowed: every stage is off', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('rejects an unknown pair in BREEZE_VENDOR_CANARY_DISABLED: a typo would stop nothing', () => {
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:hp,oem_update:lenovo' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_DISABLED.*oem_update:lenovo/);
+    });
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:HP, wake_on_lan:lenovo' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.

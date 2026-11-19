@@ -152,6 +152,44 @@ describe('listWakeStatusForPolicy', () => {
     expect(res.data[0]!.testWakeAllowed).toBe(true);
     expect(res.data[0]!.lastAttempt).toEqual({ outcome: 'timed_out', refusalCode: null, at: '2026-11-15T10:00:00.000Z' });
   });
+
+  // Observe-first amendment §2: the panel shows "Observing (vendor)" with the
+  // interface and error code, never a setting value.
+  it('panel shows Observing without values', async () => {
+    resolveIdsMock.mockResolvedValue([id(1), id(2), id(3)]);
+    winnersMock.mockResolvedValue(new Map([1, 2, 3].map((n) => [id(n), winner(POLICY)] as const)));
+    seed({
+      devices: [dev(1), dev(2), dev(3)],
+      statuses: [
+        st(1, { readinessState: 'unproven', reasonCodes: ['vendor_observe_only'], vendor: 'lenovo', obsVendor: 'lenovo', obsInterface: 'present', obsErrorCode: null }),
+        st(2, { readinessState: 'unproven', reasonCodes: ['vendor_observe_only'], vendor: 'hp', obsVendor: 'hp', obsInterface: 'absent', obsErrorCode: '0x8004100E' }),
+        st(3),
+      ],
+    });
+    const res = await listWakeStatusForPolicy(base);
+    const byId = new Map(res.data.map((r) => [r.deviceId, r]));
+    expect(byId.get(id(1))!.observation).toEqual({ vendor: 'lenovo', interface: 'present', errorCode: null });
+    expect(byId.get(id(2))!.observation).toEqual({ vendor: 'hp', interface: 'absent', errorCode: '0x8004100E' });
+    expect(byId.get(id(3))!.observation).toBeNull();
+    // Only the three summary fields leave the service: no settings, values or classes.
+    expect(Object.keys(byId.get(id(1))!.observation!).sort()).toEqual(['errorCode', 'interface', 'vendor']);
+  });
+
+  it('drops a stored observation summary that is not one of the known values', async () => {
+    resolveIdsMock.mockResolvedValue([id(1), id(2)]);
+    winnersMock.mockResolvedValue(new Map([1, 2].map((n) => [id(n), winner(POLICY)] as const)));
+    seed({
+      devices: [dev(1), dev(2)],
+      statuses: [
+        st(1, { obsVendor: 'acme', obsInterface: 'present', obsErrorCode: null }),
+        st(2, { obsVendor: 'lenovo', obsInterface: 'present', obsErrorCode: '<script>' }),
+      ],
+    });
+    const res = await listWakeStatusForPolicy(base);
+    const byId = new Map(res.data.map((r) => [r.deviceId, r]));
+    expect(byId.get(id(1))!.observation).toBeNull();
+    expect(byId.get(id(2))!.observation).toEqual({ vendor: 'lenovo', interface: 'present', errorCode: null });
+  });
 });
 
 describe('allowWakeAgain', () => {
