@@ -1195,6 +1195,37 @@ flagged by the #2764 collision path can be reattached from the banner.
   moves on.
 - **Separate from #7433:** this does not deliver non-exportable agent keys.
 
+**Decided in wave T1 (the agent part), where this section was open:**
+- **Package and pin.** `agent/internal/tpmattest`, `github.com/google/go-tpm` v0.9.8. The
+  agent builds with `CGO_ENABLED=0` for Windows, Linux and macOS (amd64 and arm64).
+  `go-tpm-tools` enters `go.mod` only for the simulator tests.
+- **Both keys are transient primaries in the endorsement hierarchy**: the EK from
+  `tpm2.RSAEKTemplate`, and the AK as a restricted RSA-2048 signing key (RSASSA-SHA256, noDA).
+  They are flushed after each attempt, so nothing persists in the TPM. On Linux the agent uses
+  `/dev/tpmrm0` only, never the exclusive `/dev/tpm0`.
+- **Off by default, switched by the server** (added in review of #11957). The API pushes
+  `configUpdate.tpm_attestation_enabled` on every heartbeat (`TPM_ATTESTATION_ENABLED`, default
+  `false`); an older API sends nothing and the switch stays off. While off, the agent touches no
+  TPM: no probe, no keys, and `tpmAvailable` is omitted. Turning it on starts an attempt right
+  away instead of waiting for the next hardware send.
+- **When.** Attestation rides on the hardware send (startup, every 24 h, manual refresh). It runs
+  once per process and again after 7 days, in the background with a 3-minute bound. A failure is
+  retried at the next hardware send, never within the attempt: the two POSTs are sent once (a
+  retried challenge spends the hourly budget, a retried completion finds its challenge consumed).
+  The agent keeps no local state: the server refreshes the
+  time for the same EK, and a reinstall attests on its first start. The route's loop deferral
+  (a server `Retry-After`) is checked before any key is created.
+- **Every TPM call runs under a deadline** (the probe 15 s, an attempt 3 minutes), in its own
+  goroutine, because go-tpm's commands take no context. A TPM that hangs is abandoned: the
+  hardware send goes on without `tpmAvailable`, and the one stuck call holds the TPM so no further
+  TPM work starts, and no goroutines pile up, until it returns.
+- **`tpmAvailable`** is sent with the hardware report: false for no TPM 2.0 (none, TPM 1.2, TBS
+  not found, disabled or not running, or `Tbs.dll` missing). It is omitted when the probe cannot
+  tell (a permission error, a hung TPM), so the server keeps what it had. On Windows `Tbs.dll` is
+  loaded from System32 before go-tpm asks for it by name.
+- **Tests.** The flow is tested against the TCG reference simulator (`-tags tpmsim`, cgo). A
+  `-tags tpmreal` test runs it on the machine's own TPM.
+
 ### 12.2 API (collection)
 
 - **Challenge:** `POST /agents/:id/attestation/challenge` validates the AK attributes (restricted,
