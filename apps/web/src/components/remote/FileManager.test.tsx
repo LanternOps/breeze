@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FileManager from './FileManager';
@@ -14,15 +14,14 @@ describe('FileManager address bar', () => {
     mockFetchWithAuth.mockReset();
   });
 
-  function renderFileManager(initialPath: string) {
-    render(<FileManager deviceId="device-1" deviceHostname="workstation-1" initialPath={initialPath} />);
+  function renderFileManager(initialPath: string, osType?: string) {
+    render(<FileManager deviceId="device-1" deviceHostname="workstation-1" initialPath={initialPath} osType={osType} />);
     return screen.getByRole('textbox', { name: 'Folder path' });
   }
 
   it.each([
     ['C:\\', 'C:\\Program Files\\Reports & Logs', 'C:\\Program Files\\Reports & Logs'],
     ['C:\\', 'D:', 'D:\\'],
-    ['C:\\', '\\\\host\\share', '\\\\host\\share'],
     ['/home', '/srv/daily\\reports ', '/srv/daily\\reports '],
   ])('opens an entered path from %s with Enter', async (initialPath, typedPath, requestedPath) => {
     const user = userEvent.setup();
@@ -50,6 +49,77 @@ describe('FileManager address bar', () => {
     expect(address).toHaveValue(initialPath);
   });
 
+  it.each([
+    ['C:\\', 'windows', '\\\\host\\share'],
+    ['C:\\', 'windows', '//host/share'],
+    ['/home', 'linux', '//host/share'],
+    ['/home', 'linux', '/\\host/share'],
+    ['/home', 'linux', '/??/host/share'],
+    ['/home', 'windows', '/srv'],
+  ])('rejects %s (%s) → %s without requesting a listing', async (initialPath, osType, typedPath) => {
+    const user = userEvent.setup();
+    mockFetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+
+    const address = renderFileManager(initialPath, osType);
+    await screen.findByText('Empty Directory');
+    mockFetchWithAuth.mockClear();
+
+    fireEvent.change(address, { target: { value: typedPath } });
+    expect(address).toBeInvalid();
+    await user.click(screen.getByRole('button', { name: 'Open folder' }));
+    expect(mockFetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('keeps the draft editable and preserves it through a same-folder refresh', async () => {
+    const user = userEvent.setup();
+    const root = { ok: true, json: async () => ({ data: [], path: '/' }) };
+    const refresh = Promise.withResolvers<typeof root>();
+    mockFetchWithAuth.mockResolvedValue(root);
+
+    const address = renderFileManager('/');
+    await screen.findByText('Empty Directory');
+    mockFetchWithAuth.mockReturnValueOnce(refresh.promise);
+
+    fireEvent.change(address, { target: { value: '/srv' } });
+    await user.click(screen.getByTitle('Refresh'));
+    await user.click(address);
+    await user.keyboard('/logs');
+
+    await act(async () => refresh.resolve(root));
+    expect(address).toHaveValue('/srv/logs');
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeDisabled();
+
+    await user.click(screen.getByTitle('Home'));
+    await screen.findByText('Empty Directory');
+    expect(address).toHaveValue('/');
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeEnabled();
+  });
+
+  it('keeps the latest folder when an older navigation finishes last', async () => {
+    const user = userEvent.setup();
+    function listing(path: string, name: string) {
+      return { ok: true, json: async () => ({ path, data: [{ name, type: 'file', path: name }] }) };
+    }
+    const older = Promise.withResolvers<ReturnType<typeof listing>>();
+    const newer = Promise.withResolvers<ReturnType<typeof listing>>();
+    mockFetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+
+    const address = renderFileManager('/');
+    await screen.findByText('Empty Directory');
+    mockFetchWithAuth.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+    fireEvent.change(address, { target: { value: '/old' } });
+    await user.click(screen.getByRole('button', { name: 'Open folder' }));
+    await user.click(screen.getByTitle('Home'));
+
+    await act(async () => newer.resolve(listing('/', 'current.txt')));
+    await act(async () => older.resolve(listing('/old', 'stale.txt')));
+
+    expect(address).toHaveValue('/');
+    expect(screen.getByText('current.txt')).toBeInTheDocument();
+    expect(screen.queryByText('stale.txt')).not.toBeInTheDocument();
+  });
+
   it('shows a failed lookup and keeps the address available for correction', async () => {
     const user = userEvent.setup();
     mockFetchWithAuth.mockImplementation(async (url: string) => url.endsWith('path=%2Fmissing')
@@ -72,6 +142,16 @@ describe('FileManager address bar', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(mockFetchWithAuth).toHaveBeenLastCalledWith('/system-tools/devices/device-1/files?path=%2Fmissing');
     await screen.findByRole('alert');
+
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeDisabled();
+    const table = screen.getByRole('table');
+    fireEvent.dragOver(table);
+    expect(screen.queryByText('Drop Files')).not.toBeInTheDocument();
+    const file = new File(['content'], 'blocked.txt', { type: 'text/plain' });
+    fireEvent.drop(table, { dataTransfer: { files: [file] } });
+    expect(screen.queryByText('blocked.txt')).not.toBeInTheDocument();
+    expect(mockFetchWithAuth).not.toHaveBeenCalledWith(expect.stringContaining('/files/upload'), expect.anything());
+
     await user.click(address);
     await user.keyboard('{Escape}');
     expect(address).toHaveValue('/');
@@ -273,6 +353,7 @@ describe('FileManager uploads', () => {
       />
     );
 
+    await screen.findByText('Empty Directory');
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
     fireEvent.change(input, { target: { files: [file] } });
@@ -318,6 +399,7 @@ describe('FileManager uploads', () => {
         />
       );
 
+      await screen.findByText('Empty Directory');
       const input = container.querySelector('input[type="file"]') as HTMLInputElement;
       const file = new File(['hello world'], 'big.bin', { type: 'application/octet-stream' });
       fireEvent.change(input, { target: { files: [file] } });
