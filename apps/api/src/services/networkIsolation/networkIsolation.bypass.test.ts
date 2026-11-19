@@ -6,6 +6,13 @@ vi.mock('../partnerTrust.commands', () => ({
   createDeviceExecuteBatchGate: () => async () => {}, TrustDeniedError: class extends Error {},
 }));
 vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: mocks.captureMessage }));
+// The minimum-OS delivery gate (#12169) reads the device for every agent
+// update; it has its own suite (agentOsFloorCommands.test.ts). Stubbed so the
+// read counts below measure the isolation floor only.
+vi.mock('../agentOsFloorCommands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agentOsFloorCommands')>()),
+  agentOsFloorRefusal: vi.fn(async () => null),
+}));
 import { partitionClaimable, revalidateCommandForDelivery } from '../commandClaimEligibility';
 import { agentVersions, deviceNetworkIsolations } from '../../db/schema';
 const device = { id: '11111111-1111-4111-8111-111111111111', orgId: '22222222-2222-4222-8222-222222222222', status: 'online', orgType: 'customer', installIncarnation: 1 };

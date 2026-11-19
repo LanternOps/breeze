@@ -707,7 +707,7 @@ async function registerLocalBinaries(args: {
             releaseManifest,
             manifestSignature,
             signingKeyId: keyId,
-            minOsVersion: KEEP_KNOWN_MIN_OS,
+            minOsVersion: keepKnownMinOs(),
             ...(autoPromote ? { isLatest: true } : {}),
           },
         });
@@ -1006,7 +1006,7 @@ async function registerFromOfficialManifest(args: {
             releaseManifest: manifestString,
             manifestSignature: signatureString,
             signingKeyId: "release-artifact-manifest-ed25519",
-            minOsVersion: KEEP_KNOWN_MIN_OS,
+            minOsVersion: keepKnownMinOs(),
             ...(autoPromote ? { isLatest: true } : {}),
           },
         });
@@ -2654,7 +2654,9 @@ type UpsertMetadata = {
 // keep the stored floor when it does not, so a re-sync from a source without
 // minOs (checksums fallback, a pre-threshold manifest) never erases a known
 // floor and silently ungates Macs.
-const KEEP_KNOWN_MIN_OS = sql`COALESCE(excluded.min_os_version, ${agentVersions.minOsVersion})`;
+// Built per call, not at module load: suites that mock db/schema without
+// agentVersions still import this module (devices routes import it).
+const keepKnownMinOs = () => sql`COALESCE(excluded.min_os_version, ${agentVersions.minOsVersion})`;
 
 // Spec 3b: when syncing from an OVERRIDDEN repository, the release manifest is
 // signed by the self-hoster's release key, which agents do not (and must not
@@ -2777,7 +2779,7 @@ async function upsertVersion(
           signingKeyId: signedMetadata.signingKeyId,
           fileSize: BigInt(signedMetadata.size),
           releaseNotes: releaseNotes ?? null,
-          minOsVersion: KEEP_KNOWN_MIN_OS,
+          minOsVersion: keepKnownMinOs(),
           ...(autoPromote ? { isLatest: true } : {}),
         },
       });
@@ -2849,7 +2851,7 @@ async function upsertBackupVersionExplicit(
           fileSize: BigInt(metadata.size),
           releaseNotes: releaseNotes ?? null,
           isLatest,
-          minOsVersion: KEEP_KNOWN_MIN_OS,
+          minOsVersion: keepKnownMinOs(),
         },
       });
   }));
