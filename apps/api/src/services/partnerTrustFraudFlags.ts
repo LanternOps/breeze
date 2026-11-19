@@ -37,7 +37,7 @@ import {
   type BillingFraudFlag,
   type MalformedBillingFraudFlag,
 } from './breezeBillingClient';
-import { isOpsAlertingConfigured, sendOpsAlert } from './opsAlerts';
+import { isOpsAlertingConfigured, opsText, sendOpsAlert } from './opsAlerts';
 import { setTrustState } from './partnerTrust';
 import { closeOpenCheckoutsAfterRestrict } from './partnerTrustPromotion';
 import { captureException } from './sentry';
@@ -115,7 +115,8 @@ async function alertOperator(title: string, lines: string[]): Promise<void> {
 async function partnerName(partnerId: string): Promise<string> {
   const [row] = await systemDb(() => db.select({ name: partners.name }).from(partners)
     .where(eq(partners.id, partnerId)).limit(1), 'partnerTrustFraudFlags.partnerName');
-  return row?.name ?? partnerId;
+  // The partner name is tenant-controlled and lands in a chat-rendered alert.
+  return opsText(row?.name ?? partnerId);
 }
 
 async function readLedgerByFlag(billingFlagId: string): Promise<LedgerRow | null> {

@@ -17,6 +17,27 @@ export function isOpsAlertingConfigured(): boolean {
   return Boolean(process.env.OPS_ALERT_WEBHOOK_URL?.trim() || process.env.OPS_ALERT_EMAIL?.trim());
 }
 
+/**
+ * Neutralises a tenant-controlled string (partner or org name, anything a
+ * customer typed) before it is interpolated into an ops alert, which Discord
+ * renders as markdown. Flattens newlines, backslash-escapes markdown control
+ * characters, breaks URL schemes and @-mentions so nothing autolinks or
+ * pings, and caps the length.
+ */
+export function opsText(value: string, maxLength = 80): string {
+  const flat = value
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const escaped = flat
+    .replace(/[\\*_`~|>#[\]()<]/g, '\\$&')
+    .replace(/([a-z][a-z0-9+.-]*):\/\//gi, '$1:\u200b//')
+    .replace(/@/g, '@\u200b');
+  if (escaped.length <= maxLength) return escaped;
+  // Do not cut between a backslash and the character it escapes.
+  return `${escaped.slice(0, maxLength - 1).replace(/(?<!\\)\\$/, '')}…`;
+}
+
 function formatContent(msg: OpsAlertMessage): string {
   const label = process.env.OPS_ALERT_LABEL?.trim();
   const title = label ? `[${label}] ${msg.title}` : msg.title;
@@ -30,7 +51,7 @@ async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> 
     const response = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Breeze-RMM/1.0' },
-      body: JSON.stringify({ content: formatContent(msg) }),
+      body: JSON.stringify({ content: formatContent(msg), allowed_mentions: { parse: [] } }),
       signal: controller.signal,
       redirect: 'error',
     });
