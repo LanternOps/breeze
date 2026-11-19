@@ -1407,17 +1407,34 @@ elif case == "body":
         assert not fw.body_ok(b), b
 elif case == "token":
     good = "sk-ant-oat01-" + "A" * 40
-    assert fw.read_token(io.StringIO(good + "\n")) == good
-    for bad in ("", "not-a-token\n", good + "\n" + good + "\n", "sk-ant-api03-" + "A" * 40 + "\n", good + " x\n"):
+    sec = "ab" * 32
+    assert fw.read_credentials(io.StringIO(good + "\n" + sec + "\n")) == (good, sec)
+    for bad in ("", good + "\n", "not-a-token\n" + sec + "\n", good + "\n" + good + "\n", good + "\n" + sec + "\n" + sec + "\n",
+                "sk-ant-api03-" + "A" * 40 + "\n" + sec + "\n", good + " x\n" + sec + "\n",
+                good + "\n" + "ab" * 15 + "\n", good + "\nplaceholder\n", good + "\n" + "AB" * 32 + "\n"):
         try:
-            fw.read_token(io.StringIO(bad)); raise SystemExit("accepted %r" % bad)
+            fw.read_credentials(io.StringIO(bad)); raise SystemExit("accepted %r" % bad)
         except ValueError:
             pass
+elif case == "client":
+    sec = "cd" * 32
+    class H(dict):
+        def get(self, k, d=None):
+            return {a.lower(): b for a, b in self.items()}.get(k.lower(), d)
+    assert fw.client_refusal(H({"Authorization": "Bearer " + sec}), sec) is None
+    assert fw.client_refusal(H({"authorization": "Bearer " + sec, "Host": "x"}), sec) is None
+    for h in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": sec}, {"Authorization": "Bearer " + sec + "x"},
+              {"Authorization": "Bearer " + sec[:-1]}, {"Authorization": "bearer " + sec}, {"x-api-key": sec},
+              {"Authorization": "Bearer \u00e9" + sec}, {"Authorization": "Bearer " + sec, "Origin": "http://127.0.0.1:1"},
+              {"Authorization": "Bearer " + sec, "origin": "null"}, {"Authorization": "Bearer " + sec, "Sec-Fetch-Mode": "cors"},
+              {"Authorization": "Bearer " + sec, "sec-fetch-site": "same-origin"}):
+        assert fw.client_refusal(H(h), sec), h
 PY
 }
 check "forwarder: only POST to the model API (messages, count_tokens; ?beta=true) is forwarded" "fw_py routes"
 check "forwarder: client credentials and unlisted headers are dropped; its own bearer + oauth beta are set" "fw_py headers"
-check "forwarder: the token on stdin must be one setup-token line" "fw_py token"
+check "forwarder: stdin must hold the setup-token line then a 64+ hex client secret line" "fw_py token"
+check "forwarder: the client secret is compared exactly; Origin and Sec-Fetch-* are refused even with it" "fw_py client"
 check "forwarder: upstream TLS verifies the certificate and the host name" "fw_py tls"
 check "forwarder: a body that would make the API reach out (MCP servers, containers, server tools) is refused" "fw_py body"
 # Live, against a fake egress proxy that records CONNECTs (no network needed).
@@ -1446,19 +1463,34 @@ AGENT_OAUTH_TOKEN=""
 check "forwarder: it does not start without a loaded token" "! start_model_forwarder"
 AGENT_OAUTH_TOKEN="$FWTOK"
 check "forwarder: the runner starts it" "start_model_forwarder && [ -n \"\$MODEL_PORT\" ]"
+check "forwarder: the per-run client secret is 32 random bytes (64 hex), not the old fixed string, and not the token" "[[ \"\$AGENT_TOKEN_PLACEHOLDER\" =~ ^[0-9a-f]{64}\$ ]] && [ \"\$AGENT_TOKEN_PLACEHOLDER\" != \"\$FWTOK\" ]"
+FWSEC1="$AGENT_TOKEN_PLACEHOLDER"
 check "forwarder: the runner drops its copy of the token once the forwarder holds it" "[ -z \"\$AGENT_OAUTH_TOKEN\" ]"
 fwcode() { curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -m 10 "$@"; }
+fwauth() { fwcode -H "Authorization: Bearer $FWSEC1" "$@"; }
+FWBODY='{"model":"m","messages":[]}'
+check "forwarder: a model call with no client secret is refused" "[ \"\$(fwcode -X POST -H 'content-type: application/json' -d '$FWBODY' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: a model call with the wrong client secret is refused" "[ \"\$(fwcode -X POST -H 'Authorization: Bearer wrong' -H 'content-type: application/json' -d '$FWBODY' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: the old fixed placeholder is refused" "[ \"\$(fwcode -X POST -H 'Authorization: Bearer qa-model-forwarder-adds-the-credential' -d '$FWBODY' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: a browser-shaped call (Origin) with the right secret is refused" "[ \"\$(fwauth -X POST -H 'Origin: http://127.0.0.1:1234' -H 'content-type: application/json' -d '$FWBODY' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: a Sec-Fetch-* call with the right secret is refused" "[ \"\$(fwauth -X POST -H 'Sec-Fetch-Mode: cors' -H 'content-type: application/json' -d '$FWBODY' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: a CORS preflight (OPTIONS) is refused, with or without the secret" "[ \"\$(fwcode -X OPTIONS -H 'Origin: http://x.example' -H 'Access-Control-Request-Method: POST' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ] && [ \"\$(fwauth -X OPTIONS http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
+check "forwarder: refusals add no CORS headers" "! curl --noproxy '*' -si -m 10 -X OPTIONS -H 'Origin: http://x.example' http://127.0.0.1:\$MODEL_PORT/v1/messages | grep -qi 'access-control'"
+check "forwarder: a client-secret refusal never leaves the machine" "[ ! -s '$FAKEPX_LOG' ]"
 check "forwarder: a non-model route is refused" "[ \"\$(fwcode http://127.0.0.1:\$MODEL_PORT/api/oauth/profile)\" = 403 ]"
 check "forwarder: a POST to an OAuth endpoint is refused" "[ \"\$(fwcode -X POST -d '{}' http://127.0.0.1:\$MODEL_PORT/api/oauth/claude_cli/create_api_key)\" = 403 ]"
 check "forwarder: a model call naming an MCP server is refused" "[ \"\$(fwcode -X POST -H 'content-type: application/json' -d '{\"model\":\"m\",\"messages\":[],\"mcp_servers\":[{\"type\":\"url\",\"url\":\"https://x.example/\"}]}' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
 check "forwarder: a request for another Host (DNS rebinding) is refused" "[ \"\$(fwcode -X POST -H 'Host: rebind.example:'\$MODEL_PORT -H 'content-type: application/json' -d '{}' http://127.0.0.1:\$MODEL_PORT/v1/messages)\" = 403 ]"
 check "forwarder: a refused route never leaves the machine" "[ ! -s '$FAKEPX_LOG' ]"
-fwcode -X POST -H 'content-type: application/json' -d '{"model":"m","messages":[]}' "http://127.0.0.1:$MODEL_PORT/v1/messages?beta=true" >/dev/null
+fwauth -X POST -H 'content-type: application/json' -d '{"model":"m","messages":[]}' "http://127.0.0.1:$MODEL_PORT/v1/messages?beta=true" >/dev/null
 check "forwarder: a model call goes out through the egress proxy, to api.anthropic.com only" "[ \"\$(cat '$FAKEPX_LOG')\" = 'CONNECT api.anthropic.com:443 HTTP/1.0' ]"
 check "forwarder: its argv does not hold the token" "! ps -ww -o command= -p \"\$MODEL_PID\" | grep -qF \"\$FWTOK\" && ps -ww -o command= -p \"\$MODEL_PID\" | grep -q model-forwarder"
-check "forwarder: decisions go to the protected audit log, without the token" "[ \"\$(model_log_path)\" = '$QA_HOME/.audit/model-$RUN_ID.log' ] && grep -q 'DENY GET /api/oauth/profile' \"\$(model_log_path)\" && ! grep -qF \"\$FWTOK\" \"\$(model_log_path)\""
+check "forwarder: decisions go to the protected audit log, without the token or the client secret" "[ \"\$(model_log_path)\" = '$QA_HOME/.audit/model-$RUN_ID.log' ] && grep -q 'DENY GET /api/oauth/profile' \"\$(model_log_path)\" && ! grep -qF \"\$FWTOK\" \"\$(model_log_path)\" && ! grep -qF \"\$FWSEC1\" \"\$(model_log_path)\""
+check "forwarder: its argv does not hold the client secret" "! ps -ww -o command= -p \"\$MODEL_PID\" | grep -qF \"\$FWSEC1\""
 stop_model_forwarder; kill "$FAKEPX_PID" 2>/dev/null
-check "forwarder: stop_model_forwarder stops it" "[ -z \"\$MODEL_PORT\" ]"
+check "forwarder: stop_model_forwarder stops it and forgets the client secret" "[ -z \"\$MODEL_PORT\" ] && [ -z \"\$AGENT_TOKEN_PLACEHOLDER\" ]"
+AGENT_OAUTH_TOKEN="$FWTOK"; start_model_forwarder; FWSEC2="$AGENT_TOKEN_PLACEHOLDER"; stop_model_forwarder
+check "forwarder: each run gets a fresh client secret" "[ -n \"\$FWSEC2\" ] && [ \"\$FWSEC1\" != \"\$FWSEC2\" ]"
 check "wiring: the egress allowlist is the model API host only" "[ \"\$QA_EGRESS_ALLOW\" = api.anthropic.com ]"
 check "wiring: no runner path hands the token to a process environment" "! grep -q 'CLAUDE_CODE_OAUTH_TOKEN=\"\$AGENT\|with_agent_token' '$QA_DIR/scheduled-ui-sweep.sh' '$QA_DIR/sweep-lib.sh' '$QA_DIR/install-schedule.sh'"
 check "wiring: the installer ships the forwarder" "grep -q 'model-forwarder.py' '$QA_DIR/install-schedule.sh'"
@@ -1722,12 +1754,13 @@ if type build_agent_cmd >/dev/null 2>&1; then
   check "token: it is not exported to the runner's other children" "[ -z \"\$(/usr/bin/printenv CLAUDE_CODE_OAUTH_TOKEN)\" ]"
   # Strix r10: the agent holds no credential at all. Its environment is the
   # wrapper's (everything after sandbox-exec -f <profile>), run here directly.
-  MODEL_PORT=5555
+  MODEL_PORT=5555; AGENT_TOKEN_PLACEHOLDER="$(gen_client_secret)"
   build_agent_cmd /usr/bin/env
   AGENT_ENV="$(ANTHROPIC_API_KEY=sk-ant-api03-runner ANTHROPIC_AUTH_TOKEN=runner-auth CLAUDE_CODE_OAUTH_TOKEN="$GOOD" \
     CLAUDE_CODE_OAUTH_REFRESH_TOKEN=runner-refresh HTTPS_PROXY=http://127.0.0.1:4321 "${AGENT_CMD[@]:3}")"
   check "token: the agent's environment holds no credential, even one the runner's env has" "! printf '%s' \"\$AGENT_ENV\" | grep -qE 'sk-ant-|runner-auth|runner-refresh|^ANTHROPIC_API_KEY=|^ANTHROPIC_AUTH_TOKEN=|^CLAUDE_CODE_OAUTH_REFRESH_TOKEN='"
-  check "token: the agent signs in with the forwarder's placeholder" "printf '%s\n' \"\$AGENT_ENV\" | grep -qx \"CLAUDE_CODE_OAUTH_TOKEN=\$AGENT_TOKEN_PLACEHOLDER\" && [ -n \"\$AGENT_TOKEN_PLACEHOLDER\" ]"
+  check "token: the agent signs in with the forwarder's placeholder" "printf '%s\n' \"\$AGENT_ENV\" | grep -qx \"CLAUDE_CODE_OAUTH_TOKEN=\$AGENT_TOKEN_PLACEHOLDER\" && [[ \"\$AGENT_TOKEN_PLACEHOLDER\" =~ ^[0-9a-f]{64}\$ ]]"
+  check "token: the client secret is never written to RUN_DIR or the profile" "! grep -rqF \"\$AGENT_TOKEN_PLACEHOLDER\" '$RUN_DIR' '$T/agent.sb' 2>/dev/null"
   check "token: the agent's model API is the loopback forwarder" "printf '%s\n' \"\$AGENT_ENV\" | grep -qx 'ANTHROPIC_BASE_URL=http://127.0.0.1:5555'"
   check "token: the agent gets no egress proxy (its only route out is the forwarder)" "! printf '%s\n' \"\$AGENT_ENV\" | grep -qiE '^(https?|all)_proxy='"
   build_agent_cmd claude -p hi

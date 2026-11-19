@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Loopback auth-injecting forwarder for the scheduled QA sweep agent's model calls.
 
-The agent never holds a credential. It talks plain HTTP to this forwarder on
-127.0.0.1 (ANTHROPIC_BASE_URL) with a placeholder token; the forwarder, which
+The agent never holds the claude.ai credential. It talks plain HTTP to this
+forwarder on 127.0.0.1 (ANTHROPIC_BASE_URL) with a per-run random client
+secret as its bearer token (Strix r16: otherwise any page script in the QA
+stack could spend the token); the forwarder, which
 runs as the runner OUTSIDE the agent's sandbox, replaces the request's
 credentials with the agent's claude.ai token and forwards the request over TLS
 to api.anthropic.com through the egress proxy (CONNECT), so every byte still
-leaves via the one audited route. The token reaches this process on stdin --
-never argv or the environment, which other local processes can read -- and is
-held only here.
+leaves via the one audited route. The token and the client secret reach this
+process on stdin (two lines) -- never argv or the environment, which other
+local processes can read -- and are held only here.
 
 It forwards the model API and nothing else:
 
@@ -28,6 +30,12 @@ It forwards the model API and nothing else:
     `source` object anywhere in it is inline (base64, text or content): a
     `url` source would have the API fetch that URL, a `file` source reads the
     Files API. So the model API is not an egress route around the sandbox;
+  - the client must present the per-run secret as `Authorization: Bearer
+    <secret>` (constant-time compare) before anything else is considered; a
+    request with no or a wrong secret gets 403. A request carrying an Origin
+    or any Sec-Fetch-* header (a browser's mark) is refused even with the
+    secret, and OPTIONS (CORS preflight) is 403, so a web page cannot reach
+    this listener even if it guesses the port;
   - the Host header must name this listener (127.0.0.1 or localhost and its
     port), so a web page reaching loopback by DNS rebinding is refused.
 
@@ -38,6 +46,7 @@ Each decision is logged one per line to a file the agent cannot read or write.
 Python 3.9 stdlib only (the QA Mac's /usr/bin/python3).
 """
 import argparse
+import hmac
 import http.client
 import json
 import http.server
@@ -59,6 +68,7 @@ INLINE_SOURCES = ("base64", "text", "content")
 URL_VALUE = re.compile(r"\A\s*https?://", re.I)
 # Content-block keys that name something for the API to fetch or open.
 FETCH_KEYS = ("url", "file_id")
+SECRET_RE = re.compile(r"\A[0-9a-f]{64,256}\Z")
 TOKEN_RE = re.compile(r"\Ask-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,500}\Z")
 # Client headers worth forwarding. Anything else -- Authorization, x-api-key,
 # Cookie, Proxy-*, Host, hop-by-hop, Content-Length -- is dropped.
@@ -161,13 +171,28 @@ def host_ok(host, port):
     return host in ("127.0.0.1:%d" % port, "localhost:%d" % port)
 
 
-def read_token(stream):
-    """The agent token from stdin: one setup-token line, else ValueError."""
-    data = stream.read(1024)
-    lines = [ln for ln in data.splitlines() if ln.strip()]
-    if len(lines) != 1 or not TOKEN_RE.match(lines[0].strip()):
-        raise ValueError("stdin must hold exactly one claude setup-token token")
-    return lines[0].strip()
+def client_refusal(headers, secret):
+    """None for a request from the agent, else why it is refused. `headers` has .get and .keys()."""
+    for k in headers.keys():
+        lk = k.lower()
+        if lk == "origin" or lk.startswith("sec-fetch-"):
+            return "browser request (%s)" % lk
+    auth = headers.get("Authorization", "")
+    if not isinstance(auth, str) or not auth.startswith("Bearer "):
+        return "no client secret"
+    # bytes compare: hmac.compare_digest rejects non-ASCII str.
+    if not hmac.compare_digest(auth[7:].encode("utf-8", "replace"), secret.encode("ascii")):
+        return "wrong client secret"
+    return None
+
+
+def read_credentials(stream):
+    """(agent token, client secret) from stdin: exactly two lines, else ValueError."""
+    data = stream.read(2048)
+    lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
+    if len(lines) != 2 or not TOKEN_RE.match(lines[0]) or not SECRET_RE.match(lines[1]):
+        raise ValueError("stdin must hold a claude setup-token token line then a 64+ hex client secret line")
+    return lines[0], lines[1]
 
 
 def tls_context():
@@ -205,6 +230,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_POST(self):
+        # Who is asking comes first: nothing about a browser's or an
+        # unauthenticated client's request is processed (not even its body).
+        why = client_refusal(self.headers, self.server.secret)
+        if why:
+            return self.refuse(403, why)
         if not route_ok(self.command, self.path):
             return self.refuse(403, "not a model API route")
         if not host_ok(self.headers.get("Host", ""), self.server.server_address[1]):
@@ -259,7 +289,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _refuse_other(self):
+    def _refuse_other(self):  # includes OPTIONS: a CORS preflight is never answered
         self.refuse(403, "method")
 
     do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = do_CONNECT = _refuse_other
@@ -277,12 +307,13 @@ def main():
     ap.add_argument("--log", required=True)
     args = ap.parse_args()
     try:
-        token = read_token(sys.stdin)
+        token, secret = read_credentials(sys.stdin)
     except ValueError as e:
         sys.exit("model-forwarder: %s" % e)
     sys.stdin.close()
     srv = Server(("127.0.0.1", 0), Handler)
     srv.token = token
+    srv.secret = secret
     srv.egress_port = args.egress_port
     srv.log_path = args.log
     srv.tls = tls_context()
