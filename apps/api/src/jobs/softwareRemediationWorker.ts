@@ -8,10 +8,12 @@ import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import {
   evaluateSoftwarePolicyArming,
+  isSoftwareRuleBlocked,
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
   SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
 } from '../services/softwarePolicyService';
+import { getSoftwareBlocklistRulesForDevice } from '../services/softwarePolicyConflicts';
 import { resolveSecurityAgentsLinkForDevice } from '../services/featureConfigResolver';
 import {
   loadManagedRuleApplicability,
@@ -1091,7 +1093,17 @@ async function admitRemediateDeviceInstall(
       skips.push({ rule: '(not in current violations)', catalogId, reason: 'not_currently_missing' });
     }
 
+    // Reload the applying blocklists at dispatch time as well as evaluation
+    // time: a deny may have been added while this install job was queued.
+    const blockedRules = await getSoftwareBlocklistRulesForDevice(data.deviceId);
+    const currentRules = normalizeSoftwarePolicyRules(policy.rules).software;
     for (const entry of requested) {
+      const rule = currentRules.find((candidate) => candidate.catalogId === entry.catalogId)
+        ?? { name: entry.ruleName, catalogId: entry.catalogId };
+      if (isSoftwareRuleBlocked(rule, blockedRules)) {
+        skips.push({ rule: entry.ruleName, catalogId: entry.catalogId, reason: 'blocked_by_policy' });
+        continue;
+      }
       if (managedApplicability) {
         const { notApplicable } = managedApplicability.filterViolations(data.deviceId, [{
           type: 'missing',

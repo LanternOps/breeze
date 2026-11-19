@@ -8,6 +8,7 @@ import PolicyLinkSelector from "./PolicyLinkSelector";
 import SoftwarePolicyCoverageBadge from "../../software/SoftwarePolicyCoverageBadge";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { fetchWithAuth } from "../../../stores/auth";
 type PolicySummary = {
   name: string;
   mode: string;
@@ -18,11 +19,10 @@ type PolicySummary = {
     }>;
   };
 };
-export default function SoftwarePolicyTab({
+function SoftwarePolicyLinkEditor({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -49,27 +49,25 @@ export default function SoftwarePolicyTab({
       return;
     }
     let cancelled = false;
-    import("../../../stores/auth").then(({ fetchWithAuth }) => {
-      fetchWithAuth(`${meta.fetchUrl}/${selectedPolicyId}`)
-        .then(async (res) => {
-          if (!res.ok || cancelled) return;
-          const json = await res.json();
-          const data = json.data ?? json;
-          if (!cancelled) {
-            setLinkedPolicySummary({
-              name: data.name,
-              mode: data.mode,
-              rules: data.rules,
-            });
-          }
-        })
-        .catch((err) => {
-          console.warn(
-            `[SoftwarePolicyTab] Failed to load linked policy ${selectedPolicyId}:`,
-            err,
-          );
-        });
-    });
+    fetchWithAuth(`${meta.fetchUrl}/${selectedPolicyId}`)
+      .then(async (res) => {
+        if (!res.ok || cancelled) return;
+        const json = await res.json();
+        const data = json.data ?? json;
+        if (!cancelled) {
+          setLinkedPolicySummary({
+            name: data.name,
+            mode: data.mode,
+            rules: data.rules,
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn(
+          `[SoftwarePolicyTab] Failed to load linked policy ${selectedPolicyId}:`,
+          err,
+        );
+      });
     return () => {
       cancelled = true;
     };
@@ -87,29 +85,9 @@ export default function SoftwarePolicyTab({
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
     if (ok) {
-      onLinkChanged(null, "software_policy");
+      onLinkChanged(null, "software_policy", existingLink.id);
       setSelectedPolicyId(null);
       setLinkedPolicySummary(null);
-    }
-  };
-  const handleOverride = async () => {
-    if (!parentLink?.featurePolicyId) return;
-    clearError();
-    const result = await save(null, {
-      featureType: "software_policy",
-      featurePolicyId: parentLink.featurePolicyId,
-    });
-    if (result) {
-      onLinkChanged(result, "software_policy");
-      setSelectedPolicyId(parentLink.featurePolicyId);
-    }
-  };
-  const handleRevert = async () => {
-    if (!existingLink || !parentLink) return;
-    const ok = await remove(existingLink.id);
-    if (ok) {
-      onLinkChanged(null, "software_policy");
-      setSelectedPolicyId(parentLink.featurePolicyId ?? null);
     }
   };
   return (
@@ -123,8 +101,6 @@ export default function SoftwarePolicyTab({
       onSave={handleSave}
       onRemove={existingLink ? handleRemove : undefined}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={existingLink && parentLink ? handleRevert : undefined}
     >
       <div className="space-y-4">
         <div>
@@ -204,4 +180,30 @@ export default function SoftwarePolicyTab({
       </div>
     </FeatureTabShell>
   );
+}
+
+/** Software links accumulate; editing/removing one must never replace its siblings. */
+export default function SoftwarePolicyTab(props: FeatureTabProps) {
+  const [adding, setAdding] = useState(false);
+  const ownLinks = props.siblingLinks?.filter((link) => link.featureType === "software_policy")
+    ?? (props.existingLink ? [props.existingLink] : []);
+  const ownIds = new Set(ownLinks.map((link) => link.id));
+  const inheritedLinks = props.allLinks?.filter((link) => link.featureType === "software_policy" && !ownIds.has(link.id))
+    ?? (props.parentLink && !props.existingLink ? [props.parentLink] : []);
+  return <div className="space-y-4">
+    <p className="text-sm text-muted-foreground">{i18n.t("policies:configurationPolicies.featureTabs.softwarePolicyTab.policiesApplyTogether", { defaultValue: "All linked software policies apply together, including policies inherited from broader assignments. Adding a policy does not replace another software policy." })}</p>
+    {ownLinks.map((link) => <SoftwarePolicyLinkEditor key={link.id} {...props} existingLink={link} parentLink={undefined} />)}
+    {inheritedLinks.map((link) => <SoftwarePolicyLinkEditor key={link.id} {...props} existingLink={undefined} parentLink={link} />)}
+    {(adding || ownLinks.length + inheritedLinks.length === 0) && <SoftwarePolicyLinkEditor
+      key="new-software-policy"
+      {...props}
+      existingLink={undefined}
+      parentLink={undefined}
+      onLinkChanged={(link, type, removedId) => {
+        props.onLinkChanged(link, type, removedId);
+        if (link) setAdding(false);
+      }}
+    />}
+    {!adding && ownLinks.length + inheritedLinks.length > 0 && <button type="button" className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted" onClick={() => setAdding(true)}>{i18n.t("policies:configurationPolicies.featureTabs.softwarePolicyTab.addSoftwarePolicy", { defaultValue: "Add software policy" })}</button>}
+  </div>;
 }

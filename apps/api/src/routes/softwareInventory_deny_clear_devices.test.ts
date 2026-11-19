@@ -201,7 +201,7 @@ describe('software inventory routes', () => {
         } as any)
         .mockReturnValueOnce({
           values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
           }),
         } as any)
         .mockReturnValueOnce({
@@ -252,7 +252,7 @@ describe('software inventory routes', () => {
       vi.mocked(db.insert)
         .mockReturnValueOnce({
           values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
           }),
         } as any)
         .mockReturnValueOnce({

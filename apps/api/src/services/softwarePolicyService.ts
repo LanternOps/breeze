@@ -512,17 +512,70 @@ export function evaluateSoftwareInventoryDetailed(
 
 export function evaluateSoftwarePolicyAgainstInventory(
   policy: Pick<typeof softwarePolicies.$inferSelect, 'mode' | 'rules'>,
-  inventory: SoftwareInventoryRow[]
+  inventory: SoftwareInventoryRow[],
+  blockedRules: SoftwarePolicyRuleDefinition[] = [],
 ): {
   status: Exclude<SoftwarePolicyComplianceStatus, 'unknown'>;
   violations: SoftwarePolicyViolation[];
 } {
   const rules = normalizeSoftwarePolicyRules(policy.rules);
+  // A prohibited application is never also required. Keep the allowlist's
+  // installed-software checks intact, but remove conflicting requirements so
+  // independent install/uninstall workers cannot oscillate on the same app.
   const violations = evaluateSoftwareInventory(policy.mode, rules, inventory);
+  const effectiveViolations = policy.mode === 'allowlist' && blockedRules.length > 0
+    ? [
+      ...violations.filter((violation) => violation.type !== 'missing'),
+      ...evaluateSoftwareInventory('allowlist', {
+        ...rules,
+        software: rules.software.filter((rule) => !isSoftwareRuleBlocked(rule, blockedRules)),
+      }, inventory).filter((violation) => violation.type === 'missing'),
+    ]
+    : violations;
   return {
-    status: violations.length > 0 ? 'violation' : 'compliant',
-    violations,
+    status: effectiveViolations.length > 0 ? 'violation' : 'compliant',
+    violations: effectiveViolations,
   };
+}
+
+/** Whether two case-insensitive '*' glob languages share any software name. */
+function softwareNamePatternsOverlap(left: string, right: string): boolean {
+  const a = left.toLowerCase();
+  const b = right.toLowerCase();
+  const pending: Array<[number, number]> = [[0, 0]];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const [i, j] = pending.pop()!;
+    const key = `${i}:${j}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (i === a.length && j === b.length) return true;
+    if (a[i] === '*') pending.push([i + 1, j]);
+    if (b[j] === '*') pending.push([i, j + 1]);
+    if (i < a.length && j < b.length && (a[i] === b[j] || a[i] === '*' || b[j] === '*')) {
+      const next: [number, number] = [a[i] === '*' ? i : i + 1, b[j] === '*' ? j : j + 1];
+      if (next[0] !== i || next[1] !== j) pending.push(next);
+    }
+  }
+  return false;
+}
+
+/** Blocklist wins independently of assignment specificity and policy priority. */
+export function isSoftwareRuleBlocked(
+  required: SoftwarePolicyRuleDefinition,
+  blockedRules: SoftwarePolicyRuleDefinition[],
+): boolean {
+  return blockedRules.some((blocked) => {
+    if (required.catalogId && blocked.catalogId && required.catalogId !== blocked.catalogId) return false;
+    if (required.vendor && blocked.vendor
+      && normalizeComparable(required.vendor) !== normalizeComparable(blocked.vendor)) return false;
+    if (required.maxVersion && blocked.minVersion
+      && compareSoftwareVersions(required.maxVersion, blocked.minVersion) < 0) return false;
+    if (required.minVersion && blocked.maxVersion
+      && compareSoftwareVersions(required.minVersion, blocked.maxVersion) > 0) return false;
+    if (required.catalogId && required.catalogId === blocked.catalogId) return true;
+    return softwareNamePatternsOverlap(required.name, blocked.name);
+  });
 }
 
 export async function getSoftwareInventoryByDeviceIds(
@@ -584,7 +637,11 @@ export async function evaluateSoftwarePolicyForDevice(
     .from(softwareInventory)
     .where(eq(softwareInventory.deviceId, deviceId));
 
-  return evaluateSoftwarePolicyAgainstInventory(policy, inventory);
+  const { getSoftwareBlocklistRulesForDevice } = await import('./softwarePolicyConflicts');
+  const blockedRules = policy.mode === 'allowlist'
+    ? await getSoftwareBlocklistRulesForDevice(deviceId)
+    : [];
+  return evaluateSoftwarePolicyAgainstInventory(policy, inventory, blockedRules);
 }
 
 /**

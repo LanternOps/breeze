@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import SoftwarePolicyTab from './SoftwarePolicyTab';
 import type { FeatureLink, FeatureTabProps } from './types';
 
@@ -85,5 +85,40 @@ describe('SoftwarePolicyTab — re-sync when the parent arrives (#5080)', () => 
     // from an explicit override.
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/software-policies/sp-parent');
+  });
+});
+
+
+describe('SoftwarePolicyTab additive links', () => {
+  it('renders each linked policy and adds a new link rather than editing an existing one', async () => {
+    const links = [parentLink('allowlist'), { ...parentLink('blocklist'), id: 'link-blocklist' }];
+    const { container } = render(<SoftwarePolicyTab {...baseProps} existingLink={links[0]} siblingLinks={links} allLinks={links} />);
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/software-policies/allowlist');
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/software-policies/blocklist');
+    });
+    expect(container.querySelectorAll('h2')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Add software policy' }));
+    expect(container.querySelectorAll('h2')).toHaveLength(3);
+  });
+
+  it('removes only the selected software link', async () => {
+    const onLinkChanged = vi.fn();
+    const first = parentLink('allowlist');
+    const second = { ...parentLink('blocklist'), id: 'link-blocklist' };
+    render(<SoftwarePolicyTab {...baseProps} onLinkChanged={onLinkChanged} existingLink={first} siblingLinks={[first, second]} allLinks={[first, second]} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]);
+    fireEvent.click(await screen.findByTestId('feature-tab-remove-confirm'));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('link-blocklist'));
+    expect(onLinkChanged).toHaveBeenCalledWith(null, 'software_policy', 'link-blocklist');
+  });
+
+  it('keeps inherited policies visible alongside own policies without override controls', async () => {
+    const own = { ...parentLink('own-blocklist'), id: 'link-own' };
+    const inherited = parentLink('parent-allowlist');
+    render(<SoftwarePolicyTab {...baseProps} existingLink={own} siblingLinks={[own]} allLinks={[own, inherited]} parentLink={inherited} />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/software-policies/parent-allowlist'));
+    expect(screen.queryByRole('button', { name: /override/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /revert/i })).not.toBeInTheDocument();
   });
 });

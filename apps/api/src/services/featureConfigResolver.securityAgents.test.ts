@@ -218,12 +218,13 @@ describe('resolveDeviceIdsForSoftwarePolicy managed branch (#6960)', () => {
     expect(fromTables[1]).toBe(configPolicyEffectiveFeatureLinks);
   });
 
-  it('a non-managed policy takes the software_policy path unchanged', async () => {
+  it('a non-managed policy checks additive links and explicit targets', async () => {
     queue(
       [{ managedByLinkId: null }],
       [], // no config policy links this software policy
+      [{ id: 'sp-customer', isActive: true, targetIds: null }], // no explicit targets either
     );
     await expect(resolveDeviceIdsForSoftwarePolicy('sp-customer')).resolves.toEqual([]);
-    expect(fromTables).toEqual([softwarePolicies, configPolicyEffectiveFeatureLinks]);
+    expect(fromTables).toEqual([softwarePolicies, configPolicyEffectiveFeatureLinks, softwarePolicies]);
   });
 });

@@ -110,13 +110,7 @@ export async function ensureDefaultConfigPolicyLink(
       featureType: 'software_policy',
       featurePolicyId: softwarePolicyId,
     })
-    .onConflictDoUpdate({
-      target: [configPolicyFeatureLinks.configPolicyId, configPolicyFeatureLinks.featureType],
-      set: {
-        featurePolicyId: softwarePolicyId,
-        updatedAt: new Date(),
-      },
-    });
+    .onConflictDoNothing();
 
   // Ensure an org-level assignment exists
   await db

@@ -55,7 +55,8 @@ function mockResolverCalls(
     .mockReturnValueOnce(selectChain(deviceRows) as any)
     .mockReturnValueOnce(selectChain(orgRows) as any)
     .mockReturnValueOnce(selectChain(groupRows) as any)
-    .mockReturnValueOnce(selectChain(assignmentRows) as any);
+    .mockReturnValueOnce(selectChain(assignmentRows) as any)
+    .mockReturnValue(selectChain([]) as any);
 }
 
 const DEVICE = { id: 'dev-1', orgId: 'org-1', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows' };

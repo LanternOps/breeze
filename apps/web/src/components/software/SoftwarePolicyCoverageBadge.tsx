@@ -4,11 +4,8 @@ import { useTranslation } from "react-i18next";
 import { fetchWithAuth } from "../../stores/auth";
 import { competitorList, type SoftwarePolicyCoverage } from "./softwarePolicyCompetitors";
 
-/**
- * #9635 — how many devices a software policy actually governs. A device
- * follows ONE software policy (closest assignment, then priority, then age), so
- * a policy can be assigned yet apply to no device; this says so, and names the
- * policy that wins instead. Read-only; renders nothing until it has an answer.
+/** Counts all devices reached by this software policy's additive assignments.
+ * Legacy overriddenBy responses remain renderable during rolling upgrades.
  */
 export default function SoftwarePolicyCoverageBadge({ policyId }: { policyId: string }) {
   const { t } = useTranslation("policies");
