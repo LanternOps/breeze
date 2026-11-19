@@ -115,10 +115,9 @@ func splitLenovoSetting(s string) (name, value string, optional []string, ok boo
 	if !found || name == "" {
 		return "", "", nil, false
 	}
-	if i := strings.Index(tail, "[Optional:"); i >= 0 {
-		rest := tail[i+len("[Optional:"):]
-		if j := strings.Index(rest, "]"); j >= 0 {
-			for _, v := range strings.Split(rest[:j], ",") {
+	if _, rest, ok := strings.Cut(tail, "[Optional:"); ok {
+		if list, _, ok := strings.Cut(rest, "]"); ok {
+			for v := range strings.SplitSeq(list, ",") {
 				if v = strings.TrimSpace(v); v != "" {
 					optional = append(optional, v)
 				}
@@ -135,7 +134,7 @@ func lenovoMachineType(model string) *string {
 	if !lenovoMachineTypeRe.MatchString(m) {
 		return nil
 	}
-	return ptr(strings.ToUpper(m[:4]))
+	return new(strings.ToUpper(m[:4]))
 }
 
 // passwordStateOf accepts only an integer in uint16 range.
@@ -144,7 +143,7 @@ func passwordStateOf(v any) *int {
 	if !ok || f < 0 || f > math.MaxUint16 || f != math.Trunc(f) {
 		return nil
 	}
-	return ptr(int(f))
+	return new(int(f))
 }
 
 // lenovoClasses keeps well-formed Lenovo_* names, sorted, unique, capped.

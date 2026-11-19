@@ -91,5 +91,3 @@ func settingNames(s []ObservedSetting) []string {
 	}
 	return out
 }
-
-func strp(s string) *string { return &s }

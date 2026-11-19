@@ -1053,11 +1053,14 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
-        helpers.buildWakeOnLanConfigUpdate, helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+        helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
         helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
+      // The wake builder also takes the agent's partner, for observe_vendors.
+      expect(vi.mocked(helpers.buildWakeOnLanConfigUpdate))
+        .toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }), 'partner-1');
       expect(vi.mocked(helpers.buildHelperConfigUpdate))
         .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ hierarchy }));
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });

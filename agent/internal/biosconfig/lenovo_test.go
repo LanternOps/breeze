@@ -225,7 +225,7 @@ func TestLenovoIdeaPadAbsent(t *testing.T) {
 
 func TestLenovoMachineTypeAndBounds(t *testing.T) {
 	for model, want := range map[string]*string{
-		"20U9CTO1WW": strp("20U9"), "11A4000AUS": strp("11A4"), "20u9": strp("20U9"),
+		"20U9CTO1WW": new("20U9"), "11A4000AUS": new("11A4"), "20u9": new("20U9"),
 		"ThinkPad": nil, "20U": nil, "": nil, "20-U9": nil,
 	} {
 		got := lenovoMachineType(model)
@@ -236,7 +236,7 @@ func TestLenovoMachineTypeAndBounds(t *testing.T) {
 	for _, c := range []struct {
 		in   any
 		want *int
-	}{{2.0, intp(2)}, {0.0, intp(0)}, {-1.0, nil}, {70000.0, nil}, {1.5, nil}, {"2", nil}, {nil, nil}} {
+	}{{2.0, new(2)}, {0.0, new(0)}, {-1.0, nil}, {70000.0, nil}, {1.5, nil}, {"2", nil}, {nil, nil}} {
 		got := passwordStateOf(c.in)
 		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
 			t.Errorf("passwordState(%v) = %v", c.in, got)
@@ -247,5 +247,3 @@ func TestLenovoMachineTypeAndBounds(t *testing.T) {
 		t.Fatalf("classes = %v", classes)
 	}
 }
-
-func intp(i int) *int { return &i }

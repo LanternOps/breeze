@@ -283,8 +283,6 @@ func decodeScript(out []byte, v any) error {
 	return nil
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // failed builds an observation for a failure before anything was read.
 func failed(vendor, iface, code string) *Observation {
 	return &Observation{Vendor: vendor, Interface: iface, ErrorCode: &code}

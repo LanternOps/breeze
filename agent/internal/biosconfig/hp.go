@@ -145,9 +145,9 @@ func isSetOf(v any) *bool {
 	case float64:
 		switch n {
 		case 1:
-			return ptr(true)
+			return new(true)
 		case 0:
-			return ptr(false)
+			return new(false)
 		}
 	}
 	return nil

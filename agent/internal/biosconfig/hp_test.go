@@ -199,7 +199,7 @@ func TestControlCharsStripped(t *testing.T) {
 	f := newFakeRunner()
 	f.out[hpReadScript] = mustJSON(t, map[string]any{
 		"enum": []any{map[string]any{
-			"name":     "Wake\x00 On\x1b LAN​‮",
+			"name":     "Wake\x00 On\x1b LAN\u200b\u202e",
 			"value":    "Boot\r\nto\tHard Drive\x7f",
 			"possible": []string{"Dis\x07able", "", "  ", "\x00"},
 		}},

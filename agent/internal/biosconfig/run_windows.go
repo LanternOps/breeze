@@ -31,8 +31,7 @@ func RunReadOnlyPowerShell(ctx context.Context, script string, stdin []byte) ([]
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, fmt.Errorf("powershell exit %d", exit.ExitCode())
 		}
 		return nil, errors.New("powershell did not run")
