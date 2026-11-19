@@ -14,7 +14,7 @@ A Compose deployment keeps state in six named Docker volumes, plus your object s
 
 | Persistent location | Back it up? | Script flag | Details |
 |---|---|---|---|
-| `postgres_data` | Yes. This is the critical backup. | `--db` | PostgreSQL data at `/var/lib/postgresql/data` |
+| `postgres_data` (or `postgres_data_alt` when `POSTGRES_DATA_VOLUME` selects it) | Yes. This is the critical backup. | `--db` | PostgreSQL data at `/var/lib/postgresql/data` |
 | Object storage | Yes, when configured. | `--storage` | The bucket configured by `S3_ENDPOINT` and `S3_BUCKET` |
 | Configuration | Yes. | `--config` | `.env`, certificates, and Compose files. Encrypted with `tar` and `openssl` |
 | `api_data` | Yes. | `--data` (included in `--all` since 2026-09-03) | Patch compliance report CSV files at `/data/patch-reports` |

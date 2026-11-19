@@ -132,12 +132,15 @@ Breeze is tested on PostgreSQL 16, 17 and 18 (see [Supported PostgreSQL versions
 - If you installed the boot service (`breeze-rmm.service` by default), do not reboot the host during the procedure. The service starts every container on boot.
 - This procedure is for the bundled `postgres` service on Docker volumes. For the [local `./data` storage mode](#local-data-storage-mode) or a managed database, see below.
 
-Run every command from the directory that holds `docker-compose.yml` and `.env`. `dc` stands for the Compose command your installation uses. `guided-setup.sh` and its boot service use exactly this, so a variable you export in your shell can never make your session differ from a reboot:
+Run every command from the directory that holds `docker-compose.yml` and `.env`. `dc` stands for the Compose command your installation uses. `guided-setup.sh` and its boot service use exactly this form:
 
 ```bash
 dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
 # Add every other -f file you normally deploy with, in the same order.
+env | grep -E '^POSTGRES_(IMAGE_REF|DATA_VOLUME)=' && echo 'STOP: unset these first'
 ```
+
+The last line must print nothing. Compose prefers a variable exported in your shell over `.env`, so an exported `POSTGRES_IMAGE_REF` or `POSTGRES_DATA_VOLUME` would make your session start a different database than the next reboot.
 
 <Steps>
 
@@ -182,11 +185,13 @@ dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
    FROM information_schema.tables
    WHERE table_type = 'BASE TABLE'
      AND table_schema NOT IN ('pg_catalog', 'information_schema')
-   ORDER BY 1;
+   ORDER BY table_schema COLLATE "C", table_name COLLATE "C";
    SQL
-   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-16.txt
-   wc -l pg-upgrade/counts-16.txt
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-16.txt \
+     && test -s pg-upgrade/counts-16.txt && wc -l pg-upgrade/counts-16.txt
    ```
+
+   It must print a line count (one line per table). No output means the count failed: stop and fix it before going on.
 
 4. **Save the cluster roles**
 
@@ -219,7 +224,7 @@ dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
 
    ```bash
    dc up -d postgres
-   dc ps postgres          # wait for (healthy)
+   until dc ps postgres | grep -q '(healthy)'; do sleep 2; done
    docker inspect "$(dc ps -q postgres)" --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{println}}{{end}}'
    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW server_version" -c "SHOW data_directory"'
    ```
@@ -229,11 +234,11 @@ dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
 7. **Load the roles**
 
    ```bash
-   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -q' < pg-upgrade/globals.sql
-   rm -f pg-upgrade/globals.sql
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -q' < pg-upgrade/globals.sql \
+     && rm -f pg-upgrade/globals.sql
    ```
 
-   One error is expected: `role "<POSTGRES_USER>" already exists`, because the new cluster created it on first start. The `ALTER ROLE` lines after it still apply.
+   One error is expected: `role "<POSTGRES_USER>" already exists`, because the new cluster created it on first start. The `ALTER ROLE` lines after it still apply. `psql` still exits 0 for it, so `globals.sql` is deleted only once the roles loaded. If the file is still there, `psql` could not connect: wait for Postgres and run the step again.
 
 8. **Restore the dump**
 
@@ -259,8 +264,9 @@ dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
     SELECT extname || ' ' || extversion FROM pg_extension ORDER BY 1;
     SELECT 'invalid index: ' || indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
     SQL
-    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-18.txt
-    diff pg-upgrade/counts-16.txt pg-upgrade/counts-18.txt && echo 'row counts identical'
+    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-18.txt \
+      && test -s pg-upgrade/counts-18.txt \
+      && diff pg-upgrade/counts-16.txt pg-upgrade/counts-18.txt && echo 'row counts identical'
     ```
 
     Expect `18.x`, `pg_trgm` (and `vector` if Workspace is on), no `invalid index` lines, and `row counts identical`. The counts were taken with every writer stopped, so **any** difference is a failed restore, not activity. Stop and roll back.
@@ -303,7 +309,7 @@ If you moved to 18 by mounting the volume at `/var/lib/postgresql` (the layout t
 
 ### Local `./data` storage mode
 
-If `guided-setup.sh` set up local storage, the database is a bind mount of `./data/postgres` and `POSTGRES_DATA_VOLUME` has no effect. Follow steps 1–4 and 7–11 above. For steps 5 and 6, keep the old directory as the rollback:
+If `guided-setup.sh` set up local storage, the database is a bind mount of `./data/postgres` and `POSTGRES_DATA_VOLUME` has no effect. `guided-setup.sh` does not regenerate that Compose file, so add `PGDATA: /var/lib/postgresql/data` to the `postgres` service's `environment:` by hand first (without it an 18 image refuses to start). Follow steps 1–4 and 7–11 above. For steps 5 and 6, keep the old directory as the rollback:
 
 ```bash
 dc stop postgres
