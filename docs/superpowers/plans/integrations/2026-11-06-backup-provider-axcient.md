@@ -539,7 +539,7 @@ git commit -m "feat(integrations): per-provider backup connection forms and the 
 
 ## W03: live verification (blocked on Decision 1: a live account)
 
-W03 does not start until a live key exists, from an OliveTech Axcient trial or from the design partner's read-only key. Record each answer in the wave issue. Any answer that disagrees with W01/W02 becomes a red test in the owning file before it becomes a fix.
+W03 does not start until a live key exists, from our own Axcient trial or from the design partner's read-only key. Record each answer in the wave issue. Any answer that disagrees with W01/W02 becomes a red test in the owning file before it becomes a fix.
 
 ### Task 11: Live smoke against a real x360Recover account
 

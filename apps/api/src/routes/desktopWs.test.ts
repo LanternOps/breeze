@@ -524,7 +524,7 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
       mode: 'notify',
       technicianName: 'Billy Tech',
       technicianEmail: null,
-      orgName: 'Olive Technology',
+      orgName: 'Fabrikam MSP',
       consentUnavailableBehavior: 'proceed',
       consentTimeoutMs: 30000,
       notifyOnEnd: true,

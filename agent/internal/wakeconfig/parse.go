@@ -23,6 +23,9 @@ type rawAdapter struct {
 	MAC         string  `json:"mac"`
 	MagicPacket *string `json:"magicPacket"`
 	EEE         *string `json:"eee"`
+	// S5 is the raw RegistryValue of Realtek's S5WakeOnLan keyword; null or
+	// missing means the driver has no such keyword.
+	S5 *string `json:"s5"`
 }
 
 // ParseWindowsReadings turns the collector's JSON into readings. It is pure and
@@ -79,6 +82,17 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 				reading.EEE = "enabled"
 			case "0":
 				reading.EEE = "disabled"
+			}
+		}
+		reading.ShutdownWake = "absent"
+		if a.S5 != nil {
+			switch strings.TrimSpace(*a.S5) {
+			case "1":
+				reading.ShutdownWake = "enabled"
+			case "0":
+				reading.ShutdownWake = "disabled"
+			default:
+				reading.ShutdownWake = "unknown"
 			}
 		}
 		out.Adapters = append(out.Adapters, reading)

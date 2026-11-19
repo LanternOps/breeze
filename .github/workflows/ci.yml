@@ -471,6 +471,12 @@ jobs:
         run: node --test .github/scripts/integration-suites.test.mjs
         timeout-minutes: 10
 
+      # Related-test narrowing of queue unit suites, shadow: the always list
+      # and the related set (W07c, #10751).
+      - name: Test related-test selection
+        run: node --test .github/scripts/related-tests.test.mjs
+        timeout-minutes: 10
+
       # postgres-versions.json ↔ ci.yml's Postgres 18 smoke ↔ the scheduled
       # postgres-compat.yml (parity with integration-test) (#11417).
       - name: Test Postgres compatibility contract
@@ -675,6 +681,15 @@ jobs:
       - name: Type-check workspace (ee)
         if: matrix.shard == 1
         run: pnpm --filter @breeze/ext-workspace typecheck
+
+      # W07c (#10751), shadow: how many API unit tests a related run of this
+      # queue entry's own diff would select. A log line only; it changes nothing
+      # this job runs, and it cannot fail the job.
+      - name: Related-test shadow (W07c)
+        if: github.event_name == 'merge_group' && matrix.shard == 1
+        continue-on-error: true
+        timeout-minutes: 3
+        run: node .github/scripts/related-tests.mjs shadow --job test-api --base "${CI_BASE_SHA}" --head HEAD
 
       - name: Run API tests
         # Vitest resolves workspace packages from source; build-api owns the
@@ -1193,6 +1208,15 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # W07c (#10751), shadow: how many web unit tests a related run of this
+      # queue entry's own diff would select. A log line only; it changes nothing
+      # this job runs, and it cannot fail the job.
+      - name: Related-test shadow (W07c)
+        if: github.event_name == 'merge_group' && matrix.shard == 1
+        continue-on-error: true
+        timeout-minutes: 3
+        run: node .github/scripts/related-tests.mjs shadow --job test-web --base "${CI_BASE_SHA}" --head HEAD
 
       - name: Run Web tests
         # Source aliases in vitest.config.ts avoid a production Astro build.

@@ -22,8 +22,8 @@ const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: "OK", json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const conn = {
-  id: "conn-1", provider: "cove", name: "OliveTech Cove", baseUrl: "https://api.backup.management/jsonapi",
-  vendorRootName: "OliveTech", isActive: true, status: "connected", syncIntervalMinutes: 30,
+  id: "conn-1", provider: "cove", name: "Fabrikam MSP Cove", baseUrl: "https://api.backup.management/jsonapi",
+  vendorRootName: "Fabrikam MSP", isActive: true, status: "connected", syncIntervalMinutes: 30,
   showProviderNameInPortal: false, lastSyncAt: "2026-09-15T11:50:00.000Z", lastSyncStatus: "success",
   lastSyncError: null, lastSyncCustomers: 3, lastSyncUnmappedCustomers: 1, lastSyncDevices: 40,
   lastSyncUnmappedDevices: 5, lastSyncLinkedDevices: 30, lastSyncAmbiguousDevices: 0, hasCredentials: true,
@@ -68,7 +68,7 @@ describe("BackupProvidersIntegration", () => {
     render(<BackupProvidersIntegration />);
     await screen.findByTestId("backup-connection-conn-1");
     fireEvent.click(screen.getByTestId("backup-providers-add"));
-    expect(screen.getByTestId("backup-add-name")).not.toHaveAttribute("placeholder", "OliveTech Cove");
+    expect(screen.getByTestId("backup-add-name")).toHaveAttribute("placeholder", "Main Cove account");
   });
 
   it("POSTs a new connection with the credentials blob and refetches", async () => {
@@ -77,7 +77,7 @@ describe("BackupProvidersIntegration", () => {
 
     fireEvent.click(screen.getByTestId("backup-providers-add"));
     fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Second Cove" } });
-    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "OliveTech" } });
+    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "Fabrikam MSP" } });
     fireEvent.change(screen.getByTestId("backup-add-username"), { target: { value: "breeze-ro" } });
     fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "s3cret" } });
     fireEvent.click(screen.getByTestId("backup-add-submit"));
@@ -95,7 +95,7 @@ describe("BackupProvidersIntegration", () => {
       provider: "cove",
       name: "Second Cove",
       showProviderNameInPortal: false,
-      credentials: { partnerName: "OliveTech", username: "breeze-ro", password: "s3cret" },
+      credentials: { partnerName: "Fabrikam MSP", username: "breeze-ro", password: "s3cret" },
     });
   });
 
@@ -261,12 +261,12 @@ describe("posted bodies stay byte-identical (raw JSON, including key order)", ()
   it("Cove", async () => {
     render(<BackupProvidersIntegration />);
     fireEvent.click(await screen.findByTestId("backup-providers-add"));
-    for (const [field, value] of Object.entries({ name: " Second Cove ", "partner-name": " OliveTech ", username: " breeze-ro ", password: " s3cret " })) {
+    for (const [field, value] of Object.entries({ name: " Second Cove ", "partner-name": " Fabrikam MSP ", username: " breeze-ro ", password: " s3cret " })) {
       fireEvent.change(screen.getByTestId(`backup-add-${field}`), { target: { value } });
     }
     fireEvent.click(screen.getByTestId("backup-add-submit"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
-    expect(postedBody()).toBe('{"provider":"cove","name":"Second Cove","showProviderNameInPortal":false,"credentials":{"partnerName":"OliveTech","username":"breeze-ro","password":" s3cret "}}');
+    expect(postedBody()).toBe('{"provider":"cove","name":"Second Cove","showProviderNameInPortal":false,"credentials":{"partnerName":"Fabrikam MSP","username":"breeze-ro","password":" s3cret "}}');
   });
 
   it("Dropsuite", async () => {

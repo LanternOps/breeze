@@ -31,10 +31,10 @@ describe('buildQuoteTemplate', () => {
   it('renders the partner signature (escaped, multi-line) in html and text', () => {
     const t = buildQuoteTemplate({
       quoteNumber: 'Q-1', partnerName: 'Acme', total: '$1', acceptUrl: 'https://x.example/q/t',
-      signature: 'Todd H.\nOliveTech <support>',
+      signature: 'Todd H.\nFabrikam MSP <support>',
     });
-    expect(t.html).toContain('Todd H.<br>OliveTech &lt;support&gt;');
-    expect(t.text).toContain('Todd H.\nOliveTech <support>');
+    expect(t.html).toContain('Todd H.<br>Fabrikam MSP &lt;support&gt;');
+    expect(t.text).toContain('Todd H.\nFabrikam MSP <support>');
   });
 
   it('brands the layout as the MSP, not the platform', () => {

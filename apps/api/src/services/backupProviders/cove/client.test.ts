@@ -13,7 +13,7 @@ import statisticsAll from './__fixtures__/statistics-page-all-statuses.json';
 import statisticsM365 from './__fixtures__/statistics-page-m365.json';
 import statisticsMissing from './__fixtures__/statistics-page-missing-status.json';
 
-const CREDS = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+const CREDS = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 const BASE_URL = 'https://api.backup.management/jsonapi';
 
 /** A fetch stub that replays the given bodies in order and records every request. */
@@ -65,7 +65,7 @@ describe('CoveJsonRpcClient.login', () => {
     const { client, calls } = makeClient([loginSuccess]);
     const result = await client.login(CREDS);
 
-    expect(result).toEqual({ visa: 'visa-after-login', partnerId: '1000', partnerName: 'OliveTech' });
+    expect(result).toEqual({ visa: 'visa-after-login', partnerId: '1000', partnerName: 'Fabrikam MSP' });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(BASE_URL);
     expect(calls[0]!.body).toMatchObject({
@@ -106,7 +106,7 @@ describe('CoveJsonRpcClient.login', () => {
 
   it('falls back to the supplied partner name when the vendor omits PartnerName', async () => {
     const { client } = makeClient([{ visa: 'v', result: { result: { PartnerId: 1000 } } }]);
-    await expect(client.login(CREDS)).resolves.toEqual({ visa: 'v', partnerId: '1000', partnerName: 'OliveTech' });
+    await expect(client.login(CREDS)).resolves.toEqual({ visa: 'v', partnerId: '1000', partnerName: 'Fabrikam MSP' });
   });
 
   it('raises malformed_response when the envelope carries neither result nor error', async () => {
