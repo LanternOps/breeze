@@ -1,30 +1,33 @@
-import { getCommandTimeoutMs } from '../../services/commandTimeouts';
+import { getCommandTimeoutMs, getCommandUndeliveredTimeoutMs } from '../../services/commandTimeouts';
 import { CommandTypes } from '../../services/commandTypes';
 import type { BackupVerificationType } from './types';
 
 /**
- * #11813 — how long a pending/running verification may live before the
- * verification-timeout-check job fails it (and fails its device command).
+ * #11813 — when the verification-timeout job may fail a pending/running
+ * verification (and its device command).
  *
  * It used to be a flat 30 minutes while `backup_verify` / `backup_test_restore`
- * carry a two-hour command budget (`LONG_TIMEOUT_TYPES`, commandTimeouts.ts).
- * Every large snapshot was cut off at 30 minutes: failing the command revokes
- * its brokered read session (`authenticateStorageSession` revokes as
- * `command_<status>` once the command is no longer live, so `command_failed`
- * here), every later object resolve returns 410, and the agent reports
- * `partial`. The timeout is now read from the command budget so the two
- * cannot disagree again.
+ * carried a two-hour command budget. Every large snapshot was cut off at 30
+ * minutes: failing the command revokes its brokered read session
+ * (`authenticateStorageSession` revokes as `command_<status>` once the command
+ * is no longer live), every later object resolve returns 410, and the agent
+ * reports `partial`.
  *
- * Clocks: this one runs from the verification's `startedAt` (dispatch). The
- * command's own budget runs from delivery (`executed_at`, stale-command
- * reaper; the read session's deadline is its claim time + the same budget).
- * Both verification commands are `live` (commandOfflinePolicy.ts): dispatch
- * refuses them for an offline device and never queues them, so delivery
- * follows dispatch within one send or poll. The grace absorbs that gap and
- * keeps this job behind the command's deadline; the agent's helper also stops
- * at `VerifyRunBudget` (2 h − 10 min after it starts) and reports its counts.
- * This job only cleans up a verification nobody answered. It runs every
- * 5 minutes.
+ * The budget now scales with the snapshot (services/backupVerifyBudget.ts):
+ * it is computed when the verification is created, carried on the command as
+ * `payload.timeBudgetSeconds` and stored on the row as
+ * `details.timeBudgetSeconds`. It is read back through the command's own
+ * clamp (`getCommandTimeoutMs`), so this job, the stale-command reaper and the
+ * read session's deadline cannot disagree.
+ *
+ * Clocks: the command's execution budget runs from delivery (`executed_at`),
+ * not dispatch. A verification command can wait 20+ minutes before delivery
+ * (the delivery refresher defers it while the snapshot's file index
+ * hydrates), so this job's deadline runs from `executed_at` too — see
+ * `verificationDeadline`. The grace keeps it behind the command's own
+ * deadline so the agent's partial counts (its helper stops 10 minutes short
+ * of the forward wait) arrive first. This job only cleans up a verification
+ * nobody answered. It runs every 5 minutes.
  */
 export const VERIFICATION_TIMEOUT_GRACE_MS = 5 * 60 * 1000;
 
@@ -42,21 +45,85 @@ export function verificationCommandType(type: BackupVerificationType): string {
   return type === 'integrity' ? CommandTypes.BACKUP_VERIFY : CommandTypes.BACKUP_TEST_RESTORE;
 }
 
-export function verificationTimeoutMs(type: BackupVerificationType): number {
-  return getCommandTimeoutMs(verificationCommandType(type)) + VERIFICATION_TIMEOUT_GRACE_MS;
+function timeBudgetSecondsOf(details: unknown): unknown {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  return (details as Record<string, unknown>).timeBudgetSeconds;
 }
 
-/** The smallest per-type timeout: a safe `started_at <= cutoff` pre-filter for the scan. */
+/**
+ * The verification's execution budget: `details.timeBudgetSeconds` through the
+ * command's own clamp ([2h, 12h]; absent or invalid → the 2 h base).
+ */
+export function verificationBudgetMs(type: BackupVerificationType, details: unknown): number {
+  return getCommandTimeoutMs(verificationCommandType(type), { timeBudgetSeconds: timeBudgetSecondsOf(details) });
+}
+
+/** How long the verification's command may wait undelivered (the 2 h base). */
+function verificationUndeliveredLimitMs(type: BackupVerificationType): number {
+  return getCommandUndeliveredTimeoutMs(verificationCommandType(type));
+}
+
+/**
+ * The one deadline the verification-timeout job applies.
+ *
+ *  - Command delivered (`executed_at` set): `executed_at` + budget + grace —
+ *    the same clock the reaper and the read session run on.
+ *  - Command never delivered, or no row found: `started_at` + the undelivered
+ *    limit (2 h) + grace. Such a command can no longer be claimed after that
+ *    limit (the reaper expires it on the same clock), so its verification
+ *    settles on today's 125 minutes instead of waiting out an execution
+ *    budget that never started.
+ *
+ * `budgetMs` is the budget that deadline used, for the reason text.
+ */
+export function verificationDeadline(params: {
+  verificationType: BackupVerificationType;
+  startedAt: string | Date;
+  details: unknown;
+  command: { executedAt: Date | null } | null;
+}): { deadlineMs: number; budgetMs: number } {
+  const executedAt = params.command?.executedAt ?? null;
+  if (executedAt) {
+    const budgetMs = verificationBudgetMs(params.verificationType, params.details);
+    return { deadlineMs: executedAt.getTime() + budgetMs + VERIFICATION_TIMEOUT_GRACE_MS, budgetMs };
+  }
+  const budgetMs = verificationUndeliveredLimitMs(params.verificationType);
+  const startedMs = new Date(params.startedAt).getTime();
+  return { deadlineMs: startedMs + budgetMs + VERIFICATION_TIMEOUT_GRACE_MS, budgetMs };
+}
+
+/**
+ * The smallest possible deadline measured from `started_at`: a safe
+ * `started_at <= now - this` pre-filter for the scan. Every deadline above is
+ * at least `started_at` + the 2 h base + grace (a command is claimed after it
+ * is created, and the budget floor is the base).
+ */
 export function shortestVerificationTimeoutMs(): number {
-  return Math.min(verificationTimeoutMs('integrity'), verificationTimeoutMs('test_restore'));
+  return Math.min(
+    verificationUndeliveredLimitMs('integrity'),
+    verificationUndeliveredLimitMs('test_restore'),
+    verificationBudgetMs('integrity', null),
+    verificationBudgetMs('test_restore', null),
+  ) + VERIFICATION_TIMEOUT_GRACE_MS;
 }
 
-export function verificationTimeoutReason(type: BackupVerificationType): string {
-  return `Verification timed out after ${Math.round(verificationTimeoutMs(type) / 60_000)} minutes`;
+/**
+ * For callers that see only the verification row (no `executed_at`): how long
+ * after `started_at` a pending/running verification is certainly overdue. The
+ * command can be claimed at the latest at its undelivered limit, so this is
+ * that limit + budget + grace — never earlier than `verificationDeadline`, so
+ * it never flags a healthy run.
+ */
+export function verificationStuckAfterMs(type: BackupVerificationType, details: unknown): number {
+  return verificationUndeliveredLimitMs(type) + verificationBudgetMs(type, details) + VERIFICATION_TIMEOUT_GRACE_MS;
 }
 
-export function verificationTimeoutDetails(type: BackupVerificationType): { reason: string; reasonCode: string } {
-  return { reason: verificationTimeoutReason(type), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE };
+export function verificationTimeoutReason(budgetMs: number): string {
+  return `Verification timed out after ${Math.round((budgetMs + VERIFICATION_TIMEOUT_GRACE_MS) / 60_000)} minutes`;
+}
+
+export function verificationTimeoutDetails(budgetMs: number): { reason: string; reasonCode: string } {
+  return { reason: verificationTimeoutReason(budgetMs), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE };
 }
 
 /** True when a verification's details mark it as failed by the timeout job — new code or legacy text. */

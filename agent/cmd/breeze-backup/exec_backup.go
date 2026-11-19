@@ -599,33 +599,62 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 	return marshalRestoreResult(result, err)
 }
 
-// verifyRunBudget bounds each backup_verify / backup_test_restore run so it
-// reports its partial counts before the agent's forward wait expires (see
-// backupipc.VerifyRunBudget, #6598). A var so tests can shorten it.
+// verifyRunBudget bounds a backup_verify / backup_test_restore run whose
+// request carries no usable timeout, so it reports its partial counts before
+// the agent's forward wait expires (see backupipc.VerifyRunBudget, #6598). A
+// var so tests can shorten it.
 var verifyRunBudget = backupipc.VerifyRunBudget
 
-// verifyOptions builds the run options for a verify or test restore:
-// the run budget, and progress over conn (nil conn = log-only progress).
-func verifyOptions(conn *ipc.Conn, commandID, phase string) backup.VerifyOptions {
+// verifyRunBudgetFor is the run budget for a verification request: the
+// agent's forward wait (the IPC request's TimeoutMs, which the agent derives
+// from the server's scaled budget) minus backupipc.VerifyRunMargin, capped at
+// backupipc.VerifyMaxCommandTimeout. It deliberately ignores the command
+// payload: the run must end before THIS agent's wait does, whatever the
+// server asked for, so a helper paired with an agent that still waits the
+// base 2 h stops at 1 h 50 m as before. A missing timeout, or one no longer
+// than the margin, falls back to verifyRunBudget; the result is always
+// positive (a zero TimeBudget would mean "unbounded" to the verify loop).
+func verifyRunBudgetFor(timeoutMs int64) time.Duration {
+	if timeoutMs <= 0 {
+		return verifyRunBudget
+	}
+	timeout := backupipc.VerifyMaxCommandTimeout
+	if timeoutMs < timeout.Milliseconds() {
+		timeout = time.Duration(timeoutMs) * time.Millisecond
+	}
+	if timeout <= backupipc.VerifyRunMargin {
+		return verifyRunBudget
+	}
+	return timeout - backupipc.VerifyRunMargin
+}
+
+// verifyOptions builds the run options for a verify or test restore: the run
+// budget (callers pass verifyRunBudgetFor(req.TimeoutMs); zero or negative
+// means verifyRunBudget, never "unbounded"), and progress over conn (nil conn
+// = log-only progress).
+func verifyOptions(conn *ipc.Conn, commandID, phase string, runBudget time.Duration) backup.VerifyOptions {
+	if runBudget <= 0 {
+		runBudget = verifyRunBudget
+	}
 	var send func(backupipc.BackupProgress)
 	if conn != nil {
 		send = func(p backupipc.BackupProgress) { sendBackupRunProgress(conn, commandID, p) }
 	}
 	return backup.VerifyOptions{
-		TimeBudget: verifyRunBudget,
+		TimeBudget: runBudget,
 		Progress:   newVerifyProgressReporter(send, commandID, phase, verifyProgressInterval, time.Now),
 	}
 }
 
-func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	return execBackupVerifyContext(context.Background(), "", payload, mgr, vaultState, nil)
+func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, runBudget time.Duration) backupipc.BackupCommandResult {
+	return execBackupVerifyContext(context.Background(), "", payload, mgr, vaultState, nil, runBudget)
 }
 
 // execBackupVerifyContext runs a backup_verify. When the run budget elapses
 // the result is still a successful command whose body carries the partial
 // counts and a `partial`/`failed` status — the API reads the verification
 // body only from a completed command. conn may be nil.
-func execBackupVerifyContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+func execBackupVerifyContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, runBudget time.Duration) backupipc.BackupCommandResult {
 	expectation, err := integrity.FromPayload(payload)
 	if err != nil {
 		return fail(err.Error())
@@ -644,19 +673,19 @@ func execBackupVerifyContext(ctx context.Context, commandID string, payload json
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid verify payload: " + err.Error())
 	}
-	opts := verifyOptions(conn, commandID, "verifying")
+	opts := verifyOptions(conn, commandID, "verifying", runBudget)
 	opts.Integrity = expectation
 	result, err := backup.VerifyIntegrityWithOptions(ctx, restoreProvider, p.SnapshotID, opts)
 	return marshalResult(result, err)
 }
 
-func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	return execBackupTestRestoreContext(context.Background(), "", payload, mgr, vaultState, nil)
+func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, runBudget time.Duration) backupipc.BackupCommandResult {
+	return execBackupTestRestoreContext(context.Background(), "", payload, mgr, vaultState, nil, runBudget)
 }
 
 // execBackupTestRestoreContext runs a backup_test_restore; see
 // execBackupVerifyContext for the budget and progress behaviour.
-func execBackupTestRestoreContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
+func execBackupTestRestoreContext(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, runBudget time.Duration) backupipc.BackupCommandResult {
 	expectation, err := integrity.FromPayload(payload)
 	if err != nil {
 		return fail(err.Error())
@@ -675,7 +704,7 @@ func execBackupTestRestoreContext(ctx context.Context, commandID string, payload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	opts := verifyOptions(conn, commandID, "test_restore")
+	opts := verifyOptions(conn, commandID, "test_restore", runBudget)
 	opts.Integrity = expectation
 	result, err := backup.TestRestoreWithOptions(ctx, restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), opts)
 	return marshalResult(result, err)

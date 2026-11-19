@@ -8,14 +8,19 @@ import { createOrganization, createPartner } from './db-utils';
 import { processBackupVerificationResult, timeoutStaleVerifications } from '../../routes/backup/verificationService';
 import {
   LEGACY_VERIFICATION_TIMEOUT_REASON,
+  VERIFICATION_TIMEOUT_GRACE_MS,
   VERIFICATION_TIMEOUT_REASON_CODE,
-  verificationTimeoutMs,
   verificationTimeoutReason,
 } from '../../routes/backup/verificationTimeout';
 
-// #11813 against real Postgres: the timeout scan's derived cutoff, the stable
-// reason code it now writes, and the late-result lookup, which must match both
-// new rows (by code) and rows written before the code existed (by old text).
+// #11813 against real Postgres: the timeout scan's clock (executed_at + the
+// verification's scaled budget + grace), the compare-and-set on the observed
+// command (executed_at written by JS at claim, compared back to the column),
+// the stable reason code it writes, and the late-result lookup, which must
+// match both new rows (by code) and rows written before the code existed.
+
+const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
 
 async function fixture() {
   const partner = await createPartner();
@@ -56,11 +61,17 @@ async function insertVerification(
   return id;
 }
 
-async function insertCommand(deviceId: string): Promise<string> {
+/**
+ * executed_at is written as a millisecond JS Date, exactly as the delivery
+ * claim writes it (commandDispatch.ts), so the scan's CAS on the observed
+ * value is exercised against the real column type.
+ */
+async function insertCommand(deviceId: string, executedAgoMs: number | null, status = 'sent'): Promise<string> {
   const id = randomUUID();
+  const executedAt = executedAgoMs === null ? null : new Date(Date.now() - executedAgoMs);
   await getTestDb().execute(sql`
     INSERT INTO device_commands (id, device_id, type, payload, status, executed_at)
-    VALUES (${id}, ${deviceId}, 'backup_verify', '{}'::jsonb, 'sent', now())
+    VALUES (${id}, ${deviceId}, 'backup_verify', '{}'::jsonb, ${status}, ${executedAt ? executedAt.toISOString() : null}::timestamp)
   `);
   return id;
 }
@@ -78,10 +89,10 @@ async function commandRow(id: string) {
 describe('backup verification timeout (#11813)', () => {
   it('leaves a verification inside its command budget running and fails one past it with the reason code', async () => {
     const f = await fixture();
-    const healthyCommand = await insertCommand(f.deviceId);
-    const staleCommand = await insertCommand(f.deviceId);
-    const healthy = await insertVerification(f, 'running', 45 * 60 * 1000, { commandId: healthyCommand });
-    const stale = await insertVerification(f, 'running', verificationTimeoutMs('integrity') + 60 * 1000, { commandId: staleCommand });
+    const healthyCommand = await insertCommand(f.deviceId, 30 * MIN);
+    const staleCommand = await insertCommand(f.deviceId, 2 * HOUR + VERIFICATION_TIMEOUT_GRACE_MS + MIN);
+    const healthy = await insertVerification(f, 'running', 45 * MIN, { commandId: healthyCommand });
+    const stale = await insertVerification(f, 'running', 2 * HOUR + 30 * MIN, { commandId: staleCommand });
 
     await timeoutStaleVerifications();
 
@@ -92,16 +103,57 @@ describe('backup verification timeout (#11813)', () => {
     expect(failed?.status).toBe('failed');
     expect(failed?.details).toMatchObject({
       commandId: staleCommand,
-      reason: verificationTimeoutReason('integrity'),
+      reason: verificationTimeoutReason(2 * HOUR),
       reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
     });
     const command = await commandRow(staleCommand);
     expect(command?.status).toBe('failed');
     expect(command?.result).toMatchObject({
       status: 'timeout',
-      error: verificationTimeoutReason('integrity'),
+      error: verificationTimeoutReason(2 * HOUR),
       timedOutBy: 'verification-timeout-check',
     });
+  });
+
+  // Delivery deferred while the file index hydrated: started 2h30m ago but
+  // claimed 1h40m ago, inside its 2h budget. The old clock (started_at) failed it.
+  it('does not count the wait before delivery against the budget', async () => {
+    const f = await fixture();
+    const command = await insertCommand(f.deviceId, HOUR + 40 * MIN);
+    const id = await insertVerification(f, 'running', 2 * HOUR + 30 * MIN, { commandId: command });
+
+    await timeoutStaleVerifications();
+
+    expect((await verificationRow(id))?.status).toBe('running');
+    expect((await commandRow(command))?.status).toBe('sent');
+  });
+
+  it('honours the scaled budget stored on the verification', async () => {
+    const f = await fixture();
+    const inside = await insertCommand(f.deviceId, 5 * HOUR);
+    const past = await insertCommand(f.deviceId, 395 * MIN + VERIFICATION_TIMEOUT_GRACE_MS + MIN);
+    const insideId = await insertVerification(f, 'running', 5 * HOUR + 10 * MIN, { commandId: inside, timeBudgetSeconds: 395 * 60 });
+    const pastId = await insertVerification(f, 'running', 7 * HOUR, { commandId: past, timeBudgetSeconds: 395 * 60 });
+
+    await timeoutStaleVerifications();
+
+    expect((await verificationRow(insideId))?.status).toBe('running');
+    expect((await commandRow(inside))?.status).toBe('sent');
+    const failed = await verificationRow(pastId);
+    expect(failed?.status).toBe('failed');
+    expect(failed?.details).toMatchObject({ reason: 'Verification timed out after 400 minutes', timeBudgetSeconds: 395 * 60 });
+    expect((await commandRow(past))?.status).toBe('failed');
+  });
+
+  it('fails a never-delivered command on the 2h clock from started_at (CAS on pending + NULL executed_at)', async () => {
+    const f = await fixture();
+    const command = await insertCommand(f.deviceId, null, 'pending');
+    const id = await insertVerification(f, 'pending', 2 * HOUR + VERIFICATION_TIMEOUT_GRACE_MS + MIN, { commandId: command, timeBudgetSeconds: 12 * 3600 });
+
+    await timeoutStaleVerifications();
+
+    expect((await verificationRow(id))?.status).toBe('failed');
+    expect((await commandRow(command))?.status).toBe('failed');
   });
 
   it.each([

@@ -43,6 +43,7 @@ import {
 } from '../../services/recoveryAuthorizationSubject';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 import { ATTESTATION_FAILED_VERIFICATION_REASON } from '../../services/backupAttestationFailureSettlement';
+import { computeBackupVerifyBudgetSeconds } from '../../services/backupVerifyBudget';
 
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -271,9 +272,15 @@ export function toVerificationListItem(row: BackupVerification): BackupVerificat
   // consumers only get the simulated-evidence marker plus, for rows that did
   // not pass, a whitespace-normalized, length-capped `reason` string (never
   // other keys). `partial` is included because a downgraded result is just as
-  // unexplained without it (#6561).
+  // unexplained without it (#6561). `timeBudgetSeconds` is server-computed
+  // (never agent-written) and is kept so the readiness calculator, which reads
+  // this list, can bound an in-flight row by its own scaled budget.
   const details: Record<string, unknown> = {};
   if (row.details?.simulated === true) details.simulated = true;
+  const timeBudgetSeconds = row.details?.timeBudgetSeconds;
+  if (typeof timeBudgetSeconds === 'number' && Number.isInteger(timeBudgetSeconds) && timeBudgetSeconds > 0) {
+    details.timeBudgetSeconds = timeBudgetSeconds;
+  }
   if ((row.status === 'failed' || row.status === 'partial') && typeof row.details?.reason === 'string') {
     const reason = row.details.reason.replace(/\s+/g, ' ').trim().slice(0, MAX_LIST_FAILURE_REASON_LENGTH);
     if (reason) details.reason = reason;
@@ -747,12 +754,24 @@ async function runBackupVerificationInternal(
   }
 
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
+  // The run budget scales with what has to be read (services/backupVerifyBudget.ts).
+  // Each count comes from the snapshot, else from the job that wrote it; with
+  // neither, the 2 h base. Sent to the agent and stored on the verification so
+  // every clock (agent forward wait, reaper, read session, timeout job) uses
+  // the same number.
+  const positiveOrNull = (value: number | null | undefined): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  const timeBudgetSeconds = computeBackupVerifyBudgetSeconds({
+    fileCount: positiveOrNull(snapshot?.fileCount) ?? positiveOrNull(backupJob.fileCount),
+    sizeBytes: positiveOrNull(snapshot?.sizeBytes) ?? positiveOrNull(backupJob.totalSize),
+  });
   const dispatchResult = await deps.queueCommand(
     input.deviceId,
     commandType,
     {
       snapshotId: agentSnapshotId,
       verificationType: input.verificationType,
+      timeBudgetSeconds,
       // A reference only: the destination is resolved when the command is
       // delivered, so it is never written to the command row.
       ...backupReadCredentialPayload(backupJob.configId, input.orgId, providerConfig.provider),
@@ -834,6 +853,7 @@ async function runBackupVerificationInternal(
       source: input.source,
       requestedBy: input.requestedBy ?? null,
       commandId: dispatchResult.command.id,
+      timeBudgetSeconds,
     }
   }, input.orgId);
 
