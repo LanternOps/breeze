@@ -11,7 +11,7 @@ const { authState, gates, adapterState, dbState, ctxState } = vi.hoisted(() => (
   gates: { permission: false, mfa: false },
   adapterState: {
     test: {
-      ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3,
+      ok: true, rootId: '1000', rootName: 'Fabrikam MSP', rootType: 'partner', tenantCount: 3,
       capabilityNotes: ['quarantine: API not enabled on key'],
     } as Record<string, unknown>,
     /** Runs during the vendor round-trip: simulates a concurrent writer. */
@@ -203,9 +203,9 @@ import { edrConnectionRoutes } from './connections';
 
 function connectionRow(over: Record<string, unknown> = {}) {
   return {
-    id: CONNECTION_ID, partnerId: PARTNER_ID, provider: 'bitdefender', name: 'OliveTech GZ',
+    id: CONNECTION_ID, partnerId: PARTNER_ID, provider: 'bitdefender', name: 'Fabrikam MSP GZ',
     baseUrl: ACCESS_URL, region: null, credentialsEncrypted: 'enc:x', webhookSecretEncrypted: null,
-    vendorRootId: '1000', vendorRootName: 'OliveTech', isActive: true, status: 'connected',
+    vendorRootId: '1000', vendorRootName: 'Fabrikam MSP', isActive: true, status: 'connected',
     createdAt: new Date(), updatedAt: new Date(),
     ...over,
   };
@@ -227,7 +227,7 @@ describe('EDR connection routes', () => {
     authState.partnerId = PARTNER_ID;
     authState.partnerOrgAccess = 'all';
     adapterState.test = {
-      ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3,
+      ok: true, rootId: '1000', rootName: 'Fabrikam MSP', rootType: 'partner', tenantCount: 3,
       capabilityNotes: ['quarantine: API not enabled on key'],
     };
     dbState.connections = [];
@@ -257,7 +257,7 @@ describe('EDR connection routes', () => {
     app.route('/edr', edrConnectionRoutes);
   });
 
-  const createBody = { provider: 'bitdefender', name: 'OliveTech GZ', baseUrl: ACCESS_URL, credentials: CREDS };
+  const createBody = { provider: 'bitdefender', name: 'Fabrikam MSP GZ', baseUrl: ACCESS_URL, credentials: CREDS };
 
   describe('GET /edr/connections', () => {
     it('lists connections with booleans and NEVER the ciphertext', async () => {
@@ -516,7 +516,7 @@ describe('EDR connection routes', () => {
     it('credentials resolving to the SAME vendorRootId still rotate', async () => {
       dbState.connections = [connectionRow({ vendorRootId: '1000' })];
       adapterState.test = {
-        ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3, capabilityNotes: [],
+        ok: true, rootId: '1000', rootName: 'Fabrikam MSP', rootType: 'partner', tenantCount: 3, capabilityNotes: [],
       };
       expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
       expect(dbState.updated).toHaveLength(1);

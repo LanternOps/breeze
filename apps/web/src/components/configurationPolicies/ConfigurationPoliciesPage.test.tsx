@@ -7,7 +7,7 @@ const POLICY = {
   name: 'Default Workstation Policy',
   status: 'active',
   orgId: '44444444-4444-4444-4444-444444444444',
-  orgName: 'OliveTech',
+  orgName: 'Fabrikam MSP',
   featureLinks: [{ id: 'link-1', featureType: 'patch' }],
 };
 

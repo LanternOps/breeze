@@ -19,7 +19,7 @@ const orgOwned: ConfigPolicy = {
   name: 'Default Workstation Policy',
   status: 'active',
   orgId: '44444444-4444-4444-4444-444444444444',
-  orgName: 'OliveTech',
+  orgName: 'Fabrikam MSP',
 };
 
 describe('ConfigPolicyList status filter select accessible name (#7156)', () => {
@@ -63,7 +63,7 @@ describe('ConfigPolicyList ownership badges', () => {
 
     const badges = screen.getAllByTestId('org-badge');
     expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('OliveTech');
+    expect(badges[0]).toHaveTextContent('Fabrikam MSP');
   });
 
   it('falls back to a generic label when the org name is missing', () => {

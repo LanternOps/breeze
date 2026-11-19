@@ -15,8 +15,8 @@ const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? "OK" : "ERROR", json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const connection = (o: Partial<BackupProviderConnection> = {}): BackupProviderConnection => ({
-  id: "conn-1", provider: "cove", name: "OliveTech Cove", baseUrl: "https://api.backup.management/jsonapi",
-  vendorRootName: "OliveTech", isActive: true, status: "connected", syncIntervalMinutes: 30,
+  id: "conn-1", provider: "cove", name: "Fabrikam MSP Cove", baseUrl: "https://api.backup.management/jsonapi",
+  vendorRootName: "Fabrikam MSP", isActive: true, status: "connected", syncIntervalMinutes: 30,
   showProviderNameInPortal: false, lastSyncAt: "2026-09-15T11:50:00.000Z", lastSyncStatus: "success",
   lastSyncError: null, lastSyncCustomers: 12, lastSyncUnmappedCustomers: 2, lastSyncDevices: 340,
   lastSyncUnmappedDevices: 18, lastSyncLinkedDevices: 300, lastSyncAmbiguousDevices: 4,
@@ -87,14 +87,14 @@ describe("BackupProviderConnectionCard", () => {
   });
 
   it("POSTs the test endpoint and hands the result up rather than rendering its own modal", async () => {
-    fetchMock.mockResolvedValue(res({ success: true, rootName: "OliveTech", customerCount: 12 }));
+    fetchMock.mockResolvedValue(res({ success: true, rootName: "Fabrikam MSP", customerCount: 12 }));
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
 
     fireEvent.click(screen.getByTestId("backup-connection-test"));
 
     await waitFor(() => expect(onTestResult).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections/conn-1/test", { method: "POST" });
-    expect(onTestResult.mock.calls[0]![0]).toMatchObject({ success: true, rootName: "OliveTech" });
+    expect(onTestResult.mock.calls[0]![0]).toMatchObject({ success: true, rootName: "Fabrikam MSP" });
   });
 
   it("treats an HTTP-200 {success:false} test as a failure and still surfaces the provider message", async () => {
@@ -114,7 +114,7 @@ describe("BackupProviderConnectionCard", () => {
   // page reload. Test must tell the parent to refetch on BOTH outcomes so the
   // badge/reauth banner reflect reality immediately.
   it("tells the parent to refetch after a successful test", async () => {
-    fetchMock.mockResolvedValue(res({ success: true, rootName: "OliveTech", customerCount: 12 }));
+    fetchMock.mockResolvedValue(res({ success: true, rootName: "Fabrikam MSP", customerCount: 12 }));
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
 
     fireEvent.click(screen.getByTestId("backup-connection-test"));
@@ -148,7 +148,7 @@ describe("BackupProviderConnectionCard", () => {
     expect(url).toBe("/backup/providers/connections/conn-1");
     expect((init as RequestInit).method).toBe("PATCH");
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      name: "OliveTech Cove", isActive: true, showProviderNameInPortal: true,
+      name: "Fabrikam MSP Cove", isActive: true, showProviderNameInPortal: true,
     });
   });
 
@@ -220,7 +220,7 @@ describe("BackupProviderConnectionCard", () => {
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
     fireEvent.click(screen.getByTestId("backup-connection-delete"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("OliveTech Cove");
+    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("Fabrikam MSP Cove");
     expect((fetchMock.mock.calls.at(-1)![1] as RequestInit).method).toBe("DELETE");
   });
 
@@ -331,12 +331,12 @@ describe("Cove rotate semantics", () => {
 
   it("posts all three fields in order, trimming identity and not the password", async () => {
     renderCard();
-    type("partner-name", " OliveTech ");
+    type("partner-name", " Fabrikam MSP ");
     type("username", " breeze-ro ");
     type("password", " s3cret ");
     fireEvent.click(screen.getByTestId("backup-connection-save"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(lastBody()).toBe('{"name":"OliveTech Cove","isActive":true,"showProviderNameInPortal":false,"credentials":{"partnerName":"OliveTech","username":"breeze-ro","password":" s3cret "}}');
+    expect(lastBody()).toBe('{"name":"Fabrikam MSP Cove","isActive":true,"showProviderNameInPortal":false,"credentials":{"partnerName":"Fabrikam MSP","username":"breeze-ro","password":" s3cret "}}');
   });
 
   it("refuses to save when the username is filled and the password blank, rather than dropping the username", () => {
@@ -362,7 +362,7 @@ describe("Cove rotate semantics", () => {
 
   it("clears the password after saving and keeps the partner name and username", async () => {
     renderCard();
-    type("partner-name", "OliveTech");
+    type("partner-name", "Fabrikam MSP");
     type("username", "breeze-ro");
     type("password", "s3cret");
     fireEvent.click(screen.getByTestId("backup-connection-save"));
@@ -370,7 +370,7 @@ describe("Cove rotate semantics", () => {
     expect(screen.queryByTestId("backup-connection-password")).toBeNull();
     fireEvent.click(screen.getByTestId("backup-connection-reauth"));
     expect(screen.getByTestId("backup-connection-password")).toHaveValue("");
-    expect(screen.getByTestId("backup-connection-partner-name")).toHaveValue("OliveTech");
+    expect(screen.getByTestId("backup-connection-partner-name")).toHaveValue("Fabrikam MSP");
     expect(screen.getByTestId("backup-connection-username")).toHaveValue("breeze-ro");
   });
 
