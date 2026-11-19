@@ -97,7 +97,10 @@ export function relatedPlan(job, changed, { floor = [], exists } = {}) {
   if (!files.length) return full('no_changes');
   if (files.length > MAX_RELATED_FILES) return full('too_many_files');
   for (const path of files) {
-    if (!SAFE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('/')) return full(`unsafe_path:${path}`);
+    // Checked as given and as passed (relative to the area root), so
+    // `apps/web/-x.ts` cannot become a `-x.ts` flag after `related`.
+    const arg = posix.relative(area.root, path);
+    if ([path, arg].some(p => !SAFE_PATH.test(p)) || path.split('/').includes('..') || path.startsWith('/')) return full(`unsafe_path:${path}`);
     if (floorHit(floor, path)) return full(`floor:${path}`);
     if (path === area.config || /^vitest\.config\.[cm]?[jt]s$/.test(posix.relative(area.root, path))) return full(`config:${path}`);
     if (area.setupFiles.includes(path)) return full(`setup:${path}`);

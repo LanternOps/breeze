@@ -97,6 +97,7 @@ test('relatedCommand is null when a changed file is gone or its path could read 
   const exists = path => path !== 'apps/web/src/lib/gone.ts';
   assert.equal(related.relatedPlan('test-web', ['apps/web/src/lib/gone.ts'], { floor, exists }).reason, 'full:deleted:apps/web/src/lib/gone.ts');
   assert.equal(related.relatedPlan('test-web', ['-x.ts'], { floor }).reason, 'full:unsafe_path:-x.ts');
+  assert.equal(related.relatedPlan('test-web', ['apps/web/-x.ts'], { floor }).reason, 'full:unsafe_path:apps/web/-x.ts', 'a flag once relative to the area root');
   assert.equal(related.relatedPlan('test-web', ['apps/web/src/a b.ts'], { floor }).reason, 'full:unsafe_path:apps/web/src/a b.ts');
 });
 

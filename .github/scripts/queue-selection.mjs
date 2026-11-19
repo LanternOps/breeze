@@ -183,6 +183,9 @@ export function integrationSuites({ suiteMap, P, delta, overlap, floor, ownTests
 
 // Per related-capable unit job the entry runs, what a `vitest related` run over
 // P ∪ Δ would be: 'related', or 'full:<why>' (related-tests.mjs relatedPlan).
+// Known gap: the gate has no tree for the entry, so it passes no `exists` and
+// cannot see a deleted path (the test-job line, which has the tree, can). An
+// enforcing caller must pass `exists` over the tree it runs in.
 export function unitRelated(thinJobs, changed, floor) {
   const jobs = thinJobs.filter(job => Object.hasOwn(RELATED_JOBS, job));
   if (!jobs.length) return null;

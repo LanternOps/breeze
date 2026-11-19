@@ -1256,7 +1256,8 @@ const IMPORT_TESTS_SUITE = suiteOfTest(loadSuiteMap(SUITE_MAP_TEXT), 'apps/api/s
 test('B3/C2: the suite map and the related shadow never move a job, whatever the map holds', () => {
   for (const [P, delta] of [...fixtures.map(f => [f.P, f.delta]), [TICKET_P, TICKET_DELTA]]) {
     const real = withMap(P, delta);
-    for (const [label, bad] of [['missing', undefined], ['malformed', 'suite bad line'], ['empty', ''], ['throws', { toString() { throw Error('boom'); } }]]) {
+    for (const [label, bad] of [['missing', undefined], ['malformed', 'suite bad line'], ['unclosed class', 'suite a tests apps/[x'],
+      ['empty', ''], ['not a string', { toString() { throw Error('boom'); } }]]) {
       const out = withMap(P, delta, { suiteMap: bad });
       assert.deepEqual(jobLevel(out), jobLevel(real), `${label} map`);
       if (real.integration_suites) assert.equal(out.integration_suites.suites, 'all', `${label} map selects every suite`);
