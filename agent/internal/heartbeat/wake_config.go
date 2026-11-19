@@ -114,7 +114,9 @@ func (h *Heartbeat) collectWakeInputs(ctx context.Context) (wakeconfig.Inputs, e
 		Model:        hw.Model,
 		Virtual:      virt.IsVirtual,
 		Windows:      readings,
-		Firmware:     biosconfig.Detect(hw.Manufacturer, hw.Model),
+		// Read-only. A failed firmware read is reported in the snapshot and
+		// never fails the collection.
+		Firmware: wakeconfig.ReadFirmware(ctx, biosconfig.Detect(hw.Manufacturer, hw.Model)),
 	}, nil
 }
 

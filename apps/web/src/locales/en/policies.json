@@ -1266,7 +1266,14 @@
             "nic_unreadable": "A wired adapter is present but could not be read",
             "nic_cmdlets_unavailable": "Network adapter settings cannot be read on this device",
             "nic_eee_enabled": "Energy-Efficient Ethernet is on",
-            "firmware_adapter_unavailable": "Firmware settings cannot be read yet"
+            "firmware_adapter_unavailable": "Firmware settings cannot be read yet",
+            "nic_eee_unknown": "Energy-Efficient Ethernet state unknown",
+            "firmware_wake_on_lan_not_lan_only": "BIOS Wake on LAN is not set to LAN only",
+            "firmware_deep_sleep_enabled": "BIOS Deep Sleep Control is on",
+            "firmware_setting_unrecognised": "A BIOS setting Breeze checks was not recognised on this model",
+            "firmware_value_not_allowed": "This model does not allow the BIOS value Breeze needs",
+            "firmware_unreadable": "BIOS settings could not be read",
+            "firmware_interface_unavailable": "This model does not expose BIOS settings to Windows"
           },
           "attempts": {
             "pending": "Pending",

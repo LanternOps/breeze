@@ -1266,7 +1266,14 @@
             "nic_unreadable": "Une carte filaire est présente, mais n'a pas pu être lue",
             "nic_cmdlets_unavailable": "Les paramètres de la carte réseau ne peuvent pas être lus sur cet appareil",
             "nic_eee_enabled": "Energy-Efficient Ethernet activé",
-            "firmware_adapter_unavailable": "Les paramètres du micrologiciel ne sont pas encore lisibles"
+            "firmware_adapter_unavailable": "Les paramètres du micrologiciel ne sont pas encore lisibles",
+            "nic_eee_unknown": "État d'Energy-Efficient Ethernet inconnu",
+            "firmware_wake_on_lan_not_lan_only": "Le Wake on LAN du BIOS n'est pas réglé sur LAN uniquement",
+            "firmware_deep_sleep_enabled": "Le contrôle de veille profonde du BIOS est activé",
+            "firmware_setting_unrecognised": "Un paramètre du BIOS vérifié par Breeze n'a pas été reconnu sur ce modèle",
+            "firmware_value_not_allowed": "Ce modèle n'autorise pas la valeur du BIOS requise par Breeze",
+            "firmware_unreadable": "Les paramètres du BIOS n'ont pas pu être lus",
+            "firmware_interface_unavailable": "Ce modèle n'expose pas les paramètres du BIOS à Windows"
           },
           "attempts": {
             "pending": "En attente",
