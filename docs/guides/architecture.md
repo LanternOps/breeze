@@ -40,7 +40,7 @@ A fast, modern Remote Monitoring and Management platform targeting MSPs and inte
 │                              │                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐      │
 │  │  PostgreSQL  │  │    Redis     │  │  Object Storage      │      │
-│  │  (Drizzle)   │  │  (BullMQ +   │  │  (S3/R2/Minio)       │      │
+│  │  (Drizzle)   │  │  (BullMQ +   │  │  (S3/R2/RustFS)      │      │
 │  │              │  │   Caching)   │  │  Scripts, Logs, etc  │      │
 │  └──────────────┘  └──────────────┘  └──────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘

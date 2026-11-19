@@ -791,6 +791,21 @@ jobs:
         if: matrix.shard == 1
         run: pnpm --filter=@breeze/api test:rls
 
+      # S3-compatibility smoke test (#8350): Breeze's real storage services
+      # (put/get/range, presign, multipart, batch delete, conditional writes)
+      # against the RustFS that docker-compose.dev.yml ships. Same tag AND
+      # digest as that file; bump both together. The endpoint is the
+      # container's bridge IP because the backup SSRF guard refuses loopback.
+      - name: Run S3-compatibility smoke test (RustFS)
+        if: matrix.shard == 1
+        run: |
+          docker run -d --name rustfs -e RUSTFS_ACCESS_KEY=rustfsadmin -e RUSTFS_SECRET_KEY=rustfsadmin \
+            rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+          ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' rustfs)
+          for _ in $(seq 1 30); do curl -fsS "http://${ip}:9000/health" >/dev/null && break; sleep 2; done
+          S3_ENDPOINT="http://${ip}:9000" S3_ACCESS_KEY=rustfsadmin S3_SECRET_KEY=rustfsadmin \
+            pnpm --filter=@breeze/api test:storage || { docker logs rustfs | tail -50; exit 1; }
+
   test-m365-graph-read-executor:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
