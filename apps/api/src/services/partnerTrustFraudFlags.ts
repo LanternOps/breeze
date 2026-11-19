@@ -70,12 +70,24 @@ class RetryLaterError extends Error {
 }
 
 let consecutiveFeedFailures = 0;
-const alertedMalformedFlagIds = new Set<string>();
+/**
+ * Flags left pending on purpose (malformed, partner mismatch, consume
+ * refused), alerted once per process so a stuck flag does not page the ops
+ * channel every run. A restart alerts again, once.
+ */
+const alertedStuckFlagKeys = new Set<string>();
 
 /** Test seam: reset the in-process alert bookkeeping. */
 export function resetFraudFlagSweepStateForTests(): void {
   consecutiveFeedFailures = 0;
-  alertedMalformedFlagIds.clear();
+  alertedStuckFlagKeys.clear();
+}
+
+async function alertStuckOnce(key: string, title: string, lines: string[]): Promise<void> {
+  if (alertedStuckFlagKeys.has(key)) return;
+  alertedStuckFlagKeys.add(key);
+  captureException(new Error(`[partnerTrustFraudFlags] ${title} (${key})`));
+  await alertOperator(title, lines);
 }
 
 function systemDb<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -261,8 +273,7 @@ async function processFlag(flag: BillingFraudFlag): Promise<FraudFlagConsumeOutc
   if (existing) {
     if (existing.partnerId !== flag.partnerId) {
       // Billing re-pointed a flag id at another partner. Never act on it.
-      captureException(new Error(`[partnerTrustFraudFlags] flag ${flag.id} partner differs from its ledger row`));
-      await alertOperator('Billing fraud flag left pending: partner mismatch', [
+      await alertStuckOnce(`mismatch:${flag.id}`, 'Billing fraud flag left pending: partner mismatch', [
         `Flag id: ${flag.id}`,
         `Ledger partner: ${existing.partnerId}`,
         `Feed partner: ${flag.partnerId}`,
@@ -304,11 +315,8 @@ async function processFlag(flag: BillingFraudFlag): Promise<FraudFlagConsumeOutc
 
 async function reportMalformed(malformed: MalformedBillingFraudFlag[]): Promise<void> {
   for (const entry of malformed) {
-    const key = entry.id ?? `no-id:${entry.problem}`;
-    if (alertedMalformedFlagIds.has(key)) continue;
-    alertedMalformedFlagIds.add(key);
-    captureException(new Error(`[partnerTrustFraudFlags] malformed billing fraud flag ${key}: ${entry.problem}`));
-    await alertOperator('Billing fraud flag left pending: malformed', [
+    const key = `malformed:${entry.id ?? `no-id:${entry.problem}`}`;
+    await alertStuckOnce(key, 'Billing fraud flag left pending: malformed', [
       `Flag id: ${entry.id ?? 'unknown'}`,
       `Invalid field: ${entry.problem}`,
       'Core did not act on it and did not consume it. Fix or consume it on the billing side.',
@@ -356,13 +364,23 @@ export async function runBillingFraudFlagSweep(): Promise<FraudFlagSweepResult> 
       try {
         outcome = await processFlag(flag);
       } catch (error) {
-        // A consume failure means billing is unreachable: stop this run, the
-        // ledger lets the next one finish. Anything else skips just this flag.
-        if (error instanceof Error && 'code' in error && (error as { code?: string }).code === 'BILLING_UNAVAILABLE') {
-          throw error;
+        // Billing unreachable (5xx/transport): stop this run, the ledger lets
+        // the next one finish. Billing refusing THIS flag's consume (4xx):
+        // the action is recorded, so skip it and keep going rather than let
+        // it block every newer flag. Anything else skips just this flag.
+        const code = error instanceof Error && 'code' in error ? (error as { code?: string }).code : undefined;
+        if (code === 'BILLING_UNAVAILABLE') throw error;
+        if (code === 'FRAUD_FLAG_REJECTED') {
+          await alertStuckOnce(`rejected:${flag.id}`, 'Billing fraud flag left pending: consume refused', [
+            `Flag id: ${flag.id}`,
+            `Partner id: ${flag.partnerId}`,
+            `Billing answered: ${error instanceof Error ? error.message : String(error)}`,
+            'Core has recorded its outcome; the flag stays pending on the billing side until it is consumed there.',
+          ]);
+        } else {
+          console.warn(`[partnerTrustFraudFlags] flag ${flag.id} failed; left pending`, error);
+          captureException(error instanceof Error ? error : new Error(String(error)));
         }
-        console.warn(`[partnerTrustFraudFlags] flag ${flag.id} failed; left pending`, error);
-        captureException(error instanceof Error ? error : new Error(String(error)));
         outcome = null;
       }
       if (outcome === null) {

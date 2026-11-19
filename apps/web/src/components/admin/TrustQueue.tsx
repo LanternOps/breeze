@@ -292,7 +292,7 @@ export default function TrustQueue() {
   const restore = async (row: TrustQueueRow) => {
     const restorable = row.fraudFlagRestore;
     if (!restorable) return;
-    if (!window.confirm(`Restore ${row.name} to ${restorable.previousTrustState}? The billing objects behind this restriction will not restrict it again.`)) return;
+    if (!window.confirm(`Restore ${row.name} to ${restorable.previousTrustState}? The billing objects behind this restriction will not restrict it again. Checkouts closed by the restriction are not reopened.`)) return;
 
     setActingOn(row.id);
     try {

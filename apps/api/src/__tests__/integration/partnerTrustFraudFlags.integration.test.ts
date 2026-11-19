@@ -214,6 +214,28 @@ describe('billing fraud flag sweep', () => {
     expect(billing.closeOpenCheckouts).toHaveBeenCalledTimes(1);
   });
 
+  it('a flag billing refuses to consume does not block the newer flags behind it, and alerts once', async () => {
+    const first = await partnerWithTrust('trusted');
+    const second = await partnerWithTrust('trusted');
+    const stuck = flagFor(first.id);
+    const next = flagFor(second.id);
+    feed = [stuck, next];
+    billing.consumeFraudFlag.mockImplementation(async (id: string) => {
+      if (id === stuck.id) throw new BillingError('FRAUD_FLAG_REJECTED', 'Billing service returned 404');
+      feed = feed.filter((f) => f.id !== id);
+      return 'consumed';
+    });
+
+    const result = await runBillingFraudFlagSweep();
+    await runBillingFraudFlagSweep();
+
+    expect(result).toMatchObject({ consumed: 1, leftPending: 1 });
+    expect((await readPartner(second.id)).trustState).toBe('restricted');
+    expect(billing.consumeFraudFlag).toHaveBeenCalledWith(next.id, 'restricted');
+    const rejectedAlerts = sendOpsAlert.mock.calls.filter(([msg]) => String(msg.title).includes('refused'));
+    expect(rejectedAlerts).toHaveLength(1);
+  });
+
   it.each([
     ['the flag is unset', { PARTNER_TRUST_FRAUD_FLAGS_ENABLED: undefined }, 'disabled'],
     ['trust is in shadow mode', { PARTNER_TRUST_MODE: 'shadow' }, 'not_enforcing'],
@@ -290,6 +312,7 @@ describe('restore', () => {
     await runBillingFraudFlagSweep();
     expect(billing.consumeFraudFlag).toHaveBeenLastCalledWith(later.id, 'suppressed');
     expect((await readPartner(partner.id)).trustState).toBe('trusted');
+    expect((await ledger(partner.id)).find((r) => r.billingFlagId === later.id)).toMatchObject({ outcome: 'suppressed' });
 
     // A flag on a DIFFERENT object still restricts.
     const other = flagFor(partner.id);

@@ -216,7 +216,9 @@ export interface BreezeBillingClient {
 
   /**
    * Marks a flag consumed with a terminal outcome. Once-only on the billing
-   * side: a second consume answers `already_consumed`. Throws on anything else.
+   * side: a second consume answers `already_consumed`. Throws on anything
+   * else: FRAUD_FLAG_REJECTED for a 4xx (this flag only), otherwise
+   * BILLING_UNAVAILABLE.
    */
   consumeFraudFlag(id: string, outcome: string): Promise<ConsumeFraudFlagResult>;
 }
@@ -462,7 +464,10 @@ export function createBreezeBillingClient(opts: {
       }
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        throw new BillingError('BILLING_UNAVAILABLE', `Billing service returned ${res.status}: ${body.slice(0, 200)}`);
+        // A 4xx is billing refusing THIS flag (unknown id, bad outcome) while
+        // up; the caller skips just this flag. 5xx means billing is down.
+        const code = res.status >= 400 && res.status < 500 ? 'FRAUD_FLAG_REJECTED' : 'BILLING_UNAVAILABLE';
+        throw new BillingError(code, `Billing service returned ${res.status}: ${body.slice(0, 200)}`);
       }
       const body = await res.json().catch(() => null) as { consumed?: unknown; alreadyConsumed?: unknown } | null;
       if (body?.consumed === true) return 'consumed';

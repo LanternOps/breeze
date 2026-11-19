@@ -580,12 +580,19 @@ describe('breezeBillingClient', () => {
     });
 
     it.each([
-      ['a 404', respond(404, { error: 'unknown_flag' })],
       ['a 500', respond(500, { error: 'internal_error' })],
       ['an unrecognised body', respond(200, { what: 1 })],
-    ])('throws when consume gets %s', async (_label, fetchMock) => {
+    ])('throws BILLING_UNAVAILABLE when consume gets %s', async (_label, fetchMock) => {
       const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
       await expect(client.consumeFraudFlag(FLAG_ID, 'restricted')).rejects.toMatchObject({ code: 'BILLING_UNAVAILABLE' });
+    });
+
+    it.each([
+      ['a 404', respond(404, { error: 'unknown_flag' })],
+      ['a 400', respond(400, { error: 'invalid_body' })],
+    ])('throws FRAUD_FLAG_REJECTED (this flag only, billing is up) when consume gets %s', async (_label, fetchMock) => {
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+      await expect(client.consumeFraudFlag(FLAG_ID, 'restricted')).rejects.toMatchObject({ code: 'FRAUD_FLAG_REJECTED' });
     });
   });
 });
