@@ -527,8 +527,9 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
  * as its own audit row (`partner.trust.checkouts_closed`) next to the
  * restriction's. Read the row's `result` / `details.status`, not just its
  * action: an `unavailable` or `failed` outcome writes the same action name.
- * Called after every probation → restricted transition: the hard-deny path
- * below and the admin restrict route (#11952). A separate row rather than more evidence on the restriction
+ * Called after every transition to restricted: the hard-deny path below, the
+ * admin restrict route (#11952) and the billing fraud flag sweep
+ * (partnerTrustFraudFlags.ts, from trusted or probation). A separate row rather than more evidence on the restriction
  * row: the restriction is written first and must never wait on, or be undone
  * by, the billing service. Best effort throughout — never throws.
  *

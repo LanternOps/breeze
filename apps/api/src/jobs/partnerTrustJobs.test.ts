@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   update, select, runOutside, withSystem, classify, tryAutoPromote,
   restrictOnHardDeny, partnerForDevice, ipClassifyProvider, runIpClassifyBackfill, offlineDataRefreshedAt,
+  runBillingFraudFlagSweep,
 } = vi.hoisted(() => ({
   offlineDataRefreshedAt: vi.fn(),
   runIpClassifyBackfill: vi.fn(),
@@ -15,6 +16,7 @@ const {
   restrictOnHardDeny: vi.fn(),
   partnerForDevice: vi.fn(),
   ipClassifyProvider: vi.fn(),
+  runBillingFraudFlagSweep: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -41,13 +43,14 @@ vi.mock('../config/env', async (importOriginal) => ({
 }));
 vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, restrictOnHardDeny }));
 vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
+vi.mock('../services/partnerTrustFraudFlags', () => ({ runBillingFraudFlagSweep }));
 vi.mock('./ipClassifyBackfill', () => ({
   IP_CLASSIFY_BACKFILL_JOB: 'ip-classify-backfill',
   runIpClassifyBackfill,
   scheduleIpClassifyBackfill: vi.fn(),
 }));
 
-import { processPartnerTrustJob } from './partnerTrustJobs';
+import { PARTNER_TRUST_FRAUD_FLAGS_JOB, processPartnerTrustJob, schedulePartnerTrustJobs } from './partnerTrustJobs';
 
 type ProbationRow = {
   id: string;
@@ -343,5 +346,61 @@ describe('processPartnerTrustJob', () => {
     });
     expect(classify).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('billing fraud flag job', () => {
+  const savedMode = process.env.PARTNER_TRUST_MODE;
+  const savedFlag = process.env.PARTNER_TRUST_FRAUD_FLAGS_ENABLED;
+
+  beforeEach(() => {
+    process.env.PARTNER_TRUST_MODE = 'enforce';
+    runBillingFraudFlagSweep.mockReset();
+  });
+
+  afterEach(() => {
+    if (savedMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+    else process.env.PARTNER_TRUST_MODE = savedMode;
+    if (savedFlag === undefined) delete process.env.PARTNER_TRUST_FRAUD_FLAGS_ENABLED;
+    else process.env.PARTNER_TRUST_FRAUD_FLAGS_ENABLED = savedFlag;
+  });
+
+  function fakeQueue(existing: Array<{ name: string; key: string }> = []) {
+    return {
+      getRepeatableJobs: vi.fn().mockResolvedValue(existing),
+      removeRepeatableByKey: vi.fn().mockResolvedValue(true),
+      add: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it('runs the sweep and returns its result', async () => {
+    runBillingFraudFlagSweep.mockResolvedValue({ restricted: 1, consumed: 1, leftPending: 0, malformed: 0 });
+
+    await expect(processPartnerTrustJob({ name: PARTNER_TRUST_FRAUD_FLAGS_JOB, data: {} }))
+      .resolves.toEqual({ restricted: 1, consumed: 1, leftPending: 0, malformed: 0 });
+  });
+
+  it('schedules the repeatable only when the flag is on, replacing any earlier one', async () => {
+    process.env.PARTNER_TRUST_FRAUD_FLAGS_ENABLED = 'true';
+    const queue = fakeQueue([{ name: PARTNER_TRUST_FRAUD_FLAGS_JOB, key: 'old-key' }]);
+
+    await schedulePartnerTrustJobs(queue as never);
+
+    expect(queue.removeRepeatableByKey).toHaveBeenCalledWith('old-key');
+    expect(queue.add).toHaveBeenCalledWith(
+      PARTNER_TRUST_FRAUD_FLAGS_JOB,
+      {},
+      expect.objectContaining({ repeat: { every: 120_000 } }),
+    );
+  });
+
+  it('removes a leftover repeatable and schedules nothing when the flag is off', async () => {
+    delete process.env.PARTNER_TRUST_FRAUD_FLAGS_ENABLED;
+    const queue = fakeQueue([{ name: PARTNER_TRUST_FRAUD_FLAGS_JOB, key: 'old-key' }]);
+
+    await schedulePartnerTrustJobs(queue as never);
+
+    expect(queue.removeRepeatableByKey).toHaveBeenCalledWith('old-key');
+    expect(queue.add).not.toHaveBeenCalledWith(PARTNER_TRUST_FRAUD_FLAGS_JOB, expect.anything(), expect.anything());
   });
 });

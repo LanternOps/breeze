@@ -218,6 +218,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- system context / background / bootstrap ------------------------------
   'services/abuseSignals/persistence.ts': 'abuse-sweep worker persistence (jobs/abuseSignalsSweep); no tenant request writes partner config',
   'services/abuseSignals/scriptContent.ts': 'abuse-sweep script-host cache, populated only by the system abuse pipeline',
+  'services/partnerTrustFraudFlags.ts': 'system-only operator ledger of billing fraud flags (partner_billing_fraud_flags); written by the partner-trust-fraud-flags worker and the platform-admin restore route, never a tenant request',
   'services/inboundEmail/inboundEmailService.ts': 'inbound-mail worker queue state (jobs/inboundEmailWorker); no tenant caller',
   'services/llm/llmConfigResolver.ts': 'runtime resolver; only write is the system-context version-CASed credential-error stamp',
   'services/llm/researchEval/runCase.ts': 'dev-only research-eval fixture seeding of a disposable partner/org/agent on a LOCAL database; the CLI refuses unless DATABASE_URL is loopback, RESEARCH_EVAL_ALLOW_WRITES=1 and NODE_ENV != production; never reachable from a request',
