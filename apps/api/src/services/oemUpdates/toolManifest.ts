@@ -48,7 +48,12 @@ export type LaneManifest = {
 };
 
 /** The agent's embedded allowlist for one lane (`agent/internal/oemupdates/allowlist.json`). */
-export type LaneToolAllowlist = { hosts: string[] };
+export type LaneToolAllowlist = {
+  /** The tool's download hosts. */
+  hosts: string[];
+  /** Each prerequisite's own hosts, by the agent's prerequisite name. */
+  prerequisites?: Record<string, string[]>;
+};
 
 const ALL_CLOSED: Record<OemCategory, GateState> = Object.freeze({
   bios: 'closed',
@@ -73,14 +78,23 @@ const MANIFEST: Readonly<Record<OemLane, LaneManifest>> = Object.freeze({
     laneGate: 'closed',
     categoryGates: ALL_CLOSED,
     codeBlocks: [],
-    // Floor and pin from vendor research; W10 re-checks them and records url and sha256.
+    // W10 lab (2026-11-19): DCU 5.7.2 Windows Universal (Dell driver ID M9H5F,
+    // released 2026-09-11) from Dell's own host; SHA-256 matches Dell's download
+    // page. .NET Desktop Runtime 10.0.15 (DCU 5.7.2 needs 10.0.8 or later) from
+    // Microsoft's host. The prerequisite name is the agent's
+    // (lane_dell.go dotnetDesktopRuntime).
     tool: {
       version: '5.7.2',
       minSafeVersion: '5.7.1',
       supportedRange: { min: '5.7.1', maxExclusive: '6.0.0' },
-      url: null,
-      sha256: null,
-      prerequisites: [{ name: 'dotnet-desktop-runtime', minVersion: '10.0.8', url: null, sha256: null }],
+      url: 'https://dl.dell.com/FOLDER15013620M/1/Dell-Command-Update-Windows-Universal-Application_M9H5F_WIN64_5.7.2_A00.EXE',
+      sha256: 'b405681cfe05bf61b4e129550d8d4134a1c42bb648f5c9d9fb980a1edb918ee9',
+      prerequisites: [{
+        name: 'dotnet_desktop_runtime',
+        minVersion: '10.0.8',
+        url: 'https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.15/windowsdesktop-runtime-10.0.15-win-x64.exe',
+        sha256: 'e61b030c1673edfa3c0844502eff83198c46af9e7df70dfc6e2efc5b11ea513a',
+      }],
     },
   },
   surface: { lane: 'surface', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
@@ -132,7 +146,7 @@ export function openCategoriesForLane(lane: OemLane, opts?: { deviceId?: string 
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
-function urlIssue(label: string, url: string | null, allow: LaneToolAllowlist): string | null {
+function urlIssue(label: string, url: string | null, allow: { hosts: string[] }): string | null {
   if (!url) return `${label}: an open gate requires a url`;
   let parsed: URL;
   try {
@@ -162,7 +176,8 @@ export function validateLaneManifest(manifest: LaneManifest, allow: LaneToolAllo
   if (!tool.sha256 || !SHA256.test(tool.sha256)) issues.push(`${lane}: tool: an open gate requires a 64-hex sha256`);
   for (const prerequisite of tool.prerequisites) {
     const label = `${lane}: prerequisite ${prerequisite.name}`;
-    const prerequisiteUrl = urlIssue(label, prerequisite.url, allow);
+    // The agent checks a prerequisite against its own hosts (allowlist.json).
+    const prerequisiteUrl = urlIssue(label, prerequisite.url, { hosts: allow.prerequisites?.[prerequisite.name] ?? [] });
     if (prerequisiteUrl) issues.push(prerequisiteUrl);
     if (!prerequisite.sha256 || !SHA256.test(prerequisite.sha256)) issues.push(`${label}: requires a 64-hex sha256`);
   }

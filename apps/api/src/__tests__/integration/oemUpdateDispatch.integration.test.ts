@@ -117,7 +117,9 @@ describe('vendor update seam against real PostgreSQL', () => {
     const [row] = await commandRows(deviceId);
     expect(row!.submittedOrgId).toBe(org.id);
     expect(Math.abs(row!.deliverBy!.getTime() - notAfter.getTime())).toBeLessThan(5000);
-    expect(row!.payload).toMatchObject({ lane: 'dell', categories: ['driver'], tool: null, occurrenceKey: '2027-01' });
+    expect(row!.payload).toMatchObject({ lane: 'dell', categories: ['driver'], occurrenceKey: '2027-01' });
+    // Dell's tool is pinned (W10): the payload names it, so a device without DCU can install it.
+    expect((row!.payload as { tool?: { version?: string } }).tool?.version).toBe('5.7.2');
 
     const status = await statusRow(deviceId);
     expect(status).toMatchObject({

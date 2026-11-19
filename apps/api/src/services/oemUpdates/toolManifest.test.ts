@@ -40,12 +40,25 @@ function manifest(overrides: Partial<LaneManifest> = {}): LaneManifest {
 
 const allow: LaneToolAllowlist = { hosts: ['dl.dell.com'] };
 
-/** Lane → hosts from the agent's embedded allowlist (W02), tolerating Go or JSON casing. */
+type AgentLaneAllowlist = {
+  tool?: { hosts?: string[] };
+  prerequisites?: Record<string, { hosts?: string[] }>;
+};
+
+/**
+ * Lane → hosts from the agent's embedded allowlist, in its real nested shape:
+ * the tool's hosts, and each prerequisite's own hosts by the agent's name.
+ */
 function agentAllowlist(): Record<string, LaneToolAllowlist> | null {
   if (!existsSync(ALLOWLIST_PATH)) return null;
-  const raw = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8')) as Record<string, Record<string, string[]>>;
+  const raw = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8')) as Record<string, AgentLaneAllowlist>;
   return Object.fromEntries(
-    Object.entries(raw).map(([lane, v]) => [lane, { hosts: v.hosts ?? v.Hosts ?? [] }]),
+    Object.entries(raw).map(([lane, v]) => [lane, {
+      hosts: v.tool?.hosts ?? [],
+      prerequisites: Object.fromEntries(
+        Object.entries(v.prerequisites ?? {}).map(([name, p]) => [name, p.hosts ?? []]),
+      ),
+    }]),
   );
 }
 
@@ -71,9 +84,49 @@ describe('tool manifest contract', () => {
     }
   });
 
-  it('dell carries the floor and leaves url and sha256 null until the lab wave', () => {
+  it('dell pins the DCU 5.7.2 and .NET Desktop Runtime installers checked in the W10 lab', () => {
     const { tool } = getLaneManifest('dell');
-    expect(tool).toMatchObject({ version: '5.7.2', minSafeVersion: '5.7.1', url: null, sha256: null });
+    expect(tool).toMatchObject({
+      version: '5.7.2',
+      minSafeVersion: '5.7.1',
+      url: 'https://dl.dell.com/FOLDER15013620M/1/Dell-Command-Update-Windows-Universal-Application_M9H5F_WIN64_5.7.2_A00.EXE',
+      sha256: 'b405681cfe05bf61b4e129550d8d4134a1c42bb648f5c9d9fb980a1edb918ee9',
+    });
+    expect(tool?.prerequisites).toEqual([{
+      name: 'dotnet_desktop_runtime',
+      minVersion: '10.0.8',
+      url: 'https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.15/windowsdesktop-runtime-10.0.15-win-x64.exe',
+      sha256: 'e61b030c1673edfa3c0844502eff83198c46af9e7df70dfc6e2efc5b11ea513a',
+    }]);
+  });
+
+  it('every real lane passes the open gate rule as if all its gates were open', () => {
+    // Pinning is checked before a gate opens, so a wrong host or name fails here, not in the lab.
+    const lists = agentAllowlist();
+    expect(lists).not.toBeNull();
+    for (const lane of SHIPPED_OEM_LANES) {
+      const m = getLaneManifest(lane);
+      if (!m.tool?.url) continue;
+      const open: LaneManifest = { ...m, laneGate: 'open', categoryGates: { ...allClosed(), driver: 'open' } };
+      expect(validateLaneManifest(open, lists![lane] ?? { hosts: [] }), lane).toEqual([]);
+    }
+  });
+
+  it('every prerequisite name is one the agent allowlists', () => {
+    const lists = agentAllowlist();
+    for (const lane of SHIPPED_OEM_LANES) {
+      for (const p of getLaneManifest(lane).tool?.prerequisites ?? []) {
+        expect(Object.keys(lists?.[lane]?.prerequisites ?? {}), `${lane}/${p.name}`).toContain(p.name);
+      }
+    }
+  });
+
+  it('a prerequisite url is checked against that prerequisite\'s hosts, not the tool\'s', () => {
+    const tool = manifest().tool!;
+    const prerequisites = [{ name: 'runtime', minVersion: '10.0.8', url: 'https://builds.dotnet.microsoft.com/r.exe', sha256: SHA }];
+    const m = manifest({ tool: { ...tool, prerequisites } });
+    expect(validateLaneManifest(m, { hosts: ['dl.dell.com'], prerequisites: { runtime: ['builds.dotnet.microsoft.com'] } })).toEqual([]);
+    expect(validateLaneManifest(m, { hosts: ['dl.dell.com', 'builds.dotnet.microsoft.com'] }).join()).toMatch(/runtime/);
   });
 
   it('surface has shipped, with no tool and every gate closed', () => {
@@ -192,7 +245,7 @@ describe('tool manifest contract', () => {
 
 describe('payloadToolFor', () => {
   it('is null until the tool is fully pinned, so the agent uses only what is installed', () => {
-    expect(payloadToolFor(getLaneManifest('dell'))).toBeNull();
+    expect(payloadToolFor(getLaneManifest('hp'))).toBeNull(); // HP is not pinned until W14
     expect(payloadToolFor(manifest({ tool: null }))).toBeNull();
     const tool = manifest().tool!;
     expect(payloadToolFor(manifest({ tool: { ...tool, url: null } }))).toBeNull();
