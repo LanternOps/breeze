@@ -13,7 +13,7 @@ const v2Req: ConsentRequest = {
   sessionId: 'sess-1',
   technicianName: 'Billy',
   technicianEmail: null,
-  orgName: 'Olive Technology',
+  orgName: 'Fabrikam MSP',
   timeoutMs: 3_000,
   onTimeout: 'proceed',
   nonce: 'nonce-1',

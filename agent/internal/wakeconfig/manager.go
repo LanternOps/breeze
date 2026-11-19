@@ -3,6 +3,7 @@ package wakeconfig
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,6 +23,15 @@ const DefaultRetryInterval = time.Hour
 // Settings is what the heartbeat's wake_on_lan_settings block carries.
 type Settings struct {
 	Enabled bool
+	// ConfigureSettings is the delivered configure_settings. It reaches a
+	// Writer only once writesActivated is true.
+	ConfigureSettings bool
+}
+
+// policyFingerprint identifies the delivered policy for the write limiter: a
+// change resets the per-setting failure history.
+func policyFingerprint(s Settings) string {
+	return fmt.Sprintf("v1|enabled=%t|configure=%t", s.Enabled, s.ConfigureSettings)
 }
 
 // Options configures a Manager.
@@ -39,6 +49,17 @@ type Options struct {
 	// FirstDelay holds the first cycle off the boot path (the heartbeat passes a
 	// jittered 60-120 s). Settings that arrive earlier are coalesced into it.
 	FirstDelay time.Duration
+
+	// Writer applies Windows and NIC settings; nil means never write.
+	Writer Writer
+	// Reread re-reads the Windows layer after writes.
+	Reread func(ctx context.Context) (*WindowsReadings, error)
+	// BootID clears needs_reboot once the machine has booted since a write.
+	BootID func() (string, error)
+
+	// testAllowWrites stands in for writesActivated in this package's tests.
+	// It is unexported so no other package can enable writes.
+	testAllowWrites bool
 }
 
 // Manager runs the collect-and-maybe-upload loop while the policy enables it.
@@ -47,9 +68,15 @@ type Manager struct {
 
 	mu       sync.Mutex
 	settings Settings
-	started  bool
-	cancel   context.CancelFunc
-	done     chan struct{}
+	dirty    bool // settings changed since the loop last looked
+	// lastFP is the policy fingerprint last delivered in this process; fpChanged
+	// records that it moved, even if it moved back before a cycle ran.
+	lastFP    string
+	haveFP    bool
+	fpChanged bool
+	started   bool
+	cancel    context.CancelFunc
+	done      chan struct{}
 
 	sig chan struct{} // buffered(1): settings changed
 }
@@ -71,7 +98,15 @@ func New(opts Options) *Manager {
 // ApplySettings stores the settings and signals the loop. It never blocks.
 func (m *Manager) ApplySettings(s Settings) {
 	m.mu.Lock()
+	if s != m.settings {
+		m.dirty = true
+	}
 	m.settings = s
+	fp := policyFingerprint(s)
+	if m.haveFP && fp != m.lastFP {
+		m.fpChanged = true
+	}
+	m.lastFP, m.haveFP = fp, true
 	m.mu.Unlock()
 	select {
 	case m.sig <- struct{}{}:
@@ -83,6 +118,33 @@ func (m *Manager) enabled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.settings.Enabled
+}
+
+func (m *Manager) currentSettings() Settings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.settings
+}
+
+func (m *Manager) takeDirty() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.dirty
+	m.dirty = false
+	return d
+}
+
+func (m *Manager) takeFPChanged() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.fpChanged
+	m.fpChanged = false
+	return c
+}
+
+// writesAllowed is the single gate in front of every Writer call.
+func (m *Manager) writesAllowed(s Settings) bool {
+	return s.Enabled && s.ConfigureSettings && (writesActivated || m.opts.testAllowWrites) && m.opts.Writer != nil
 }
 
 // Start launches the loop. It returns immediately and is idempotent.
@@ -140,8 +202,9 @@ func (m *Manager) run(ctx context.Context) {
 			return
 		case <-m.sig:
 			en := m.enabled()
-			if en && !wasEnabled {
-				collect = true // enable transition (includes boot)
+			dirty := m.takeDirty()
+			if en && (!wasEnabled || dirty) {
+				collect = true // enable transition (includes boot) or a settings change
 			}
 			if !en && armed {
 				if !timer.Stop() {
@@ -164,6 +227,12 @@ func (m *Manager) run(ctx context.Context) {
 				if !ok && m.opts.RetryInterval < next {
 					next = m.opts.RetryInterval
 				}
+				if armed && !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
 				timer.Reset(next)
 				armed = true
 			}
@@ -185,8 +254,39 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		// Unsupported OS is final: wait the full interval, never spin.
 		return errors.Is(err, ErrUnsupported)
 	}
-	st := loadState(m.opts.StatePath)
 	now := m.opts.Now()
+	st, err := loadStateAt(m.opts.StatePath, now)
+	if err != nil {
+		// Transient (a sharing violation, a permission glitch): skip the cycle
+		// rather than overwrite the good state with an empty one.
+		log.Warn("wake status state unreadable; skipping this cycle", "error", err.Error())
+		return false
+	}
+	settings := m.currentSettings()
+	if m.takeFPChanged() {
+		// The policy moved (perhaps and back) since the last cycle.
+		st.Apply.Limiter.resetFailures()
+	}
+	if in.Windows != nil {
+		rep := Apply(ctx, ApplyInputs{
+			Configure:         m.writesAllowed(settings),
+			PolicyFingerprint: policyFingerprint(settings),
+			Virtual:           in.Virtual,
+			Readings:          in.Windows,
+			Memory:            st.Adapters,
+			Reread:            m.opts.Reread,
+			Writer:            m.opts.Writer,
+			State:             &st.Apply,
+			Persist:           func(ApplyState) error { return saveState(m.opts.StatePath, st) },
+			StillAllowed:      func() bool { return m.writesAllowed(m.currentSettings()) },
+			BootID:            m.opts.BootID,
+			Now:               now,
+			activated:         writesActivated || m.opts.testAllowWrites,
+		})
+		in.Windows = rep.Readings
+		status := rep.Status
+		in.Apply = &status
+	}
 	in.Memory, in.Now = st.Adapters, now
 	snap := Compute(in)
 	st.Adapters = snap.Memory

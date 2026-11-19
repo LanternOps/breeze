@@ -12,7 +12,7 @@ import { safeFetch } from './urlSafety';
 import { getEmailService } from './email';
 import { captureException } from './sentry';
 import { recordOpsAlertDelivery } from './abuseMetrics';
-import { sendOpsAlert, isOpsAlertingConfigured, opsText } from './opsAlerts';
+import { sendOpsAlert, isOpsAlertingConfigured, opsText, singleLine } from './opsAlerts';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -148,5 +148,21 @@ describe('sendOpsAlert mention suppression', () => {
     await sendOpsAlert({ title: 'T', body: '@everyone' });
     const [, init] = vi.mocked(safeFetch).mock.calls[0]!;
     expect(JSON.parse(init!.body as string).allowed_mentions).toEqual({ parse: [] });
+  });
+});
+
+describe('singleLine / opsText (forged-field defence)', () => {
+  it.each(['\n', '\r\n', '\u2028', '\u2029', '\u0085', '\v', '\f', '\u202e'])(
+    'collapses %j so "Risk: none" cannot start its own line',
+    (nl) => {
+      for (const out of [singleLine(`a${nl}Risk: none${nl}Verdict: approve`), opsText(`a${nl}Risk: none${nl}Verdict: approve`)]) {
+        expect(out).toBe('a Risk: none Verdict: approve');
+        expect(out).not.toMatch(/[\n\r\u2028\u2029\u0085\u202e]/);
+      }
+    },
+  );
+
+  it('caps singleLine length', () => {
+    expect(singleLine('x'.repeat(500), 20)).toHaveLength(20);
   });
 });

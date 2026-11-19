@@ -207,7 +207,7 @@ value is allowed. Anything unrecognised is `unproven`; the agent never guesses.
 **Which models get firmware writes (my call, against the advisor):** the advisor recommends limiting writes to
 lab-certified model and firmware combinations, since one machine can't certify a whole vendor. That list would cover
 too few models to fix a mixed MSP fleet, and these are vendor-supported interfaces that validate names and values. So
-writes go to any model with an exact name and value match, controlled instead by a staged rollout (OliveTech first) and
+writes go to any model with an exact name and value match, controlled instead by a staged rollout (our own tenant first) and
 a **per-vendor server-side switch** that stops firmware writes without an agent release.
 Interface: `Detect / Read / PasswordState / Apply`, in a new `agent/internal/biosconfig` package with no
 WOL logic in it, so WOL policy code owns the allowlist.
@@ -375,7 +375,7 @@ Multi-wave feature; register it after the plan. **Writes reach customers only in
 | W3 | Agent Windows and NIC writes, inactive because nothing can set the flag | None |
 | W4 | Agent firmware writes for Dell only, inactive likewise | None |
 | W5 | Mac read and `womp` write. Reports `unsupported_os` until this ships | Macs report readiness |
-| W6 | Toggle in the tab with form defaults changed for new policies, docs, release notes, staged activation: Dell switch on, OliveTech first | Policies can turn WOL on, with BIOS changes on Dell only |
+| W6 | Toggle in the tab with form defaults changed for new policies, docs, release notes, staged activation: Dell switch on, our own tenant first | Policies can turn WOL on, with BIOS changes on Dell only |
 | W7+ | One wave per vendor as machines are found: HP, Lenovo (read and write adapters), Surface (detection) | That vendor moves from `unproven` to supported |
 
 Keeping the toggle until W6 matters, and hiding it isn't enough on its own, since the API and AI tools can also write

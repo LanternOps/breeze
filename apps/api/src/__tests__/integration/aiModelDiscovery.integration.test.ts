@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inArray, like, sql } from 'drizzle-orm';
 
 const { sendOpsAlertMock } = vi.hoisted(() => ({ sendOpsAlertMock: vi.fn() }));
-vi.mock('../../services/opsAlerts', () => ({ sendOpsAlert: sendOpsAlertMock }));
+vi.mock('../../services/opsAlerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/opsAlerts')>()),
+  sendOpsAlert: sendOpsAlertMock,
+}));
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { aiPlatformModels } from '../../db/schema';

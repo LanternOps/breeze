@@ -801,8 +801,8 @@ func bannerLabel(prompt *ipc.DesktopPrompt) string {
 	return technicianLine(prompt) + " is connected"
 }
 
-// technicianLine renders the who-is-this prefix: "Billy from Olive Technology",
-// "Billy", "A technician from Olive Technology", or "A technician". The partner
+// technicianLine renders the who-is-this prefix: "Billy from Fabrikam MSP",
+// "Billy", "A technician from Fabrikam MSP", or "A technician". The partner
 // name is the trust anchor for the end user, so it is kept even when the
 // identity level redacts the technician's name.
 func technicianLine(prompt *ipc.DesktopPrompt) string {

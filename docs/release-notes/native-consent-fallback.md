@@ -34,11 +34,11 @@ preferred over the native fallback.
 ## Trust-signal change: prompts now name the MSP, not the client
 
 The consent dialog and notices now read **"<Technician> from <Your MSP>
-connected"** (e.g. "Billy from Olive Technology connected"). Previously the name
+connected"** (e.g. "Billy from Fabrikam MSP connected"). Previously the name
 shown was the **client organization's own** name (the end user's own company),
 which was not a useful trust signal. The partner/MSP name is now shown, and it
 is retained even when `technician_identity_level` redacts the technician's own
-name (e.g. "A technician from Olive Technology").
+name (e.g. "A technician from Fabrikam MSP").
 
 ## Behavior change on upgrade
 

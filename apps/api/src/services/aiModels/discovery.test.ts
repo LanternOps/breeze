@@ -25,7 +25,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert: sendOpsAlertMock }));
+vi.mock('../opsAlerts', async (orig) => ({ ...(await orig<typeof import('../opsAlerts')>()), sendOpsAlert: sendOpsAlertMock }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./connections', () => connMocks);
 vi.mock('./platformModels', () => ({
@@ -43,6 +43,9 @@ import {
 } from './discovery';
 import { DiscoveryTruncatedError } from './gateway/openai/discovery';
 import { captureException } from '../sentry';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 import { refreshPlatformModelSnapshot } from './platformModels';
 
 const NOW = new Date('2026-11-20T06:38:00.000Z');
@@ -326,5 +329,21 @@ describe('withoutKeyMaterial — discovered rows never persist the connection ke
       .toEqual([{ modelId: 'x', displayName: null }]);
     expect(withoutKeyMaterial([{ modelId: 'x', displayName: 'Mistral 7B' }], null))
       .toEqual([{ modelId: 'x', displayName: 'Mistral 7B' }]);
+  });
+
+  it('escapes provider-sourced model ids in the ops alert', async () => {
+    withSystemDbAccessContextMock.mockResolvedValueOnce({
+      inserted: [], restored: [], markedMissing: [HOSTILE], retired: [HOSTILE], toNotify: [{ id: 'i1', modelId: HOSTILE }],
+      defaultProblem: { modelId: HOSTILE, lifecycle: 'retired' },
+    });
+    sendOpsAlertMock.mockResolvedValue(false);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const discover = vi.fn().mockResolvedValue([{ id: 'model-a', displayName: 'A', maxInputTokens: null, maxOutputTokens: null, capabilities: null }]);
+    await syncPlatformModels({ env: { ANTHROPIC_API_KEY: 'k' }, discover });
+    const { body } = sendOpsAlertMock.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 });

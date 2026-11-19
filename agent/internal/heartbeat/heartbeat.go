@@ -603,7 +603,7 @@ type Heartbeat struct {
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
 	workloads          *workloadsRuntime
-	// wake runs the read-only Wake-on-LAN readiness collector; wakeApply is a
+	// wake runs the Wake-on-LAN readiness collector (writes inactive); wakeApply is a
 	// test seam that replaces wake.ApplySettings.
 	wake      *wakeconfig.Manager
 	wakeApply func(wakeconfig.Settings)
@@ -3986,7 +3986,7 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
-	// Apply wake_on_lan_settings (read-only readiness collection). Same rule:
+	// Apply wake_on_lan_settings (readiness collection; writes inactive). Same rule:
 	// above the policy-probe early return. An absent block changes nothing.
 	h.applyWakeOnLanFromUpdate(update)
 

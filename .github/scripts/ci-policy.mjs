@@ -29,6 +29,10 @@ export const POLICY_FILES = Object.freeze([
   // runs and in the integration sequencer (W07b2, shadow).
   '.github/scripts/integration-suites.txt',
   '.github/scripts/integration-suites.mjs',
+  // Related-test narrowing of overlap-area unit suites in the queue (W07c),
+  // shadow: the always list and the module queue selection logs it from.
+  '.github/scripts/unit-always-tests.txt',
+  '.github/scripts/related-tests.mjs',
 ]);
 
 // Any workflow, script or local action can steer selection, listed or not.

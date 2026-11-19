@@ -173,7 +173,7 @@ W03 is blocked until Decision 1 is resolved. W01 and W02 are not.
 
 All resolved as the defaults below on 2026-11-06, except decision 1, which is owed before W03.
 
-1. **Live account.** Options: (a) an Axcient partner trial under OliveTech; (b) a read-only key from the prospect that keeps Axcient, as a design-partner arrangement; (c) ship on fixtures and verify with the first real partner connection. **Recommend (a), fall back to (b).** Shipping unverified repeats the Cove visa mistake, where the integration never worked against the real API until a customer hit it.
+1. **Live account.** Options: (a) an Axcient partner trial under our own MSP; (b) a read-only key from the prospect that keeps Axcient, as a design-partner arrangement; (c) ship on fixtures and verify with the first real partner connection. **Recommend (a), fall back to (b).** Shipping unverified repeats the Cove visa mistake, where the integration never worked against the real API until a customer hit it.
 2. **Inactive clients are listed** (`active: false`), not filtered. Resolved as the default: hiding them silently would make a parked customer look like a sync bug.
 3. **AutoVerify does not affect `status`**; it is evidence only. Resolved as the default (reasoning above). Revisit if partners want "backups succeed but won't boot" to alert.
 4. **Vendor per-device thresholds are ignored** in favour of the global 48-hour stale rule. Resolved as the default.
