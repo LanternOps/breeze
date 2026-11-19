@@ -43,6 +43,11 @@ function csv(name: string): string[] {
     .filter(Boolean);
 }
 
+/** The listed partners, lowercased. Empty means every stage is off. */
+export function vendorCanaryPartnerIds(): string[] {
+  return [...new Set(csv('BREEZE_VENDOR_CANARY_PARTNER_IDS'))];
+}
+
 export function isVendorCanaryPartner(partnerId: string | null | undefined): boolean {
   if (!partnerId) return false;
   return csv('BREEZE_VENDOR_CANARY_PARTNER_IDS').includes(partnerId.toLowerCase());

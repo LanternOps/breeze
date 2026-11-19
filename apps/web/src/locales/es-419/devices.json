@@ -5016,7 +5016,8 @@
       "noOpenCategories": "No se puede ejecutar nada con esta opción. Aquí solo hay BIOS y firmware disponibles: elija Reiniciar al terminar.",
       "decommissioned": "Este dispositivo está dado de baja, por lo que no se le puede enviar nada.",
       "cancelledAtClaim": "La ejecución se canceló antes de llegar al dispositivo. Inténtelo de nuevo."
-    }
+    },
+    "observeQueued": "Se inició una revisión de solo lectura en {{hostname}}. No se instala nada."
   },
   "vendorUpdates": {
     "title": "Actualizaciones del fabricante",
@@ -5101,7 +5102,16 @@
       "byUnknown": "Desconocido",
       "range": "{{from}}-{{to}} de {{total}}",
       "previousPage": "Anterior",
-      "nextPage": "Siguiente"
+      "nextPage": "Siguiente",
+      "observed": "Observado",
+      "observedTools": "Herramientas encontradas: {{tools}}",
+      "observedNoTools": "No se encontraron herramientas del fabricante",
+      "observedVerdict": {
+        "observed": "{{vendor}}: revisión de solo lectura terminada",
+        "observedWithErrors": "{{vendor}}: revisión de solo lectura terminada con algunas lecturas fallidas",
+        "platformUnsupported": "{{vendor}}: las herramientas empresariales del fabricante no admiten este modelo",
+        "invalid": "{{vendor}}: no se pudo leer el resultado de la revisión"
+      }
     }
   },
   "reinstalledBadge": {

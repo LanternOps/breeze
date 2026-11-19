@@ -165,6 +165,9 @@ export const CommandTypes = {
   // Hands a vendor tool's own update schedule back. Queued only through
   // services/oemUpdates/dispatch.ts (oemUpdateExposure.contract.test.ts).
   OEM_UPDATE_RELEASE: 'oem_update_release',
+  // Read-only vendor observation (observe-first amendment). Queued only through
+  // services/oemUpdates/observe.ts, and only for a vendor canary partner.
+  OEM_OBSERVE: 'oem_observe',
   // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
   WAKE_ON_LAN: 'wake_on_lan',
   // On-demand inventory refresh — agent re-runs every send*Inventory collector,

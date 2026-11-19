@@ -5016,7 +5016,8 @@
       "noOpenCategories": "Mit dieser Auswahl kann nichts ausgeführt werden. Hier sind nur BIOS und Firmware verfügbar: Wählen Sie „Nach Abschluss neu starten“.",
       "decommissioned": "Dieses Gerät ist außer Betrieb genommen, daher kann nichts an es gesendet werden.",
       "cancelledAtClaim": "Der Lauf wurde abgebrochen, bevor er das Gerät erreichte. Versuchen Sie es erneut."
-    }
+    },
+    "observeQueued": "Prüfung ohne Änderungen auf {{hostname}} gestartet. Es wird nichts installiert."
   },
   "vendorUpdates": {
     "title": "Herstellerupdates",
@@ -5101,7 +5102,16 @@
       "byUnknown": "Unbekannt",
       "range": "{{from}}-{{to}} von {{total}}",
       "previousPage": "Zurück",
-      "nextPage": "Weiter"
+      "nextPage": "Weiter",
+      "observed": "Beobachtet",
+      "observedTools": "Gefundene Tools: {{tools}}",
+      "observedNoTools": "Keine Hersteller-Tools gefunden",
+      "observedVerdict": {
+        "observed": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen",
+        "observedWithErrors": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen, einige Abfragen sind fehlgeschlagen",
+        "platformUnsupported": "{{vendor}}: Dieses Modell wird von den Business-Tools des Herstellers nicht unterstützt",
+        "invalid": "{{vendor}}: Das Prüfergebnis konnte nicht gelesen werden"
+      }
     }
   },
   "reinstalledBadge": {

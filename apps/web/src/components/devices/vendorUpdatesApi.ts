@@ -30,15 +30,31 @@ export type OemStatusView = {
   displayState: OemDisplayState;
   /** Null when no run could reach this device, including with the feature off. */
   lane: OemLane | null;
+  /**
+   * Run Now sends the read-only observation instead of a run (vendor canary,
+   * #11065 observe-first). Absent from an older API: false.
+   */
+  observe?: boolean;
   status: OemLastRun | null;
   gates: Record<OemCategory, 'open' | 'closed'>;
 };
 
 export type OemRunItem = OemUpdateRunResult['items'][number];
 
+/** A finished read-only observation, summarised by the API (lane, verdict, names only). */
+export type OemObservationView = {
+  lane: string;
+  verdict: 'observed' | 'observed_with_errors' | 'platform_unsupported' | 'invalid';
+  tools: string[];
+  conflicts: string[];
+};
+
 /** GET /devices/:id/oem-updates/history. */
 export type OemRunView = {
   commandId: string;
+  /** `observe` for a read-only observation. Absent from an older API: a run. */
+  kind?: 'run' | 'observe';
+  observation?: OemObservationView | null;
   trigger: 'scheduled' | 'on_demand' | null;
   status: string;
   outcome: OemOutcome | null;
@@ -84,6 +100,16 @@ export const OEM_RUN_QUEUED_EVENT = 'breeze:oem-update-run-queued';
 export function announceOemRunQueued(deviceId: string): void {
   window.dispatchEvent(new CustomEvent(OEM_RUN_QUEUED_EVENT, { detail: { deviceId } }));
 }
+
+/** Vendor tool product names an observation can report, not translated (locales/TERMINOLOGY.md). */
+export const OEM_OBSERVE_TOOL_NAMES: Record<string, string> = {
+  hpia: 'HP Image Assistant',
+  hp_cmsl: 'HP Client Management Script Library',
+  lenovo_system_update: 'Lenovo System Update',
+  lenovo_thin_installer: 'Lenovo Thin Installer',
+  lenovo_lsuclient: 'LSUClient',
+  lenovo_client_update: 'Lenovo.Client.Update',
+};
 
 /** Product names, not translated (locales/TERMINOLOGY.md). */
 export const OEM_VENDOR_NAMES: Record<OemLane, string> = {

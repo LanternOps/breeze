@@ -28,7 +28,11 @@ import { getCommandTimeoutMs } from '../services/commandTimeouts';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../services/drainClaimAllowlist';
 import { isLifecycleCommand } from '../services/partnerTrust';
 import { isParkedDeliverableCommandType } from '../services/unassignedPool/deliveryEligibility';
-import { OEM_UPDATE_MIN_AGENT_VERSION, OEM_UPDATE_RELEASE_MIN_AGENT_VERSION } from '@breeze/shared';
+import {
+  OEM_OBSERVE_MIN_AGENT_VERSION,
+  OEM_UPDATE_MIN_AGENT_VERSION,
+  OEM_UPDATE_RELEASE_MIN_AGENT_VERSION,
+} from '@breeze/shared';
 
 const SRC = resolve(import.meta.dirname, '..');
 
@@ -196,5 +200,84 @@ describe('contract: oem_update_release is only queued through its seam (#11065)'
     expect(policy).not.toEqual({ kind: 'reject' });
     expect(getCommandTimeoutMs('oem_update_release')).toBe(30 * 60 * 1000);
     expect(COMMAND_MIN_AGENT_VERSION.oem_update_release).toBe(OEM_UPDATE_RELEASE_MIN_AGENT_VERSION);
+  });
+});
+
+// `oem_observe` (observe-first amendment): the read-only canary instrument. It
+// installs nothing, but it runs best-guess vendor reads as SYSTEM on a customer
+// machine, so only its own seam may queue it, and only for a canary partner.
+const ALLOWED_OBSERVE: Record<string, string> = {
+  'services/commandTypes.ts': 'the type constant',
+  'services/commandTimeouts.ts': 'execution budget',
+  'services/commandOfflinePolicy.ts': 'refused for an offline device',
+  'services/partnerTrust.ts': 'gated (operator-directed) classification',
+  'services/commandQueue.ts': 'always audited',
+  'services/commandMinVersion.ts': 'minimum agent version',
+  'services/commandClaimEligibility.ts': 'delivery revalidation required',
+  'services/commandResultHandlers.ts': 'result handler registration',
+  'routes/agents/commands.ts': 'HTTP result transport reaches the same handler',
+  'services/oemUpdates/observe.ts': 'the one seam that queues it',
+  'services/oemUpdates/revalidation.ts': 'claim-time recheck of the flag, the canary stage and the kill switches',
+};
+
+const OBSERVE_WORD = /(?<![A-Za-z0-9_])(?:oem_observe|OEM_OBSERVE)(?![A-Za-z0-9_])/;
+
+describe('contract: oem_observe is only queued through its seam (#11065 observe-first)', () => {
+  it('appears only in the allowlisted API files', () => {
+    const offenders = walk(SRC)
+      .filter((file) => OBSERVE_WORD.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(SRC, file).replaceAll('\\', '/'))
+      .filter((file) => !(file in ALLOWED_OBSERVE));
+    expect(
+      offenders,
+      'oem_observe must go through services/oemUpdates/observe.ts: do not add it to generic, bulk, AI, MCP, automation, mobile, fix-memory or fleet-finding paths',
+    ).toEqual([]);
+  });
+
+  it('has no stale allowlist entries', () => {
+    const stale = Object.keys(ALLOWED_OBSERVE).filter((file) => !OBSERVE_WORD.test(readFileSync(join(SRC, file), 'utf8')));
+    expect(stale).toEqual([]);
+  });
+
+  it('only the seam calls the enqueue functions with it', () => {
+    const queueCall = /(?:dispatchDeviceCommand\w*|queueCommand\w*|executeCommand|insertQueuedCommandInTransaction)\b/;
+    const seamOnly = Object.keys(ALLOWED_OBSERVE).filter((file) => file !== 'services/oemUpdates/observe.ts');
+    const offenders = seamOnly.filter((file) => {
+      const lines = readFileSync(join(SRC, file), 'utf8').split('\n');
+      return lines.some((line, i) =>
+        OBSERVE_WORD.test(line) && queueCall.test(lines.slice(Math.max(0, i - 3), i + 1).join('\n')));
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('is rejected by the generic single and bulk command schemas', () => {
+    expect(createCommandSchema.safeParse({ type: 'oem_observe' }).success).toBe(false);
+    expect(
+      bulkCommandSchema.safeParse({ deviceIds: ['11111111-1111-4111-8111-111111111111'], type: 'oem_observe' }).success,
+    ).toBe(false);
+  });
+
+  it('is not a fleet-finding remediation', () => {
+    expect((REMEDIATION_COMMAND_TYPE_ALLOWLIST as readonly string[]).includes('oem_observe')).toBe(false);
+  });
+
+  it('is refused for a parked device and earns no claim exemption', () => {
+    expect(isParkedDeliverableCommandType('oem_observe')).toBe(false);
+    expect((DRAIN_CLAIM_TYPE_ALLOWLIST as readonly string[]).includes('oem_observe')).toBe(false);
+    expect(TEARDOWN_CLAIM_EXEMPT_TYPES.has('oem_observe')).toBe(false);
+  });
+
+  it('is gated, never a trust-exempt lifecycle command', () => {
+    expect(isLifecycleCommand('oem_observe')).toBe(false);
+  });
+
+  it('must pass a delivery revalidation', () => {
+    expect(REVALIDATION_REQUIRED_TYPES.has('oem_observe')).toBe(true);
+  });
+
+  it('rejects an offline device, runs on the 30 minute budget and carries its own fail-closed version', () => {
+    expect(defaultOfflinePolicy('oem_observe')).toEqual({ kind: 'reject' });
+    expect(getCommandTimeoutMs('oem_observe')).toBe(30 * 60 * 1000);
+    expect(COMMAND_MIN_AGENT_VERSION.oem_observe).toBe(OEM_OBSERVE_MIN_AGENT_VERSION);
   });
 });
