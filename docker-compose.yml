@@ -1266,7 +1266,8 @@ services:
       # POSTGRES_DATA_VOLUME picks which declared volume holds the database:
       # postgres_data (unset, the default) or postgres_data_alt. The PostgreSQL
       # major-version runbook restores into the other slot so the old volume
-      # stays untouched as the rollback. Any other value fails `docker compose`.
+      # stays untouched as the rollback. Any other volume name fails `docker
+      # compose`; never set it to a path (that would bind-mount a host directory).
       - ${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data
     healthcheck:
       <<: *healthcheck

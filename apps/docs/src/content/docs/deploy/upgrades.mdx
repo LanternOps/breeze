@@ -218,7 +218,7 @@ The last line must print nothing. Compose prefers a variable exported in your sh
    POSTGRES_DATA_VOLUME=postgres_data_alt
    ```
 
-   Keep the old `POSTGRES_IMAGE_REF` value somewhere: it is half of the rollback. Use a digest you have reviewed (`docker buildx imagetools inspect pgvector/pgvector:pg18` lists it). Any other `POSTGRES_DATA_VOLUME` value makes `docker compose` fail, which is deliberate.
+   Keep the old `POSTGRES_IMAGE_REF` value somewhere: it is half of the rollback. Use a digest you have reviewed (`docker buildx imagetools inspect pgvector/pgvector:pg18` lists it). Any other volume name in `POSTGRES_DATA_VOLUME` makes `docker compose` fail, which is deliberate. Never set it to a path: Compose would bind-mount that host directory instead.
 
 6. **Start Postgres 18 and confirm it is on the new volume**
 
@@ -301,7 +301,7 @@ rm -rf pg-upgrade
 
 Keep `POSTGRES_DATA_VOLUME=postgres_data_alt` in `.env` from now on, next to `POSTGRES_IMAGE_REF`. Losing that line starts Postgres on the old slot, which is empty after cleanup. The next major-version move restores back into `postgres_data` and removes the line. `guided-setup.sh` keeps it when it rewrites `.env`, and both slots count as existing data when it checks for a previous install.
 
-Never run `docker compose down -v` or `docker volume prune` while you rely on the old volume as a rollback: both delete it.
+Never run `docker compose down -v` or `docker volume prune` while you rely on the old volume as a rollback: both delete it. The same goes for `guided-setup.sh` run with a new `.env`: if you choose **Delete existing Postgres storage** there, it deletes both `postgres_data` and `postgres_data_alt`.
 
 ### Already running 18 with the upstream volume layout
 
@@ -322,7 +322,7 @@ Set that `PGDATA` and run `docker compose up -d postgres` again. The check is in
 
 ### Local `./data` storage mode
 
-If `guided-setup.sh` set up local storage, the database is a bind mount of `./data/postgres` and `POSTGRES_DATA_VOLUME` has no effect. `guided-setup.sh` does not regenerate that Compose file, so add `PGDATA: /var/lib/postgresql/data` to the `postgres` service's `environment:` by hand first (without it an 18 image refuses to start). Follow steps 1–4 and 7–11 above. For steps 5 and 6, keep the old directory as the rollback:
+If `guided-setup.sh` set up local storage, the database is a bind mount of `./data/postgres` and `POSTGRES_DATA_VOLUME` has no effect. `guided-setup.sh` does not regenerate that Compose file, so if its `postgres` service has no `PGDATA` yet, add `PGDATA: /var/lib/postgresql/data` to its `environment:` by hand first (one `PGDATA` key only) (without it an 18 image refuses to start). Follow steps 1–4 and 7–11 above. For steps 5 and 6, keep the old directory as the rollback:
 
 ```bash
 dc stop postgres
@@ -415,7 +415,7 @@ The `postgres` service in `docker-compose.yml` gains `PGDATA` and a selectable d
 |---|---|
 | `postgres` sets `PGDATA: /var/lib/postgresql/data`, the mount target. Postgres 18 images moved their default data directory outside that mount and refuse to start without it. | On 16 or 17 with the shipped mount: nothing. It is the default path there, so the next `docker compose up -d` recreates the container once (a few seconds of database restart) on the same data. **Already running 18 with your volume mounted at `/var/lib/postgresql`:** run `SHOW data_directory` first. If it reports `/var/lib/postgresql/18/docker`, keep your mount and set `PGDATA` to that path instead. With the whole release service block, Postgres refuses to start and logs that path. With only this line merged into your file, it starts an empty database. See [Already running 18 with the upstream volume layout](#already-running-18-with-the-upstream-volume-layout). |
 | `postgres` sets `entrypoint:` (a short shell check, then the image's `docker-entrypoint.sh`) and `command: ['postgres']`. The check refuses to start when `PGDATA` holds no database but one exists beside or inside it, instead of initializing an empty one. | Nothing on a fresh install or one whose `PGDATA` already holds the database: it hands straight to the image. A `command:` override, such as `postgres -c ...`, still works. If you set your own `entrypoint:` on `postgres`, yours replaces the check. |
-| The `postgres` mount becomes `${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data`, and a second volume, `postgres_data_alt`, is declared. | Nothing. Unset keeps `postgres_data`. Only the [PostgreSQL 16 to 18](#postgresql-16-to-18) procedure sets `POSTGRES_DATA_VOLUME`, and any value other than the two declared names makes `docker compose` fail. |
+| The `postgres` mount becomes `${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data`, and a second volume, `postgres_data_alt`, is declared. | Nothing. Unset keeps `postgres_data`. Only the [PostgreSQL 16 to 18](#postgresql-16-to-18) procedure sets `POSTGRES_DATA_VOLUME`, and any other volume name makes `docker compose` fail. Never set it to a path, which Compose would bind-mount. |
 | `guided-setup.sh` local-storage mode rewrites either mount form to `./data/postgres`, and treats both volumes as existing data. | Nothing. Fetch the current `guided-setup.sh` as usual. |
 
 ### Unreleased — report-only observation retention settings mapped
