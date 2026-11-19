@@ -18,6 +18,11 @@ import {
   NOTE_WRITE_NEEDS_APPROVAL_MESSAGE,
   NOTE_WRITE_UNAVAILABLE_MESSAGE,
 } from './aiNoteWrites';
+import {
+  UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE,
+  UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE,
+  UNATTENDED_NOTE_UNAVAILABLE_MESSAGE,
+} from './deviceNoteBounds';
 
 export type ContextType = 'issue' | 'quirk' | 'followup' | 'preference';
 
@@ -87,7 +92,7 @@ export async function createDeviceContext(
   details: Record<string, unknown> | null,
   auth: AuthContext,
   expiresAt?: Date,
-  opts?: { cardFree?: boolean }
+  opts?: { cardFree?: boolean; unattended?: boolean }
 ): Promise<ContextEntry | { error: string }> {
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
@@ -96,7 +101,14 @@ export async function createDeviceContext(
   const [device] = await db.select().from(devices).where(and(...conditions)).limit(1);
   if (!device) return { error: 'Device not found or access denied' };
 
-  if (opts?.cardFree) {
+  if (opts?.cardFree || opts?.unattended) {
+    // One locked path for both bounded writes. `cardFree` (chat gate, #11986):
+    // past a bound the model is sent back to the card. `unattended` alone (MCP
+    // dispatch #12140, flow steps #12161) has no card: past the bound the note is refused with a
+    // message that says what to do. Either way the lock key is the id Postgres
+    // returned, never the caller's spelling.
+    const noCard = !opts.cardFree;
+    const unavailable = noCard ? UNATTENDED_NOTE_UNAVAILABLE_MESSAGE : NOTE_WRITE_UNAVAILABLE_MESSAGE;
     // A note the chat gate let through without a card (aiNoteWrites.ts). The
     // gate's device counts ran before this call wrote, so calls running in
     // parallel could all have passed them. Count again here, under a
@@ -110,11 +122,11 @@ export async function createDeviceContext(
     // would not show.
     if (!hasDbAccessContext()) {
       console.error('[brainDeviceContext] card-free note reached the handler outside a DB context; not written');
-      return { error: NOTE_WRITE_UNAVAILABLE_MESSAGE };
+      return { error: unavailable };
     }
     if (!expiresAt || expiresAt.getTime() > Date.now() + NOTE_WRITE_AUTO_MAX_EXPIRY_DAYS * 86_400_000 + 60_000) {
       console.error('[brainDeviceContext] card-free note reached the handler with an expiry past the cap; not written');
-      return { error: NOTE_WRITE_UNAVAILABLE_MESSAGE };
+      return { error: unavailable };
     }
     // Key the lock on the id as Postgres returned it, not as the caller spelled
     // it: the column reads every case of a uuid as one device, so a raw-text
@@ -122,7 +134,16 @@ export async function createDeviceContext(
     // the bound once per spelling.
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`brain_device_context:${device.id}`}, 0))`);
     const counts = await countDeviceNotes(device.id);
-    if (!cardFreeNoteFits(counts)) return { error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE };
+    if (noCard) {
+      // A count that is not a number fails closed, as a fault, not as a full device.
+      if (!Number.isFinite(counts.active)) {
+        console.error('[brainDeviceContext] unattended note: active-note count was not a number; not written');
+        return { error: unavailable };
+      }
+      if (counts.active >= UNATTENDED_NOTE_MAX_ACTIVE_PER_DEVICE) return { error: UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE };
+    } else if (!cardFreeNoteFits(counts)) {
+      return { error: NOTE_WRITE_NEEDS_APPROVAL_MESSAGE };
+    }
   }
 
   const [entry] = await db

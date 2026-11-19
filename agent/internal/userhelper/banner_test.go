@@ -22,8 +22,8 @@ func TestBannerSessionTracking(t *testing.T) {
 	showBannerFn = func(label string, _ int64) bool { shown = append(shown, label); return true }
 	hideBannerFn = func() { hidden++ }
 
-	handleBannerShow(ipc.BannerShowRequest{SessionID: "s1", Label: "Billy from Olive Technology is connected"})
-	handleBannerShow(ipc.BannerShowRequest{SessionID: "s2", Label: "Sue from Olive Technology is connected"})
+	handleBannerShow(ipc.BannerShowRequest{SessionID: "s1", Label: "Billy from Fabrikam MSP is connected"})
+	handleBannerShow(ipc.BannerShowRequest{SessionID: "s2", Label: "Sue from Fabrikam MSP is connected"})
 
 	handleBannerHide("s1") // stale — s2 owns the banner now
 	if hidden != 0 {
@@ -33,7 +33,7 @@ func TestBannerSessionTracking(t *testing.T) {
 	if hidden != 1 {
 		t.Fatalf("owner hide must hide, hides=%d", hidden)
 	}
-	if len(shown) != 2 || shown[1] != "Sue from Olive Technology is connected" {
+	if len(shown) != 2 || shown[1] != "Sue from Fabrikam MSP is connected" {
 		t.Fatalf("labels: %v", shown)
 	}
 	// hide with empty session id always hides (defensive daemon-side payloads)

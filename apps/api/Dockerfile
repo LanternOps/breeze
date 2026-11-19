@@ -62,9 +62,25 @@ FROM scratch AS release-dist
 COPY --from=builder /app/apps/api/dist /apps/api/dist
 COPY --from=builder /app/ee/workspace/dist /ee/workspace/dist
 
+# Production dependency closure only. `deps` installs devDependencies too
+# (vitest, tsup, drizzle-kit, ...) because builder needs them; the runner must
+# not ship them. Copying deps' node_modules shipped ~1 GB of build/test tooling
+# and with it every advisory in that tooling -- e.g. picomatch
+# (CVE-2026-112366, #12114), which has no production path into @breeze/api.
+# dist/index.cjs bundles @breeze/* sources and keeps only apps/api's
+# `dependencies` external (tsup.config.ts), so the prod closure is all it loads.
+# The node_modules trees are deleted and re-linked from deps' content-addressed
+# store (outside /app), offline. Running `pnpm install --prod` over the existing
+# trees is NOT enough: it only unlinks the dev packages and leaves them in
+# node_modules/.pnpm, where they still ship and still scan (verified).
+# Inheriting from deps keeps the workspace manifests in lockstep with it.
+FROM deps AS prod-deps
+RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules ee/*/node_modules && \
+    pnpm install --frozen-lockfile --offline --prod
+
 # Runtime source and workspace dependencies do not require compilation. Keeping
 # them separate lets release packaging skip builder when release-dist is supplied.
-FROM deps AS runtime-source
+FROM prod-deps AS runtime-source
 COPY packages ./packages
 COPY ee ./ee
 COPY apps/api/package.json ./apps/api/package.json
@@ -118,8 +134,8 @@ RUN addgroup --system --gid 1001 nodejs && \
 # /app/apps/api/node_modules links into /app/node_modules/.pnpm.
 COPY --from=release-dist --chown=hono:nodejs /apps/api/dist ./apps/api/dist
 COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/package.json ./apps/api/package.json
-COPY --from=deps --chown=hono:nodejs /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=deps --chown=hono:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=hono:nodejs /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=prod-deps --chown=hono:nodejs /app/node_modules ./node_modules
 COPY --from=runtime-source --chown=hono:nodejs /app/packages ./packages
 
 # Built-in extensions: this runner's WORKDIR ends at /app/apps/api (see below),

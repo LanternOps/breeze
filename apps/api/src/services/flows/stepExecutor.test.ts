@@ -63,6 +63,7 @@ import { currentFlowExecutionFrame } from './flowExecutionContext';
 import { preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding } from './preApproval';
 import { executeFlowBuiltin } from './builtins/index';
 import { countRunBuiltinCalls } from './builtins/runCounters';
+import { UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE, UNATTENDED_NOTE_UNAVAILABLE_MESSAGE } from '../deviceNoteBounds';
 import { classifyToolResult, executeFlowStep, isErrorResult, isTransientFlowToolError, type StepExecutionInput } from './stepExecutor';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -654,6 +655,49 @@ describe('executeFlowStep — tier 1/2 and tenant', () => {
     await executeFlowStep(input());
     expect(executeTool).toHaveBeenCalledTimes(2);
     expect(dbContexts).toEqual([]);
+  });
+
+  // #12161: a flow's Tier-2 step runs with no person approving it (only Tier 3
+  // parks), so a note it writes is held to the unattended-note bounds
+  // (deviceNoteBounds.ts) through the same server-set flag MCP sets.
+  it('a set_device_context step is dispatched as an unattended note write', async () => {
+    vi.mocked(executeTool).mockResolvedValue('Context recorded successfully (ID: x).');
+    const notePin: FlowStepPin = { stepId: 'note', tool: 'set_device_context', source: 'core', tier: 2, approvalScope: null };
+    const out = await executeFlowStep(input({
+      step: step('note', 'set_device_context', { deviceId: '{{trigger.device.id}}', contextType: 'issue', summary: 'disk full' }),
+      pin: notePin,
+    }));
+    expect(out).toMatchObject({ kind: 'completed' });
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(executeTool).mock.calls[0]).toEqual([
+      'set_device_context',
+      { deviceId: DEVICE, contextType: 'issue', summary: 'disk full' },
+      expect.anything(),
+      { context: { unattendedNoteWrite: true } },
+    ]);
+  });
+
+  it.each([
+    ['the active-note limit', UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE],
+    ['a wiring fault', UNATTENDED_NOTE_UNAVAILABLE_MESSAGE],
+  ])('a note refused for %s fails the step once, with no retry', async (_why, message) => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({ error: message }));
+    const notePin: FlowStepPin = { stepId: 'note', tool: 'set_device_context', source: 'core', tier: 2, approvalScope: null };
+    const out = await executeFlowStep(input({
+      step: step('note', 'set_device_context', { deviceId: DEVICE, contextType: 'issue', summary: 'disk full' }),
+      pin: notePin,
+    }), noSleep);
+    expect(out).toMatchObject({ kind: 'failed', code: 'step_failed', policy: false });
+    expect(JSON.stringify(out)).toContain(message);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(noSleep.sleep).not.toHaveBeenCalled();
+  });
+
+  it('any other core tool step keeps the three-argument dispatch', async () => {
+    await executeFlowStep(input({
+      step: step('look', 'get_device_details', { deviceId: DEVICE }), pin: LOOKUP_PIN,
+    }));
+    expect(vi.mocked(executeTool).mock.calls[0]).toHaveLength(3);
   });
 
   it('a non-JSON result is stored as { text }', async () => {

@@ -102,6 +102,12 @@ func (c *idleCatchUp) wantsRefeed() bool {
 	if c.refeeds >= maxIdleCatchUpRefeeds {
 		return false
 	}
+	return c.owes()
+}
+
+// owes reports whether the newest frame has not reached the viewer: it is
+// still inside the encoder, or a reset discarded it before it came out.
+func (c *idleCatchUp) owes() bool {
 	return c.lost || c.newest > c.emitted
 }
 

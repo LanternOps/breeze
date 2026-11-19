@@ -734,7 +734,7 @@ function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'suppress (hours, at least 1) for recurring_pattern.',
   );
   lines.push('Finish by calling submit_alert_verdict exactly once. Your rationale is shown to technicians; ≤ 2 sentences.');
-  // #6909 (US prod, OliveTech, 09-22 -> 09-24): KB2267602 (a Defender
+  // #6909 (US prod, our own tenant, 09-22 -> 09-24): KB2267602 (a Defender
   // definition-update package, superseded several times a day) reported "not
   // found" was classified actionable/investigate-WSUS 8 of 9 times — only
   // transient_self_healed was correct. Named, not generic, because the model

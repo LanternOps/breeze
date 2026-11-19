@@ -329,6 +329,13 @@ describe('completeConsentOperation — §4.2 in order', () => {
     const probeOrder = (dependencies.graphClient.readResource as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     const persistOrder = (dependencies.tokenCache.writeConsentRow as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     expect(redeemOrder).toBeLessThan(verifyOrder);
+    // The session nonce reaches MSAL's code redemption (#9978).
+    expect(dependencies.broker.redeemConsentCode).toHaveBeenCalledWith({
+      authorizationCode: 'auth-code',
+      codeVerifier: 'v'.repeat(43),
+      redirectUri: 'https://console.example.test/api/v1/m365/comms-consent/callback',
+      nonce: 'nonce',
+    });
     expect(verifyOrder).toBeLessThan(probeOrder);
     expect(probeOrder).toBeLessThan(persistOrder);
     expect(dependencies.tokenCache.writeConsentRow).toHaveBeenCalledWith({

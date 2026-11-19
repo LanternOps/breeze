@@ -382,7 +382,10 @@ func TestConsentCaptureTarget(t *testing.T) {
 }
 
 func TestSameConsentPrincipal(t *testing.T) {
-	consent := &sessionbroker.Session{WinSessionID: "3", IdentityKey: "501"}
+	consent := &sessionbroker.Session{WinSessionID: "3", IdentityKey: "501", UID: 1000}
+	linuxHelper := func(uid, bindingUID uint32) *sessionbroker.Session {
+		return &sessionbroker.Session{UID: uid, LinuxDesktop: &sessionbroker.LinuxDesktopBinding{UID: bindingUID, LogindSessionID: "3"}}
+	}
 	tests := []struct {
 		name    string
 		goos    string
@@ -393,7 +396,12 @@ func TestSameConsentPrincipal(t *testing.T) {
 		{"windows other session", "windows", &sessionbroker.Session{WinSessionID: "4"}, false},
 		{"mac same user", "darwin", &sessionbroker.Session{IdentityKey: "501"}, true},
 		{"mac other user", "darwin", &sessionbroker.Session{IdentityKey: "502"}, false},
-		{"linux has no capture helper to compare", "linux", &sessionbroker.Session{IdentityKey: "0"}, true},
+		// Linux (#12117 W3): the capture helper is the user's own desktop
+		// helper, bound to a logind session; the consenting user must be it.
+		{"linux desktop helper of the same user", "linux", linuxHelper(1000, 1000), true},
+		{"linux desktop helper of another user", "linux", linuxHelper(1001, 1001), false},
+		{"linux helper whose binding disagrees with its uid", "linux", linuxHelper(1000, 1001), false},
+		{"linux capture that is not a bound desktop helper", "linux", &sessionbroker.Session{UID: 1000, IdentityKey: "0"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

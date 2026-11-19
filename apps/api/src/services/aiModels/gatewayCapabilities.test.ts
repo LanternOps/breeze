@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({ captured: [] as Array<{ error: unknown; tags: unknown; options: unknown }> }));
+vi.mock('../sentry', () => ({
+  captureException: (error: unknown, _c: unknown, tags: unknown, options: unknown) => { h.captured.push({ error, tags, options }); },
+}));
+
 import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 import {
   endpointFingerprint,
@@ -90,6 +96,96 @@ describe('gatewayCapabilities', () => {
   it('null / non-object raw → unverified', () => {
     expect(verifiedGatewayCapabilities(null, fp).state).toBe('unverified');
     expect(verifiedGatewayCapabilities('x', fp).state).toBe('unverified');
+  });
+
+  describe('#12177 a present but unreadable record is `invalid`, not `unverified`', () => {
+    const NO_CAPS = { supportsTools: false, thinkingMode: 'unknown', effortLevels: [], supportsVision: false };
+    let warn: ReturnType<typeof vi.spyOn>;
+    const setup = () => {
+      h.captured.length = 0;
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    };
+    afterEach(() => { warn?.mockRestore(); });
+
+    it('an extra key → invalid, no tools, no record', () => {
+      setup();
+      const r = verifiedGatewayCapabilities({ breeze_verification: { ...rec(), extra: 1 }, tool_use: { supported: true } }, fp);
+      expect(r.state).toBe('invalid');
+      expect(r.record).toBeNull();
+      expect(r.capabilities).toEqual(NO_CAPS);
+    });
+
+    it('a missing key, a wrong type, or a double-encoded record → invalid', () => {
+      setup();
+      const { summary: _drop, ...missing } = rec();
+      expect(verifiedGatewayCapabilities({ breeze_verification: missing }, fp).state).toBe('invalid');
+      expect(verifiedGatewayCapabilities({ breeze_verification: { ...rec(), harnessVersion: 1 } }, fp).state).toBe('invalid');
+      expect(verifiedGatewayCapabilities({ breeze_verification: JSON.stringify(rec()) }, fp).state).toBe('invalid');
+      expect(verifiedGatewayCapabilities({ breeze_verification: null }, fp).state).toBe('invalid');
+    });
+
+    it('a double-encoded capabilities column (a JSON string holding the record) → invalid, no tools', () => {
+      setup();
+      const r = verifiedGatewayCapabilities(JSON.stringify(verifiedCapabilitiesTree(rec(), null)), fp);
+      expect(r.state).toBe('invalid');
+      expect(r.capabilities).toEqual(NO_CAPS);
+    });
+
+    it('no record at all stays unverified and logs nothing', () => {
+      setup();
+      expect(verifiedGatewayCapabilities({ tool_use: { supported: true } }, fp, { offeringId: 'off-none' }).state).toBe('unverified');
+      expect(verifiedGatewayCapabilities(null, fp, { offeringId: 'off-none' }).state).toBe('unverified');
+      expect(verifiedGatewayCapabilities('not json', fp, { offeringId: 'off-none' }).state).toBe('unverified');
+      expect(verifiedGatewayCapabilities(JSON.stringify({ tool_use: { supported: true } }), fp, { offeringId: 'off-none' }).state).toBe('unverified');
+      expect(warn).not.toHaveBeenCalled();
+      expect(h.captured).toHaveLength(0);
+    });
+
+    it('warns and reports once per offering, naming the offering and the failing paths/codes, never the values', () => {
+      setup();
+      const bad = { breeze_verification: { ...rec(), passed: 'leaked-passed-value', leakedKeyName: 'leaked-extra-value' } };
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-1' });
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-1' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(h.captured).toHaveLength(1);
+
+      const line = String(warn.mock.calls[0]![0]);
+      expect(line).toContain('off-once-1');
+      expect(line).toContain('passed:invalid_type');
+      expect(line).toContain('unrecognized_keys');
+      const event = h.captured[0]!;
+      const message = (event.error as Error).message;
+      expect(message).toContain('off-once-1');
+      expect(message).toContain('passed:invalid_type');
+      expect(event.tags).toMatchObject({ service: 'aiModels', stage: 'offering_verification_read' });
+      expect(event.options).toEqual({ fingerprint: ['aiModels', 'offering_verification_invalid'] });
+      const everything = JSON.stringify([warn.mock.calls, message, event.tags]);
+      expect(everything).not.toContain('leaked-passed-value');
+      expect(everything).not.toContain('leaked-extra-value');
+      expect(everything).not.toContain('leakedKeyName');
+
+      // A different offering is its own report.
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-once-2' });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(h.captured).toHaveLength(2);
+    });
+
+    it('a readable read re-arms the report: re-verified then corrupted again reports again', () => {
+      setup();
+      const bad = { breeze_verification: { ...rec(), extra: 1 } };
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-rearm' });
+      expect(verifiedGatewayCapabilities(verifiedCapabilitiesTree(rec(), null), fp, { offeringId: 'off-rearm' }).state).toBe('verified');
+      verifiedGatewayCapabilities(bad, fp, { offeringId: 'off-rearm' });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(h.captured).toHaveLength(2);
+    });
+
+    it('does not report without an offering id (nothing to name or dedupe on)', () => {
+      setup();
+      expect(verifiedGatewayCapabilities({ breeze_verification: { passed: 'yes' } }, fp).state).toBe('invalid');
+      expect(warn).not.toHaveBeenCalled();
+      expect(h.captured).toHaveLength(0);
+    });
   });
 
   it('readVerification rejects malformed records', () => {

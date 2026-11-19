@@ -9,7 +9,7 @@ import type { LiveSession } from '@/services/deviceActions';
  * Before this, only the Scripts-library Run modal and the device/bulk script
  * picker let the operator choose a run context; every other way to launch a
  * script used the saved default, and nothing anywhere showed which context a
- * run had actually used — which is a large part of why the OliveTech GCPW
+ * run had actually used — which is a large part of why the GCPW rollout
  * failures (#4882) looked random: the same script ran alternately as SYSTEM
  * and as the user with no visible control over which.
  *

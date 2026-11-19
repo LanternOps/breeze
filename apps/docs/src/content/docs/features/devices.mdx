@@ -145,6 +145,8 @@ Once a device is removed, its detail page shows a badge next to the **Removed** 
 | Agent uninstall failed / cancelled | The command errored, or was cancelled (for example, by a Restore). |
 | Agent was left installed | The device was removed with "Leave the agent installed" selected. |
 
+On Windows, from the release after v0.127.0, the agent reports the uninstall only after the teardown has finished. It runs the Windows Installer uninstall, which also removes the **Programs and Features** entry. Installs that did not come from the MSI are removed by hand. The agent then checks that its services and processes are gone, and that Windows Installer no longer lists it, before it reports **Agent uninstalled**. A leftover scheduled task, a file queued for removal at the next reboot, a config folder it could not fully delete, or a Windows Installer that could not be queried does not fail the uninstall; the command's recorded result lists them as warnings. If a step fails, the badge shows **Agent uninstall failed** and the command's recorded error names the step (the badge itself does not show it). A failure before the agent's services are removed starts the agent service again; a failure after that leaves the agent partly removed, to finish by hand. Older agents, and macOS and Linux agents, report the uninstall as soon as the teardown starts.
+
 ### Restoring and permanently deleting
 
 A removed device's **Actions** menu offers two choices in place of Remove:

@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, lte, not, or } from 'drizzle-orm';
 
 import { db } from '../db';
 import { SENSITIVE_EVENT_LOG_CATEGORY } from './eventLogSensitivity';
+import { sanitizeUntrustedText, UNTRUSTED_FIELD_MAX_LENGTH } from './aiInputSanitizer';
 import {
   agentLogs,
   alertCorrelationMembers,
@@ -176,6 +177,9 @@ async function fetchPerDeviceLogEvidence<T extends { timestamp: Date }>(
 function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, Math.round(value * 100) / 100));
 }
+
+/** `brain_device_context.summary` is varchar(255). */
+const DEVICE_NOTE_SUMMARY_MAX_LENGTH = 255;
 
 function summarizeJson(value: unknown, maxLength = 180): string {
   if (value == null) return '';
@@ -812,6 +816,7 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
   if (eventRows.length === 0 && agentLogRows.length === 0) gaps.push('No warning/error logs were found in the incident window.');
   if (metricRows.length === 0) gaps.push('No 5-minute metric rollups were available in the incident window.');
 
+  const flaggedNotes: Array<{ noteId: string; deviceId: string; flags: string[] }> = [];
   const evidence: RcaEvidenceItem[] = [
     ...buildAlertEvidence(
       alertRows,
@@ -831,15 +836,27 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
       summary: buildCorrelationSummary(link),
       metadata: buildCorrelationMetadata(link),
     })),
-    ...contextRows.map((row) => ({
-      id: `device_context:${row.id}`,
-      source: 'device_context' as const,
-      type: row.contextType,
-      timestamp: toIso(asDate(row.createdAt)),
-      deviceId: row.deviceId,
-      title: row.summary,
-      summary: row.details ? `${row.summary}: ${summarizeJson(row.details)}` : row.summary,
-    })),
+    ...contextRows.map((row) => {
+      // Device notes are text a model or a device user wrote (#12140): sanitise
+      // them like every other reader of brain_device_context (aiAgent.ts
+      // preload, get_device_context) before they reach a model through
+      // get_alert_correlations `explain`. Summary and details separately, as
+      // the preload does; details clipped first so the text shown is the text
+      // sanitised.
+      const noteFlags: string[] = [];
+      const summary = sanitizeUntrustedText(row.summary, DEVICE_NOTE_SUMMARY_MAX_LENGTH, noteFlags);
+      const details = row.details ? sanitizeUntrustedText(summarizeJson(row.details), UNTRUSTED_FIELD_MAX_LENGTH, noteFlags) : '';
+      if (noteFlags.length > 0) flaggedNotes.push({ noteId: row.id, deviceId: row.deviceId, flags: noteFlags });
+      return {
+        id: `device_context:${row.id}`,
+        source: 'device_context' as const,
+        type: row.contextType,
+        timestamp: toIso(asDate(row.createdAt)),
+        deviceId: row.deviceId,
+        title: summary,
+        summary: details ? `${summary}: ${details}` : summary,
+      };
+    }),
     ...changeRows.map((row) => ({
       id: `device_change:${row.id}`,
       source: 'device_change' as const,
@@ -881,6 +898,11 @@ export async function buildAlertCorrelationRca(options: BuildRcaOptions): Promis
         summary: `${row.metricName} averaged ${Number(row.avgValue ?? 0).toFixed(1)} with max ${Number(row.maxValue ?? 0).toFixed(1)} over a 5-minute bucket.`,
       })),
   ];
+
+  if (flaggedNotes.length > 0) {
+    // The text is neutralised; record which device notes needed it.
+    console.warn('[alertCorrelationRca] device notes needed sanitising', { groupId: options.groupId, notes: flaggedNotes });
+  }
 
   const timeline = rankEvidence(evidence, maxEvidenceItems);
   const candidates = [

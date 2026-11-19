@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"testing"
+	"time"
 )
 
 // These tests drive Microsoft's real software H264 MFT (#11622). They skip
@@ -28,8 +29,67 @@ func newSoftwareMFTForTest(t *testing.T, lateLowLatency bool) *mftEncoder {
 		m.Close()
 		t.Skip("a hardware MFT was activated; this test needs the software MFT")
 	}
+	// Freeze the quality refresh's clock (#11639) so these tests see a
+	// refresh only when they advance it.
+	now := time.Unix(1_700_000_000, 0)
+	m.clock = func() time.Time { return now }
 	t.Cleanup(func() { m.Close() })
 	return m
+}
+
+// advanceSoftwareMFTClock moves the frozen clock set by newSoftwareMFTForTest.
+func advanceSoftwareMFTClock(m *mftEncoder, d time.Duration) {
+	now := m.clock().Add(d)
+	m.clock = func() time.Time { return now }
+}
+
+// #11639: after a burst of large changes the real software MFT gets a bounded
+// quality refresh once the screen has settled, and nothing after it. The
+// bytes of each refresh output are logged: on the lab VM they show whether
+// the encoder spends the refresh refining (larger outputs that then shrink)
+// or pads its CBR frames (outputs that stay near the frame budget).
+func TestSoftwareMFT_QualityRefreshAfterBurst(t *testing.T) {
+	m := newSoftwareMFTForTest(t, false)
+	for i := 1; i <= 7; i++ {
+		if _, err := m.Encode(softwareMFTTestFrame(i * 5)); err != nil {
+			t.Fatalf("burst frame %d: %v", i, err)
+		}
+	}
+	if !m.refresh.armed {
+		t.Fatalf("a 7-frame burst of full-frame changes must arm the refresh (budget %d bytes)",
+			frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS))
+	}
+	if out, _ := m.CatchUpIdle(); out != nil {
+		t.Fatal("the refresh must wait for the screen to settle")
+	}
+
+	advanceSoftwareMFTClock(m, qualityRefreshSettle)
+	limit := 2 * qualityRefreshFrames(m.cfg.FPS)
+	var sizes []int
+	for i := 0; i < limit+10; i++ {
+		out, err := m.CatchUpIdle()
+		if err != nil {
+			t.Fatalf("refresh re-submit %d: %v", i, err)
+		}
+		if out == nil {
+			break
+		}
+		sizes = append(sizes, len(out))
+	}
+	t.Logf("refresh outputs (bytes, budget %d): %v", frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), sizes)
+	if len(sizes) < qualityRefreshFrames(m.cfg.FPS) {
+		t.Fatalf("refresh outputs = %d, want at least %d (a refresh ended early: the encoder returned nothing or failed)",
+			len(sizes), qualityRefreshFrames(m.cfg.FPS))
+	}
+	if len(sizes) > limit {
+		t.Fatalf("refresh outputs = %d, want at most %d", len(sizes), limit)
+	}
+	advanceSoftwareMFTClock(m, time.Minute)
+	for range 10 {
+		if out, _ := m.CatchUpIdle(); out != nil {
+			t.Fatal("a static screen after the refresh must cost nothing")
+		}
+	}
 }
 
 func softwareMFTTestFrame(i int) []byte {

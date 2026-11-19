@@ -12,7 +12,8 @@ import '../../lib/i18n';
 
 type RebootChoice = 'when_finished' | 'leave_to_me';
 
-type RunResponse = { commandId: string; categories: OemCategory[]; skippedCategories: OemCategory[] };
+/** `observe` is set when the API sent the read-only observation instead (vendor canary, #11065). */
+type RunResponse = { commandId: string; observe?: boolean; categories: OemCategory[]; skippedCategories: OemCategory[] };
 
 export interface RunVendorUpdatesDialogProps {
   open: boolean;
@@ -97,9 +98,11 @@ export default function RunVendorUpdatesDialog({ open, device, lane, onClose, on
       });
       showToast({
         type: 'success',
-        message: result.skippedCategories?.length
-          ? t('runVendorUpdatesDialog.queuedSkipped', { hostname: device.hostname })
-          : t('runVendorUpdatesDialog.queued', { hostname: device.hostname }),
+        message: result.observe
+          ? t('runVendorUpdatesDialog.observeQueued', { hostname: device.hostname })
+          : result.skippedCategories?.length
+            ? t('runVendorUpdatesDialog.queuedSkipped', { hostname: device.hostname })
+            : t('runVendorUpdatesDialog.queued', { hostname: device.hostname }),
       });
       onCompleted(result);
       onClose();

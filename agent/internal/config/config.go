@@ -154,6 +154,12 @@ type Config struct {
 	// relay TURN, disconnect timeout, etc.) ship regardless.
 	DesktopDebug bool `mapstructure:"desktop_debug"`
 
+	// DesktopWaylandHelper turns on the Linux per-session desktop helper
+	// (#12117): root spawns an unprivileged helper into a Wayland session
+	// with systemd-run. Default false; with it off the agent never
+	// constructs the helper manager. Linux only.
+	DesktopWaylandHelper bool `mapstructure:"desktop_wayland_helper"`
+
 	// PAMEnabled opts into dormant elevation-account provisioning at startup.
 	// Default false. After reconciliation, organization PAM policy is authoritative:
 	// an enabled policy provisions the account even when this flag is false.

@@ -13,6 +13,7 @@ import type { IpClassifier } from '../../services/ipClassifyOfflineData';
 import { readPromotionBlockers, type RecordedPromotionBlockers } from '../../services/partnerTrustBlockers';
 import { buildEvidenceCard, type EvidenceCard } from '../../services/partnerTrustEvidenceCard';
 import { closeOpenCheckoutsAfterRestrict } from '../../services/partnerTrustPromotion';
+import { loadFraudRestoreEpisodes } from '../../services/partnerTrustFraudFlags';
 
 export const trustAdminRoutes = new Hono();
 
@@ -229,16 +230,20 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
   const hasMore = rows.length > limit;
   const visibleRows = rows.slice(0, limit);
   const active = activeIpClassifier();
-  const [mapped, blockers, offline] = await Promise.all([
+  const [mapped, blockers, offline, fraudRestores] = await Promise.all([
     card === '1'
       ? Promise.all(visibleRows.map(mapTrustQueueRowWithCard))
       : Promise.resolve(visibleRows.map(mapTrustQueueRow)),
     readPromotionBlockers(visibleRows.filter((row) => row.trustState === 'probation').map((row) => row.id)),
     active === 'offline' ? readOfflineClassifierStatus() : Promise.resolve(null),
+    loadFraudRestoreEpisodes(visibleRows.filter((row) => row.trustState === 'restricted').map((row) => row.id)),
   ]);
   const page = mapped.map((row) => ({
     ...row,
     promotionBlockers: row.trustState === 'probation' ? blockers.get(row.id) ?? null : null,
+    // billing#51: a restriction the Restore action can undo, with the exact
+    // ledger rows the restore must name; null when there is none.
+    fraudFlagRestore: fraudRestores.get(row.id) ?? null,
   }));
   const last = page.at(-1);
   const classifier: TrustQueueClassifier = { active, offline };

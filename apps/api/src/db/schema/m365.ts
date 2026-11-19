@@ -14,7 +14,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import type { CanonicalAppRoleAssignment } from '@breeze/shared/m365';
+import type { CanonicalAppRoleAssignment, GrantReconciliationMode } from '@breeze/shared/m365';
 import { organizations } from './orgs';
 import { users } from './users';
 import type {
@@ -62,6 +62,9 @@ export const m365Connections = pgTable(
     // delegated counterpart of observedGrants; never sourced by parsing an access token.
     observedDelegatedScopes: jsonb('observed_delegated_scopes').$type<string[]>().notNull().default([]),
     grantsVerifiedAt: timestamp('grants_verified_at', { withTimezone: true }),
+    // How observedGrants was verified (#12085). NULL = no observation recorded
+    // by a mode-aware build (pre-column observations were all exact).
+    grantReconciliationMode: varchar('grant_reconciliation_mode', { length: 32 }).$type<GrantReconciliationMode>(),
     displayName: varchar('display_name', { length: 256 }),
     status: varchar('status', { length: 32 }).$type<M365ConnectionStatus>().notNull().default('pending-consent'),
     consentedAt: timestamp('consented_at', { withTimezone: true }),
@@ -97,6 +100,10 @@ export const m365Connections = pgTable(
     unhealthyIdx: index('m365_connections_unhealthy_idx')
       .on(t.id)
       .where(sql`${t.orgId} IS NOT NULL AND ${t.status} IN ('degraded', 'suspended')`),
+    grantReconciliationModeCheck: check(
+      'm365_connections_grant_reconciliation_mode_check',
+      sql`${t.grantReconciliationMode} IS NULL OR ${t.grantReconciliationMode} IN ('exact', 'graph_token_only')`,
+    ),
   }),
 );
 

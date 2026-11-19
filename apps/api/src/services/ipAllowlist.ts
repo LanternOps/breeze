@@ -5,6 +5,7 @@ import { ipMatchesAny } from './ipMatch';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { writeAuditEvent, type RequestLike } from './auditEvents';
 import { captureException } from './sentry';
+import { registerClusterInvalidator } from './clusterInvalidator';
 import { getConfig, isConfigInitialized } from '../config/validate';
 
 export type IpAllowlistMode = 'enforce' | 'off';
@@ -77,11 +78,15 @@ export function ipAllowlistMode(): IpAllowlistMode {
 }
 
 // --- Per-partner allowlist read with a short in-process cache -----------------
-// All read paths (per-request guard and login) share this cache. The writing
-// instance invalidates on save; other API instances converge within the TTL.
+// All read paths (per-request guard and login) share this cache. A save
+// invalidates it on every API instance through the W05 cluster cache bus
+// (#8636), after the writer commits; with Redis down, other instances converge
+// within the TTL.
 
 const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { value: string[]; expiresAt: number }>();
+// Bumped by every invalidation: a read that started before it is not cached.
+let cacheGeneration = 0;
 const INACTIVE_ALLOWLIST_WARN_INTERVAL_MS = 60_000;
 const inactiveAllowlistWarnedAt = new Map<string, number>();
 
@@ -93,6 +98,7 @@ export async function readPartnerAllowlist(partnerId: string): Promise<string[]>
   const now = Date.now();
   const hit = cache.get(partnerId);
   if (hit && hit.expiresAt > now) return hit.value;
+  const generationAtStart = cacheGeneration;
 
   const [row] = await db
     .select({ settings: partners.settings })
@@ -108,12 +114,22 @@ export async function readPartnerAllowlist(partnerId: string): Promise<string[]>
   const raw = security.ipAllowlist;
   const value = Array.isArray(raw) ? raw.filter((e): e is string => typeof e === 'string') : [];
 
-  cache.set(partnerId, { value, expiresAt: now + CACHE_TTL_MS });
+  if (generationAtStart === cacheGeneration) cache.set(partnerId, { value, expiresAt: now + CACHE_TTL_MS });
   return value;
 }
 
+const allowlistInvalidator = registerClusterInvalidator('partner-ip-allowlist', (partnerId?: string) => {
+  cacheGeneration += 1;
+  if (partnerId) cache.delete(partnerId);
+  else cache.clear();
+});
+
+/**
+ * Drop the cached allowlist for `partnerId` on this instance now, and on every
+ * other API instance once the caller's transaction commits.
+ */
 export function clearPartnerAllowlistCache(partnerId: string): void {
-  cache.delete(partnerId);
+  allowlistInvalidator.invalidateAroundCommit(partnerId);
 }
 
 function warnInactiveAllowlist(partnerId: string): void {

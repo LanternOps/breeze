@@ -109,7 +109,9 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		return out, nil
 	}
 
-	return m.submitSync(sample, false, "ProcessInput failed")
+	out, err := m.submitSync(sample, false, "ProcessInput failed")
+	m.noteRefreshOutput(out)
+	return out, err
 }
 
 // submitSync feeds one sample to a synchronous MFT, drains the output it
@@ -198,6 +200,7 @@ func (m *mftEncoder) dropRetainedNV12() {
 		m.retainedNV12 = nil
 	}
 	m.catchUp.clear()
+	m.refresh.cancel()
 }
 
 // stallThresholds returns the stall flush and refuse-input limits for this
@@ -207,14 +210,19 @@ func (m *mftEncoder) stallThresholds() (flushAt, refuseAt int) {
 	return mftNilStallThresholds(m.isHW, recent)
 }
 
-// CatchUpIdle implements optionalIdleCatchUp (#11622). While the screen is
-// static, a synchronous MFT that still holds the newest submitted frame gets
-// the retained frame again, which pushes one held frame out; the output is
-// returned for the capture loop to send. It is a no-op for hardware MFTs
-// (async or not: their stall thresholds are below the re-submit budget, and
-// the lab has not shown them holding frames), for an encoder that emitted the
-// newest frame already (a one-in-one-out encoder never re-submits), and once
-// the per-frame budget is spent.
+// CatchUpIdle implements optionalIdleCatchUp. On a capture iteration with no
+// new frame, a synchronous software MFT re-submits its retained last frame
+// for one of two reasons (nextIdleRefeed):
+//   - catch-up (#11622): the newest submitted frame is still inside the
+//     encoder; the re-submit pushes one held frame out;
+//   - quality refresh (#11639): an expensive output has settled; the
+//     re-submit lets CBR rate control drain and refine the coarse picture.
+//
+// The output is returned for the capture loop to send. It is a no-op for
+// hardware MFTs (async or not: their stall thresholds are below the
+// re-submit budgets, and the lab has not shown them holding frames or losing
+// quality this way), when nothing is owed and no refresh is due, and once the
+// budgets are spent.
 func (m *mftEncoder) CatchUpIdle() ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -232,23 +240,58 @@ func (m *mftEncoder) CatchUpIdle() ([]byte, error) {
 	if _, refuseAt := m.stallThresholds(); m.consecutiveNilOutputs >= refuseAt {
 		return nil, nil
 	}
-	if !m.catchUp.startRefeed() {
+	kind := nextIdleRefeed(&m.catchUp, &m.refresh, m.now())
+	switch kind {
+	case idleRefeedNone:
 		return nil, nil
+	case idleRefeedCatchUp:
+		if !m.catchUpLogged {
+			m.catchUpLogged = true
+			slog.Info("MFT encoder is holding frames on a static screen; re-submitting the last frame so the viewer catches up",
+				"held", m.catchUp.held(), "isHW", m.isHW, "frameIdx", m.frameIdx)
+		}
+	case idleRefeedQuality:
+		if !m.refreshLogged {
+			m.refreshLogged = true
+			slog.Info("MFT encoder quality refresh: re-submitting the last frame after a burst of change on a static screen",
+				"frames", qualityRefreshFrames(m.cfg.FPS), "bitrate", m.cfg.Bitrate, "fps", m.cfg.FPS, "frameIdx", m.frameIdx)
+		}
 	}
-	if !m.catchUpLogged {
-		m.catchUpLogged = true
-		slog.Info("MFT encoder is holding frames on a static screen; re-submitting the last frame so the viewer catches up",
-			"held", m.catchUp.held(), "isHW", m.isHW, "frameIdx", m.frameIdx)
-	}
+	out, err := m.resubmitRetainedLocked()
+	noteIdleRefeedResult(&m.refresh, kind, m.now(), out, err, frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), m.cfg.FPS)
+	return out, err
+}
+
+// resubmitRetainedLocked feeds the retained frame to the synchronous MFT
+// again and returns what it produced. Caller holds m.mu.
+func (m *mftEncoder) resubmitRetainedLocked() ([]byte, error) {
 	sample, err := m.createSample(m.retainedNV12)
 	if err != nil {
-		return nil, fmt.Errorf("create catch-up sample: %w", err)
+		return nil, fmt.Errorf("create idle re-submit sample: %w", err)
 	}
 	defer comRelease(sample)
 	if m.forceKeyframePending {
 		_ = m.forceKeyframeLocked()
 	}
-	return m.submitSync(sample, true, "ProcessInput (idle catch-up)")
+	return m.submitSync(sample, true, "ProcessInput (idle re-submit)")
+}
+
+// noteRefreshOutput reports an output that is not a refresh re-submit to the
+// quality refresh, which an expensive one arms (#11639). Only the synchronous
+// software MFT refreshes, so other MFTs skip the IDR scan. Caller holds m.mu.
+func (m *mftEncoder) noteRefreshOutput(out []byte) {
+	if out == nil || m.isHW || m.asyncMode {
+		return
+	}
+	m.refresh.noteOutput(m.now(), out, frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), m.cfg.FPS)
+}
+
+// now is the refresh's clock (time.Now unless a test set clock).
+func (m *mftEncoder) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
 }
 
 func (m *mftEncoder) vtblFn(idx int) uintptr {
@@ -984,5 +1027,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		return out, nil
 	}
 
-	return m.submitSync(sample, false, "ProcessInput (GPU)")
+	out, err := m.submitSync(sample, false, "ProcessInput (GPU)")
+	m.noteRefreshOutput(out)
+	return out, err
 }

@@ -102,6 +102,9 @@ export type EventType =
   | 'policy.violation'
   | 'policy.compliant'
   | 'policy.remediation.triggered'
+  // Strix (PR #12184): at least one rule was not assessed because the device
+  // org's compliance probe list is full. Never a violation; the owner is told.
+  | 'policy.not_assessed'
   // Audit baseline compliance events
   | 'compliance.audit_deviation'
   | 'compliance.audit_remediated'
@@ -727,6 +730,7 @@ export const EVENT_TYPES = {
   POLICY_VIOLATION: 'policy.violation' as const,
   POLICY_COMPLIANT: 'policy.compliant' as const,
   POLICY_REMEDIATION_TRIGGERED: 'policy.remediation.triggered' as const,
+  POLICY_NOT_ASSESSED: 'policy.not_assessed' as const,
   // Patch
   PATCH_AVAILABLE: 'patch.available' as const,
   PATCH_APPROVED: 'patch.approved' as const,

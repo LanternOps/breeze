@@ -32,8 +32,8 @@ func (h *Heartbeat) noteSupportViewer(prompt *ipc.DesktopPrompt) {
 	h.supportViewerMu.Unlock()
 }
 
-// SupportViewer is who the Quick Support indicator names ("Billy from Olive
-// Technology", "A technician"), or "" before any start carried a prompt.
+// SupportViewer is who the Quick Support indicator names ("Billy from Fabrikam
+// MSP", "A technician"), or "" before any start carried a prompt.
 func (h *Heartbeat) SupportViewer() string {
 	if h == nil {
 		return ""

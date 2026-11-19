@@ -27,6 +27,9 @@ services:
       POSTGRES_USER: breeze
       POSTGRES_PASSWORD: breeze
       POSTGRES_DB: breeze
+      # Pinned to the volume mount below: Postgres 18 images default it to
+      # /var/lib/postgresql/18/docker, outside the mount (see docker-compose.yml).
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:5432:5432"
     volumes:

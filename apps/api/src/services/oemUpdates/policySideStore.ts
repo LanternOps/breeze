@@ -46,6 +46,7 @@ import { occurrenceBoundaries, type OemOccurrenceBoundaries } from './occurrence
 import { oemOccurrenceMemo, oemOfferedLane, oemPolicySide, type OemDeviceFacts } from './policySide';
 import { loadOemLinkCandidates, pickOemLink, type OemLinkCandidate, type ResolvedOemUpdatesLink } from './resolver';
 import { getLaneManifest, SHIPPED_OEM_LANES } from './toolManifest';
+import { vendorCanaryFingerprint } from '../vendorCanary';
 
 /**
  * Bump when `computeOemPolicySideRow` changes what it stores for the same inputs: it is
@@ -113,9 +114,9 @@ let fingerprintMemo: { key: string; value: string } | null = null;
 
 /**
  * Everything outside the database that can change a device's policy side, hashed:
- * the master flag, the partner allowlist, the kill switches, the lab override, and
- * the manifest's gates and shipped lanes. The canonical form is rebuilt on each call
- * (it is small); the hash is recomputed only when that form changes.
+ * the master flag, the partner allowlist, the kill switches, the lab override, the
+ * manifest's gates and shipped lanes, and the vendor canary (`vendorCanary.ts`).
+ * The canonical form is rebuilt on each call (it is small); the hash is recomputed only when that form changes.
  */
 export function oemGatesFingerprint(): string {
   const canonical = JSON.stringify({
@@ -126,6 +127,9 @@ export function oemGatesFingerprint(): string {
     // isLabDevice is inert in production, so the list is too.
     lab: process.env.NODE_ENV === 'production' ? [] : csv('BREEZE_OEM_UPDATES_LAB_DEVICE_IDS'),
     shipped: [...SHIPPED_OEM_LANES],
+    // Partner list, kill switch and stage table (#11065 observe-first): a stage
+    // change or a canary env change refreshes every device, as the allowlist does.
+    canary: vendorCanaryFingerprint(),
     manifest: OEM_LANES.map((lane) => {
       const manifest = getLaneManifest(lane);
       return [lane, manifest.laneGate, OEM_CATEGORIES.map((category) => manifest.categoryGates[category]), [...manifest.codeBlocks].sort()];

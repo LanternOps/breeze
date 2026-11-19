@@ -577,7 +577,7 @@ it('verified + linux: still unsupported_os')
 
 ---
 
-## W06: Activation (Dell, OliveTech first)
+## W06: Activation (Dell, our own tenant first)
 
 ### Task 15: Turn it on
 
@@ -586,6 +586,7 @@ All of this lands in one PR, so nothing can write before its gates exist.
 **Files:**
 - Create: `routes/configurationPolicies/wakeConfigureGate.ts` + test
 - Modify: `wakeOnLanInlineSettings.ts`, `featureLinks.ts`, `crud.ts`, `services/configurationPolicy.ts`, `services/aiGuardrails.ts`, `routes/agents/helpers.ts`, `WakeOnLanTab.tsx`, locale `policies.json` ×8, `apps/docs`, `docs/release-notes/next-release-draft.md` (append under its own heading)
+- Modify (agent, added by W03): `agent/internal/wakeconfig/apply.go` — flip `writesActivated` to `true`, and delete `TestWritesInactiveUntilActivation` / `TestProductionWakeWiringNeverWritesBeforeActivation` (they pin it off). W03 parses `configure_settings` but this compile-time switch keeps it from reaching a writer, so activation needs both the server change and an agent release.
 - Test: `featureLinks.test.ts`, `aiGuardrails.approvalScope.contract.test.ts`, `routes/agents/heartbeat.test.ts`, `WakeOnLanTab.test.tsx`
 
 **Interfaces:**
@@ -618,9 +619,10 @@ it('form states Fast Startup is turned off and warns about CIS when the policy t
 ### Task 16: Lab gate and rollout (manual, blocking merge)
 
 - [ ] **Step 1: Run spec §9's PC checklist on the lab Dell from this branch** on a worktree stack with `WOL_FIRMWARE_WRITE_VENDORS=dell`: names and password state, apply/read back/reboot/wake from S5 and sleep, no network drop, **no BitLocker recovery with BitLocker on**, password machine reports `firmware_protected` with no write, `needs_reboot` across an agent restart.
+  - From W03: the NIC writes were only parse-checked on Windows (PowerShell 5.1 on the lab Dell), never executed. Confirm each one reads back and the link stays up. The Realtek shutdown-wake keyword `S5WakeOnLan` comes from community sources; confirm it on a Realtek NIC or drop it. The lab Dell's Intel I219-LM has no `*EEE` keyword: its EEE keyword is `EEELinkAdvertisement`, which W02/W03 do not read, so Intel EEE reads `absent` and is never turned off. Decide whether Intel EEE matters for wake before activating. Also confirm that after a `-NoRestart` write `Get-NetAdapterPowerManagement` / `Get-NetAdapterAdvancedProperty` return the stored value (if they return the active one, every write reads back as a mismatch and is blocked after 3 days), and that the kernel `BootId` counter that clears `needs_reboot` advances on a full boot.
 - [ ] **Step 2: Record results in the PR.** A BitLocker prompt stops this wave for redesign.
 - [ ] **Step 3: Tear down the stack, and say what's left running.**
-- [ ] **Step 4: After release, follow canary pins:** set `WOL_FIRMWARE_WRITE_VENDORS=dell` in production, enable on OliveTech only, and clear pins at the next promote. Check `apply_failed` and timeout counts before widening.
+- [ ] **Step 4: After release, follow canary pins:** set `WOL_FIRMWARE_WRITE_VENDORS=dell` in production, enable on our own tenant only (partner id from env, never named here), and clear pins at the next promote. Check `apply_failed` and timeout counts before widening.
 
 ---
 

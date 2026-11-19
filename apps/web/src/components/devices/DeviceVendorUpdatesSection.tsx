@@ -13,6 +13,8 @@ import {
   type OemRunItem,
   type OemRunView,
   type OemStatusView,
+  OEM_OBSERVE_TOOL_NAMES,
+  type OemObservationView,
 } from './vendorUpdatesApi';
 import '../../lib/i18n';
 
@@ -151,10 +153,51 @@ function itemResultLabel(result: OemRunItem['result'], t: DevicesT): string {
   }
 }
 
+function observationVerdict(observation: OemObservationView, t: DevicesT): string {
+  const vendor = OEM_VENDOR_NAMES[observation.lane as OemLane] ?? observation.lane;
+  switch (observation.verdict) {
+    case 'observed':
+      return t('vendorUpdates.history.observedVerdict.observed', { vendor });
+    case 'observed_with_errors':
+      return t('vendorUpdates.history.observedVerdict.observedWithErrors', { vendor });
+    case 'platform_unsupported':
+      return t('vendorUpdates.history.observedVerdict.platformUnsupported', { vendor });
+    case 'invalid':
+      return t('vendorUpdates.history.observedVerdict.invalid', { vendor });
+  }
+}
+
+/** A read-only observation (vendor canary): what was found, never an install. */
+function ObservationRow({ run, who, t }: { run: OemRunView; who: string; t: DevicesT }) {
+  const observation = run.observation ?? null;
+  const tools = observation?.tools.map((name) => OEM_OBSERVE_TOOL_NAMES[name] ?? name) ?? [];
+  return (
+    <li data-testid={`vendor-updates-run-${run.commandId}`} data-kind="observe" className="px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <span className="font-medium">{t('vendorUpdates.history.observed')}</span>
+        <span className="text-xs text-muted-foreground">
+          {formatDateTime(run.createdAt)} · {who}
+        </span>
+      </div>
+      {observation && (
+        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+          <li data-testid="vendor-updates-observation-verdict">{observationVerdict(observation, t)}</li>
+          <li data-testid="vendor-updates-observation-tools">
+            {tools.length > 0
+              ? t('vendorUpdates.history.observedTools', { tools: tools.join(', ') })
+              : t('vendorUpdates.history.observedNoTools')}
+          </li>
+        </ul>
+      )}
+    </li>
+  );
+}
+
 function RunRow({ run, t }: { run: OemRunView; t: DevicesT }) {
   const who = run.trigger === 'scheduled'
     ? t('vendorUpdates.history.bySchedule')
     : run.actor?.name || run.actor?.email || t('vendorUpdates.history.byUnknown');
+  if (run.kind === 'observe') return <ObservationRow run={run} who={who} t={t} />;
   return (
     <li data-testid={`vendor-updates-run-${run.commandId}`} className="px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -235,8 +278,9 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
     }
     setView(result.view);
     setPhase('ready');
-    // No run on record means no history to ask for.
-    if (result.view.status) {
+    // No run on record means no history to ask for, unless Run Now observes here:
+    // observations write no status row.
+    if (result.view.status || result.view.observe) {
       await loadHistory();
     } else {
       historyRead.current += 1;
@@ -300,6 +344,7 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
   }
 
   const { displayState, lane, status, gates } = view;
+  const hasHistory = Boolean(status) || view.observe === true;
   if (!lane && !status) return null;
 
   const vendor = (lane ?? status?.lane) ? OEM_VENDOR_NAMES[(lane ?? status?.lane) as OemLane] : '';
@@ -399,7 +444,7 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
         </p>
       )}
 
-      {status && runs.length > 0 && (
+      {hasHistory && runs.length > 0 && (
         <div data-testid="vendor-updates-history" className="mt-4">
           <h4 className="text-sm font-semibold">{t('vendorUpdates.history.heading')}</h4>
           <ul className="mt-2 divide-y rounded-md border">

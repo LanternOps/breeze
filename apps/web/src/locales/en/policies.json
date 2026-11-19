@@ -68,7 +68,9 @@
       "check": "Check",
       "lastChecked": "Last Checked",
       "noComplianceResultsYetAssignThisPolicy": "No compliance results yet. Assign this policy to devices and add compliance rules; status appears after the next evaluation.",
-      "summary": "Showing the first {{shown}} of {{total}} results — the summary below reflects this page only."
+      "summary": "Showing the first {{shown}} of {{total}} results — the summary below reflects this page only.",
+      "notCollectedProbeLimit": "Not collected (probe limit)",
+      "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Select an organization for this policy.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Notify on end",
         "sendNotificationWhenWindowCloses": "Send notification when window closes.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Weekly windows open every Sunday at the start time, in the selected timezone.",
-        "monthlyOpensOnTheFirst": "Monthly windows open on the 1st of each month at the start time, in the selected timezone."
+        "dayOfWeek": "Day of week",
+        "dayOfWeekHint": "The day each weekly window opens, in the selected timezone.",
+        "dayOfMonth": "Day of month",
+        "dayOfMonthHint": "The day each monthly window opens, in the selected timezone. In a month without that day, the window opens on the month's last day."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent collection",

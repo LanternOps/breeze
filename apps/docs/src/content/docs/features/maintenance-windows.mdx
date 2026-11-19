@@ -120,6 +120,8 @@ The `config_policy_maintenance_settings` table stores:
 | `durationHours` | `integer` | How long the window lasts from its computed start time |
 | `timezone` | `varchar(100)` | IANA timezone identifier (e.g., `America/New_York`). Defaults to `UTC`. |
 | `windowStart` | `varchar(30)` | For `once` recurrence, the ISO-8601 datetime the window runs at (e.g., `2026-03-15T02:00:00`). For `daily`, `weekly` and `monthly`, its time-of-day sets when each window opens; when empty, the window opens at midnight. |
+| `dayOfWeek` | `varchar(3)` | For `weekly` recurrence, the day the window opens: `sun`, `mon`, `tue`, `wed`, `thu`, `fri` or `sat`, in the configured timezone. Default: `sun`. |
+| `dayOfMonth` | `integer` | For `monthly` recurrence, the day of the month the window opens (1-31), in the configured timezone. In a shorter month the window opens on that month's last day, so `31` means the last day of every month. Default: `1`. |
 | `suppressAlerts` | `boolean` | Default: `true` |
 | `suppressPatching` | `boolean` | Default: `false` |
 | `suppressAutomations` | `boolean` | Default: `false` |
@@ -212,10 +214,10 @@ For recurring windows, the system generates occurrence records automatically. St
 | Recurrence | Window Start |
 |------------|--------------|
 | `daily` | The configured start time, in the configured timezone, every day |
-| `weekly` | The configured start time on the most recent Sunday in the configured timezone |
-| `monthly` | The configured start time on the 1st of the current month in the configured timezone |
+| `weekly` | The configured start time on the configured day of the week (`dayOfWeek`, default Sunday) in the configured timezone |
+| `monthly` | The configured start time on the configured day of the month (`dayOfMonth`, default the 1st) in the configured timezone. A day past the end of a shorter month opens on its last day. |
 
-Set **Start time** on the policy's Maintenance tab to choose the time of day each window opens, in the selected timezone. A policy that has no start time stored — including every recurring policy saved before this was configurable — falls back to **midnight (00:00)**, which is how those windows have always behaved.
+Set **Start time** on the policy's Maintenance tab to choose the time of day each window opens, in the selected timezone. For weekly and monthly windows, **Day of week** and **Day of month** choose the day. Policies saved before the day was configurable keep opening on Sunday (weekly) and the 1st (monthly). A policy that has no start time stored — including every recurring policy saved before this was configurable — falls back to **midnight (00:00)**, which is how those windows have always behaved.
 
 The window remains active for `durationHours` from its computed start time.
 

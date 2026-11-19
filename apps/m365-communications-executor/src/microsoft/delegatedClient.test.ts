@@ -41,22 +41,26 @@ interface StubCcaOptions {
 
 interface StubCca extends ConfidentialClientPort {
   deserializedBlobs: string[];
+  byCodeRequests: Array<Parameters<ConfidentialClientPort['acquireTokenByCode']>[0]>;
   authority: string;
 }
 
 function makeStubCca(authority: string, options: StubCcaOptions): StubCca {
   const deserializedBlobs: string[] = [];
+  const byCodeRequests: StubCca['byCodeRequests'] = [];
   let serialized = options.serialized ?? '';
   let silentCalled = false;
   return {
     authority,
     deserializedBlobs,
+    byCodeRequests,
     async acquireTokenSilent() {
       if (options.silentError !== undefined) throw options.silentError;
       silentCalled = true;
       return options.silentResult === undefined ? { accessToken: 'access-token' } : options.silentResult;
     },
-    async acquireTokenByCode() {
+    async acquireTokenByCode(request) {
+      byCodeRequests.push(request);
       if (options.byCodeError !== undefined) throw options.byCodeError;
       return options.byCodeResult === undefined
         ? { idToken: 'raw-id-token', accessToken: 'consent-access', scopes: ['Mail.Send'], account: ACCOUNT }
@@ -252,6 +256,7 @@ describe('delegated credential broker — redeemConsentCode', () => {
       authorizationCode: 'auth-code',
       codeVerifier: 'v'.repeat(43),
       redirectUri: 'https://console.example.test/api/v1/m365/comms-consent/callback',
+      nonce: 'session-nonce',
     });
 
     expect(redemption).toEqual({
@@ -264,6 +269,11 @@ describe('delegated credential broker — redeemConsentCode', () => {
     });
     expect(factory).toHaveBeenCalledOnce();
     expect(factory).toHaveBeenCalledWith({ authority: 'https://login.microsoftonline.com/common' });
+    // msal-node >= 6.0.1 rejects a nonce-bearing ID token unless the request
+    // names the expected nonce (#9978).
+    expect(created[0]!.byCodeRequests).toEqual([expect.objectContaining({
+      code: 'auth-code', codeVerifier: 'v'.repeat(43), nonce: 'session-nonce',
+    })]);
     // The throwaway in-memory MSAL cache IS the mechanism: no deserialize, no store I/O.
     expect(created[0]!.deserializedBlobs).toEqual([]);
     expect(readSpy).not.toHaveBeenCalled();
@@ -275,12 +285,12 @@ describe('delegated credential broker — redeemConsentCode', () => {
   it('maps provider rejection to credential_unavailable and invalid_grant to delegated_reauth_required', async () => {
     const generic = fixture({ byCodeError: new Error('AADSTS900023: something detailed') });
     await expect(generic.broker.redeemConsentCode({
-      authorizationCode: 'auth-code', codeVerifier: 'v'.repeat(43), redirectUri: 'https://x.example/cb',
+      authorizationCode: 'auth-code', codeVerifier: 'v'.repeat(43), redirectUri: 'https://x.example/cb', nonce: 'n',
     })).rejects.toMatchObject({ code: 'credential_unavailable' });
 
     const invalidGrant = fixture({ byCodeError: { errorCode: 'invalid_grant' } });
     await expect(invalidGrant.broker.redeemConsentCode({
-      authorizationCode: 'auth-code', codeVerifier: 'v'.repeat(43), redirectUri: 'https://x.example/cb',
+      authorizationCode: 'auth-code', codeVerifier: 'v'.repeat(43), redirectUri: 'https://x.example/cb', nonce: 'n',
     })).rejects.toMatchObject({ code: 'delegated_reauth_required' });
   });
 });

@@ -957,9 +957,9 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 </Aside>
 
 <Aside type="caution" title="Enabling AI Workspace requires pgvector">
-  Workspace's migrations run `CREATE EXTENSION vector` when the API boots. On a stock `postgres:16-alpine` the API **refuses to start** with `extension "vector" is not available`, naming the flag and both remedies.
+  Workspace's migrations run `CREATE EXTENSION vector` when the API boots. On a stock `postgres:<major>-alpine` image the API **refuses to start** with `extension "vector" is not available`, naming the flag and both remedies.
 
-  Use a Postgres image that ships the extension — the `POSTGRES_IMAGE_REF` default (`pgvector/pgvector:pg16`) already does, and is the same Postgres major version as stock with the extension baked in. On a managed Postgres, confirm your provider offers `pgvector` before turning the flag on.
+  Use a Postgres image that ships the extension — the `POSTGRES_IMAGE_REF` default (`pgvector/pgvector:pg16`) and its pg17/pg18 variants already do, and each is the same Postgres major version as stock with the extension baked in. On a managed Postgres, confirm your provider offers `pgvector` before turning the flag on.
 
   If you do not want Workspace, leave `BREEZE_WORKSPACE_ENABLED` unset — no extension is needed and nothing else changes.
 </Aside>
@@ -1448,6 +1448,7 @@ See [Google sign-in for the Customer Portal](/features/portal-google-sign-in/) f
 | Variable | Default | Description |
 |---|---|---|
 | `PARTNER_TRUST_MODE` | `off` when `IS_HOSTED` is not `true`; otherwise `shadow` | `off` disables the feature entirely. `shadow` classifies new self-serve partners and records what it *would* have done without denying anything. `enforce` places new partners in probation until a card payment settles and ages, or an admin approves them from the trust queue. |
+| `PARTNER_TRUST_FRAUD_FLAGS_ENABLED` | `false` | Hosted billing only. When `true` and `PARTNER_TRUST_MODE=enforce`, the worker pulls billing fraud flags from this region's `BREEZE_BILLING_URL` every 2 minutes and restricts each flagged partner, whether it was trusted or on probation. Each restriction alerts the ops channel, and a platform admin can undo it with **Restore** in the trust queue. Restore returns the partner to its previous state and stops the same billing object from restricting it again. Set it per region. Turning it on acts on every flag already pending, so review the billing feed first. |
 | `IP_CLASSIFY_PROVIDER` | — | Keyed IP-reputation provider (`ipinfo` or `ipdata`) used to classify a signup's origin. Unset means the offline baseline classifies instead (see below). |
 | `IP_CLASSIFY_API_KEY` | — | API key for that provider. Setting a provider without a key logs a warning and falls back to the offline baseline. |
 | `IP_CLASSIFY_TOR_LIST_URL` | `https://check.torproject.org/torbulkexitlist` | Offline baseline: Tor exit list, one address per line, refreshed daily. Must be `https`. `none` disables the download and keeps the snapshot bundled with the release. |

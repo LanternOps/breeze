@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Nenhum resultado de conformidade foi relatado. Atribua uma Política de Configuração com regras de conformidade a este dispositivo ou aguarde a próxima avaliação.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Atribuir uma política de configuração"
+    "assignPolicy": "Atribuir uma política de configuração",
+    "notCollectedProbeLimit": "Não coletado (limite de sondagens)",
+    "notCollectedProbeLimitHint": "A lista de sondagens de conformidade desta organização está cheia, então pelo menos uma verificação aqui não é coletada. Ela não é avaliada, alertada nem corrigida até que a lista tenha espaço."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} foi movido para {{orgName}}",
@@ -5014,7 +5016,8 @@
       "noOpenCategories": "Nada pode ser executado com esta escolha. Aqui só há BIOS e firmware disponíveis: escolha Reiniciar ao terminar.",
       "decommissioned": "Este dispositivo está desativado, então nada pode ser enviado a ele.",
       "cancelledAtClaim": "A execução foi cancelada antes de chegar ao dispositivo. Tente novamente."
-    }
+    },
+    "observeQueued": "Verificação somente leitura iniciada em {{hostname}}. Nada é instalado."
   },
   "vendorUpdates": {
     "title": "Atualizações do fabricante",
@@ -5099,7 +5102,16 @@
       "byUnknown": "Desconhecido",
       "range": "{{from}}-{{to}} de {{total}}",
       "previousPage": "Anterior",
-      "nextPage": "Próxima"
+      "nextPage": "Próxima",
+      "observed": "Observado",
+      "observedTools": "Ferramentas encontradas: {{tools}}",
+      "observedNoTools": "Nenhuma ferramenta do fabricante encontrada",
+      "observedVerdict": {
+        "observed": "{{vendor}}: verificação somente leitura concluída",
+        "observedWithErrors": "{{vendor}}: verificação somente leitura concluída com algumas leituras com falha",
+        "platformUnsupported": "{{vendor}}: este modelo não é compatível com as ferramentas corporativas do fabricante",
+        "invalid": "{{vendor}}: não foi possível ler o resultado da verificação"
+      }
     }
   },
   "reinstalledBadge": {

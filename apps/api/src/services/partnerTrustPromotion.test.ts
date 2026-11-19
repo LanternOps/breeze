@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpClass } from '../db/schema/orgs';
+import { opsText } from './opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 const {
   readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold,
@@ -43,7 +46,7 @@ vi.mock('./breezeBillingClient', () => ({ getBreezeBillingClient: getBillingClie
 vi.mock('./partnerTrustEvidenceCard', () => ({ sendEvidenceCard }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: createAuditLog }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
-vi.mock('./opsAlerts', () => ({ sendOpsAlert }));
+vi.mock('./opsAlerts', async (orig) => ({ ...(await orig<typeof import('./opsAlerts')>()), sendOpsAlert }));
 vi.mock('./sentry', () => ({ captureException }));
 vi.mock('./partnerTrustBlockers', () => ({ recordPromotionBlockers }));
 
@@ -617,6 +620,17 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
       body: expect.stringContaining('p1'),
     }));
     expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes the billing detail in the checkouts-not-closed ops alert', async () => {
+    execute.mockResolvedValue([cardTestingRow()]);
+    closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: HOSTILE });
+    await restrictOnHardDeny('p1');
+    const { body } = sendOpsAlert.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('alerts an operator (without a Sentry event) when the billing endpoint is unavailable', async () => {

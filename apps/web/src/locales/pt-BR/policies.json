@@ -68,7 +68,9 @@
       "check": "Verificação",
       "lastChecked": "Última verificação",
       "noComplianceResultsYetAssignThisPolicy": "Ainda não há resultados de conformidade. Atribua esta política a dispositivos e adicione regras de conformidade; o status aparecerá após a próxima avaliação.",
-      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página."
+      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página.",
+      "notCollectedProbeLimit": "Não coletado (limite de sondagens)",
+      "notCollectedProbeLimitHint": "A lista de sondagens de conformidade desta organização está cheia, então pelo menos uma verificação aqui não é coletada. Ela não é avaliada, alertada nem corrigida até que a lista tenha espaço."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Selecione uma organização para esta política.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Notificar no término",
         "sendNotificationWhenWindowCloses": "Enviar uma notificação quando a janela for encerrada.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Janelas semanais abrem todo domingo no horário de início, no fuso horário selecionado.",
-        "monthlyOpensOnTheFirst": "Janelas mensais abrem no dia 1º de cada mês no horário de início, no fuso horário selecionado."
+        "dayOfWeek": "Dia da semana",
+        "dayOfWeekHint": "O dia em que cada janela semanal abre, no fuso horário selecionado.",
+        "dayOfMonth": "Dia do mês",
+        "dayOfMonthHint": "O dia em que cada janela mensal abre, no fuso horário selecionado. Em um mês sem esse dia, a janela abre no último dia do mês."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Coleta do agente",

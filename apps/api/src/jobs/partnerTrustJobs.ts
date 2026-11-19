@@ -10,12 +10,19 @@ import { offlineDataRefreshedAt } from '../services/ipClassifyOffline';
 import { classifierFor, isOfflineBaselineClear } from '../services/ipClassifyOfflineData';
 import { partnerForDevice } from '../services/partnerTrust.repo';
 import { restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
+import { runBillingFraudFlagSweep } from '../services/partnerTrustFraudFlags';
+import { billingFraudFlagsEnabled } from '../config/env';
 import { IP_CLASSIFY_BACKFILL_JOB, runIpClassifyBackfill, scheduleIpClassifyBackfill } from './ipClassifyBackfill';
 import { jobSchedule } from './scheduleRegistry';
 
 export const IP_CLASSIFY_JOB = 'ip-classify';
 export const PARTNER_TRUST_PROMOTE_JOB = 'partner-trust-promote';
 const PROMOTE_REPEAT_ID = 'partner-trust-promote-repeat';
+/** billing#51: pulls billing fraud flags and restricts the flagged partners. */
+export const PARTNER_TRUST_FRAUD_FLAGS_JOB = 'partner-trust-fraud-flags';
+const FRAUD_FLAGS_REPEAT_ID = 'partner-trust-fraud-flags-repeat';
+// Sub-hourly tick, so `every` rather than a scheduleRegistry cron slot.
+const FRAUD_FLAGS_EVERY_MS = 2 * 60 * 1_000;
 
 /**
  * Minimum gap between signup-IP classification attempts for one partner. The
@@ -124,6 +131,11 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
 export async function processPartnerTrustJob(
   job: { name: string; data: unknown },
 ): Promise<unknown | undefined> {
+  if (job.name === PARTNER_TRUST_FRAUD_FLAGS_JOB) {
+    // The sweep checks its own gates (flag, enforce mode, billing URL) so a
+    // repeatable left over from an earlier configuration is a no-op.
+    return runBillingFraudFlagSweep();
+  }
   if (job.name === PARTNER_TRUST_PROMOTE_JOB) {
     if (partnerTrustMode() === 'off') return { skipped: true };
     return runPartnerTrustPromote();
@@ -172,8 +184,21 @@ export async function processPartnerTrustJob(
 }
 
 export async function schedulePartnerTrustJobs(queue: Queue): Promise<void> {
-  if (partnerTrustMode() === 'off') return;
   const existing = await queue.getRepeatableJobs();
+  // Billing fraud flags (billing#51): always clear an earlier repeatable so a
+  // region that turns the flag off stops pulling; add it back only when on.
+  for (const job of existing) {
+    if (job.name === PARTNER_TRUST_FRAUD_FLAGS_JOB) await queue.removeRepeatableByKey(job.key);
+  }
+  if (billingFraudFlagsEnabled() && partnerTrustMode() === 'enforce') {
+    await queue.add(PARTNER_TRUST_FRAUD_FLAGS_JOB, {}, {
+      jobId: FRAUD_FLAGS_REPEAT_ID,
+      repeat: { every: FRAUD_FLAGS_EVERY_MS },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 25 },
+    });
+  }
+  if (partnerTrustMode() === 'off') return;
   for (const job of existing) {
     if (job.name === PARTNER_TRUST_PROMOTE_JOB) await queue.removeRepeatableByKey(job.key);
   }

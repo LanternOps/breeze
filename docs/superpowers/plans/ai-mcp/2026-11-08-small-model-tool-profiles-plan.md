@@ -118,13 +118,13 @@ Worked `auto` example the thresholds must reproduce, **corrected in W02 (#11396)
 
 | Surface | `minimal` from | `standard` from | `full` from |
 |---|---|---|---|
-| chat | 7,678 | 16,728 | 171,067 |
+| chat | 7,702 | 16,728 | 171,067 |
 | helper | 7,147 | 10,291 | 16,920 |
 | script builder | 7,777 (but `minimal` drops `execute_script_on_device`, so the builder refuses `tool_profile_underpowered` below 9,929) | 9,929 | 14,730 |
 | AI agents | 7,353 | 15,983 | 105,428 |
 | Office | `full` at any window (prefixes unmeasured) | | |
 
-The shared `search_logs` schema remeasurement raises the chat `minimal` prefix to 3,320 tokens. With the existing 4,358-token reserve, its minimum window is now 7,678; the other thresholds are unchanged.
+The shared `search_logs` schema remeasurement raises the chat `minimal` prefix to 3,320 tokens. With the existing 4,358-token reserve, its minimum window is now 7,678; the other thresholds are unchanged. The `search_documentation` `limit` parameter (#6734) raises it again to 3,344 tokens, so the chat `minimal` window is now 7,702.
 
 ## Execution split
 

@@ -3,6 +3,7 @@ import { ShieldCheck, RefreshCw } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import { hasProbeLimitNotCollected } from "@/lib/complianceProbeLimit";
 import "../../lib/i18n";
 
 type ComplianceRow = {
@@ -215,7 +216,9 @@ export default function DeviceComplianceTab({
                   </td>
                 </tr>
               ) : (
-                sorted.map((row) => (
+                sorted.map((row) => {
+                  const probeLimit = hasProbeLimitNotCollected(row.details);
+                  return (
                   <tr
                     key={row.id}
                     data-testid="device-compliance-row"
@@ -225,14 +228,28 @@ export default function DeviceComplianceTab({
                       {row.configItemName ?? "Compliance rule"}
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
-                          STATUS_STYLES[row.status] ??
-                          "bg-muted text-muted-foreground border-border"
-                        }`}
-                      >
-                        {STATUS_LABELS[row.status] ?? row.status}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {/* A probe-limit `pending` is not "not evaluated yet". */}
+                        {probeLimit && row.status === "pending" ? null : (
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+                              STATUS_STYLES[row.status] ??
+                              "bg-muted text-muted-foreground border-border"
+                            }`}
+                          >
+                            {STATUS_LABELS[row.status] ?? row.status}
+                          </span>
+                        )}
+                        {probeLimit ? (
+                          <span
+                            data-testid="device-compliance-probe-limit"
+                            title={t("deviceComplianceTab.notCollectedProbeLimitHint")}
+                            className="inline-flex items-center rounded-full border border-dashed border-warning/50 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning"
+                          >
+                            {t("deviceComplianceTab.notCollectedProbeLimit")}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3 tabular-nums text-muted-foreground">
                       {typeof row.remediationAttempts === "number" &&
@@ -244,7 +261,8 @@ export default function DeviceComplianceTab({
                       {formatTimestamp(row.lastCheckedAt, timezone)}
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

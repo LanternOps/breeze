@@ -30,6 +30,9 @@ export const EVENT_SUBSCRIBER_IDS = [
   'flow-event-trigger',
   'notification-dispatcher',
   'policy-alert-bridge',
+  // Strix (PR #12184) — tells a compliance rule's owner (partner or org) that
+  // the per-org probe cap left the rule uncollected, so it is not assessed.
+  'policy-not-assessed-notice',
   'psa-alert-ticketing',
   'webhook-delivery',
   // Wisp event check-ins W04 (#11493, #10410) — the event fast path of a

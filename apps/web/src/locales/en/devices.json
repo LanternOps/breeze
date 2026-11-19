@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "No compliance results reported. Assign a Configuration Policy with compliance rules to this device, or wait for the next evaluation.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Assign a configuration policy"
+    "assignPolicy": "Assign a configuration policy",
+    "notCollectedProbeLimit": "Not collected (probe limit)",
+    "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
@@ -5014,7 +5016,8 @@
       "noOpenCategories": "Nothing can run with this choice. BIOS and firmware are all that is available here: choose Reboot when finished.",
       "decommissioned": "This device is decommissioned, so nothing can be sent to it.",
       "cancelledAtClaim": "The run was cancelled before it reached the device. Try again."
-    }
+    },
+    "observeQueued": "Read-only vendor check started on {{hostname}}. Nothing is installed."
   },
   "vendorUpdates": {
     "title": "Vendor updates",
@@ -5099,7 +5102,16 @@
       "byUnknown": "Unknown",
       "range": "{{from}}-{{to}} of {{total}}",
       "previousPage": "Previous",
-      "nextPage": "Next"
+      "nextPage": "Next",
+      "observed": "Observed",
+      "observedTools": "Tools found: {{tools}}",
+      "observedNoTools": "No vendor tools found",
+      "observedVerdict": {
+        "observed": "{{vendor}}: read-only check finished",
+        "observedWithErrors": "{{vendor}}: read-only check finished with some reads failing",
+        "platformUnsupported": "{{vendor}}: this model is not supported by the vendor's business tools",
+        "invalid": "{{vendor}}: the check result could not be read"
+      }
     }
   },
   "reinstalledBadge": {

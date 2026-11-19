@@ -282,6 +282,23 @@ describe('EmailTemplateEditor', () => {
     expect((window as unknown as { __emailTplPwned?: number }).__emailTplPwned).toBeUndefined();
   });
 
+  it('previews {{ticket_number}} as the 10-char customer code customers actually receive (#12200)', () => {
+    render(
+      <EmailTemplateEditor
+        templateId="ticket_autoresponse"
+        value={{ subject: null, heading: null, buttonLabel: null, html: '<p>Ticket {{ticket_number}}</p>' }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const text = screen.getByTestId('email-template-preview').textContent ?? '';
+    const m = text.match(/Ticket (\S+)/);
+    // tickets.ticket_number is the customer-facing number (#8965); internal T-numbers are staff-only.
+    expect(m?.[1]).toMatch(/^[A-Z0-9_-]{10}$/);
+    expect(text).not.toContain('T-2026-');
+  });
+
   it('strips javascript hrefs, style, base, and form from the preview', () => {
     render(
       <EmailTemplateEditor

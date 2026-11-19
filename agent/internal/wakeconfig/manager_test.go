@@ -37,6 +37,7 @@ type harness struct {
 func newHarness(t *testing.T, interval time.Duration) *harness {
 	t.Helper()
 	h := &harness{clock: &fakeClock{t: t0}, path: filepath.Join(t.TempDir(), "wake_status_state.json")}
+	t.Cleanup(func() { stopAndWait(t, h.m) })
 	h.fast.Store("disabled")
 	h.m = New(Options{
 		Collect: func(ctx context.Context) (Inputs, error) {
@@ -55,6 +56,27 @@ func newHarness(t *testing.T, interval time.Duration) *harness {
 		Interval:  interval,
 	})
 	return h
+}
+
+// stopAndWait stops a manager and waits for its loop to exit, so it is not
+// still writing state into a TempDir that is being removed. A manager that
+// was never started has nothing to wait for.
+func stopAndWait(t *testing.T, m *Manager) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	started := m.started
+	m.mu.Unlock()
+	if !started {
+		return
+	}
+	m.Stop()
+	select {
+	case <-m.Done():
+	case <-time.After(5 * time.Second):
+		t.Error("wake manager did not stop")
+	}
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {

@@ -49,9 +49,25 @@ type Session struct {
 	cursorDC          *webrtc.DataChannel
 	controlDC         *webrtc.DataChannel
 
+	// backend is the session backend session that supplies capturer and
+	// inputHandler when the process registered a SessionBackend (#12117);
+	// nil otherwise. Closed by doCleanup after the capturer.
+	backend BackendSession
+
 	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
 	// then, after it found no usable software encoder (#11392).
 	softwareSwapRetryAt atomic.Int64
+
+	// captureW/captureH are the even-aligned size the session is streaming,
+	// and encoderResizeRetryAt the end of the backoff after a failed encoder
+	// resize (#11754, session_geometry.go). Capture goroutine only (set in
+	// StartSession before it starts).
+	captureW, captureH   int
+	encoderResizeRetryAt time.Time
+	// captureCap is the capturer captureW/captureH belong to. A frame from
+	// another one is the first after a monitor switch, whose own transition
+	// already ran (nil: unknown, sizes alone decide).
+	captureCap ScreenCapturer
 
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.
@@ -690,6 +706,13 @@ func (s *Session) doCleanup() {
 		s.oldCapturers = nil
 		if s.capturer != nil {
 			s.capturer.Close()
+		}
+		// The backend session owns the capturer and the input sink; it is
+		// released after both are done with.
+		if s.backend != nil {
+			if err := s.backend.Close(); err != nil {
+				slog.Warn("Failed to close the capture session", "session", s.id, "error", err.Error())
+			}
 		}
 		// After the capturer: the display may sleep again only once nothing
 		// captures it (#10874).

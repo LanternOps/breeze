@@ -34,6 +34,8 @@ vi.mock('../db', () => ({
     if (dbState.inContext) dbState.deferred.push(work);
     else work();
   },
+  // #8636 — the cluster invalidator announces after commit; no bus here, so run it at once.
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
@@ -50,6 +52,8 @@ import {
   resolveDesktopSessionPolicy,
 } from './remoteAccessPolicy';
 import { resolveEffectiveConfig } from './configurationPolicy';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
 
 // Guards the security-sensitive default: Remote Desktop / VNC / Remote Tools
 // must stay ON-by-default after sourcing DEFAULTS from the canonical module.
@@ -469,5 +473,84 @@ describe('remote access cache max age (#8053)', () => {
 
     const result = await resolveRemoteAccessForDevice('clamp-device', { maxAgeMs: 1e9 });
     expect(result.settings.vncRelay).toBe(false);
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'device-remote-access-policy';
+  const policy = (vncRelay: boolean) => ({
+    deviceId: 'd',
+    features: {
+      remote_access: {
+        inlineSettings: { vncRelay },
+        sourcePolicyName: `relay ${vncRelay}`,
+        sourcePolicyId: `policy-${vncRelay}`,
+      },
+    },
+    inheritanceChain: [],
+  }) as any;
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+    invalidateRemoteAccessCache();
+    published.length = 0;
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a remote drop for one device makes the next read re-resolve', async () => {
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce(policy(true)).mockResolvedValueOnce(policy(false));
+    expect((await resolveRemoteAccessForDevice('bus-device')).settings.vncRelay).toBe(true);
+    expect((await resolveRemoteAccessForDevice('bus-device')).settings.vncRelay).toBe(true);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(1);
+
+    getClusterCacheTarget(NAME)!.invalidate('bus-device');
+
+    expect((await resolveRemoteAccessForDevice('bus-device')).settings.vncRelay).toBe(false);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('a remote drop with no key clears every device', async () => {
+    vi.mocked(resolveEffectiveConfig).mockResolvedValue(policy(true));
+    await resolveRemoteAccessForDevice('bus-a');
+    await resolveRemoteAccessForDevice('bus-b');
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    await resolveRemoteAccessForDevice('bus-a');
+    await resolveRemoteAccessForDevice('bus-b');
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(4);
+  });
+
+  it('the writer call publishes [name, deviceId] and the global one [name, null]', () => {
+    invalidateRemoteAccessCache('bus-device');
+    expect(published).toEqual([[NAME, 'bus-device']]);
+    published.length = 0;
+    invalidateRemoteAccessCache();
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a resolution in flight when a remote drop lands answers its caller but is not cached', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(resolveEffectiveConfig)
+      .mockImplementationOnce(async () => { await gate; return policy(true); })
+      .mockResolvedValueOnce(policy(false));
+    const inFlight = resolveRemoteAccessForDevice('race-device');
+
+    getClusterCacheTarget(NAME)!.invalidate('race-device');
+    release();
+    expect((await inFlight).settings.vncRelay).toBe(true);
+
+    expect((await resolveRemoteAccessForDevice('race-device')).settings.vncRelay).toBe(false);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "lane": "hp",
+  "agentVersion": "0.131.0",
+  "nativeArch": "amd64",
+  "osBuild": "10.0.22631.4460",
+  "smbios": {
+    "manufacturer": "HP",
+    "model": "HP Laptop 15-fd0xxx",
+    "systemSku": "8F2X1UA#ABA",
+    "family": "103C_5335KV HP Laptop",
+    "baseboardProduct": "8C9F"
+  },
+  "bios": { "version": "F.12", "releaseDate": "2025-03-10" },
+  "chassis": "laptop",
+  "power": { "acLine": "off", "batteryFlag": 128, "batteryPercent": 255 },
+  "bitlocker": { "protection": "unknown", "pcr7Bound": null, "activeProtectorEscrowed": null },
+  "pendingReboot": true,
+  "tools": [],
+  "conflicts": [{ "name": "hp_support_assistant", "version": "9.40.48.0" }],
+  "errors": [{ "step": "bitlocker", "code": "preflight_unknown" }],
+  "truncated": false,
+  "hp": {
+    "instrumentedBiosNamespace": false,
+    "platformCatalog": { "status": 404 }
+  }
+}

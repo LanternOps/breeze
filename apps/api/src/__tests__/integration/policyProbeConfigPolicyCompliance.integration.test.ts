@@ -175,6 +175,27 @@ describe('buildPolicyProbeConfigUpdate: configuration-policy compliance rules (#
     expect(names.at(-1)).toBe(name(MAX_POLICY_STATE_PROBES_PER_ORG - 1));
   });
 
+  runDb('#12130: partner-wide probes that sort first cannot starve the org\'s own probes', async () => {
+    const t = await seedTenant();
+    const count = MAX_POLICY_STATE_PROBES_PER_ORG + 20;
+    await seedCompliancePolicy({
+      owner: { orgId: null, partnerId: t.partnerId },
+      rules: Array.from({ length: count }, (_, i) => registryRule('HKLM\\SOFTWARE\\AAPartner', `Value${String(i).padStart(4, '0')}`)),
+    });
+    await seedCompliancePolicy({
+      owner: { orgId: t.orgId, partnerId: null },
+      rules: Array.from({ length: 10 }, (_, i) => registryRule('HKLM\\SOFTWARE\\ZZOrg', `Value${i}`)),
+    });
+
+    const probe = await withDbAccessContext(agentContext(t.orgId, t.partnerId), () =>
+      buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId }));
+
+    const paths = (probe?.policy_registry_state_probes ?? []).map((p) => p.registry_path);
+    expect(paths).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+    expect(paths.filter((p) => p.endsWith('ZZOrg'))).toHaveLength(10);
+    expect(paths.filter((p) => p.endsWith('AAPartner'))).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG - 10);
+  });
+
   runDb('ownership predicate: no partner = org-owned only; another partner\'s partner-wide rule never leaks (system scope, RLS cannot mask it)', async () => {
     const t = await seedTenant();
     const other = await seedTenant();

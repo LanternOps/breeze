@@ -9,7 +9,8 @@ import { test } from 'node:test';
 import * as queue from './queue-selection.mjs';
 // Imported only to pin the candidate-side consumer to the gate's definitions.
 import * as thin from './ci-gate-thin.mjs';
-import { FULL_SUITE_FLAGS, GATE_WORKFLOW, createGateIO, extractAggregator, runAggregator } from './ci-gate.mjs';
+import { FULL_SUITE_FLAGS, GATE_WORKFLOW, baseRevisionIO, createGateIO, extractAggregator, runAggregator } from './ci-gate.mjs';
+import { loadSuiteMap, suiteOfTest } from './integration-suites.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const workflow = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -1236,4 +1237,120 @@ test('consume CLI: the real module loads, and with the kill switch unset it writ
     assert.equal(readFileSync(output, 'utf8'), 'thin_skip=\nselection_mode=full\nselection_reason=thin_disabled\n');
     assert.match(result.stdout, /^queue-thin: mode=full reason=thin_disabled /);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── W07b3 / W07c (#10751): named suites and related unit tests, shadow only ──
+//
+// Both are extra log fields beside the selection. Neither may move a job, and
+// neither may turn a selection into full/error when its own inputs are bad.
+
+const SUITE_MAP_TEXT = readFileSync(join(REPO_ROOT, '.github/scripts/integration-suites.txt'), 'utf8');
+const withMap = (P, delta, extra = {}) => queue.computeSelection({ ...context, suiteMap: SUITE_MAP_TEXT, ...extra, P, delta, full: classify(P) });
+const JOB_LEVEL = ['mode', 'reason', 'overlap', 'thin_jobs', 'full_jobs', 'unrun_own_tests', 'flags', 'reader_tests', 'would_skip', 'would_add'];
+const jobLevel = out => Object.fromEntries(JOB_LEVEL.map(key => [key, out[key]]));
+// #10287's interaction with its floor paths (migration, schema, registry, integration tests) taken out.
+const TICKET_P = ['apps/api/src/services/ticketExternalRefs.ts', 'apps/api/src/services/ticketImport/importWriter.ts', 'apps/api/src/services/ticketMerge/repoint.ts'];
+const TICKET_DELTA = ['apps/api/src/services/ticketImport/importAttachments.ts', 'apps/api/src/services/ticketImport/importWriter.ts'];
+const IMPORT_TESTS_SUITE = suiteOfTest(loadSuiteMap(SUITE_MAP_TEXT), 'apps/api/src/__tests__/integration/ticketImportAttachments.integration.test.ts');
+
+test('B3/C2: the suite map and the related shadow never move a job, whatever the map holds', () => {
+  for (const [P, delta] of [...fixtures.map(f => [f.P, f.delta]), [TICKET_P, TICKET_DELTA]]) {
+    const real = withMap(P, delta);
+    for (const [label, bad] of [['missing', undefined], ['malformed', 'suite bad line'], ['unclosed class', 'suite a tests apps/[x'],
+      ['empty', ''], ['not a string', { toString() { throw Error('boom'); } }]]) {
+      const out = withMap(P, delta, { suiteMap: bad });
+      assert.deepEqual(jobLevel(out), jobLevel(real), `${label} map`);
+      if (real.integration_suites) assert.equal(out.integration_suites.suites, 'all', `${label} map selects every suite`);
+    }
+    assert.deepEqual(jobLevel(real), jobLevel(select(P, delta)), 'the map changes no job-level field');
+  }
+});
+
+test('B3: W4\'s seven fixtures still select every job they select today', () => {
+  for (const f of fixtures) {
+    const out = withMap(f.P, f.delta);
+    assert.equal(out.mode, 'shadow', `${f.name}: ${out.reason}`);
+    assert.ok(out.thin_jobs.includes(f.caught_by_job), f.name);
+  }
+});
+
+test('B3: integration_suites is null when the entry runs no integration, else the suites or all', () => {
+  assert.equal(withMap(['apps/web/src/a.ts'], ['apps/web/src/b.ts']).integration_suites, null);
+  const out = withMap(TICKET_P, TICKET_DELTA);
+  assert.ok(out.thin_jobs.includes('integration-test'));
+  assert.deepEqual(out.integration_suites, { suites: ['core', IMPORT_TESTS_SUITE], reason: 'mapped' });
+});
+
+test('B3: #10287 (attachment counters, shard 14) selects the suite owning the import tests', () => {
+  const f = fixture('pr-10287-integration');
+  const out = withMap(f.P, f.delta);
+  // Its migration and integration tests are floor paths, so today it is every suite.
+  assert.deepEqual(out.integration_suites, { suites: 'all', reason: 'floor:apps/api/migrations/2027-01-12-110000-ticket-external-refs-origin-ticket.sql' });
+  // Without the floor paths the interaction still lands in the owning suite.
+  assert.ok(withMap(TICKET_P, TICKET_DELTA).integration_suites.suites.includes(IMPORT_TESTS_SUITE));
+});
+
+test('B3: suites = S(O) ∪ (S(P) ∩ S(Δ)) ∪ suites of own integration tests', () => {
+  const P = ['apps/api/src/services/ticketExternalRefs.ts'], accounting = 'apps/api/src/services/accountingSync.ts';
+  const repoint = 'apps/api/src/services/ticketMerge/repoint.ts';
+  // P and Δ in different suites, no file in common: only core.
+  assert.deepEqual(withMap(P, [accounting]).integration_suites, { suites: ['core'], reason: 'mapped' });
+  // A suite both sides touch runs; one only Δ touches does not.
+  assert.deepEqual(withMap(P, [accounting, repoint]).integration_suites.suites, ['core', 'ticket']);
+  // O: a file both edit runs its suites.
+  assert.deepEqual(withMap([accounting], [accounting]).integration_suites.suites, ['core', 'accounting']);
+  // An integration test P edits always runs its own suite, even when Δ touches another.
+  const own = 'apps/api/src/services/accounting/accountingFeePush.integration.test.ts';
+  assert.deepEqual(queue.routeOwnTest(own, context).jobs, ['integration-test']);
+  const withOwn = withMap([...P, own], [repoint]);
+  assert.deepEqual(withOwn.integration_suites.suites, ['core', 'accounting', 'ticket']);
+});
+
+test('B3: any all is full: an unmapped Δ path, an unmapped P path, a floor path', () => {
+  const unmapped = 'apps/api/src/services/zzzNoSuiteOwnsThis.ts';
+  assert.deepEqual(withMap(TICKET_P, [...TICKET_DELTA, unmapped]).integration_suites, { suites: 'all', reason: `delta:unmapped:${unmapped}` });
+  assert.deepEqual(withMap([...TICKET_P, unmapped], TICKET_DELTA).integration_suites, { suites: 'all', reason: `p:unmapped:${unmapped}` });
+  const floor = 'apps/api/src/db/schema/tickets.ts';
+  assert.equal(withMap(TICKET_P, [...TICKET_DELTA, floor]).integration_suites.suites, 'all');
+});
+
+test('B3: the suite map is read from the base revision, so a head that drops a suite changes nothing', () => {
+  tempRepo(({ dir, git, put, commit }) => {
+    const MAP = '.github/scripts/integration-suites.txt';
+    for (const path of [MAP, '.github/scripts/integration-floor-paths.txt', 'apps/api/vitest.integration.config.ts', ...Object.keys(context.playwrightConfigs).map(n => `e2e-tests/${n}`)]) {
+      put(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
+    }
+    const base = commit('base');
+    put(MAP, SUITE_MAP_TEXT.split('\n').filter(line => !/^suite ticket /.test(line)).join('\n'));
+    commit('head drops the ticket suite');
+    const io = createGateIO({ cwd: dir, env: { PATH: process.env.PATH } });
+    const fromBase = { ...queue.selectionContext(baseRevisionIO(io, base), workflow), classify };
+    const fromHead = { ...queue.selectionContext(io, workflow), classify };
+    const suites = ctx => queue.computeSelection({ ...ctx, P: TICKET_P, delta: TICKET_DELTA, full: classify(TICKET_P) }).integration_suites;
+    assert.ok(suites(fromBase).suites.includes('ticket'), JSON.stringify(suites(fromBase)));
+    assert.equal(suites(fromHead).suites, 'all', 'the working tree really holds the edited map');
+    void git;
+  });
+});
+
+test('C2: unit_related logs, per related-capable unit job selected, what the related run would be', () => {
+  const out = withMap(['apps/web/src/lib/runAction.ts'], ['apps/web/src/lib/runAction.ts']);
+  assert.ok(out.thin_jobs.includes('test-web'));
+  assert.equal(out.unit_related['test-web'], 'related');
+  assert.deepEqual(Object.keys(out.unit_related).filter(job => !out.thin_jobs.includes(job)), [], 'only jobs the entry runs');
+  const floorHit = withMap(['apps/api/src/services/a.ts'], ['apps/api/src/db/schema/x.ts']);
+  assert.match(floorHit.unit_related['test-api'], /^full:floor:/);
+  assert.equal(withMap(['docs/a.md'], ['docs/b.md']).unit_related, null);
+});
+
+test('B3/C2: the new fields are on the shadow line', () => {
+  for (const key of ['integration_suites', 'unit_related']) assert.ok(queue.SHADOW_FIELDS.includes(key), key);
+});
+
+test('B3: selectionContext reads the suite map through io, and a missing map is not an error', () => {
+  const asked = [];
+  const io = { read: path => { asked.push(path); if (path.endsWith('integration-suites.txt')) throw Error('fatal: path not in base'); return ''; }, exec: () => '' };
+  const ctx = queue.selectionContext(io, workflow);
+  assert.ok(asked.includes('.github/scripts/integration-suites.txt'));
+  assert.equal(ctx.suiteMap, undefined);
 });

@@ -8,6 +8,12 @@ const h = vi.hoisted(() => ({
   processor: null as null | ((job: { name: string; data: unknown }) => Promise<unknown>),
 }));
 
+// The observe sweep has its own tests (services/oemUpdates/observe.test.ts).
+vi.mock('../services/oemUpdates/observe', () => ({
+  runOemObserveSweep: vi.fn(async () => ({ considered: 0, dispatched: 0 })),
+  observedHpPlatformUnsupported: vi.fn(async () => false),
+}));
+
 vi.mock('../db', () => ({
   db: { select: vi.fn(() => ({ from: () => ({ innerJoin: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: async () => [] }) }) }) }) }) })) },
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),

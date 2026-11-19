@@ -68,7 +68,9 @@
       "check": "Kontrol et",
       "lastChecked": "Son Kontrol Edildi",
       "noComplianceResultsYetAssignThisPolicy": "Henüz uyumluluk sonucu yok. Bu politikayı cihazlara atayın ve uyumluluk kuralları ekleyin; durum bir sonraki değerlendirmeden sonra görünür.",
-      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır."
+      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır.",
+      "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+      "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Bu politika için bir kuruluş seçin.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
-        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
+        "dayOfWeek": "Haftanın günü",
+        "dayOfWeekHint": "Her haftalık pencerenin açıldığı gün, seçilen saat diliminde.",
+        "dayOfMonth": "Ayın günü",
+        "dayOfMonthHint": "Her aylık pencerenin açıldığı gün, seçilen saat diliminde. O günü olmayan bir ayda pencere ayın son gününde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",

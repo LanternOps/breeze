@@ -31,6 +31,33 @@ describe('sendThreadedReply', () => {
     expect(sendDraftCall[1].method).toBe('POST');
   });
 
+  it("leaves the subject alone by default so the reply keeps Graph's RE: subject", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: 'draft-9' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 202, text: async () => '' });
+
+    await sendThreadedReply(target, 'orig-1', '<p>reply</p>');
+
+    const patched = JSON.parse(fetchMock.mock.calls[1]![1].body);
+    expect(patched).not.toHaveProperty('subject');
+  });
+
+  it('PATCHes subject together with body when a subject is passed (#12200)', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: 'draft-9' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 202, text: async () => '' });
+
+    await sendThreadedReply(target, 'orig-1', '<p>ack</p>', {
+      subject: '[KQ04YOHZ-N] We received your request: printer down',
+    });
+
+    const patched = JSON.parse(fetchMock.mock.calls[1]![1].body);
+    expect(patched.subject).toBe('[KQ04YOHZ-N] We received your request: printer down');
+    expect(patched.body).toEqual({ contentType: 'HTML', content: '<p>ack</p>' });
+  });
+
   it('throws if createReply fails', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 403, text: async () => 'denied' });
     await expect(sendThreadedReply(target, 'orig-1', '<p>x</p>')).rejects.toThrow(/403/);

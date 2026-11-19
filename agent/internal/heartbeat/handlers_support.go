@@ -208,9 +208,8 @@ const (
 )
 
 // buildSupportSelfDeleteCmdLine renders the Windows trampoline command line
-// and the environment entries it reads its paths from. Extracted (like
-// buildWindowsUninstallScript) so the exact text is unit-testable on any host
-// without spawning cmd.exe.
+// and the environment entries it reads its paths from. Extracted so the exact
+// text is unit-testable on any host without spawning cmd.exe.
 //
 // The paths are passed in the environment, never written into the line:
 // cmd.exe expands %NAME% anywhere in its command line, quoted or not, with no

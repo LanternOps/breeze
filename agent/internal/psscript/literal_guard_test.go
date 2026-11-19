@@ -41,10 +41,6 @@ var literalValueExceptions = map[string]map[string]string{
 	"internal/updater/rollback_detached_script.go": {
 		"payload": "escaped by rollbackJournalPayload",
 	},
-	"internal/heartbeat/handlers_uninstall.go": {
-		"strings.ReplaceAll(s, \"'\", `'\\''`)": "POSIX sh quoting in shQuote, not PowerShell",
-		"reason":                                "constant messages in the macOS sh script",
-	},
 	"internal/userhelper/notify_windows.go": {
 		"notifyAUMID": "constant",
 	},
@@ -73,6 +69,9 @@ var literalValueExceptions = map[string]map[string]string{
 	"internal/collectors/timesync/system_events_windows.go": {
 		"since.UTC().Format(time.RFC3339Nano)": "formatted time",
 		"until.UTC().Format(time.RFC3339Nano)": "formatted time",
+	},
+	"internal/oemupdates/observe/host_windows.go": {
+		"name": "checked against wmiNameRe (letters only); a WQL literal, not PowerShell",
 	},
 	"internal/security/local_admin_group_probe.go": {
 		"localAdminResolveMarker": "constant",
