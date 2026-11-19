@@ -89,7 +89,7 @@ Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing
   - `deletes the draft and throws when the PATCH response still carries other recipients`: the PATCH response has `ccRecipients:[{…'colleague@example.com'}]`. Expect `DELETE …/messages/<draftId>` to be called, `/send` never to be called, and the call to reject with `/recipient/`.
   - `deletes the draft when send fails`: `/send` returns 500. Expect a best-effort DELETE of the draft, and the original error rethrown.
   - `sendNewMail sets replyTo to the mailbox`.
-- [ ] **Step 2: Run and see them fail.** `cd apps/api && pnpm vitest run src/services/ticketMailbox/graphReplySender.test.ts`
+- [ ] **Step 2: Run and see them fail.** `cd apps/api && npx vitest run src/services/ticketMailbox/graphReplySender.test.ts`
 - [ ] **Step 3: Implement.** The PATCH sends recipients and body in one request. Read the PATCH response JSON (`{ toRecipients, ccRecipients, bccRecipients }`). Compare the lower-cased addresses: To must be exactly `[to]`, and Cc and Bcc empty. Otherwise throw `GraphRecipientMismatchError`. Wrap everything after `createReply` in try/catch: on any error, `DELETE` the draft (swallowing its own error), then rethrow.
 - [ ] **Step 4: Run and see them pass.**
 - [ ] **Step 5: Update the caller.** In `ticketNotifyWorker.ts` `sendEmailPayloads`, both `sendThreadedReply` calls pass `{ to: payload.to, …(threadedReplyUsesSubject ? { subject } : {}) }`. Run `src/jobs/ticketNotifyWorker.graphFork.test.ts`. Update its expectations to the new options object. Do not delete assertions.
@@ -113,10 +113,11 @@ Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing
   - The existing deleted, private and pre-commit-retry tests run on **both** lanes (`it.each(['platform','graph'])`).
   - renderPartnerEmail test `with_reply variant drops the sign-in copy and places bodyBeforeCta before the CTA`.
   - renderPartnerEmail test `custom template still carries the reply text before the CTA` (custom html `<p>Sign in to the portal</p>{{cta_button}}`, `bodyBeforeCta` present).
-- [ ] **Step 2: Run and see them fail.** `cd apps/api && pnpm vitest run src/jobs/ticketNotifyWorker.leak.test.ts src/services/emailTemplates/renderPartnerEmail.test.ts`
-- [ ] **Step 3: Implement.** Load the comment first (the same select and the same retry-on-missing). Then compose: when `fullMessageReply` is on and the comment passes the live/public check, pass `replyHtml`. Remove `&& !graphMailbox`. Rewrite the long comment above the gate to describe the recipient replace. Update the `ticket.commented` case comment (~968) and the `fullMessageReply` caveat in `packages/shared/src/validators/partnerTicketingSettings.ts:47-61`.
+- [ ] **Step 2: Run and see them fail.** `cd apps/api && npx vitest run src/jobs/ticketNotifyWorker.leak.test.ts src/services/emailTemplates/renderPartnerEmail.test.ts`
+- [ ] **Step 3: Implement.** Read the partner flag first. Load the comment (the same select and the same retry-on-missing) **only when the flag is on**. With the flag off, `ticket_comments` is never queried; the structural no-query test at `ticketNotifyWorker.leak.test.ts:194` must stay green on both lanes. Add `flag off never selects ticket_comments on the graph lane`. Then compose: when the flag is on and the comment passes the live/public check, pass `replyHtml`. Remove `&& !graphMailbox`. Rewrite the long comment above the gate to describe the recipient replace. Update the `ticket.commented` case comment (~968) and the `fullMessageReply` caveat in `packages/shared/src/validators/partnerTicketingSettings.ts:47-61`.
 - [ ] **Step 4: Run the tests and see them pass,** plus `src/jobs/ticketNotifyWorker.test.ts` and the graphFork test.
-- [ ] **Step 5: Typecheck.** `pnpm --filter @breeze/api exec tsc --noEmit -p .`. Check the exit code; do not pipe to `tail`. Give it a 12 GB heap: `NODE_OPTIONS=--max-old-space-size=12288`.
+- [ ] **Step 5: Typecheck.** `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit; echo exit=$?`. Check the exit code; do not pipe to `tail`.
+- [ ] **Step 5b: Lab check before merge.** Use a real connected M365 test mailbox. Confirm that the PATCH response echoes the To, Cc and Bcc addresses verbatim; if Graph rewrites an alias, the exact match must normalise for it. Confirm that a reply to a message whose From differs from the requester reaches only the requester.
 - [ ] **Step 6: Update the docs.** `apps/docs` ticketing page: the reply-text option now works with a connected Microsoft 365 mailbox. Commit with `feat(ticketing): send the public reply text through a connected M365 mailbox (Refs #8758)`.
 
 **W1 PR:** label `category:ticketing`. Body: behaviour change only for partners with `fullMessageReply: true` and a connected mailbox. Recipient replace for all Graph customer mail.
@@ -139,7 +140,7 @@ Spec D1. Rule 9 block for the PR: **Home** is Settings → Ticketing → Email (
 - Produces: `resolveEmailCustomer(partner: unknown, org: unknown): ResolvedEmailCustomer`, with tolerant reads (malformed input means default). A field the org sets wins. An org `queueNotifyAddresses: []` is set, meaning "off for this org", and is not inherit.
 - `orgTicketSettingsSchema.emailCustomer: emailCustomerSettingsSchema.nullable().optional()`. `null` clears the override. The existing `refine` (at least one field) still passes with only `emailCustomer`.
 
-- [ ] Steps: failing tests `org field wins`, `omitted org field inherits`, `org [] is off, not inherit`, `defaults are [] / false with source default`, `malformed partner settings resolve to defaults`. Run `pnpm --filter @breeze/shared test` (the `test-shared` CI job). Implement, see them pass, commit.
+- [ ] Steps: failing tests `org field wins`, `omitted org field inherits`, `org [] is off, not inherit`, `defaults are [] / false with source default`, `malformed partner settings resolve to defaults`. Run `cd packages/shared && npx vitest run src/validators/emailCustomerSettings.test.ts` (CI: `test-shared`). Implement, see them pass, commit.
 
 ### Task 2: migrations (column + legacy copy)
 
@@ -174,7 +175,7 @@ The data copy starts with `SELECT set_config('breeze.scope', 'system', true);`. 
 
 W2 shows only the reply toggle. The address list arrives in W5 on the same card. Save goes through `runAction` with a page Save button. Test ids: `email-customer-card`, `email-customer-reply-includes-comment`, `email-customer-save`, `org-email-customer-reply-mode`.
 
-- [ ] Steps: failing component tests (`saves emailCustomer.replyIncludesComment via PATCH /partners/me`, `org editor shows the inherited partner value`, and `inbound card save body has no fullMessageReply`). Implement. Run `pnpm --filter @breeze/web test -- src/components/settings`. `no-silent-mutations.test.ts` and `keyUsage.test.ts` must stay green. Commit.
+- [ ] Steps: failing component tests (`saves emailCustomer.replyIncludesComment via PATCH /partners/me`, `org editor shows the inherited partner value`, and `inbound card save body has no fullMessageReply`). Implement. Run `cd apps/web && npx vitest run src/components/settings/EmailCustomerCard.test.tsx src/components/settings/OrgTicketSettingsEditor.test.tsx src/lib/__tests__/no-silent-mutations.test.ts` (never `pnpm --filter <pkg> test -- --run`; path filters are substring matches, see `docs/agents/testing.md`). `no-silent-mutations.test.ts` and `keyUsage.test.ts` must stay green. Commit.
 
 **W2 PR:** must pass **Integration Tests** (export-policy and cascade suites run only there). Carry the Rule 9 block and the keep-survivor note.
 
@@ -285,3 +286,5 @@ Spec D2 "Customer reply". **Event transport:** emit it directly through `fx.emit
 5. **Queue notice template** (spec open call). The proposal is a fixed staff layout, not a partner-editable template, because it is staff mail.
 6. **No-inbound fallback subject** (spec open call). The proposal keeps today's rendered template subject (`[T-…] New reply: …`), which carries the ticket token so replies thread back, rather than `RE: <subject>`.
 7. **Gmail mailboxes.** A connected Gmail mailbox has no outbound lane (`resolveOutboundMailbox` is m365-only), so those partners use the platform/partner lane, where the flag already appends the text today. Out of scope unless you want a Gmail send lane.
+8. **Recipient replace scope.** W1 applies the replace to every Graph customer send: comment, resolved and autoresponse. The spec's D3 names only the reply. `submitterEmail` and the autoresponse `to` are both the message's `From` (`inboundEmailService.ts:932`, `autoresponder.ts:145`). A sender whose `Reply-To` differs from `From` would now get mail at `From`. Is that acceptable for all three, or should the replace cover the comment notice only?
+9. **Gmail connections on the Graph path (inferred, not verified).** `resolveOutboundMailbox` filters the inbound message by `provider = 'm365'` but not the connection query. A partner with only a Gmail connection may get a `graphMailbox` payload. Verify in W1 Task 1, and file it separately if it is real.
