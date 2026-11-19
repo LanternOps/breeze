@@ -14,7 +14,7 @@ function policies(
     name: `${prefix} ${String(index + 1).padStart(2, '0')}`,
     status,
     orgId: '44444444-4444-4444-4444-444444444444',
-    orgName: 'OliveTech',
+    orgName: 'Fabrikam MSP',
   }));
 }
 

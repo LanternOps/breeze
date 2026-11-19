@@ -69,8 +69,8 @@ describe("BACKUP_PROVIDER_FORMS", () => {
 
 describe("createCredentials", () => {
   it("trims every field except the Cove password", () => {
-    expect(createCredentials(cove, { partnerName: " OliveTech ", username: " breeze-ro ", password: " p " })).toEqual({
-      partnerName: "OliveTech",
+    expect(createCredentials(cove, { partnerName: " Fabrikam MSP ", username: " breeze-ro ", password: " p " })).toEqual({
+      partnerName: "Fabrikam MSP",
       username: "breeze-ro",
       password: " p ",
     });

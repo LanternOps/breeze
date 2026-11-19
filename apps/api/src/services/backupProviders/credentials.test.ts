@@ -28,7 +28,7 @@ afterAll(() => {
 import { decryptProviderCredentials, encryptProviderCredentials } from './credentials';
 
 describe('backup provider credential crypto', () => {
-  const creds = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+  const creds = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 
   it('round-trips a credential blob through the SAME row id', () => {
     const rowId = randomUUID();
