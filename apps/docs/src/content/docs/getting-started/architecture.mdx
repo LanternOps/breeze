@@ -67,7 +67,7 @@ A single Go binary (~8 MB) that runs as a system service:
 
 ### Database (PostgreSQL + Drizzle)
 
-PostgreSQL 16 with Drizzle ORM for type-safe schema management:
+PostgreSQL (16 by default; 17 and 18 supported) with Drizzle ORM for type-safe schema management:
 
 - 30+ tables covering devices, users, organizations, alerts, scripts, audit logs
 - Hand-written SQL migrations in `apps/api/migrations/`, applied with `pnpm db:migrate`
