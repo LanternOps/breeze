@@ -694,8 +694,10 @@ describe('parent-first locking around a primary re-projection', () => {
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
 
     // org -> sites (id order) -> the contact row: one order for every writer.
+    // The trailing organizations lock is the site-contact mirror re-taking the
+    // parent lock this transaction already holds (a no-op): it never precedes the site.
     const locks = lockReads(calls);
-    expect(locks.map((l) => l.table)).toEqual([organizations, sites, contacts]);
+    expect(locks.map((l) => l.table)).toEqual([organizations, sites, contacts, organizations]);
     expect(compile(locks[1]!.where).params).toEqual([SITE]);
     // The demotion is itself a contacts UPDATE, so it must come after all three.
     const firstContactWrite = calls.updates.find((u) => u.table === contacts)!;
@@ -796,8 +798,10 @@ describe('the target row is re-read UNDER the lock before anything is projected'
     expect(orgBlobWrites(calls)).toEqual([]);
     // The second lock pass re-takes the organization BEFORE the newly-named
     // site, so the parent-first order that closes #3911 survives the recompute.
+    // The trailing organizations lock is the site-contact mirror re-taking the
+    // parent lock already held (a no-op).
     expect(lockReads(calls).map((l) => l.table)).toEqual([
-      organizations, contacts, organizations, sites,
+      organizations, contacts, organizations, sites, organizations,
     ]);
   });
 

@@ -21,6 +21,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { contacts } from '../../db/schema/contacts';
+import { contactRoles } from '../../db/schema/contactRoles';
 import { organizations } from '../../db/schema/orgs';
 
 const dialect = new PgDialect();
@@ -337,5 +338,51 @@ describe('site contacts', () => {
     const f = makeExec([[{ id: DANA, name: 'Front desk', email: null, phone: null, mobile: null }]]);
     await syncSiteContactRow(f.exec, ORG, SITE, null);
     expect(f.deletes()).toHaveLength(1);
+    // Not a billing holder: no projection write.
+    expect(f.blobWrites()).toHaveLength(0);
+  });
+
+  it('re-projects billing_contact after deleting a site contact that held billing @ Organization', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: null, phone: null, mobile: null }],
+      LOCK,
+      [{ id: 'role-1' }],
+      [],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, null);
+    expect(f.log.map((s) => [s.verb, s.table])).toEqual([
+      ['select', contacts],
+      ['select', organizations],
+      ['select', contactRoles],
+      ['delete', contacts],
+      ['select', contacts],
+      ['update', organizations],
+    ]);
+    expect(f.log[1]!.lockMode).toBe('no key update');
+    expect(f.blobWrites()).toEqual([null]);
+  });
+
+  it('re-projects billing_contact after updating a site contact that holds billing @ Organization', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: 'old@acme.com', phone: null, mobile: null }],
+      LOCK,
+      [{ id: 'role-1' }],
+      [{ id: DANA, name: 'Front desk', email: 'new@acme.com', phone: null }],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, { email: 'new@acme.com' });
+    const writes = f.log.filter((s) => s.verb === 'update').map((s) => s.table);
+    expect(writes).toEqual([contacts, organizations]);
+    expect(f.blobWrites()).toEqual([{ contactId: DANA, name: 'Front desk', email: 'new@acme.com', phone: null }]);
+  });
+
+  it('leaves billing_contact alone when the updated site contact does not hold billing', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: 'old@acme.com', phone: null, mobile: null }],
+      LOCK,
+      [],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, { email: 'new@acme.com' });
+    expect(f.contactUpdates()).toHaveLength(1);
+    expect(f.blobWrites()).toHaveLength(0);
   });
 });

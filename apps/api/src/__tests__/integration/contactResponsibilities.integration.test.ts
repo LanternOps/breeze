@@ -18,6 +18,7 @@ import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getTenantExportPolicyRegistry } from '../../services/tenantExportPolicyRegistry';
 import { createContact, deleteContact, updateContact } from '../../services/contacts/crud';
 import { linkLoginToContact } from '../../services/contacts/loginLink';
+import { syncSiteContactRow } from '../../services/contacts/compat';
 import { replaceContactResponsibilities } from '../../services/contacts/responsibilities';
 import { requesterAuthorized } from '../../services/callerVerification/access';
 import type { BindingRow } from '../../services/callerVerification/types';
@@ -631,5 +632,48 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     const [role] = await testDb.insert(contactRoles).values({ contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical' }).returning();
     await testDb.delete(contacts).where(eq(contacts.id, f.contactA.id));
     expect(await testDb.select().from(contactRoles).where(eq(contactRoles.id, role!.id))).toEqual([]);
+  });
+
+  runDb('clearing a site primary contact that holds billing @ Organization re-projects organizations.billing_contact', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const [primary] = await testDb.insert(contacts).values({
+      orgId: f.orgA.id, siteId: f.siteA.id, isPrimary: true, name: 'Primary', email: 'primary@a.example', roles: ['billing'],
+    }).returning();
+    await testDb.insert(contactRoles).values({
+      contactId: primary!.id, orgId: f.orgA.id, role: 'billing', siteId: null, deviceGroupId: null,
+    });
+    await testDb.update(organizations).set({
+      billingContact: { contactId: primary!.id, name: 'Primary', email: 'primary@a.example', phone: null },
+    }).where(eq(organizations.id, f.orgA.id));
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      syncSiteContactRow(db, f.orgA.id, f.siteA.id, null));
+
+    expect(await testDb.select().from(contacts).where(eq(contacts.id, primary!.id))).toEqual([]);
+    const [org] = await testDb.select({ billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, f.orgA.id));
+    expect((org!.billingContact as { contactId?: string } | null)?.contactId).not.toBe(primary!.id);
+  });
+
+  runDb('editing the email of a site primary contact that holds billing @ Organization is reflected in billing_contact', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const [primary] = await testDb.insert(contacts).values({
+      orgId: f.orgA.id, siteId: f.siteA.id, isPrimary: true, name: 'Primary', email: 'old@a.example', roles: ['billing'],
+    }).returning();
+    await testDb.insert(contactRoles).values({
+      contactId: primary!.id, orgId: f.orgA.id, role: 'billing', siteId: null, deviceGroupId: null,
+    });
+    await testDb.update(organizations).set({
+      billingContact: { contactId: primary!.id, name: 'Primary', email: 'old@a.example', phone: null },
+    }).where(eq(organizations.id, f.orgA.id));
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      syncSiteContactRow(db, f.orgA.id, f.siteA.id, { name: 'Primary', email: 'new@a.example' }));
+
+    const [org] = await testDb.select({ billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, f.orgA.id));
+    expect(org!.billingContact).toMatchObject({ contactId: primary!.id, email: 'new@a.example' });
   });
 });

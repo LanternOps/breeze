@@ -126,6 +126,15 @@ async function applyToSiteContactRow(
     .where(and(eq(contacts.siteId, siteId), eq(contacts.isPrimary, true)))
     .limit(1);
 
+  // A site contact can also hold `billing @ Organization`; deleting or editing it
+  // then changes `organizations.billing_contact`. Lock the org parent-first and
+  // read the canonical table BEFORE any delete, since contact_roles cascades.
+  let heldBilling = false;
+  if (existing) {
+    await lockOrganizationForProjection(exec, orgId);
+    heldBilling = await anyHoldsOrgBillingResponsibility(exec, orgId, [existing.id]);
+  }
+
   const base: ContactFields = replace || !existing
     ? { name: null, email: null, phone: null }
     : { name: existing.name, email: existing.email, phone: existing.phone };
@@ -143,7 +152,10 @@ async function applyToSiteContactRow(
   // taking the re-import identity key with it). When mobile survives, fall
   // through and clear the three modelled fields instead.
   if (isEmpty(next) && (existing?.mobile ?? null) === null) {
-    if (existing) await exec.delete(contacts).where(eq(contacts.id, existing.id));
+    if (existing) {
+      await exec.delete(contacts).where(eq(contacts.id, existing.id));
+      if (heldBilling) await projectBillingContact(exec, orgId);
+    }
     return;
   }
 
@@ -155,6 +167,7 @@ async function applyToSiteContactRow(
     await recordDestinationChangeWithExecutor(exec, {
       orgId, contactId: existing.id, kind: 'email', value: next.email, source: 'technician', userId: actorId ?? null,
     });
+    if (heldBilling) await projectBillingContact(exec, orgId, { keepContactId: existing.id });
     return;
   }
 

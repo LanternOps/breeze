@@ -11,7 +11,9 @@ import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
 import { portalUsers } from '../../db/schema/portal';
 import type { SQL } from 'drizzle-orm';
 
-const { updateContactMock, addRolesMock } = vi.hoisted(() => ({ updateContactMock: vi.fn(), addRolesMock: vi.fn() }));
+const { updateContactMock, addRolesMock, removeResponsibilityMock } = vi.hoisted(() => ({
+  updateContactMock: vi.fn(), addRolesMock: vi.fn(), removeResponsibilityMock: vi.fn(),
+}));
 
 vi.mock('./crud', async () => {
   const actual = await vi.importActual<typeof import('./crud')>('./crud');
@@ -19,7 +21,7 @@ vi.mock('./crud', async () => {
 });
 vi.mock('./responsibilities', async () => {
   const actual = await vi.importActual<typeof import('./responsibilities')>('./responsibilities');
-  return { ...actual, addLegacyDerivedContactRoles: addRolesMock };
+  return { ...actual, addLegacyDerivedContactRoles: addRolesMock, removeContactResponsibility: removeResponsibilityMock };
 });
 
 import {
@@ -474,22 +476,42 @@ describe("portalLoginEmailEquals (#11529)", () => {
 
 describe('dropPortalRoleForRemovedLogin (#11599)', () => {
   const input = { orgId: ORG, contactId: C, actor: { userId: 'tech-1' } };
+  const SITE = '55555555-5555-4555-8555-555555555555';
+  const GROUP = '66666666-6666-4666-8666-666666666666';
 
-  it('removes only the portal role when no other login remains on the contact', async () => {
-    const r = recorder([[{ roles: ['billing', 'portal'] }], []]);
+  it('removes the canonical portal assignment (not the whole role list) when no other login remains', async () => {
+    const r = recorder([[{ roles: ['billing', 'portal'] }], [], [{ siteId: null, deviceGroupId: null }]]);
     await dropPortalRoleForRemovedLogin(r.exec, input);
-    expect(updateContactMock).toHaveBeenCalledWith(r.exec, C, ORG, { roles: ['billing'] }, input.actor);
+    expect(removeResponsibilityMock).toHaveBeenCalledTimes(1);
+    expect(removeResponsibilityMock).toHaveBeenCalledWith(r.exec, {
+      contactId: C, orgId: ORG, role: 'portal', scope: { type: 'organization' },
+    });
+    expect(updateContactMock).not.toHaveBeenCalled();
   });
 
-  it('scopes both reads to the organization', async () => {
-    const r = recorder([[{ roles: ['portal'] }], []]);
+  it('removes the portal assignment at every scope it is held, one call per scope', async () => {
+    const r = recorder([
+      [{ roles: ['portal'] }],
+      [],
+      [{ siteId: SITE, deviceGroupId: null }, { siteId: null, deviceGroupId: GROUP }],
+    ]);
     await dropPortalRoleForRemovedLogin(r.exec, input);
-    expect(r.wheres).toHaveLength(2);
+    expect(removeResponsibilityMock.mock.calls.map((call) => call[1].scope)).toEqual([
+      { type: 'site', siteId: SITE },
+      { type: 'device_group', deviceGroupId: GROUP },
+    ]);
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('scopes all three reads to the organization', async () => {
+    const r = recorder([[{ roles: ['portal'] }], [], []]);
+    await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(r.wheres).toHaveLength(3);
     for (const w of r.wheres) expect(compile(w).params).toContain(ORG);
   });
 
   it('locks the contact row FOR UPDATE so a concurrent invite cannot interleave', async () => {
-    const r = recorder([[{ roles: ['portal'] }], []]);
+    const r = recorder([[{ roles: ['portal'] }], [], []]);
     await dropPortalRoleForRemovedLogin(r.exec, input);
     expect(r.forStrengths).toEqual(['update']);
   });
@@ -497,12 +519,14 @@ describe('dropPortalRoleForRemovedLogin (#11599)', () => {
   it('keeps the role while another login is still bound to the contact', async () => {
     const r = recorder([[{ roles: ['portal'] }], [{ id: 'pu-other' }]]);
     await dropPortalRoleForRemovedLogin(r.exec, input);
+    expect(removeResponsibilityMock).not.toHaveBeenCalled();
     expect(updateContactMock).not.toHaveBeenCalled();
   });
 
   it('writes nothing when the contact has no portal role or is gone', async () => {
     await dropPortalRoleForRemovedLogin(recorder([[{ roles: ['billing'] }]]).exec, input);
     await dropPortalRoleForRemovedLogin(recorder([[]]).exec, input);
+    expect(removeResponsibilityMock).not.toHaveBeenCalled();
     expect(updateContactMock).not.toHaveBeenCalled();
   });
 });

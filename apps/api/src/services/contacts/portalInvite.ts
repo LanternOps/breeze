@@ -30,6 +30,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
+import { contactRoles } from '../../db/schema/contactRoles';
 import { portalUsers } from '../../db/schema';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
 import {
@@ -39,9 +40,9 @@ import {
   type PortalAccountTarget,
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
-import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
+import { normalizeContactEmail, type ContactActor, type ContactExecutor } from './crud';
 import { portalLoginEmailEquals } from '../portalLoginEmail';
-import { addLegacyDerivedContactRoles } from './responsibilities';
+import { addLegacyDerivedContactRoles, removeContactResponsibility } from './responsibilities';
 
 /**
  * The ONE comparison every portal-invite path uses to find an existing login
@@ -374,7 +375,7 @@ export async function dropPortalRoleForRemovedLogin(
   exec: ContactExecutor,
   input: { orgId: string; contactId: string; actor: ContactActor },
 ): Promise<void> {
-  const { orgId, contactId, actor } = input;
+  const { orgId, contactId } = input;
   const [row] = await exec
     .select({ roles: contacts.roles })
     .from(contacts)
@@ -391,5 +392,27 @@ export async function dropPortalRoleForRemovedLogin(
     .where(and(eq(portalUsers.contactId, contactId), eq(portalUsers.orgId, orgId)))
     .limit(1);
   if (remaining) return;
-  await updateContact(exec, contactId, orgId, { roles: roles.filter((r) => r !== 'portal') }, actor);
+  // `contacts.roles[]` is a projection of contact_roles (spec §8.2): remove the
+  // canonical `portal` assignment at every scope it is held, and the removal
+  // refreshes the projection.
+  const held = await exec
+    .select({ siteId: contactRoles.siteId, deviceGroupId: contactRoles.deviceGroupId })
+    .from(contactRoles)
+    .where(and(
+      eq(contactRoles.contactId, contactId),
+      eq(contactRoles.orgId, orgId),
+      eq(contactRoles.role, 'portal'),
+    ));
+  for (const { siteId, deviceGroupId } of held) {
+    await removeContactResponsibility(exec, {
+      contactId,
+      orgId,
+      role: 'portal',
+      scope: siteId
+        ? { type: 'site', siteId }
+        : deviceGroupId
+          ? { type: 'device_group', deviceGroupId }
+          : { type: 'organization' },
+    });
+  }
 }
