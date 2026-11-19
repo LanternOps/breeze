@@ -13,6 +13,8 @@ vi.mock('drizzle-orm', () => ({
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
   inArray: (left: unknown, right: unknown) => ({ type: 'inArray', left, right }),
   isNull: (column: unknown) => ({ type: 'isNull', column }),
+  isNotNull: (column: unknown) => ({ type: 'isNotNull', column }),
+  or: (...conditions: unknown[]) => ({ type: 'or', conditions }),
   sql: Object.assign((strings: TemplateStringsArray) => ({ type: 'sql', text: strings.join('?') }), {
     raw: (s: string) => ({ type: 'raw', s }),
   }),
@@ -34,7 +36,7 @@ vi.mock('../../db/schema', () => ({
   serviceProcessCheckResults: {
     deviceId: 'spcr.deviceId', status: 'spcr.status', watchType: 'spcr.watchType', name: 'spcr.name', timestamp: 'spcr.timestamp',
   },
-  automationPolicyCompliance: { deviceId: 'apc.deviceId', status: 'apc.status' },
+  automationPolicyCompliance: { deviceId: 'apc.deviceId', status: 'apc.status', policyId: 'apc.policyId' },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -49,6 +51,11 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: { DEVICES_READ: { resource: 'devices', action: 'read' } },
 }));
+
+// The live-rule predicate itself is proven against real RLS in
+// deviceComplianceLiveRules.integration.test.ts; here it is a sentinel.
+const LIVE_RULE = { type: 'configComplianceResultNotStale' };
+vi.mock('../policyManagement/helpers', () => ({ configComplianceResultNotStale: () => LIVE_RULE }));
 
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),
@@ -149,6 +156,26 @@ describe('GET /devices/:id/tab-counts', () => {
         // Snoozed episodes are status 'dismissed' (close_reason 'snoozed'), so
         // status = 'open' alone excludes both snoozed and resolved episodes.
         { type: 'eq', left: 'metricAnomalyEpisodes.status', right: 'open' },
+      ],
+    });
+  });
+
+  it('counts only results whose rule still exists, keeping legacy-axis rows (#12187)', async () => {
+    queueSelects([[{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '2' }]], []);
+
+    const res = await app.request(`/devices/${device.id}/tab-counts`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.compliance).toBe(2);
+
+    // Fifth db.select() is the compliance count.
+    const complianceChain = selectMock.mock.results[4]!.value;
+    const [where] = complianceChain.where.mock.calls[0]!;
+    expect(where).toEqual({
+      type: 'and',
+      conditions: [
+        { type: 'eq', left: 'apc.deviceId', right: device.id },
+        { type: 'inArray', left: 'apc.status', right: ['non_compliant', 'error'] },
+        { type: 'or', conditions: [{ type: 'isNotNull', column: 'apc.policyId' }, LIVE_RULE] },
       ],
     });
   });
