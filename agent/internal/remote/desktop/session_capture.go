@@ -228,6 +228,27 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 	return false
 }
 
+// shouldForceStaticKeyframe reports whether the DXGI loop arms its periodic
+// keyframe on a static normal desktop: after 30 idle iterations, then every
+// staticDesktopKeyframeEvery. It was added to keep the decoder in step with
+// cached-frame resends; an armed keyframe is applied to the next input, so on
+// a static screen it costs nothing until the next change, which is then coded
+// as an IDR.
+//
+// A software encoder never gets it (#11639). In this loop that is the
+// software MFT fed through the GPU converter (OpenH264 has no GPU input and
+// runs the CPU branch, which never had the periodic keyframe). Under CBR an
+// IDR re-codes the whole picture within a frame's budget, so every change
+// after an idle second (a clock tick) would come out as a coarse full frame
+// and trigger a quality refresh. Viewer PLI/FIR and request_keyframe still
+// force keyframes on demand.
+func shouldForceStaticKeyframe(enc *VideoEncoder, onSecure bool, consecutiveSkips int, sinceLast time.Duration) bool {
+	if enc == nil || onSecure || consecutiveSkips < 30 || !enc.BackendIsHardware() {
+		return false
+	}
+	return sinceLast >= staticDesktopKeyframeEvery
+}
+
 // captureLoop continuously captures and sends encoded H264 frames.
 // Dispatches between DXGI tight-loop and ticker-paced modes. Mode switches
 // return to this function instead of calling each other recursively, avoiding
@@ -484,12 +505,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
-		// Periodic keyframe during normal desktop idle — keeps decoder
-		// synchronized when the capture loop is resending cached frames.
-		if !onSecure && consecutiveSkips >= 30 && time.Since(lastIdleKeyframe) >= staticDesktopKeyframeEvery {
-			if enc := s.encoder.Load(); enc != nil {
-				_ = enc.ForceKeyframe()
-			}
+		// Periodic keyframe during normal desktop idle (see
+		// shouldForceStaticKeyframe).
+		if enc := s.encoder.Load(); shouldForceStaticKeyframe(enc, onSecure, consecutiveSkips, time.Since(lastIdleKeyframe)) {
+			_ = enc.ForceKeyframe()
 			lastIdleKeyframe = time.Now()
 		}
 
