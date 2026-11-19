@@ -660,6 +660,8 @@ describe('brokered read delivery', () => {
       const s = out.storageSession as SessionDescriptor;
       const sessionLifetimeMs = Date.parse(s.deadline) - NOW.getTime();
       expect(sessionLifetimeMs).toBe(expectedLifetimeMs);
+      // The agent's forward wait is read from this field: it must survive delivery.
+      expect(out.timeBudgetSeconds).toBe(timeBudgetSeconds);
       // The verification was created (and its clock would have started) well
       // before delivery; its deadline runs from the claim (executed_at).
       const { deadlineMs } = verificationDeadline({
