@@ -41,6 +41,8 @@ func newApplyHarness(t *testing.T, mach *fakeMachine, w Writer) *applyHarness {
 		Interval:        time.Hour,
 		testAllowWrites: true,
 	})
+	// Registered after t.TempDir so it runs first (cleanups are LIFO).
+	t.Cleanup(func() { stopAndWait(t, h.m) })
 	return h
 }
 

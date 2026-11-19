@@ -102,9 +102,12 @@ type ApplyInputs struct {
 	Writer Writer
 	State  *ApplyState
 	// Persist saves the state. It must succeed before each write runs.
-	Persist  func(ApplyState) error
-	BootTime func() (time.Time, error)
-	Now      time.Time
+	Persist func(ApplyState) error
+	// StillAllowed is checked before each write; false stops the pass (the
+	// policy was removed or configure turned off mid-cycle). nil means yes.
+	StillAllowed func() bool
+	BootTime     func() (time.Time, error)
+	Now          time.Time
 }
 
 // ApplyReport is the result of one pass.
@@ -145,7 +148,7 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 	var attempted []Op
 	if in.Configure && in.Writer != nil {
 		for _, op := range planOps(in.Virtual, in.Readings, in.Memory, now) {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || (in.StillAllowed != nil && !in.StillAllowed()) {
 				break
 			}
 			key := op.Key()
@@ -220,8 +223,10 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 			st.LastApplyResult = "partial"
 		}
 	}
-	if err := persist(in, *st); err != nil && len(attempted) > 0 {
-		log.Warn("wake apply results not persisted", "error", err.Error())
+	if len(attempted) > 0 {
+		if err := persist(in, *st); err != nil {
+			log.Warn("wake apply results not persisted", "error", err.Error())
+		}
 	}
 	rep.Status = statusFor(st, rep.Readings, in.Virtual, in.Memory, in.Configure, now)
 	return rep

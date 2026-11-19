@@ -272,6 +272,7 @@ func (m *Manager) cycle(ctx context.Context) bool {
 			Writer:            m.opts.Writer,
 			State:             &st.Apply,
 			Persist:           func(ApplyState) error { return saveState(m.opts.StatePath, st) },
+			StillAllowed:      func() bool { return m.writesAllowed(m.currentSettings()) },
 			BootTime:          m.opts.BootTime,
 			Now:               now,
 		})

@@ -522,8 +522,11 @@ func TestPolicyRemovedStopsAndRevertsNothing(t *testing.T) {
 	h.m.ApplySettings(Settings{Enabled: true, ConfigureSettings: true})
 	h.m.Start(context.Background())
 	defer h.m.Stop()
-	waitFor(t, "first apply", func() bool { return w.count() > 0 })
+	waitFor(t, "first cycle", func() bool { return h.uploads.Load() > 0 })
 	n := w.count()
+	if n == 0 {
+		t.Fatal("no writes in the first cycle")
+	}
 	h.m.ApplySettings(Settings{Enabled: false})
 	time.Sleep(150 * time.Millisecond)
 	if w.count() != n {
@@ -537,6 +540,41 @@ func TestPolicyRemovedStopsAndRevertsNothing(t *testing.T) {
 	got := m.read()
 	if got.FastStartup != "disabled" || got.Adapters[0].MagicPacket != "enabled" {
 		t.Fatalf("settings were reverted: %+v", got)
+	}
+}
+
+// sideEffectWriter runs hook before its first write.
+type sideEffectWriter struct {
+	inner *fakeWriter
+	hook  func()
+	once  sync.Once
+}
+
+func (s *sideEffectWriter) Write(ctx context.Context, op Op) error {
+	s.once.Do(s.hook)
+	return s.inner.Write(ctx, op)
+}
+
+// A policy removed (or configure turned off) while a cycle is writing stops
+// the writes that have not started yet.
+func TestPolicyChangeMidCycleStopsRemainingWrites(t *testing.T) {
+	for name, next := range map[string]Settings{
+		"removed":       {Enabled: false},
+		"configure_off": {Enabled: true},
+	} {
+		m := badMachine()
+		inner := &fakeWriter{machine: m}
+		var h *applyHarness
+		w := &sideEffectWriter{inner: inner, hook: func() { h.m.ApplySettings(next) }}
+		h = newApplyHarness(t, m, w)
+		h.m.ApplySettings(Settings{Enabled: true, ConfigureSettings: true})
+		h.m.Start(context.Background())
+		waitFor(t, "first cycle", func() bool { return h.uploads.Load() > 0 })
+		h.m.Stop()
+		<-h.m.Done()
+		if inner.count() != 1 {
+			t.Fatalf("%s: want only the write already started, got %v", name, inner.ops)
+		}
 	}
 }
 
