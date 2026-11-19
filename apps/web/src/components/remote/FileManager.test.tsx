@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FileManager from './FileManager';
 
@@ -7,6 +8,75 @@ const mockFetchWithAuth = vi.fn();
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => mockFetchWithAuth(...args),
 }));
+
+describe('FileManager address bar', () => {
+  beforeEach(() => {
+    mockFetchWithAuth.mockReset();
+  });
+
+  function renderFileManager(initialPath: string) {
+    render(<FileManager deviceId="device-1" deviceHostname="workstation-1" initialPath={initialPath} />);
+    return screen.getByRole('textbox', { name: 'Folder path' });
+  }
+
+  it.each([
+    ['C:\\', 'C:\\Program Files\\Reports & Logs', 'C:\\Program Files\\Reports & Logs'],
+    ['C:\\', 'D:', 'D:\\'],
+    ['C:\\', '\\\\host\\share', '\\\\host\\share'],
+    ['/home', '/srv/daily\\reports ', '/srv/daily\\reports '],
+  ])('opens an entered path from %s with Enter', async (initialPath, typedPath, requestedPath) => {
+    const user = userEvent.setup();
+    const expectedUrl = `/system-tools/devices/device-1/files?${new URLSearchParams({ path: requestedPath })}`;
+    mockFetchWithAuth.mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url === expectedUrl
+        ? { path: requestedPath, data: [{ name: 'report.txt', type: 'file', path: 'report.txt' }] }
+        : { data: [] },
+    }));
+
+    const address = renderFileManager(initialPath);
+    await screen.findByText('Empty Directory');
+    expect(address).toHaveValue(initialPath);
+
+    await user.click(address);
+    fireEvent.change(address, { target: { value: typedPath } });
+    expect(mockFetchWithAuth).not.toHaveBeenCalledWith(expectedUrl);
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByText('report.txt')).toBeInTheDocument();
+    expect(address).toHaveValue(requestedPath);
+    await user.click(screen.getByTitle('Home'));
+    await screen.findByText('Empty Directory');
+    expect(address).toHaveValue(initialPath);
+  });
+
+  it('shows a failed lookup and keeps the address available for correction', async () => {
+    const user = userEvent.setup();
+    mockFetchWithAuth.mockImplementation(async (url: string) => url.endsWith('path=%2Fmissing')
+      ? { ok: false, json: async () => ({ error: 'Directory does not exist' }) }
+      : { ok: true, json: async () => ({ data: [] }) });
+
+    const address = renderFileManager('/');
+    await screen.findByText('Empty Directory');
+
+    fireEvent.change(address, { target: { value: 'relative' } });
+    expect(address).toBeInvalid();
+    await user.click(screen.getByRole('button', { name: 'Open folder' }));
+    expect(mockFetchWithAuth).toHaveBeenCalledTimes(2);
+
+    fireEvent.change(address, { target: { value: '/missing' } });
+    await user.click(screen.getByRole('button', { name: 'Open folder' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Directory does not exist');
+    expect(address).toHaveValue('/missing');
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(mockFetchWithAuth).toHaveBeenLastCalledWith('/system-tools/devices/device-1/files?path=%2Fmissing');
+    await screen.findByRole('alert');
+    await user.click(address);
+    await user.keyboard('{Escape}');
+    expect(address).toHaveValue('/');
+  });
+});
 
 describe('FileManager downloads', () => {
   beforeEach(() => {

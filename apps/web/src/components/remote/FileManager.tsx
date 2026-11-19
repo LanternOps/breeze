@@ -33,7 +33,7 @@ import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo as navigateToPage } from '@/lib/navigation';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
+import { buildBreadcrumbs, getParentPath, getPathRoot, isPathRoot, isWindowsPath, joinRemotePath } from './filePathUtils';
 import {
   copyFiles,
   moveFiles,
@@ -191,9 +191,11 @@ export default function FileManager({
 }: FileManagerProps) {
   const { t } = useTranslation('remote');
   const [currentPath, setCurrentPath] = useState(initialPath);
+  const [pathDraft, setPathDraft] = useState<string | null>(null);
+  const pathInputValue = pathDraft ?? currentPath;
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; path: string } | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<TransferItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -211,6 +213,7 @@ export default function FileManager({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const directoryRequestId = useRef(0);
 
   // One AbortController per in-flight transfer so Cancel actually aborts the
   // browser-side request instead of just hiding the row (issue #2396).
@@ -222,6 +225,7 @@ export default function FileManager({
 
   // Fetch directory contents
   const fetchDirectory = useCallback(async (path: string) => {
+    const requestId = ++directoryRequestId.current;
     setLoading(true);
     setSelectedItems(new Set());
 
@@ -241,21 +245,24 @@ export default function FileManager({
         throw new Error(translated || json.error || t('fileManager.errors.loadDirectory'));
       }
       const json = await response.json();
+      if (requestId !== directoryRequestId.current) return;
       const entriesData = Array.isArray(json.data) ? json.data : [];
       setEntries(entriesData);
       // Prefer the path the agent actually listed: navigating into a macOS
       // Finder alias lands on the alias's target, and uploads/breadcrumbs must
       // follow it there rather than stay on the alias file.
       setCurrentPath(typeof json.path === 'string' && json.path ? json.path : path);
+      setPathDraft(null);
       setError(null);
     } catch (err) {
+      if (requestId !== directoryRequestId.current) return;
       const message = err instanceof Error ? err.message : t('fileManager.errors.loadDirectory');
       console.error('[FileManager] Failed to load directory:', err);
       onError?.(message);
-      setError(message);
+      setError({ message, path });
       setEntries([]);
     } finally {
-      setLoading(false);
+      if (requestId === directoryRequestId.current) setLoading(false);
     }
   }, [deviceId, onError]);
 
@@ -904,7 +911,7 @@ export default function FileManager({
       </div>
 
       {/* Navigation */}
-      <div className="flex items-center gap-2 border-b px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <button
           type="button"
           onClick={goHome}
@@ -953,7 +960,7 @@ export default function FileManager({
           </div>
         )}
 
-        <div className="flex flex-1 items-center gap-1 text-sm">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap text-sm">
           <button
             type="button"
             onClick={() => navigateTo(breadcrumbs.rootPath)}
@@ -987,6 +994,44 @@ export default function FileManager({
           <History className="h-3.5 w-3.5" />
           {t('fileManager.activity')}{activities.length > 0 && ` (${activities.length})`}
         </button>
+
+        <form
+          className="flex w-full min-w-0 items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (loading || !pathInputValue.trim()) return;
+            setShowTrash(false);
+            // A bare drive letter in the address field means the drive root.
+            navigateTo(/^[A-Za-z]:$/.test(pathInputValue) ? getPathRoot(pathInputValue) : pathInputValue);
+          }}
+        >
+          <input
+            type="text"
+            aria-label={t('fileManager.folderPath')}
+            title={t('fileManager.absolutePathHint')}
+            placeholder={t('fileManager.folderPath')}
+            value={pathInputValue}
+            required
+            maxLength={2048}
+            pattern={isWindowsPath(initialPath) ? String.raw`(?:[A-Za-z]:(?:(?:/|\\).*)?|\\\\.+|//.+)` : '/.*'}
+            readOnly={loading}
+            spellCheck={false}
+            autoComplete="off"
+            autoCapitalize="none"
+            onChange={(event) => setPathDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setPathDraft(null);
+            }}
+            className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-sm"
+          />
+          <button
+            type="submit"
+            disabled={loading || !pathInputValue.trim()}
+            className="h-8 shrink-0 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {t('fileManager.openFolder')}
+          </button>
+        </form>
       </div>
 
       {/* Disk Cleanup lives on the device's own tab. */}
@@ -1096,10 +1141,10 @@ export default function FileManager({
                   <td colSpan={5} className="px-4 py-8 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <AlertCircle className="h-6 w-6 text-red-500" />
-                      <p className="text-sm text-red-500">{error}</p>
+                      <p role="alert" className="text-sm text-red-500">{error.message}</p>
                       <button
                         type="button"
-                        onClick={() => fetchDirectory(currentPath)}
+                        onClick={() => fetchDirectory(error.path)}
                         className="text-xs text-primary hover:underline"
                       >
                         {t('common:actions.retry')}

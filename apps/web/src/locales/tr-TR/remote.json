@@ -245,6 +245,7 @@
     "unverifiedHint": "Cihaz zamanında yanıt vermedi — doğrulamak için yenileyin"
   },
   "fileManager": {
+    "absolutePathHint": "Mutlak klasör yolunu girin",
     "activeCount": "{{count}} aktif",
     "activity": "Etkinlik",
     "cancelled": "İptal edildi",
@@ -270,6 +271,7 @@
       "upload": "Yükleme başarısız oldu",
       "uploadTimeout": "Yükleme 2 dakika sonra zaman aşımına uğradı. Dosya hâlâ cihazda yazılı olabilir; doğrulamak için yenileyin."
     },
+    "folderPath": "Klasör yolu",
     "freeOf": "{{free}} ücretsiz {{total}}",
     "goUp": "Yukarı Git",
     "home": "Ana Sayfa",
@@ -284,6 +286,7 @@
       "invalidName": "Klasör adları yol ayırıcıları veya bu cihazın dosya sisteminin izin vermediği karakterler içeremez.",
       "nameExists": "Burada bu ada sahip bir dosya veya klasör zaten var."
     },
+    "openFolder": "Klasörü aç",
     "selectedCount": "Seçilen Sayı",
     "size": "Boyut",
     "title": "Dosya Yöneticisi",
