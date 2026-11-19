@@ -215,6 +215,7 @@ apps/api/src/config/extensionBundledDependencies.test.ts
 apps/api/src/config/monitoringPrometheusScrapeConfig.test.ts
 apps/api/src/config/perfWorkflowContract.test.ts
 apps/api/src/config/portalDevE2eWorkflowContract.test.ts
+apps/api/src/config/postgresDataDirCompose.test.ts
 apps/api/src/config/productionReadinessWiring.test.ts
 apps/api/src/config/proxyTrustCompose.test.ts
 apps/api/src/config/releaseBuildReuse.test.ts

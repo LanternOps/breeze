@@ -1210,8 +1210,65 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-breeze}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-breeze}
+      # Pinned to the volume mount below. Postgres 18 images moved the default
+      # data directory to /var/lib/postgresql/18/docker, outside that mount, and
+      # without this line they refuse to start on this file. This is the
+      # Postgres 16/17 default, so existing volumes stay exactly where they are.
+      # Already running 18 with your volume mounted at /var/lib/postgresql?
+      # Read the PostgreSQL section of the upgrade guide before taking this line.
+      # The entrypoint below refuses to start if you take it with that mount.
+      PGDATA: /var/lib/postgresql/data
+    # Wraps the image entrypoint. If PGDATA holds no database but one exists
+    # next to it (the upstream 18 layout keeps it in /var/lib/postgresql/18/docker)
+    # or inside it, starting would initialise a new EMPTY database that the API
+    # then migrates, and Breeze would come up looking freshly installed. Refuse
+    # instead and name the PGDATA that finds the existing data. Fresh installs
+    # and a PGDATA that already holds a database go straight to the image
+    # entrypoint. `$$` escapes Compose interpolation; the command passes
+    # through, so overlays that set `command: postgres -c ...` still work.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${1:-}" in postgres|-*)
+          pgdata="$${PGDATA:-}"
+          if [ -n "$$pgdata" ] && [ ! -s "$$pgdata/PG_VERSION" ]; then
+            parent="$$(dirname "$$pgdata")"
+            pick=""
+            others=""
+            # The parent itself, one or two levels below it (upstream
+            # <major>/docker, tianon/postgres-upgrade <major>/data), and the
+            # same below PGDATA (a whole-file upgrade over such a volume).
+            for found in "$$parent/PG_VERSION" "$$parent"/*/PG_VERSION "$$parent"/*/*/PG_VERSION "$$pgdata"/*/PG_VERSION "$$pgdata"/*/*/PG_VERSION; do
+              [ -s "$$found" ] || continue
+              dir="$$(dirname "$$found")"
+              if [ -z "$$pick" ] || { [ "$$(cat "$$found")" = "$${PG_MAJOR:-}" ] && [ "$$(cat "$$pick/PG_VERSION")" != "$${PG_MAJOR:-}" ]; }; then
+                [ -n "$$pick" ] && others="$$others $$pick"
+                pick="$$dir"
+              else
+                others="$$others $$dir"
+              fi
+            done
+            if [ -n "$$pick" ]; then
+              echo "postgres: refusing to start. PGDATA=$$pgdata holds no database, but a PostgreSQL $$(cat "$$pick/PG_VERSION") database exists at $$pick." >&2
+              [ -z "$$others" ] || echo "postgres: other databases found:$$others" >&2
+              echo "postgres: starting now would create a new, EMPTY database and Breeze would come up as a fresh install. Nothing has been changed." >&2
+              echo "postgres: to start on the existing data, set PGDATA: $$pick on the postgres service in docker-compose.yml (keep your volume mount), or move that data into $$pgdata." >&2
+              echo "postgres: see https://docs.breezermm.com/deploy/upgrades/#already-running-18-with-the-upstream-volume-layout" >&2
+              exit 1
+            fi
+          fi
+        esac
+        exec docker-entrypoint.sh "$$@"
+      - postgres-entrypoint
+    command: ['postgres']
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # POSTGRES_DATA_VOLUME picks which declared volume holds the database:
+      # postgres_data (unset, the default) or postgres_data_alt. The PostgreSQL
+      # major-version runbook restores into the other slot so the old volume
+      # stays untouched as the rollback. Any other volume name fails `docker
+      # compose`; never set it to a path (that would bind-mount a host directory).
+      - ${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data
     healthcheck:
       <<: *healthcheck
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}']
@@ -1410,6 +1467,9 @@ volumes:
   caddy_config:
   api_data:
   postgres_data:
+  # Second database slot, used only when POSTGRES_DATA_VOLUME selects it (see
+  # the postgres service).
+  postgres_data_alt:
   redis_data:
 
 secrets:
